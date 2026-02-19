@@ -20,6 +20,7 @@ log.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
+toml_edit.workspace = true
 which.workspace = true
 
 [lints]

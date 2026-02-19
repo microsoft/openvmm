@@ -320,11 +320,11 @@ impl SimpleFlowNode for Node {
                 }
 
                 if let Some(vmgstool) = vmgstool {
-                    match rt.read(vmgstool) {
-                        crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe, .. } => {
+                    match rt.read(vmgstool).bin {
+                        crate::build_vmgstool::VmgstoolOutputBin::WindowsBin { exe, .. } => {
                             fs_err::copy(exe, test_content_dir.join("vmgstool.exe"))?;
                         }
-                        crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin, .. } => {
+                        crate::build_vmgstool::VmgstoolOutputBin::LinuxBin { bin, .. } => {
                             let dst = test_content_dir.join("vmgstool");
                             fs_err::copy(bin, &dst)?;
                             dst.make_executable()?;

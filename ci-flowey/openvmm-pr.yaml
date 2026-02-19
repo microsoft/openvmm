@@ -1612,6 +1612,7 @@ jobs:
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::run_cargo_build 6
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::build_openvmm 0
       $(FLOWEY_BIN) e 7 flowey_core::pipeline::artifact::publish 0
+      $(FLOWEY_BIN) e 7 flowey_lib_hvlite::build_vmgstool 0
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::init_cross_build 6
     displayName: split debug symbols
   - bash: |-
@@ -1623,7 +1624,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::run_split_debug_info 4
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::run_cargo_build 15
-      $(FLOWEY_BIN) e 7 flowey_lib_hvlite::build_vmgstool 0
+      $(FLOWEY_BIN) e 7 flowey_lib_hvlite::build_vmgstool 1
       $(FLOWEY_BIN) e 7 flowey_core::pipeline::artifact::publish 1
       $(FLOWEY_BIN) e 7 flowey_lib_hvlite::init_cross_build 5
     displayName: split debug symbols
@@ -1946,6 +1947,7 @@ jobs:
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::run_cargo_build 6
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_openvmm 0
       $(FLOWEY_BIN) e 6 flowey_core::pipeline::artifact::publish 0
+      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_vmgstool 0
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 5
     displayName: split debug symbols
   - bash: |-
@@ -1957,7 +1959,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::run_split_debug_info 4
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::run_cargo_build 15
-      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_vmgstool 0
+      $(FLOWEY_BIN) e 6 flowey_lib_hvlite::build_vmgstool 1
       $(FLOWEY_BIN) e 6 flowey_core::pipeline::artifact::publish 1
       $(FLOWEY_BIN) e 6 flowey_lib_hvlite::init_cross_build 4
     displayName: split debug symbols
@@ -2245,13 +2247,14 @@ jobs:
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::build_prep_steps 0
       $(FLOWEY_BIN) e 5 flowey_core::pipeline::artifact::publish 3
+      $(FLOWEY_BIN) e 5 flowey_lib_hvlite::build_vmgstool 0
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::init_cross_build 4
     displayName: cargo build prep_steps
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 5 flowey_lib_common::run_cargo_build 6
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::run_cargo_build 10
-      $(FLOWEY_BIN) e 5 flowey_lib_hvlite::build_vmgstool 0
+      $(FLOWEY_BIN) e 5 flowey_lib_hvlite::build_vmgstool 1
       $(FLOWEY_BIN) e 5 flowey_core::pipeline::artifact::publish 4
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::init_cross_build 3
       $(FLOWEY_BIN) e 5 flowey_lib_hvlite::run_cargo_build 7
@@ -3454,13 +3457,14 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_prep_steps 0
       $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 5
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_vmgstool 0
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 4
     displayName: cargo build prep_steps
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 6
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 10
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_vmgstool 0
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_vmgstool 1
       $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 6
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 3
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 7
