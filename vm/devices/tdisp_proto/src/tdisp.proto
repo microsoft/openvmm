@@ -116,7 +116,7 @@ enum TdispGuestProtocolType {
   TDISP_GUEST_PROTOCOL_TYPE_AMD_SEV_TIO_V1_0 = 1;
 
   // Guest is utilizing the first iteration of Intel® TDX Connect technology.
-  TDISP_GUEST_PROTOCOL_TYPE_INTEL_SEV_TIO_V1_0 = 2;
+  TDISP_GUEST_PROTOCOL_TYPE_INTEL_TDX_CONNECT_V1_0 = 2;
 }
 
 // ----------------------------------------------------------------------------
