@@ -15,8 +15,11 @@ use tdisp_proto::{
     guest_to_host_command::Command, guest_to_host_response::Response,
 };
 
-use crate::serialize_proto::{
-    deserialize_command, deserialize_response, serialize_command, serialize_response,
+use crate::{
+    serialize_proto::{
+        deserialize_command, deserialize_response, serialize_command, serialize_response,
+    },
+    tests::mocks::TDISP_MOCK_GUEST_PROTOCOL,
 };
 
 /// Build a well-formed response wrapper around the given `Response` variant.
@@ -36,7 +39,9 @@ fn test_command_get_device_interface_info_roundtrip() {
     let cmd = GuestToHostCommand {
         device_id: 42,
         command: Some(Command::GetDeviceInterfaceInfo(
-            TdispCommandRequestGetDeviceInterfaceInfo {},
+            TdispCommandRequestGetDeviceInterfaceInfo {
+                guest_protocol_type: TDISP_MOCK_GUEST_PROTOCOL as i32,
+            },
         )),
     };
     let bytes = serialize_command(&cmd);
@@ -159,8 +164,7 @@ fn test_response_get_device_interface_info_roundtrip() {
     let resp = make_response(Response::GetDeviceInterfaceInfo(
         TdispCommandResponseGetDeviceInterfaceInfo {
             interface_info: Some(TdispDeviceInterfaceInfo {
-                interface_version_major: 1,
-                interface_version_minor: 0,
+                guest_protocol_type: TDISP_MOCK_GUEST_PROTOCOL as i32,
                 supported_features: 0xDEAD,
                 tdisp_device_id: 99,
             }),
@@ -172,8 +176,7 @@ fn test_response_get_device_interface_info_roundtrip() {
         panic!("expected GetDeviceInterfaceInfo response");
     };
     let info = r.interface_info.unwrap();
-    assert_eq!(info.interface_version_major, 1);
-    assert_eq!(info.interface_version_minor, 0);
+    assert_eq!(info.guest_protocol_type, TDISP_MOCK_GUEST_PROTOCOL as i32);
     assert_eq!(info.supported_features, 0xDEAD);
     assert_eq!(info.tdisp_device_id, 99);
 }

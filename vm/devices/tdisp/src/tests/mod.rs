@@ -3,6 +3,9 @@
 
 //! Unit tests for the TDISP guest-to-host interface.
 
+/// Mocks for the host interface and the emulator.
+mod mocks;
+
 /// Unit tests for serialization and deserialization of TDISP guest-to-host commands and responses.
 pub mod serialize_tests;
 
