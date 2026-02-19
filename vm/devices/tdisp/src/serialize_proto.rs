@@ -89,20 +89,23 @@ pub fn validate_command(command: &GuestToHostCommand) -> anyhow::Result<()> {
 /// Validate the invariants of a [`GuestToHostResponse`] to ensure that it matches the
 /// expected required protocol format.
 pub fn validate_response(response: &GuestToHostResponse) -> anyhow::Result<()> {
-    require_field!(response.response)?;
     require_enum!(response.result, TdispGuestOperationErrorCode)?;
     require_enum!(response.tdi_state_before, TdispTdiState)?;
     require_enum!(response.tdi_state_after, TdispTdiState)?;
 
-    if let Some(Response::GetTdiReport(req)) = &response.response {
-        require_enum!(req.report_type, TdispReportType)?;
-        if req.report_buffer.is_empty() {
-            return Err(anyhow::anyhow!(
-                "proto validation: report_buffer must not be empty"
-            ));
+    // Only require a result field if the response is a success.
+    if response.result == TdispGuestOperationErrorCode::Success as i32 {
+        require_field!(response.response)?;
+        if let Some(Response::GetTdiReport(req)) = &response.response {
+            require_enum!(req.report_type, TdispReportType)?;
+            if req.report_buffer.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "proto validation: report_buffer must not be empty"
+                ));
+            }
+        } else if let Some(Response::GetDeviceInterfaceInfo(req)) = &response.response {
+            require_field!(req.interface_info)?;
         }
-    } else if let Some(Response::GetDeviceInterfaceInfo(req)) = &response.response {
-        require_field!(req.interface_info)?;
     }
 
     Ok(())

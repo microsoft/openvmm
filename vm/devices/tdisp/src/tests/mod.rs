@@ -8,3 +8,6 @@ pub mod serialize_tests;
 
 /// Unit tests for the TDISP state machine handling.
 pub mod statemachine_tests;
+
+/// End-to-end tests that drive the emulator through serialized command packets.
+pub mod endtoend_tests;
