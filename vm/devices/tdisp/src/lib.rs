@@ -565,7 +565,13 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         tracing::info!("Device transition from Unlocked to Locked state");
-        self.transition_state_to(TdispTdiState::Locked).unwrap();
+        match self.transition_state_to(TdispTdiState::Locked) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Failed to transition to Locked state: {e:?}");
+                return Err(TdispGuestOperationError::HostFailedToProcessCommand);
+            }
+        }
         Ok(())
     }
 
@@ -594,7 +600,13 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         }
 
         tracing::info!("Device transition from Locked to Run state");
-        self.transition_state_to(TdispTdiState::Run).unwrap();
+        match self.transition_state_to(TdispTdiState::Run) {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::error!("Failed to transition to Run state: {e:?}");
+                return Err(TdispGuestOperationError::HostFailedToProcessCommand);
+            }
+        }
 
         Ok(())
     }
@@ -625,13 +637,16 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
             .tdisp_get_device_report(report_type)
             .context("failed to call to get device report from host");
 
-        if let Err(e) = report_buffer {
-            tracing::error!("Failed to get device report from host: {e:?}");
-            return Err(TdispGuestOperationError::HostFailedToProcessCommand);
+        match report_buffer {
+            Ok(report_buffer) => {
+                tracing::info!("Retrieve attestation report called successfully");
+                Ok(report_buffer)
+            }
+            Err(e) => {
+                tracing::error!("Failed to get device report from host: {e:?}");
+                Err(TdispGuestOperationError::HostFailedToProcessCommand)
+            }
         }
-
-        tracing::info!("Retrieve attestation report called successfully");
-        Ok(report_buffer.unwrap())
     }
 
     #[instrument(fields(device_id = %self.debug_device_id), skip(self))]
