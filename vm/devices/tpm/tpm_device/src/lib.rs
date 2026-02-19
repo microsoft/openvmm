@@ -380,7 +380,7 @@ impl Tpm {
         register_layout: TpmRegisterLayout,
         mem: GuestMemory,
         ppi_store: Box<dyn NonVolatileStore>,
-        nvram_store: Box<dyn NonVolatileStore>,
+        mut nvram_store: Box<dyn NonVolatileStore>,
         monotonic_timer: MonotonicTimer,
         refresh_tpm_seeds: bool,
         is_restoring: bool,
@@ -390,16 +390,22 @@ impl Tpm {
         is_confidential_vm: bool,
         bios_guid: Guid,
     ) -> Result<Self, TpmError> {
-        tracing::error!("initializing TPM");
+        tracing::info!("initializing TPM");
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
+
+        let existing_nvmem_blob = nvram_store
+            .restore()
+            .await
+            .map_err(TpmErrorKind::ReadNvramState)?;
+        let blob_size = existing_nvmem_blob.map(|v| v.len()).unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE);
 
         let tpm_engine = MsTpm20RefPlatform::initialize(
             Box::new(TpmPlatformCallbacks {
                 pending_nvram: pending_nvram.clone(),
                 monotonic_timer,
             }),
-            ms_tpm_20_ref::InitKind::ColdInit,
+            ms_tpm_20_ref::InitKind::ColdInitWithSize(blob_size),
         )
         .map_err(TpmErrorKind::InstantiateTpm)?;
 
@@ -503,8 +509,6 @@ impl Tpm {
             large_vtpm_blob: bool,
             fixup_16k_ak_cert: bool,
         }
-
-        tracing::error!("on_first_boot");
 
         let quirks = {
             // Check whether or not we need to pave-over the blank TPM with our
@@ -794,7 +798,6 @@ impl Tpm {
             .await
             .map_err(TpmErrorKind::PersistNvramState)?;
 
-        tracing::error!("on_first_boot done");
         Ok(())
     }
 
@@ -1837,7 +1840,6 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            tracing::error!("tpm save");
             // Block save requests when there is an outstanding ak cert request.
             //
             // DEVNOTE:
@@ -1919,13 +1921,10 @@ mod save_restore {
                 allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
             };
 
-            tracing::error!(size: tpm_state_blob.len(), "save: tpm_state_blob size")
-
             Ok(saved_state)
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            tracing::error!("tpm restore");
             let state::SavedState {
                 control_area,
                 current_io_command,
@@ -1936,8 +1935,6 @@ mod save_restore {
                 keys,
                 allow_ak_cert_renewal,
             } = state;
-
-            tracing::error!(size: tpm_state_blob.len(), "restore: tpm_state_blob size");
 
             self.control_area = {
                 let state::SavedControlArea {
