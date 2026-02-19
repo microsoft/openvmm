@@ -398,7 +398,9 @@ impl Tpm {
             .restore()
             .await
             .map_err(TpmErrorKind::ReadNvramState)?;
-        let blob_size = existing_nvmem_blob.map(|v| v.len()).unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE);
+        let blob_size = existing_nvmem_blob
+            .map(|v| v.len())
+            .unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE);
 
         let tpm_engine = MsTpm20RefPlatform::initialize(
             Box::new(TpmPlatformCallbacks {
