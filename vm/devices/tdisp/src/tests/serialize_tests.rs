@@ -5,15 +5,25 @@
 //! These are fairly basic and not exhaustive to all packet types. Basically ensures the most core
 //! serialization and deserialization logic is working.
 
-use tdisp_proto::{
-    GuestToHostCommand, GuestToHostResponse, TdispCommandRequestBind,
-    TdispCommandRequestGetDeviceInterfaceInfo, TdispCommandRequestGetTdiReport,
-    TdispCommandRequestStartTdi, TdispCommandRequestUnbind, TdispCommandResponseBind,
-    TdispCommandResponseGetDeviceInterfaceInfo, TdispCommandResponseGetTdiReport,
-    TdispCommandResponseStartTdi, TdispCommandResponseUnbind, TdispDeviceInterfaceInfo,
-    TdispGuestOperationErrorCode, TdispGuestUnbindReason, TdispReportType, TdispTdiState,
-    guest_to_host_command::Command, guest_to_host_response::Response,
-};
+use tdisp_proto::GuestToHostCommand;
+use tdisp_proto::GuestToHostResponse;
+use tdisp_proto::TdispCommandRequestBind;
+use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
+use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestStartTdi;
+use tdisp_proto::TdispCommandRequestUnbind;
+use tdisp_proto::TdispCommandResponseBind;
+use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+use tdisp_proto::TdispCommandResponseGetTdiReport;
+use tdisp_proto::TdispCommandResponseStartTdi;
+use tdisp_proto::TdispCommandResponseUnbind;
+use tdisp_proto::TdispDeviceInterfaceInfo;
+use tdisp_proto::TdispGuestOperationErrorCode;
+use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispReportType;
+use tdisp_proto::TdispTdiState;
+use tdisp_proto::guest_to_host_command::Command;
+use tdisp_proto::guest_to_host_response::Response;
 
 use crate::{
     serialize_proto::{

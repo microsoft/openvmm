@@ -7,13 +7,19 @@
 //! the resulting [`GuestToHostResponse`] is serialized and deserialized in turn.
 //! All responses -- including error responses -- exercise the full wire round-trip.
 
+use tdisp_proto::GuestToHostCommand;
+use tdisp_proto::TdispCommandRequestBind;
+use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
+use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestStartTdi;
+use tdisp_proto::TdispCommandRequestUnbind;
+use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestProtocolType;
-use tdisp_proto::{
-    GuestToHostCommand, TdispCommandRequestBind, TdispCommandRequestGetDeviceInterfaceInfo,
-    TdispCommandRequestGetTdiReport, TdispCommandRequestStartTdi, TdispCommandRequestUnbind,
-    TdispGuestOperationErrorCode, TdispGuestUnbindReason, TdispReportType, TdispTdiState,
-    guest_to_host_command::Command, guest_to_host_response::Response,
-};
+use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispReportType;
+use tdisp_proto::TdispTdiState;
+use tdisp_proto::guest_to_host_command::Command;
+use tdisp_proto::guest_to_host_response::Response;
 
 use crate::serialize_proto::{
     deserialize_command, deserialize_response, serialize_command, serialize_response,

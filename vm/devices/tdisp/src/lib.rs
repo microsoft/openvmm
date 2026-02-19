@@ -38,13 +38,21 @@ pub mod tests;
 use anyhow::Context;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tdisp_proto::{
-    GuestToHostCommand, GuestToHostResponse, TdispCommandResponseBind,
-    TdispCommandResponseGetDeviceInterfaceInfo, TdispCommandResponseGetTdiReport,
-    TdispCommandResponseStartTdi, TdispCommandResponseUnbind, TdispDeviceInterfaceInfo,
-    TdispGuestOperationErrorCode, TdispGuestProtocolType, TdispGuestUnbindReason, TdispReportType,
-    TdispTdiState, guest_to_host_command::Command, guest_to_host_response::Response,
-};
+use tdisp_proto::GuestToHostCommand;
+use tdisp_proto::GuestToHostResponse;
+use tdisp_proto::TdispCommandResponseBind;
+use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+use tdisp_proto::TdispCommandResponseGetTdiReport;
+use tdisp_proto::TdispCommandResponseStartTdi;
+use tdisp_proto::TdispCommandResponseUnbind;
+use tdisp_proto::TdispDeviceInterfaceInfo;
+use tdisp_proto::TdispGuestOperationErrorCode;
+use tdisp_proto::TdispGuestProtocolType;
+use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispReportType;
+use tdisp_proto::TdispTdiState;
+use tdisp_proto::guest_to_host_command::Command;
+use tdisp_proto::guest_to_host_response::Response;
 use thiserror::Error;
 use tracing::instrument;
 

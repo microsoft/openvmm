@@ -1,7 +1,12 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tdisp_proto::{TdispDeviceInterfaceInfo, TdispGuestProtocolType, TdispReportType};
+use tdisp_proto::TdispDeviceInterfaceInfo;
+use tdisp_proto::TdispGuestProtocolType;
+use tdisp_proto::TdispReportType;
 
 use crate::{
     TdispGuestRequestInterface, TdispHostDeviceInterface, TdispHostDeviceTargetEmulator,

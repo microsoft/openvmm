@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use tdisp_proto::{TdispGuestUnbindReason, TdispReportType, TdispTdiState};
+use tdisp_proto::TdispGuestUnbindReason;
+use tdisp_proto::TdispReportType;
+use tdisp_proto::TdispTdiState;
 
 use crate::{TdispGuestOperationError, TdispGuestRequestInterface};
 
