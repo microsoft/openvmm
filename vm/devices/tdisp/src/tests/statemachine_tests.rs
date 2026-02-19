@@ -42,10 +42,7 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
         Ok(())
     }
 
-    fn tdisp_get_device_report(
-        &mut self,
-        report_type: TdispReportType,
-    ) -> anyhow::Result<Vec<u8>> {
+    fn tdisp_get_device_report(&mut self, report_type: TdispReportType) -> anyhow::Result<Vec<u8>> {
         *self.last_call.lock() = Some(LastCall::GetDeviceReport(report_type));
         Ok(vec![0xDE, 0xAD, 0xBE, 0xEF])
     }
