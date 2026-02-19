@@ -18,15 +18,15 @@
 //! to prepare and assign trusted devices to guest partitions.
 //!
 //! The host is responsible for dispatching guest commands to this machinery by
-//! creating a `TdispHostDeviceTargetEmulator` and calling through appropriate
+//! creating a [`TdispHostDeviceTargetEmulator`] and calling through appropriate
 //! trait methods to pass guest commands received from the guest to the emulator.
 //!
 //! This crate will handle incoming guest message structs and manage the state transitions
 //! of the TDISP device and ensure valid transitions are made. Once a valid transition is made, the
-//! `TdispHostDeviceTargetEmulator` will call back into the host through the
-//! `TdispHostDeviceInterface` trait to allow the host to perform platform actions
+//! [`TdispHostDeviceTargetEmulator`] will call back into the host through the
+//! [`TdispHostDeviceInterface`] trait to allow the host to perform platform actions
 //! such as binding the device to a guest partition or retrieving attestation reports.
-//! It is the responsibility of the host to provide a `TdispHostDeviceInterface`
+//! It is the responsibility of the host to provide a [`TdispHostDeviceInterface`]
 //! implementation that performs the necessary platform actions.
 
 /// Protobuf serialization of guest commands and responses.
