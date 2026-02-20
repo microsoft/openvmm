@@ -304,7 +304,7 @@ impl ReadyState {
         let state = &mut self.state;
         // Queues completion for in-flight TX packets that were lost when the
         // endpoint stopped. They will get picked up when the worker restarts.
-        for (id, tx_packet) in state.pending_tx_packets.iter_mut().enumerate() {
+        for tx_packet in state.pending_tx_packets.iter_mut() {
             if tx_packet.pending_packet_count > 0 {
                 state.pending_tx_completions.push_back(PendingTxCompletion {
                     transaction_id: tx_packet.transaction_id,
