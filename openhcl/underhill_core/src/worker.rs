@@ -1799,7 +1799,7 @@ async fn new_underhill_vm(
     let tpm_size = vmgs
         .as_ref()
         .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
-        .map(|info| info.valid_bytes);
+        .map(|info| info.valid_bytes as usize);
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
