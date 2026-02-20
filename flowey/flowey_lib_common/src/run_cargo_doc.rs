@@ -8,6 +8,7 @@
 
 use crate::_util::cargo_output;
 use flowey::node::prelude::*;
+use flowey::shell::FloweyCmd;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
@@ -31,7 +32,7 @@ impl CargoDocCommands {
     pub fn run_with(
         self,
         rt: &RustRuntimeServices<'_>,
-        f: impl Fn(xshell::Cmd<'_>) -> xshell::Cmd<'_>,
+        f: impl Fn(FloweyCmd<'_>) -> FloweyCmd<'_>,
     ) -> anyhow::Result<PathBuf> {
         let Self {
             cmds,

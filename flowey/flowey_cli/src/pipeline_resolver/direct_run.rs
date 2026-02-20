@@ -94,6 +94,7 @@ fn direct_run_do_work(
             arch,
             cond_param_idx,
             timeout_minutes: _,
+            ref command_wrapper,
             ado_pool: _,
             ado_variables: _,
             gh_override_if: _,
@@ -343,6 +344,10 @@ fn direct_run_do_work(
             platform,
             flow_arch,
         )?;
+
+        if let Some(wrapper) = command_wrapper {
+            runtime_services.sh.set_wrapper(Some(wrapper.clone()));
+        }
 
         for ResolvedRunnableStep {
             node_handle,

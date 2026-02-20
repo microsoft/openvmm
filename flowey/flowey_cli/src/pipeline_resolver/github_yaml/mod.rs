@@ -76,6 +76,7 @@ pub fn github_yaml(
         flow_backend: crate::cli::FlowBackendCli::Github,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -90,6 +91,7 @@ pub fn github_yaml(
             ref external_read_vars,
             ado_pool: _,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
@@ -127,6 +129,12 @@ pub fn github_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
         }
 
         let mut gh_steps = Vec::new();
