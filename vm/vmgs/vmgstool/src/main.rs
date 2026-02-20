@@ -828,11 +828,7 @@ async fn vmgs_file_read(
     Ok(())
 }
 
-async fn vmgs_read(
-    vmgs: &mut Vmgs,
-    file_id: FileId,
-    decrypt: bool,
-) -> Result<Vec<u8>, Error> {
+async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Vec<u8>, Error> {
     eprintln!("Reading File ID {} ({:?})", file_id.0, file_id);
     Ok(if decrypt {
         vmgs.read_file(file_id).await?
