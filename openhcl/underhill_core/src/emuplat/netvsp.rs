@@ -676,6 +676,7 @@ impl HclNetworkVFManagerWorker {
                     .unwrap()
                     .map(NextWorkItem::ManagerMessage)
                     .chain(iter([NextWorkItem::ExitWorker]));
+                // VPCI bus events determine when the MANA device has been Removed.
                 let device_change = self.vtl2_bus_control.notifier().map(|device| match device {
                     VpciBusEvent::DeviceEnumerated => {
                         tracing::info!("MANA device enumerated, waiting for uevent.");
@@ -683,8 +684,18 @@ impl HclNetworkVFManagerWorker {
                     }
                     VpciBusEvent::PrepareForRemoval => NextWorkItem::ManaDeviceRemoved,
                 });
-                let device_arrival = (&mut self.uevent_handler).map(|device_path| {
+                // UEVENT notifications determine when the MANA device has Arrived.
+                let device_arrival = (&mut self.uevent_handler).map(|notification| {
+                    let UeventNotification {
+                        device_path,
+                        action,
+                    } = notification;
+                    // Prior behavior treats any uevent with a valid device path as an arrival, as long
+                    // as the VTL2 device is currently missing. Otherwise, uevents are silelntly ignored.
+                    // It would be more correct to check that the uevent action is 'add' or 'rescan'.
+                    // For now, adding tracing to help investigate uevent processing.
                     let exists = Path::new(&device_path).exists();
+                    tracing::info!(?action, exists, %device_path, "uevent received");
                     match (vtl2_device_state, exists) {
                         (Vtl2DeviceState::Missing, true) => NextWorkItem::ManaDeviceArrived,
                         _ => NextWorkItem::Continue,
@@ -1100,8 +1111,20 @@ impl HclNetworkVFManagerWorker {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UeventAction {
+    Add,
+    Remove,
+    Rescan,
+}
+
+struct UeventNotification {
+    device_path: String,
+    action: UeventAction,
+}
+
 struct HclNetworkVfManagerUeventHandler {
-    uevent_receiver: mesh::Receiver<String>,
+    uevent_receiver: mesh::Receiver<UeventNotification>,
     _callback_handle: uevent::CallbackHandle,
 }
 
@@ -1114,17 +1137,25 @@ impl HclNetworkVfManagerUeventHandler {
         let (tx, rx) = mesh::channel();
         let callback = move |notification: uevent::Notification<'_>| {
             let uevent::Notification::Event(uevent) = notification;
-            // uevent can also notify rescan events, in which case we don't know here whether
-            // it is an add or remove. Just wake up the receiver and let the receiver decide
-            // how to handle that case.
             let action = uevent.get("ACTION").unwrap_or("unknown");
             let dev_path = uevent.get("DEVPATH").unwrap_or("unknown");
             if device_path == dev_path {
-                if action == "add" || action == "remove" {
-                    tx.send(fs_dev_path.clone());
+                let uevent_action = match action {
+                    "add" => Some(UeventAction::Add),
+                    "remove" => Some(UeventAction::Remove),
+                    _ => None,
+                };
+                if let Some(uevent_action) = uevent_action {
+                    tx.send(UeventNotification {
+                        device_path: fs_dev_path.clone(),
+                        action: uevent_action,
+                    });
                 }
             } else if uevent.get("RESCAN") == Some("true") {
-                tx.send(fs_dev_path.clone());
+                tx.send(UeventNotification {
+                    device_path: fs_dev_path.clone(),
+                    action: UeventAction::Rescan,
+                });
             }
         };
         let callback_handle = uevent_listener.add_custom_callback(callback).await;
@@ -1136,7 +1167,7 @@ impl HclNetworkVfManagerUeventHandler {
 }
 
 impl futures::Stream for HclNetworkVfManagerUeventHandler {
-    type Item = String;
+    type Item = UeventNotification;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
