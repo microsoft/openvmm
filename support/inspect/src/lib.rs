@@ -3296,17 +3296,35 @@ mod tests {
         #[derive(Inspect)]
         struct Indexed {
             #[inspect(safe, iter_by_index)]
-            a: Vec<Qux>,
+            a: Vec<Baz>,
+        }
+
+        #[derive(Inspect)]
+        struct Baz {
+            #[inspect(safe)]
+            a: u32,
+            #[inspect(safe)]
+            b: Qux,
         }
 
         #[derive(Inspect)]
         struct Qux {
-            #[inspect(safe)]
+            #[inspect(sensitive)]
             a: u32,
+            b: u32,
         }
 
         let obj = Indexed {
-            a: vec![Qux { a: 0 }, Qux { a: 0 }],
+            a: vec![
+                Baz {
+                    a: 0,
+                    b: Qux { a: 0, b: 0 },
+                },
+                Baz {
+                    a: 0,
+                    b: Qux { a: 0, b: 0 },
+                },
+            ],
         };
 
         expected_node(
@@ -3316,12 +3334,14 @@ mod tests {
                 a: {
                     0: {
                         a: 0,
+                        b: {},
                     },
                     1: {
                         a: 0,
+                        b: {},
                     },
                 },
-            }|{"a":{"0":{"a":0},"1":{"a":0}}}"#]),
+            }|{"a":{"0":{"a":0,"b":{}},"1":{"a":0,"b":{}}}}"#]),
         );
     }
 
