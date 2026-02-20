@@ -130,7 +130,7 @@ enum ExitCode {
 }
 
 #[derive(Args)]
-pub(crate) struct FilePathArg {
+struct FilePathArg {
     /// VMGS file path
     #[clap(short = 'f', long, alias = "filepath")]
     file_path: PathBuf,
@@ -741,7 +741,7 @@ async fn vmgs_file_write(
     Ok(())
 }
 
-pub(crate) async fn vmgs_write(
+async fn vmgs_write(
     vmgs: &mut Vmgs,
     file_id: FileId,
     data: &[u8],
@@ -828,7 +828,7 @@ async fn vmgs_file_read(
     Ok(())
 }
 
-pub(crate) async fn vmgs_read(
+async fn vmgs_read(
     vmgs: &mut Vmgs,
     file_id: FileId,
     decrypt: bool,
@@ -1108,7 +1108,7 @@ fn vmgs_dump_headers(header1: &VmgsHeader, header2: &VmgsHeader) -> Result<(), E
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[expect(clippy::enum_variant_names)]
-pub(crate) enum OpenMode {
+enum OpenMode {
     /// Open read-only. Ignore encryption status.
     ReadOnlyIgnore,
     /// Open read-only. Warn if encrypted and no key was provided.
@@ -1128,7 +1128,7 @@ impl OpenMode {
     }
 }
 
-pub(crate) async fn vmgs_file_open(
+async fn vmgs_file_open(
     file_path: impl AsRef<Path>,
     key_path: Option<impl AsRef<Path>>,
     open_mode: OpenMode,
