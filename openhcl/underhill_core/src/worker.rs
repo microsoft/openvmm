@@ -1794,6 +1794,13 @@ async fn new_underhill_vm(
         }
     }
 
+    let tpm_size = vmgs
+        .as_ref()
+        .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
+        .map(|info| info.valid_bytes);
+
+    tracing::error!(CVM_ALLOWED, ?tpm_size, "FOOBAR TPM size from VMGS");
+
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
         runtime_params
@@ -2867,6 +2874,8 @@ async fn new_underhill_vm(
             initial_cmos: None,
         });
 
+    vmgs;
+
     if dps.general.tpm_enabled {
         let no_persistent_secrets =
             vmgs_client.is_none() || dps.general.suppress_attestation.unwrap_or(false);
@@ -2938,6 +2947,7 @@ async fn new_underhill_vm(
                     logger: Some(GetTpmLoggerHandle.into_resource()),
                     is_confidential_vm: isolation.is_isolated(),
                     bios_guid: dps.general.bios_guid,
+                    nvram_size: tpm_size,
                 }
                 .into_resource(),
                 worker_host: control_send
