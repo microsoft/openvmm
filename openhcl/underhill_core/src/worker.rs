@@ -1794,12 +1794,12 @@ async fn new_underhill_vm(
         }
     }
 
+    // Get TPM data size from VMGS. This is used by the TPM device later to
+    // initialize it with the correct size.
     let tpm_size = vmgs
         .as_ref()
         .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
         .map(|info| info.valid_bytes);
-
-    tracing::error!(CVM_ALLOWED, ?tpm_size, "FOOBAR TPM size from VMGS");
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
@@ -2873,8 +2873,6 @@ async fn new_underhill_vm(
             century_reg_idx: 0x32,
             initial_cmos: None,
         });
-
-    vmgs;
 
     if dps.general.tpm_enabled {
         let no_persistent_secrets =
