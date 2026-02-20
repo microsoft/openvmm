@@ -384,7 +384,7 @@ impl Tpm {
         mem: GuestMemory,
         ppi_store: Box<dyn NonVolatileStore>,
         nvram_store: Box<dyn NonVolatileStore>,
-        nvram_size: Option<u64>,
+        nvram_size: Option<usize>,
         monotonic_timer: MonotonicTimer,
         refresh_tpm_seeds: bool,
         is_restoring: bool,
@@ -399,7 +399,7 @@ impl Tpm {
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
         let monotonic_timer = Arc::new(Mutex::new(monotonic_timer));
 
-        let nvram_size = nvram_size.unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE as u64);
+        let nvram_size = nvram_size.unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE);
 
         let tpm_engine = MsTpm20RefPlatform::initialize(
             Box::new(TpmPlatformCallbacks {
