@@ -284,6 +284,56 @@ struct ReadyState {
     data: ProcessingData,
 }
 
+impl ReadyState {
+    /// Reset TX tracking state after the endpoint has been stopped.
+    ///
+    /// Any in-flight TX packets submitted to the old endpoint queues will
+    /// never be completed, so this method:
+    /// 1. Queues completions for all outstanding sends so the guest gets
+    ///    responses.
+    /// 2. Restores `free_tx_packets` to full, ensuring the worker will call
+    ///    `poll_ready()` on restart (which unmasks the incoming ring).
+    /// 3. Clears leftover TX segments that referenced the old endpoint queue.
+    ///
+    /// Without this, leaked TxIds permanently deplete `free_tx_packets`.
+    /// When `free_tx_packets` falls below `free_tx_packet_threshold`, the
+    /// worker skips `poll_ready()` in its poll_fn, leaving the incoming ring
+    /// masked (guest sees `out_mask:1`). The worker then parks waiting for
+    /// endpoint signals that never come, and the guest hangs.
+    fn reset_tx_after_endpoint_stop(&mut self) {
+        let state = &mut self.state;
+        // Queues completion for in-flight TX packets that were lost when the
+        // endpoint stopped. They will get picked up when the worker restarts.
+        for (id, tx_packet) in state.pending_tx_packets.iter_mut().enumerate() {
+            if tx_packet.pending_packet_count > 0 {
+                state.pending_tx_completions.push_back(PendingTxCompletion {
+                    transaction_id: tx_packet.transaction_id,
+                    tx_id: None,
+                    status: protocol::Status::SUCCESS,
+                });
+                tx_packet.pending_packet_count = 0;
+            }
+        }
+
+        // Clear tx_id from any pre-existing pending completions
+        for pending in state.pending_tx_completions.iter_mut() {
+            pending.tx_id = None;
+        }
+
+        // Restore all TX slots so the worker can process new packets and
+        // will call poll_ready() to unmask the ring.
+        state.free_tx_packets.clear();
+        state
+            .free_tx_packets
+            .extend((0..state.pending_tx_packets.len() as u32).rev().map(TxId));
+
+        // Clear leftover TX segments from the previous endpoint queue;
+        // they cannot be submitted to the new queue.
+        self.data.tx_segments.clear();
+        self.data.tx_segments_sent = 0;
+    }
+}
+
 /// Represents a virtual function (VF) device used to expose accelerated
 /// networking to the guest.
 #[async_trait]
@@ -3494,12 +3544,18 @@ impl Adapter {
                 // TODO
             }
             rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS => {
+                let had_rss = primary.rss_state.is_some();
                 self.oid_set_rss_parameters(reader, primary)?;
 
                 // Endpoints cannot currently change RSS parameters without
                 // being restarted. This was a limitation driven by some DPDK
                 // PMDs, and should be fixed.
-                restart_endpoint = true;
+                //
+                // Skip the restart if RSS was already disabled and the guest
+                // is disabling it again — nothing has changed.
+                if had_rss || primary.rss_state.is_some() {
+                    restart_endpoint = true;
+                }
             }
             _ => {
                 tracelimit::warn_ratelimited!(?oid, "set of unknown OID");
@@ -4370,6 +4426,15 @@ impl Coordinator {
             .collect::<Vec<_>>();
 
         c_state.endpoint.stop().await;
+
+        // Reset TX tracking for each worker after the endpoint stop.
+        for worker in self.workers.iter_mut() {
+            if let Some(worker_state) = worker.state_mut() {
+                if let Some(ready) = worker_state.state.ready_mut() {
+                    ready.reset_tx_after_endpoint_stop();
+                }
+            }
+        }
 
         let (primary_worker, subworkers) = if let [primary, sub @ ..] = self.workers.as_mut_slice()
         {
