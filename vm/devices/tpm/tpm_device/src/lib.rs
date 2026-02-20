@@ -1828,6 +1828,8 @@ mod save_restore {
             pub ppi_state: SavedPpiState,
             #[mesh(5)]
             pub tpm_state_blob: Vec<u8>,
+            #[mesh(6)]
+            pub nvram_size: Option<u64>,
             // Experimental fields to avoid breaking changes
             // TODO CVM: Remove the explicit numbering once live servicing design is finialized
             #[mesh(60)]
@@ -1836,8 +1838,6 @@ mod save_restore {
             pub keys: Option<SavedTpmKeys>,
             #[mesh(62)]
             pub allow_ak_cert_renewal: Option<bool>,
-            #[mesh(63)]
-            pub nvram_size: Option<u64>,
         }
     }
 
