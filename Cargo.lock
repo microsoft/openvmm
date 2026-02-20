@@ -2058,7 +2058,6 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
- "toml_edit",
  "vmm_test_images",
  "which 8.0.0",
 ]
@@ -9560,7 +9559,7 @@ dependencies = [
 
 [[package]]
 name = "vmgstool"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",

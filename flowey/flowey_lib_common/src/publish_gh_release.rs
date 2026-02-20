@@ -81,7 +81,6 @@ impl FlowNode for Node {
 
             move |rt| {
                 let gh_cli = rt.read(gh_cli);
-                let sh = xshell::Shell::new()?;
 
                 for req in requests {
                     let GhReleaseParams {
@@ -126,11 +125,10 @@ impl FlowNode for Node {
                                 path
                             }
                         })
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                        let draft = if draft { " --draft"} else {""};
+                        .collect::<Vec<_>>();
+                    let draft = draft.then_some("--draft");
 
-                    xshell::cmd!(sh, "{gh_cli} release download --repo {repo} {tag} --title {title} --notes \"\"{draft} {files}").run()?;
+                    flowey::shell_cmd!(rt, "{gh_cli} release create --repo {repo} {tag} --title {title} --notes-from-tag {draft...} {files...}").run()?;
                 }
 
                 Ok(())

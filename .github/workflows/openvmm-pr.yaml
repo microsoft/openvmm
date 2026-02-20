@@ -4721,14 +4721,13 @@ jobs:
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 3 flowey_lib_hvlite::build_prep_steps 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 5
-        flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
       run: |-
         flowey.exe e 3 flowey_lib_common::run_cargo_build 6
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 10
-        flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 1
+        flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 6
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 3
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 7
@@ -5281,14 +5280,13 @@ jobs:
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 5 flowey_lib_hvlite::build_prep_steps 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 3
-        flowey.exe e 5 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
       run: |-
         flowey.exe e 5 flowey_lib_common::run_cargo_build 6
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 10
-        flowey.exe e 5 flowey_lib_hvlite::build_vmgstool 1
+        flowey.exe e 5 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 4
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 3
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 7
@@ -5594,7 +5592,6 @@ jobs:
         flowey e 6 flowey_lib_hvlite::run_cargo_build 6
         flowey e 6 flowey_lib_hvlite::build_openvmm 0
         flowey e 6 flowey_core::pipeline::artifact::publish 0
-        flowey e 6 flowey_lib_hvlite::build_vmgstool 0
         flowey e 6 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build vmgstool
@@ -5606,7 +5603,7 @@ jobs:
       run: |-
         flowey e 6 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 6 flowey_lib_hvlite::run_cargo_build 15
-        flowey e 6 flowey_lib_hvlite::build_vmgstool 1
+        flowey e 6 flowey_lib_hvlite::build_vmgstool 0
         flowey e 6 flowey_core::pipeline::artifact::publish 1
         flowey e 6 flowey_lib_hvlite::init_cross_build 4
       shell: bash
@@ -5916,7 +5913,6 @@ jobs:
         flowey e 7 flowey_lib_hvlite::run_cargo_build 6
         flowey e 7 flowey_lib_hvlite::build_openvmm 0
         flowey e 7 flowey_core::pipeline::artifact::publish 0
-        flowey e 7 flowey_lib_hvlite::build_vmgstool 0
         flowey e 7 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build vmgstool
@@ -5928,7 +5924,7 @@ jobs:
       run: |-
         flowey e 7 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 7 flowey_lib_hvlite::run_cargo_build 15
-        flowey e 7 flowey_lib_hvlite::build_vmgstool 1
+        flowey e 7 flowey_lib_hvlite::build_vmgstool 0
         flowey e 7 flowey_core::pipeline::artifact::publish 1
         flowey e 7 flowey_lib_hvlite::init_cross_build 5
       shell: bash

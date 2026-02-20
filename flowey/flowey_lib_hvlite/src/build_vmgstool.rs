@@ -10,14 +10,8 @@ use flowey_lib_common::run_cargo_build::CargoCrateType;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 
 #[derive(Serialize, Deserialize)]
-pub struct VmgstoolOutput {
-    pub bin: VmgstoolOutputBin,
-    pub version: String,
-}
-
-#[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum VmgstoolOutputBin {
+pub enum VmgstoolOutput {
     LinuxBin {
         #[serde(rename = "vmgstool")]
         bin: PathBuf,
@@ -51,7 +45,6 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
-        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
@@ -87,21 +80,6 @@ impl SimpleFlowNode for Node {
             features.push("test_helpers".into());
         }
 
-        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let version = openvmm_repo_path.map(ctx, |p| {
-            let path = p.join("vm/vmgs/vmgstool/Cargo.toml");
-            let toml = fs_err::read_to_string(&path)
-                .expect("failed to read Cargo.toml")
-                .parse::<toml_edit::DocumentMut>()
-                .expect("failed to parse Cargo.toml");
-            let version = toml
-                .get("package")
-                .and_then(|x| x.get("version"))
-                .map(|x| x.as_str().expect("invalid version").to_owned());
-            log::info!("discovered vmgstool version: {version:?}");
-            version.unwrap_or("0.0.0".to_string())
-        });
-
         let output = ctx.reqv(|v| crate::run_cargo_build::Request {
             crate_name: "vmgstool".into(),
             out_name: "vmgstool".into(),
@@ -118,23 +96,15 @@ impl SimpleFlowNode for Node {
         ctx.emit_minor_rust_step("report built vmgstool", |ctx| {
             let vmgstool = vmgstool.claim(ctx);
             let output = output.claim(ctx);
-            let version = version.claim(ctx);
             move |rt| {
-                let version = rt.read(version);
                 let output = match rt.read(output) {
                     crate::run_cargo_build::CargoBuildOutput::WindowsBin { exe, pdb } => {
-                        VmgstoolOutput {
-                            bin: VmgstoolOutputBin::WindowsBin { exe, pdb },
-                            version,
-                        }
+                        VmgstoolOutput::WindowsBin { exe, pdb }
                     }
                     crate::run_cargo_build::CargoBuildOutput::ElfBin { bin, dbg } => {
-                        VmgstoolOutput {
-                            bin: VmgstoolOutputBin::LinuxBin {
-                                bin,
-                                dbg: dbg.unwrap(),
-                            },
-                            version,
+                        VmgstoolOutput::LinuxBin {
+                            bin,
+                            dbg: dbg.unwrap(),
                         }
                     }
                     _ => unreachable!(),

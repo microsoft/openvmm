@@ -3897,14 +3897,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 23 flowey_lib_common::cache 0
-        flowey v 23 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar1
-        flowey v 23 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar2
+        flowey v 23 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar2
+        flowey v 23 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar1 }}
-        path: ${{ env.floweyvar2 }}
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
       name: 'Restore cache: gh-cli'
     - name: installing gh
       run: |-
@@ -3926,11 +3926,37 @@ jobs:
         flowey e 23 flowey_core::pipeline::artifact::resolve 2
       shell: bash
     - name: enumerate vmgstool release files
+      run: flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 0
+      shell: bash
+    - name: check if openvmm needs to be cloned
       run: |-
-        flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 0
+        flowey e 23 flowey_lib_common::git_checkout 0
+        flowey v 23 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
+        flowey v 23 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar1 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey v 23 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey e 23 flowey_lib_common::git_checkout 3
+        flowey e 23 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 1
+      shell: bash
+    - name: get cargo crate version
+      run: |-
+        flowey e 23 flowey_lib_common::get_cargo_crate_version 0
         flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 2
         flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 3
+        flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 4
       shell: bash
     - name: publish github releases
       run: flowey e 23 flowey_lib_common::publish_gh_release 0
@@ -4107,14 +4133,13 @@ jobs:
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 3 flowey_lib_hvlite::build_prep_steps 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 5
-        flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
       run: |-
         flowey.exe e 3 flowey_lib_common::run_cargo_build 6
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 10
-        flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 1
+        flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 6
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 3
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 7
@@ -4667,14 +4692,13 @@ jobs:
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 5 flowey_lib_hvlite::build_prep_steps 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 3
-        flowey.exe e 5 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
       run: |-
         flowey.exe e 5 flowey_lib_common::run_cargo_build 6
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 10
-        flowey.exe e 5 flowey_lib_hvlite::build_vmgstool 1
+        flowey.exe e 5 flowey_lib_hvlite::build_vmgstool 0
         flowey.exe e 5 flowey_core::pipeline::artifact::publish 4
         flowey.exe e 5 flowey_lib_hvlite::init_cross_build 3
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 7
@@ -4980,7 +5004,6 @@ jobs:
         flowey e 6 flowey_lib_hvlite::run_cargo_build 6
         flowey e 6 flowey_lib_hvlite::build_openvmm 0
         flowey e 6 flowey_core::pipeline::artifact::publish 0
-        flowey e 6 flowey_lib_hvlite::build_vmgstool 0
         flowey e 6 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build vmgstool
@@ -4992,7 +5015,7 @@ jobs:
       run: |-
         flowey e 6 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 6 flowey_lib_hvlite::run_cargo_build 15
-        flowey e 6 flowey_lib_hvlite::build_vmgstool 1
+        flowey e 6 flowey_lib_hvlite::build_vmgstool 0
         flowey e 6 flowey_core::pipeline::artifact::publish 1
         flowey e 6 flowey_lib_hvlite::init_cross_build 4
       shell: bash
@@ -5302,7 +5325,6 @@ jobs:
         flowey e 7 flowey_lib_hvlite::run_cargo_build 6
         flowey e 7 flowey_lib_hvlite::build_openvmm 0
         flowey e 7 flowey_core::pipeline::artifact::publish 0
-        flowey e 7 flowey_lib_hvlite::build_vmgstool 0
         flowey e 7 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build vmgstool
@@ -5314,7 +5336,7 @@ jobs:
       run: |-
         flowey e 7 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 7 flowey_lib_hvlite::run_cargo_build 15
-        flowey e 7 flowey_lib_hvlite::build_vmgstool 1
+        flowey e 7 flowey_lib_hvlite::build_vmgstool 0
         flowey e 7 flowey_core::pipeline::artifact::publish 1
         flowey e 7 flowey_lib_hvlite::init_cross_build 5
       shell: bash

@@ -812,14 +812,11 @@ impl SimpleFlowNode for Node {
                 copy_to_dir.push((
                     extras_dir.to_owned(),
                     output.map(ctx, |x| {
-                        Some(match x.bin {
-                            crate::build_vmgstool::VmgstoolOutputBin::WindowsBin {
-                                exe: _,
-                                pdb,
-                            } => pdb,
-                            crate::build_vmgstool::VmgstoolOutputBin::LinuxBin { bin: _, dbg } => {
-                                dbg
+                        Some(match x {
+                            crate::build_vmgstool::VmgstoolOutput::WindowsBin { exe: _, pdb } => {
+                                pdb
                             }
+                            crate::build_vmgstool::VmgstoolOutput::LinuxBin { bin: _, dbg } => dbg,
                         })
                     }),
                 ));

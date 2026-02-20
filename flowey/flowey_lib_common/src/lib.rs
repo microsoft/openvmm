@@ -31,6 +31,7 @@ pub mod download_mdbook_admonish;
 pub mod download_mdbook_mermaid;
 pub mod download_nuget_exe;
 pub mod gen_cargo_nextest_run_cmd;
+pub mod get_cargo_crate_version;
 pub mod gh_download_azure_key_vault_secret;
 pub mod gh_latest_completed_workflow_id;
 pub mod gh_task_azure_login;
