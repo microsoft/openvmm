@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
 
 mod storage_backend;
 #[cfg(feature = "test_helpers")]
@@ -42,7 +41,7 @@ const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
 const VHD_DISK_FOOTER_PACKED_SIZE: u64 = 512;
 
 #[derive(Debug, Error)]
-enum Error {
+pub(crate) enum Error {
     #[error("VMGS file IO")]
     VmgsFile(#[source] std::io::Error),
     #[error("VHD file error")]
@@ -96,6 +95,9 @@ enum Error {
     GspUnknown,
     #[error("VMGS file is using an unknown encryption algorithm")]
     EncryptionUnknown,
+    #[cfg(feature = "test_helpers")]
+    #[error("Unable to parse IGVM file")]
+    IgvmFile(#[source] anyhow::Error),
 }
 
 impl From<vmgs::Error> for Error {
@@ -1312,7 +1314,7 @@ mod tests {
     use pal_async::async_test;
     use tempfile::tempdir;
 
-    async fn test_vmgs_create(
+    pub(crate) async fn test_vmgs_create(
         path: impl AsRef<Path>,
         file_size: Option<u64>,
         force_create: bool,
@@ -1323,7 +1325,7 @@ mod tests {
         Ok(())
     }
 
-    async fn test_vmgs_open(
+    pub(crate) async fn test_vmgs_open(
         path: impl AsRef<Path>,
         open_mode: OpenMode,
         encryption_key: Option<&[u8]>,
