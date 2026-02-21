@@ -691,7 +691,7 @@ impl HclNetworkVFManagerWorker {
                         action,
                     } = notification;
                     // Prior behavior treats any uevent with a valid device path as an arrival, as long
-                    // as the VTL2 device is currently missing. Otherwise, uevents are silelntly ignored.
+                    // as the VTL2 device is currently missing. Otherwise, uevents are silently ignored.
                     // It would be more correct to check that the uevent action is 'add' or 'rescan'.
                     // For now, adding tracing to help investigate uevent processing.
                     let exists = Path::new(&device_path).exists();
