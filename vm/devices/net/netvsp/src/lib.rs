@@ -289,7 +289,7 @@ impl ReadyState {
     ///
     /// Any in-flight TX packets submitted to the old endpoint queues will
     /// never be completed, so this method:
-    /// 1. Queues completions for all outstanding sends so the guest gets
+    /// 1. Queue completions for all outstanding sends so the guest gets
     ///    responses.
     /// 2. Restores `free_tx_packets` to full, ensuring the worker will call
     ///    `poll_ready()` on restart (which unmasks the incoming ring).
