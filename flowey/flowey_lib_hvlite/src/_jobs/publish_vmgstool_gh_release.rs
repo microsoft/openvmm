@@ -39,12 +39,22 @@ impl SimpleFlowNode for Node {
                     let vmgstool = rt.read(vmgstool);
                     match vmgstool {
                         VmgstoolOutput::LinuxBin { bin, dbg } => {
-                            files.push((bin, Some(format!("vmgstool-{target}"))));
-                            files.push((dbg, Some(format!("vmgstool-{target}.dbg"))));
+                            let bin_name = PathBuf::from(format!("vmgstool-{target}"));
+                            fs_err::hard_link(&bin, &bin_name)?;
+                            files.push((bin_name.absolute()?, None));
+
+                            let dbg_name = PathBuf::from(format!("vmgstool-{target}.dbg"));
+                            fs_err::hard_link(&dbg, &dbg_name)?;
+                            files.push((dbg_name.absolute()?, None));
                         }
                         VmgstoolOutput::WindowsBin { exe, pdb } => {
-                            files.push((exe, Some(format!("vmgstool-{target}.exe"))));
-                            files.push((pdb, Some(format!("vmgstool-{target}.pdb"))));
+                            let exe_name = PathBuf::from(format!("vmgstool-{target}.exe"));
+                            fs_err::hard_link(&exe, &exe_name)?;
+                            files.push((exe_name.absolute()?, None));
+
+                            let pdb_name = PathBuf::from(format!("vmgstool-{target}.pdb"));
+                            fs_err::hard_link(&pdb, &pdb_name)?;
+                            files.push((pdb_name.absolute()?, None));
                         }
                     }
                 }

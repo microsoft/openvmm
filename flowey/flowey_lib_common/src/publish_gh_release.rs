@@ -128,7 +128,7 @@ impl FlowNode for Node {
                         .collect::<Vec<_>>();
                     let draft = draft.then_some("--draft");
 
-                    flowey::shell_cmd!(rt, "{gh_cli} release create --repo {repo} {tag} --title {title} --notes-from-tag {draft...} {files...}").run()?;
+                    flowey::shell_cmd!(rt, "{gh_cli} release create --repo {repo} {tag} --title {title} --notes TODO {draft...} {files...}").run()?;
                 }
 
                 Ok(())
