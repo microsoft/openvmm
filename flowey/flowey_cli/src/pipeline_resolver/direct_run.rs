@@ -342,7 +342,7 @@ fn direct_run_do_work(
             FlowBackend::Local,
             platform,
             flow_arch,
-        );
+        )?;
 
         for ResolvedRunnableStep {
             node_handle,
@@ -360,7 +360,9 @@ fn direct_run_do_work(
             if !node_working_dir.exists() {
                 fs_err::create_dir(&node_working_dir)?;
             }
-            std::env::set_current_dir(node_working_dir)?;
+
+            std::env::set_current_dir(node_working_dir.clone())?;
+            runtime_services.sh.change_dir(node_working_dir);
 
             if can_merge {
                 log::debug!("minor step: {} ({})", label, node_handle.modpath(),);

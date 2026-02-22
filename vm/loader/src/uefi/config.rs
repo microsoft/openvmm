@@ -323,8 +323,9 @@ pub struct Flags {
     pub cxl_memory_enabled: bool,
     pub mtrrs_initialized_at_load: bool,
     pub hv_sint_enabled: bool,
+    pub azi_hsm_enabled: bool,
 
-    #[bits(34)]
+    #[bits(33)]
     _reserved: u64,
 }
 

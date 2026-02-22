@@ -86,11 +86,9 @@ impl FlowNode for Node {
                                 return Ok(())
                             }
 
-                            let sh = xshell::Shell::new()?;
-
                             if matches!(nuget_config_platform, NugetInstallPlatform::Windows) {
                                 let install_aacp_cmd = r#""& { $(irm https://aka.ms/install-artifacts-credprovider.ps1) } -AddNetfx""#;
-                                xshell::cmd!(sh, "powershell.exe iex {install_aacp_cmd}").run()?;
+                                flowey::shell_cmd!(rt, "powershell.exe iex {install_aacp_cmd}").run()?;
                             } else {
                                 log::warn!("automatic Azure Artifacts Credential Provider installation is not supported yet for this platform!");
                                 log::warn!("follow the guide, and press <enter> to continue");
@@ -138,10 +136,8 @@ fn check_if_aacp_installed(
     rt: &mut RustRuntimeServices<'_>,
     nuget_config_platform: &NugetInstallPlatform,
 ) -> anyhow::Result<()> {
-    let sh = xshell::Shell::new()?;
-
     let profile: PathBuf = if matches!(nuget_config_platform, NugetInstallPlatform::Windows) {
-        let path = xshell::cmd!(sh, "cmd.exe /c echo %UserProfile%")
+        let path = flowey::shell_cmd!(rt, "cmd.exe /c echo %UserProfile%")
             .ignore_status()
             .read()?;
 

@@ -79,9 +79,8 @@ impl FlowNode for Node {
                             });
                     fs_err::create_dir_all(&extracted_sysroot_path)?;
 
-                    let sh = xshell::Shell::new()?;
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "tar
                                 -xf {openhcl_sysroot_tar_gz}
                                 -C {extracted_sysroot_path}

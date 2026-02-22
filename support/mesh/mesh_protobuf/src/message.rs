@@ -81,12 +81,30 @@ impl<R> MessageDecode<'_, ProtobufMessage, R> for ProtobufMessageEncoding {
 /// A protobuf message and the associated protobuf type URL.
 ///
 /// This has the encoding of `google.protobuf.Any`.
-#[derive(Debug, Protobuf)]
+#[derive(Protobuf)]
 pub struct ProtobufAny {
     #[mesh(1)]
     type_url: String, // FUTURE: avoid allocation here
     #[mesh(2)]
     value: ProtobufMessage,
+}
+
+impl core::fmt::Debug for ProtobufAny {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if f.alternate() {
+            // Full debug output like derive would produce
+            f.debug_struct("ProtobufAny")
+                .field("type_url", &self.type_url)
+                .field("value", &self.value)
+                .finish()
+        } else {
+            // Compact output with just type_url and data length
+            f.debug_struct("ProtobufAny")
+                .field("type_url", &self.type_url)
+                .field("value_len", &self.value.0.len())
+                .finish()
+        }
+    }
 }
 
 #[derive(Debug, Error)]

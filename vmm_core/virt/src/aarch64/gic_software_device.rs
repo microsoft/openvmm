@@ -4,8 +4,7 @@
 //! VPCI device implementation for GIC-based VMs.
 
 use crate::irqcon::ControlGic;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::ops::Range;
 use std::sync::Arc;
 use thiserror::Error;
@@ -65,13 +64,10 @@ impl MapVpciInterrupt for GicSoftwareDevice {
     }
 }
 
-impl MsiInterruptTarget for GicSoftwareDevice {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let irqcon = self.irqcon.clone();
-        Box::new(move |_address, data| {
-            if SPI_RANGE.contains(&data) {
-                irqcon.set_spi_irq(data, true);
-            }
-        })
+impl SignalMsi for GicSoftwareDevice {
+    fn signal_msi(&self, _rid: u32, _address: u64, data: u32) {
+        if SPI_RANGE.contains(&data) {
+            self.irqcon.set_spi_irq(data, true);
+        }
     }
 }

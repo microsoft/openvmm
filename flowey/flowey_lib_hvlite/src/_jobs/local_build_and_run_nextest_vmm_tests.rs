@@ -375,6 +375,9 @@ impl SimpleFlowNode for Node {
                         if windows || ubuntu {
                             artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
                         }
+                        if linux {
+                            artifacts.push(KnownTestArtifacts::Alpine323X64Vhd);
+                        }
 
                         artifacts
                     }
@@ -389,6 +392,9 @@ impl SimpleFlowNode for Node {
                         }
                         if windows || ubuntu {
                             artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
+                        }
+                        if linux {
+                            artifacts.push(KnownTestArtifacts::Alpine323Aarch64Vhd);
                         }
 
                         artifacts
@@ -457,7 +463,6 @@ impl SimpleFlowNode for Node {
                             openhcl_initrd_extra_params: None,
                             custom_openvmm_hcl: None,
                             custom_openhcl_boot: None,
-                            custom_uefi: None,
                             custom_kernel: custom_kernel_abs.clone(),
                             custom_sidecar: None,
                             custom_extra_rootfs: vec![],

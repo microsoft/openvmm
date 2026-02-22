@@ -487,9 +487,12 @@ export async function fetchTestAnalysis(
   });
 
   // Filter runs based on branch selection
-  const filteredRuns = runs.filter(
-    (run) => run.metadata.ghBranch === branchFilter
-  );
+  let filteredRuns = runs;
+  if (branchFilter !== "all") {
+    filteredRuns = runs.filter(
+      (run) => run.metadata.ghBranch === branchFilter
+    );
+  }
 
   const totalToFetch = filteredRuns.length;
   let fetchedCount = 0;

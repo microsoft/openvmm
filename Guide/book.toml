@@ -3,7 +3,6 @@
 
 [book]
 language = "en"
-multilingual = false
 src = "src"
 title = "The OpenVMM Guide"
 

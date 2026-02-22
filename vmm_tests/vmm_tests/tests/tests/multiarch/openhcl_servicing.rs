@@ -6,6 +6,8 @@
 //! For x86-64, it is supported using both Hyper-V and OpenVMM.
 //! For aarch64, it is supported using Hyper-V.
 
+use crate::utils::ExpectedGuestDevice;
+use crate::utils::get_device_paths;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
@@ -17,6 +19,8 @@ use nvme_resources::NvmeFaultControllerHandle;
 use nvme_resources::fault::AdminQueueFaultBehavior;
 use nvme_resources::fault::AdminQueueFaultConfig;
 use nvme_resources::fault::FaultConfiguration;
+use nvme_resources::fault::IoQueueFaultBehavior;
+use nvme_resources::fault::IoQueueFaultConfig;
 use nvme_resources::fault::NamespaceChange;
 use nvme_resources::fault::NamespaceFaultConfig;
 use nvme_resources::fault::PciFaultBehavior;
@@ -49,6 +53,8 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use pipette_client::PipetteClient;
+use pipette_client::process::Child;
+use pipette_client::process::Stdio;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
@@ -61,6 +67,9 @@ use zerocopy::IntoBytes;
 
 const DEFAULT_SERVICING_COUNT: u8 = 3;
 const KEEPALIVE_VTL2_NSID: u32 = 37; // Pick any namespace ID as long as it doesn't conflict with other namespaces in the controller
+const VTL0_NVME_LUN: u32 = 1; // LUN 0 is reserved for the boot device
+const DEFAULT_DISK_SIZE: u64 = 256 * 1024; // 256 KiB
+const SCSI_SECTOR_SIZE: u64 = 512;
 
 async fn openhcl_servicing_core<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
@@ -321,7 +330,14 @@ async fn servicing_keepalive_with_namespace_update(
                 ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
 
     agent.ping().await?;
     let sh = agent.unix_shell();
@@ -392,7 +408,14 @@ async fn _servicing_keepalive_with_missed_get_log_page(
                 ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
 
     agent.ping().await?;
     let sh = agent.unix_shell();
@@ -479,6 +502,72 @@ async fn servicing_keepalive_fault_if_identify(
     Ok(())
 }
 
+/// Test that disabling keepalive through inspect actually disables it.
+/// We test this by disabling keepalive and waiting for IDENTIFY.
+/// We should only receive IDENTIFY if (and only if) keepalive is disabled.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_test_keepalive_disable_through_inspect(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let (identify_verify_send, identify_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                    .build(),
+                AdminQueueFaultBehavior::Verify(Some(identify_verify_send)),
+            ),
+        );
+
+    let mut flags = config.default_servicing_flags();
+    // Enable keepalive, then disable it later via inspect
+    flags.enable_nvme_keepalive = true;
+    // We need to disabled MANA KA since if either of the KA flasgs in on, DMA manager will save its state
+    // which includes NVMe regions and restore verification will fail ("unrestored allocations found"),
+    // since NVMe KA is off and we don't save anything).
+    flags.enable_mana_keepalive = false;
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+
+    // Disable keepalive via inspect
+    vm.inspect_update_openhcl("vm/nvme_keepalive_mode", "disabled")
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    agent.ping().await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(identify_verify_recv)
+        .await
+        .expect("IDENTIFY should be observed within 30 seconds of vm restore after servicing with keepalive disabled")
+        .expect("IDENTIFY verification should pass and return a valid result.");
+
+    fault_start_updater.set(false).await;
+
+    Ok(())
+}
+
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_verify_no_duplicate_aers(
@@ -550,6 +639,162 @@ async fn servicing_keepalive_with_nvme_identify_fault(
     Ok(())
 }
 
+/// Verifies behavior when a submission queue is full and we try to service. The
+/// servicing should still succeed (i.e. the queue pairs should still be
+/// listening for save commands).
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_io_queue_full(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay excessively (100s) to cause the queue to fill up. Don't start fault
+    // immediately. There will be some IO during guest boot that we don't want to
+    // interfere with.
+    // DEV NOTE: Reduced mqes is required to make sure the queue fills up during
+    // the test. dd is single threaded and there seems to be a guest limitation
+    // that prevents more than 16 concurrent SCSI requests. This limit can
+    // probably be lifted if/when fio is available in the guest.
+    let fault_configuration = FaultConfiguration::new(cell.clone())
+        .with_io_queue_fault(
+            IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+                CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+                IoQueueFaultBehavior::Delay(Duration::from_secs(100)),
+            ),
+        )
+        .with_pci_fault(PciFaultConfig::new().with_max_queue_size(8));
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 100 * 1024 * 1024; // 100 MiB
+
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+    // to /dev/sda or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // At this point the guest should be booted and the disk should be stable
+    // with no other ongoing IO. Start some large reads to fill up the IO queue.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // 60 seconds should be plenty of time for the save to complete. If
+    // save is stuck it will be exposed here.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck.")
+        .expect("VM save failed");
+
+    vm.restore_openhcl().await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Verifies behavior when device io is slow/stuck and we repeatedly
+/// try to service. When draining IO queues after restore, nvme_driver should
+/// still be responsive on Save commands.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_unresponsive_io(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay (120s). Draining IO after restore will now be excessively slow.
+    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
+        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+            IoQueueFaultBehavior::Delay(Duration::from_secs(120)),
+        ),
+    );
+
+    let scsi_controller_guid = Guid::new_random();
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+    // to /dev/sda or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (DEFAULT_DISK_SIZE / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // At this point the guest should be booted and the disk should be stable
+    // with no other ongoing IO. Start some reads.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // 60 seconds should be plenty of time for the save to complete. Save should
+    // NEVER get stuck. Keeping a timeout to avoid long running tests.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Stuck on first save attempt.")
+        .expect("VM save failed");
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore.")
+        .expect("VM save failed");
+    vm.restore_openhcl().await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
 async fn apply_fault_with_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
@@ -559,7 +804,14 @@ async fn apply_fault_with_keepalive(
 ) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
-    let (mut vm, agent) = create_keepalive_test_config(config, fault_configuration).await?;
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
 
     agent.ping().await?;
     let sh = agent.unix_shell();
@@ -584,10 +836,11 @@ async fn apply_fault_with_keepalive(
 async fn create_keepalive_test_config(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
+    vtl0_nvme_lun: u32,
+    scsi_instance: Guid,
+    disk_size: u64,
 ) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    let vtl0_nvme_lun = 1;
-    let scsi_instance = Guid::new_random();
 
     config
         .with_vmbus_redirect(true)
@@ -606,7 +859,7 @@ async fn create_keepalive_test_config(
                             nsid: KEEPALIVE_VTL2_NSID,
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(256 * 1024),
+                                len: Some(disk_size),
                             })
                             .into_resource(),
                         }],
@@ -747,4 +1000,26 @@ async fn servicing_with_keepalive_disabled_after_servicing(
         .expect("Failed to receive completion for CC Enable PCI command verification");
 
     Ok(())
+}
+
+// Reads a large chunk from the disk, generating lots of concurrent IOs on the
+// submission queue.
+async fn large_read_from_disk(
+    agent: &PipetteClient,
+    disk_path: &str,
+) -> Result<Child, anyhow::Error> {
+    let mut io_cmd = agent.command("sh");
+
+    let cmd = format!(
+        "dd if={} of=/dev/null bs=10M iflag=direct status=none",
+        disk_path
+    );
+
+    io_cmd
+        .args(["-c", &cmd])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let io_child = io_cmd.spawn().await?;
+    Ok(io_child)
 }

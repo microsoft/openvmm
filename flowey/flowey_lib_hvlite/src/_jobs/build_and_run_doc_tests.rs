@@ -44,16 +44,15 @@ impl SimpleFlowNode for Node {
             rust_installed.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
             move |rt| {
-                let sh = xshell::Shell::new()?;
-
                 let target = target.to_string();
                 let profile = match profile {
                     CommonProfile::Release => "release",
                     CommonProfile::Debug => "dev",
                 };
 
-                sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(sh, "cargo test --locked --doc --workspace --no-fail-fast --target {target} --profile {profile}").run()?;
+                let path = rt.read(openvmm_repo_path);
+                rt.sh.change_dir(path);
+                flowey::shell_cmd!(rt, "cargo test --locked --doc --workspace --no-fail-fast --target {target} --profile {profile}").run()?;
 
                 Ok(())
             }

@@ -58,7 +58,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.91"
+rust-version = "1.93"
 edition = "2024"
 
 [workspace.dependencies]
@@ -144,6 +144,7 @@ pal_async_test = { path = "support/pal/pal_async_test" }
 pal_event = { path = "support/pal/pal_event" }
 pal_uring = { path = "support/pal/pal_uring" }
 powershell_builder = { path = "support/powershell_builder" }
+resource_dll_parser = { path = "support/resource_dll_parser" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
@@ -175,6 +176,8 @@ kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
+mem_profile_tracing = { path = "openhcl/mem_profile_tracing" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
@@ -321,6 +324,7 @@ tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
 mcr_resources = { path = "vm/devices/mcr_resources" }
+pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
 user_driver = { path = "vm/devices/user_driver" }
@@ -433,6 +437,7 @@ criterion = { version = "0.7", default-features = false }
 crossterm = { version = "0.29.0", default-features = false }
 ctrlc = "3.4.0"
 der = "0.7"
+dhat = "0.3.3"
 dirs = "6.0"
 elfcore = "1.1.5"
 embed-resource = "3.0.2"
@@ -457,6 +462,7 @@ gptman = "2.0"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 h2 = "0.4"
+heapless = { version = "0.8", default-features = false }
 heck = "0.5"
 hex = "0.4"
 http = "1"
@@ -530,7 +536,7 @@ signal-hook = { version = "0.3", default-features = false }
 slab = "0.4"
 smallbox = "0.8"
 smallvec = "1.8"
-smoltcp = { version = "0.8", default-features = false }
+smoltcp = { version = "0.12.0", default-features = false }
 socket2 = "0.6"
 spin = "0.10.0"
 stackfuture = "0.3"
@@ -539,7 +545,7 @@ syn = "2"
 target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
-time = "0.3"
+time = "0.3.47"
 toml_edit = "0.23"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
@@ -609,12 +615,13 @@ codegen-units = 1
 opt-level = 'z'
 lto = 'fat'
 
-# Optimize minimal_rt even in the dev profile to ensure no relocations creep
-# into the relocate function.
+# Optimize minimal_rt_reloc even in the dev profile to ensure no relocations
+# creep into the relocate function.
 #
 # FUTURE: rewrite relocator in asm to avoid depending on this.
-[profile.dev.package.minimal_rt]
+[profile.dev.package.minimal_rt_reloc]
 opt-level = 1
+debug-assertions = false
 
 # Optimize loom and its main dependency even in the dev profile, as otherwise tests just take too long.
 [profile.dev.package.loom]

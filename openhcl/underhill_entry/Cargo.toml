@@ -13,6 +13,9 @@ gdb = ["underhill_core/gdb"]
 # Enable profiler support.
 profiler = ["underhill_core/profiler"]
 
+# Enable profiler tracing (heap profiling) support.
+mem-profile-tracing = ["dep:dhat", "underhill_core/mem-profile-tracing"]
+
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 
@@ -27,6 +30,7 @@ openssl_crypto_only.workspace = true
 anyhow.workspace = true
 fast_memcpy = { workspace = true, features = ["replace_system_memcpy"] }
 mimalloc.workspace = true
+dhat = { workspace = true, optional = true }
 
 [lints]
 workspace = true

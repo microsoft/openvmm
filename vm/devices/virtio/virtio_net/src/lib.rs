@@ -252,7 +252,7 @@ impl VirtioDevice for Device {
             16 => {
                 (self.registers.duplex as u32)
                     | ((self.registers.rss_max_key_size as u32) << 8)
-                    | ((self.registers.rss_max_indirection_table_length as u32) << 24)
+                    | ((self.registers.rss_max_indirection_table_length as u32) << 16)
             }
             20 => self.registers.supported_hash_types,
             _ => 0,

@@ -623,8 +623,6 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             tlb_access.flush_entire();
         }
 
-        // TODO SNP: check list of locks, roll back bitmap changes if there was one.
-
         if shared {
             // Unaccept the pages so that the hypervisor can reclaim them.
             for &range in &ranges {

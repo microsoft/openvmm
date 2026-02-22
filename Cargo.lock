@@ -444,9 +444,9 @@ dependencies = [
 
 [[package]]
 name = "bytes"
-version = "1.10.1"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cache_topology"
@@ -797,19 +797,29 @@ dependencies = [
 name = "consomme"
 version = "0.0.0"
 dependencies = [
+ "blocking",
+ "cfg-if",
  "futures",
  "getrandom 0.3.3",
+ "heapless",
  "inspect",
  "inspect_counters",
  "libc",
+ "mesh_channel_core",
+ "open_enum",
+ "pal",
  "pal_async",
  "parking_lot",
  "resolv-conf",
+ "slab",
  "smoltcp",
  "socket2",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
+ "winapi",
  "windows-sys 0.61.0",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -1028,6 +1038,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "defmt"
+version = "0.3.100"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0963443817029b2024136fc4dd07a5107eb8f977eaf18fcd1fdeb11306b64ad"
+dependencies = [
+ "defmt 1.0.1",
+]
+
+[[package]]
+name = "defmt"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "548d977b6da32fa1d1fda2876453da1e7df63ad0304c8b3dae4dbe7b96f39b78"
+dependencies = [
+ "bitflags 1.3.2",
+ "defmt-macros",
+]
+
+[[package]]
+name = "defmt-macros"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d4fc12a85bcf441cfe44344c4b72d58493178ce635338a3f3b78943aceb258e"
+dependencies = [
+ "defmt-parser",
+ "proc-macro-error2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
+name = "defmt-parser"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
+dependencies = [
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1052,9 +1103,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.4.0"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c9e6a11ca8224451684bc0d7d5a7adbf8f2fd6887261a1cfc3c0432f9d4068e"
+checksum = "cc3dc5ad92c2e2d1c193bbbbdf2ea477cb81331de4f3103f267ca18368b988c4"
 dependencies = [
  "powerfmt",
 ]
@@ -1084,6 +1135,22 @@ dependencies = [
 [[package]]
 name = "device_emulators"
 version = "0.0.0"
+
+[[package]]
+name = "dhat"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98cd11d84628e233de0ce467de10b8633f4ddaecafadefc86e13b84b8739b827"
+dependencies = [
+ "backtrace",
+ "lazy_static",
+ "mintex",
+ "parking_lot",
+ "rustc-hash 1.1.0",
+ "serde",
+ "serde_json",
+ "thousands",
+]
 
 [[package]]
 name = "diag_client"
@@ -1123,6 +1190,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "azure_profiler_proto",
+ "cfg-if",
  "cvm_tracing",
  "diag_proto",
  "fs-err",
@@ -1938,6 +2006,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "xshell",
 ]
 
 [[package]]
@@ -1967,7 +2036,7 @@ dependencies = [
  "home",
  "log",
  "rlimit",
- "rustc-hash",
+ "rustc-hash 2.1.1",
  "serde",
  "serde_json",
  "target-lexicon",
@@ -1992,7 +2061,6 @@ dependencies = [
  "target-lexicon",
  "vmm_test_images",
  "which 8.0.0",
- "xshell",
 ]
 
 [[package]]
@@ -2826,6 +2894,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash32"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2913,6 +2990,16 @@ dependencies = [
 [[package]]
 name = "headervec"
 version = "0.0.0"
+
+[[package]]
+name = "heapless"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
+dependencies = [
+ "hash32",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "heck"
@@ -3829,6 +3916,7 @@ dependencies = [
 name = "lxutil"
 version = "0.0.0"
 dependencies = [
+ "arrayvec",
  "bitfield-struct 0.11.0",
  "headervec",
  "libc",
@@ -3905,6 +3993,13 @@ dependencies = [
  "guid",
  "mesh",
  "vm_resource",
+]
+
+[[package]]
+name = "mem_profile_tracing"
+version = "0.0.0"
+dependencies = [
+ "dhat",
 ]
 
 [[package]]
@@ -4178,11 +4273,16 @@ dependencies = [
  "cfg-if",
  "hvdef",
  "minimal_rt_build",
+ "minimal_rt_reloc",
  "zerocopy 0.8.27",
 ]
 
 [[package]]
 name = "minimal_rt_build"
+version = "0.0.0"
+
+[[package]]
+name = "minimal_rt_reloc"
 version = "0.0.0"
 
 [[package]]
@@ -4208,6 +4308,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "mintex"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c505b3e17ed6b70a7ed2e67fbb2c560ee327353556120d6e72f5232b6880d536"
 
 [[package]]
 name = "mio"
@@ -4565,9 +4671,9 @@ dependencies = [
 
 [[package]]
 name = "num-conv"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51d515d32fb182ee37cda2ccdcb92950d6a3c2893aa280e540671c2cd0f3b1d9"
+checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
 
 [[package]]
 name = "num-integer"
@@ -4633,6 +4739,7 @@ dependencies = [
 name = "nvme"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chipset_device",
  "device_emulators",
@@ -5187,6 +5294,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "pcie_remote_resources",
  "prost",
  "rustyline",
  "scsidisk_resources",
@@ -5287,7 +5395,7 @@ dependencies = [
  "anyhow",
  "fs-err",
  "mesh",
- "object 0.37.3",
+ "resource_dll_parser",
  "tracing",
 ]
 
@@ -5627,6 +5735,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcie_remote_resources"
+version = "0.0.0"
+dependencies = [
+ "guid",
+ "mesh",
+ "vm_resource",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5692,6 +5809,7 @@ dependencies = [
  "kmsg",
  "libtest-mimic",
  "linkme",
+ "memory_range",
  "mesh",
  "mesh_process",
  "mesh_worker",
@@ -6015,6 +6133,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "proc-macro-error-attr2"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "proc-macro-error2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802"
+dependencies = [
+ "proc-macro-error-attr2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.106",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6253,6 +6393,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95325155c684b1c89f7765e30bc1c42e4a6da51ca513615660cb8a62ef9a88e3"
 
 [[package]]
+name = "resource_dll_parser"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "fs-err",
+ "object 0.37.3",
+]
+
+[[package]]
 name = "rlimit"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6300,6 +6449,12 @@ name = "rustc-demangle"
 version = "0.1.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f7d92ca342cea22a06f2121d944b4fd82af56988c270852495420f961d4ace"
+
+[[package]]
+name = "rustc-hash"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
@@ -6565,18 +6720,28 @@ checksum = "56e6fa9c48d24d85fb3de5ad847117517440f6beceb7798af16b4a87d616b8d0"
 
 [[package]]
 name = "serde"
-version = "1.0.219"
+version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f0e2c6ed6606019b4e29e69dbaba95b11854410e5347d525002456dbbb786b6"
+checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+dependencies = [
+ "serde_core",
+ "serde_derive",
+]
+
+[[package]]
+name = "serde_core"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
 dependencies = [
  "serde_derive",
 ]
 
 [[package]]
 name = "serde_derive"
-version = "1.0.219"
+version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b0276cf7f2c73365f7157c8123c21cd9a50fbbd844757af28ca1f5925fc2a00"
+checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6890,12 +7055,15 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smoltcp"
-version = "0.8.2"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee34c1e1bfc7e9206cc0fb8030a90129b4e319ab53856249bb27642cab914fb3"
+checksum = "dad095989c1533c1c266d9b1e8d70a1329dd3723c3edac6d03bbd67e7bf6f4bb"
 dependencies = [
  "bitflags 1.3.2",
  "byteorder",
+ "cfg-if",
+ "defmt 0.3.100",
+ "heapless",
  "managed",
 ]
 
@@ -6956,6 +7124,12 @@ dependencies = [
  "base64ct",
  "der",
 ]
+
+[[package]]
+name = "stable_deref_trait"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stackfuture"
@@ -7283,7 +7457,6 @@ dependencies = [
  "test_igvm_agent_lib",
  "tracing",
  "tracing-subscriber",
- "winapi",
  "windows-sys 0.61.0",
 ]
 
@@ -7347,6 +7520,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "thousands"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
+
+[[package]]
 name = "thread_local"
 version = "1.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7357,9 +7536,9 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.41"
+version = "0.3.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a7619e19bc266e0f9c5e6686659d394bc57973859340060a69221e57dbc0c40"
+checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
  "itoa",
@@ -7367,22 +7546,22 @@ dependencies = [
  "num-conv",
  "num_threads",
  "powerfmt",
- "serde",
+ "serde_core",
  "time-core",
  "time-macros",
 ]
 
 [[package]]
 name = "time-core"
-version = "0.1.4"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9e9a38711f559d9e3ce1cdb06dd7c5b8ea546bc90052da6d06bb76da74bb07c"
+checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
 
 [[package]]
 name = "time-macros"
-version = "0.2.22"
+version = "0.2.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3526739392ec93fd8b359c8e98514cb3e8e021beb4e5f597b00a0221f8ed8a49"
+checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
@@ -8039,6 +8218,7 @@ dependencies = [
  "local_clock",
  "mana_driver",
  "mcr_resources",
+ "mem_profile_tracing",
  "memory_range",
  "mesh",
  "mesh_process",
@@ -8081,6 +8261,7 @@ dependencies = [
  "thiserror 2.0.16",
  "time",
  "tpm_device",
+ "tpm_protocol",
  "tpm_resources",
  "tracelimit",
  "tracing",
@@ -8116,6 +8297,7 @@ dependencies = [
  "vmcore",
  "vmgs",
  "vmgs_broker",
+ "vmgs_format",
  "vmgs_resources",
  "vmm_core",
  "vmm_core_defs",
@@ -8168,6 +8350,7 @@ name = "underhill_entry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "dhat",
  "fast_memcpy",
  "mimalloc",
  "openssl_crypto_only",
@@ -9308,6 +9491,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "scsi_buffers",
+ "serde_json",
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
@@ -9339,6 +9523,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "inspect",
  "open_enum",
+ "serde",
  "static_assertions",
  "zerocopy 0.8.27",
 ]
@@ -9378,6 +9563,7 @@ dependencies = [
  "hcl_compat_uefi_nvram_storage",
  "hex",
  "pal_async",
+ "resource_dll_parser",
  "serde",
  "serde_json",
  "tempfile",
@@ -9500,6 +9686,7 @@ dependencies = [
  "hyperv_ic_resources",
  "jiff",
  "kmsg",
+ "memory_range",
  "mesh",
  "mesh_rpc",
  "net_backend_resources",

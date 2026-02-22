@@ -96,6 +96,8 @@ pub enum NamespaceChange {
 pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
     pub controller_management_fault_enable: PciFaultBehavior,
+    /// Custom MQES value to return in CAP register reads. 1 based value.
+    pub max_queue_size: Option<u16>,
 }
 
 /// A fault config to trigger spurious namespace change notifications from the controller.
@@ -433,12 +435,19 @@ impl PciFaultConfig {
     pub fn new() -> Self {
         Self {
             controller_management_fault_enable: PciFaultBehavior::Default,
+            max_queue_size: None,
         }
     }
 
     /// Add a cc.en() fault
     pub fn with_cc_enable_fault(mut self, behaviour: PciFaultBehavior) -> Self {
         self.controller_management_fault_enable = behaviour;
+        self
+    }
+
+    /// Add a custom CAP.MQES value to return on register reads
+    pub fn with_max_queue_size(mut self, max_queue_size: u16) -> Self {
+        self.max_queue_size = Some(max_queue_size);
         self
     }
 }

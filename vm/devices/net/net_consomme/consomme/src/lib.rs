@@ -16,12 +16,17 @@
 
 mod arp;
 mod dhcp;
+mod dhcpv6;
 #[cfg_attr(unix, path = "dns_unix.rs")]
 #[cfg_attr(windows, path = "dns_windows.rs")]
 mod dns;
+mod dns_resolver;
 mod icmp;
+mod ndp;
 mod tcp;
 mod udp;
+
+mod unix;
 mod windows;
 
 use inspect::Inspect;
@@ -35,10 +40,13 @@ use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv6Packet;
+use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
-use std::net::SocketAddrV4;
+use smoltcp::wire::Ipv6Address;
+use smoltcp::wire::Ipv6Packet;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
@@ -51,6 +59,8 @@ pub struct Consomme {
     #[inspect(mut)]
     udp: udp::Udp,
     icmp: icmp::Icmp,
+    dns: Option<dns_resolver::DnsResolver>,
+    host_has_ipv6: bool,
 }
 
 #[derive(Inspect)]
@@ -61,7 +71,7 @@ struct ConsommeState {
 }
 
 /// Dynamic networking properties of a consomme endpoint.
-#[derive(Inspect)]
+#[derive(Inspect, Clone)]
 pub struct ConsommeParams {
     /// Current IPv4 network mask.
     #[inspect(display)]
@@ -80,10 +90,33 @@ pub struct ConsommeParams {
     pub client_mac: EthernetAddress,
     /// Current list of DNS resolvers.
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDisplay)")]
-    pub nameservers: Vec<Ipv4Address>,
+    pub nameservers: Vec<IpAddress>,
+    /// Current IPv6 network mask (if any).
+    #[inspect(display)]
+    pub prefix_len_ipv6: u8,
+    /// Current IPv6 gateway MAC address (if any).
+    #[inspect(display)]
+    pub gateway_mac_ipv6: EthernetAddress,
+    /// Gateway's link-local IPv6 address (derived from gateway_mac_ipv6).
+    ///
+    /// This is the address used as the source for NDP Router Advertisements
+    /// and as the target for Neighbor Solicitations.
+    #[inspect(display)]
+    pub gateway_link_local_ipv6: Ipv6Address,
+    /// Current IPv6 address learned from guest via SLAAC (if any).
+    ///
+    /// With SLAAC (Stateless Address Autoconfiguration), the guest generates
+    /// its own IPv6 address using the advertised prefix and its interface identifier.
+    /// This field is learned from incoming IPv6 traffic from the guest.
+    #[inspect(with = "Option::is_some")]
+    pub client_ip_ipv6: Option<Ipv6Address>,
     /// Idle timeout for UDP connections.
     #[inspect(debug)]
     pub udp_timeout: Duration,
+    /// If true, skip checks for host IPv6 support and assume the host has a
+    /// routable IPv6 address.
+    #[inspect(display)]
+    pub skip_ipv6_checks: bool,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -95,9 +128,13 @@ impl ConsommeParams {
     /// Create default dynamic network state. The default state is
     ///     IP address: 10.0.0.2 / 24
     ///     gateway: 10.0.0.1 with MAC address 52-55-10-0-0-1
-    ///     no DNS resolvers
+    ///     IPv6 address: is not assigned by us, we expect the guest to assign it via SLAAC
+    ///     gateway IPv6 link-local address: fe80::5055:aff:fe00:102 (EUI-64 derived from
+    ///     gateway MAC address 52-55-0A-00-01-02)
     pub fn new() -> Result<Self, Error> {
         let nameservers = dns::nameservers()?;
+        let gateway_mac_ipv6 = EthernetAddress([0x52, 0x55, 0x0A, 0x00, 0x01, 0x02]);
+
         Ok(Self {
             gateway_ip: Ipv4Address::new(10, 0, 0, 1),
             gateway_mac: EthernetAddress([0x52, 0x55, 10, 0, 0, 1]),
@@ -105,8 +142,13 @@ impl ConsommeParams {
             client_mac: EthernetAddress([0x0, 0x0, 0x0, 0x0, 0x1, 0x0]),
             net_mask: Ipv4Address::new(255, 255, 255, 0),
             nameservers,
+            prefix_len_ipv6: 64,
+            gateway_mac_ipv6,
+            gateway_link_local_ipv6: Self::compute_link_local_address(gateway_mac_ipv6),
+            client_ip_ipv6: None,
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
+            skip_ipv6_checks: false,
         })
     }
 
@@ -117,12 +159,81 @@ impl ConsommeParams {
     pub fn set_cidr(&mut self, cidr: &str) -> Result<(), InvalidCidr> {
         let cidr: smoltcp::wire::Ipv4Cidr = cidr.parse().map_err(|()| InvalidCidr)?;
         let base_address = cidr.network().address();
-        self.gateway_ip = base_address;
-        self.gateway_ip.0[3] += 1;
-        self.client_ip = base_address;
-        self.client_ip.0[3] += 2;
+        let mut gateway_octets = base_address.octets();
+        gateway_octets[3] += 1;
+        self.gateway_ip = Ipv4Address::from(gateway_octets);
+        let mut client_octets = base_address.octets();
+        client_octets[3] += 2;
+        self.client_ip = Ipv4Address::from(client_octets);
         self.net_mask = cidr.netmask();
         Ok(())
+    }
+
+    /// Compute a link-local IPv6 address from a MAC address using EUI-64 format.
+    ///
+    /// RFC 4291 Section 2.5.6: Link-local addresses are formed by combining
+    /// the link-local prefix (fe80::/64) with an interface identifier derived
+    /// from the MAC address using the EUI-64 format.
+    ///
+    /// EUI-64 format (RFC 2464 Section 4):
+    /// - Insert 0xFFFE in the middle of the 48-bit MAC address
+    /// - Invert the universal/local bit (bit 6 of the first byte)
+    pub fn compute_link_local_address(mac: EthernetAddress) -> Ipv6Address {
+        const LINK_LOCAL_PREFIX: [u8; 8] = [0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+        let mut addr = [0u8; 16];
+
+        // Set link-local prefix (fe80::/64)
+        addr[0..8].copy_from_slice(&LINK_LOCAL_PREFIX);
+
+        // Create EUI-64 interface identifier from MAC address
+        // MAC: AB:CD:EF:11:22:33
+        // EUI-64: AB:CD:EF:FF:FE:11:22:33 with universal/local bit flipped
+        addr[8] = mac.0[0] ^ 0x02; // Flip the universal/local bit
+        addr[9] = mac.0[1];
+        addr[10] = mac.0[2];
+        addr[11] = 0xFF;
+        addr[12] = 0xFE;
+        addr[13] = mac.0[3];
+        addr[14] = mac.0[4];
+        addr[15] = mac.0[5];
+
+        Ipv6Address::from_octets(addr)
+    }
+
+    /// Returns the list of IPv6 nameservers suitable for advertisement to
+    /// guests via NDP RDNSS or DHCPv6.
+    ///
+    /// Filters out addresses that are not useful as DNS servers in a
+    /// guest-facing context: unspecified, loopback, multicast, unique-local
+    /// (fc00::/7), and deprecated site-local (fec0::/10) addresses.
+    pub fn filtered_ipv6_nameservers(&self) -> Vec<Ipv6Address> {
+        self.nameservers
+            .iter()
+            .filter_map(|ip| match ip {
+                IpAddress::Ipv6(addr) => Some(*addr),
+                _ => None,
+            })
+            .filter(|addr| {
+                let octets = addr.octets();
+                !(addr.is_unspecified()
+                    || addr.is_loopback()
+                    || addr.is_multicast()
+                    || matches!(octets[0], 0xfc | 0xfd) // unique local address
+                    || octets.starts_with(&[0xfe, 0xc0])) // deprecated site-local
+            })
+            .collect()
+    }
+
+    /// Returns the default internal nameserver list for use when the DNS
+    /// resolver is active. Includes the IPv6 gateway only when the host
+    /// has a routable IPv6 address.
+    fn internal_nameservers(&self, host_has_ipv6: bool) -> Vec<IpAddress> {
+        let mut ns = vec![self.gateway_ip.into()];
+        if host_has_ipv6 {
+            ns.push(self.gateway_link_local_ipv6.into());
+        }
+        ns
     }
 }
 
@@ -207,6 +318,12 @@ impl ChecksumState {
         udp: true,
         tso: None,
     };
+    const TCP6: Self = Self {
+        ipv4: false,
+        tcp: true,
+        udp: false,
+        tso: None,
+    };
 
     fn caps(&self) -> ChecksumCapabilities {
         let mut caps = ChecksumCapabilities::default();
@@ -227,36 +344,12 @@ impl ChecksumState {
 /// frame).
 pub const MIN_MTU: usize = 1514;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct SocketAddress {
-    ip: Ipv4Address,
-    port: u16,
-}
-
-impl From<SocketAddress> for SocketAddrV4 {
-    fn from(addr: SocketAddress) -> Self {
-        Self::new(addr.ip.into(), addr.port)
-    }
-}
-
-impl From<SocketAddress> for socket2::SockAddr {
-    fn from(addr: SocketAddress) -> Self {
-        socket2::SockAddr::from(SocketAddrV4::from(addr))
-    }
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-struct FourTuple {
-    dst: SocketAddress,
-    src: SocketAddress,
-}
-
 /// The reason a packet was dropped without being handled.
 #[derive(Debug, Error)]
 pub enum DropReason {
     /// The packet could not be parsed.
     #[error("packet parsing error")]
-    Packet(#[from] smoltcp::Error),
+    Packet(#[from] smoltcp::wire::Error),
     /// The ethertype is unknown.
     #[error("unsupported ethertype {0}")]
     UnsupportedEthertype(EthernetProtocol),
@@ -284,6 +377,20 @@ pub enum DropReason {
     /// Specified port is not bound.
     #[error("port is not bound")]
     PortNotBound,
+    /// The DHCPv6 message type is unsupported.
+    #[error("unsupported dhcpv6 message type {0:?}")]
+    UnsupportedDhcpv6(dhcpv6::MessageType),
+    /// The NDP message type is unsupported.
+    #[error("unsupported ndp message type {0:?}")]
+    UnsupportedNdp(ndp::NdpMessageType),
+    /// An incoming packet was recognized but was self-contradictory.
+    /// E.g. a TCP packet with both SYN and FIN flags set.
+    #[error("packet is malformed")]
+    MalformedPacket,
+    /// An incoming IP packet has been split into several IP fragments and was dropped,
+    /// since IP reassembly is not supported.
+    #[error("packet fragmentation is not supported")]
+    FragmentedPacket,
 }
 
 /// An error to create a consomme instance.
@@ -300,9 +407,75 @@ struct Ipv4Addresses {
     dst_addr: Ipv4Address,
 }
 
+#[derive(Debug)]
+struct Ipv6Addresses {
+    src_addr: Ipv6Address,
+    dst_addr: Ipv6Address,
+}
+
+#[derive(Debug)]
+enum IpAddresses {
+    V4(Ipv4Addresses),
+    V6(Ipv6Addresses),
+}
+
+impl IpAddresses {
+    fn src_addr(&self) -> IpAddress {
+        match self {
+            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.src_addr),
+            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.src_addr),
+        }
+    }
+
+    fn dst_addr(&self) -> IpAddress {
+        match self {
+            IpAddresses::V4(addrs) => IpAddress::Ipv4(addrs.dst_addr),
+            IpAddresses::V6(addrs) => IpAddress::Ipv6(addrs.dst_addr),
+        }
+    }
+}
+
+/// Returns `true` if the given IPv6 address is a globally routable unicast
+/// address (i.e., not loopback, unspecified, or link-local).
+fn is_routable_ipv6(addr: &std::net::Ipv6Addr) -> bool {
+    !addr.is_loopback() && !addr.is_unspecified() && !addr.is_unicast_link_local()
+}
+
 impl Consomme {
     /// Creates a new consomme instance with specified state.
-    pub fn new(params: ConsommeParams) -> Self {
+    pub fn new(mut params: ConsommeParams) -> Self {
+        let host_has_ipv6 = if params.skip_ipv6_checks {
+            true
+        } else {
+            #[cfg(windows)]
+            let host_has_ipv6_result = windows::host_has_ipv6_address().map_err(|e| e.to_string());
+            #[cfg(unix)]
+            let host_has_ipv6_result = unix::host_has_ipv6_address().map_err(|e| e.to_string());
+
+            match host_has_ipv6_result {
+                Ok(has_ipv6) => has_ipv6,
+                Err(e) => {
+                    tracelimit::warn_ratelimited!(
+                        "failed to check for host IPv6 address, assuming no IPv6 support: {e}"
+                    );
+                    false
+                }
+            }
+        };
+        let dns =
+            match dns_resolver::DnsResolver::new(dns_resolver::DEFAULT_MAX_PENDING_DNS_REQUESTS) {
+                Ok(dns) => {
+                    // When the DNS resolver is available, use the default internal nameserver.
+                    params.nameservers = params.internal_nameservers(host_has_ipv6);
+                    Some(dns)
+                }
+                Err(_) => {
+                    tracelimit::warn_ratelimited!(
+                        "failed to initialize DNS resolver, falling back to using host DNS settings"
+                    );
+                    None
+                }
+            };
         let timeout = params.udp_timeout;
         Self {
             state: ConsommeState {
@@ -312,6 +485,8 @@ impl Consomme {
             tcp: tcp::Tcp::new(),
             udp: udp::Udp::new(timeout),
             icmp: icmp::Icmp::new(),
+            dns,
+            host_has_ipv6,
         }
     }
 
@@ -392,6 +567,11 @@ impl<T: Client> Access<'_, T> {
         let frame = EthernetRepr::parse(&frame_packet)?;
         match frame.ethertype {
             EthernetProtocol::Ipv4 => self.handle_ipv4(&frame, frame_packet.payload(), checksum)?,
+            EthernetProtocol::Ipv6 => {
+                if self.inner.host_has_ipv6 {
+                    self.handle_ipv6(&frame, frame_packet.payload(), checksum)?
+                }
+            }
             EthernetProtocol::Arp => self.handle_arp(&frame, frame_packet.payload())?,
             _ => return Err(DropReason::UnsupportedEthertype(frame.ethertype)),
         }
@@ -410,7 +590,7 @@ impl<T: Client> Access<'_, T> {
             || payload.len() < ipv4.header_len().into()
             || payload.len() < ipv4.total_len().into()
         {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::MalformedPacket);
         }
 
         let total_len = if checksum.tso.is_some() {
@@ -419,11 +599,11 @@ impl<T: Client> Access<'_, T> {
             ipv4.total_len().into()
         };
         if total_len < ipv4.header_len().into() {
-            return Err(DropReason::Packet(smoltcp::Error::Malformed));
+            return Err(DropReason::MalformedPacket);
         }
 
         if ipv4.more_frags() || ipv4.frag_offset() != 0 {
-            return Err(DropReason::Packet(smoltcp::Error::Fragmented));
+            return Err(DropReason::FragmentedPacket);
         }
 
         if !checksum.ipv4 && !ipv4.verify_checksum() {
@@ -437,14 +617,76 @@ impl<T: Client> Access<'_, T> {
 
         let inner = &payload[ipv4.header_len().into()..total_len];
 
-        match ipv4.protocol() {
-            IpProtocol::Tcp => self.handle_tcp(&addresses, inner, checksum)?,
-            IpProtocol::Udp => self.handle_udp(frame, &addresses, inner, checksum)?,
+        match ipv4.next_header() {
+            IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V4(addresses), inner, checksum)?,
+            IpProtocol::Udp => {
+                self.handle_udp(frame, &IpAddresses::V4(addresses), inner, checksum)?
+            }
             IpProtocol::Icmp => {
                 self.handle_icmp(frame, &addresses, inner, checksum, ipv4.hop_limit())?
             }
             p => return Err(DropReason::UnsupportedIpProtocol(p)),
         };
         Ok(())
+    }
+
+    fn handle_ipv6(
+        &mut self,
+        frame: &EthernetRepr,
+        payload: &[u8],
+        checksum: &ChecksumState,
+    ) -> Result<(), DropReason> {
+        let ipv6 = Ipv6Packet::new_unchecked(payload);
+        if payload.len() < smoltcp::wire::IPV6_HEADER_LEN || ipv6.version() != 6 {
+            return Err(DropReason::MalformedPacket);
+        }
+
+        let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
+        if payload.len() < required_len {
+            return Err(DropReason::MalformedPacket);
+        }
+
+        let next_header = ipv6.next_header();
+        let inner = &payload[smoltcp::wire::IPV6_HEADER_LEN..];
+        let addresses = Ipv6Addresses {
+            src_addr: ipv6.src_addr(),
+            dst_addr: ipv6.dst_addr(),
+        };
+
+        match next_header {
+            IpProtocol::Udp => {
+                self.handle_udp(frame, &IpAddresses::V6(addresses), inner, checksum)?
+            }
+            IpProtocol::Tcp => self.handle_tcp(&IpAddresses::V6(addresses), inner, checksum)?,
+            IpProtocol::Icmpv6 => {
+                // Check if this is an NDP packet
+                let icmpv6_packet = Icmpv6Packet::new_unchecked(inner);
+                let msg_type = icmpv6_packet.msg_type();
+
+                if msg_type == smoltcp::wire::Icmpv6Message::NeighborSolicit
+                    || msg_type == smoltcp::wire::Icmpv6Message::NeighborAdvert
+                    || msg_type == smoltcp::wire::Icmpv6Message::RouterSolicit
+                    || msg_type == smoltcp::wire::Icmpv6Message::RouterAdvert
+                {
+                    self.handle_ndp(frame, inner, ipv6.src_addr())?;
+                } else {
+                    return Err(DropReason::UnsupportedIpProtocol(next_header));
+                }
+            }
+
+            p => return Err(DropReason::UnsupportedIpProtocol(p)),
+        };
+        Ok(())
+    }
+
+    /// Updates the DNS nameservers based on the current consomme parameters.
+    pub fn update_dns_nameservers(&mut self) {
+        if self.inner.dns.is_some() {
+            self.inner.state.params.nameservers = self
+                .inner
+                .state
+                .params
+                .internal_nameservers(self.inner.host_has_ipv6);
+        }
     }
 }
