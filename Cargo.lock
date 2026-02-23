@@ -7371,6 +7371,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tdisp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "parking_lot",
+ "prost",
+ "tdisp_proto",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
+name = "tdisp_proto"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "prost",
+ "prost-build",
+]
+
+[[package]]
 name = "tdx_guest_device"
 version = "0.0.0"
 dependencies = [
@@ -9933,6 +9954,7 @@ dependencies = [
  "slab",
  "sparse_mmap",
  "state_unit",
+ "tdisp",
  "tracelimit",
  "tracing",
  "user_driver",

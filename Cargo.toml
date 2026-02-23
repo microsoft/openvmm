@@ -265,6 +265,8 @@ nvme_resources = { path = "vm/devices/storage/nvme_resources" }
 nvme_spec = { path = "vm/devices/storage/nvme_spec" }
 nvme_test = { path = "vm/devices/storage/nvme_test" }
 storage_string = { path = "vm/devices/storage/storage_string" }
+tdisp = { path = "vm/devices/tdisp" }
+tdisp_proto = { path = "vm/devices/tdisp_proto" }
 vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
