@@ -47,7 +47,7 @@ use vpci_client::VpciDevice;
 use vpci_client::VpciDeviceEject;
 
 /// [TDISP TODO] Required for the tdisp crate to be built in the meantime.
-#[allow(unused_imports)]
+#[expect(unused_imports)]
 use tdisp::TdispHostDeviceInterface;
 
 /// Trait for creating memory access instances.
