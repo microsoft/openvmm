@@ -561,7 +561,7 @@ async fn tpm_servicing<T: PetriVmmBackend>(
 
     let inspect_before = vm.inspect_openhcl("vm/tpm/worker/nvram_size", None, None)?;
 
-    vm.restart_openhcl(new_openhcl.clone(), flags).await?;
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
     agent.ping().await?;
 
     let inspect_after = vm.inspect_openhcl("vm/tpm/worker/nvram_size", None, None)?;
