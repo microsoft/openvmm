@@ -84,6 +84,7 @@ enum Commands {
     Complete(clap_dyn_complete::Complete),
     Completions(completions::Completions),
 
+    Clean(tasks::Clean),
     Fmt(tasks::Fmt),
     Fuzz(tasks::Fuzz),
     GuestTest(tasks::GuestTest),
@@ -148,6 +149,7 @@ fn try_main() -> anyhow::Result<()> {
             Ok(())
         }
 
+        Commands::Clean(task) => task.run(ctx),
         Commands::Fmt(task) => task.run(ctx),
         Commands::Fuzz(task) => task.run(ctx),
         Commands::GuestTest(task) => task.run(ctx),
