@@ -15,6 +15,7 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
 #[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
+use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use pipette_client::PipetteClient;
 use std::path::Path;
 #[cfg(windows)]
@@ -564,12 +565,16 @@ async fn tpm_servicing<T: PetriVmmBackend>(
 
     agent.ping().await?;
 
-    let inspect_before = vm.inspect_openhcl("vm/tpm/worker/nvram_size", None, None)?;
+    let inspect_before = vm
+        .inspect_openhcl("vm/tpm/worker/nvram_size", None, None)
+        .await?;
 
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
     agent.ping().await?;
 
-    let inspect_after = vm.inspect_openhcl("vm/tpm/worker/nvram_size", None, None)?;
+    let inspect_after = vm
+        .inspect_openhcl("vm/tpm/worker/nvram_size", None, None)
+        .await?;
     assert_eq!(inspect_before, inspect_after);
 
     agent.power_off().await?;
