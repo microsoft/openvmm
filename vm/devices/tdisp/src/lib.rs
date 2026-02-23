@@ -33,7 +33,7 @@
 pub mod serialize_proto;
 
 #[cfg(test)]
-pub mod tests;
+mod tests;
 
 use anyhow::Context;
 use parking_lot::Mutex;
