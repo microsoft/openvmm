@@ -285,9 +285,6 @@ pub struct Tpm {
     #[inspect(rename = "has_pending_nvram", with = "|x| !x.lock().is_empty()")]
     pending_nvram: Arc<Mutex<Vec<u8>>>,
     #[inspect(skip)]
-    monotonic_timer: Arc<Mutex<MonotonicTimer>>,
-    nvram_size: usize,
-    #[inspect(skip)]
     async_ak_cert_request: Option<Pin<Box<AkCertRequest>>>,
     #[inspect(skip)]
     waker: Option<Waker>,
@@ -355,7 +352,7 @@ pub enum TpmErrorKind {
 
 struct TpmPlatformCallbacks {
     pending_nvram: Arc<Mutex<Vec<u8>>>,
-    monotonic_timer: Arc<Mutex<MonotonicTimer>>,
+    monotonic_timer: MonotonicTimer,
 }
 
 impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
@@ -370,7 +367,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn monotonic_timer(&mut self) -> std::time::Duration {
-        (self.monotonic_timer.lock())()
+        (self.monotonic_timer)()
     }
 
     fn get_unique_value(&self) -> &'static [u8] {
@@ -395,16 +392,16 @@ impl Tpm {
         bios_guid: Guid,
     ) -> Result<Self, TpmError> {
         tracing::info!("initializing TPM");
+        tracing::error!(CVM_ALLOWED, ?nvram_size, "FOOBAR nvram size");
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
-        let monotonic_timer = Arc::new(Mutex::new(monotonic_timer));
 
         let nvram_size = nvram_size.unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE);
 
         let tpm_engine = MsTpm20RefPlatform::initialize(
             Box::new(TpmPlatformCallbacks {
                 pending_nvram: pending_nvram.clone(),
-                monotonic_timer: monotonic_timer.clone(),
+                monotonic_timer,
             }),
             ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size as usize),
         )
@@ -463,8 +460,6 @@ impl Tpm {
 
             command_buffer: [0; TPM_PAGE_SIZE],
             pending_nvram,
-            monotonic_timer,
-            nvram_size: nvram_size as usize,
             async_ak_cert_request: None,
             waker: None,
             ak_cert_renew_time: None,
@@ -1816,8 +1811,6 @@ mod save_restore {
             pub ppi_state: SavedPpiState,
             #[mesh(5)]
             pub tpm_state_blob: Vec<u8>,
-            #[mesh(6)]
-            pub nvram_size: Option<u64>,
             // Experimental fields to avoid breaking changes
             // TODO CVM: Remove the explicit numbering once live servicing design is finialized
             #[mesh(60)]
@@ -1924,7 +1917,6 @@ mod save_restore {
                 auth_value: self.auth_value,
                 keys,
                 allow_ak_cert_renewal: Some(self.allow_ak_cert_renewal),
-                nvram_size: Some(self.nvram_size as u64),
             };
 
             Ok(saved_state)
@@ -1940,7 +1932,6 @@ mod save_restore {
                 auth_value,
                 keys,
                 allow_ak_cert_renewal,
-                nvram_size,
             } = state;
 
             self.control_area = {
@@ -1989,38 +1980,6 @@ mod save_restore {
                 }
             };
             self.requested_locality = requested_locality;
-
-            // TODO: UNKNOWN: if the NVRAM sizes in the save state and the VMGS don't match,
-            // what should we do here? Options include:
-            // - Reinitialize the TPM with the size from the save state
-            //     Downside: have to rearchitect things a little bit (e.g., monotonic_timer) to
-            //     make it possible to reinitialize the TPM here
-            // - Fail (undesirable? would cause failed servicing and crash the VM)
-            // - Plow ahead like nothing is wrong (undesirable? we know something is wrong)
-            if let Some(saved_size) = nvram_size {
-                if saved_size != self.nvram_size as u64 {
-                    // Recreate the engine if the saved NVRAM size differs fom
-                    // what was used during initialization.
-                    tracing::warn!(
-                        CVM_ALLOWED,
-                        init_size = self.nvram_size,
-                        saved_size,
-                        "Recreating TPM engine with correct NVRAM size"
-                    );
-                    let tpm_engine = MsTpm20RefPlatform::initialize(
-                        Box::new(TpmPlatformCallbacks {
-                            pending_nvram: self.pending_nvram.clone(),
-                            monotonic_timer: self.monotonic_timer.clone(),
-                        }),
-                        ms_tpm_20_ref::InitKind::ColdInitWithSize(saved_size as usize),
-                    )
-                    .map_err(TpmRestoreError::TpmRuntimeLib)
-                    .map_err(|e| RestoreError::Other(e.into()))?;
-                    self.tpm_engine_helper =
-                        TpmEngineHelper::new(MsTpm20RefEngine::new(tpm_engine));
-                    self.nvram_size = saved_size as usize;
-                }
-            }
 
             self.tpm_engine_helper
                 .tpm_engine

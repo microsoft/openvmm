@@ -1795,7 +1795,9 @@ async fn new_underhill_vm(
     }
 
     // Get TPM data size from VMGS. This is used by the TPM device later to
-    // initialize it with the correct size.
+    // initialize it with the correct size. VMGS file control blocks are saved
+    // and restored during servicing, so this is cached and doesn't directly
+    // access the VMGS file.
     let tpm_size = vmgs
         .as_ref()
         .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
