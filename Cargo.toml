@@ -496,7 +496,7 @@ log = "0.4"
 loom = "0.7.2"
 macaddr = "1.0"
 mimalloc = { version = "0.1.39", default-features = false }
-ms-tpm-20-ref = { version = "0.1", git = "https://github.com/stunes-ms/ms-tpm-20-ref-rs.git", branch = "user/mikestunes/init-size" }
+ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"
 mshv-ioctls = "0.6.0"
 nix = { version = "0.30.1", default-features = false }
