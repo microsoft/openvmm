@@ -8,8 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-bitfield-struct.workspace = true
-open_enum.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 prost.workspace = true

@@ -9,6 +9,7 @@ edition.workspace = true
 [dependencies]
 inspect.workspace = true
 tdisp.workspace = true
+tdisp_proto.workspace = true
 
 anyhow.workspace = true
 

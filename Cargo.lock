@@ -5035,6 +5035,7 @@ dependencies = [
  "anyhow",
  "inspect",
  "tdisp",
+ "tdisp_proto",
 ]
 
 [[package]]
@@ -7384,8 +7385,6 @@ name = "tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "bitfield-struct 0.11.0",
- "open_enum",
  "parking_lot",
  "prost",
  "tdisp_proto",

@@ -7,12 +7,12 @@
 //! See: `vm/devices/tdisp` for more information.
 
 use std::future::Future;
-use tdisp::GuestToHostCommand;
-use tdisp::GuestToHostResponse;
-pub use tdisp::TdispCommandId;
-use tdisp::TdispGuestUnbindReason;
-use tdisp::TdispReportType;
-use tdisp::devicereport::TdiReportStruct;
+pub use tdisp_proto::GuestToHostCommand;
+pub use tdisp_proto::GuestToHostResponse;
+pub use tdisp_proto::TdiReportStruct;
+pub use tdisp_proto::TdispDeviceInterfaceInfo;
+pub use tdisp_proto::TdispGuestUnbindReason;
+pub use tdisp_proto::TdispReportType;
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// implementations to send TDISP commands to the host through a backing interface
@@ -28,7 +28,7 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     /// Get the TDISP interface info for the device.
     fn tdisp_get_device_interface_info(
         &self,
-    ) -> impl Future<Output = anyhow::Result<tdisp::TdispDeviceInterfaceInfo>> + Send;
+    ) -> impl Future<Output = anyhow::Result<TdispDeviceInterfaceInfo>> + Send;
 
     /// Bind the device to the current partition and transition to Locked.
     /// NOTE: While the device is in the Locked state, it can continue to
