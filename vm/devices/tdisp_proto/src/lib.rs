@@ -5,6 +5,7 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
+#![allow(unused_qualifications)]
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.

@@ -32,6 +32,9 @@
 /// Protobuf serialization of guest commands and responses.
 pub mod serialize_proto;
 
+/// Serialization code from PCI standard structures reported from the TDISP device directly.
+pub mod devicereport;
+
 #[cfg(test)]
 mod tests;
 
@@ -46,7 +49,7 @@ use tdisp_proto::TdispCommandResponseGetTdiReport;
 use tdisp_proto::TdispCommandResponseStartTdi;
 use tdisp_proto::TdispCommandResponseUnbind;
 use tdisp_proto::TdispDeviceInterfaceInfo;
-use tdisp_proto::TdispGuestOperationError;
+pub use tdisp_proto::TdispGuestOperationError;
 use tdisp_proto::TdispGuestOperationErrorCode;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispGuestUnbindReason;

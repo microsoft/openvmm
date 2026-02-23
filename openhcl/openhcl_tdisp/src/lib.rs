@@ -11,6 +11,7 @@ use std::future::Future;
 // Re-export the TDISP protocol types necessary for OpenbHCL from top level tdisp crates
 // to avoid a direct dependency on tdisp_proto and tdisp.
 pub use tdisp::TdispGuestOperationError;
+pub use tdisp::devicereport::TdiReportStruct;
 pub use tdisp::serialize_proto::deserialize_command;
 pub use tdisp::serialize_proto::deserialize_response;
 pub use tdisp::serialize_proto::serialize_command;
@@ -19,15 +20,22 @@ pub use tdisp_proto::GuestToHostCommand;
 pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
 pub use tdisp_proto::GuestToHostResponseExt;
-pub use tdisp_proto::TdiReportStruct;
 pub use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseGetTdiReport;
+pub use tdisp_proto::TdispCommandResponseStartTdi;
+pub use tdisp_proto::TdispCommandResponseUnbind;
 pub use tdisp_proto::TdispDeviceInterfaceInfo;
 pub use tdisp_proto::TdispGuestOperationErrorCode;
 pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
 pub use tdisp_proto::TdispReportType;
 
+use tdisp_proto::TdispCommandRequestBind;
+use tdisp_proto::TdispCommandRequestGetTdiReport;
+use tdisp_proto::TdispCommandRequestStartTdi;
+use tdisp_proto::TdispCommandRequestUnbind;
 use tdisp_proto::guest_to_host_command::Command;
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
@@ -88,5 +96,44 @@ pub fn make_get_device_interface_info_command(
                 guest_protocol_type: guest_protocol_type as i32,
             },
         )),
+    }
+}
+
+/// Creates a [`GuestToHostCommand`] for the `Bind` command.
+pub fn make_bind_command(device_id: u64) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::Bind(TdispCommandRequestBind {})),
+    }
+}
+
+/// Creates a [`GuestToHostCommand`] for the `StartTdi` command.
+pub fn make_start_tdi_command(device_id: u64) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::StartTdi(TdispCommandRequestStartTdi {})),
+    }
+}
+
+/// Creates a [`GuestToHostCommand`] for the `GetTdiReport` command.
+pub fn make_get_tdi_report_command(
+    device_id: u64,
+    report_type: TdispReportType,
+) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::GetTdiReport(TdispCommandRequestGetTdiReport {
+            report_type: report_type as i32,
+        })),
+    }
+}
+
+/// Creates a [`GuestToHostCommand`] for the `Unbind` command.
+pub fn make_unbind_command(device_id: u64, reason: TdispGuestUnbindReason) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::Unbind(TdispCommandRequestUnbind {
+            unbind_reason: reason as i32,
+        })),
     }
 }

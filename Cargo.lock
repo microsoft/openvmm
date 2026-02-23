@@ -7385,11 +7385,13 @@ name = "tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bitfield-struct 0.11.0",
  "parking_lot",
  "prost",
+ "static_assertions",
  "tdisp_proto",
- "thiserror 2.0.16",
  "tracing",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -7399,6 +7401,7 @@ dependencies = [
  "inspect",
  "prost",
  "prost-build",
+ "thiserror 2.0.16",
 ]
 
 [[package]]

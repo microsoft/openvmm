@@ -12,6 +12,9 @@ parking_lot.workspace = true
 prost.workspace = true
 tracing.workspace = true
 tdisp_proto.workspace = true
+bitfield-struct.workspace = true
+zerocopy.workspace = true
+static_assertions.workspace = true
 
 [lints]
 workspace = true
