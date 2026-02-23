@@ -100,7 +100,7 @@ impl Fuse for VirtioFs {
 
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
         // Block truncation and other modifications on readonly filesystems
-        if arg.valid & (FATTR_SIZE | FATTR_MODE | FATTR_UID | FATTR_GID) != 0 {
+        if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
             self.check_writable()?;
         }
         let node_id = request.node_id();
@@ -138,14 +138,14 @@ impl Fuse for VirtioFs {
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
-        // On readonly filesystem, reject write operations.
-        if self.readonly {
-            // O_ACCMODE is the mask for access mode bits (O_RDONLY, O_WRONLY, O_RDWR)
-            const O_ACCMODE: u32 = 0o3;
-            let access_mode = flags & O_ACCMODE;
-            if access_mode == lx::O_WRONLY as u32 || access_mode == lx::O_RDWR as u32 {
-                return Err(lx::Error::EROFS);
-            }
+        // On readonly filesystem, reject write access modes.
+        if self.readonly
+            && matches!(
+                (flags & lx::O_NOACCESS as u32) as i32,
+                lx::O_WRONLY | lx::O_RDWR
+            )
+        {
+            return Err(lx::Error::EROFS);
         }
         let file = inode.open(flags)?;
         let fh = self.insert_file(file);
