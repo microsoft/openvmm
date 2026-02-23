@@ -20,8 +20,8 @@ use std::task::Context;
 use std::task::Poll;
 
 /// There is no official maximum size for DNS messages over TCP, but we can set
-/// a reasonable upper bound to u16::MAX (65535 bytes) to prevent unbounded memory 
-/// usage. This is larger than the typical 512-byte limit for UDP, as TCP can 
+/// a reasonable upper bound to u16::MAX (65535 bytes) to prevent unbounded memory
+/// usage. This is larger than the typical 512-byte limit for UDP, as TCP can
 /// handle larger messages.
 const MAX_DNS_TCP_MESSAGE_SIZE: usize = 65535;
 
