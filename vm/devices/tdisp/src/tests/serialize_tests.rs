@@ -5,6 +5,11 @@
 //! These are fairly basic and not exhaustive to all packet types. Basically ensures the most core
 //! serialization and deserialization logic is working.
 
+use crate::serialize_proto::deserialize_command;
+use crate::serialize_proto::deserialize_response;
+use crate::serialize_proto::serialize_command;
+use crate::serialize_proto::serialize_response;
+use crate::tests::mocks::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp_proto::GuestToHostCommand;
 use tdisp_proto::GuestToHostResponse;
 use tdisp_proto::TdispCommandRequestBind;
@@ -24,13 +29,6 @@ use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
 use tdisp_proto::guest_to_host_response::Response;
-
-use crate::{
-    serialize_proto::{
-        deserialize_command, deserialize_response, serialize_command, serialize_response,
-    },
-    tests::mocks::TDISP_MOCK_GUEST_PROTOCOL,
-};
 
 /// Build a well-formed response wrapper around the given `Response` variant.
 fn make_response(response: Response) -> GuestToHostResponse {

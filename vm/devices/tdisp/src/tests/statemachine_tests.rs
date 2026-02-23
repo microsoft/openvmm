@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::TdispGuestOperationError;
+use crate::TdispGuestRequestInterface;
+use crate::tests::mocks::LastCall;
+use crate::tests::mocks::new_machine;
 use tdisp_proto::TdispGuestUnbindReason;
 use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
-
-use crate::{TdispGuestOperationError, TdispGuestRequestInterface};
-
-use crate::tests::mocks::{LastCall, new_machine};
 
 // ── Valid forward-progress transitions ───────────────────────────────────────
 

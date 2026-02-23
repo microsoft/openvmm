@@ -7,6 +7,15 @@
 //! the resulting [`GuestToHostResponse`] is serialized and deserialized in turn.
 //! All responses -- including error responses -- exercise the full wire round-trip.
 
+use crate::TdispHostDeviceTarget;
+use crate::TdispHostDeviceTargetEmulator;
+use crate::serialize_proto::deserialize_command;
+use crate::serialize_proto::deserialize_response;
+use crate::serialize_proto::serialize_command;
+use crate::serialize_proto::serialize_response;
+use crate::tests::mocks::LastCall;
+use crate::tests::mocks::TDISP_MOCK_GUEST_PROTOCOL;
+use crate::tests::mocks::new_emulator;
 use tdisp_proto::GuestToHostCommand;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
@@ -20,13 +29,6 @@ use tdisp_proto::TdispReportType;
 use tdisp_proto::TdispTdiState;
 use tdisp_proto::guest_to_host_command::Command;
 use tdisp_proto::guest_to_host_response::Response;
-
-use crate::serialize_proto::{
-    deserialize_command, deserialize_response, serialize_command, serialize_response,
-};
-use crate::{TdispHostDeviceTarget, TdispHostDeviceTargetEmulator};
-
-use crate::tests::mocks::{LastCall, TDISP_MOCK_GUEST_PROTOCOL, new_emulator};
 
 // ── Dispatch helpers ──────────────────────────────────────────────────────────
 

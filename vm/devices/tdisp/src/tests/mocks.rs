@@ -1,17 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::sync::Arc;
-
-use parking_lot::Mutex;
-use tdisp_proto::TdispDeviceInterfaceInfo;
-use tdisp_proto::TdispGuestProtocolType;
-use tdisp_proto::TdispReportType;
-
 use crate::TdispGuestRequestInterface;
 use crate::TdispHostDeviceInterface;
 use crate::TdispHostDeviceTargetEmulator;
 use crate::TdispHostStateMachine;
+use parking_lot::Mutex;
+use std::sync::Arc;
+use tdisp_proto::TdispDeviceInterfaceInfo;
+use tdisp_proto::TdispGuestProtocolType;
+use tdisp_proto::TdispReportType;
 
 pub const TDISP_MOCK_GUEST_PROTOCOL: TdispGuestProtocolType = TdispGuestProtocolType::AmdSevTioV10;
 
