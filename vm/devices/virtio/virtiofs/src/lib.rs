@@ -138,14 +138,14 @@ impl Fuse for VirtioFs {
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
-        // On readonly filesystem, reject write access modes.
-        if self.readonly
-            && matches!(
-                (flags & lx::O_NOACCESS as u32) as i32,
-                lx::O_WRONLY | lx::O_RDWR
-            )
-        {
-            return Err(lx::Error::EROFS);
+        // On readonly filesystem, reject write access modes and write-implying flags.
+        if self.readonly {
+            let access_mode = (flags & lx::O_NOACCESS as u32) as i32;
+            if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR)
+                || flags & lx::O_TRUNC as u32 != 0
+            {
+                return Err(lx::Error::EROFS);
+            }
         }
         let file = inode.open(flags)?;
         let fh = self.insert_file(file);
@@ -401,7 +401,7 @@ impl VirtioFs {
         root_path: impl AsRef<Path>,
         mount_options: Option<&LxVolumeOptions>,
     ) -> lx::Result<Self> {
-        let readonly = mount_options.map_or(false, |o| o.is_readonly());
+        let readonly = mount_options.is_some_and(|o| o.is_readonly());
         let volume = if let Some(mount_options) = mount_options {
             mount_options.new_volume(root_path)
         } else {

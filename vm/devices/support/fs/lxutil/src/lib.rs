@@ -1033,7 +1033,9 @@ impl LxVolumeOptions {
 
     /// Enable or disable readonly mode for the volume.
     ///
-    /// When readonly is enabled, all write operations will be rejected with EROFS.
+    /// This flag is not enforced by `LxVolume` itself. It is intended to be
+    /// read by higher-level layers (e.g., virtio-fs) via [`is_readonly`](Self::is_readonly)
+    /// to reject write operations with `EROFS`.
     pub fn readonly(&mut self, readonly: bool) -> &mut Self {
         self.readonly = readonly;
         self
