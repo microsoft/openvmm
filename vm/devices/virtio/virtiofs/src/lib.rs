@@ -141,9 +141,7 @@ impl Fuse for VirtioFs {
         // On readonly filesystem, reject write access modes and write-implying flags.
         if self.readonly {
             let access_mode = (flags & lx::O_NOACCESS as u32) as i32;
-            if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR)
-                || flags & lx::O_TRUNC as u32 != 0
-            {
+            if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
                 return Err(lx::Error::EROFS);
             }
         }
