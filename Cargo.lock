@@ -5029,6 +5029,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "openhcl_tdisp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "inspect",
+ "tdisp",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.73"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7391,7 +7400,6 @@ dependencies = [
  "inspect",
  "prost",
  "prost-build",
- "zerocopy 0.8.27",
 ]
 
 [[package]]

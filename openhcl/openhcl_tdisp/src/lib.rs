@@ -13,7 +13,6 @@ pub use tdisp::TdispCommandId;
 use tdisp::TdispGuestUnbindReason;
 use tdisp::TdispReportType;
 use tdisp::devicereport::TdiReportStruct;
-pub use tdisp::{TDISP_INTERFACE_VERSION_MAJOR, TDISP_INTERFACE_VERSION_MINOR};
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// implementations to send TDISP commands to the host through a backing interface
