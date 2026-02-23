@@ -7,12 +7,28 @@
 //! See: `vm/devices/tdisp` for more information.
 
 use std::future::Future;
+
+// Re-export the TDISP protocol types necessary for OpenbHCL from top level tdisp crates
+// to avoid a direct dependency on tdisp_proto and tdisp.
+pub use tdisp::TdispGuestOperationError;
+pub use tdisp::serialize_proto::deserialize_command;
+pub use tdisp::serialize_proto::deserialize_response;
+pub use tdisp::serialize_proto::serialize_command;
+pub use tdisp::serialize_proto::serialize_response;
 pub use tdisp_proto::GuestToHostCommand;
+pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
+pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdiReportStruct;
+pub use tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 pub use tdisp_proto::TdispDeviceInterfaceInfo;
+pub use tdisp_proto::TdispGuestOperationErrorCode;
+pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
 pub use tdisp_proto::TdispReportType;
+
+use tdisp_proto::guest_to_host_command::Command;
 
 /// Represents a TDISP device assigned to a guest partition. This trait allows
 /// implementations to send TDISP commands to the host through a backing interface
@@ -58,4 +74,19 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
         &self,
         reason: TdispGuestUnbindReason,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+/// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
+pub fn make_get_device_interface_info_command(
+    device_id: u64,
+    guest_protocol_type: TdispGuestProtocolType,
+) -> GuestToHostCommand {
+    GuestToHostCommand {
+        device_id,
+        command: Some(Command::GetDeviceInterfaceInfo(
+            TdispCommandRequestGetDeviceInterfaceInfo {
+                guest_protocol_type: guest_protocol_type as i32,
+            },
+        )),
+    }
 }
