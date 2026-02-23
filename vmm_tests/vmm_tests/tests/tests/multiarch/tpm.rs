@@ -545,13 +545,16 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
 /// Test that TPM NVRAM size persists across servicing.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, VMGS_WITH_BOOT_ENTRY]
 )]
 async fn tpm_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
-    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+    (igvm_file, vmgs_file): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,
+    ),
 ) -> anyhow::Result<()> {
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
@@ -559,7 +562,8 @@ async fn tpm_servicing<T: PetriVmmBackend>(
     let config = config
         .with_tpm(true)
         .with_tpm_state_persistence(true)
-        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_initial_vmgs(vmgs_file);
 
     let (mut vm, agent) = config.run().await?;
 
