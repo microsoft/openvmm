@@ -247,7 +247,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
 /// are assigned to isolated partitions other than the host.
 pub trait TdispClientDevice: Send + Sync {
     /// Send a TDISP command to the host for this device.
-    /// [TDISP TODO] Async? Better handling of device_id in GuestToHostCommand?
+    /// TODO TDISP: Async? Better handling of device_id in GuestToHostCommand?
     fn tdisp_command_to_host(&self, command: GuestToHostCommand) -> anyhow::Result<()>;
 }
 
