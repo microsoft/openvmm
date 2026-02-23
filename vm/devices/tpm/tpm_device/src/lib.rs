@@ -403,7 +403,7 @@ impl Tpm {
                 pending_nvram: pending_nvram.clone(),
                 monotonic_timer,
             }),
-            ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size as usize),
+            ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size),
         )
         .map_err(TpmErrorKind::InstantiateTpm)?;
 

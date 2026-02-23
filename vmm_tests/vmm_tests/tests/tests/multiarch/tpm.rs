@@ -555,6 +555,11 @@ async fn tpm_servicing<T: PetriVmmBackend>(
     let mut flags = config.default_servicing_flags();
     flags.override_version_checks = true;
 
+    let config = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk);
+
     let (mut vm, agent) = config.run().await?;
 
     agent.ping().await?;
