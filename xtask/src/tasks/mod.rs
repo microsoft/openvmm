@@ -3,6 +3,7 @@
 
 //! Implementations of various Xtasks
 
+mod clean;
 mod fmt;
 mod fuzz;
 mod git_hooks;
@@ -11,6 +12,7 @@ mod verify_size;
 
 pub use git_hooks::update_hooks;
 
+pub use self::clean::Clean;
 pub use self::fmt::Fmt;
 pub use self::fuzz::Fuzz;
 pub use self::git_hooks::InstallGitHooks;
