@@ -392,7 +392,6 @@ impl Tpm {
         bios_guid: Guid,
     ) -> Result<Self, TpmError> {
         tracing::info!("initializing TPM");
-        tracing::error!(CVM_ALLOWED, ?nvram_size, "FOOBAR nvram size");
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
