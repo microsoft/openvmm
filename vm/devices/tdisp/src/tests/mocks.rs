@@ -8,10 +8,10 @@ use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispReportType;
 
-use crate::{
-    TdispGuestRequestInterface, TdispHostDeviceInterface, TdispHostDeviceTargetEmulator,
-    TdispHostStateMachine,
-};
+use crate::TdispGuestRequestInterface;
+use crate::TdispHostDeviceInterface;
+use crate::TdispHostDeviceTargetEmulator;
+use crate::TdispHostStateMachine;
 
 pub const TDISP_MOCK_GUEST_PROTOCOL: TdispGuestProtocolType = TdispGuestProtocolType::AmdSevTioV10;
 
