@@ -541,3 +541,33 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     Ok(())
 }
+
+/// Test that TPM NVRAM size persists across servicing.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY]
+)]
+async fn tpm_servicing<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+
+    let (mut vm, agent) = config.run().await?;
+
+    agent.ping().await?;
+
+    let inspect_before = vm.inspect_openhcl("vm/tpm/worker/nvram_size", None, None)?;
+
+    vm.restart_openhcl(new_openhcl.clone(), flags).await?;
+    agent.ping().await?;
+
+    let inspect_after = vm.inspect_openhcl("vm/tpm/worker/nvram_size", None, None)?;
+    assert_eq!(inspect_before, inspect_after);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

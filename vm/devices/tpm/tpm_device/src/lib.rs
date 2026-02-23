@@ -264,6 +264,7 @@ pub struct Tpm {
     mmio_region: Vec<(&'static str, RangeInclusive<u64>)>,
     allow_ak_cert_renewal: bool,
     handle_ak_cert_renewal: bool,
+    nvram_size: usize, // for inspect
 
     // For logging
     bios_guid: Guid,
@@ -444,6 +445,7 @@ impl Tpm {
             mmio_region,
             allow_ak_cert_renewal: false,
             handle_ak_cert_renewal: false,
+            nvram_size,
             bios_guid,
             ak_pub_hash: [0; SHA_256_OUTPUT_SIZE_BYTES],
 
@@ -2068,6 +2070,7 @@ mod tests {
             gm,
             ppi_store,
             store,
+            None,
             monotonic_timer,
             false,
             false,
