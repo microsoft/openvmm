@@ -19,7 +19,10 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-/// Maximum DNS message size over TCP (2-byte length field can represent up to 65535).
+/// There is no official maximum size for DNS messages over TCP, but we can set
+/// a reasonable upper bound to u16::MAX (65535 bytes) to prevent unbounded memory 
+/// usage. This is larger than the typical 512-byte limit for UDP, as TCP can 
+/// handle larger messages.
 const MAX_DNS_TCP_MESSAGE_SIZE: usize = 65535;
 
 pub struct DnsTcpHandler {
@@ -32,6 +35,8 @@ pub struct DnsTcpHandler {
     tx_buf: VecDeque<u8>,
     /// The guest has sent FIN; no more data will arrive.
     guest_fin: bool,
+    /// Number of DNS queries submitted but not yet resolved.
+    in_flight: usize,
 }
 
 impl DnsTcpHandler {
@@ -44,6 +49,7 @@ impl DnsTcpHandler {
             rx_buf: VecDeque::new(),
             tx_buf: VecDeque::new(),
             guest_fin: false,
+            in_flight: 0,
         }
     }
 
@@ -101,6 +107,7 @@ impl DnsTcpHandler {
                 dns_query: &query_data,
             };
             self.backend.query(&request, self.receiver.sender());
+            self.in_flight += 1;
         }
     }
 
@@ -108,6 +115,14 @@ impl DnsTcpHandler {
     /// Returns the total number of bytes written.
     pub fn poll_read(&mut self, cx: &mut Context<'_>, bufs: &mut [IoSliceMut<'_>]) -> usize {
         while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
+            self.in_flight = self.in_flight.saturating_sub(1);
+            if response.response_data.len() > MAX_DNS_TCP_MESSAGE_SIZE {
+                tracelimit::warn_ratelimited!(
+                    size = response.response_data.len(),
+                    "DNS TCP response exceeds maximum message size, dropping"
+                );
+                continue;
+            }
             #[cfg(unix)]
             {
                 let len = response.response_data.len() as u16;
@@ -146,10 +161,10 @@ impl DnsTcpHandler {
         self.guest_fin = true;
     }
 
-    /// Returns true when the guest has sent FIN and all responses have
-    /// been flushed, so the server side can send FIN too.
+    /// Returns true when the guest has sent FIN, all in-flight queries
+    /// have been resolved, and all responses have been flushed.
     pub fn should_close(&self) -> bool {
-        self.guest_fin && self.tx_buf.is_empty()
+        self.guest_fin && self.in_flight == 0 && self.tx_buf.is_empty()
     }
 }
 
