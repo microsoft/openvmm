@@ -9,6 +9,7 @@ use super::DropReason;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
+use crate::dns_resolver::DnsBackend;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -301,15 +302,32 @@ impl<T: Client> Access<'_, T> {
                 Err(_) => false,
             });
         // Check for any new incoming data
+        let dns_backend = self.inner.dns.as_ref().map(|d| d.backend().as_ref());
         self.inner.tcp.connections.retain(|ft, conn| {
-            conn.poll_conn(
-                cx,
-                &mut Sender {
-                    ft,
-                    state: &mut self.inner.state,
-                    client: self.client,
+            let mut sender = Sender {
+                ft,
+                state: &mut self.inner.state,
+                client: self.client,
+            };
+            // Temporarily take the backend to split the mutable borrow between
+            // the backend and the rest of TcpConnection's fields.
+            let mut backend = std::mem::replace(&mut conn.backend, TcpBackend::Socket(None));
+            let result = match &mut backend {
+                TcpBackend::Dns(dns_handler) => match dns_backend {
+                    Some(dns_backend) => {
+                        conn.poll_dns_backend(cx, &mut sender, dns_handler, dns_backend)
+                    }
+                    None => {
+                        tracing::warn!("DNS TCP connection without DNS resolver, dropping");
+                        false
+                    }
                 },
-            )
+                TcpBackend::Socket(opt_socket) => {
+                    conn.poll_socket_backend(cx, &mut sender, opt_socket)
+                }
+            };
+            conn.backend = backend;
+            result
         })
     }
 
@@ -389,11 +407,7 @@ impl<T: Client> Access<'_, T> {
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
                     if is_dns_tcp {
-                        let conn = TcpConnection::new_dns(
-                            &mut sender,
-                            &tcp,
-                            self.inner.dns.as_ref().unwrap(),
-                        )?;
+                        let conn = TcpConnection::new_dns(&mut sender, &tcp)?;
                         e.insert(conn);
                     } else {
                         let conn = TcpConnection::new(&mut sender, &tcp)?;
@@ -671,7 +685,6 @@ impl TcpConnection {
     fn new_dns(
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
-        dns: &crate::dns_resolver::DnsResolver,
     ) -> Result<Self, DropReason> {
         let mut this = Self::default();
         this.initialize_from_first_client_packet(tcp)?;
@@ -686,7 +699,7 @@ impl TcpConnection {
             transport: crate::dns_resolver::DnsTransport::Tcp,
         };
 
-        this.backend = TcpBackend::Dns(DnsTcpHandler::new(dns.backend().clone(), flow));
+        this.backend = TcpBackend::Dns(DnsTcpHandler::new(flow));
         // Immediately transition to SynReceived so the handshake SYN-ACK is sent.
         this.state = TcpState::SynReceived;
         this.rx_window_cap = this.rx_buffer.capacity();
@@ -729,18 +742,6 @@ impl TcpConnection {
         Ok(())
     }
 
-    fn poll_conn(&mut self, cx: &mut Context<'_>, sender: &mut Sender<'_, impl Client>) -> bool {
-        // Temporarily take the backend to split the mutable borrow between
-        // the backend and the rest of TcpConnection's fields.
-        let mut backend = std::mem::replace(&mut self.backend, TcpBackend::Socket(None));
-        let result = match &mut backend {
-            TcpBackend::Dns(dns_handler) => self.poll_dns_backend(cx, sender, dns_handler),
-            TcpBackend::Socket(opt_socket) => self.poll_socket_backend(cx, sender, opt_socket),
-        };
-        self.backend = backend;
-        result
-    }
-
     /// Poll the DNS TCP virtual connection backend.
     ///
     /// There is no real socket; data flows through the [`DnsTcpHandler`].
@@ -749,10 +750,11 @@ impl TcpConnection {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         dns_handler: &mut DnsTcpHandler,
+        dns_backend: &dyn DnsBackend,
     ) -> bool {
         // rx path: feed guest data into the DNS handler for query extraction.
         let (a, b) = self.rx_buffer.as_slices();
-        dns_handler.ingest(&[a, b]);
+        dns_handler.ingest(&[a, b], dns_backend);
         self.rx_buffer.clear();
 
         if self.state.rx_fin() && !dns_handler.guest_fin() {

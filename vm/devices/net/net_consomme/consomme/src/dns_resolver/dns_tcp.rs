@@ -15,7 +15,6 @@ use super::DnsResponse;
 use mesh_channel_core::Receiver;
 use std::collections::VecDeque;
 use std::io::IoSliceMut;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
@@ -26,7 +25,6 @@ use std::task::Poll;
 const MAX_DNS_TCP_MESSAGE_SIZE: usize = 65535;
 
 pub struct DnsTcpHandler {
-    backend: Arc<dyn DnsBackend>,
     receiver: Receiver<DnsResponse>,
     flow: DnsFlow,
     /// Data received from the guest, accumulating DNS TCP framed messages.
@@ -40,10 +38,9 @@ pub struct DnsTcpHandler {
 }
 
 impl DnsTcpHandler {
-    pub fn new(backend: Arc<dyn DnsBackend>, flow: DnsFlow) -> Self {
+    pub fn new(flow: DnsFlow) -> Self {
         let receiver = Receiver::new();
         Self {
-            backend,
             receiver,
             flow,
             rx_buf: VecDeque::new(),
@@ -55,7 +52,7 @@ impl DnsTcpHandler {
 
     /// Feed data received from the guest into the handler.
     /// Extracts complete DNS messages and submits them for resolution.
-    pub fn ingest(&mut self, data: &[&[u8]]) {
+    pub fn ingest(&mut self, data: &[&[u8]], backend: &dyn DnsBackend) {
         for chunk in data {
             let remaining_capacity = MAX_DNS_TCP_MESSAGE_SIZE.saturating_sub(self.rx_buf.len());
             let accepted = chunk.len().min(remaining_capacity);
@@ -69,19 +66,20 @@ impl DnsTcpHandler {
                 );
             }
         }
-        self.extract_and_submit_queries();
+        self.extract_and_submit_queries(backend);
     }
 
     /// Parse the rx buffer for complete DNS TCP-framed messages
     /// (2-byte big-endian length prefix + payload) and submit each query.
-    fn extract_and_submit_queries(&mut self) {
+    fn extract_and_submit_queries(&mut self, backend: &dyn DnsBackend) {
         loop {
             if self.rx_buf.len() < 2 {
                 break;
             }
             let msg_len = u16::from_be_bytes([self.rx_buf[0], self.rx_buf[1]]) as usize;
-            if msg_len == 0 || msg_len > MAX_DNS_TCP_MESSAGE_SIZE {
-                // Malformed: discard the length prefix and try to resync.
+            if msg_len < super::DNS_HEADER_SIZE {
+                // Too small to be a valid DNS message; discard the length
+                // prefix and try to resync.
                 self.rx_buf.drain(..2);
                 continue;
             }
@@ -106,7 +104,7 @@ impl DnsTcpHandler {
                 flow: self.flow.clone(),
                 dns_query: &query_data,
             };
-            self.backend.query(&request, self.receiver.sender());
+            backend.query(&request, self.receiver.sender());
             self.in_flight += 1;
         }
     }
@@ -171,6 +169,7 @@ impl DnsTcpHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// A test DNS backend that echoes the query back as the response.
     struct EchoBackend;
@@ -213,7 +212,7 @@ mod tests {
     #[test]
     fn single_query_response() {
         let backend = Arc::new(EchoBackend);
-        let mut handler = DnsTcpHandler::new(backend, test_flow());
+        let mut handler = DnsTcpHandler::new(test_flow());
 
         // 22-byte fake DNS query (> 12-byte header minimum)
         let query = vec![
@@ -222,7 +221,7 @@ mod tests {
         ];
         let msg = make_tcp_dns_message(&query);
 
-        handler.ingest(&[&msg]);
+        handler.ingest(&[&msg], backend.as_ref());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
@@ -235,7 +234,7 @@ mod tests {
     #[test]
     fn partial_message_buffering() {
         let backend = Arc::new(EchoBackend);
-        let mut handler = DnsTcpHandler::new(backend, test_flow());
+        let mut handler = DnsTcpHandler::new(test_flow());
 
         let query = vec![
             0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x66,
@@ -244,7 +243,7 @@ mod tests {
         let msg = make_tcp_dns_message(&query);
 
         // Feed just the length prefix
-        handler.ingest(&[&msg[..2]]);
+        handler.ingest(&[&msg[..2]], backend.as_ref());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
@@ -255,14 +254,14 @@ mod tests {
         );
 
         // Feed the rest
-        handler.ingest(&[&msg[2..]]);
+        handler.ingest(&[&msg[2..]], backend.as_ref());
         assert!(handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) > 0);
     }
 
     #[test]
     fn multiple_queries_in_one_write() {
         let backend = Arc::new(EchoBackend);
-        let mut handler = DnsTcpHandler::new(backend, test_flow());
+        let mut handler = DnsTcpHandler::new(test_flow());
 
         let q1 = vec![
             0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x61,
@@ -275,7 +274,7 @@ mod tests {
         let mut combined = make_tcp_dns_message(&q1);
         combined.extend(make_tcp_dns_message(&q2));
 
-        handler.ingest(&[&combined]);
+        handler.ingest(&[&combined], backend.as_ref());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
@@ -290,13 +289,13 @@ mod tests {
     #[test]
     fn should_close_after_fin_and_drain() {
         let backend = Arc::new(EchoBackend);
-        let mut handler = DnsTcpHandler::new(backend, test_flow());
+        let mut handler = DnsTcpHandler::new(test_flow());
 
         let query = vec![
             0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x78,
             0x78, 0x78,
         ];
-        handler.ingest(&[&make_tcp_dns_message(&query)]);
+        handler.ingest(&[&make_tcp_dns_message(&query)], backend.as_ref());
         handler.set_guest_fin();
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
