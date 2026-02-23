@@ -19,6 +19,20 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
+use openhcl_tdisp::GuestToHostCommand;
+use openhcl_tdisp::GuestToHostCommandExt;
+use openhcl_tdisp::GuestToHostResponse;
+use openhcl_tdisp::GuestToHostResponseExt;
+use openhcl_tdisp::TdispCommandResponseBind;
+use openhcl_tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
+use openhcl_tdisp::TdispCommandResponseGetTdiReport;
+use openhcl_tdisp::TdispCommandResponseStartTdi;
+use openhcl_tdisp::TdispCommandResponseUnbind;
+use openhcl_tdisp::TdispDeviceInterfaceInfo;
+use openhcl_tdisp::TdispGuestOperationErrorCode;
+use openhcl_tdisp::TdispGuestProtocolType;
+use openhcl_tdisp::TdispGuestUnbindReason;
+use openhcl_tdisp::TdispReportType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -29,18 +43,7 @@ use pci_core::spec::hwid::HardwareIds;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
-use tdisp::GuestToHostCommand;
-use tdisp::GuestToHostResponse;
-use tdisp::TdispCommandId;
-use tdisp::TdispCommandResponsePayload;
-use tdisp::TdispGuestOperationError;
-use tdisp::TdispGuestUnbindReason;
-use tdisp::TdispReportType;
-use tdisp::command::TdispCommandRequestGetTdiReport;
-use tdisp::command::TdispCommandRequestPayload;
-use tdisp::command::TdispCommandRequestUnbind;
 use tdisp::devicereport::TdiReportStruct;
-use tdisp::serialize::SerializePacket;
 use thiserror::Error;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
@@ -595,7 +598,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         &self,
         payload: GuestToHostCommand,
     ) -> Result<GuestToHostResponse, anyhow::Error> {
-        let serialized = payload.serialize_to_bytes();
+        let serialized = openhcl_tdisp::serialize_command(&payload);
 
         // Ensure that the length does not exceed the VMBUS maximum packet size.
         // This shouldn't be possible since the host should reject the command anyways,
@@ -608,6 +611,8 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ));
         }
 
+        // Make a mesh call to send the VMBUS packet to the host and await a response
+        // packet from the host.
         let res = self
             .dev
             .req
@@ -631,12 +636,13 @@ impl TdispVirtualDeviceInterface for VpciDevice {
                 anyhow::anyhow!("failed to send tdisp command")
             })?;
 
-        match res.result {
-            TdispGuestOperationError::Success => Ok(res),
+        match res.get_error_code() {
+            Some(TdispGuestOperationErrorCode::Success) => Ok(res),
             _ => {
                 let err_msg = format!(
                     "send_tdisp_command {:?} failed because host responded with an error: {:?}",
-                    payload.command_id, res.result
+                    payload.get_type_name(),
+                    res.result
                 );
 
                 tracing::error!(msg = err_msg);
@@ -645,57 +651,52 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         }
     }
 
-    async fn tdisp_get_device_interface_info(
-        &self,
-    ) -> anyhow::Result<tdisp::TdispDeviceInterfaceInfo> {
-        let res = self
-            .send_tdisp_command(GuestToHostCommand {
-                device_id: self.dev.id.slot.into_bits() as u64,
-                command_id: TdispCommandId::GET_DEVICE_INTERFACE_INFO,
-                payload: TdispCommandRequestPayload::None,
-            })
-            .await;
+    async fn tdisp_get_device_interface_info(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
+        // TDISP TODO: Configure the correct guest protocol type when TDX support is added.
+        let target_protocol_type = TdispGuestProtocolType::AmdSevTioV10;
 
-        match res {
-            Ok(resp) => match resp.payload {
-                TdispCommandResponsePayload::GetDeviceInterfaceInfo(info) => Ok(info),
-                _ => Err(anyhow::anyhow!("unexpected response payload")),
-            },
-            Err(e) => Err(e),
+        let res = self
+            .send_tdisp_command(openhcl_tdisp::make_get_device_interface_info_command(
+                self.dev.id.slot.into_bits() as u64,
+                target_protocol_type,
+            ))
+            .await?;
+
+        match res.get_response::<TdispCommandResponseGetDeviceInterfaceInfo>() {
+            Ok(info) => Ok(info.interface_info.unwrap()),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in get_device_interface_info: {err}"
+            )),
         }
     }
 
     async fn tdisp_bind_interface(&self) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(GuestToHostCommand {
-                device_id: self.dev.id.slot.into_bits() as u64,
-                command_id: TdispCommandId::BIND,
-                payload: TdispCommandRequestPayload::None,
-            })
-            .await;
-        match res {
-            Ok(resp) => match resp.payload {
-                TdispCommandResponsePayload::None => Ok(()),
-                _ => Err(anyhow::anyhow!("unexpected response payload")),
-            },
-            Err(e) => Err(e),
+            .send_tdisp_command(openhcl_tdisp::make_bind_command(
+                self.dev.id.slot.into_bits() as u64,
+            ))
+            .await?;
+
+        match res.get_response::<TdispCommandResponseBind>() {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in tdisp_bind_interface: {err}"
+            )),
         }
     }
 
     async fn tdisp_start_device(&self) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(GuestToHostCommand {
-                device_id: self.dev.id.slot.into_bits() as u64,
-                command_id: TdispCommandId::START_TDI,
-                payload: TdispCommandRequestPayload::None,
-            })
-            .await;
-        match res {
-            Ok(resp) => match resp.payload {
-                TdispCommandResponsePayload::None => Ok(()),
-                _ => Err(anyhow::anyhow!("unexpected response payload")),
-            },
-            Err(e) => Err(e),
+            .send_tdisp_command(openhcl_tdisp::make_start_tdi_command(
+                self.dev.id.slot.into_bits() as u64,
+            ))
+            .await?;
+
+        match res.get_response::<TdispCommandResponseStartTdi>() {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in tdisp_start_device: {err}"
+            )),
         }
     }
 
@@ -704,69 +705,55 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         report_type: &TdispReportType,
     ) -> anyhow::Result<Vec<u8>> {
         let res = self
-            .send_tdisp_command(GuestToHostCommand {
-                device_id: self.dev.id.slot.into_bits() as u64,
-                command_id: TdispCommandId::GET_TDI_REPORT,
-                payload: TdispCommandRequestPayload::GetTdiReport(
-                    TdispCommandRequestGetTdiReport {
-                        report_type: report_type.0,
-                    },
-                ),
-            })
-            .await;
+            .send_tdisp_command(openhcl_tdisp::make_get_tdi_report_command(
+                self.dev.id.slot.into_bits() as u64,
+                *report_type,
+            ))
+            .await?;
 
-        match res {
-            Ok(resp) => match resp.payload {
-                TdispCommandResponsePayload::GetTdiReport(resp) => Ok(resp.report_buffer),
-                _ => Err(anyhow::anyhow!("unexpected response payload")),
-            },
-            Err(e) => Err(e),
+        match res.get_response::<TdispCommandResponseGetTdiReport>() {
+            Ok(r) => Ok(r.report_buffer),
+            Err(err) => Err(anyhow::anyhow!(
+                "error response in tdisp_get_device_report: {err}"
+            )),
         }
     }
 
     async fn tdisp_get_tdi_report(&self) -> anyhow::Result<TdiReportStruct> {
-        let res = self
-            .tdisp_get_device_report(&TdispReportType::INTERFACE_REPORT)
-            .await;
+        let buffer = self
+            .tdisp_get_device_report(&TdispReportType::InterfaceReport)
+            .await
+            .context("failed to get TDI report")?;
 
-        let buffer = res.context("failed to get TDI report")?;
         tdisp::devicereport::deserialize_tdi_report(&buffer)
             .context("failed to deserialize TDI report from host")
     }
 
     async fn tdisp_get_tdi_device_id(&self) -> anyhow::Result<u64> {
-        let res = self
-            .tdisp_get_device_report(&TdispReportType::GUEST_DEVICE_ID)
-            .await;
-
-        let buffer = res.context("failed to get TDI report")?;
+        let buffer = self
+            .tdisp_get_device_report(&TdispReportType::GuestDeviceId)
+            .await
+            .context("failed to get TDI device ID")?;
 
         // Ensure it's a u64
         if buffer.len() != size_of::<u64>() {
             return Err(anyhow::anyhow!("unexpected buffer size for TDI device ID"));
         }
 
-        // Convert to u64
         Ok(u64::from_le_bytes(buffer.try_into().unwrap()))
     }
 
-    /// Request to unbind the device and return to the Unlocked state.
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(GuestToHostCommand {
-                device_id: self.dev.id.slot.into_bits() as u64,
-                command_id: TdispCommandId::UNBIND,
-                payload: TdispCommandRequestPayload::Unbind(TdispCommandRequestUnbind {
-                    unbind_reason: reason.0,
-                }),
-            })
-            .await;
-        match res {
-            Ok(resp) => match resp.payload {
-                TdispCommandResponsePayload::None => Ok(()),
-                _ => Err(anyhow::anyhow!("unexpected response payload")),
-            },
-            Err(e) => Err(e),
+            .send_tdisp_command(openhcl_tdisp::make_unbind_command(
+                self.dev.id.slot.into_bits() as u64,
+                reason,
+            ))
+            .await?;
+
+        match res.get_response::<TdispCommandResponseUnbind>() {
+            Ok(_) => Ok(()),
+            Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
         }
     }
 }
@@ -1214,9 +1201,8 @@ impl WorkerState {
                         .read(data.as_mut_slice())
                         .context("failed to read tdisp command data")?;
 
-                    let host_response =
-                        GuestToHostResponse::deserialize_from_bytes(data.as_slice())
-                            .context("failed to deserialize tdisp response");
+                    let host_response = openhcl_tdisp::deserialize_response(data.as_slice())
+                        .context("failed to deserialize tdisp response");
 
                     rpc.complete(host_response.map_err(mesh::error::RemoteError::new));
                 } else {
