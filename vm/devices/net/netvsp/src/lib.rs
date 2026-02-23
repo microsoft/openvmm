@@ -1524,14 +1524,6 @@ impl Nic {
                 saved_state::Primary::Version => vec![true],
                 saved_state::Primary::Init(_) => vec![true],
                 saved_state::Primary::Ready(ready) => {
-                    if ready.channels.len() as u16 > self.adapter.max_queues {
-                        // Should not happen since UMED capacity should not change.
-                        tracing::error!(
-                            saved_num_channels = ready.channels.len(),
-                            adapter_max_queues = self.adapter.max_queues,
-                            "saved state has more channels than the adapter supports",
-                        );
-                    }
                     ready.channels.iter().map(|x| x.is_some()).collect()
                 }
             };
