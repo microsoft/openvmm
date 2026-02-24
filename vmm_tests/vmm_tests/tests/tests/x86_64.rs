@@ -271,11 +271,12 @@ async fn vpci_relay_tdisp_device(
     Ok(())
 }
 
-/// Boot with a virtio-blk disk and verify the device appears in the guest.
+/// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
 #[openvmm_test(linux_direct_x64)]
 async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     use disk_backend_resources::LayeredDiskHandle;
     use disk_backend_resources::layer::RamDiskLayerHandle;
+    use openvmm_defs::config::VirtioBus;
     use virtio_resources::blk::VirtioBlkHandle;
 
     let disk_size: u64 = 8 * 1024 * 1024; // 8 MiB
@@ -284,35 +285,40 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     })
     .into_resource();
 
-    let virtio_blk_guid = guid::guid!("d1a2b3c4-e5f6-7890-abcd-ef1234567890");
     let (vm, agent) = config
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl0,
-                    instance_id: virtio_blk_guid,
-                    resource: VirtioPciDeviceHandle(
-                        VirtioBlkHandle {
-                            disk: disk_resource,
-                            read_only: false,
-                        }
-                        .into_resource(),
-                    )
+                c.virtio_devices.push((
+                    VirtioBus::Mmio,
+                    VirtioBlkHandle {
+                        disk: disk_resource,
+                        read_only: false,
+                    }
                     .into_resource(),
-                });
+                ));
+            })
+        })
+        .run()
+        .await?;
 
-    // Verify virtio-blk device appears as /dev/vda
-    let lsblk = cmd!(sh, "lsblk -d -n -o NAME,SIZE").read().await?;
-    tracing::info!(?lsblk, "Block devices");
-    assert!(
-        lsblk.lines().any(|l| l.starts_with("vda")),
-        "expected vda in lsblk output: {lsblk}"
+    let sh = agent.unix_shell();
+
+    // Verify virtio-blk device appears as /dev/vda via sysfs
+    let vda_size = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    let expected_sectors = disk_size / 512;
+    assert_eq!(
+        vda_sectors, expected_sectors,
+        "unexpected disk size in sectors"
     );
 
     // Verify we can write and read back data
     cmd!(
         sh,
-        "sh -c 'echo hello_virtio_blk | dd of=/dev/vda bs=512 count=1 conv=notrunc'"
+        "sh -c 'echo hello_virtio_blk | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
     )
     .read()
     .await

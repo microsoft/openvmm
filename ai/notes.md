@@ -373,3 +373,18 @@ The test kernel is ready for virtio-blk testing with no modifications needed.
 - `cargo check -p virtio_blk -p openvmm_entry -p petri -p vmm_tests --tests` — all clean
 - `cargo xtask fmt --fix` — all passes clean
 - `cargo doc -p virtio_blk --no-deps` — clean
+- `cargo nextest run -p vmm_tests -E 'test(virtio_blk_device)'` — **PASS**
+
+### Transport Notes (KVM Limitations)
+- **VPCI** (VMBus PCI) is NOT available under KVM — requires Hyper-V hypervisor support
+- **PCIe** doesn't work with linux_direct boot because:
+  - Default ECAM base (0x8_0000_0000) is above 4GB; kernel ignores it
+  - Even with ECAM in low MMIO gap, kernel rejects MMCONFIG not reserved in ACPI motherboard resources
+  - The `pci=nocrs` workaround also fails because `PCI: Fatal: No config space access function found`
+  - PCIe works with UEFI firmware guests (firmware initializes PCI properly)
+- **virtio-mmio** works with linux_direct boot on KVM
+  - `CONFIG_VIRTIO_MMIO=y` in test kernel
+  - Uses `VirtioBus::Mmio` with `config.virtio_devices` vec
+  - Devices appear as `/dev/vdX` in guest
+- For production/Hyper-V use: VPCI or PCIe transport should be used
+- Integration test uses virtio-mmio for compatibility with KVM test environment
