@@ -54,6 +54,7 @@ use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vpci_protocol as protocol;
+use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
 use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -603,11 +604,11 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         // Ensure that the length does not exceed the VMBUS maximum packet size.
         // This shouldn't be possible since the host should reject the command anyways,
         // but fail earlier for safety.
-        if serialized.len() > vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE {
+        if serialized.len() > MAX_VPCI_TDISP_COMMAND_SIZE {
             return Err(anyhow::anyhow!(
                 "serialized TDISP command exceeds VMBUS maximum packet size ({} > {})",
                 serialized.len(),
-                vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE
+                MAX_VPCI_TDISP_COMMAND_SIZE
             ));
         }
 
@@ -1192,6 +1193,14 @@ impl WorkerState {
                         .context("failed to read tdisp command header")?;
 
                     let data_len = header.data_length as usize;
+                    if data_len > MAX_VPCI_TDISP_COMMAND_SIZE {
+                        rpc.fail(anyhow::anyhow!(
+                            "Received TdispCommand data length exceeds maximum allowed: {} > {}",
+                            data_len,
+                            MAX_VPCI_TDISP_COMMAND_SIZE
+                        ));
+                        return Ok(());
+                    }
 
                     // Allocate a mutable vector with the correct size
                     let mut data: Vec<u8> = vec![0; data_len];
