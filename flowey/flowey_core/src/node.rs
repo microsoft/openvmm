@@ -3053,6 +3053,7 @@ macro_rules! flowey_request {
 macro_rules! shell_cmd {
     ($rt:expr, $cmd:literal) => {{
         let flowey_sh = &$rt.sh;
+        #[expect(clippy::disallowed_macros)]
         flowey_sh.wrap($crate::reexports::xshell::cmd!(flowey_sh.xshell(), $cmd))
     }};
 }
