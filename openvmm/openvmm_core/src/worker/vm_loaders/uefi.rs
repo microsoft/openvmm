@@ -39,7 +39,6 @@ pub struct UefiLoadSettings {
     pub uefi_console_mode: Option<UefiConsoleMode>,
     pub default_boot_always_attempt: bool,
     pub bios_guid: Guid,
-    pub azi_hsm_enabled: bool,
 }
 
 /// Loads the UEFI firmware.
@@ -118,8 +117,7 @@ pub fn load_uefi(
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
         )
-        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt)
-        .with_azi_hsm_enabled(load_settings.azi_hsm_enabled);
+        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {

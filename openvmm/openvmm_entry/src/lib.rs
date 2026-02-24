@@ -1089,7 +1089,6 @@ async fn vm_config_from_command_line(
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
             bios_guid,
-            azi_hsm_enabled: opt.azi_hsm_enabled,
         };
     } else {
         // Linux Direct
@@ -1260,7 +1259,6 @@ async fn vm_config_from_command_line(
                         }
                     },
                     hv_sint_enabled: false,
-                    azi_hsm_enabled: opt.azi_hsm_enabled,
                 }
                 .into_resource(),
             ),

@@ -3707,7 +3707,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_lifetime: _,
         management_vtl_features: _,
         hv_sint_enabled: _,
-        azi_hsm_enabled: _,
         battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 
