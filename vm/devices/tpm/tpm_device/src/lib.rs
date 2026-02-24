@@ -264,6 +264,7 @@ pub struct Tpm {
     mmio_region: Vec<(&'static str, RangeInclusive<u64>)>,
     allow_ak_cert_renewal: bool,
     handle_ak_cert_renewal: bool,
+    nvram_size: usize, // for inspect
 
     // For logging
     bios_guid: Guid,
@@ -441,6 +442,7 @@ impl Tpm {
             mmio_region,
             allow_ak_cert_renewal: false,
             handle_ak_cert_renewal: false,
+            nvram_size: 32768,
             bios_guid,
             ak_pub_hash: [0; SHA_256_OUTPUT_SIZE_BYTES],
 
@@ -519,6 +521,7 @@ impl Tpm {
                 // once the fix for reporting the NVRAM size correctly is
                 // everywhere.
                 recover::recover_blob(&mut blob);
+                self.nvram_size = blob.len();
                 if let Err(e) = self
                     .tpm_engine_helper
                     .tpm_engine
