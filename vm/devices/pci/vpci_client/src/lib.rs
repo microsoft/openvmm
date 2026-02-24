@@ -664,7 +664,9 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             .await?;
 
         match res.get_response::<TdispCommandResponseGetDeviceInterfaceInfo>() {
-            Ok(info) => Ok(info.interface_info.unwrap()),
+            Ok(info) => info.interface_info.ok_or_else(|| {
+                anyhow::anyhow!("missing interface_info after validation, this should never happen")
+            }),
             Err(err) => Err(anyhow::anyhow!(
                 "error response in get_device_interface_info: {err}"
             )),
