@@ -9497,7 +9497,6 @@ dependencies = [
 name = "vmgs"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "cfg-if",
  "crc32fast",
@@ -9518,6 +9517,7 @@ dependencies = [
  "tracing",
  "vmgs_format",
  "windows 0.62.0",
+ "windows-result 0.4.0",
  "zerocopy 0.8.27",
 ]
 
@@ -9590,6 +9590,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.16",
+ "tracing",
+ "tracing-subscriber",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "uefi_nvram_storage",

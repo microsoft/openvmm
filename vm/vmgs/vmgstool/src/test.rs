@@ -194,7 +194,7 @@ async fn vmgs_two_keys(disk: Disk, first_key: &[u8], second_key: &[u8]) -> Resul
 
     #[cfg(with_encryption)]
     {
-        eprintln!("Adding encryption key without removing old key");
+        tracing::info!("Adding encryption key without removing old key");
         vmgs.test_add_new_encryption_key(second_key, EncryptionAlgorithm::AES_GCM)
             .await?;
     }
@@ -212,7 +212,7 @@ async fn vmgs_file_copy_igvmfile(
 ) -> Result<(), Error> {
     let mut vmgs = vmgs_file_open(file_path, None::<PathBuf>, OpenMode::ReadWriteIgnore).await?;
 
-    eprintln!("Reading IGVM file from: {}", data_path.as_ref().display());
+    tracing::info!("Reading IGVM file from: {}", data_path.as_ref().display());
 
     let bytes = read_igvmfile(data_path.as_ref().to_path_buf(), resource_code).await?;
 
@@ -237,12 +237,9 @@ async fn read_igvmfile(dll_path: PathBuf, resource_code: ResourceCode) -> Result
     // Try to find the resource in the DLL
     let descriptor = resource_dll_parser::DllResourceDescriptor::new(b"VMFW", resource_code as u32);
     let (start, len) = resource_dll_parser::try_find_resource_from_dll(&file, &descriptor)
-        .map_err(|e| Error::IgvmFile(anyhow::anyhow!("Failed to parse DLL: {}", e)))?
-        .ok_or_else(|| {
-            Error::IgvmFile(anyhow::anyhow!(
-                "File is not a valid PE DLL or resource not found"
-            ))
-        })?;
+        .map_err(Error::IgvmFile)?
+        .ok_or_else(|| Error::IgvmFile(anyhow::anyhow!("File is not a valid PE DLL")))?;
+
     // Read the resource data
     let mut file = file;
     file.seek(SeekFrom::Start(start)).map_err(Error::DataFile)?;
@@ -250,8 +247,8 @@ async fn read_igvmfile(dll_path: PathBuf, resource_code: ResourceCode) -> Result
     let mut bytes = vec![0u8; len];
     file.read_exact(&mut bytes).map_err(Error::DataFile)?;
 
-    eprintln!("Successfully loaded IGVM file from DLL");
-    eprintln!("Read {} bytes", bytes.len());
+    tracing::info!("Successfully loaded IGVM file from DLL");
+    tracing::info!("Read {} bytes", bytes.len());
 
     Ok(bytes)
 }
