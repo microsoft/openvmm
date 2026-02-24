@@ -50,6 +50,58 @@ disk backend integration). The device will:
 - [x] **5.2 `cargo xtask fmt --fix` passes**
 - [x] **5.3 `cargo doc` passes**
 
+### Phase 6: Concurrent IO
+
+- [ ] **6.1 Replace sequential IO loop with concurrent dispatch**
+
+  **Problem**: The current `AsyncRun::run` loop awaits each request sequentially:
+  ```
+  loop { work = queue.next().await; process_request(...).await; }
+  ```
+  This means only one disk IO is ever in-flight at a time, which is a significant
+  performance bottleneck — especially for async backends or multi-queue setups.
+
+  **Approach** (modeled after NVMe's `io.rs`):
+  - Use `FuturesUnordered` (from `unicycle` crate, already used by nvme) to track in-flight IOs
+  - Replace the sequential loop with a `poll_fn` that simultaneously:
+    1. Polls the `VirtioQueue` stream for new descriptors (up to a max depth)
+    2. Polls `FuturesUnordered` for completed IOs
+  - When a new descriptor arrives: parse the header, spawn the IO future into `FuturesUnordered`
+  - When an IO completes: write status byte, call `work.complete(bytes_written)`
+  - Cap in-flight IOs at a configurable depth (e.g., 64) to avoid unbounded memory usage
+
+  **Key changes to `lib.rs`**:
+  - Add `unicycle` dependency to `Cargo.toml`
+  - Move `process_request` to return a `(VirtioQueueCallbackWork, u32)` tuple
+    (the completed work item + bytes_written), instead of calling `work.complete` inside
+  - Change `WorkerStats` counters to use `AtomicU64` or move stats tracking out of the
+    hot path (since `&mut stats` can't be shared across concurrent futures). Alternatively,
+    accumulate stats from completed IO results.
+  - The `WorkerTask::run` method becomes a `poll_fn` loop:
+    ```
+    loop {
+        poll_fn(|cx| {
+            // Try to dequeue new work if under max depth
+            while ios.len() < MAX_IO_DEPTH {
+                match queue.poll_next(cx) {
+                    Ready(Some(Ok(work))) => ios.push(process(work)),
+                    Ready(Some(Err(e))) => log error,
+                    _ => break,
+                }
+            }
+            // Poll for completed IOs
+            match ios.poll_next_unpin(cx) {
+                Ready(Some(result)) => return Ready(result),
+                _ => {}
+            }
+            Pending
+        }).await;
+        // handle completed IO: write status, complete descriptor, update stats
+    }
+    ```
+
+  **Files changed**: `vm/devices/virtio/virtio_blk/Cargo.toml`, `vm/devices/virtio/virtio_blk/src/lib.rs`
+
 ## Notes
 
 - See `ai/notes.md` for detailed codebase research and reference material
