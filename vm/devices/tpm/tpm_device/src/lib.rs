@@ -530,7 +530,6 @@ impl Tpm {
                 // once the fix for reporting the NVRAM size correctly is
                 // everywhere.
                 recover::recover_blob(&mut blob);
-                self.nvram_size = blob.len();
                 if let Err(e) = self
                     .tpm_engine_helper
                     .tpm_engine
@@ -1988,7 +1987,6 @@ mod save_restore {
                 }
             };
             self.requested_locality = requested_locality;
-
             self.tpm_engine_helper
                 .tpm_engine
                 .inner_mut()
