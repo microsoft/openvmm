@@ -123,7 +123,7 @@ pub fn deserialize_tdi_report(data: &[u8]) -> anyhow::Result<TdiReportStruct> {
     )
     .map_err(|e| anyhow::anyhow!("failed to deserialize TDI report mmio_interface_info: {e:?}"))?;
 
-    // [TDISP TODO] Parse the vendor specific info
+    // TDISP TODO: Parse the vendor specific info
     let _vendor_specific_info = read_mmio_elems.1.to_vec();
 
     Ok(TdiReportStruct {
