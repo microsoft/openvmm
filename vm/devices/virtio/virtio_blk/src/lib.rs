@@ -45,7 +45,7 @@ const MAX_IO_DEPTH: usize = 64;
 
 /// The virtio-blk device.
 #[derive(InspectMut)]
-pub struct Device {
+pub struct VirtioBlkDevice {
     disk: Disk,
     #[inspect(skip)]
     memory: GuestMemory,
@@ -54,19 +54,14 @@ pub struct Device {
     #[inspect(skip)]
     driver: VmTaskDriver,
     read_only: bool,
-    #[inspect(skip)]
     config: VirtioBlkConfig,
     worker: Option<Worker>,
 }
 
+#[derive(Inspect)]
 struct Worker {
+    #[inspect(flatten)]
     task: TaskControl<WorkerTask, WorkerState>,
-}
-
-impl Inspect for Worker {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.task.inspect(req);
-    }
 }
 
 #[derive(Inspect)]
@@ -103,10 +98,6 @@ impl InspectTask<WorkerState> for WorkerTask {
 /// Result of a completed IO operation, returned from the spawned future
 /// back to the main task for stats accumulation and descriptor completion.
 struct IoCompletion {
-    #[allow(dead_code)]
-    work: VirtioQueueCallbackWork,
-    #[allow(dead_code)]
-    bytes_written: u32,
     stat: IoStat,
 }
 
@@ -186,7 +177,7 @@ impl AsyncRun<WorkerState> for WorkerTask {
     }
 }
 
-impl Device {
+impl VirtioBlkDevice {
     /// Creates a new virtio-blk device backed by the given disk.
     pub fn new(
         driver_source: &VmTaskDriverSource,
@@ -249,8 +240,7 @@ impl Device {
             // Alignment in 512-byte sectors for discard ranges. Uses the
             // backend's optimal unmap granularity (same as SCSI Optimal
             // Unmap Granularity), converted to 512-byte units.
-            discard_sector_alignment: disk.optimal_unmap_sectors()
-                * (sector_size / 512),
+            discard_sector_alignment: disk.optimal_unmap_sectors() * (sector_size / 512),
             // Write zeroes fields (VIRTIO_BLK_F_WRITE_ZEROES) — not advertised.
             max_write_zeroes_sectors: 0,
             max_write_zeroes_seg: 0,
@@ -271,7 +261,7 @@ impl Device {
     }
 }
 
-impl VirtioDevice for Device {
+impl VirtioDevice for VirtioBlkDevice {
     fn traits(&self) -> DeviceTraits {
         let mut features = VIRTIO_BLK_F_SIZE_MAX
             | VIRTIO_BLK_F_SEG_MAX
@@ -402,11 +392,7 @@ async fn process_request(
                 );
             }
             work.complete(bytes_written + 1); // +1 for status byte
-            IoCompletion {
-                work,
-                bytes_written: bytes_written + 1,
-                stat,
-            }
+            IoCompletion { stat }
         }
         Err(status) => {
             if let Err(err) = write_status_byte(mem, &work, status) {
@@ -417,8 +403,6 @@ async fn process_request(
             }
             work.complete(1); // just the status byte
             IoCompletion {
-                work,
-                bytes_written: 1,
                 stat: IoStat::Error,
             }
         }
@@ -445,12 +429,11 @@ async fn process_request_inner(
 
     let header = VirtioBlkReqHeader::read_from_bytes(&header_bytes).unwrap();
     let request_type = header.request_type;
-    let sector = header.sector;
-    let sector_size = disk.sector_size() as u64;
+    let sector_shift = disk.sector_shift() - 9; // convert from disk sector size to 512-byte units
+    let disk_sector = header.sector << sector_shift;
 
     match request_type {
         VIRTIO_BLK_T_IN => {
-            let disk_sector = sector * 512 / sector_size;
             let bytes = do_io_per_descriptor(disk, mem, work, disk_sector, true).await?;
             Ok((bytes, IoStat::Read))
         }
@@ -458,7 +441,6 @@ async fn process_request_inner(
             if read_only {
                 return Err(VIRTIO_BLK_S_IOERR);
             }
-            let disk_sector = sector * 512 / sector_size;
             let bytes = do_io_per_descriptor(disk, mem, work, disk_sector, false).await?;
             Ok((bytes, IoStat::Write))
         }
@@ -486,11 +468,8 @@ async fn process_request_inner(
             // Per spec §5.2.6.1: "The unmap bit MUST be zero for discard commands."
             // Per spec §5.2.6.2: "the device MAY deallocate the specified range."
             // Discard is a hint — no data-content guarantee.
-            let mut all_bytes = vec![
-                0u8;
-                size_of::<VirtioBlkReqHeader>()
-                    + size_of::<VirtioBlkDiscardWriteZeroes>()
-            ];
+            let mut all_bytes =
+                [0u8; size_of::<VirtioBlkReqHeader>() + size_of::<VirtioBlkDiscardWriteZeroes>()];
             let read_len = work
                 .read(mem, &mut all_bytes)
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
@@ -503,11 +482,10 @@ async fn process_request_inner(
             .unwrap();
             // Spec §5.2.6.2: "the device MUST set the status byte to
             // VIRTIO_BLK_S_UNSUPP for discard commands if the unmap flag is set."
-            if seg.flags & VIRTIO_BLK_WRITE_ZEROES_FLAG_UNMAP != 0 {
+            if seg.flags != 0 {
                 return Err(VIRTIO_BLK_S_UNSUPP);
             }
-            let disk_sector = seg.sector * 512 / sector_size;
-            let disk_count = seg.num_sectors as u64 * 512 / sector_size;
+            let disk_count = (seg.num_sectors as u64) << sector_shift;
             disk.unmap(disk_sector, disk_count, false)
                 .await
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;

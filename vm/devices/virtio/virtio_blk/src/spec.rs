@@ -6,6 +6,7 @@
 //! Based on OASIS VIRTIO v1.2, Section 5.2.
 //! <https://docs.oasis-open.org/virtio/virtio/v1.2/cs01/virtio-v1.2-cs01.html>
 
+use inspect::Inspect;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -78,7 +79,7 @@ pub const VIRTIO_BLK_WRITE_ZEROES_FLAG_UNMAP: u32 = 1;
 /// All multi-byte fields are little-endian.
 /// Fields are only valid when their corresponding feature bit is negotiated.
 #[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct VirtioBlkConfig {
     /// Capacity in 512-byte sectors (always present).
     pub capacity: u64,
@@ -124,15 +125,17 @@ pub struct VirtioBlkConfig {
     /// backend's unmap behavior guarantees zeroes
     /// (valid if VIRTIO_BLK_F_WRITE_ZEROES).
     pub write_zeroes_may_unmap: u8,
+    #[inspect(skip)]
     pub unused1: [u8; 3],
     // Explicit padding to satisfy zerocopy IntoBytes alignment requirements
     // for the u64 `capacity` field. Not part of the virtio config space;
     // `device_register_length` excludes these bytes.
+    #[inspect(skip)]
     pub _padding: [u8; 4],
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct VirtioBlkGeometry {
     pub cylinders: u16,
     pub heads: u8,
@@ -140,7 +143,7 @@ pub struct VirtioBlkGeometry {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct VirtioBlkTopology {
     /// log2 of physical_block_size / logical_block_size
     pub physical_block_exp: u8,
@@ -154,7 +157,7 @@ pub struct VirtioBlkTopology {
 
 /// Request header, read from the first descriptor.
 #[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct VirtioBlkReqHeader {
     pub request_type: u32,
     pub reserved: u32,
@@ -163,7 +166,7 @@ pub struct VirtioBlkReqHeader {
 
 /// Discard/write zeroes data segment.
 #[repr(C)]
-#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
 pub struct VirtioBlkDiscardWriteZeroes {
     pub sector: u64,
     pub num_sectors: u32,
