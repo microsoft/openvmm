@@ -11,6 +11,7 @@ mod spec;
 use crate::spec::*;
 use disk_backend::Disk;
 use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
@@ -19,6 +20,9 @@ use inspect_counters::Counter;
 use pal_async::task::Spawn;
 use pal_async::wait::PolledWait;
 use scsi_buffers::RequestBuffers;
+use std::future::Future;
+use std::pin::Pin;
+use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::StopTask;
@@ -37,6 +41,7 @@ use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
 const PAGE_SIZE: u64 = 4096;
+const MAX_IO_DEPTH: usize = 64;
 
 /// The virtio-blk device.
 #[derive(InspectMut)]
@@ -95,41 +100,89 @@ impl InspectTask<WorkerState> for WorkerTask {
     }
 }
 
+/// Result of a completed IO operation, returned from the spawned future
+/// back to the main task for stats accumulation and descriptor completion.
+struct IoCompletion {
+    #[allow(dead_code)]
+    work: VirtioQueueCallbackWork,
+    #[allow(dead_code)]
+    bytes_written: u32,
+    stat: IoStat,
+}
+
+/// Which stat counter to increment for a completed IO.
+enum IoStat {
+    Read,
+    Write,
+    Flush,
+    Discard,
+    Error,
+    None,
+}
+
 impl AsyncRun<WorkerState> for WorkerTask {
     async fn run(
         &mut self,
         stop: &mut StopTask<'_>,
         state: &mut WorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        loop {
-            let work = stop
-                .until_stopped(async {
-                    self.queue
-                        .next()
-                        .await
-                        .expect("virtio queue stream never ends")
-                })
-                .await?;
+        let mut ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>> =
+            FuturesUnordered::new();
 
-            match work {
-                Ok(work) => {
-                    process_request(
-                        &state.disk,
-                        &state.memory,
-                        state.read_only,
-                        work,
-                        &mut state.stats,
-                    )
-                    .await;
+        stop.until_stopped(async {
+            loop {
+                enum Event {
+                    NewWork(Result<VirtioQueueCallbackWork, std::io::Error>),
+                    Completed(IoCompletion),
                 }
-                Err(err) => {
-                    tracelimit::error_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        "error reading from virtio queue"
-                    );
+
+                let event = std::future::poll_fn(|cx| {
+                    // Poll for completed IOs first to free up slots.
+                    if let Poll::Ready(Some(completion)) = ios.poll_next_unpin(cx) {
+                        return Poll::Ready(Event::Completed(completion));
+                    }
+                    // Accept new work if under the depth limit.
+                    if ios.len() < MAX_IO_DEPTH {
+                        if let Poll::Ready(item) = self.queue.poll_next_unpin(cx) {
+                            let item = item.expect("virtio queue stream never ends");
+                            return Poll::Ready(Event::NewWork(item));
+                        }
+                    }
+                    Poll::Pending
+                })
+                .await;
+
+                match event {
+                    Event::NewWork(Ok(work)) => {
+                        let disk = state.disk.clone();
+                        let mem = state.memory.clone();
+                        let read_only = state.read_only;
+                        ios.push(Box::pin(async move {
+                            process_request(&disk, &mem, read_only, work).await
+                        }));
+                    }
+                    Event::NewWork(Err(err)) => {
+                        tracelimit::error_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "error reading from virtio queue"
+                        );
+                    }
+                    Event::Completed(completion) => {
+                        match completion.stat {
+                            IoStat::Read => state.stats.read_ops.increment(),
+                            IoStat::Write => state.stats.write_ops.increment(),
+                            IoStat::Flush => state.stats.flush_ops.increment(),
+                            IoStat::Discard => state.stats.discard_ops.increment(),
+                            IoStat::Error => state.stats.errors.increment(),
+                            IoStat::None => {}
+                        }
+                        // work is completed inside process_request
+                        drop(completion);
+                    }
                 }
             }
-        }
+        })
+        .await
     }
 }
 
@@ -310,42 +363,47 @@ async fn process_request(
     mem: &GuestMemory,
     read_only: bool,
     mut work: VirtioQueueCallbackWork,
-    stats: &mut WorkerStats,
-) {
-    let status = match process_request_inner(disk, mem, read_only, &work, stats).await {
-        Ok(bytes_written) => {
+) -> IoCompletion {
+    match process_request_inner(disk, mem, read_only, &work).await {
+        Ok((bytes_written, stat)) => {
             if let Err(err) = write_status_byte(mem, &work, VIRTIO_BLK_S_OK) {
                 tracelimit::error_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "failed to write status byte"
                 );
             }
-            bytes_written + 1 // +1 for status byte
+            work.complete(bytes_written + 1); // +1 for status byte
+            IoCompletion {
+                work,
+                bytes_written: bytes_written + 1,
+                stat,
+            }
         }
         Err(status) => {
-            stats.errors.increment();
             if let Err(err) = write_status_byte(mem, &work, status) {
                 tracelimit::error_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     "failed to write error status byte"
                 );
             }
-            1 // just the status byte
+            work.complete(1); // just the status byte
+            IoCompletion {
+                work,
+                bytes_written: 1,
+                stat: IoStat::Error,
+            }
         }
-    };
-
-    work.complete(status);
+    }
 }
 
-/// Inner request processing. Returns Ok(data_bytes_written) on success,
+/// Inner request processing. Returns Ok((data_bytes_written, stat)) on success,
 /// or Err(status_code) on failure.
 async fn process_request_inner(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
     work: &VirtioQueueCallbackWork,
-    stats: &mut WorkerStats,
-) -> Result<u32, u8> {
+) -> Result<(u32, IoStat), u8> {
     // Read the request header from the first (readable) descriptor.
     let mut header_bytes = [0u8; size_of::<VirtioBlkReqHeader>()];
     let header_len = work
@@ -363,22 +421,21 @@ async fn process_request_inner(
 
     match request_type {
         VIRTIO_BLK_T_IN => {
-            stats.read_ops.increment();
             let disk_sector = sector * 512 / sector_size;
-            do_io_per_descriptor(disk, mem, work, disk_sector, true).await
+            let bytes = do_io_per_descriptor(disk, mem, work, disk_sector, true).await?;
+            Ok((bytes, IoStat::Read))
         }
         VIRTIO_BLK_T_OUT => {
             if read_only {
                 return Err(VIRTIO_BLK_S_IOERR);
             }
-            stats.write_ops.increment();
             let disk_sector = sector * 512 / sector_size;
-            do_io_per_descriptor(disk, mem, work, disk_sector, false).await
+            let bytes = do_io_per_descriptor(disk, mem, work, disk_sector, false).await?;
+            Ok((bytes, IoStat::Write))
         }
         VIRTIO_BLK_T_FLUSH => {
-            stats.flush_ops.increment();
             disk.sync_cache().await.map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok(0)
+            Ok((0, IoStat::Flush))
         }
         VIRTIO_BLK_T_GET_ID => {
             let id = if let Some(disk_id) = disk.disk_id() {
@@ -391,13 +448,12 @@ async fn process_request_inner(
                 *b"openvmm-virtio-blk\0\0"
             };
             work.write(mem, &id).map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok(VIRTIO_BLK_ID_BYTES as u32)
+            Ok((VIRTIO_BLK_ID_BYTES as u32, IoStat::None))
         }
         VIRTIO_BLK_T_DISCARD => {
             if read_only {
                 return Err(VIRTIO_BLK_S_IOERR);
             }
-            stats.discard_ops.increment();
             let mut all_bytes = vec![
                 0u8;
                 size_of::<VirtioBlkReqHeader>()
@@ -418,7 +474,7 @@ async fn process_request_inner(
             disk.unmap(disk_sector, disk_count, false)
                 .await
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok(0)
+            Ok((0, IoStat::Discard))
         }
         VIRTIO_BLK_T_WRITE_ZEROES => {
             if read_only {
@@ -444,7 +500,7 @@ async fn process_request_inner(
             disk.unmap(disk_sector, disk_count, false)
                 .await
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok(0)
+            Ok((0, IoStat::Discard))
         }
         _ => Err(VIRTIO_BLK_S_UNSUPP),
     }
