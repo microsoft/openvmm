@@ -26,6 +26,22 @@ pub mod i8042 {
     }
 }
 
+pub mod pit {
+    //! Resource definitions for the PIT (Programmable Interval Timer).
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to a PIT (Intel 8253/8254 Programmable Interval Timer) device.
+    #[derive(MeshPayload)]
+    pub struct PitDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for PitDeviceHandle {
+        const ID: &'static str = "pit";
+    }
+}
+
 pub mod battery {
     //! Resource definitions for the battery device
 

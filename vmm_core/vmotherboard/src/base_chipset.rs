@@ -208,7 +208,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_pic,
-            deps_generic_pit,
             deps_generic_psp: _, // not actually a device... yet
             deps_hyperv_firmware_pcat,
             deps_hyperv_firmware_uefi,
@@ -343,16 +342,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                 .arc_mutex_device("piix4-usb-uhci-stub")
                 .on_pci_bus(attached_to)
                 .add(|_| chipset_legacy::piix4_uhci::Piix4UsbUhciStub::new())?;
-        }
-
-        if let Some(options::dev::GenericPitDeps {}) = deps_generic_pit {
-            // hard-coded IRQ lines, as per x86 spec
-            builder.arc_mutex_device("pit").add(|services| {
-                pit::PitDevice::new(
-                    services.new_line(IRQ_LINE_SET, "timer0", 2),
-                    services.register_vmtime().access("pit"),
-                )
-            })?;
         }
 
         let _ = dma;
@@ -1125,7 +1114,6 @@ pub mod options {
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
             generic_pic:                 dev::GenericPicDeps,
-            generic_pit:                 dev::GenericPitDeps,
             generic_psp:                 dev::GenericPspDeps,
 
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
@@ -1298,9 +1286,6 @@ pub mod options {
             /// Interface to create GPA alias ranges.
             pub adjust_gpa_range: Box<dyn chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange>,
         }
-
-        /// Generic Intel 8253/8254 Programmable Interval Timer (PIT)
-        pub struct GenericPitDeps;
 
         feature_gated! {
             feature = "dev_hyperv_vga";
