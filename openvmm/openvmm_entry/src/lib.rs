@@ -1292,6 +1292,7 @@ async fn vm_config_from_command_line(
                 device: TpmDeviceHandle {
                     ppi_store,
                     nvram_store,
+                    nvram_size: None,
                     refresh_tpm_seeds: false,
                     ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                     register_layout,
