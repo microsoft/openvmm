@@ -246,8 +246,11 @@ impl Device {
             // u32::MAX × 512 bytes ≈ 2 TiB per segment; no practical limit.
             max_discard_sectors: u32::MAX,
             max_discard_seg: 1,
-            // Alignment in 512-byte sectors; matches logical sector size.
-            discard_sector_alignment: sector_size / 512,
+            // Alignment in 512-byte sectors for discard ranges. Uses the
+            // backend's optimal unmap granularity (same as SCSI Optimal
+            // Unmap Granularity), converted to 512-byte units.
+            discard_sector_alignment: disk.optimal_unmap_sectors()
+                * (sector_size / 512),
             // Write zeroes fields (VIRTIO_BLK_F_WRITE_ZEROES) — not advertised.
             max_write_zeroes_sectors: 0,
             max_write_zeroes_seg: 0,
