@@ -351,8 +351,8 @@ The test kernel is ready for virtio-blk testing with no modifications needed.
 
 ### Files Created
 - `vm/devices/virtio/virtio_blk/Cargo.toml` — crate manifest
-- `vm/devices/virtio/virtio_blk/src/lib.rs` — VirtioDevice trait impl, worker, request processing (~550 lines)
-- `vm/devices/virtio/virtio_blk/src/spec.rs` — virtio-blk spec constants, config struct, request types (~123 lines)
+- `vm/devices/virtio/virtio_blk/src/lib.rs` — VirtioDevice trait impl, worker, request processing (~640 lines)
+- `vm/devices/virtio/virtio_blk/src/spec.rs` — virtio-blk spec constants, config struct, request types (~170 lines)
 - `vm/devices/virtio/virtio_blk/src/resolver.rs` — resource resolver (~55 lines)
 
 ### Files Modified
@@ -388,3 +388,35 @@ The test kernel is ready for virtio-blk testing with no modifications needed.
   - Devices appear as `/dev/vdX` in guest
 - For production/Hyper-V use: VPCI or PCIe transport should be used
 - Integration test uses virtio-mmio for compatibility with KVM test environment
+
+## Config Space Documentation (Spec §5.2.4)
+
+All config fields documented in spec.rs with VIRTIO v1.2 references. Key design decisions:
+
+- **capacity**: `sector_count * (sector_size / 512)` — always in 512-byte units per spec §5.2.4
+- **size_max** (4 MiB): Maximum bytes in a single descriptor. Bounds individual DMA mappings. Matches cloud-hypervisor/QEMU conventions.
+- **seg_max** (128): Maximum data descriptors per request. 128 × 4 MiB = 512 MiB max per request. Matches QEMU.
+- **blk_size**: Disk's native logical sector size (spec §5.2.5 step 2). Doesn't change protocol units.
+- **topology.physical_block_exp**: log2(physical/logical) sector size ratio (spec §5.2.5 step 4).
+- **topology.min_io_size** (1): No minimum I/O constraint. Spec says "suggested minimum I/O size in blocks."
+- **topology.opt_io_size** (0): No optimal I/O hint. 0 means "no preference."
+- **writeback** (1): Indicates writeback cache; driver should use FLUSH. We don't negotiate CONFIG_WCE.
+- **max_discard_sectors** (u32::MAX): Effectively unlimited per-segment discard range.
+- **discard_sector_alignment**: Matches logical sector size in 512-byte units.
+- **max_write_zeroes_sectors** (u32::MAX): Effectively unlimited per-segment write zeroes range.
+- **write_zeroes_may_unmap**: Set to 1 ONLY if `unmap_behavior() == Zeroes` (spec §5.2.6.2: "The device SHOULD clear write_zeroes_may_unmap if a write zeroes request cannot result in deallocating sectors.")
+
+## Discard/Write Zeroes Fix
+
+### Bug (fixed)
+Previously, both DISCARD and WRITE_ZEROES called `disk.unmap()`. This was incorrect for WRITE_ZEROES because:
+- **Spec §5.2.6.2**: "After a write zeroes command is completed, reads of the specified ranges of sectors MUST return zeroes."
+- `disk.unmap()` with `UnmapBehavior::Unspecified` does NOT guarantee zeroes.
+
+### Current behavior (correct)
+- **DISCARD** (`VIRTIO_BLK_T_DISCARD`): Calls `disk.unmap()`. Correct — spec says "the device MAY deallocate," no data guarantee. Also validates that `flags.unmap` bit is zero (spec §5.2.6.2: "MUST set status to UNSUPP for discard commands if the unmap flag is set").
+- **WRITE_ZEROES** (`VIRTIO_BLK_T_WRITE_ZEROES`):
+  1. Checks `flags.unmap` bit (spec §5.2.6): if set AND `unmap_behavior() == Zeroes`, uses fast `disk.unmap()` path.
+  2. Otherwise, writes actual zeroes via `write_zeroes()` helper using a 1 MiB zero-filled bounce buffer with chunked writes.
+  3. Reports `IoStat::WriteZeroes` (separate counter from Discard).
+- **write_zeroes_may_unmap** config: Only set to 1 when `unmap_behavior() == Zeroes`.
