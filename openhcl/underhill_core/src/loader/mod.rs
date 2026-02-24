@@ -659,7 +659,6 @@ pub fn write_uefi_config(
 
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
         flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
-        flags.set_azi_hsm_enabled(platform_config.general.azi_hsm_enabled);
 
         // Some settings do not depend on host config
 

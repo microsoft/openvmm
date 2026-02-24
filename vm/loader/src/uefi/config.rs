@@ -322,10 +322,8 @@ pub struct Flags {
     pub dhcp6_link_layer_address: bool,
     pub cxl_memory_enabled: bool,
     pub mtrrs_initialized_at_load: bool,
-    pub reserved: bool,
-    pub azi_hsm_enabled: bool,
 
-    #[bits(33)]
+    #[bits(35)]
     _reserved: u64,
 }
 
