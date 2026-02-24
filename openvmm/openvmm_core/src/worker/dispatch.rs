@@ -162,6 +162,7 @@ pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
 
 impl Manifest {
     fn from_config(config: Config) -> Self {
+        let with_pit = config.chipset_devices.iter().any(|d| d.name == "pit");
         Self {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
@@ -174,6 +175,7 @@ impl Manifest {
             memory: config.memory,
             processor_topology: config.processor_topology,
             chipset: config.chipset,
+            with_pit,
             #[cfg(windows)]
             kernel_vmnics: config.kernel_vmnics,
             input: config.input,
@@ -221,6 +223,8 @@ pub struct Manifest {
     processor_topology: ProcessorTopologyConfig,
     hypervisor: HypervisorConfig,
     chipset: BaseChipsetManifest,
+    /// Whether a PIT device is present (used for ACPI table generation).
+    with_pit: bool,
     #[cfg(windows)]
     kernel_vmnics: Vec<openvmm_defs::config::KernelVmNicConfig>,
     input: mesh::Receiver<InputData>,
@@ -560,6 +564,7 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    with_pit: bool,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1224,7 +1229,7 @@ impl InitializedVm {
                             pcie_host_bridges: &Vec::new(),
                             with_ioapic: cfg.chipset.with_generic_ioapic,
                             with_pic: cfg.chipset.with_generic_pic,
-                            with_pit: cfg.chipset.with_generic_pit,
+                            with_pit: cfg.with_pit,
                             with_psp: cfg.chipset.with_generic_psp,
                             pm_base: PM_BASE,
                             acpi_irq: SYSTEM_IRQ_ACPI,
@@ -1544,7 +1549,6 @@ impl InitializedVm {
 
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
 
-        let deps_generic_pit = (cfg.chipset.with_generic_pit).then_some(dev::GenericPitDeps {});
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
         let deps_hyperv_framebuffer =
@@ -1630,7 +1634,6 @@ impl InitializedVm {
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_pic,
-                deps_generic_pit,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
@@ -2297,6 +2300,7 @@ impl InitializedVm {
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
                 chipset_cfg: cfg.chipset,
+                with_pit: cfg.with_pit,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_count,
@@ -2343,7 +2347,7 @@ impl LoadedVmInner {
             with_ioapic: self.chipset_cfg.with_generic_ioapic,
             with_psp: self.chipset_cfg.with_generic_psp,
             with_pic: self.chipset_cfg.with_generic_pic,
-            with_pit: self.chipset_cfg.with_generic_pit,
+            with_pit: self.with_pit,
             pm_base: PM_BASE,
             acpi_irq: SYSTEM_IRQ_ACPI,
         };
@@ -2925,6 +2929,7 @@ impl LoadedVm {
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
+            with_pit: self.inner.with_pit,
             vmbus: None,      // TODO
             vtl2_vmbus: None, // TODO
             hypervisor: self.inner.hypervisor_cfg,
