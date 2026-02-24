@@ -1399,7 +1399,7 @@ async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
             .provisioning_reason()
             .unwrap_or(VmgsProvisioningReason::Unknown),
         tpm_version: tpm_protocol::TPM_DEFAULT_VERSION.to_string(),
-        tpm_nvram_size: tpm_device::TPM_DEFAULT_SIZE,
+        tpm_nvram_size: tpm_device::DEFAULT_VTPM_SIZE,
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
             "0x{:x}",
