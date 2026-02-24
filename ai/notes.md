@@ -292,6 +292,24 @@ Need to add `VirtioBlk` variant.
 **Petri disk helper** `petri_disk_to_openvmm()` converts petri `Disk` enum to `Resource<DiskHandleKind>`.
 This already works for any disk type; we just need to wire it into the virtio-blk handle.
 
+## Linux Test Kernel Config (virtio-related)
+
+Extracted from `/home/john/src/openvmm/.packages/underhill-deps-private/x64/vmlinux` (IKCONFIG):
+
+```
+CONFIG_VIRTIO_BLK=y           # ✅ Built-in (not module)
+CONFIG_VIRTIO_PCI=y           # ✅ PCI transport built-in
+CONFIG_VIRTIO_PCI_LIB=y
+CONFIG_VIRTIO_PCI_LEGACY=y
+CONFIG_VIRTIO_PCI_LIB_LEGACY=y
+CONFIG_BLK_DEV_NVME is not set  # NVMe is NOT enabled
+CONFIG_BLK_DEV_SD=y           # SCSI disk built-in
+CONFIG_BLK_DEV_SR=y           # SCSI CD-ROM built-in
+```
+
+Virtio-blk devices will appear as `/dev/vdX` in the guest (vda, vdb, etc.).
+The test kernel is ready for virtio-blk testing with no modifications needed.
+
 ## Design Decisions
 
 1. **Use `VirtioDevice` directly** (like virtio_net), not `LegacyVirtioDevice`.
