@@ -347,6 +347,101 @@ The test kernel is ready for virtio-blk testing with no modifications needed.
 - `petri/src/vm/openvmm/construct.rs` — handle VirtioBlk in config construction
 - `vmm_tests/vmm_tests/tests/tests/x86_64/storage.rs` — add virtio-blk tests
 
+## Disable / IO Lifecycle Investigation
+
+### The Problem
+
+`VirtioDevice::disable()` is sync (`fn disable(&mut self)`). All current implementations
+that have async cleanup (virtio_blk, virtio_pmem, virtiofs, LegacyWrapper) use `.detach()`
+to fire-and-forget the cleanup. This means `disable()` returns before in-flight IOs finish,
+and the guest can observe the device as reset while DMA is still in progress.
+
+This is NOT a transport-layer bug. The transport write handlers hold `&mut self`, so the
+guest cannot read `device_status` until the entire handler returns. The ordering of
+`device_status = 0` vs `disable()` within the handler is irrelevant from the guest's
+perspective. The bug is at the device level: `.detach()` returns immediately.
+
+### Call Sites Analysis
+
+All `disable()` call sites:
+
+| Call site | Location | Context |
+|---|---|---|
+| PCI status=0 write | `pci.rs` line ~408 | Inside `write_bar_u32()` → `mmio_write()` — sync, returns `IoResult` |
+| MMIO status=0 write | `mmio.rs` line ~362 | Inside `write_u32()` → `mmio_write()` — sync, returns `IoResult` |
+| PCI Drop | `pci.rs` line ~564 | `impl Drop for VirtioPciDevice` — sync, cannot await |
+| MMIO Drop | `mmio.rs` line ~144 | `impl Drop for VirtioMmioDevice` — sync, cannot await |
+| LegacyWrapper Drop | `common.rs` line ~603 | `impl Drop for LegacyWrapper<T>` — sync, cannot await |
+
+### IoResult::Defer Mechanism
+
+The chipset device framework already supports deferred IO completion:
+- `chipset_device::io::IoResult::Defer(DeferredToken)` — return from sync handler, complete later
+- `chipset_device::io::deferred::defer_write()` → `(DeferredWrite, DeferredToken)` — for writes
+- `DeferredWrite::complete()` — signals the IO is done
+- `DeferredToken::poll_write()` — the framework polls for completion
+
+This is defined in `vm/chipset_device/src/io/deferred.rs` with doc examples.
+
+### ChangeDeviceState::stop() Is Async
+
+The transport's `ChangeDeviceState::stop()` IS async (`async fn stop(&mut self)`).
+Currently both PCI and MMIO transports have empty `stop()` impls. This could be
+leveraged if the transport needs to wait for device teardown.
+
+### VirtioDevice Implementors
+
+| Device | Crate | disable() behavior |
+|---|---|---|
+| VirtioBlkDevice | virtio_blk | `.detach()` — spawns task to stop worker |
+| Device (net) | virtio_net | Sends `CoordinatorMessage::Disable` on channel (no await) |
+| Device (pmem) | virtio_pmem | `.detach()` — spawns task to stop worker |
+| VirtioFsDevice | virtiofs | `.detach()` — spawns task to stop workers |
+| LegacyWrapper<T> | virtio/common.rs | `.detach()` — stops workers + waits for outstanding descriptors |
+
+LegacyVirtioDevice implementors (wrapped by LegacyWrapper): virtio_serial, virtio_p9, TestDevice.
+
+### Approach Options
+
+**Approach A: Make `VirtioDevice::disable()` return a future**
+
+Change the trait to:
+```rust
+fn disable(&mut self) -> impl Send + Future<Output = ()>;
+```
+
+Transport write handlers would use `IoResult::Defer` + `DeferredWrite` to defer the
+guest's status write until the future completes. The transport spawns the disable future
+and wires up `DeferredWrite::complete()` as the callback.
+
+Impact: VirtioDevice trait change, all 4 implementors, LegacyWrapper, both transports.
+`Drop` impls still need `.detach()` (Drop can never be async) but Drop means VMM shutdown
+so fire-and-forget is acceptable.
+
+**Approach B: Keep `disable()` sync, add async completion callback**
+
+`disable()` stays sync — kicks off shutdown. Transport adds a pending-disable state tracked
+via `DeferredWrite`. Device signals completion through a channel or shared state. Transport
+completes the deferred write when signaled.
+
+Smaller trait change, but requires plumbing a completion mechanism. Neither PCI nor MMIO
+transport currently has a `poll_device` loop, so completion signaling would need a new
+mechanism (e.g., storing a `DeferredWrite` that gets completed by the spawned task).
+
+### VIRTIO Spec Reference (v1.2)
+
+- §4.1.4.3.1 (Device Requirements): "The device MUST reset when 0 is written to device_status,
+  and present a 0 in device_status once that is done."
+- §4.1.4.3.2 (Driver Requirements): "After writing 0 to device_status, the driver MUST wait
+  for a read of device_status to return 0 before reinitializing the device."
+- §2.4.2: "The driver SHOULD consider a driver-initiated reset complete when it reads device
+  status as 0."
+- Linux driver `vp_reset()` writes 0 then polls until status reads back 0.
+
+Since the transport holds `&mut self` during the write handler, the guest cannot observe
+status=0 until the handler returns. So the spec is satisfied as long as disable() completes
+all DMA before the handler returns (or uses IoResult::Defer to extend the critical section).
+
 ## Implementation Summary
 
 ### Files Created
