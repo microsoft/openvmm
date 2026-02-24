@@ -85,7 +85,6 @@ struct WorkerStats {
     write_ops: Counter,
     flush_ops: Counter,
     discard_ops: Counter,
-    write_zeroes_ops: Counter,
     errors: Counter,
 }
 
@@ -117,7 +116,6 @@ enum IoStat {
     Write,
     Flush,
     Discard,
-    WriteZeroes,
     Error,
     None,
 }
@@ -175,7 +173,6 @@ impl AsyncRun<WorkerState> for WorkerTask {
                             IoStat::Write => state.stats.write_ops.increment(),
                             IoStat::Flush => state.stats.flush_ops.increment(),
                             IoStat::Discard => state.stats.discard_ops.increment(),
-                            IoStat::WriteZeroes => state.stats.write_zeroes_ops.increment(),
                             IoStat::Error => state.stats.errors.increment(),
                             IoStat::None => {}
                         }
@@ -211,7 +208,6 @@ impl Device {
         //
         // `capacity` is always present. Other fields are gated by feature bits
         // we advertise in `traits()`.
-        let unmap_zeroes = disk.unmap_behavior() == disk_backend::UnmapBehavior::Zeroes;
         let config = VirtioBlkConfig {
             // Capacity in 512-byte sectors (spec §5.2.4). The protocol always
             // uses 512-byte units regardless of the disk's native sector size.
@@ -252,13 +248,10 @@ impl Device {
             max_discard_seg: 1,
             // Alignment in 512-byte sectors; matches logical sector size.
             discard_sector_alignment: sector_size / 512,
-            // Write zeroes fields (VIRTIO_BLK_F_WRITE_ZEROES, spec §5.2.4).
-            max_write_zeroes_sectors: u32::MAX,
-            max_write_zeroes_seg: 1,
-            // Per spec §5.2.6.2: "The device SHOULD clear write_zeroes_may_unmap
-            // if a write zeroes request cannot result in deallocating sectors."
-            // Only set if the backend guarantees zeroes on unmap.
-            write_zeroes_may_unmap: u8::from(unmap_zeroes),
+            // Write zeroes fields (VIRTIO_BLK_F_WRITE_ZEROES) — not advertised.
+            max_write_zeroes_sectors: 0,
+            max_write_zeroes_seg: 0,
+            write_zeroes_may_unmap: 0,
             unused1: [0; 3],
             _padding: [0; 4],
         };
@@ -287,7 +280,10 @@ impl VirtioDevice for Device {
             features |= VIRTIO_BLK_F_RO;
         }
         if self.disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored {
-            features |= VIRTIO_BLK_F_DISCARD | VIRTIO_BLK_F_WRITE_ZEROES;
+            features |= VIRTIO_BLK_F_DISCARD;
+            // FUTURE: investigate adding VIRTIO_BLK_F_WRITE_ZEROES support
+            // by adding an explicit write_zeroes operation to the DiskIo
+            // backend trait, rather than emulating it with bounce-buffer writes.
         }
 
         DeviceTraits {
@@ -514,50 +510,6 @@ async fn process_request_inner(
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
             Ok((0, IoStat::Discard))
         }
-        VIRTIO_BLK_T_WRITE_ZEROES => {
-            if read_only {
-                return Err(VIRTIO_BLK_S_IOERR);
-            }
-            // Per spec §5.2.6.2: "After a write zeroes command is completed,
-            // reads of the specified ranges of sectors MUST return zeroes."
-            let mut all_bytes = vec![
-                0u8;
-                size_of::<VirtioBlkReqHeader>()
-                    + size_of::<VirtioBlkDiscardWriteZeroes>()
-            ];
-            let read_len = work
-                .read(mem, &mut all_bytes)
-                .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            if read_len < all_bytes.len() {
-                return Err(VIRTIO_BLK_S_IOERR);
-            }
-            let seg = VirtioBlkDiscardWriteZeroes::read_from_bytes(
-                &all_bytes[size_of::<VirtioBlkReqHeader>()..],
-            )
-            .unwrap();
-            let disk_sector = seg.sector * 512 / sector_size;
-            let disk_count = seg.num_sectors as u64 * 512 / sector_size;
-
-            // Per spec §5.2.6.2: "if the unmap is set, the device MAY
-            // deallocate the specified range [...] as if the discard command
-            // had been sent." We can only do this if the backend guarantees
-            // unmapped sectors read back as zeroes.
-            let unmap_hint = seg.flags & VIRTIO_BLK_WRITE_ZEROES_FLAG_UNMAP != 0;
-            let unmap_zeroes = disk.unmap_behavior() == disk_backend::UnmapBehavior::Zeroes;
-
-            if unmap_hint && unmap_zeroes {
-                // Backend guarantees zeroes on unmap — use the fast path.
-                disk.unmap(disk_sector, disk_count, false)
-                    .await
-                    .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            } else {
-                // Must write actual zeroes to satisfy the spec guarantee.
-                write_zeroes(disk, disk_sector, disk_count)
-                    .await
-                    .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            }
-            Ok((0, IoStat::WriteZeroes))
-        }
         _ => Err(VIRTIO_BLK_S_UNSUPP),
     }
 }
@@ -658,39 +610,4 @@ fn write_status_byte(
         return Err(virtio::VirtioWriteError::NotAllWritten(1));
     }
     work.write_at_offset(writable_len - 1, mem, &[status])
-}
-
-/// Write zeroes to the disk by issuing write_vectored calls with a
-/// zero-filled bounce buffer. Processes in chunks to bound memory use.
-async fn write_zeroes(
-    disk: &Disk,
-    start_sector: u64,
-    sector_count: u64,
-) -> Result<(), disk_backend::DiskError> {
-    let sector_size = disk.sector_size() as u64;
-    // 1 MiB chunk to bound allocation while keeping reasonable throughput.
-    let chunk_bytes: u64 = 1 << 20;
-    let chunk_sectors = chunk_bytes / sector_size;
-
-    let zero_mem = GuestMemory::allocate(chunk_bytes as usize);
-    let mut remaining = sector_count;
-    let mut sector = start_sector;
-
-    while remaining > 0 {
-        let n = remaining.min(chunk_sectors);
-        let byte_len = (n * sector_size) as usize;
-        let gpns: Vec<u64> = (0..byte_len as u64)
-            .step_by(PAGE_SIZE as usize)
-            .map(|o| o / PAGE_SIZE)
-            .collect();
-        let range = PagedRange::new(0, byte_len, &gpns).ok_or(disk_backend::DiskError::Io(
-            std::io::Error::other("bad range"),
-        ))?;
-        let buffers = RequestBuffers::new(&zero_mem, range, false);
-        disk.write_vectored(&buffers, sector, false).await?;
-        sector += n;
-        remaining -= n;
-    }
-
-    Ok(())
 }

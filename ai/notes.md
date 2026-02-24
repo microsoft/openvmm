@@ -406,17 +406,13 @@ All config fields documented in spec.rs with VIRTIO v1.2 references. Key design 
 - **max_write_zeroes_sectors** (u32::MAX): Effectively unlimited per-segment write zeroes range.
 - **write_zeroes_may_unmap**: Set to 1 ONLY if `unmap_behavior() == Zeroes` (spec §5.2.6.2: "The device SHOULD clear write_zeroes_may_unmap if a write zeroes request cannot result in deallocating sectors.")
 
-## Discard/Write Zeroes Fix
+## Discard/Write Zeroes
 
-### Bug (fixed)
-Previously, both DISCARD and WRITE_ZEROES called `disk.unmap()`. This was incorrect for WRITE_ZEROES because:
-- **Spec §5.2.6.2**: "After a write zeroes command is completed, reads of the specified ranges of sectors MUST return zeroes."
-- `disk.unmap()` with `UnmapBehavior::Unspecified` does NOT guarantee zeroes.
+### DISCARD (supported)
+- Calls `disk.unmap()` — spec says "the device MAY deallocate," no data guarantee
+- Validates `flags.unmap` bit is zero (spec §5.2.6.2: "MUST set status to UNSUPP for discard commands if the unmap flag is set")
 
-### Current behavior (correct)
-- **DISCARD** (`VIRTIO_BLK_T_DISCARD`): Calls `disk.unmap()`. Correct — spec says "the device MAY deallocate," no data guarantee. Also validates that `flags.unmap` bit is zero (spec §5.2.6.2: "MUST set status to UNSUPP for discard commands if the unmap flag is set").
-- **WRITE_ZEROES** (`VIRTIO_BLK_T_WRITE_ZEROES`):
-  1. Checks `flags.unmap` bit (spec §5.2.6): if set AND `unmap_behavior() == Zeroes`, uses fast `disk.unmap()` path.
-  2. Otherwise, writes actual zeroes via `write_zeroes()` helper using a 1 MiB zero-filled bounce buffer with chunked writes.
-  3. Reports `IoStat::WriteZeroes` (separate counter from Discard).
-- **write_zeroes_may_unmap** config: Only set to 1 when `unmap_behavior() == Zeroes`.
+### WRITE_ZEROES (not supported)
+- Feature `VIRTIO_BLK_F_WRITE_ZEROES` is NOT advertised
+- Removed because correctly implementing write_zeroes requires guaranteeing that subsequent reads return zeroes (spec §5.2.6.2), but the `disk_backend::Disk` trait has no `write_zeroes` operation — only `unmap()` (which may not guarantee zeroes) and `write_vectored()` (which would require expensive bounce-buffer emulation)
+- FUTURE: add explicit `write_zeroes` support to the DiskIo backend trait, then re-enable this feature
