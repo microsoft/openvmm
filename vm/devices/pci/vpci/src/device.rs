@@ -1345,6 +1345,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use tdisp::TdispHostStateMachine;
     use test_with_tracing::test;
     use thiserror::Error;
     use vmbus_async::queue::IncomingPacket;
@@ -1797,14 +1798,14 @@ mod tests {
         assert_eq!(value, 0x20);
     }
 
-    #[async_test]
-    async fn verify_simple_device_registers(driver: DefaultDriver) {
-        let msi_controller = TestVpciInterruptController::new();
-
-        struct TestDevice(ConfigSpaceType0Emulator);
-        impl TestDevice {
-            fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
-                Self(ConfigSpaceType0Emulator::new(
+    struct TestDevice {
+        config_space: ConfigSpaceType0Emulator,
+        tdisp_interface: TdispHostStateMachine,
+    }
+    impl TestDevice {
+        fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
+            Self {
+                config_space: ConfigSpaceType0Emulator::new(
                     HardwareIds {
                         vendor_id: 0x123,
                         device_id: 0x789,
@@ -1825,90 +1826,100 @@ mod tests {
                             0x2000,
                             BarMemoryKind::Intercept(register_mmio.new_io_region("bar2", 0x2000)),
                         ),
-                ))
-            }
-
-            fn read_bar_u32(&self, bar: u8, offset: u16) -> u32 {
-                if bar == 0 && offset == 0 {
-                    1
-                } else if bar == 0 && offset == 4 {
-                    2
-                } else if bar == 2 && offset == 0 {
-                    3
-                } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
-                    4
-                } else {
-                    panic!("Unexpected address {}/{:#x}", bar, offset);
-                }
-            }
-
-            fn write_bar_u32(&mut self, bar: u8, offset: u16, val: u32) {
-                if bar == 0 && offset == 0 {
-                    assert_eq!(val, 1);
-                } else if bar == 0 && offset == 4 {
-                    assert_eq!(val, 2);
-                } else if bar == 2 && offset == 0 {
-                    assert_eq!(val, 3);
-                } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
-                    assert_eq!(val, 4);
-                } else {
-                    panic!("Unexpected address {}/{:#x}", bar, offset);
-                }
+                ),
+                tdisp_interface: tdisp::test_helpers::make_null_tdisp_interface(),
             }
         }
 
-        impl InspectMut for TestDevice {
-            fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-                req.ignore();
+        fn read_bar_u32(&self, bar: u8, offset: u16) -> u32 {
+            if bar == 0 && offset == 0 {
+                1
+            } else if bar == 0 && offset == 4 {
+                2
+            } else if bar == 2 && offset == 0 {
+                3
+            } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
+                4
+            } else {
+                panic!("Unexpected address {}/{:#x}", bar, offset);
             }
         }
 
-        impl Inspect for TestDevice {
-            fn inspect(&self, req: inspect::Request<'_>) {
-                req.ignore();
+        fn write_bar_u32(&mut self, bar: u8, offset: u16, val: u32) {
+            if bar == 0 && offset == 0 {
+                assert_eq!(val, 1);
+            } else if bar == 0 && offset == 4 {
+                assert_eq!(val, 2);
+            } else if bar == 2 && offset == 0 {
+                assert_eq!(val, 3);
+            } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
+                assert_eq!(val, 4);
+            } else {
+                panic!("Unexpected address {}/{:#x}", bar, offset);
             }
         }
+    }
 
-        impl ChipsetDevice for TestDevice {
-            fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
-                Some(self)
-            }
+    impl InspectMut for TestDevice {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
 
-            fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
-                Some(self)
-            }
+    impl Inspect for TestDevice {
+        fn inspect(&self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    impl ChipsetDevice for TestDevice {
+        fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+            Some(self)
         }
 
-        impl MmioIntercept for TestDevice {
-            fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
-                if let Some((bar, offset)) = self.0.find_bar(address) {
-                    read_as_u32_chunks(offset, data, |offset| self.read_bar_u32(bar, offset))
-                }
-                IoResult::Ok
-            }
-
-            fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
-                if let Some((bar, offset)) = self.0.find_bar(address) {
-                    write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
-                        ReadWriteRequestType::Write(value) => {
-                            self.write_bar_u32(bar, offset, value);
-                            None
-                        }
-                        ReadWriteRequestType::Read => Some(self.read_bar_u32(bar, offset)),
-                    })
-                }
-                IoResult::Ok
-            }
+        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+            Some(self)
         }
 
-        impl PciConfigSpace for TestDevice {
-            fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-                self.0.read_u32(offset, value)
-            }
-            fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-                self.0.write_u32(offset, value)
-            }
+        fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispGuestRequestInterface> {
+            Some(&mut self.tdisp_interface)
         }
+    }
+
+    impl MmioIntercept for TestDevice {
+        fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
+            if let Some((bar, offset)) = self.config_space.find_bar(address) {
+                read_as_u32_chunks(offset, data, |offset| self.read_bar_u32(bar, offset))
+            }
+            IoResult::Ok
+        }
+
+        fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
+            if let Some((bar, offset)) = self.config_space.find_bar(address) {
+                write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
+                    ReadWriteRequestType::Write(value) => {
+                        self.write_bar_u32(bar, offset, value);
+                        None
+                    }
+                    ReadWriteRequestType::Read => Some(self.read_bar_u32(bar, offset)),
+                })
+            }
+            IoResult::Ok
+        }
+    }
+
+    impl PciConfigSpace for TestDevice {
+        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+            self.config_space.read_u32(offset, value)
+        }
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+            self.config_space.write_u32(offset, value)
+        }
+    }
+
+    #[async_test]
+    async fn verify_simple_device_registers(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
 
         let vm_chipset = TestChipset::default();
         let pci = vm_chipset

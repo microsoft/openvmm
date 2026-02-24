@@ -38,31 +38,36 @@ pub mod devicereport;
 #[cfg(test)]
 mod tests;
 
+/// Mocks for the host interface and the emulator.
+pub mod test_helpers;
+
 use anyhow::Context;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tdisp_proto::GuestToHostCommand;
-use tdisp_proto::GuestToHostResponse;
-use tdisp_proto::TdispCommandResponseBind;
-use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
-use tdisp_proto::TdispCommandResponseGetTdiReport;
-use tdisp_proto::TdispCommandResponseStartTdi;
-use tdisp_proto::TdispCommandResponseUnbind;
-use tdisp_proto::TdispDeviceInterfaceInfo;
+pub use tdisp_proto::GuestToHostCommand;
+pub use tdisp_proto::GuestToHostResponse;
+pub use tdisp_proto::TdispCommandResponseBind;
+pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseGetTdiReport;
+pub use tdisp_proto::TdispCommandResponseStartTdi;
+pub use tdisp_proto::TdispCommandResponseUnbind;
+pub use tdisp_proto::TdispDeviceInterfaceInfo;
 pub use tdisp_proto::TdispGuestOperationError;
-use tdisp_proto::TdispGuestOperationErrorCode;
-use tdisp_proto::TdispGuestProtocolType;
-use tdisp_proto::TdispGuestUnbindReason;
-use tdisp_proto::TdispReportType;
-use tdisp_proto::TdispTdiState;
-use tdisp_proto::guest_to_host_command::Command;
-use tdisp_proto::guest_to_host_response::Response;
+pub use tdisp_proto::TdispGuestOperationErrorCode;
+pub use tdisp_proto::TdispGuestProtocolType;
+pub use tdisp_proto::TdispGuestUnbindReason;
+pub use tdisp_proto::TdispReportType;
+pub use tdisp_proto::TdispTdiState;
+pub use tdisp_proto::guest_to_host_command::Command;
+pub use tdisp_proto::guest_to_host_response::Response;
 use tracing::instrument;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;
 
-/// Trait used by the emulator to call back into the host.
+/// Describes the interface that host software should implement to provide TDISP
+/// functionality for a device. These interfaces might dispatch to a physical
+/// device, or might be implemented by a software emulator.
 pub trait TdispHostDeviceInterface: Send + Sync {
     /// Request versioning and protocol negotiation from the host.
     fn tdisp_negotiate_protocol(

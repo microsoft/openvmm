@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 pci_core.workspace = true
+tdisp.workspace = true
 vpci_protocol.workspace = true
 
 device_emulators.workspace = true
