@@ -13,6 +13,11 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
+#[allow(unused_imports)]
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
+use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM;
 use pipette_client::PipetteClient;
 use std::path::Path;
 use vmm_test_macros::openvmm_test;
@@ -501,5 +506,48 @@ async fn cvm_tpm_guest_tests<T, U: PetriVmmBackend>(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
+    Ok(())
+}
+
+/// Test that TPM NVRAM size persists across servicing.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, VMGS_WITH_16K_TPM]
+)]
+async fn tpm_servicing<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file, vmgs_file): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<VMGS_WITH_16K_TPM>,
+    ),
+) -> anyhow::Result<()> {
+    let mut flags = config.default_servicing_flags();
+    flags.override_version_checks = true;
+
+    let config = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_initial_vmgs(vmgs_file);
+
+    let (mut vm, agent) = config.run().await?;
+
+    agent.ping().await?;
+
+    let inspect_before = vm
+        .inspect_openhcl("vm/tpm/worker/nvram_size", None, None)
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+    agent.ping().await?;
+
+    let inspect_after = vm
+        .inspect_openhcl("vm/tpm/worker/nvram_size", None, None)
+        .await?;
+    assert_eq!(inspect_before, inspect_after);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
     Ok(())
 }
