@@ -1065,6 +1065,7 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
+            KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
         let cvm_filter = |arch| {

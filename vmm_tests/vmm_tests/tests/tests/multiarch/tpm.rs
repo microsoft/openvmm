@@ -15,9 +15,11 @@ use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_LINUX_X64;
 use petri_artifacts_vmm_test::artifacts::guest_tools::TPM_GUEST_TESTS_WINDOWS_X64;
 #[cfg(windows)]
 use petri_artifacts_vmm_test::artifacts::host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
+#[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
-use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
+use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM;
 use pipette_client::PipetteClient;
 use std::path::Path;
 #[cfg(windows)]
@@ -547,15 +549,15 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
 /// Test that TPM NVRAM size persists across servicing.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_BOOT_ENTRY],
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_BOOT_ENTRY],
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, VMGS_WITH_BOOT_ENTRY]
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, VMGS_WITH_16K_TPM]
 )]
 async fn tpm_servicing<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (igvm_file, vmgs_file): (
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
-        ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,
+        ResolvedArtifact<VMGS_WITH_16K_TPM>,
     ),
 ) -> anyhow::Result<()> {
     let mut flags = config.default_servicing_flags();
