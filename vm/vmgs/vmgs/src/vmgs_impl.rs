@@ -1102,7 +1102,7 @@ impl Vmgs {
         // Update the cached extended file table
         let extended_file_table =
             VmgsExtendedFileTable::ref_from_bytes(extended_file_table_buffer.as_bytes())
-                .map_err(|_| Error::InvalidFormat("incorrect extended file table size ".into()))?;
+                .map_err(|_| Error::InvalidFormat("incorrect extended file table size".into()))?;
 
         for (file_id, fcb) in temp_state.fcbs.iter_mut() {
             if *file_id != FileId::EXTENDED_FILE_TABLE {

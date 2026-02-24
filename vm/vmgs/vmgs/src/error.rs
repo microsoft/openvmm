@@ -52,7 +52,7 @@ pub enum Error {
     #[error("The VMGS file has a non zero size but the contents are empty")]
     EmptyFile,
     /// Cannot overwrite encrypted file with plaintext data
-    #[error("cannot overwrite encrypted file with plaintext data")]
+    #[error("Cannot overwrite encrypted file with plaintext data")]
     OverwriteEncrypted,
     /// File must be decrypted to perform this operation
     #[error("File must be decrypted to perform this operation")]
