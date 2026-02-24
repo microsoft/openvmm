@@ -46,7 +46,6 @@ use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
 use sha2::Digest;
 use sha2::Sha256;
-use static_assertions::const_assert_eq;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
