@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::TdispHostDeviceInterface;
-use crate::TdispHostStateMachine;
+use crate::TdispHostDeviceTargetEmulator;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tdisp_proto::TdispDeviceInterfaceInfo;
@@ -44,6 +44,9 @@ impl TdispHostDeviceInterface for NullTdispHostInterface {
 }
 
 /// Implements the host side of the TDISP interface for a mock device that does nothing.
-pub fn make_null_tdisp_interface() -> TdispHostStateMachine {
-    TdispHostStateMachine::new(Arc::new(Mutex::new(NullTdispHostInterface {})))
+pub fn make_null_tdisp_interface(debug_device_id: &str) -> TdispHostDeviceTargetEmulator {
+    TdispHostDeviceTargetEmulator::new(
+        Arc::new(Mutex::new(NullTdispHostInterface {})),
+        debug_device_id,
+    )
 }

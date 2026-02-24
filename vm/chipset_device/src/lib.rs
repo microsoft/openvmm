@@ -65,7 +65,7 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
     /// Optionally returns a trait object which implements TDISP host
     /// communication.
     #[inline(always)]
-    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispGuestRequestInterface> {
+    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         None
     }
 }

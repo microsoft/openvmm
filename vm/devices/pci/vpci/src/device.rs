@@ -44,6 +44,7 @@ use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use vpci_protocol as protocol;
+use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
 use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -229,6 +230,8 @@ enum PacketError {
     RegisterInterrupt(#[source] RegisterInterruptError),
     #[error("unknown interrupt address {:#x}/data {:#x}", .0.address, .0.data)]
     UnknownInterrupt(MsiAddressData),
+    #[error("invalid packet serialization")]
+    InvalidSerialization(#[source] anyhow::Error),
 }
 
 #[derive(Debug)]
@@ -266,6 +269,9 @@ enum DeviceRequest {
     },
     ReleaseResources,
     Reset,
+    TdispCommand {
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -480,6 +486,25 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::Reset,
+            }
+        }
+        protocol::MessageType::VPCI_TDISP_COMMAND => {
+            let (header, rest) = Ref::<_, protocol::VpciTdispCommandHeader>::from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("tdisp_command_header"))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+
+            let data_len = header.data_length as usize;
+            if data_len > MAX_VPCI_TDISP_COMMAND_SIZE {
+                return Err(PacketError::PacketTooLarge);
+            }
+
+            let data = rest
+                .get(..data_len)
+                .ok_or(PacketError::PacketTooSmall("tdisp_command_data"))?
+                .to_vec();
+
+            PacketData::DeviceRequest {
+                slot: header.slot,
+                request: DeviceRequest::TdispCommand { data },
             }
         }
         typ => return Err(PacketError::UnknownType(typ)),
@@ -882,6 +907,47 @@ impl ReadyState {
                             &protocol::Status::NOT_SUPPORTED,
                             &[],
                         )?;
+                    }
+                    DeviceRequest::TdispCommand { data } => {
+                        let command = match tdisp::serialize_proto::deserialize_command(&data) {
+                            Ok(cmd) => cmd,
+                            Err(err) => {
+                                tracelimit::warn_ratelimited!(
+                                    error = err.as_ref() as &dyn std::error::Error,
+                                    "failed to deserialize TDISP command"
+                                );
+                                conn.send_completion(
+                                    transaction_id,
+                                    &protocol::Status::BAD_DATA,
+                                    &[],
+                                )?;
+                                return Ok(());
+                            }
+                        };
+
+                        tracing::debug!(?command, "received TDISP command over vpci channel");
+
+                        let mut locked_dev = dev.device.lock();
+                        if let Some(tdisp) = locked_dev.supports_tdisp() {
+                            let response = tdisp
+                                .tdisp_handle_guest_command(command)
+                                .map_err(PacketError::InvalidSerialization)?;
+
+                            let response_serialized =
+                                tdisp::serialize_proto::serialize_response(&response);
+
+                            conn.send_completion(
+                                transaction_id,
+                                &protocol::Status::SUCCESS,
+                                response_serialized.as_bytes(),
+                            )?;
+                        } else {
+                            conn.send_completion(
+                                transaction_id,
+                                &protocol::Status::NOT_SUPPORTED,
+                                &[],
+                            )?;
+                        }
                     }
                 }
             }
@@ -1345,7 +1411,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
-    use tdisp::TdispHostStateMachine;
+    use tdisp::TdispHostDeviceTargetEmulator;
     use test_with_tracing::test;
     use thiserror::Error;
     use vmbus_async::queue::IncomingPacket;
@@ -1800,7 +1866,7 @@ mod tests {
 
     struct TestDevice {
         config_space: ConfigSpaceType0Emulator,
-        tdisp_interface: TdispHostStateMachine,
+        tdisp_interface: TdispHostDeviceTargetEmulator,
     }
     impl TestDevice {
         fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
@@ -1827,7 +1893,7 @@ mod tests {
                             BarMemoryKind::Intercept(register_mmio.new_io_region("bar2", 0x2000)),
                         ),
                 ),
-                tdisp_interface: tdisp::test_helpers::make_null_tdisp_interface(),
+                tdisp_interface: tdisp::test_helpers::make_null_tdisp_interface("vpci-unit-test"),
             }
         }
 
@@ -1881,7 +1947,7 @@ mod tests {
             Some(self)
         }
 
-        fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispGuestRequestInterface> {
+        fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
             Some(&mut self.tdisp_interface)
         }
     }

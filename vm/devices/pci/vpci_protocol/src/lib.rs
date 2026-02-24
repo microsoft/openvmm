@@ -833,4 +833,5 @@ pub struct VpciTdispCommand {
 }
 
 /// Maximum size of a TDISP command in bytes. Property of the VMBUS implementation on the host.
-pub const MAX_VPCI_TDISP_COMMAND_SIZE: usize = 35000;
+pub const MAX_VPCI_TDISP_COMMAND_SIZE: usize =
+    MAXIMUM_PACKET_SIZE - size_of::<VpciTdispCommandHeader>();
