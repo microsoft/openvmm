@@ -46,6 +46,7 @@ use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
 use sha2::Digest;
 use sha2::Sha256;
+use static_assertions::const_assert_eq;
 use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
@@ -101,6 +102,11 @@ const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 // blob.
 const LEGACY_VTPM_SIZE: usize = 16 * 1024;
 const STANDARD_VTPM_SIZE: usize = 32 * 1024;
+
+// Default vTPM NVRAM size provisioned for a new VMGS.
+pub const DEFAULT_VTPM_SIZE: usize = ms_tpm_20_ref::NV_MEMORY_SIZE;
+
+static_assertions::const_assert_eq!(DEFAULT_VTPM_SIZE, STANDARD_VTPM_SIZE);
 
 /// Operation types for provisioning telemetry.
 #[expect(clippy::enum_variant_names)]
@@ -396,7 +402,7 @@ impl Tpm {
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
-        let nvram_size = nvram_size.unwrap_or(ms_tpm_20_ref::NV_MEMORY_SIZE);
+        let nvram_size = nvram_size.unwrap_or(DEFAULT_VTPM_SIZE);
 
         let tpm_engine = MsTpm20RefPlatform::initialize(
             Box::new(TpmPlatformCallbacks {
