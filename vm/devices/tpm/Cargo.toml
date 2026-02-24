@@ -33,6 +33,7 @@ async-trait.workspace = true
 bitfield-struct.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
+static_assertions.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true

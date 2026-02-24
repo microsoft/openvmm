@@ -33,6 +33,7 @@ pub enum KnownTestArtifacts {
     Ubuntu2404ServerAarch64Vhd,
     Windows11EnterpriseAarch64Vhdx,
     VmgsWithBootEntry,
+    VmgsWith16kTpm,
 }
 
 struct KnownTestArtifactMeta {
@@ -97,6 +98,11 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
         KnownTestArtifacts::VmgsWithBootEntry,
         petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::VmgsWith16kTpm,
+        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::SIZE,
     ),
 ];
 

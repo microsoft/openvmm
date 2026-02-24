@@ -1012,6 +1012,7 @@ fn vm_config_from_command_line(
                 guest_secret_key: None,
                 logger: None,
                 bios_guid,
+                nvram_size: None,
             }
             .into_resource(),
         });
