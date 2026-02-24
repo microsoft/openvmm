@@ -142,7 +142,7 @@ fn check_if_aacp_installed(
             .read()?;
 
         if crate::_util::running_in_wsl(rt) {
-            crate::_util::wslpath::win_to_linux(path)
+            crate::_util::wslpath::win_to_linux(rt, path)
         } else {
             path.into()
         }
