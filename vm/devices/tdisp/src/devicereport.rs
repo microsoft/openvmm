@@ -44,7 +44,7 @@ pub struct TdispTdiReportMmioFlags {
     /// For attribute updatable ranges (see below), this field must indicate attribute of the range when the TDI was locked.
     pub is_non_tee_mem: bool,
 
-    ///  IS_MEM_ATTR_UPDATABLE – must be 1b if the attributes of this range is updatable using SET_MMIO_ATTRIBUTE_REQUEST
+    /// IS_MEM_ATTR_UPDATABLE – must be 1b if the attributes of this range is updatable using SET_MMIO_ATTRIBUTE_REQUEST
     pub is_mem_attr_updatable: bool,
     #[bits(12)]
     _reserved0: u16,

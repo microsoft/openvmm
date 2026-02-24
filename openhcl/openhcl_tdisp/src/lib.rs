@@ -8,7 +8,7 @@
 
 use std::future::Future;
 
-// Re-export the TDISP protocol types necessary for OpenbHCL from top level tdisp crates
+// Re-export the TDISP protocol types necessary for OpenHCL from top level tdisp crates
 // to avoid a direct dependency on tdisp_proto and tdisp.
 pub use tdisp::TdispGuestOperationError;
 pub use tdisp::devicereport::TdiReportStruct;
