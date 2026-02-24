@@ -544,6 +544,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     }
                 }
                 VmbusStorageType::Nvme => todo!(),
+                VmbusStorageType::VirtioBlk => todo!(),
             }
         }
 

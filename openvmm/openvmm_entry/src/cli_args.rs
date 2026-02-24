@@ -175,6 +175,26 @@ options:
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
 
+    /// attach a disk via a virtio-blk controller
+    #[clap(long_help = r#"
+e.g: --virtio-blk memdiff:file:/path/to/disk.vhd
+
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
+
+valid disk kinds:
+    `mem:<len>`                    memory backed disk
+        <len>: length of ramdisk, e.g.: `1G`
+    `memdiff:<disk>`               memory backed diff disk
+        <disk>: lower disk, e.g.: `file:base.img`
+    `file:<path>`                  file-backed disk
+        <path>: path to file
+
+flags:
+    `ro`                           open disk as read-only
+"#)]
+    #[clap(long = "virtio-blk")]
+    pub virtio_blk: Vec<DiskCli>,
+
     /// number of sub-channels for the SCSI controller
     #[clap(long, value_name = "COUNT", default_value = "0")]
     pub scsi_sub_channels: u16,

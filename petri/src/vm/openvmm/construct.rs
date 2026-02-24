@@ -85,6 +85,8 @@ use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 use video_core::SharedFramebufferHandle;
+use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::blk::VirtioBlkHandle;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
@@ -1127,6 +1129,28 @@ fn vmbus_storage_controllers_to_openvmm(
                     }
                     .into_resource(),
                 });
+            }
+            VmbusStorageType::VirtioBlk => {
+                for (_lun, Drive { disk, is_dvd }) in &controller.drives {
+                    if *is_dvd {
+                        anyhow::bail!("dvd not supported with virtio-blk");
+                    }
+                    let Some(disk) = disk else {
+                        anyhow::bail!("empty drive not supported with virtio-blk");
+                    };
+                    vpci_devices.push(VpciDeviceConfig {
+                        vtl,
+                        instance_id: *instance_id,
+                        resource: VirtioPciDeviceHandle(
+                            VirtioBlkHandle {
+                                disk: petri_disk_to_openvmm(disk)?,
+                                read_only: false,
+                            }
+                            .into_resource(),
+                        )
+                        .into_resource(),
+                    });
+                }
             }
         }
     }

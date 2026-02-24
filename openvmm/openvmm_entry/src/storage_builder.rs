@@ -25,7 +25,11 @@ use std::collections::BTreeMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
+use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::blk::VirtioBlkHandle;
 use vm_resource::IntoResource;
+use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
@@ -39,7 +43,13 @@ pub(super) struct StorageBuilder {
     pcie_nvme_controllers: BTreeMap<String, Vec<NamespaceDefinition>>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
+    vtl0_virtio_blk_disks: Vec<VirtioBlkDisk>,
     openhcl_vtl: Option<DeviceVtl>,
+}
+
+struct VirtioBlkDisk {
+    disk: Resource<DiskHandleKind>,
+    read_only: bool,
 }
 
 #[derive(Clone)]
@@ -47,6 +57,7 @@ pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
     Nvme(Option<u32>, Option<String>),
+    VirtioBlk,
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
@@ -93,6 +104,17 @@ const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 16] = [
     guid::guid!("5864e1e4-bb70-40d2-900c-2128034960d2"),
 ];
 
+const VIRTIO_BLK_INSTANCE_IDS: [Guid; 8] = [
+    guid::guid!("a5c3f2d1-e746-4b8a-9c01-7f3d2a1b0e54"),
+    guid::guid!("b6d4e3f2-f857-5c9b-ad12-8e4f3b2c1f65"),
+    guid::guid!("c7e5f4a3-a968-6dac-be23-9f5a4c3d2a76"),
+    guid::guid!("d8f6a5b4-ba79-7ebd-cf34-a06b5d4e3b87"),
+    guid::guid!("e9a7b6c5-cb8a-8fce-d045-b17c6e5f4c98"),
+    guid::guid!("fab8c7d6-dc9b-9adf-e156-c28d7f6a5da9"),
+    guid::guid!("abc9d8e7-edac-abea-f267-d39e8a7b6eba"),
+    guid::guid!("bcdae9f8-febd-bcfb-a378-e4af9b8c7fcb"),
+];
+
 impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
         Self {
@@ -104,6 +126,7 @@ impl StorageBuilder {
             pcie_nvme_controllers: BTreeMap::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
+            vtl0_virtio_blk_disks: Vec::new(),
             openhcl_vtl,
         }
     }
@@ -242,6 +265,17 @@ impl StorageBuilder {
                 });
                 Some(nsid)
             }
+            DiskLocation::VirtioBlk => {
+                if vtl != DeviceVtl::Vtl0 {
+                    anyhow::bail!("virtio-blk only supported for VTL0");
+                }
+                if is_dvd {
+                    anyhow::bail!("dvd not supported with virtio-blk");
+                }
+                self.vtl0_virtio_blk_disks
+                    .push(VirtioBlkDisk { disk, read_only });
+                None
+            }
         };
         Ok(location)
     }
@@ -280,6 +314,9 @@ impl StorageBuilder {
                     NVME_VTL0_INSTANCE_ID
                 },
             ),
+            DiskLocation::VirtioBlk => {
+                anyhow::bail!("underhill not supported with virtio-blk")
+            }
         };
 
         let (luns, location) = match target {
@@ -297,6 +334,9 @@ impl StorageBuilder {
             DiskLocation::Nvme(nsid, None) => {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
+            }
+            DiskLocation::VirtioBlk => {
+                anyhow::bail!("underhill not supported with virtio-blk")
             }
         };
 
@@ -446,6 +486,24 @@ impl StorageBuilder {
                     msix_count: 64,
                     requests: None,
                 }
+                .into_resource(),
+            });
+        }
+
+        for (i, vblk) in std::mem::take(&mut self.vtl0_virtio_blk_disks)
+            .into_iter()
+            .enumerate()
+        {
+            config.vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl0,
+                instance_id: VIRTIO_BLK_INSTANCE_IDS[i],
+                resource: VirtioPciDeviceHandle(
+                    VirtioBlkHandle {
+                        disk: vblk.disk,
+                        read_only: vblk.read_only,
+                    }
+                    .into_resource(),
+                )
                 .into_resource(),
             });
         }

@@ -42,6 +42,7 @@ storvsp_resources.workspace = true
 tpm_resources.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
+virtio_resources.workspace = true
 vmbfs_resources.workspace = true
 vmcore.workspace = true
 vm_manifest_builder.workspace = true

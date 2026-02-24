@@ -346,3 +346,30 @@ The test kernel is ready for virtio-blk testing with no modifications needed.
 - `petri/src/vm/mod.rs` — add `VirtioBlk` to `VmbusStorageType` (or equivalent mechanism)
 - `petri/src/vm/openvmm/construct.rs` — handle VirtioBlk in config construction
 - `vmm_tests/vmm_tests/tests/tests/x86_64/storage.rs` — add virtio-blk tests
+
+## Implementation Summary
+
+### Files Created
+- `vm/devices/virtio/virtio_blk/Cargo.toml` — crate manifest
+- `vm/devices/virtio/virtio_blk/src/lib.rs` — VirtioDevice trait impl, worker, request processing (~550 lines)
+- `vm/devices/virtio/virtio_blk/src/spec.rs` — virtio-blk spec constants, config struct, request types (~123 lines)
+- `vm/devices/virtio/virtio_blk/src/resolver.rs` — resource resolver (~55 lines)
+
+### Files Modified
+- `Cargo.toml` — added `virtio_blk` workspace member
+- `vm/devices/virtio/virtio_resources/src/lib.rs` — added `pub mod blk` with `VirtioBlkHandle`
+- `openvmm/openvmm_resources/src/lib.rs` — registered `VirtioBlkResolver`
+- `openvmm/openvmm_resources/Cargo.toml` — added `virtio_blk` dep
+- `openvmm/openvmm_entry/src/cli_args.rs` — added `--virtio-blk` CLI option
+- `openvmm/openvmm_entry/src/lib.rs` — wired up `--virtio-blk` processing
+- `openvmm/openvmm_entry/src/storage_builder.rs` — added `DiskLocation::VirtioBlk`, `VirtioBlkDisk`, build logic
+- `petri/Cargo.toml` — added `virtio_resources` dep
+- `petri/src/vm/mod.rs` — added `VirtioBlk` to `VmbusStorageType`
+- `petri/src/vm/openvmm/construct.rs` — handles VirtioBlk in config construction
+- `petri/src/vm/hyperv/mod.rs` — added `VirtioBlk => todo!()` arm
+- `vmm_tests/vmm_tests/tests/tests/x86_64.rs` — added `virtio_blk_device` integration test
+
+### Build Verification
+- `cargo check -p virtio_blk -p openvmm_entry -p petri -p vmm_tests --tests` — all clean
+- `cargo xtask fmt --fix` — all passes clean
+- `cargo doc -p virtio_blk --no-deps` — clean

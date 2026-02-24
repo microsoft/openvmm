@@ -652,6 +652,28 @@ async fn vm_config_from_command_line(
         )?;
     }
 
+    for &cli_args::DiskCli {
+        vtl,
+        ref kind,
+        read_only,
+        is_dvd,
+        ref underhill,
+        ..
+    } in &opt.virtio_blk
+    {
+        if underhill.is_some() {
+            anyhow::bail!("underhill not supported with virtio-blk");
+        }
+        storage.add(
+            vtl,
+            None,
+            storage_builder::DiskLocation::VirtioBlk,
+            kind,
+            is_dvd,
+            read_only,
+        )?;
+    }
+
     let floppy_disks: Vec<_> = opt
         .floppy
         .iter()

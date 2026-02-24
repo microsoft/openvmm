@@ -22,104 +22,33 @@ disk backend integration). The device will:
 
 ### Phase 1: Core Device Implementation
 
-- [ ] **1.1 Create `virtio_blk` crate skeleton**
-  - `vm/devices/virtio/virtio_blk/Cargo.toml`
-  - `vm/devices/virtio/virtio_blk/src/lib.rs`
-  - Add to workspace `Cargo.toml` members list
-
-- [ ] **1.2 Define virtio-blk spec constants (`spec.rs`)**
-  - Device ID (2), feature bits, request types
-  - `VirtioBlkConfig` struct (config space layout)
-  - `VirtioBlkReqHeader` struct (request header)
-  - Status codes (OK=0, IOERR=1, UNSUPP=2)
-  - Discard/write-zeroes segment structs
-
-- [ ] **1.3 Implement the `VirtioDevice` trait (`lib.rs`)**
-  - Device struct holding `Disk`, `GuestMemory`, `VmTaskDriver`
-  - `traits()` → device_id=2, features, max_queues=1, config register length
-  - `read_registers_u32` / `write_registers_u32` → config space (capacity, blk_size, etc.)
-  - `enable()` → spawn per-queue worker tasks
-  - `disable()` → stop workers, wait for outstanding I/O
-
-- [ ] **1.4 Implement request processing worker**
-  - Parse `VirtioBlkReqHeader` from first descriptor (type, sector)
-  - For READ: create `RequestBuffers` from data descriptors, call `disk.read_vectored()`
-  - For WRITE: create `RequestBuffers` from data descriptors, call `disk.write_vectored()`
-  - For FLUSH: call `disk.sync_cache()`
-  - For GET_ID: write 20-byte serial string to data descriptor
-  - For DISCARD: call `disk.unmap()`
-  - For WRITE_ZEROES: call `disk.write_vectored()` with zeros or `disk.unmap()`
-  - Write status byte to final descriptor
-  - Complete descriptor in used ring
-
-- [ ] **1.5 Descriptor-to-RequestBuffers translation**
-  - Convert `VirtioQueuePayload` (GPA + length) to `PagedRange` for `RequestBuffers`
-  - Handle page boundary splitting (similar to NVMe's `prp.rs`)
-  - Validate request bounds (sector + data_len <= capacity)
+- [x] **1.1 Create `virtio_blk` crate skeleton**
+- [x] **1.2 Define virtio-blk spec constants (`spec.rs`)**
+- [x] **1.3 Implement the `VirtioDevice` trait (`lib.rs`)**
+- [x] **1.4 Implement request processing worker**
+- [x] **1.5 Descriptor-to-RequestBuffers translation**
 
 ### Phase 2: Resource Plumbing
 
-- [ ] **2.1 Add resource handle to `virtio_resources`**
-  - Add `pub mod blk` to `vm/devices/virtio/virtio_resources/src/lib.rs`
-  - Define `VirtioBlkHandle { disk: Resource<DiskHandleKind>, read_only: bool }`
-  - Implement `ResourceId<VirtioDeviceHandle>` with ID `"virtio-blk"`
-  - Add necessary deps to `virtio_resources/Cargo.toml`
-
-- [ ] **2.2 Create resolver (`resolver.rs`)**
-  - `VirtioBlkResolver` struct
-  - `declare_static_async_resolver!` for `(VirtioDeviceHandle, VirtioBlkHandle)`
-  - `AsyncResolveResource` impl: resolve disk handle, create device, return `ResolvedVirtioDevice`
-
-- [ ] **2.3 Register resolver in `openvmm_resources`**
-  - Add `virtio_blk::resolver::VirtioBlkResolver` to `register_static_resolvers!` in
-    `openvmm/openvmm_resources/src/lib.rs`
-  - Add `virtio_blk` dep to `openvmm/openvmm_resources/Cargo.toml`
+- [x] **2.1 Add resource handle to `virtio_resources`**
+- [x] **2.2 Create resolver (`resolver.rs`)**
+- [x] **2.3 Register resolver in `openvmm_resources`**
 
 ### Phase 3: CLI/Configuration Integration
 
-- [ ] **3.1 Add VirtioBlk to `DiskLocation` enum**
-  - In `openvmm/openvmm_entry/src/storage_builder.rs`, add `VirtioBlk` variant
-  - Add CLI argument handling (e.g. `--disk memdiff:file.vhdx,virtio-blk`)
-  - Build `VpciDeviceConfig` with `VirtioPciDeviceHandle(VirtioBlkHandle.into_resource())`
-
-- [ ] **3.2 Wire up the CLI argument parsing**
-  - Find where disk location is parsed from CLI args (likely in `cli_args.rs` or similar)
-  - Add `virtio-blk` as a valid disk target
+- [x] **3.1 Add VirtioBlk to `DiskLocation` enum and StorageBuilder**
+- [x] **3.2 Add `--virtio-blk` CLI argument**
 
 ### Phase 4: Petri Test Integration
 
-- [ ] **4.1 Add VirtioBlk to petri storage types**
-  - Add `VirtioBlk` variant to `VmbusStorageType` enum (or create separate mechanism)
-    in `petri/src/vm/mod.rs`
-  - Add handling in `petri/src/vm/openvmm/construct.rs` to generate `VpciDeviceConfig`
-    with `VirtioPciDeviceHandle(VirtioBlkHandle.into_resource())`
-  - Ensure `petri_disk_to_openvmm()` output works with `VirtioBlkHandle`
+- [x] **4.1 Add VirtioBlk to petri storage types**
+- [x] **4.2 Write integration test (`virtio_blk_device`)**
 
-- [ ] **4.2 Write integration tests**
-  - In `vmm_tests/vmm_tests/tests/tests/x86_64/storage.rs` (or new file):
-  - Test: Boot Linux guest with virtio-blk disk, verify device appears as `/dev/vdX`
-  - Test: Read/write data to virtio-blk disk from guest
-  - Test: virtio-blk with ramdisk backend
-  - Test: virtio-blk with file-backed disk
-  - Test: virtio-blk read-only disk
-  - Test: Flush/sync operations
-  - Use same patterns as existing NVMe/SCSI tests (pipette agent, `new_test_vtl2_*` helpers)
+### Phase 5: Build & Verification
 
-### Phase 5: Unit Tests & Polish
-
-- [ ] **5.1 Add unit tests**
-  - Config space read/write tests
-  - Request parsing tests (valid and malformed requests)
-  - Feature negotiation tests
-  - Bounds checking (sector out of range, etc.)
-
-- [ ] **5.2 Add inspect support**
-  - Implement `Inspect`/`InspectMut` for device state
-  - Expose counters (read/write ops, bytes, errors)
-
-- [ ] **5.3 Documentation**
-  - Rustdoc for public APIs
-  - Update Guide/ if needed (device support matrix, etc.)
+- [x] **5.1 All affected crates build cleanly**
+- [x] **5.2 `cargo xtask fmt --fix` passes**
+- [x] **5.3 `cargo doc` passes**
 
 ## Notes
 

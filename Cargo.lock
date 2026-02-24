@@ -5442,6 +5442,7 @@ dependencies = [
  "tpm_device",
  "uidevices",
  "virtio",
+ "virtio_blk",
  "virtio_net",
  "virtio_p9",
  "virtio_pmem",
@@ -5849,6 +5850,7 @@ dependencies = [
  "underhill_confidentiality",
  "unix_socket",
  "video_core",
+ "virtio_resources",
  "vm_manifest_builder",
  "vm_resource",
  "vmbfs_resources",
@@ -8960,6 +8962,29 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "virtio_blk"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "disk_backend",
+ "futures",
+ "guestmem",
+ "inspect",
+ "inspect_counters",
+ "pal_async",
+ "scsi_buffers",
+ "task_control",
+ "tracelimit",
+ "tracing",
+ "virtio",
  "virtio_resources",
  "vm_resource",
  "vmcore",
