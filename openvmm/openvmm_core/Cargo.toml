@@ -87,7 +87,6 @@ pal_async.workspace = true
 pal.workspace = true
 range_map_vec.workspace = true
 sparse_mmap.workspace = true
-tracing_helpers.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true

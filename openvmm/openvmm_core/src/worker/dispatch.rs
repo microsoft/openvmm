@@ -22,7 +22,6 @@ use futures::executor::block_on;
 use futures::future::try_join_all;
 use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
-use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use ide_resources::GuestMedia;
@@ -1250,7 +1249,7 @@ impl InitializedVm {
                             num_lock_enabled: false,
                             // TODO: these are all very bogus values, and need to be swapped out with something better
                             smbios: firmware_pcat::config::SmbiosConstants {
-                                bios_guid: Guid {
+                                bios_guid: guid::Guid {
                                     data1: 0xC4066C45,
                                     data2: 0x503D,
                                     data3: 0x40E8,
@@ -1940,8 +1939,8 @@ impl InitializedVm {
         }
 
         #[cfg(all(windows, feature = "virt_whp"))]
-        fn make_ids(name: &str, instance_id: Option<Guid>) -> (String, String, Guid, u64) {
-            let guid = instance_id.unwrap_or_else(Guid::new_random);
+        fn make_ids(name: &str, instance_id: Option<guid::Guid>) -> (String, String, guid::Guid, u64) {
+            let guid = instance_id.unwrap_or_else(guid::Guid::new_random);
             // TODO: clarify how the device ID is constructed
             let device_id = (guid.data2 as u64) << 16 | (guid.data3 as u64 & 0xfff8);
             let vpci_device_name = format!("vpci:{guid}");
@@ -1976,7 +1975,7 @@ impl InitializedVm {
             #[cfg(windows)]
             for nic_config in cfg.kernel_vmnics {
                 let mut nic = vmswitch::kernel::KernelVmNic::new(
-                    &Guid::new_random(),
+                    &guid::Guid::new_random(),
                     "nic",
                     "nic",
                     nic_config.mac_address.into(),

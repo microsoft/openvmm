@@ -5187,7 +5187,6 @@ dependencies = [
  "storvsp",
  "thiserror 2.0.16",
  "tracing",
- "tracing_helpers",
  "uefi_nvram_storage",
  "virt",
  "virt_hvf",
