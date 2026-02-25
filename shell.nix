@@ -4,10 +4,10 @@ let
     url = "https://github.com/NixOS/nixpkgs/archive/50ab793786d9de88ee30ec4e4c24fb4236fc2674.tar.gz";
     sha256 = "1s2gr5rcyqvpr58vxdcb095mdhblij9bfzaximrva2243aal3dgx";
   };
-  # Pinned rust-overlay from stable branch
+  # Pinned rust-overlay from stable branch which has our current rust version (1.93)
   rust_overlay = import (builtins.fetchTarball {
-    url = "https://github.com/oxalica/rust-overlay/archive/2ef5b3362af585a83bafd34e7fc9b1f388c2e5e2.tar.gz";
-    sha256 = "138a0p83qzflw8wj4a7cainqanjmvjlincx8imr3yq1b924lg9cz";
+    url = "https://github.com/oxalica/rust-overlay/archive/ec6a3d5cdf14bb5a1dd03652bd3f6351004d2188.tar.gz";
+    sha256 = "0pik603mmxsgs2gndk681j9rkxjlrx3lxbpwd9linn2rn8vacg0a";
   });
   pkgs = import nixpkgs { overlays = [ rust_overlay ]; };
 
