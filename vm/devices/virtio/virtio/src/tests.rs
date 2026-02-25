@@ -32,7 +32,6 @@ use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
