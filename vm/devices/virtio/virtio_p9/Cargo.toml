@@ -20,7 +20,6 @@ task_control.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
-pal_async.workspace = true
 tracing.workspace = true
 
 [lints]

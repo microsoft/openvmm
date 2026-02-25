@@ -405,7 +405,9 @@ impl VirtioPciDevice {
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
-                        self.device.disable();
+                        let waker = std::task::Waker::noop();
+                        let mut cx = std::task::Context::from_waker(&waker);
+                        let _ = self.device.poll_disable(&mut cx);
                     }
                     *self.interrupt_status.lock() = 0;
                 }
@@ -561,7 +563,9 @@ impl VirtioPciDevice {
 impl Drop for VirtioPciDevice {
     fn drop(&mut self) {
         // TODO conditionalize
-        self.device.disable();
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let _ = self.device.poll_disable(&mut cx);
     }
 }
 

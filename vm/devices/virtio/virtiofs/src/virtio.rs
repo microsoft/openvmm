@@ -7,10 +7,12 @@ use async_trait::async_trait;
 use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
 use inspect::InspectMut;
-use pal_async::task::Spawn;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
+use std::task::ready;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
@@ -158,17 +160,12 @@ impl VirtioDevice for VirtioFsDevice {
             .collect();
     }
 
-    fn disable(&mut self) {
-        self.exit_event.notify(usize::MAX);
-        let mut workers = self.workers.drain(..).collect::<Vec<_>>();
-        self.driver
-            .spawn("shutdown-virtiofs-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(async |worker| {
-                    worker.stop().await;
-                }))
-                .await;
-            })
-            .detach();
+    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        for worker in &mut self.workers {
+            ready!(worker.poll_stop(cx));
+        }
+        self.workers.clear();
+        Poll::Ready(())
     }
 }
 
