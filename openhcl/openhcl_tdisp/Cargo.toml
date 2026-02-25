@@ -7,7 +7,6 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-inspect.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
 
