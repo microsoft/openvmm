@@ -249,10 +249,10 @@ impl UefiDevice {
                 if let Some(out) = &mut output {
                     let _ = writeln!(
                         out,
-                        "[{}] [{}] (ticks: {}) {}",
+                        "({} ticks) [{}] [{}]: {}",
+                        log.ticks(),
                         log.debug_level_str(),
                         log.phase_str(),
-                        log.ticks(),
                         log.message_trimmed(),
                     );
                 } else if let DiagnosticsEmitter::Tracing { limit } = emitter {
