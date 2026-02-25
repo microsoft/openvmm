@@ -3,13 +3,12 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import "./styles/menu.css";
 
 // Menu component that opens from the left side
 export function Menu(): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
   const toggle = useCallback(() => setOpen((o) => !o), []);
 
   // Prevent body scroll while drawer open
@@ -22,11 +21,6 @@ export function Menu(): React.JSX.Element {
       };
     }
   }, [open]);
-
-  function navigateAndClose(path: string) {
-    navigate(path);
-    toggle();
-  }
 
   return (
     <>
@@ -58,28 +52,31 @@ export function Menu(): React.JSX.Element {
               <div className="menu-drawer-header">Petri Test Viewer</div>
               <ul className="menu-nav-list" role="list">
                 <li>
-                  <button
+                  <Link
+                    to="/runs"
                     className="drawer-link"
-                    onClick={() => navigateAndClose("/runs")}
+                    onClick={toggle}
                   >
                     Runs
-                  </button>
+                  </Link>
                 </li>
                 <li>
-                  <button
+                  <Link
+                    to="/tests"
                     className="drawer-link"
-                    onClick={() => navigateAndClose("/tests")}
+                    onClick={toggle}
                   >
                     Tests
-                  </button>
+                  </Link>
                 </li>
                 <li>
-                  <button
+                  <Link
+                    to="/docs"
                     className="drawer-link"
-                    onClick={() => navigateAndClose("/docs")}
+                    onClick={toggle}
                   >
                     Docs
-                  </button>
+                  </Link>
                 </li>
                 <li className="drawer-separator" aria-hidden="true" />
                 <li>
