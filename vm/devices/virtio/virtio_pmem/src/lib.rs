@@ -9,9 +9,10 @@ pub mod resolver;
 use anyhow::Context;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
-use pal_async::task::Spawn;
 use std::fs;
 use std::sync::Arc;
+use std::task::Poll;
+use std::task::ready;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
@@ -121,15 +122,12 @@ impl VirtioDevice for Device {
         };
     }
 
-    fn disable(&mut self) {
-        self.exit_event.notify(usize::MAX);
-        if let Some(mut worker) = self.worker.take() {
-            self.driver
-                .spawn("shutdown-virtio-pmem-queue".to_owned(), async move {
-                    worker.stop().await;
-                })
-                .detach();
+    fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        if let Some(worker) = &mut self.worker {
+            ready!(worker.poll_stop(cx));
         }
+        self.worker = None;
+        Poll::Ready(())
     }
 }
 

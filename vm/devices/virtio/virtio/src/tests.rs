@@ -843,20 +843,12 @@ impl VirtioDevice for TestDevice {
             .collect();
     }
 
-    fn disable(&mut self) {
-        if self.workers.is_empty() {
-            return;
+    fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        for worker in &mut self.workers {
+            std::task::ready!(worker.poll_stop(cx));
         }
-        self.exit_event.notify(usize::MAX);
-        let mut workers = self.workers.drain(..).collect::<Vec<_>>();
-        self.driver
-            .spawn("shutdown-test-virtio-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(async |worker| {
-                    worker.stop().await;
-                }))
-                .await;
-            })
-            .detach();
+        self.workers.clear();
+        std::task::Poll::Ready(())
     }
 }
 

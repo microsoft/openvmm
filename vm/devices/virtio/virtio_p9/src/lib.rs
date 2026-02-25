@@ -9,9 +9,11 @@ pub mod resolver;
 
 use async_trait::async_trait;
 use guestmem::GuestMemory;
-use pal_async::task::Spawn;
 use plan9::Plan9FileSystem;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
+use std::task::ready;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::Resources;
@@ -126,16 +128,12 @@ impl VirtioDevice for VirtioPlan9Device {
         ));
     }
 
-    fn disable(&mut self) {
-        let Some(mut worker) = self.worker.take() else {
-            return;
-        };
-        self.exit_event.notify(usize::MAX);
-        self.driver
-            .spawn("shutdown-virtio-9p-queue".to_owned(), async move {
-                worker.stop().await;
-            })
-            .detach();
+    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(worker) = &mut self.worker {
+            ready!(worker.poll_stop(cx));
+        }
+        self.worker = None;
+        Poll::Ready(())
     }
 }
 

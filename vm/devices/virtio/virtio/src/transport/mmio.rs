@@ -141,7 +141,9 @@ impl VirtioMmioDevice {
 
 impl Drop for VirtioMmioDevice {
     fn drop(&mut self) {
-        self.device.disable();
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let _ = self.device.poll_disable(&mut cx);
     }
 }
 
@@ -359,7 +361,9 @@ impl VirtioMmioDevice {
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
-                        self.device.disable();
+                        let waker = std::task::Waker::noop();
+                        let mut cx = std::task::Context::from_waker(&waker);
+                        let _ = self.device.poll_disable(&mut cx);
                     }
                     self.interrupt_state.lock().update(false, !0);
                 }
