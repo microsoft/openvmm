@@ -237,7 +237,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
         let sync_tx = inner
             .endpoint_state
             .as_ref()
-            .map_or(true, |s| s.lock().sync_tx);
+            .is_none_or(|s| s.lock().sync_tx);
         let senders = config
             .into_iter()
             .map(|config| {
