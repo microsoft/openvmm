@@ -936,9 +936,25 @@ impl ReadyState {
                             let response_serialized =
                                 tdisp::serialize_proto::serialize_response(&response);
 
+                            let response_header = protocol::VpciTdispCommandHeaderReply {
+                                status: protocol::Status::SUCCESS,
+                                slot,
+                                data_length: response_serialized.len() as u64,
+                            };
+
+                            tracing::debug!(?response_header, "guest response");
+                            tracing::debug!(
+                                response_header_len = response_header.as_bytes().len(),
+                                "guest response header size"
+                            );
+                            tracing::debug!(
+                                payload_size = response_serialized.len(),
+                                "guest response payload size"
+                            );
+
                             conn.send_completion(
                                 transaction_id,
-                                &protocol::Status::SUCCESS,
+                                &response_header,
                                 response_serialized.as_bytes(),
                             )?;
                         } else {
@@ -1411,7 +1427,9 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
+    use tdisp_proto::GuestToHostResponseExt;
     use test_with_tracing::test;
     use thiserror::Error;
     use vmbus_async::queue::IncomingPacket;
@@ -1547,6 +1565,28 @@ mod tests {
                 .map_err(GuestError::Queue)
         }
 
+        async fn write_packet_with_header<T: IntoBytes + Immutable + KnownLayout>(
+            &mut self,
+            transaction_id: Option<u64>,
+            header: &T,
+            extra: &[u8],
+        ) -> Result<(), GuestError> {
+            self.host_queue
+                .split()
+                .1
+                .write(OutgoingPacket {
+                    transaction_id: transaction_id.unwrap_or(0),
+                    packet_type: if transaction_id.is_some() {
+                        OutgoingPacketType::InBandWithCompletion
+                    } else {
+                        OutgoingPacketType::InBandNoCompletion
+                    },
+                    payload: &[header.as_bytes(), extra],
+                })
+                .await
+                .map_err(GuestError::Queue)
+        }
+
         async fn negotiate_version(&mut self) {
             if let Err(vsp_version) = self.try_negotiate_version().await {
                 self.protocol_version = vsp_version;
@@ -1673,6 +1713,65 @@ mod tests {
             assert_eq!(reply.rsvd, 0);
             assert_eq!(reply.interrupt.message_count, 1);
             (reply.interrupt.address, reply.interrupt.data_payload)
+        }
+
+        /// Serializes `command` to a `VPCI_TDISP_COMMAND` vmbus packet, sends it
+        /// to the server requesting a completion, then reads the completion and
+        /// deserializes the payload back to a [`tdisp::GuestToHostResponse`].
+        async fn send_tdisp_command(
+            &mut self,
+            command: tdisp::GuestToHostCommand,
+        ) -> tdisp::GuestToHostResponse {
+            let serialized = tdisp::serialize_proto::serialize_command(&command);
+
+            let header = protocol::VpciTdispCommandHeader {
+                message_type: protocol::MessageType::VPCI_TDISP_COMMAND,
+                slot: SlotNumber::new(),
+                data_length: serialized.len() as u64,
+            };
+            let transaction_id = self.transaction_id.fetch_add(1, Ordering::Relaxed);
+            self.write_packet_with_header(Some(transaction_id), &header, serialized.as_bytes())
+                .await
+                .unwrap();
+
+            let mut queue = self.host_queue.split().0;
+            let packet = queue.read().await.map_err(GuestError::Queue).unwrap();
+            match &*packet {
+                IncomingPacket::Completion(completion) => {
+                    assert_eq!(completion.transaction_id(), transaction_id);
+
+                    // Read the entire completion payload at once before splitting it.
+                    // reader.len() returns the *total* payload size regardless of any
+                    // subsequent reads, so we must snapshot all bytes in one shot and
+                    // then parse them manually to avoid zero-padding artefacts.
+                    let mut reader = completion.reader();
+                    let mut all_bytes = vec![0u8; reader.len()];
+                    reader.read(&mut all_bytes).unwrap();
+
+                    let (reply_header, proto_bytes) =
+                        protocol::VpciTdispCommandHeaderReply::read_from_prefix(&all_bytes)
+                            .expect("completion payload too small to contain status");
+
+                    assert_eq!(
+                        reply_header.status,
+                        protocol::Status::SUCCESS,
+                        "tdisp command completion returned non-success status"
+                    );
+
+                    tracing::debug!(
+                        reply_header_size = reply_header.as_bytes().len(),
+                        "completion header size"
+                    );
+                    tracing::debug!(payload_size = proto_bytes.len(), "completion payload size");
+
+                    // Read only data_length bytes from the payload.
+                    let proto_bytes_shaved = &proto_bytes[..reply_header.data_length as usize];
+
+                    tdisp::serialize_proto::deserialize_response(proto_bytes_shaved)
+                        .expect("failed to deserialize GuestToHostResponse")
+                }
+                _ => panic!("unexpected incoming packet type"),
+            }
         }
     }
 
@@ -2043,6 +2142,46 @@ mod tests {
         write_u32(bar_address1 + 4, 2);
         write_u32(bar_address2, 3);
         write_u32(bar_address2 + HV_PAGE_SIZE, 4);
+    }
+
+    #[async_test]
+    async fn verify_tdisp_get_device_interface_info(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let vm_chipset = TestChipset::default();
+        let pci = vm_chipset
+            .device_builder("test")
+            .with_external_pci()
+            .add(|services| TestDevice::new(&mut services.register_mmio()))
+            .unwrap();
+        let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.start_device(0x1000000).await;
+
+        let guest_protocol_type = tdisp::TdispGuestProtocolType::AmdSevTioV10 as i32;
+        let command = tdisp::GuestToHostCommand {
+            device_id: SlotNumber::new().into_bits() as u64,
+            command: Some(tdisp::Command::GetDeviceInterfaceInfo(
+                tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo {
+                    guest_protocol_type,
+                },
+            )),
+        };
+        let response = guest_driver.send_tdisp_command(command).await;
+
+        let response = response.get_response::<TdispCommandResponseGetDeviceInterfaceInfo>();
+        match response {
+            Ok(info_resp) => {
+                let interface_info = info_resp
+                    .interface_info
+                    .expect("interface_info must be set");
+
+                assert_eq!(interface_info.guest_protocol_type, guest_protocol_type);
+                assert_eq!(interface_info.supported_features, 0xDEAD);
+            }
+            _ => panic!(
+                "expected GetDeviceInterfaceInfo response, got {:?}",
+                response
+            ),
+        }
     }
 
     #[async_test]

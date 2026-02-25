@@ -822,6 +822,19 @@ pub struct VpciTdispCommandHeader {
     // pub data: [u8; data_length...],
 }
 
+/// A TDISP packet response from the host to the guest.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VpciTdispCommandHeaderReply {
+    /// Status of the translation operation
+    pub status: Status,
+    /// PCI slot number of the target device
+    pub slot: SlotNumber,
+    /// Length of the data payload to follow
+    pub data_length: u64,
+    // pub data: [u8; data_length...],
+}
+
 /// A serialized TDISP VPCI VMBUS command packet.
 #[derive(Debug, Clone)]
 pub struct VpciTdispCommand {

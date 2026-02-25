@@ -37,5 +37,8 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+tdisp_proto.workspace = true
 [lints]
 workspace = true
