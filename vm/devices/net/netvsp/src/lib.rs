@@ -5332,25 +5332,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 Ok(true)
             }
             Err(TxError::TryRestart(err)) => {
-                // Complete any pending tx prior to restarting queues.
-                let pending_tx = state
-                    .pending_tx_packets
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(id, inflight)| {
-                        if inflight.pending_packet_count > 0 {
-                            inflight.pending_packet_count = 0;
-                            Some(PendingTxCompletion {
-                                transaction_id: inflight.transaction_id,
-                                tx_id: Some(TxId(id as u32)),
-                                status: protocol::Status::SUCCESS,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                state.pending_tx_completions.extend(pending_tx);
+                // In-flight TX packets will be cleaned up by
+                // `reset_tx_after_endpoint_stop` during the queue restart.
                 Err(WorkerError::EndpointRequiresQueueRestart(err))
             }
             Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
