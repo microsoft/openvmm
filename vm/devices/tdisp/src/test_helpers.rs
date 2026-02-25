@@ -9,6 +9,15 @@ use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispReportType;
 
+/// Guest protocol that will be negotiated by the mock device.
+pub const TDISP_MOCK_GUEST_PROTOCOL: TdispGuestProtocolType = TdispGuestProtocolType::AmdSevTioV10;
+
+/// Device features that will be negotiated by the mock device.
+pub const TDISP_MOCK_SUPPORTED_FEATURES: u64 = 0xDEAD;
+
+/// Device ID that will be negotiated by the mock device.
+pub const TDISP_MOCK_DEVICE_ID: u64 = 99;
+
 /// Implements the host side of the TDISP interface for the mock NullDevice.
 pub struct NullTdispHostInterface {}
 impl TdispHostDeviceInterface for NullTdispHostInterface {
@@ -17,9 +26,9 @@ impl TdispHostDeviceInterface for NullTdispHostInterface {
         _requested_guest_protocol: TdispGuestProtocolType,
     ) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         Ok(TdispDeviceInterfaceInfo {
-            guest_protocol_type: TdispGuestProtocolType::AmdSevTioV10 as i32,
-            supported_features: 0xDEAD,
-            tdisp_device_id: 99,
+            guest_protocol_type: TDISP_MOCK_GUEST_PROTOCOL as i32,
+            supported_features: TDISP_MOCK_SUPPORTED_FEATURES,
+            tdisp_device_id: TDISP_MOCK_DEVICE_ID,
         })
     }
 

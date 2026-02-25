@@ -1429,6 +1429,9 @@ mod tests {
     use std::sync::atomic::Ordering;
     use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
+    use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
+    use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
+    use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
     use tdisp_proto::GuestToHostResponseExt;
     use test_with_tracing::test;
     use thiserror::Error;
@@ -1741,9 +1744,6 @@ mod tests {
                     assert_eq!(completion.transaction_id(), transaction_id);
 
                     // Read the entire completion payload at once before splitting it.
-                    // reader.len() returns the *total* payload size regardless of any
-                    // subsequent reads, so we must snapshot all bytes in one shot and
-                    // then parse them manually to avoid zero-padding artefacts.
                     let mut reader = completion.reader();
                     let mut all_bytes = vec![0u8; reader.len()];
                     reader.read(&mut all_bytes).unwrap();
@@ -2144,6 +2144,10 @@ mod tests {
         write_u32(bar_address2 + HV_PAGE_SIZE, 4);
     }
 
+    /// Verifies that the TDISP guest protocol can be negotiated correctly over a hosted VMBUS channel.
+    /// This test covers:
+    /// - Some basic VMBUS VPCI packet serialization for VpciTdispCommand
+    /// - VPCI VMBUS server interface receiving and responding to TDISP commands
     #[async_test]
     async fn verify_tdisp_get_device_interface_info(driver: DefaultDriver) {
         let msi_controller = TestVpciInterruptController::new();
@@ -2156,7 +2160,7 @@ mod tests {
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         guest_driver.start_device(0x1000000).await;
 
-        let guest_protocol_type = tdisp::TdispGuestProtocolType::AmdSevTioV10 as i32;
+        let guest_protocol_type = TDISP_MOCK_GUEST_PROTOCOL as i32;
         let command = tdisp::GuestToHostCommand {
             device_id: SlotNumber::new().into_bits() as u64,
             command: Some(tdisp::Command::GetDeviceInterfaceInfo(
@@ -2175,7 +2179,11 @@ mod tests {
                     .expect("interface_info must be set");
 
                 assert_eq!(interface_info.guest_protocol_type, guest_protocol_type);
-                assert_eq!(interface_info.supported_features, 0xDEAD);
+                assert_eq!(
+                    interface_info.supported_features,
+                    TDISP_MOCK_SUPPORTED_FEATURES
+                );
+                assert_eq!(interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
             }
             _ => panic!(
                 "expected GetDeviceInterfaceInfo response, got {:?}",

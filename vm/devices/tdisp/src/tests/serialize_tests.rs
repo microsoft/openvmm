@@ -9,7 +9,7 @@ use crate::serialize_proto::deserialize_command;
 use crate::serialize_proto::deserialize_response;
 use crate::serialize_proto::serialize_command;
 use crate::serialize_proto::serialize_response;
-use crate::tests::mocks::TDISP_MOCK_GUEST_PROTOCOL;
+use crate::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp_proto::GuestToHostCommand;
 use tdisp_proto::GuestToHostResponse;
 use tdisp_proto::TdispCommandRequestBind;
