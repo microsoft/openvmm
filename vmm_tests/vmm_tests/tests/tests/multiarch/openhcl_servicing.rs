@@ -21,6 +21,7 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
+use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -217,6 +218,50 @@ async fn shutdown_ic(
 
     vm.send_enlightened_shutdown(petri::ShutdownKind::Shutdown)
         .await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test that TPM NVRAM size persists across servicing.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64, VMGS_WITH_16K_TPM],
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[LATEST_STANDARD_AARCH64, VMGS_WITH_16K_TPM]
+)]
+async fn tpm_servicing<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (igvm_file, vmgs_file): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<VMGS_WITH_16K_TPM>,
+    ),
+) -> anyhow::Result<()> {
+    let flags = OpenHclServicingFlags {
+        override_version_checks: true,
+        ..Default::default()
+    };
+
+    let config = config
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .with_backing_vmgs(vmgs_file)
+        .modify_backend(|b| b.with_tpm().with_tpm_state_persistence());
+
+    let (mut vm, agent) = config.run().await?;
+
+    agent.ping().await?;
+
+    let inspect_before = vm
+        .inspect_openhcl("vm/tpm/worker/nvram_size", None, None)
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+    agent.ping().await?;
+
+    let inspect_after = vm
+        .inspect_openhcl("vm/tpm/worker/nvram_size", None, None)
+        .await?;
+    assert_eq!(inspect_before, inspect_after);
+
+    agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
