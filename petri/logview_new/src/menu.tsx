@@ -3,14 +3,13 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import "./styles/menu.css";
 
 // Menu component that opens from the left side
 export function Menu(): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const navigate = useNavigate();
-  const toggle = useCallback(() => setOpen((o) => !o), []);
+  const toggleVisible = useCallback(() => setOpen((o) => !o), []);
 
   // Prevent body scroll while drawer open
   useEffect(() => {
@@ -23,18 +22,13 @@ export function Menu(): React.JSX.Element {
     }
   }, [open]);
 
-  function navigateAndClose(path: string) {
-    navigate(path);
-    toggle();
-  }
-
   return (
     <>
       <button
         type="button"
         aria-label={open ? "Close navigation menu" : "Open navigation menu"}
         className="menu-trigger"
-        onClick={toggle}
+        onClick={toggleVisible}
       >
         <span className="menu-lines" aria-hidden="true">
           <span />
@@ -47,7 +41,7 @@ export function Menu(): React.JSX.Element {
           <>
             <div
               className="menu-overlay"
-              onClick={toggle}
+              onClick={toggleVisible}
               role="presentation"
             />
             <nav
@@ -58,28 +52,31 @@ export function Menu(): React.JSX.Element {
               <div className="menu-drawer-header">Petri Test Viewer</div>
               <ul className="menu-nav-list" role="list">
                 <li>
-                  <button
+                  <Link
+                    to="/runs"
                     className="drawer-link"
-                    onClick={() => navigateAndClose("/runs")}
+                    onClick={toggleVisible}
                   >
                     Runs
-                  </button>
+                  </Link>
                 </li>
                 <li>
-                  <button
+                  <Link
+                    to="/tests"
                     className="drawer-link"
-                    onClick={() => navigateAndClose("/tests")}
+                    onClick={toggleVisible}
                   >
                     Tests
-                  </button>
+                  </Link>
                 </li>
                 <li>
-                  <button
+                  <Link
+                    to="/docs"
                     className="drawer-link"
-                    onClick={() => navigateAndClose("/docs")}
+                    onClick={toggleVisible}
                   >
                     Docs
-                  </button>
+                  </Link>
                 </li>
                 <li className="drawer-separator" aria-hidden="true" />
                 <li>

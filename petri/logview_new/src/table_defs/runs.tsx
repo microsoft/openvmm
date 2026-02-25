@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { ColumnDef } from "@tanstack/react-table";
+import { Link } from "react-router-dom";
 import { RunData } from "../data_defs";
 import "../styles/runs.css";
 
@@ -17,9 +18,7 @@ export const columnWidthMap = {
 };
 
 // Define the columns for the runs table
-export const createColumns = (
-  onRunClick: (runId: string) => void
-): ColumnDef<RunData>[] => {
+export const createColumns = (): ColumnDef<RunData>[] => {
   return [
     {
       id: "status",
@@ -67,16 +66,13 @@ export const createColumns = (
       cell: (info) => {
         const runId = info.getValue<string>().replace("runs/", "");
         return (
-          <a
-            href="#"
-            onClick={(e) => {
-              e.preventDefault();
-              onRunClick(runId);
-            }}
+          <Link
+            to={`/runs/${runId}`}
             className="common-table-link"
+            title={runId}
           >
             {runId}
-          </a>
+          </Link>
         );
       },
       sortingFn: (rowA, rowB, columnId) => {
