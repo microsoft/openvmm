@@ -9,17 +9,13 @@ use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
 use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
-use async_trait::async_trait;
 use futures::FutureExt;
 use futures::Stream;
-use futures::StreamExt;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MappedMemoryRegion;
 use inspect::Inspect;
-use pal_async::DefaultPool;
-use pal_async::driver::Driver;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -29,42 +25,21 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
-use task_control::AsyncRun;
-use task_control::StopTask;
-use task_control::TaskControl;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 
-#[async_trait]
-pub trait VirtioQueueWorkerContext {
-    async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool;
-}
-
-#[derive(Debug, Inspect)]
-pub struct VirtioQueueUsedHandler {
-    #[inspect(skip)]
+#[derive(Debug)]
+pub(crate) struct VirtioQueueUsedHandler {
     core: QueueCoreCompleteWork,
-    #[inspect(with = "|x| x.lock().0")]
-    outstanding_desc_count: Arc<Mutex<(u16, event_listener::Event)>>,
-    #[inspect(skip)]
     notify_guest: Interrupt,
 }
 
 impl VirtioQueueUsedHandler {
-    fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
-        Self {
-            core,
-            outstanding_desc_count: Arc::new(Mutex::new((0, event_listener::Event::new()))),
-            notify_guest,
-        }
+    pub(crate) fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
+        Self { core, notify_guest }
     }
 
-    pub fn add_outstanding_descriptor(&self) {
-        let (count, _) = &mut *self.outstanding_desc_count.lock();
-        *count += 1;
-    }
-
-    pub fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
+    pub(crate) fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
         match self.core.complete_descriptor(work, bytes_written) {
             Ok(true) => {
                 self.notify_guest.deliver();
@@ -75,13 +50,6 @@ impl VirtioQueueUsedHandler {
                     error = &err as &dyn std::error::Error,
                     "failed to complete descriptor"
                 );
-            }
-        }
-        {
-            let (count, event) = &mut *self.outstanding_desc_count.lock();
-            *count -= 1;
-            if *count == 0 {
-                event.notify(usize::MAX);
             }
         }
     }
@@ -95,13 +63,12 @@ pub struct VirtioQueueCallbackWork {
 }
 
 impl VirtioQueueCallbackWork {
-    pub fn new(
+    pub(crate) fn new(
         mut work: QueueWork,
         used_queue_handler: &Arc<Mutex<VirtioQueueUsedHandler>>,
     ) -> Self {
         let used_queue_handler = used_queue_handler.clone();
         let payload = std::mem::take(&mut work.payload);
-        used_queue_handler.lock().add_outstanding_descriptor();
         Self {
             work,
             payload,
@@ -218,6 +185,7 @@ impl Drop for VirtioQueueCallbackWork {
 pub struct VirtioQueue {
     #[inspect(flatten)]
     core: QueueCoreGetWork,
+    #[inspect(skip)]
     used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     #[inspect(skip)]
     queue_event: PolledWait<Event>,
@@ -292,127 +260,6 @@ impl Stream for VirtioQueue {
         ready!(self.get_mut().poll_next_buffer(cx))
             .transpose()
             .into()
-    }
-}
-
-enum VirtioQueueStateInner {
-    Initializing {
-        mem: GuestMemory,
-        features: VirtioDeviceFeatures,
-        params: QueueParams,
-        event: Event,
-        notify: Interrupt,
-        exit_event: event_listener::EventListener,
-    },
-    InitializationInProgress,
-    Running {
-        queue: VirtioQueue,
-        exit_event: event_listener::EventListener,
-    },
-}
-
-pub struct VirtioQueueState {
-    inner: VirtioQueueStateInner,
-}
-
-pub struct VirtioQueueWorker {
-    driver: Box<dyn Driver>,
-    context: Box<dyn VirtioQueueWorkerContext + Send>,
-}
-
-impl VirtioQueueWorker {
-    pub fn new(driver: impl Driver, context: Box<dyn VirtioQueueWorkerContext + Send>) -> Self {
-        Self {
-            driver: Box::new(driver),
-            context,
-        }
-    }
-
-    pub fn into_running_task(
-        self,
-        name: impl Into<String>,
-        mem: GuestMemory,
-        features: VirtioDeviceFeatures,
-        queue_resources: QueueResources,
-        exit_event: event_listener::EventListener,
-    ) -> TaskControl<VirtioQueueWorker, VirtioQueueState> {
-        let name = name.into();
-        let (_, driver) = DefaultPool::spawn_on_thread(&name);
-
-        let mut task = TaskControl::new(self);
-        task.insert(
-            driver,
-            name,
-            VirtioQueueState {
-                inner: VirtioQueueStateInner::Initializing {
-                    mem,
-                    features,
-                    params: queue_resources.params,
-                    event: queue_resources.event,
-                    notify: queue_resources.notify,
-                    exit_event,
-                },
-            },
-        );
-        task.start();
-        task
-    }
-
-    async fn run_queue(&mut self, state: &mut VirtioQueueState) -> bool {
-        match &mut state.inner {
-            VirtioQueueStateInner::InitializationInProgress => unreachable!(),
-            VirtioQueueStateInner::Initializing { .. } => {
-                let VirtioQueueStateInner::Initializing {
-                    mem,
-                    features,
-                    params,
-                    event,
-                    notify,
-                    exit_event,
-                } = std::mem::replace(
-                    &mut state.inner,
-                    VirtioQueueStateInner::InitializationInProgress,
-                )
-                else {
-                    unreachable!()
-                };
-                let queue_event = PolledWait::new(&self.driver, event).unwrap();
-                let queue = VirtioQueue::new(features, params, mem, notify, queue_event);
-                if let Err(err) = queue {
-                    tracing::error!(
-                        err = &err as &dyn std::error::Error,
-                        "Failed to start queue"
-                    );
-                    false
-                } else {
-                    state.inner = VirtioQueueStateInner::Running {
-                        queue: queue.unwrap(),
-                        exit_event,
-                    };
-                    true
-                }
-            }
-            VirtioQueueStateInner::Running { queue, exit_event } => {
-                let mut exit = exit_event.fuse();
-                let mut queue_ready = queue.next().fuse();
-                let work = futures::select_biased! {
-                    _ = exit => return false,
-                    work = queue_ready => work.expect("queue will never complete").map_err(anyhow::Error::from),
-                };
-                self.context.process_work(work).await
-            }
-        }
-    }
-}
-
-impl AsyncRun<VirtioQueueState> for VirtioQueueWorker {
-    async fn run(
-        &mut self,
-        stop: &mut StopTask<'_>,
-        state: &mut VirtioQueueState,
-    ) -> Result<(), task_control::Cancelled> {
-        while stop.until_stopped(self.run_queue(state)).await? {}
-        Ok(())
     }
 }
 
