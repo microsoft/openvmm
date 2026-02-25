@@ -33,6 +33,8 @@ pub struct TpmDeviceHandle {
     pub logger: Option<Resource<TpmLoggerKind>>,
     /// BIOS GUID (for logging purposes)
     pub bios_guid: Guid,
+    /// NVRAM size (default size if None)
+    pub nvram_size: Option<usize>,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {

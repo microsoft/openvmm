@@ -57,6 +57,7 @@ impl PetriVmConfigOpenVmm {
                     logger: None,
                     // TODO: generate an actual BIOS GUID and put it here
                     bios_guid: guid::guid!("00000000-0000-0000-0000-000000000000"),
+                    nvram_size: None,
                 }
                 .into_resource(),
             });
