@@ -385,12 +385,12 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
+            //
+            // Here, we emit diagnostics to tracing with INFO level and no limit
             let _ = self.process_diagnostics(
                 false,
-                service::diagnostics::DiagnosticsEmitter::Tracing {
-                    limit: Some(DEFAULT_LOGS_PER_PERIOD),
-                },
-                None,
+                service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                Some(LogLevel::make_info()),
             );
         }
     }
