@@ -950,6 +950,7 @@ impl PetriVmConfigSetupCore<'_> {
                         is_confidential_vm: self.firmware.isolation().is_some(),
                         // TODO: generate an actual BIOS GUID and put it here
                         bios_guid: Guid::ZERO,
+                        nvram_size: None,
                     }
                     .into_resource(),
                     worker_host: self.make_device_worker("tpm").await?,

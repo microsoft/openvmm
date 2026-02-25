@@ -109,7 +109,7 @@ pub async fn request_vmgs_encryption_keys(
         attestation_vm_config,
     );
 
-    let vmgs_encrypted = vmgs.is_encrypted();
+    let vmgs_encrypted = vmgs.encrypted();
 
     tracing::info!(CVM_ALLOWED, "attempt to get VMGS key-encryption key");
 

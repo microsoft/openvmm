@@ -13,6 +13,7 @@ disallowed-macros = [
     { path = "futures::pin_mut", reason = "use std::pin::pin" },
     { path = "futures::ready", reason = "use std::task::ready" },
     { path = "tracing::enabled", reason = "https://github.com/tokio-rs/tracing/issues/2519" },
+    { path = "xshell::cmd", reason = "use `flowey::shell_cmd!` and `rt.sh` instead unless outside of a flowey node" },
 ]
 
 disallowed-methods = [
@@ -30,6 +31,7 @@ disallowed-methods = [
 
     { path = "std::fs::canonicalize", reason = "you likely want std::path::absolute" },
     { path = "std::path::Path::canonicalize", reason = "you likely want std::path::absolute" },
+    { path = "xshell::Shell::new", reason = "use `rt.sh` instead unless outside of a flowey node" },
 ]
 
 avoid-breaking-exported-api = false

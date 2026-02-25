@@ -6,22 +6,12 @@ name = "term"
 edition.workspace = true
 rust-version.workspace = true
 
-[target.'cfg(windows)'.dependencies.winapi]
-features = [
-  "consoleapi",
-  "handleapi",
-  "memoryapi",
-  "namedpipeapi",
-  "processenv",
-  "realtimeapiset",
-  "synchapi",
-  "winbase",
-  "wincon",
-  "winnls",
-  "winnt",
-  "winsock2",
-]
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
+features = [
+  "Win32_Globalization",
+  "Win32_System_Console",
+]
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

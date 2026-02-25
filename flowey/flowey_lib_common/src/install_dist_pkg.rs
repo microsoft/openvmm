@@ -26,112 +26,95 @@ flowey_request! {
     }
 }
 
-#[derive(Debug)]
-struct PackageManager {
+fn query_installed_packages(
+    rt: &mut RustRuntimeServices<'_>,
     distro: FlowPlatformLinuxDistro,
-    sh: xshell::Shell,
+    packages_to_check: &BTreeSet<String>,
+) -> anyhow::Result<BTreeSet<String>> {
+    let output = match distro {
+        FlowPlatformLinuxDistro::Ubuntu => {
+            let fmt = "${binary:Package}\n";
+            flowey::shell_cmd!(rt, "dpkg-query -W -f={fmt} {packages_to_check...}")
+        }
+        FlowPlatformLinuxDistro::Fedora => {
+            let fmt = "%{NAME}\n";
+            flowey::shell_cmd!(rt, "rpm -q --queryformat={fmt} {packages_to_check...}")
+        }
+        FlowPlatformLinuxDistro::Arch => {
+            flowey::shell_cmd!(rt, "pacman -Qq {packages_to_check...}")
+        }
+        FlowPlatformLinuxDistro::Nix => {
+            anyhow::bail!("Nix environments cannot install packages")
+        }
+        FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+    }
+    .ignore_status()
+    .output()?;
+    let output = String::from_utf8(output.stdout)?;
+
+    let mut installed_packages = BTreeSet::new();
+    for ln in output.trim().lines() {
+        let package = match ln.split_once(':') {
+            Some((package, _arch)) => package,
+            None => ln,
+        };
+        let no_existing = installed_packages.insert(package.to_owned());
+        assert!(no_existing);
+    }
+
+    Ok(installed_packages)
 }
 
-impl PackageManager {
-    fn new(ctx: &NodeCtx<'_>) -> anyhow::Result<Self> {
-        let distro = match ctx.platform() {
-            FlowPlatform::Linux(linux_distribution) => linux_distribution,
-            _ => anyhow::bail!("Unsupported platform"),
-        };
-
-        let sh = xshell::Shell::new()?;
-
-        Ok(Self { distro, sh })
-    }
-
-    fn distro(&self) -> FlowPlatformLinuxDistro {
-        self.distro
-    }
-
-    fn query_cmd(&self, packages_to_check: &BTreeSet<String>) -> anyhow::Result<BTreeSet<String>> {
-        let Self { distro, sh } = self;
-
-        let output = match distro {
-            FlowPlatformLinuxDistro::Ubuntu => {
-                let fmt = "${binary:Package}\n";
-                xshell::cmd!(sh, "dpkg-query -W -f={fmt} {packages_to_check...}")
-            }
-            FlowPlatformLinuxDistro::Fedora => {
-                let fmt = "%{NAME}\n";
-                xshell::cmd!(sh, "rpm -q --queryformat={fmt} {packages_to_check...}")
-            }
-            FlowPlatformLinuxDistro::Arch => {
-                xshell::cmd!(sh, "pacman -Qq {packages_to_check...}")
-            }
-            FlowPlatformLinuxDistro::Nix => {
-                anyhow::bail!("Nix environments cannot install packages")
-            }
-            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+fn update_packages(
+    rt: &mut RustRuntimeServices<'_>,
+    distro: FlowPlatformLinuxDistro,
+) -> anyhow::Result<()> {
+    match distro {
+        FlowPlatformLinuxDistro::Ubuntu => flowey::shell_cmd!(rt, "sudo apt-get update").run()?,
+        FlowPlatformLinuxDistro::Fedora => flowey::shell_cmd!(rt, "sudo dnf update").run()?,
+        // Running `pacman -Sy` without a full system update can break everything; do nothing
+        FlowPlatformLinuxDistro::Arch => (),
+        FlowPlatformLinuxDistro::Nix => {
+            anyhow::bail!("Nix environments cannot install packages")
         }
-        .ignore_status()
-        .output()?;
-        let output = String::from_utf8(output.stdout)?;
-
-        let mut installed_packages = BTreeSet::new();
-        for ln in output.trim().lines() {
-            let package = match ln.split_once(':') {
-                Some((package, _arch)) => package,
-                None => ln,
-            };
-            let no_existing = installed_packages.insert(package.to_owned());
-            assert!(no_existing);
-        }
-
-        Ok(installed_packages)
+        FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
     }
 
-    fn update(&self) -> anyhow::Result<()> {
-        let Self { distro, sh } = self;
+    Ok(())
+}
 
-        match distro {
-            FlowPlatformLinuxDistro::Ubuntu => xshell::cmd!(sh, "sudo apt-get update").run()?,
-            FlowPlatformLinuxDistro::Fedora => xshell::cmd!(sh, "sudo dnf update").run()?,
-            // Running `pacman -Sy` without a full system update can break everything; do nothing
-            FlowPlatformLinuxDistro::Arch => (),
-            FlowPlatformLinuxDistro::Nix => {
-                anyhow::bail!("Nix environments cannot install packages")
+fn install_packages(
+    rt: &mut RustRuntimeServices<'_>,
+    distro: FlowPlatformLinuxDistro,
+    packages: &BTreeSet<String>,
+    interactive: bool,
+) -> anyhow::Result<()> {
+    match distro {
+        FlowPlatformLinuxDistro::Ubuntu => {
+            let mut options = Vec::new();
+            if !interactive {
+                // auto accept
+                options.push("-y");
+                // Wait for dpkg locks to be released when running in CI
+                options.extend(["-o", "DPkg::Lock::Timeout=60"]);
             }
-            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+            flowey::shell_cmd!(rt, "sudo apt-get install {options...} {packages...}").run()?;
         }
-
-        Ok(())
+        FlowPlatformLinuxDistro::Fedora => {
+            let auto_accept = (!interactive).then_some("-y");
+            flowey::shell_cmd!(rt, "sudo dnf install {auto_accept...} {packages...}").run()?;
+        }
+        FlowPlatformLinuxDistro::Arch => {
+            let auto_accept = (!interactive).then_some("--noconfirm");
+            flowey::shell_cmd!(rt, "sudo pacman -S {auto_accept...} {packages...}").run()?;
+        }
+        FlowPlatformLinuxDistro::Nix => {
+            anyhow::bail!("Nix environments cannot install packages")
+        }
+        FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
     }
 
-    fn install(&self, packages: &BTreeSet<String>, interactive: bool) -> anyhow::Result<()> {
-        let Self { distro, sh } = self;
-
-        match distro {
-            FlowPlatformLinuxDistro::Ubuntu => {
-                let mut options = Vec::new();
-                if !interactive {
-                    // auto accept
-                    options.push("-y");
-                    // Wait for dpkg locks to be released when running in CI
-                    options.extend(["-o", "DPkg::Lock::Timeout=60"]);
-                }
-                xshell::cmd!(sh, "sudo apt-get install {options...} {packages...}").run()?;
-            }
-            FlowPlatformLinuxDistro::Fedora => {
-                let auto_accept = (!interactive).then_some("-y");
-                xshell::cmd!(sh, "sudo dnf install {auto_accept...} {packages...}").run()?;
-            }
-            FlowPlatformLinuxDistro::Arch => {
-                let auto_accept = (!interactive).then_some("--noconfirm");
-                xshell::cmd!(sh, "sudo pacman -S {auto_accept...} {packages...}").run()?;
-            }
-            FlowPlatformLinuxDistro::Nix => {
-                anyhow::bail!("Nix environments cannot install packages")
-            }
-            FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
-        }
-
-        Ok(())
-    }
+    Ok(())
 }
 
 new_flow_node!(struct Node);
@@ -219,7 +202,11 @@ impl FlowNode for Node {
             );
         }
 
-        let pacman = PackageManager::new(ctx)?;
+        let distro = match ctx.platform() {
+            FlowPlatform::Linux(d) => d,
+            _ => unreachable!(),
+        };
+
         let persistent_dir = ctx.persistent_dir();
         let need_install =
             ctx.emit_rust_stepv("checking if packages need to be installed", |ctx| {
@@ -228,7 +215,7 @@ impl FlowNode for Node {
                 move |rt| {
                     // Provide the users an escape-hatch to run Linux flows on distributions that are not actively
                     // supported at the moment.
-                    if matches!(rt.backend(), FlowBackend::Local) && pacman.distro() == FlowPlatformLinuxDistro::Unknown {
+                    if matches!(rt.backend(), FlowBackend::Local) && distro == FlowPlatformLinuxDistro::Unknown {
                         log::error!("This Linux distribution is not actively supported at the moment.");
                         log::warn!("");
                         log::warn!("================================================================================");
@@ -255,7 +242,7 @@ impl FlowNode for Node {
                     }
 
                     let packages_to_check = &packages;
-                    let installed_packages  = pacman.query_cmd(packages_to_check)?;
+                    let installed_packages = query_installed_packages(rt, distro, packages_to_check)?;
 
                     // the package manager won't re-install packages that are already
                     // up-to-date, so this sort of coarse-grained signal should
@@ -264,7 +251,6 @@ impl FlowNode for Node {
                 }
             });
 
-        let pacman = PackageManager::new(ctx)?;
         ctx.emit_rust_step("installing packages", move |ctx| {
             let packages = packages.clone();
             let need_install = need_install.claim(ctx);
@@ -278,7 +264,7 @@ impl FlowNode for Node {
                 if !skip_update {
                     // Retry on failure in CI
                     let mut i = 0;
-                    while let Err(e) = pacman.update() {
+                    while let Err(e) = update_packages(rt, distro) {
                         i += 1;
                         if i == 5 || interactive {
                             return Err(e);
@@ -286,7 +272,7 @@ impl FlowNode for Node {
                         std::thread::sleep(std::time::Duration::from_secs(1));
                     }
                 }
-                pacman.install(&packages, interactive)?;
+                install_packages(rt, distro, &packages, interactive)?;
 
                 Ok(())
             }

@@ -40,6 +40,8 @@ getrandom = { workspace = true, optional = true}
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 ucs2.workspace = true
 resource_dll_parser.workspace = true
 

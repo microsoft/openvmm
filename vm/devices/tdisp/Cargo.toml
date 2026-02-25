@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tdisp"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+prost.workspace = true
+tracing.workspace = true
+tdisp_proto.workspace = true
+
+[lints]
+workspace = true
