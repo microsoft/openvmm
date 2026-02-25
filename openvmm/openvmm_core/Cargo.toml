@@ -69,7 +69,6 @@ scsidisk.workspace = true
 serial_16550_resources.workspace = true
 storvsp.workspace = true
 virtio.workspace = true
-virtio_serial.workspace = true
 vmbus_channel.workspace = true
 vmbus_core.workspace = true
 vmbus_server.workspace = true

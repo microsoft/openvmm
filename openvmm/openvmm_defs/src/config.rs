@@ -41,8 +41,6 @@ pub struct Config {
     pub framebuffer: Option<framebuffer::Framebuffer>,
     pub vga_firmware: Option<RomFileLocation>,
     pub vtl2_gfx: bool,
-    pub virtio_console_pci: bool,
-    pub virtio_serial: Option<SerialPipes>,
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,

@@ -5195,7 +5195,6 @@ dependencies = [
  "virt_mshv",
  "virt_whp",
  "virtio",
- "virtio_serial",
  "vm_loader",
  "vm_resource",
  "vm_topology",
@@ -9028,18 +9027,6 @@ dependencies = [
  "mesh",
  "net_backend_resources",
  "vm_resource",
-]
-
-[[package]]
-name = "virtio_serial"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "guestmem",
- "parking_lot",
- "tracing",
- "virtio",
 ]
 
 [[package]]

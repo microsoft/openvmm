@@ -107,7 +107,6 @@ use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
-use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -116,7 +115,6 @@ use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
-use serial_io::SerialIo;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -479,83 +477,11 @@ async fn vm_config_from_command_line(
         })
     };
 
-    // TODO: unify virtio serial handling and remove this.
-    let setup_serial_virtio = |name, cli_cfg, device| -> anyhow::Result<_> {
-        Ok(match cli_cfg {
-            SerialConfigCli::Console => {
-                if console_state.borrow().is_some() {
-                    bail!("console already set");
-                }
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_out(name, term::raw_stdout());
-                *console_state.borrow_mut() = Some(ConsoleState {
-                    device,
-                    input: Box::new(PolledPipe::new(&serial_driver, io.input.unwrap())?),
-                });
-                Some(io.config)
-            }
-            SerialConfigCli::Stderr => {
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_out(name, term::raw_stderr());
-                // Ensure there is no input so that the serial devices don't see
-                // EOF and think the port is disconnected.
-                io.config.input = None;
-                Some(io.config)
-            }
-            SerialConfigCli::File(path) => {
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                let file = fs_err::File::create(path).context("failed to create file")?;
-                io.spawn_copy_out(name, file);
-                // Ensure there is no input so that the serial devices don't see
-                // EOF and think the port is disconnected.
-                io.config.input = None;
-                Some(io.config)
-            }
-            SerialConfigCli::None => None,
-            SerialConfigCli::Pipe(path) => {
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_listener(serial_driver.clone(), name, &path)
-                    .with_context(|| format!("listening on pipe {}", path.display()))?
-                    .detach();
-                Some(io.config)
-            }
-            SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
-            SerialConfigCli::NewConsole(app, window_title) => {
-                let path = console_relay::random_console_path();
-
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_listener(serial_driver.clone(), name, &path)
-                    .with_context(|| format!("listening on pipe {}", path.display()))?
-                    .detach();
-
-                let window_title =
-                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
-
-                console_relay::launch_console(
-                    app.or_else(openvmm_terminal_app).as_deref(),
-                    &path,
-                    ConsoleLaunchOptions {
-                        window_title: Some(window_title),
-                    },
-                )
-                .context("failed to launch console")?;
-                Some(io.config)
-            }
-        })
-    };
-
-    let virtio_console = opt.virtio_console || opt.virtio_console_pci;
     let mut vmbus_devices = Vec::new();
 
     let serial0_cfg = setup_serial(
         "com1",
-        opt.com1.clone().unwrap_or({
-            if !virtio_console {
-                SerialConfigCli::Console
-            } else {
-                SerialConfigCli::None
-            }
-        }),
+        opt.com1.clone().unwrap_or(SerialConfigCli::Console),
         if cfg!(guest_arch = "x86_64") {
             "ttyS0"
         } else {
@@ -587,21 +513,6 @@ async fn vm_config_from_command_line(
             "ttyS3"
         } else {
             "ttyAMA3"
-        },
-    )?;
-    let virtio_serial_cfg = setup_serial_virtio(
-        "virtio_serial",
-        opt.virtio_serial.clone().unwrap_or({
-            if virtio_console {
-                SerialConfigCli::Console
-            } else {
-                SerialConfigCli::None
-            }
-        }),
-        if opt.virtio_console_pci {
-            "hvc1"
-        } else {
-            "hvc0"
         },
     )?;
     let with_vmbus_com1_serial = if let Some(vmbus_com1_cfg) = setup_serial(
@@ -1632,8 +1543,6 @@ async fn vm_config_from_command_line(
         framebuffer,
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
-        virtio_console_pci: opt.virtio_console_pci,
-        virtio_serial: virtio_serial_cfg,
         virtio_devices,
         vmbus: with_hv.then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,

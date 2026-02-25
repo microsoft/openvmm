@@ -449,8 +449,6 @@ impl PetriVmConfigOpenVmm {
             kernel_vmnics: vec![],
             input: mesh::Receiver::new(),
             vtl2_gfx: false,
-            virtio_console_pci: false,
-            virtio_serial: None,
             virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
