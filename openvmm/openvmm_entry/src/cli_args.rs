@@ -573,10 +573,6 @@ options:
     #[clap(long)]
     pub default_boot_always_attempt: bool,
 
-    /// Enable Azure Identity HSM support in UEFI
-    #[clap(long)]
-    pub azi_hsm_enabled: bool,
-
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.
