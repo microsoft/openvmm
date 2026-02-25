@@ -81,6 +81,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_iso::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Iso),
 
             _ if id == test_vmgs::VMGS_WITH_BOOT_ENTRY => get_test_artifact_path(KnownTestArtifacts::VmgsWithBootEntry),
+            _ if id == test_vmgs::VMGS_WITH_16K_TPM => get_test_artifact_path(KnownTestArtifacts::VmgsWith16kTpm),
 
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
             _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),

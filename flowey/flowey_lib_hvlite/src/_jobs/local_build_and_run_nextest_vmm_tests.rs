@@ -354,6 +354,7 @@ impl SimpleFlowNode for Node {
                         if ubuntu {
                             artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
                             artifacts.push(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
+                            artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
                         }
                         if windows && uefi {
                             artifacts.push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
@@ -378,6 +379,7 @@ impl SimpleFlowNode for Node {
 
                         if ubuntu {
                             artifacts.push(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
+                            artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
                         }
                         if windows {
                             artifacts.push(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);

@@ -537,6 +537,11 @@ pub mod artifacts {
             /// with a persistent VMGS file enabled. This is useful for testing
             /// whether default_boot_always_attempt works to boot other VHDs.
             VMGS_WITH_BOOT_ENTRY,
+            /// VMGS file containing a 16k vTPM blob
+            ///
+            /// This file was created by creating a 16k vTPM blob and loading
+            /// it into file index 3 of a blank VMGS file.
+            VMGS_WITH_16K_TPM,
         }
 
         impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_BOOT_ENTRY {
@@ -545,6 +550,13 @@ pub mod artifacts {
         }
 
         impl IsTestVmgs for VMGS_WITH_BOOT_ENTRY {}
+
+        impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_16K_TPM {
+            const FILENAME: &'static str = "tpm-16k-vmgs.vhd";
+            const SIZE: u64 = 4194816;
+        }
+
+        impl IsTestVmgs for VMGS_WITH_16K_TPM {}
     }
 
     /// TMK-related artifacts

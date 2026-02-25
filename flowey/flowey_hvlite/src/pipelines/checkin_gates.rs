@@ -1050,6 +1050,7 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
+            KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
         let cvm_filter = |arch| {
@@ -1079,6 +1080,7 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
+            KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
         for VmmTestJobParams {
@@ -1161,6 +1163,7 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
                     KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
                     KnownTestArtifacts::VmgsWithBootEntry,
+                    KnownTestArtifacts::VmgsWith16kTpm,
                 ],
                 needs_prep_run: false,
             },

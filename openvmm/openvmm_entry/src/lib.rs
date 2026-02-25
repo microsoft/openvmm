@@ -1102,6 +1102,7 @@ fn vm_config_from_command_line(
                 logger: None,
                 is_confidential_vm: false,
                 bios_guid,
+                nvram_size: None,
             }
             .into_resource(),
         });

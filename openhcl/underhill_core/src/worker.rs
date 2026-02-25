@@ -1747,6 +1747,15 @@ async fn new_underhill_vm(
         }
     };
 
+    // Get TPM data size from VMGS. This is used by the TPM device later to
+    // initialize it with the correct size. VMGS file control blocks are saved
+    // and restored during servicing, so this is cached and doesn't directly
+    // access the VMGS file.
+    let tpm_size = vmgs
+        .as_ref()
+        .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
+        .map(|info| info.valid_bytes as usize);
+
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
         runtime_params
@@ -2887,6 +2896,7 @@ async fn new_underhill_vm(
                 logger: Some(GetTpmLoggerHandle.into_resource()),
                 is_confidential_vm: isolation.is_isolated(),
                 bios_guid: dps.general.bios_guid,
+                nvram_size: tpm_size,
             }
             .into_resource(),
         });
