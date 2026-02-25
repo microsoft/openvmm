@@ -9967,6 +9967,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "mesh",
+ "openhcl_tdisp",
  "pci_core",
  "slab",
  "sparse_mmap",

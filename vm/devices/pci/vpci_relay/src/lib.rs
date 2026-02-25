@@ -24,6 +24,7 @@ use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use openhcl_tdisp::TdispVirtualDeviceInterface;
 use pci_core::spec::hwid::HardwareIds;
 use state_unit::StateUnits;
 use std::future::poll_fn;
@@ -49,6 +50,9 @@ use vpci_client::VpciDeviceEject;
 /// TODO TDISP: Required for the tdisp crate to be built in the meantime.
 #[expect(unused_imports)]
 use tdisp::TdispHostDeviceInterface;
+use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
+use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
+use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 
 /// Trait for creating memory access instances.
 pub trait CreateMemoryAccess: 'static + Send + Sync {
@@ -58,6 +62,14 @@ pub trait CreateMemoryAccess: 'static + Send + Sync {
 
 /// The size of the MMIO region required for each VPCI device.
 pub const VPCI_RELAY_MMIO_PER_DEVICE: u64 = vpci_client::MMIO_SIZE;
+
+/// Flags for controlling optional behavior of the VPCI relay.
+#[derive(Inspect, Debug, Default, Copy, Clone)]
+pub struct VpciRelayOptions {
+    /// When set, the relay will exercise a mock TDISP flow for emulated TDISP
+    /// devices produced by OpenVMM tests.
+    pub test_tdisp_flow: bool,
+}
 
 /// Virtual PCI relay.
 #[derive(Inspect)]
@@ -80,6 +92,7 @@ pub struct VpciRelay {
     allowed_devices: Vec<AllowedDevice>,
     #[inspect(hex)]
     vtom: Option<u64>,
+    options: VpciRelayOptions,
 }
 
 #[derive(Inspect)]
@@ -164,6 +177,7 @@ impl VpciRelay {
         mmio_range: MemoryRange,
         mmio_access: Box<dyn CreateMemoryAccess>,
         vtom: Option<u64>,
+        options: VpciRelayOptions,
     ) -> Self {
         Self {
             driver_source,
@@ -176,6 +190,7 @@ impl VpciRelay {
             mmio_access,
             allowed_devices: Vec::new(),
             vtom,
+            options,
         }
     }
 
@@ -299,6 +314,16 @@ impl VpciRelay {
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
 
+        if self.options.test_tdisp_flow {
+            match Self::tdisp_test_mock_flow(vpci_device.clone()).await {
+                Ok(_) => {}
+                Err(err) => {
+                    // Panic on error, as this is a test and we want Petri to fail the test.
+                    panic!("failed to exercise TDISP flow test: {:#}", err);
+                }
+            }
+        }
+
         let device_name = format!("assigned_device:vpci-{instance_id}");
         let (device_unit, device) = chipset
             .add_dyn_device(&self.driver_source, state_units, device_name, async |_| {
@@ -343,6 +368,39 @@ impl VpciRelay {
         });
 
         state_units.start_stopped_units().await;
+        Ok(())
+    }
+
+    /// Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
+    /// Configured with the OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST environment variable.
+    async fn tdisp_test_mock_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
+        // For now, exercise just the "get device interface" flow and ensure that the device responds as
+        // TDISP capable and with the right mocked device information.
+
+        tracing::info!(
+            "tdisp_test_mock_flow: exercising TDISP flow because OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST was set"
+        );
+
+        let device_interface_info = device
+            .tdisp_get_device_interface_info()
+            .await
+            .context("tdisp_test_mock_flow: failed to get device interface info over vpci")?;
+
+        tracing::info!(
+            "tdisp_test_mock_flow: device interface info: {:?}",
+            device_interface_info
+        );
+
+        assert_eq!(
+            device_interface_info.guest_protocol_type,
+            TDISP_MOCK_GUEST_PROTOCOL as i32
+        );
+        assert_eq!(device_interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
+        assert_eq!(
+            device_interface_info.supported_features,
+            TDISP_MOCK_SUPPORTED_FEATURES
+        );
+
         Ok(())
     }
 }
