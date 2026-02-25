@@ -9,7 +9,7 @@ import "./styles/menu.css";
 // Menu component that opens from the left side
 export function Menu(): React.JSX.Element {
   const [open, setOpen] = useState(false);
-  const toggle = useCallback(() => setOpen((o) => !o), []);
+  const toggleVisible = useCallback(() => setOpen((o) => !o), []);
 
   // Prevent body scroll while drawer open
   useEffect(() => {
@@ -28,7 +28,7 @@ export function Menu(): React.JSX.Element {
         type="button"
         aria-label={open ? "Close navigation menu" : "Open navigation menu"}
         className="menu-trigger"
-        onClick={toggle}
+        onClick={toggleVisible}
       >
         <span className="menu-lines" aria-hidden="true">
           <span />
@@ -41,7 +41,7 @@ export function Menu(): React.JSX.Element {
           <>
             <div
               className="menu-overlay"
-              onClick={toggle}
+              onClick={toggleVisible}
               role="presentation"
             />
             <nav
@@ -55,7 +55,7 @@ export function Menu(): React.JSX.Element {
                   <Link
                     to="/runs"
                     className="drawer-link"
-                    onClick={toggle}
+                    onClick={toggleVisible}
                   >
                     Runs
                   </Link>
@@ -64,7 +64,7 @@ export function Menu(): React.JSX.Element {
                   <Link
                     to="/tests"
                     className="drawer-link"
-                    onClick={toggle}
+                    onClick={toggleVisible}
                   >
                     Tests
                   </Link>
@@ -73,7 +73,7 @@ export function Menu(): React.JSX.Element {
                   <Link
                     to="/docs"
                     className="drawer-link"
-                    onClick={toggle}
+                    onClick={toggleVisible}
                   >
                     Docs
                   </Link>
