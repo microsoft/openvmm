@@ -868,7 +868,6 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
-            KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
         for VmmTestJobParams {
@@ -934,7 +933,6 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
                     KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
                     KnownTestArtifacts::VmgsWithBootEntry,
-                    KnownTestArtifacts::VmgsWith16kTpm,
                 ],
             },
         ] {

@@ -685,19 +685,12 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         Ok(())
     }
 
-    /// Inspect OpenHCL.
-    pub async fn inspect_openhcl(
-        &mut self,
-        path: impl Into<String>,
-        depth: Option<usize>,
-        timeout: Option<Duration>,
-    ) -> anyhow::Result<inspect::Node> {
-        self.openhcl_diag()?.inspect(path, depth, timeout).await
-    }
-
     /// Test that we are able to inspect OpenHCL.
     pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
-        self.inspect_openhcl("", None, None).await.map(|_| ())
+        self.openhcl_diag()?
+            .inspect("", None, None)
+            .await
+            .map(|_| ())
     }
 
     /// Wait for VTL 2 to report that it is ready to respond to commands.
