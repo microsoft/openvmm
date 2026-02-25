@@ -142,16 +142,6 @@ impl VirtioMmioDevice {
     }
 }
 
-impl Drop for VirtioMmioDevice {
-    fn drop(&mut self) {
-        if self.device_status.driver_ok() || self.disabling {
-            let waker = std::task::Waker::noop();
-            let mut cx = std::task::Context::from_waker(&waker);
-            let _ = self.device.poll_disable(&mut cx);
-        }
-    }
-}
-
 impl VirtioMmioDevice {
     pub(crate) fn read_u32(&self, address: u64) -> u32 {
         let offset = (address & 0xfff) as u16;

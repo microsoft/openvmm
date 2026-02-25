@@ -571,16 +571,6 @@ impl VirtioPciDevice {
     }
 }
 
-impl Drop for VirtioPciDevice {
-    fn drop(&mut self) {
-        if self.device_status.driver_ok() || self.disabling {
-            let waker = std::task::Waker::noop();
-            let mut cx = std::task::Context::from_waker(&waker);
-            let _ = self.device.poll_disable(&mut cx);
-        }
-    }
-}
-
 impl VirtioPciDevice {
     fn read_bar_u32(&mut self, bar: u8, offset: u16) -> u32 {
         match bar {
