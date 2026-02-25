@@ -100,7 +100,7 @@ pub async fn read_key_protector(
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))
                 .map(|k| k.0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
-        Err(vmgs::Error::FileInfoNotAllocated) => Ok(KeyProtector::new_zeroed()),
+        Err(vmgs::Error::FileInfoNotAllocated(_)) => Ok(KeyProtector::new_zeroed()),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id }),
     }
 }
@@ -143,7 +143,7 @@ pub async fn read_key_protector_by_id(
                 })
             }
         },
-        Err(vmgs::Error::FileInfoNotAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
+        Err(vmgs::Error::FileInfoNotAllocated(_)) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { vmgs_err, file_id }),
     }
 }
@@ -197,7 +197,7 @@ pub async fn read_security_profile(vmgs: &mut Vmgs) -> Result<SecurityProfile, R
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
                 .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
-        Err(vmgs::Error::FileInfoNotAllocated) => Ok(SecurityProfile::new_zeroed()),
+        Err(vmgs::Error::FileInfoNotAllocated(_)) => Ok(SecurityProfile::new_zeroed()),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err })?,
     }
 }
@@ -211,7 +211,7 @@ pub async fn read_hardware_key_protector(
     let file_id = FileId::HW_KEY_PROTECTOR;
     let data = match vmgs.read_file(file_id).await {
         Ok(data) => data,
-        Err(vmgs::Error::FileInfoNotAllocated) => {
+        Err(vmgs::Error::FileInfoNotAllocated(_)) => {
             return Err(ReadFromVmgsError::EntryNotFound(file_id));
         }
         Err(vmgs_err) => {
@@ -270,7 +270,7 @@ pub async fn read_guest_secret_key(vmgs: &mut Vmgs) -> Result<GuestSecretKey, Re
                 .map_err(|_| ReadFromVmgsError::InvalidFormat(file_id))?
                 .0) // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         }
-        Err(vmgs::Error::FileInfoNotAllocated) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
+        Err(vmgs::Error::FileInfoNotAllocated(_)) => Err(ReadFromVmgsError::EntryNotFound(file_id)),
         Err(vmgs_err) => Err(ReadFromVmgsError::ReadFromVmgs { file_id, vmgs_err }),
     }
 }

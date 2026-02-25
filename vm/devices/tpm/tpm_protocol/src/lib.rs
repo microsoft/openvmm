@@ -70,8 +70,5 @@ pub fn platform_akcert_attributes() -> TpmaNvBits {
 /// Default vTPM version provisioned for a new VMGS.
 pub const TPM_DEFAULT_VERSION: &str = "1.38";
 
-/// Default vTPM NVRAM size provisioned for a new VMGS.
-pub const TPM_DEFAULT_SIZE: usize = 32768;
-
 /// Default NVRAM index size provisioned for AKCert.
 pub const TPM_DEFAULT_AKCERT_SIZE: usize = 4096;

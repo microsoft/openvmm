@@ -12,6 +12,7 @@ memory_range.workspace = true
 pci_core.workspace = true
 sparse_mmap.workspace = true
 state_unit.workspace = true
+tdisp.workspace = true
 user_driver.workspace = true
 vpci_client.workspace = true
 vpci.workspace = true

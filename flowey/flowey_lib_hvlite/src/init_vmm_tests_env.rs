@@ -163,18 +163,36 @@ impl SimpleFlowNode for Node {
                     );
 
                 let working_dir_ref = test_content_dir.as_path();
+                let disk_image_dir = disk_image_dir.map(|v| rt.read(v));
+
                 let working_dir_win = windows_via_wsl2.then(|| {
-                    flowey_lib_common::_util::wslpath::linux_to_win(working_dir_ref)
+                    flowey_lib_common::_util::wslpath::linux_to_win(rt, working_dir_ref)
                         .display()
                         .to_string()
                 });
-                let maybe_convert_path = |path: &Path| -> anyhow::Result<String> {
-                    let path = if windows_via_wsl2 {
-                        flowey_lib_common::_util::wslpath::linux_to_win(path)
+
+                // Convert a path via wslpath if running under WSL2,
+                // otherwise just make it absolute.
+                let wsl_convert_path = |path: &Path| -> anyhow::Result<PathBuf> {
+                    if windows_via_wsl2 {
+                        Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
                     } else {
                         path.absolute()
-                            .with_context(|| format!("invalid path {}", path.display()))?
-                    };
+                            .with_context(|| format!("invalid path {}", path.display()))
+                    }
+                };
+
+                // Eagerly convert all known paths.
+                let converted_content_dir = wsl_convert_path(&test_content_dir)?;
+                let test_log_dir = test_content_dir.join("test_results");
+                let converted_log_dir = wsl_convert_path(&test_log_dir)?;
+                let converted_disk_image_dir = disk_image_dir
+                    .as_ref()
+                    .map(|p| wsl_convert_path(p))
+                    .transpose()?;
+
+                // Make a converted path relative if requested.
+                let make_portable_path = |path: PathBuf| -> anyhow::Result<String> {
                     let path = if use_relative_paths {
                         if windows_via_wsl2 {
                             let working_dir_trimmed =
@@ -209,23 +227,22 @@ impl SimpleFlowNode for Node {
 
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
-                    maybe_convert_path(&test_content_dir)?,
+                    make_portable_path(converted_content_dir)?,
                 );
 
                 // use a subdir for test logs
-                let test_log_dir = test_content_dir.join("test_results");
                 if !test_log_dir.exists() {
                     fs_err::create_dir(&test_log_dir)?
                 };
                 env.insert(
                     "TEST_OUTPUT_PATH".into(),
-                    maybe_convert_path(&test_log_dir)?,
+                    make_portable_path(converted_log_dir)?,
                 );
 
-                if let Some(disk_image_dir) = disk_image_dir {
+                if let Some(disk_image_dir) = converted_disk_image_dir {
                     env.insert(
                         "VMM_TEST_IMAGES".into(),
-                        maybe_convert_path(&rt.read(disk_image_dir))?,
+                        make_portable_path(disk_image_dir)?,
                     );
                 }
 

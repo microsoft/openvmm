@@ -129,17 +129,117 @@ impl FlowNode for Node {
 
                     let working_dir_ref = working_dir.as_path();
                     let working_dir_win = windows_via_wsl2.then(|| {
-                        crate::_util::wslpath::linux_to_win(working_dir_ref)
+                        crate::_util::wslpath::linux_to_win(rt, working_dir_ref)
                             .display()
                             .to_string()
                     });
-                    let maybe_convert_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
-                        let path = if windows_via_wsl2 {
-                            crate::_util::wslpath::linux_to_win(path)
+
+                    let tool_config_files: Vec<(String, PathBuf)> = tool_config_files
+                        .into_iter()
+                        .map(|(tool, var)| (tool, rt.read(var)))
+                        .collect();
+
+                    enum NextestInvocation {
+                        // when tests are already built and provided via archive
+                        Standalone { nextest_bin: PathBuf },
+                        // when tests need to be compiled first
+                        WithCargo { rust_toolchain: Option<String> },
+                    }
+
+                    // the invocation of `nextest run` is quite different
+                    // depending on whether this is an archived run or not, as
+                    // archives don't require passing build args (after all -
+                    // those were passed when the archive was built), nor do
+                    // they require having cargo installed.
+                    let (nextest_invocation, build_args, archive_file, build_env) =
+                        match run_kind_deps {
+                            RunKindDeps::BuildAndRun {
+                                params:
+                                    build_params::NextestBuildParams {
+                                        packages,
+                                        features,
+                                        no_default_features,
+                                        target,
+                                        profile,
+                                        extra_env,
+                                    },
+                                nextest_installed: _, // side-effect
+                                rust_toolchain,
+                                cargo_flags,
+                            } => {
+                                let (mut build_args, build_env) = cargo_nextest_build_args_and_env(
+                                    rt.read(cargo_flags),
+                                    profile,
+                                    target,
+                                    rt.read(packages),
+                                    features,
+                                    no_default_features,
+                                    rt.read(extra_env),
+                                );
+
+                                let nextest_invocation = NextestInvocation::WithCargo {
+                                    rust_toolchain: rt.read(rust_toolchain),
+                                };
+
+                                // nextest also requires explicitly specifying the
+                                // path to a cargo-metadata.json file when running
+                                // using --workspace-remap (which do we below).
+                                let cargo_metadata_path = std::env::current_dir()?
+                                    .absolute()?
+                                    .join("cargo_metadata.json");
+
+                                rt.sh.change_dir(&working_dir);
+                                let output =
+                                    flowey::shell_cmd!(rt, "cargo metadata --format-version 1")
+                                        .output()?;
+                                let cargo_metadata = String::from_utf8(output.stdout)?;
+                                fs_err::write(&cargo_metadata_path, cargo_metadata)?;
+
+                                build_args.push("--cargo-metadata".into());
+                                build_args.push(cargo_metadata_path.display().to_string());
+
+                                (nextest_invocation, build_args, None, build_env)
+                            }
+                            RunKindDeps::RunFromArchive {
+                                archive_file,
+                                nextest_bin,
+                                target: _,
+                            } => {
+                                let archive_file = rt.read(archive_file);
+                                let nextest_bin = rt.read(nextest_bin);
+
+                                (
+                                    NextestInvocation::Standalone { nextest_bin },
+                                    vec![],
+                                    Some(archive_file),
+                                    BTreeMap::default(),
+                                )
+                            }
+                        };
+
+                    // Convert a path via wslpath if running under WSL2,
+                    // otherwise just make it absolute.
+                    let wsl_convert_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
+                        if windows_via_wsl2 {
+                            Ok(crate::_util::wslpath::linux_to_win(rt, path))
                         } else {
                             path.absolute()
-                                .with_context(|| format!("invalid path {}", path.display()))?
-                        };
+                                .with_context(|| format!("invalid path {}", path.display()))
+                        }
+                    };
+
+                    // Convert all known paths eagerly so the portable-path
+                    // closure below doesn't need the runtime.
+                    let config_file = wsl_convert_path(config_file)?;
+                    let converted_working_dir = wsl_convert_path(working_dir.clone())?;
+                    let tool_config_files: Vec<(String, PathBuf)> = tool_config_files
+                        .into_iter()
+                        .map(|(tool, path)| Ok((tool, wsl_convert_path(path)?)))
+                        .collect::<anyhow::Result<_>>()?;
+                    let archive_file = archive_file.map(&wsl_convert_path).transpose()?;
+
+                    // Make a converted path relative/portable if requested.
+                    let make_portable_path = |path: PathBuf| -> anyhow::Result<PathBuf> {
                         let path = if portable {
                             if windows_target {
                                 let working_dir_trimmed =
@@ -172,91 +272,11 @@ impl FlowNode for Node {
                         Ok(path)
                     };
 
-                    enum NextestInvocation {
-                        // when tests are already built and provided via archive
-                        Standalone { nextest_bin: PathBuf },
-                        // when tests need to be compiled first
-                        WithCargo { rust_toolchain: Option<String> },
-                    }
-
-                    // the invocation of `nextest run` is quite different
-                    // depending on whether this is an archived run or not, as
-                    // archives don't require passing build args (after all -
-                    // those were passed when the archive was built), nor do
-                    // they require having cargo installed.
-                    let (nextest_invocation, build_args, build_env) = match run_kind_deps {
-                        RunKindDeps::BuildAndRun {
-                            params:
-                                build_params::NextestBuildParams {
-                                    packages,
-                                    features,
-                                    no_default_features,
-                                    target,
-                                    profile,
-                                    extra_env,
-                                },
-                            nextest_installed: _, // side-effect
-                            rust_toolchain,
-                            cargo_flags,
-                        } => {
-                            let (mut build_args, build_env) = cargo_nextest_build_args_and_env(
-                                rt.read(cargo_flags),
-                                profile,
-                                target,
-                                rt.read(packages),
-                                features,
-                                no_default_features,
-                                rt.read(extra_env),
-                            );
-
-                            let nextest_invocation = NextestInvocation::WithCargo {
-                                rust_toolchain: rt.read(rust_toolchain),
-                            };
-
-                            // nextest also requires explicitly specifying the
-                            // path to a cargo-metadata.json file when running
-                            // using --workspace-remap (which do we below).
-                            let cargo_metadata_path = std::env::current_dir()?
-                                .absolute()?
-                                .join("cargo_metadata.json");
-
-                            rt.sh.change_dir(&working_dir);
-                            let output =
-                                flowey::shell_cmd!(rt, "cargo metadata --format-version 1")
-                                    .output()?;
-                            let cargo_metadata = String::from_utf8(output.stdout)?;
-                            fs_err::write(&cargo_metadata_path, cargo_metadata)?;
-
-                            build_args.push("--cargo-metadata".into());
-                            build_args.push(cargo_metadata_path.display().to_string());
-
-                            (nextest_invocation, build_args, build_env)
-                        }
-                        RunKindDeps::RunFromArchive {
-                            archive_file,
-                            nextest_bin,
-                            target: _,
-                        } => {
-                            let build_args = vec![
-                                "--archive-file".into(),
-                                maybe_convert_path(rt.read(archive_file))?
-                                    .display()
-                                    .to_string(),
-                            ];
-
-                            let nextest_invocation = NextestInvocation::Standalone {
-                                nextest_bin: rt.read(nextest_bin),
-                            };
-
-                            (nextest_invocation, build_args, BTreeMap::default())
-                        }
-                    };
-
                     let mut args: Vec<OsString> = Vec::new();
 
                     let argv0: OsString = match nextest_invocation {
                         NextestInvocation::Standalone { nextest_bin } => if portable {
-                            maybe_convert_path(nextest_bin)?
+                            make_portable_path(wsl_convert_path(nextest_bin)?)?
                         } else {
                             nextest_bin
                         }
@@ -277,20 +297,23 @@ impl FlowNode for Node {
                         "--profile".into(),
                         (&nextest_profile).into(),
                         "--config-file".into(),
-                        maybe_convert_path(config_file)?.into(),
+                        make_portable_path(config_file)?.into(),
                         "--workspace-remap".into(),
-                        maybe_convert_path(working_dir.clone())?.into(),
+                        make_portable_path(converted_working_dir)?.into(),
                     ]);
 
                     for (tool, config_file) in tool_config_files {
                         args.extend([
                             "--tool-config-file".into(),
-                            format!(
-                                "{}:{}",
-                                tool,
-                                maybe_convert_path(rt.read(config_file))?.display()
-                            )
-                            .into(),
+                            format!("{}:{}", tool, make_portable_path(config_file)?.display())
+                                .into(),
+                        ]);
+                    }
+
+                    if let Some(archive_file) = archive_file {
+                        args.extend([
+                            "--archive-file".into(),
+                            make_portable_path(archive_file)?.into(),
                         ]);
                     }
 

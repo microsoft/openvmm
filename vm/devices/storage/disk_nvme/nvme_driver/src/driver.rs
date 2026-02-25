@@ -1105,11 +1105,10 @@ impl IoIssuers {
             .await
             .map_err(RequestError::Gone)?;
 
-        Ok(self.per_cpu[cpu as usize]
+        Ok(&self.per_cpu[cpu as usize]
             .get()
             .expect("issuer was set by rpc")
-            .issuer
-            .as_ref())
+            .issuer)
     }
 }
 

@@ -1,9 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Function to parse a resource dll for a given ID.
+#![forbid(unsafe_code)]
 
-use crate::DllResourceDescriptor;
+//! Package to agnostically parse a resource dll for a given ID.
+//!
+//! # Example
+//! ```no_run
+//! use resource_dll_parser::{DllResourceDescriptor, try_find_resource_from_dll};
+//! use fs_err::File;
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! let file = File::open("vmfirmware.dll")?;
+//! let descriptor = DllResourceDescriptor::new(b"VMFW", 13515);
+//! let resource = try_find_resource_from_dll(&file, &descriptor)?;
+//! # Ok(())
+//! # }
+//! ```
+
 use anyhow::Context;
 use anyhow::bail;
 use fs_err::File;
@@ -16,7 +30,8 @@ use object::read::pe::PeFile64;
 /// file, but the given resource can not be found or loaded this function
 /// returns Err(...). On success the return value contains the starting offset
 /// into the file and its length.
-pub(crate) fn try_find_resource_from_dll(
+/// TODO: change the return types to a proper enum with variants like 'NotPeFile, NotFound, Ok(u64, usize)'
+pub fn try_find_resource_from_dll(
     file: &File,
     descriptor: &DllResourceDescriptor,
 ) -> anyhow::Result<Option<(u64, usize)>> {
@@ -75,5 +90,38 @@ pub(crate) fn try_find_resource_from_dll(
         // Failing to parse the file as a dll is fine, it means the file is
         // probably a blob instead.
         Ok(None)
+    }
+}
+
+/// Descriptor for locating a resource within a DLL file.
+///
+/// Contains the resource type (as a 4-character ASCII string encoded in LE UTF-16)
+/// and a numeric resource ID.
+pub struct DllResourceDescriptor {
+    /// 4 characters encoded in LE UTF-16
+    resource_type: [u8; 8],
+    id: u32,
+}
+
+impl DllResourceDescriptor {
+    /// Creates a new DLL resource descriptor with the given resource type and ID.
+    ///
+    /// The resource type must be a 4-character ASCII string, which will be converted
+    /// to little-endian UTF-16 encoding.
+    pub const fn new(resource_type: &[u8; 4], id: u32) -> Self {
+        Self {
+            id,
+            // Convert to LE UTF-16, only support ASCII names today
+            resource_type: [
+                resource_type[0],
+                0,
+                resource_type[1],
+                0,
+                resource_type[2],
+                0,
+                resource_type[3],
+                0,
+            ],
+        }
     }
 }

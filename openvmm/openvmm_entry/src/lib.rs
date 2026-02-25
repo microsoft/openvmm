@@ -1089,7 +1089,6 @@ async fn vm_config_from_command_line(
             }),
             default_boot_always_attempt: opt.default_boot_always_attempt,
             bios_guid,
-            azi_hsm_enabled: opt.azi_hsm_enabled,
         };
     } else {
         // Linux Direct
@@ -1166,7 +1165,7 @@ async fn vm_config_from_command_line(
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
             dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
-                storage_controllers: storage.build_underhill(),
+                storage_controllers: storage.build_underhill(opt.vmbus_redirect),
                 nic_devices: underhill_nics,
             }),
             namespace_settings: Vec::default(),
@@ -1260,7 +1259,6 @@ async fn vm_config_from_command_line(
                         }
                     },
                     hv_sint_enabled: false,
-                    azi_hsm_enabled: opt.azi_hsm_enabled,
                 }
                 .into_resource(),
             ),
@@ -1292,6 +1290,7 @@ async fn vm_config_from_command_line(
                 device: TpmDeviceHandle {
                     ppi_store,
                     nvram_store,
+                    nvram_size: None,
                     refresh_tpm_seeds: false,
                     ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                     register_layout,

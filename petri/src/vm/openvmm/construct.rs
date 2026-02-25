@@ -659,7 +659,6 @@ impl PetriVmConfigSetupCore<'_> {
                             disable_frontpage,
                             default_boot_always_attempt,
                             enable_vpci_boot,
-                            azi_hsm_enabled,
                         },
                 },
             ) => {
@@ -678,7 +677,6 @@ impl PetriVmConfigSetupCore<'_> {
                     uefi_console_mode: Some(openvmm_defs::config::UefiConsoleMode::Com1),
                     default_boot_always_attempt: *default_boot_always_attempt,
                     bios_guid: Guid::new_random(),
-                    azi_hsm_enabled: *azi_hsm_enabled,
                 }
             }
             (
@@ -818,7 +816,6 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage,
                 default_boot_always_attempt,
                 enable_vpci_boot,
-                azi_hsm_enabled,
             },
             OpenHclConfig { vmbus_redirect, .. },
         ) = match self.firmware {
@@ -873,7 +870,6 @@ impl PetriVmConfigSetupCore<'_> {
             test_gsp_by_id,
             efi_diagnostics_log_level: Default::default(), // TODO: make configurable
             hv_sint_enabled: false,
-            azi_hsm_enabled: *azi_hsm_enabled,
         };
 
         Ok((ged, guest_request_send))
@@ -950,6 +946,7 @@ impl PetriVmConfigSetupCore<'_> {
                         is_confidential_vm: self.firmware.isolation().is_some(),
                         // TODO: generate an actual BIOS GUID and put it here
                         bios_guid: Guid::ZERO,
+                        nvram_size: None,
                     }
                     .into_resource(),
                     worker_host: self.make_device_worker("tpm").await?,

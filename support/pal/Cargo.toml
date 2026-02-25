@@ -21,6 +21,7 @@ pal_event.workspace = true
 ntapi = { workspace = true, features = ["impl-default"] }
 socket2 = { workspace = true, features = ["all"] }
 widestring.workspace = true
+windows-result.workspace = true
 
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true
@@ -54,7 +55,13 @@ workspace = true
 features = [
     "Wdk_Foundation",
     "Win32_Foundation",
-    "Win32_Security"
+    "Win32_Security",
+]
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+workspace = true
+features = [
+    "Win32_System_LibraryLoader",
 ]
 
 [target.'cfg(unix)'.dependencies]

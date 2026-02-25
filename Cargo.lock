@@ -817,7 +817,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
- "winapi",
  "windows-sys 0.61.0",
  "zerocopy 0.8.27",
 ]
@@ -4350,7 +4349,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#c7433fb1a74e47cea5daf13d3aac24cd0ccac1f4"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#5b8ca3b5b423859da441f51ec8b1610708ed53c2"
 dependencies = [
  "cc",
  "once_cell",
@@ -5395,7 +5394,7 @@ dependencies = [
  "anyhow",
  "fs-err",
  "mesh",
- "object 0.37.3",
+ "resource_dll_parser",
  "tracing",
 ]
 
@@ -5522,6 +5521,8 @@ dependencies = [
  "widestring",
  "winapi",
  "windows 0.62.0",
+ "windows-result 0.4.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -6391,6 +6392,15 @@ name = "resolv-conf"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95325155c684b1c89f7765e30bc1c42e4a6da51ca513615660cb8a62ef9a88e3"
+
+[[package]]
+name = "resource_dll_parser"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "fs-err",
+ "object 0.37.3",
+]
 
 [[package]]
 name = "rlimit"
@@ -7362,6 +7372,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tdisp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "parking_lot",
+ "prost",
+ "tdisp_proto",
+ "thiserror 2.0.16",
+ "tracing",
+]
+
+[[package]]
+name = "tdisp_proto"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "prost",
+ "prost-build",
+]
+
+[[package]]
 name = "tdx_guest_device"
 version = "0.0.0"
 dependencies = [
@@ -7405,7 +7436,7 @@ dependencies = [
  "crossterm",
  "libc",
  "thiserror 2.0.16",
- "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -7760,6 +7791,7 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "sha2",
+ "static_assertions",
  "thiserror 2.0.16",
  "tpm_lib",
  "tpm_protocol",
@@ -9466,7 +9498,6 @@ dependencies = [
 name = "vmgs"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "cfg-if",
  "crc32fast",
@@ -9487,6 +9518,7 @@ dependencies = [
  "tracing",
  "vmgs_format",
  "windows 0.62.0",
+ "windows-result 0.4.0",
  "zerocopy 0.8.27",
 ]
 
@@ -9554,10 +9586,13 @@ dependencies = [
  "hcl_compat_uefi_nvram_storage",
  "hex",
  "pal_async",
+ "resource_dll_parser",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.16",
+ "tracing",
+ "tracing-subscriber",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "uefi_nvram_storage",
@@ -9923,6 +9958,7 @@ dependencies = [
  "slab",
  "sparse_mmap",
  "state_unit",
+ "tdisp",
  "tracelimit",
  "tracing",
  "user_driver",

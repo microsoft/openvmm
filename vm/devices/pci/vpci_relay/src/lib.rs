@@ -46,6 +46,10 @@ use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
 use vpci_client::VpciDeviceEject;
 
+/// TODO TDISP: Required for the tdisp crate to be built in the meantime.
+#[expect(unused_imports)]
+use tdisp::TdispHostDeviceInterface;
+
 /// Trait for creating memory access instances.
 pub trait CreateMemoryAccess: 'static + Send + Sync {
     /// Creates a new memory access instance for the given guest physical address.

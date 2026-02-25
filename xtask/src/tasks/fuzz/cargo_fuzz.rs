@@ -3,6 +3,7 @@
 
 //! Glue to invoke external `cargo-fuzz` commands
 
+use crate::shell::XtaskShell;
 use anyhow::Context;
 use std::path::Path;
 use std::path::PathBuf;
@@ -56,12 +57,12 @@ impl CargoFuzzCommand {
             anyhow::bail!("could not find cargo-fuzz! did you run `cargo install cargo-fuzz`?");
         }
 
-        let sh = xshell::Shell::new()?;
+        let sh = XtaskShell::new()?;
         if matches!(&self, CargoFuzzCommand::Run { artifact: Some(_) }) {
             sh.set_var("XTASK_FUZZ_REPRO", "1");
         }
 
-        let mut toolchain_check_cmd = xshell::cmd!(sh, "rustc");
+        let mut toolchain_check_cmd = sh.cmd("rustc");
         if let Some(toolchain_override) = toolchain {
             toolchain_check_cmd = toolchain_check_cmd.arg(format!("+{}", toolchain_override));
         }
@@ -72,7 +73,7 @@ impl CargoFuzzCommand {
         let output = std::str::from_utf8(&result.stdout)?.to_ascii_lowercase();
         let is_nightly = output.contains("-nightly") || output.contains("-dev");
 
-        let mut cmd = xshell::cmd!(sh, "cargo");
+        let mut cmd = sh.cmd("cargo");
         if let Some(toolchain_override) = toolchain {
             cmd = cmd.arg(format!("+{}", toolchain_override));
         }
