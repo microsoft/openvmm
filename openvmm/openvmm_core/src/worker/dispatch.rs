@@ -1939,7 +1939,10 @@ impl InitializedVm {
         }
 
         #[cfg(all(windows, feature = "virt_whp"))]
-        fn make_ids(name: &str, instance_id: Option<guid::Guid>) -> (String, String, guid::Guid, u64) {
+        fn make_ids(
+            name: &str,
+            instance_id: Option<guid::Guid>,
+        ) -> (String, String, guid::Guid, u64) {
             let guid = instance_id.unwrap_or_else(guid::Guid::new_random);
             // TODO: clarify how the device ID is constructed
             let device_id = (guid.data2 as u64) << 16 | (guid.data3 as u64 & 0xfff8);
