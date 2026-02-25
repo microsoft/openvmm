@@ -654,7 +654,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 
     async fn tdisp_get_device_interface_info(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         // TDISP TODO: Configure the correct guest protocol type when TDX support is added.
-        let target_protocol_type = TdispGuestProtocolType::AmdSevTioV10;
+        let target_protocol_type = TdispGuestProtocolType::AmdSevTioV1;
 
         let res = self
             .send_tdisp_command(openhcl_tdisp::make_get_device_interface_info_command(

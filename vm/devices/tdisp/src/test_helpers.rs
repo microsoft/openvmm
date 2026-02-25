@@ -10,7 +10,7 @@ use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispReportType;
 
 /// Guest protocol that will be negotiated by the mock device.
-pub const TDISP_MOCK_GUEST_PROTOCOL: TdispGuestProtocolType = TdispGuestProtocolType::AmdSevTioV10;
+pub const TDISP_MOCK_GUEST_PROTOCOL: TdispGuestProtocolType = TdispGuestProtocolType::AmdSevTioV1;
 
 /// Device features that will be negotiated by the mock device.
 pub const TDISP_MOCK_SUPPORTED_FEATURES: u64 = 0xDEAD;
