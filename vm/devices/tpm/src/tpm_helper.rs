@@ -3872,6 +3872,7 @@ mod tests {
             gm,
             ppi_store,
             store,
+            None,
             monotonic_timer,
             false,
             false,

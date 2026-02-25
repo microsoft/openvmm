@@ -7067,7 +7067,6 @@ dependencies = [
  "pal_async",
  "parking_lot",
  "sha2",
- "static_assertions",
  "thiserror 2.0.12",
  "tpm_resources",
  "tracelimit",

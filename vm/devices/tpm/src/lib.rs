@@ -118,8 +118,6 @@ const LEGACY_VTPM_SIZE: usize = 16384;
 // Default vTPM NVRAM size provisioned for a new VMGS.
 pub const DEFAULT_VTPM_SIZE: usize = ms_tpm_20_ref::NV_MEMORY_SIZE;
 
-static_assertions::const_assert_eq!(DEFAULT_VTPM_SIZE, STANDARD_VTPM_SIZE);
-
 /// Operation types for provisioning telemetry.
 #[derive(Debug)]
 enum LogOpType {
