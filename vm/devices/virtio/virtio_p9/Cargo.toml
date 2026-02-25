@@ -13,9 +13,13 @@ virtio.workspace = true
 virtio_resources.workspace = true
 guestmem.workspace = true
 vm_resource.workspace = true
+vmcore.workspace = true
+task_control.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+event-listener.workspace = true
+pal_async.workspace = true
 tracing.workspace = true
 
 [lints]
