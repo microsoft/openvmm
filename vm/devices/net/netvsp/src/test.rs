@@ -237,7 +237,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
         let sync_tx = inner
             .endpoint_state
             .as_ref()
-            .is_none_or(|s| s.lock().sync_tx);
+            .map_or(true, |s| s.lock().sync_tx);
         let senders = config
             .into_iter()
             .map(|config| {
@@ -5778,7 +5778,7 @@ async fn tx_inflight_packets_completed_after_endpoint_restart(driver: DefaultDri
         .send_rndis_control_message_no_completion(
             rndisprot::MESSAGE_TYPE_PACKET_MSG,
             rndisprot::Packet {
-                data_offset: size_of::<rndisprot::Packet>() as u32,
+                data_offset: size_of::<rndisprot::MessageHeader>() as u32,
                 data_length: frame.len() as u32,
                 oob_data_offset: 0,
                 oob_data_length: 0,
@@ -5802,6 +5802,13 @@ async fn tx_inflight_packets_completed_after_endpoint_restart(driver: DefaultDri
     let rss_bytes = build_rss_enable_params();
     send_rss_oid_and_complete(&mut channel, &rss_bytes).await;
 
+    // Endpoint should have been stopped once more.
+    let stop_after = endpoint_state.lock().stop_endpoint_counter;
+    assert!(
+        stop_after > stop_before,
+        "endpoint.stop() should have been called during restart_queues()"
+    );
+
     // The in-flight TX packet should now have a completion queued by
     // reset_tx_after_endpoint_stop(). Read it.
     let completion = channel
@@ -5812,13 +5819,6 @@ async fn tx_inflight_packets_completed_after_endpoint_restart(driver: DefaultDri
         "Expected TX completion for in-flight packet after endpoint restart"
     );
     assert_eq!(completion.unwrap().status, protocol::Status::SUCCESS);
-
-    // Endpoint should have been stopped once more.
-    let stop_after = endpoint_state.lock().stop_endpoint_counter;
-    assert!(
-        stop_after > stop_before,
-        "endpoint.stop() should have been called during restart_queues()"
-    );
 }
 
 /// Verifies that disabling RSS when RSS is already disabled does NOT trigger
