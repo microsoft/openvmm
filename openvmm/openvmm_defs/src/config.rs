@@ -313,34 +313,6 @@ impl fmt::Display for Hypervisor {
     }
 }
 
-/// Input and output for a connected serial port.
-#[derive(Debug, MeshPayload)]
-pub struct SerialPipes {
-    /// Input for a serial port.
-    ///
-    /// If the file reaches EOF, then the serial port will report carrier drop
-    /// to the guest. Use `None` when the port should remain connected
-    /// indefinitely.
-    pub input: Option<File>,
-    /// Output for a serial port.
-    ///
-    /// If the file write fails with [`std::io::ErrorKind::BrokenPipe`], then
-    /// the serial port will report carrier drop to the guest.
-    ///
-    /// `None` is equivalent to `/dev/null`--it will silently succeed all
-    /// writes.
-    pub output: Option<File>,
-}
-
-impl SerialPipes {
-    pub fn try_clone(&self) -> std::io::Result<Self> {
-        Ok(Self {
-            input: self.input.as_ref().map(File::try_clone).transpose()?,
-            output: self.output.as_ref().map(File::try_clone).transpose()?,
-        })
-    }
-}
-
 #[derive(Debug, MeshPayload)]
 pub struct KernelVmNicConfig {
     pub instance_id: Guid,

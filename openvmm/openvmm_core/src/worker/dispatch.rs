@@ -145,6 +145,7 @@ use vmotherboard::ChipsetDevices;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
+#[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
@@ -1938,6 +1939,7 @@ impl InitializedVm {
             vtl2_vmbus_server = vtl2_vmbus;
         }
 
+        #[cfg(all(windows, feature = "virt_whp"))]
         fn make_ids(name: &str, instance_id: Option<Guid>) -> (String, String, Guid, u64) {
             let guid = instance_id.unwrap_or_else(Guid::new_random);
             // TODO: clarify how the device ID is constructed
