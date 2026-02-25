@@ -52,7 +52,7 @@ export function Runs(): React.JSX.Element {
 
   // Get the table definition (columns and default sorting)
   const [sorting, setSorting] = useState<SortingState>(defaultSorting);
-  const columns = useMemo(() => createColumns(),[]);
+  const columns = useMemo(() => createColumns(), []);
   const filteredRuns = useMemo(
     () => filterRuns(runs, branchFilter, searchFilter),
     [runs, branchFilter, searchFilter]
