@@ -302,30 +302,39 @@ impl ReadyState {
     /// endpoint signals that never come, and the guest hangs.
     fn reset_tx_after_endpoint_stop(&mut self) {
         let state = &mut self.state;
-        // Queues completion for in-flight TX packets that were lost when the
-        // endpoint stopped. They will get picked up when the worker restarts.
-        for tx_packet in state.pending_tx_packets.iter_mut() {
-            if tx_packet.pending_packet_count > 0 {
-                state.pending_tx_completions.push_back(PendingTxCompletion {
-                    transaction_id: tx_packet.transaction_id,
-                    tx_id: None,
-                    status: protocol::Status::SUCCESS,
-                });
-                tx_packet.pending_packet_count = 0;
-            }
-        }
 
-        // Clear tx_id from any pre-existing pending completions
+        // Clear tx_id from any pre-existing pending completions so they
+        // don't reference the old endpoint queue.
         for pending in state.pending_tx_completions.iter_mut() {
             pending.tx_id = None;
         }
 
+        // Queue completions for in-flight TX packets that were lost when the
+        // endpoint stopped. They will get picked up when the worker restarts.
+        let pending_tx = state
+            .pending_tx_packets
+            .iter_mut()
+            .filter_map(|inflight| {
+                if inflight.pending_packet_count > 0 {
+                    inflight.pending_packet_count = 0;
+                    Some(PendingTxCompletion {
+                        transaction_id: inflight.transaction_id,
+                        tx_id: None,
+                        status: protocol::Status::SUCCESS,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        state.pending_tx_completions.extend(pending_tx);
+
         // Restore all TX slots so the worker can process new packets and
         // will call poll_ready() to unmask the ring.
-        state.free_tx_packets.clear();
-        state
-            .free_tx_packets
-            .extend((0..state.pending_tx_packets.len() as u32).rev().map(TxId));
+        state.free_tx_packets = (0..state.pending_tx_packets.len() as u32)
+            .rev()
+            .map(TxId)
+            .collect();
 
         // Clear leftover TX segments from the previous endpoint queue;
         // they cannot be submitted to the new queue.
@@ -4427,15 +4436,6 @@ impl Coordinator {
 
         c_state.endpoint.stop().await;
 
-        // Reset TX tracking for each worker after the endpoint stop.
-        for worker in self.workers.iter_mut() {
-            if let Some(worker_state) = worker.state_mut() {
-                if let Some(ready) = worker_state.state.ready_mut() {
-                    ready.reset_tx_after_endpoint_stop();
-                }
-            }
-        }
-
         let (primary_worker, subworkers) = if let [primary, sub @ ..] = self.workers.as_mut_slice()
         {
             (primary, sub)
@@ -4614,9 +4614,11 @@ impl Coordinator {
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
                 worker.channel.packet_filter = self.active_packet_filter;
-                // Clear any pending RxIds as buffers were redistributed.
+                // Clear any pending RxIds as buffers were redistributed
+                // and reset TX tracking after the endpoint stop.
                 if let Some(ready_state) = worker.state.ready_mut() {
                     ready_state.state.pending_rx_packets.clear();
+                    ready_state.reset_tx_after_endpoint_stop();
                 }
             }
         }

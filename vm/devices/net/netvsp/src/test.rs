@@ -140,6 +140,10 @@ struct TestNicEndpointState {
     pub stop_endpoint_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
     pub queues: Vec<mesh::Sender<Vec<u8>>>,
+    /// When true (default), `TestNicQueue::tx_avail` returns `(true, N)` so
+    /// TX packets are completed synchronously.  When false it returns
+    /// `(false, N)`, leaving packets in-flight.
+    pub sync_tx: bool,
 }
 
 impl TestNicEndpointState {
@@ -152,6 +156,7 @@ impl TestNicEndpointState {
             stop_endpoint_counter: 0,
             link_status_updater: None,
             queues: Vec::new(),
+            sync_tx: true,
         }))
     }
 
@@ -228,16 +233,20 @@ impl net_backend::Endpoint for TestNicEndpoint {
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
         queues.clear();
+        let inner = self.inner.lock().await;
+        let sync_tx = inner
+            .endpoint_state
+            .as_ref()
+            .map_or(true, |s| s.lock().sync_tx);
         let senders = config
             .into_iter()
             .map(|config| {
                 let (tx, rx) = mesh::channel();
-                queues.push(Box::new(TestNicQueue::new(config, rx)));
+                queues.push(Box::new(TestNicQueue::new(config, rx, sync_tx)));
                 tx
             })
             .collect::<Vec<_>>();
 
-        let inner = self.inner.lock().await;
         if let Some(endpoint_state) = &inner.endpoint_state {
             let mut locked_data = endpoint_state.lock();
             locked_data.queues = senders;
@@ -329,16 +338,18 @@ struct TestNicQueue {
     #[inspect(skip)]
     rx: mesh::Receiver<Vec<u8>>,
     next_rx_packet: Option<Vec<u8>>,
+    sync_tx: bool,
 }
 
 impl TestNicQueue {
-    pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>) -> Self {
+    pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>, sync_tx: bool) -> Self {
         let rx_ids = config.initial_rx.iter().copied().collect();
         Self {
             pool: config.pool,
             rx_ids,
             rx,
             next_rx_packet: None,
+            sync_tx,
         }
     }
 }
@@ -405,7 +416,7 @@ impl NetQueue for TestNicQueue {
     }
 
     fn tx_avail(&mut self, packets: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
-        Ok((true, packets.len()))
+        Ok((self.sync_tx, packets.len()))
     }
 
     fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
@@ -414,254 +425,6 @@ impl NetQueue for TestNicQueue {
 
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
         None
-    }
-}
-
-/// A test queue that simulates async TX completion. `tx_avail` returns
-/// `(false, N)` so the production code treats packets as in-flight rather
-/// than synchronously completed. `tx_poll` never returns completions,
-/// mimicking the scenario where the endpoint is stopped before completions
-/// arrive.
-#[derive(InspectMut)]
-struct AsyncTxTestNicQueue {
-    #[inspect(skip)]
-    pool: Box<dyn BufferAccess>,
-    #[inspect(skip)]
-    rx_ids: VecDeque<RxId>,
-    #[inspect(skip)]
-    rx: mesh::Receiver<Vec<u8>>,
-    next_rx_packet: Option<Vec<u8>>,
-}
-
-impl AsyncTxTestNicQueue {
-    pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>) -> Self {
-        let rx_ids = config.initial_rx.iter().copied().collect();
-        Self {
-            pool: config.pool,
-            rx_ids,
-            rx,
-            next_rx_packet: None,
-        }
-    }
-}
-
-impl NetQueue for AsyncTxTestNicQueue {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        if self.rx_ids.is_empty() {
-            return Poll::Pending;
-        }
-        if self.next_rx_packet.is_none() {
-            let recv = std::pin::pin!(self.rx.recv());
-            match std::task::ready!(recv.poll(cx)) {
-                Ok(packet) => {
-                    self.next_rx_packet = Some(packet);
-                }
-                Err(err) => {
-                    tracing::error!(?err, "Error receiving packet");
-                    return Poll::Pending;
-                }
-            }
-        }
-        Poll::Ready(())
-    }
-
-    fn rx_avail(&mut self, done: &[RxId]) {
-        self.rx_ids.extend(done);
-    }
-
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
-        if packets.is_empty() || self.rx_ids.is_empty() {
-            return Ok(0);
-        }
-        if self.next_rx_packet.is_none() {
-            self.next_rx_packet = self.rx.try_recv().ok();
-        }
-        if let Some(packet) = self.next_rx_packet.take() {
-            let len = packet.len();
-            assert!(len > 0);
-            let rx_id = self.rx_ids.pop_front().unwrap();
-            let mut packet = &packet[..];
-            let guest_memory = self.pool.guest_memory().clone();
-            for seg in self.pool.guest_addresses(rx_id).iter() {
-                let write_len = packet.len().min(seg.len as usize);
-                guest_memory
-                    .write_at(seg.gpa, &packet[..write_len])
-                    .unwrap();
-                packet = &packet[write_len..];
-                if packet.is_empty() {
-                    break;
-                }
-            }
-            packets[0] = rx_id;
-            Ok(1)
-        } else {
-            Ok(0)
-        }
-    }
-
-    /// Returns `(false, N)` — the endpoint accepted all segments but did NOT
-    /// complete them synchronously. The production code will leave the
-    /// corresponding TxIds in `pending_tx_packets`.
-    fn tx_avail(&mut self, packets: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
-        Ok((false, packets.len()))
-    }
-
-    /// Never completes any TX — simulates an endpoint that is stopped
-    /// before any completions arrive.
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
-        Ok(0)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        None
-    }
-}
-
-/// An endpoint that creates `AsyncTxTestNicQueue`s instead of
-/// `TestNicQueue`s, so TX packets remain in-flight (not synchronously
-/// completed).
-struct AsyncTxTestNicEndpoint {
-    inner: Arc<futures::lock::Mutex<TestNicEndpointInner>>,
-    is_ordered: bool,
-    tx_offload_support: TxOffloadSupport,
-    multiqueue_support: MultiQueueSupport,
-    link_status_rx: mesh::Receiver<VecDeque<bool>>,
-    pending_link_status_updates: VecDeque<bool>,
-}
-
-impl AsyncTxTestNicEndpoint {
-    pub fn new(endpoint_state: Option<Arc<parking_lot::Mutex<TestNicEndpointState>>>) -> Self {
-        let (link_status_tx, link_status_rx) = mesh::channel();
-        if let Some(endpoint_state) = endpoint_state.as_ref() {
-            let mut locked_state = endpoint_state.lock();
-            locked_state.link_status_updater = Some(link_status_tx);
-        }
-        let inner = TestNicEndpointInner::new(endpoint_state);
-        let tx_offload_support = TxOffloadSupport {
-            ipv4_header: true,
-            tcp: true,
-            udp: true,
-            tso: true,
-        };
-        let multiqueue_support = MultiQueueSupport {
-            max_queues: u16::MAX,
-            indirection_table_size: 128,
-        };
-        Self {
-            inner: Arc::new(futures::lock::Mutex::new(inner)),
-            is_ordered: true,
-            tx_offload_support,
-            multiqueue_support,
-            link_status_rx,
-            pending_link_status_updates: VecDeque::new(),
-        }
-    }
-}
-
-impl InspectMut for AsyncTxTestNicEndpoint {
-    fn inspect_mut(&mut self, _req: inspect::Request<'_>) {}
-}
-
-#[async_trait]
-impl net_backend::Endpoint for AsyncTxTestNicEndpoint {
-    fn endpoint_type(&self) -> &'static str {
-        "AsyncTxTestNicEndpoint"
-    }
-
-    async fn get_queues(
-        &mut self,
-        config: Vec<QueueConfig<'_>>,
-        _rss: Option<&net_backend::RssConfig<'_>>,
-        queues: &mut Vec<Box<dyn net_backend::Queue>>,
-    ) -> anyhow::Result<()> {
-        queues.clear();
-        let senders = config
-            .into_iter()
-            .map(|config| {
-                let (tx, rx) = mesh::channel();
-                queues.push(Box::new(AsyncTxTestNicQueue::new(config, rx)));
-                tx
-            })
-            .collect::<Vec<_>>();
-
-        let inner = self.inner.lock().await;
-        if let Some(endpoint_state) = &inner.endpoint_state {
-            let mut locked_data = endpoint_state.lock();
-            locked_data.queues = senders;
-        }
-        Ok(())
-    }
-
-    async fn stop(&mut self) {
-        let inner = self.inner.lock().await;
-        if let Some(endpoint_state) = &inner.endpoint_state {
-            let mut locked_data = endpoint_state.lock();
-            locked_data.stop_endpoint_counter += 1;
-        }
-    }
-
-    fn is_ordered(&self) -> bool {
-        self.is_ordered
-    }
-
-    fn tx_offload_support(&self) -> TxOffloadSupport {
-        self.tx_offload_support
-    }
-
-    fn multiqueue_support(&self) -> MultiQueueSupport {
-        self.multiqueue_support
-    }
-
-    async fn get_data_path_to_guest_vf(&self) -> anyhow::Result<bool> {
-        let locked_inner = self.inner.lock().await;
-        let endpoint_state = locked_inner.endpoint_state.as_ref().unwrap();
-        let locked_data = endpoint_state.lock();
-        match locked_data.last_use_vf {
-            Some(to_guest) => Ok(to_guest),
-            None => Err(anyhow::anyhow!("Last data path state not set")),
-        }
-    }
-
-    async fn set_data_path_to_guest_vf(&self, use_vf: bool) -> anyhow::Result<()> {
-        let inner = self.inner.clone();
-        let mut iter = {
-            let locked_inner = inner.lock().await;
-            let endpoint_state = locked_inner.endpoint_state.as_ref().unwrap();
-            let mut locked_data = endpoint_state.lock();
-            if locked_data
-                .vf_state
-                .as_ref()
-                .is_none_or(|vf_state| vf_state.is_ready())
-            {
-                locked_data.use_vf = Some(use_vf);
-                locked_data.last_use_vf = Some(use_vf);
-                locked_data.poll_iterations_required
-            } else {
-                if use_vf {
-                    anyhow::bail!("VF not ready");
-                } else {
-                    return Ok(());
-                }
-            }
-        };
-        std::future::poll_fn(move |cx| {
-            if iter <= 1 {
-                Poll::Ready(Ok(()))
-            } else {
-                iter -= 1;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        })
-        .await
-    }
-
-    async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
-        if self.pending_link_status_updates.is_empty() {
-            self.pending_link_status_updates
-                .append(&mut self.link_status_rx.select_next_some().await);
-        }
-        EndpointAction::LinkStatusNotify(self.pending_link_status_updates.pop_front().unwrap())
     }
 }
 
@@ -5962,15 +5725,16 @@ async fn send_rss_oid_and_complete(channel: &mut TestNicChannel<'_>, rss_bytes: 
 /// Verifies that in-flight TX packets receive completions after an endpoint
 /// restart triggered by an RSS parameter change.
 ///
-/// Uses `AsyncTxTestNicEndpoint` whose queues return `sync=false` from
-/// `tx_avail`, leaving TX packets in the `pending_tx_packets` state. When
-/// `restart_queues()` stops the endpoint the PR's
+/// Uses `TestNicEndpoint` with `sync_tx` set to `false` so queues return
+/// `sync=false` from `tx_avail`, leaving TX packets in the
+/// `pending_tx_packets` state. When `restart_queues()` stops the endpoint,
 /// `reset_tx_after_endpoint_stop()` should queue completions so the guest
 /// is unblocked.
 #[async_test]
 async fn tx_inflight_packets_completed_after_endpoint_restart(driver: DefaultDriver) {
     let endpoint_state = TestNicEndpointState::new();
-    let endpoint = AsyncTxTestNicEndpoint::new(Some(endpoint_state.clone()));
+    endpoint_state.lock().sync_tx = false;
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     let builder = Nic::builder();
     let nic = builder.build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
@@ -6007,7 +5771,7 @@ async fn tx_inflight_packets_completed_after_endpoint_restart(driver: DefaultDri
 
     let stop_before = endpoint_state.lock().stop_endpoint_counter;
 
-    // Send a data packet. Because `AsyncTxTestNicQueue::tx_avail` returns
+    // Send a data packet. Because `sync_tx` is false, `tx_avail` returns
     // `(false, N)`, the packet stays in-flight (pending_packet_count > 0).
     let frame = vec![0xBB; 60];
     channel
