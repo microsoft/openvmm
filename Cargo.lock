@@ -8978,7 +8978,6 @@ dependencies = [
  "guestmem",
  "inspect",
  "inspect_counters",
- "mesh",
  "net_backend",
  "net_backend_resources",
  "open_enum",
