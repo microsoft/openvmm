@@ -95,8 +95,6 @@ pub mod ged {
         pub test_gsp_by_id: bool,
         /// EFI diagnostics log level
         pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
-        /// Enable Azure HSM
-        pub azi_hsm_enabled: bool,
     }
 
     /// The firmware and chipset configuration for the guest.

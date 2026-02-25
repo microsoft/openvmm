@@ -219,8 +219,6 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
     #[serde(default)]
     pub management_vtl_features: ManagementVtlFeatures,
-    #[serde(default)]
-    pub azi_hsm_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
