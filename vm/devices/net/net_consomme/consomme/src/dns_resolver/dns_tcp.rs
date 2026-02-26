@@ -17,11 +17,10 @@ use std::io::IoSliceMut;
 use std::task::Context;
 use std::task::Poll;
 
-/// There is no official maximum size for DNS messages over TCP, but we can set
-/// a reasonable upper bound to u16::MAX (65535 bytes) to prevent unbounded memory
-/// usage. This is larger than the typical 512-byte limit for UDP, as TCP can
-/// handle larger messages.
-const MAX_DNS_TCP_MESSAGE_SIZE: usize = 65535;
+// Maximum allowed DNS message size over TCP: 65535 bytes for the message
+// plus 2 bytes for the TCP length prefix. This is a sanity check to prevent 
+// unbounded memory growth.
+const MAX_DNS_TCP_PAYLOAD_SIZE: usize = (u16::MAX as usize) + 2;
 
 /// Current phase of the DNS TCP handler state machine.
 enum Phase {
@@ -80,13 +79,6 @@ impl DnsTcpHandler {
         if !matches!(self.phase, Phase::Receiving) || self.protocol_error {
             return 0;
         }
-
-        let total_offered: usize = data.iter().map(|c| c.len()).sum();
-        tracing::info!(
-            total_offered,
-            buf_len = self.buf.len(),
-            "dns_tcp ingest: start"
-        );
 
         let mut total_consumed = 0;
         for chunk in data {
@@ -194,7 +186,7 @@ impl DnsTcpHandler {
                 Poll::Ready(Ok(response)) => {
                     dns.complete_tcp_query();
                     let payload_len = response.response_data.len();
-                    if payload_len > MAX_DNS_TCP_MESSAGE_SIZE {
+                    if payload_len > MAX_DNS_TCP_PAYLOAD_SIZE {
                         tracelimit::warn_ratelimited!(
                             size = payload_len,
                             "DNS TCP response exceeds maximum message size, dropping"
