@@ -3,12 +3,11 @@
 
 //! Download a copy of `azcopy`
 
-use crate::cache::CacheHit;
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub enum Request {
-        /// Version of `azcopy` to install (e.g: "v10")
+        /// Version of `azcopy` to install (e.g: "v10.31.0")
         Version(String),
         /// Get a path to `azcopy`
         GetAzCopy(WriteVar<PathBuf>),
@@ -22,7 +21,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_dist_pkg::Node>();
-        ctx.import::<crate::cache::Node>();
+        ctx.import::<crate::download_gh_release::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -36,9 +35,7 @@ impl FlowNode for Node {
             }
         }
 
-        let version_with_date =
-            version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
-        let version_without_date = version_with_date.split_once('-').unwrap().0.to_owned();
+        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
         let get_azcopy = get_azcopy;
 
         // -- end of req processing -- //
@@ -48,19 +45,6 @@ impl FlowNode for Node {
         }
 
         let azcopy_bin = ctx.platform().binary("azcopy");
-
-        let cache_dir = ctx.emit_rust_stepv("create azcopy cache dir", |_| {
-            |_| Ok(std::env::current_dir()?.absolute()?)
-        });
-
-        let cache_key = ReadVar::from_static(format!("azcopy-{version_with_date}"));
-        let hitvar = ctx.reqv(|hitvar| crate::cache::Request {
-            label: "azcopy".into(),
-            dir: cache_dir.clone(),
-            key: cache_key,
-            restore_keys: None,
-            hitvar,
-        });
 
         // in case we need to unzip the thing we downloaded
         let platform = ctx.platform();
@@ -78,56 +62,53 @@ impl FlowNode for Node {
             done: v,
         });
 
-        ctx.emit_rust_step("installing azcopy", |ctx| {
+        // Determine file name at emit time based on platform/arch
+        let (file_name, is_tar) = {
+            let arch = match ctx.arch() {
+                FlowArch::X86_64 => "amd64",
+                FlowArch::Aarch64 => "arm64",
+                _ => unreachable!("unsupported arch"),
+            };
+            match ctx.platform() {
+                FlowPlatform::Windows => (format!("azcopy_windows_{arch}_{version}.zip"), false),
+                FlowPlatform::Linux(_) => (format!("azcopy_linux_{arch}_{version}.tar.gz"), true),
+                FlowPlatform::MacOs => (format!("azcopy_darwin_{arch}_{version}.zip"), false),
+                _ => unreachable!("unsupported platform"),
+            }
+        };
+
+        let azcopy_archive = ctx.reqv(|v| crate::download_gh_release::Request {
+            repo_owner: "Azure".to_string(),
+            repo_name: "azure-storage-azcopy".to_string(),
+            needs_auth: false,
+            tag: format!("v{version}"),
+            file_name,
+            path: v,
+        });
+
+        ctx.emit_rust_step("extract azcopy from archive", |ctx| {
             bsdtar_installed.claim(ctx);
-            let cache_dir = cache_dir.claim(ctx);
-            let hitvar = hitvar.claim(ctx);
             let get_azcopy = get_azcopy.claim(ctx);
+            let azcopy_archive = azcopy_archive.claim(ctx);
+            let azcopy_bin = azcopy_bin.clone();
             move |rt| {
-                let cache_dir = rt.read(cache_dir);
+                let azcopy_archive = rt.read(azcopy_archive);
 
-                let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
-                    let cached_bin = cache_dir.join(&azcopy_bin);
-                    assert!(cached_bin.exists());
-                    Some(cached_bin)
+                let sh = xshell::Shell::new()?;
+                sh.change_dir(azcopy_archive.parent().unwrap());
+
+                if is_tar {
+                    xshell::cmd!(sh, "tar -xf {azcopy_archive} --strip-components=1").run()?;
                 } else {
-                    None
-                };
+                    let bsdtar = crate::_util::bsdtar_name(rt);
+                    xshell::cmd!(sh, "{bsdtar} -xf {azcopy_archive} --strip-components=1").run()?;
+                }
 
-
-                let path_to_azcopy = if let Some(cached) = cached {
-                    cached
-                } else {
-                    let sh = xshell::Shell::new()?;
-                    let arch = match rt.arch() {
-                        FlowArch::X86_64 => "amd64",
-                        FlowArch::Aarch64 => "arm64",
-                        arch => anyhow::bail!("unhandled arch {arch}"),
-                    };
-                    match rt.platform().kind() {
-                        FlowPlatformKind::Windows => {
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_windows_{arch}_{version_without_date}.zip -o azcopy.zip").run()?;
-
-                            let bsdtar = crate::_util::bsdtar_name(rt);
-                            xshell::cmd!(sh, "{bsdtar} -xf azcopy.zip --strip-components=1").run()?;
-                        }
-                        FlowPlatformKind::Unix => {
-                            let os = match rt.platform() {
-                                FlowPlatform::Linux(_) => "linux",
-                                FlowPlatform::MacOs => "darwin",
-                                platform => anyhow::bail!("unhandled platform {platform}"),
-                            };
-                            xshell::cmd!(sh, "curl --fail -L https://azcopyvnext-awgzd8g7aagqhzhe.b02.azurefd.net/releases/release-{version_with_date}/azcopy_{os}_{arch}_{version_without_date}.tar.gz -o azcopy.tar.gz").run()?;
-                            xshell::cmd!(sh, "tar -xf azcopy.tar.gz --strip-components=1").run()?;
-                        }
-                    };
-
-                    // move the unzipped bin into the cache dir
-                    let final_bin = cache_dir.join(&azcopy_bin);
-                    fs_err::rename(&azcopy_bin, &final_bin)?;
-
-                    final_bin.absolute()?
-                };
+                let path_to_azcopy = azcopy_archive
+                    .parent()
+                    .unwrap()
+                    .join(&azcopy_bin)
+                    .absolute()?;
 
                 for var in get_azcopy {
                     rt.write(var, &path_to_azcopy)
