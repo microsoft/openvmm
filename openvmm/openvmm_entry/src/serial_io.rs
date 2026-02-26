@@ -54,7 +54,8 @@ pub fn bind_serial(path: &Path) -> io::Result<Resource<SerialBackendHandle>> {
         if path.starts_with("//./pipe") {
             let pipe = pal::windows::pipe::new_named_pipe(
                 path,
-                winapi::um::winnt::GENERIC_READ | winapi::um::winnt::GENERIC_WRITE,
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Foundation::GENERIC_WRITE,
                 pal::windows::pipe::Disposition::Create,
                 pal::windows::pipe::PipeMode::Byte,
             )?;

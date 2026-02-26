@@ -113,22 +113,11 @@ whp.workspace = true
 
 win_etw_tracing.workspace = true
 
-[target.'cfg(windows)'.dependencies.winapi]
-features = [
-  "consoleapi",
-  "handleapi",
-  "memoryapi",
-  "namedpipeapi",
-  "processenv",
-  "realtimeapiset",
-  "synchapi",
-  "winbase",
-  "wincon",
-  "winnls",
-  "winnt",
-  "winsock2",
-]
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
+features = [
+  "Win32_Foundation",
+]
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

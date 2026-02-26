@@ -5331,7 +5331,7 @@ dependencies = [
  "vtl2_settings_proto",
  "whp",
  "win_etw_tracing",
- "winapi",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
