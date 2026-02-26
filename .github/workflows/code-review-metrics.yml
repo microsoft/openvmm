@@ -11,6 +11,7 @@ on:
         required: false
         default: '30'
         type: string
+  pull_request:  # Temporary trigger for testing
 
 permissions:
   contents: read
@@ -62,9 +63,15 @@ jobs:
           import sys
           from collections import defaultdict
           
-          # Load PR data
+          # Load PR data from JSONL file (one JSON object per line)
           with open('review-data/prs.json', 'r') as f:
-            prs = [json.loads(line) for line in f if line.strip()]
+            prs = []
+            for line_num, line in enumerate(f, 1):
+              if line.strip():
+                try:
+                  prs.append(json.loads(line))
+                except json.JSONDecodeError as e:
+                  print(f"Warning: Skipping malformed JSON on line {line_num}: {e}", file=sys.stderr)
           
           print(f"Processing {len(prs)} PRs...")
           
