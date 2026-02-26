@@ -204,7 +204,7 @@ impl<T: Client> Access<'_, T> {
             self.inner
                 .dns
                 .as_mut()
-                .and_then(|dns| match dns.poll_response(cx) {
+                .and_then(|dns| match dns.poll_udp_response(cx) {
                     Poll::Ready(resp) => resp,
                     Poll::Pending => None,
                 })
@@ -449,7 +449,7 @@ impl<T: Client> Access<'_, T> {
 
         // Submit the DNS query with addressing information
         // The response will be queued and sent later in poll_udp
-        dns.handle_dns(&request).map_err(|e| {
+        dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;

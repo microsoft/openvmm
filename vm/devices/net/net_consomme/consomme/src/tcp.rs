@@ -9,7 +9,7 @@ use super::DropReason;
 use crate::ChecksumState;
 use crate::ConsommeState;
 use crate::IpAddresses;
-use crate::dns_resolver::DnsBackend;
+use crate::dns_resolver::DnsResolver;
 use crate::dns_resolver::dns_tcp::DnsTcpHandler;
 use futures::AsyncRead;
 use futures::AsyncWrite;
@@ -311,7 +311,6 @@ impl<T: Client> Access<'_, T> {
                 Err(_) => false,
             });
         // Check for any new incoming data
-        let dns_backend = self.inner.dns.as_ref().map(|d| d.backend().as_ref());
         self.inner.tcp.connections.retain(|ft, conn| {
             let mut sender = Sender {
                 ft,
@@ -319,11 +318,10 @@ impl<T: Client> Access<'_, T> {
                 client: self.client,
             };
             match &mut conn.backend {
-                TcpBackend::Dns(dns_handler) => match dns_backend {
-                    Some(dns_backend) => {
-                        conn.inner
-                            .poll_dns_backend(cx, &mut sender, dns_handler, dns_backend)
-                    }
+                TcpBackend::Dns(dns_handler) => match &mut self.inner.dns {
+                    Some(dns) => conn
+                        .inner
+                        .poll_dns_backend(cx, &mut sender, dns_handler, dns),
                     None => {
                         tracing::warn!("DNS TCP connection without DNS resolver, dropping");
                         false
@@ -762,7 +760,7 @@ impl TcpConnectionInner {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         dns_handler: &mut DnsTcpHandler,
-        dns_backend: &impl DnsBackend,
+        dns: &mut DnsResolver,
     ) -> bool {
         // Propagate guest FIN before the tx path so that poll_read can
         // detect EOF on the same iteration.
@@ -775,7 +773,7 @@ impl TcpConnectionInner {
         while !self.tx_buffer.is_full() {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
             let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-            match dns_handler.poll_read(cx, &mut bufs) {
+            match dns_handler.poll_read(cx, &mut bufs, dns) {
                 Poll::Ready(n) => {
                     if n == 0 {
                         // EOF — close the connection.
@@ -792,7 +790,7 @@ impl TcpConnectionInner {
 
         // rx path: feed guest data into the DNS handler for query extraction.
         let (a, b) = self.rx_buffer.as_slices();
-        let consumed = dns_handler.ingest(&[a, b], dns_backend);
+        let consumed = dns_handler.ingest(&[a, b], dns);
         if consumed > 0 {
             self.rx_buffer.drain(..consumed);
         }
