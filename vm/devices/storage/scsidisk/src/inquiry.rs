@@ -240,6 +240,7 @@ impl SimpleScsiDisk {
         let max_write_same_length = (self.scsi_parameters.maximum_transfer_length as u64)
             .min(VHDMP_MAX_WRITE_SAME_LENGTH_BYTES)
             >> self.sector_shift;
+        // 0 indicates unsupported
 
         // Since we are only here if unmap is supported, ensure the reported
         // granularity is non-zero (or the guest will think that unmap is not
@@ -254,6 +255,31 @@ impl SimpleScsiDisk {
             optimal_unmap_granularity: optimal_unmap_granularity.into(),
             unmap_granularity_alignment: [0x80, 0x00, 0x00, 0x00], // UGAValid = 1
             max_write_same_length: max_write_same_length.into(),
+            max_atomic_transfer_length: self
+                .scsi_parameters
+                .atomic_parameters
+                .maximum_atomic_transfer_length
+                .into(),
+            atomic_alignment: self
+                .scsi_parameters
+                .atomic_parameters
+                .atomic_alignment
+                .into(),
+            atomic_transfer_length_granularity: self
+                .scsi_parameters
+                .atomic_parameters
+                .atomic_transfer_length_granularity
+                .into(),
+            maximum_atomic_transfer_length_with_atomic_boundary: self
+                .scsi_parameters
+                .atomic_parameters
+                .maximum_atomic_transfer_length_with_atomic_boundary
+                .into(),
+            maximum_atomic_boundary_size: self
+                .scsi_parameters
+                .atomic_parameters
+                .maximum_atomic_boundary_size
+                .into(),
             ..FromZeros::new_zeroed()
         };
 

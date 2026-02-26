@@ -196,6 +196,7 @@ open_enum! {
         ZBC_OUT = 0x94, // Close Zone, Finish Zone, Open Zone, Reset Write Pointer, etc.
         ZBC_IN = 0x95, // Report Zones, etc.
         READ_DATA_BUFF16 = 0x9B,
+        WRITE_ATOMIC16 = 0x9C,
         READ_CAPACITY16 = 0x9E,
         GET_LBA_STATUS = 0x9E,
         GET_PHYSICAL_ELEMENT_STATUS = 0x9E,
@@ -464,7 +465,8 @@ pub struct VpdBlockLimitsDescriptor {
     pub max_atomic_transfer_length: U32BE,
     pub atomic_alignment: U32BE,
     pub atomic_transfer_length_granularity: U32BE,
-    pub reserved1: [u8; 8],
+    pub maximum_atomic_transfer_length_with_atomic_boundary: U32BE,
+    pub maximum_atomic_boundary_size: U32BE,
 }
 
 /// VPD Page 0xB1, Block Device Characteristics
@@ -1021,6 +1023,18 @@ pub struct Cdb16 {
     pub flags: Cdb16Flags,
     pub logical_block: U64BE,
     pub transfer_blocks: U32BE,
+    pub reserved2: u8,
+    pub control: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct Cdb16Atomic {
+    pub operation_code: ScsiOp,
+    pub flags: Cdb16Flags,
+    pub logical_block: U64BE,
+    pub atomic_boundary: U16BE,
+    pub transfer_blocks: U16BE,
     pub reserved2: u8,
     pub control: u8,
 }
