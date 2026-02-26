@@ -430,7 +430,7 @@ impl IntoPipeline for CheckinGatesCli {
                     target: vmgstool_target,
                     profile: CommonProfile::from_release(release),
                     with_crypto: true,
-                    with_test_helpers: true,
+                    with_test_helpers: !release,
                     vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_tpm_guest_tests::Request {
@@ -573,7 +573,7 @@ impl IntoPipeline for CheckinGatesCli {
                     target: vmgstool_target,
                     profile: CommonProfile::from_release(release),
                     with_crypto: true,
-                    with_test_helpers: true,
+                    with_test_helpers: !release,
                     vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
