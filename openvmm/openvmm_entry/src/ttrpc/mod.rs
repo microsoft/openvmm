@@ -497,8 +497,6 @@ impl VmService {
             framebuffer: None,
             vga_firmware: None,
             vtl2_gfx: false,
-            virtio_console_pci: false,
-            virtio_serial: None,
             virtio_devices: vec![],
             vmbus: Some(VmbusConfig::default()),
             vtl2_vmbus: None,

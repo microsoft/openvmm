@@ -17,8 +17,6 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
-* `--virtio-console`: Enables a virtio serial device (via the MMIO transport) for Linux console access instead of COM1.
-* `--virtio-console-pci`: Uses the PCI transport for the virtio serial console.
 * `--gfx`: Enable a graphical console over VNC (see below)
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
@@ -29,7 +27,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
 
 And serial devices can each be configured to be relayed to different endpoints:
 
-* `--com1/com2/virtio-serial <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
+* `--com1/com2 <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
   * `none`: Serial output is dropped.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.
