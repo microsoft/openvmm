@@ -8994,12 +8994,16 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "event-listener",
  "guestmem",
+ "pal_async",
  "plan9",
+ "task_control",
  "tracing",
  "virtio",
  "virtio_resources",
  "vm_resource",
+ "vmcore",
 ]
 
 [[package]]

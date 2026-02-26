@@ -9,14 +9,20 @@ pub mod resolver;
 
 use async_trait::async_trait;
 use guestmem::GuestMemory;
+use pal_async::task::Spawn;
 use plan9::Plan9FileSystem;
 use std::sync::Arc;
+use task_control::TaskControl;
 use virtio::DeviceTraits;
-use virtio::LegacyVirtioDevice;
+use virtio::Resources;
+use virtio::VirtioDevice;
 use virtio::VirtioQueueCallbackWork;
+use virtio::VirtioQueueState;
+use virtio::VirtioQueueWorker;
 use virtio::VirtioQueueWorkerContext;
-use virtio::VirtioState;
 use virtio::spec::VirtioDeviceFeatures;
+use vmcore::vm_task::VmTaskDriver;
+use vmcore::vm_task::VmTaskDriverSource;
 
 const VIRTIO_DEVICE_TYPE_9P_TRANSPORT: u16 = 9;
 
@@ -26,10 +32,18 @@ pub struct VirtioPlan9Device {
     fs: Arc<Plan9FileSystem>,
     tag: Vec<u8>,
     memory: GuestMemory,
+    driver: VmTaskDriver,
+    worker: Option<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
+    exit_event: event_listener::Event,
 }
 
 impl VirtioPlan9Device {
-    pub fn new(tag: &str, fs: Plan9FileSystem, memory: GuestMemory) -> VirtioPlan9Device {
+    pub fn new(
+        driver_source: &VmTaskDriverSource,
+        tag: &str,
+        fs: Plan9FileSystem,
+        memory: GuestMemory,
+    ) -> VirtioPlan9Device {
         // The tag uses the same format as 9p protocol strings (2 byte length followed by string).
         let length = tag.len() + size_of::<u16>();
 
@@ -49,11 +63,14 @@ impl VirtioPlan9Device {
             fs: Arc::new(fs),
             tag: tag_buffer,
             memory,
+            driver: driver_source.simple(),
+            worker: None,
+            exit_event: event_listener::Event::new(),
         }
     }
 }
 
-impl LegacyVirtioDevice for VirtioPlan9Device {
+impl VirtioDevice for VirtioPlan9Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_DEVICE_TYPE_9P_TRANSPORT,
@@ -84,15 +101,42 @@ impl LegacyVirtioDevice for VirtioPlan9Device {
         tracing::warn!(offset, val, "[VIRTIO 9P] Unknown write",);
     }
 
-    fn get_work_callback(&mut self, index: u16) -> Box<dyn VirtioQueueWorkerContext + Send> {
-        assert!(index == 0);
-        Box::new(VirtioPlan9Worker {
+    fn enable(&mut self, resources: Resources) {
+        let queue_resources = resources
+            .queues
+            .into_iter()
+            .next()
+            .expect("expected single queue");
+
+        if !queue_resources.params.enable {
+            return;
+        }
+
+        let worker = VirtioPlan9Worker {
             mem: self.memory.clone(),
             fs: self.fs.clone(),
-        })
+        };
+        let worker = VirtioQueueWorker::new(self.driver.clone(), Box::new(worker));
+        self.worker = Some(worker.into_running_task(
+            "virtio-9p-queue".to_string(),
+            self.memory.clone(),
+            resources.features.clone(),
+            queue_resources,
+            self.exit_event.listen(),
+        ));
     }
 
-    fn state_change(&mut self, _: &VirtioState) {}
+    fn disable(&mut self) {
+        let Some(mut worker) = self.worker.take() else {
+            return;
+        };
+        self.exit_event.notify(usize::MAX);
+        self.driver
+            .spawn("shutdown-virtio-9p-queue".to_owned(), async move {
+                worker.stop().await;
+            })
+            .detach();
+    }
 }
 
 struct VirtioPlan9Worker {
