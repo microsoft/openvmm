@@ -213,3 +213,94 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+#[openvmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+)]
+async fn mana_nic_multiqueue(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let vp_count = 8;
+    let os_flavor = config.os_flavor();
+    let (mut _vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_processor_topology({
+            ProcessorTopology {
+                vp_count,
+                ..Default::default()
+            }
+        })
+        .modify_backend(|b| b.with_nic())
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .run()
+        .await?;
+
+    match os_flavor {
+        OsFlavor::Windows => {
+            let sh = agent.windows_shell();
+            let queue_count: u32 = cmd!(
+                sh,
+                "powershell.exe -NoExit -Command (Get-NetAdapterrss)[0].NumberOfReceiveQueues"
+            )
+            .read()
+            .await?
+            .replace("\r\nPS C:\\>", "")
+            .trim()
+            .parse()
+            .unwrap();
+
+            let cores: u32 = {
+                let cores_output = cmd!(
+                    sh,
+                    "powershell.exe -NoExit -Command (Get-CimInstance -ClassName Win32_Processor).NumberOfCores"
+                )
+                .read()
+                .await?;
+
+                let mut sum: u32 = 0;
+                for raw_line in cores_output.lines() {
+                    let line = raw_line.trim();
+                    // Stop when the PowerShell prompt appears.
+                    if line.contains("PS C:\\") {
+                        break;
+                    }
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if let Ok(n) = line.parse::<u32>() {
+                        sum = sum.saturating_add(n);
+                        continue;
+                    }
+                }
+
+                sum
+            };
+
+            assert!(
+                queue_count == cores,
+                "expected {} queues, got {}",
+                cores,
+                queue_count
+            );
+        }
+        OsFlavor::Linux => {
+            let sh = agent.unix_shell();
+            let output = cmd!(sh, "ethtool -l eth0").read().await?;
+            let _ = output
+                .lines()
+                .filter(|line| line.starts_with("Combined:"))
+                .map(|line| {
+                    let count = line.split_whitespace().nth(1).unwrap().trim().to_string();
+                    let n: u32 = count.parse().unwrap();
+                    assert!(n == vp_count, "expected {} queues, got {}", vp_count, n);
+                });
+        }
+        OsFlavor::Uefi | OsFlavor::FreeBsd => {
+            anyhow::bail!("Unsupported OsFlavors");
+        }
+    };
+
+    Ok(())
+}

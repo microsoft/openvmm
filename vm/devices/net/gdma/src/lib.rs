@@ -120,6 +120,7 @@ enum SmcError {
 pub struct VportConfig {
     pub mac_address: MacAddress,
     pub endpoint: Box<dyn Endpoint>,
+    pub queue_pairs: u16,
 }
 
 impl GdmaDevice {

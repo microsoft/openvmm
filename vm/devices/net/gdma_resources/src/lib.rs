@@ -30,4 +30,6 @@ pub struct VportDefinition {
     pub mac_address: MacAddress,
     /// The backend network endpoint for the vport.
     pub endpoint: Resource<NetEndpointHandleKind>,
+    /// The number of tx/rx queue pairs to allocate for the vport.
+    pub queue_pairs: u16,
 }

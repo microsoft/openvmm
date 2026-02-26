@@ -86,6 +86,7 @@ impl PetriVmConfigOpenVmm {
                     vports: vec![VportDefinition {
                         mac_address: NIC_MAC_ADDRESS,
                         endpoint,
+                        queue_pairs: self.config.processor_topology.proc_count as u16,
                     }],
                 }
                 .into_resource(),
