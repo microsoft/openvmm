@@ -2109,11 +2109,11 @@ pub mod steps {
         ///
         /// For more details on how these values affect a particular scope, refer to:
         /// <https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs>
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
         pub enum GhPermissionValue {
-            Read,
-            Write,
-            None,
+            None = 0,
+            Read = 1,
+            Write = 2,
         }
 
         /// Refers to the scope of a permission granted to the GITHUB_TOKEN

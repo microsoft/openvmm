@@ -1,6 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// The version in this crate's Cargo.toml file should be updated using the
+// semver standard when changes are made, which triggers CI to automatically
+// publish a new version.
+
 #![expect(missing_docs)]
 
 mod storage_backend;
@@ -47,7 +51,7 @@ pub(crate) enum Error {
     VmgsFile(#[source] std::io::Error),
     #[error("VHD file error")]
     Vhd1(#[source] disk_vhd1::OpenError),
-    #[error("invalid disk")]
+    #[error("Invalid disk")]
     InvalidDisk(#[source] disk_backend::InvalidDisk),
     #[error("Internal VMGS error")]
     Vmgs(#[from] VmgsError),
