@@ -75,6 +75,7 @@ pub struct GdmaDevice {
     destroying_hwc: bool,
     queues: Arc<Queues>,
     hwc: TaskControl<Devices, HwControl>,
+    is_firmware_managed: bool,
 }
 
 impl InspectMut for GdmaDevice {
@@ -129,6 +130,7 @@ impl GdmaDevice {
         msi_target: &MsiTarget,
         vports: Vec<VportConfig>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
+        is_firmware_managed: bool,
     ) -> Self {
         let (msix, msix_capability) = MsixEmulator::new(4, 64, msi_target);
 
@@ -183,6 +185,7 @@ impl GdmaDevice {
             hwc: TaskControl::new(Devices {
                 bnic: bnic::BasicNic::new(vports),
             }),
+            is_firmware_managed,
         }
     }
 
@@ -371,6 +374,10 @@ impl ChipsetDevice for GdmaDevice {
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
+    }
+
+    fn is_firmware_managed(&mut self) -> bool {
+        self.is_firmware_managed
     }
 }
 

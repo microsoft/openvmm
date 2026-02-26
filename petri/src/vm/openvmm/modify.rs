@@ -87,6 +87,7 @@ impl PetriVmConfigOpenVmm {
                         mac_address: NIC_MAC_ADDRESS,
                         endpoint,
                     }],
+                    is_firmware_managed: false,
                 }
                 .into_resource(),
             });

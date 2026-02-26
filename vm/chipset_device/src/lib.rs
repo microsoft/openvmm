@@ -61,6 +61,12 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
     ) -> Option<&mut dyn interrupt::AcknowledgePicInterrupt> {
         None
     }
+
+    /// Indicates whether the device is managed by firmware.
+    #[inline(always)]
+    fn is_firmware_managed(&mut self) -> bool {
+        false
+    }
 }
 
 /// Shared by `mmio` and `pio`

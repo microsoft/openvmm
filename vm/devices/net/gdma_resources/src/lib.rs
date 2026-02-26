@@ -17,6 +17,9 @@ use vm_resource::kind::PciDeviceHandleKind;
 pub struct GdmaDeviceHandle {
     /// The vports to instantiate on the NIC.
     pub vports: Vec<VportDefinition>,
+
+    /// Whether the device is managed by firmware.
+    pub is_firmware_managed: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for GdmaDeviceHandle {

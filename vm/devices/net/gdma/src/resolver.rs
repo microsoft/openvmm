@@ -69,6 +69,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
             input.msi_target,
             vports,
             input.register_mmio,
+            resource.is_firmware_managed,
         );
         Ok(device.into())
     }
