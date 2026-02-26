@@ -534,17 +534,14 @@ EOF
         let mut job_permissions = BTreeMap::new();
         for permission_map in gh_permissions.values() {
             for (permission, value) in permission_map {
-                if let Some(old_value) = job_permissions.insert(permission.clone(), value.clone()) {
-                    if old_value != *value {
-                        anyhow::bail!(
-                            "permission {:?} was to conflicting values in job {:?}: {:?} and {:?}",
-                            permission,
-                            label,
-                            old_value,
-                            value
-                        )
-                    }
-                };
+                // Use the most permissible value set (this allows individual
+                // jobs to override the value set in inject_all_jobs_with)
+                if job_permissions
+                    .get(permission)
+                    .is_none_or(|old_value| *old_value < *value)
+                {
+                    job_permissions.insert(permission.clone(), value.clone());
+                }
             }
         }
 

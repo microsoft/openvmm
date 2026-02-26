@@ -3836,7 +3836,7 @@ jobs:
     name: publish vmgstool
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
     needs:
     - job0

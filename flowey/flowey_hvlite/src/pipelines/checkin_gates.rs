@@ -1335,6 +1335,10 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "publish vmgstool",
                 )
+                .gh_grant_permissions::<flowey_lib_common::publish_gh_release::Node>([(
+                    GhPermission::Contents,
+                    GhPermissionValue::Write,
+                )])
                 .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release::Request {
