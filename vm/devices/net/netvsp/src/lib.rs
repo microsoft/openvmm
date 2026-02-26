@@ -285,21 +285,14 @@ struct ReadyState {
 }
 
 impl ReadyState {
-    /// Reset TX tracking state after the endpoint has been stopped.
-    ///
     /// Any in-flight TX packets submitted to the old endpoint queues will
     /// never be completed, so this method:
-    /// 1. Queue completions for all outstanding sends so the guest gets
-    ///    responses.
-    /// 2. Restores `free_tx_packets` to full, ensuring the worker will call
-    ///    `poll_ready()` on restart (which unmasks the incoming ring).
-    /// 3. Clears leftover TX segments that referenced the old endpoint queue.
+    /// 1. Queues completions for all outstanding sends so the guest gets
+    ///    responses and the associated transmit slots are reclaimed, ensuring
+    ///    the worker is ready to poll post restart of the queues.
+    /// 2. Clears leftover transmit segments that referenced the old endpoint
+    ///    queue so they are not submitted to the new one.
     ///
-    /// Without this, leaked TxIds permanently deplete `free_tx_packets`.
-    /// When `free_tx_packets` falls below `free_tx_packet_threshold`, the
-    /// worker skips `poll_ready()` in its poll_fn, leaving the incoming ring
-    /// masked (guest sees `out_mask:1`). The worker then parks waiting for
-    /// endpoint signals that never come, and the guest hangs.
     fn reset_tx_after_endpoint_stop(&mut self) {
         let state = &mut self.state;
 
@@ -3541,8 +3534,7 @@ impl Adapter {
                 // TODO
             }
             rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS => {
-                let had_rss = primary.rss_state.is_some();
-                self.oid_set_rss_parameters(reader, primary)?;
+                let rss_was_enabled = self.oid_set_rss_parameters(reader, primary)?;
 
                 // Endpoints cannot currently change RSS parameters without
                 // being restarted. This was a limitation driven by some DPDK
@@ -3550,7 +3542,7 @@ impl Adapter {
                 //
                 // Skip the restart if RSS was already disabled and the guest
                 // is disabling it again — nothing has changed.
-                if had_rss || primary.rss_state.is_some() {
+                if rss_was_enabled || primary.rss_state.is_some() {
                     restart_endpoint = true;
                 }
             }
@@ -3566,17 +3558,19 @@ impl Adapter {
         &self,
         mut reader: impl MemoryRead + Clone,
         primary: &mut PrimaryChannelState,
-    ) -> Result<(), OidError> {
+    ) -> Result<bool, OidError> {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
         let len = reader.len().min(size_of_val(&params));
         reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
+        let rss_was_enabled = primary.rss_state.is_some();
+
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
             || ((params.hash_information & NDIS_HASH_FUNCTION_MASK) == 0)
         {
             primary.rss_state = None;
-            return Ok(());
+            return Ok(rss_was_enabled);
         }
 
         if params.hash_secret_key_size != 40 {
@@ -3614,7 +3608,7 @@ impl Adapter {
             key,
             indirection_table: indirection_table.iter().map(|&x| x as u16).collect(),
         });
-        Ok(())
+        Ok(rss_was_enabled)
     }
 
     fn oid_set_packet_filter(
