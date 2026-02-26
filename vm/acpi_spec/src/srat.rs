@@ -8,6 +8,7 @@ use super::Table;
 use crate::packed_nums::*;
 use core::mem::size_of;
 use static_assertions::const_assert_eq;
+use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -205,36 +206,23 @@ impl SratMemory {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ParseSratError {
+    #[error("could not read standard ACPI header")]
     MissingAcpiHeader,
+    #[error("invalid signature. expected b\"SRAT\", found {0:?}")]
     InvalidSignature([u8; 4]),
+    #[error("mismatched len. in_header: {in_header}, actual {actual}")]
     MismatchedLength { in_header: usize, actual: usize },
+    #[error("missing fixed SRAT header")]
     MissingFixedHeader,
+    #[error("could not read APIC structure")]
     BadApic,
+    #[error("could not read MEMORY structure")]
     BadMemory,
+    #[error("unknown SRAT structure type: {0}")]
     UnknownType(u8),
 }
-
-impl core::fmt::Display for ParseSratError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::MissingAcpiHeader => write!(f, "could not read standard ACPI header"),
-            Self::InvalidSignature(sig) => {
-                write!(f, "invalid signature. expected b\"SRAT\", found {sig:?}")
-            }
-            Self::MismatchedLength { in_header, actual } => {
-                write!(f, "mismatched len. in_header: {in_header}, actual {actual}")
-            }
-            Self::MissingFixedHeader => write!(f, "missing fixed SRAT header"),
-            Self::BadApic => write!(f, "could not read APIC structure"),
-            Self::BadMemory => write!(f, "could not read MEMORY structure"),
-            Self::UnknownType(ty) => write!(f, "unknown SRAT structure type: {ty}"),
-        }
-    }
-}
-
-impl core::error::Error for ParseSratError {}
 
 pub fn parse_srat<'a>(
     raw_srat: &'a [u8],
