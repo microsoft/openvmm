@@ -47,7 +47,7 @@ pub(crate) enum Error {
     VmgsFile(#[source] std::io::Error),
     #[error("VHD file error")]
     Vhd1(#[source] disk_vhd1::OpenError),
-    #[error("invalid disk")]
+    #[error("Invalid disk")]
     InvalidDisk(#[source] disk_backend::InvalidDisk),
     #[error("Internal VMGS error")]
     Vmgs(#[from] VmgsError),
