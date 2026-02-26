@@ -5099,6 +5099,7 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",

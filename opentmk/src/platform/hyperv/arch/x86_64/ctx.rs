@@ -148,8 +148,14 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
 
     /// Return the number of logical processors present in the machine
     fn get_vp_count(&self) -> TmkResult<u32> {
-        // TODO: use ACPI to get the actual count
-        Ok(4)
+        #[cfg(target_os = "uefi")]
+        {
+            crate::uefi::acpi_wrap::AcpiTableContext::get_apic_count_from_madt().map(|r| r as u32)
+        }
+        #[cfg(not(target_os = "uefi"))]
+        {
+            Err(TmkError::NotImplemented)
+        }
     }
 
     /// Push a command onto the per-VP linked-list so it will be executed
