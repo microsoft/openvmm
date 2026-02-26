@@ -693,11 +693,16 @@ impl HclNetworkVFManagerWorker {
                     // Prior behavior treats any uevent with a valid device path as an arrival, as long
                     // as the VTL2 device is currently missing. Otherwise, uevents are silently ignored.
                     // It would be more correct to check that the uevent action is 'add' or 'rescan'.
-                    // For now, adding tracing to help investigate uevent processing.
                     let exists = Path::new(&device_path).exists();
-                    tracing::info!(?action, exists, %device_path, "uevent received");
                     match (vtl2_device_state, exists) {
                         (Vtl2DeviceState::Missing, true) => NextWorkItem::ManaDeviceArrived,
+                        (state, false) => {
+                            // Tracing to diagnose add/rescan that is not acted on due to missing device.
+                            if notification.action == UeventAction::Add || notification.action == UeventAction::Rescan {
+                                 tracelimit::warn_ratelimited!(?state, ?action, exists, %device_path, "uevent received");
+                            }
+                            NextWorkItem::Continue
+                        }
                         _ => NextWorkItem::Continue,
                     }
                 });
