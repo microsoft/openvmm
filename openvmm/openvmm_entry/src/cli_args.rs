@@ -18,6 +18,7 @@
 //       anything else on this file though.
 #![warn(missing_docs)]
 
+use crate::storage_builder::NvmeControllerType;
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
@@ -143,8 +144,18 @@ flags:
     `ro`                           open disk as read-only
     `dvd`                          specifies that device is cd/dvd and it is read_only
     `vtl2`                         assign this disk to VTL2
-    `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as SCSI)
-    `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as SCSI)
+
+options:
+    `uh[=[lun:<lun>][;controller:<controller_id>]]`           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as SCSI)
+        <lun>:            LUN of the disk [0..255]
+        <controller_id>:  GUID of the SCSI controller to attach this disk from (shows as the VSID to VTL2)
+    `uh-nvme[=[nsid:<nsid>][;controller:<controller_id>]]`    relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as SCSI)
+        <nsid>:           NSID of the namespace [0..2^32-1]
+        <controller_id>:  GUID of the SCSI controller to attach this disk from (shows as the VSID to VTL2)
+
+    When using `uh` and `uh-nvme`, each disk is identified by a unique (lun/nsid, controller_id) tuple.
+    - If no controller_id is specified, a default controller will be used.
+    - If no lun/nsid is specified, the next available lun/nsid will be used.
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
@@ -979,7 +990,7 @@ impl FromStr for VmgsCli {
 }
 
 // <kind>[,ro]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct DiskCli {
     pub vtl: DeviceVtl,
     pub kind: DiskCliKind,
@@ -987,12 +998,6 @@ pub struct DiskCli {
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
     pub pcie_port: Option<String>,
-}
-
-#[derive(Copy, Clone)]
-pub enum UnderhillDiskSource {
-    Scsi,
-    Nvme,
 }
 
 impl FromStr for DiskCli {
@@ -1007,10 +1012,10 @@ impl FromStr for DiskCli {
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
         let mut pcie_port = None;
-        for opt in opts {
-            let mut s = opt.split('=');
-            let opt = s.next().unwrap();
-            match opt {
+        for full_opt in opts {
+            let mut s = full_opt.split('=');
+            let key = s.next().unwrap();
+            match key {
                 "ro" => read_only = true,
                 "dvd" => {
                     is_dvd = true;
@@ -1019,8 +1024,6 @@ impl FromStr for DiskCli {
                 "vtl2" => {
                     vtl = DeviceVtl::Vtl2;
                 }
-                "uh" => underhill = Some(UnderhillDiskSource::Scsi),
-                "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
                 "pcie_port" => {
                     let port = s.next();
                     if port.is_none_or(|p| p.is_empty()) {
@@ -1028,7 +1031,13 @@ impl FromStr for DiskCli {
                     }
                     pcie_port = Some(String::from(port.unwrap()));
                 }
-                opt => anyhow::bail!("unknown option: '{opt}'"),
+                key => {
+                    if key.starts_with("uh") {
+                        underhill = Some(full_opt.parse()?);
+                    } else {
+                        anyhow::bail!("unknown option: '{full_opt}'")
+                    }
+                }
             }
         }
 
@@ -1048,6 +1057,91 @@ impl FromStr for DiskCli {
             underhill,
             pcie_port,
         })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum UnderhillDiskSource {
+    /// Expose to VTL2 via SCSI (optional LUN, optional controller ID (unused))
+    Scsi(Option<u8>, Option<String>),
+    /// Expose to VTL2 via NVMe (optional NSID, optional controller ID)
+    Nvme(Option<u32>, NvmeControllerType),
+}
+
+impl FromStr for UnderhillDiskSource {
+    type Err = anyhow::Error;
+
+    // uh-nvme=[nsid:<nsid>][;controller:<controller_id>]
+    // uh=[lun:<lun>][;controller:<controller_id>]
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let parse_loc = |s: &str| -> anyhow::Result<(Option<u8>, Option<u32>, Option<String>)> {
+            let mut lun = None;
+            let mut nsid = None;
+            let mut controller_id = None;
+            for part in s.split(';') {
+                let mut kv = part.splitn(2, ':');
+                let key = kv.next().unwrap();
+                let value = kv
+                    .next()
+                    .with_context(|| format!("expected key:value for '{key}'"))?;
+                match key {
+                    "lun" => {
+                        lun = Some(
+                            value
+                                .parse()
+                                .with_context(|| format!("invalid lun value '{value}'"))?,
+                        );
+                    }
+                    "nsid" => {
+                        let n = value
+                            .parse()
+                            .with_context(|| format!("invalid nsid value '{value}'"))?;
+                        if n == u32::MAX {
+                            anyhow::bail!("nsid value '{value}' is reserved");
+                        }
+                        nsid = Some(n);
+                    }
+                    "controller" => {
+                        controller_id = Some(value.to_string());
+                    }
+                    _ => anyhow::bail!("unknown option '{key}'"),
+                }
+            }
+            Ok((lun, nsid, controller_id))
+        };
+
+        let (option, value) = match s.split_once('=') {
+            Some((opt, "")) => (opt, None),
+            Some((opt, val)) => (opt, Some(val)),
+            None => (s, None),
+        };
+        match (option, value) {
+            ("uh-nvme", None) => Ok(UnderhillDiskSource::Nvme(
+                None,
+                NvmeControllerType::Vpci(None),
+            )),
+            ("uh-nvme", Some(opts)) => {
+                let (lun, nsid, controller_id) = parse_loc(opts)?;
+                if lun.is_some() {
+                    anyhow::bail!("`uh-nvme` does not support `lun`, use `nsid` instead");
+                }
+                Ok(UnderhillDiskSource::Nvme(
+                    nsid,
+                    NvmeControllerType::Vpci(controller_id),
+                ))
+            }
+            ("uh", None) => Ok(UnderhillDiskSource::Scsi(None, None)),
+            ("uh", Some(opts)) => {
+                let (lun, nsid, controller_id) = parse_loc(opts)?;
+                if nsid.is_some() {
+                    anyhow::bail!("`uh` does not support `nsid`, use `lun` instead");
+                }
+                Ok(UnderhillDiskSource::Scsi(lun, controller_id))
+            }
+            (_, _) => {
+                anyhow::bail!("invalid underhill disk source '{option}', '{value:?}' found")
+            }
+        }
     }
 }
 
@@ -1960,6 +2054,90 @@ mod tests {
             }
             _ => panic!("Expected SqliteDiff variant"),
         }
+    }
+
+    #[test]
+    fn test_parse_underhill_disk() {
+        let cases: [(&str, UnderhillDiskSource); 11] = [
+            ("uh-nvme", UnderhillDiskSource::Nvme(None, None)),
+            ("uh-nvme=nsid:0", UnderhillDiskSource::Nvme(Some(0), None)),
+            ("uh-nvme=nsid:5", UnderhillDiskSource::Nvme(Some(5), None)),
+            (
+                "uh-nvme=nsid:205",
+                UnderhillDiskSource::Nvme(Some(205), None),
+            ),
+            (
+                "uh-nvme=controller:abcd",
+                UnderhillDiskSource::Nvme(None, Some("abcd".to_string())),
+            ),
+            (
+                "uh-nvme=nsid:5;controller:abcd",
+                UnderhillDiskSource::Nvme(Some(5), Some("abcd".to_string())),
+            ),
+            ("uh", UnderhillDiskSource::Scsi(None, None)),
+            ("uh=lun:0", UnderhillDiskSource::Scsi(Some(0), None)),
+            ("uh=lun:5", UnderhillDiskSource::Scsi(Some(5), None)),
+            (
+                "uh=controller:abcd",
+                UnderhillDiskSource::Scsi(None, Some("abcd".to_string())),
+            ),
+            (
+                "uh=lun:5;controller:abcd",
+                UnderhillDiskSource::Scsi(Some(5), Some("abcd".to_string())),
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let disk = UnderhillDiskSource::from_str(input).unwrap();
+            assert_eq!(disk, expected);
+        }
+
+        let error_cases = [
+            "uh-nvme=invalid:5",
+            "uh-nvme=nsid:abc",
+            "uh-nvme=nsid:-1",
+            "uh-nvme=nsid:0xFFFFFFFF",
+            "uh-nvme=nsid:5;invalid:abcd",
+            "uh=invalid:5",
+            "uh=lun:abc",
+            "uh=lun:5;invalid:abcd",
+            "uh=lun:-1",
+            "not-uh",
+        ];
+
+        for input in error_cases {
+            assert!(
+                UnderhillDiskSource::from_str(input).is_err(),
+                "input: {}",
+                input
+            );
+        }
+
+        // Make sure underhill args fit in nicely with DiskCli parsing
+        assert_eq!(
+            DiskCli::from_str("file:disk.vhd,uh-nvme")
+                .unwrap()
+                .underhill,
+            Some(UnderhillDiskSource::Nvme(None, None))
+        );
+        assert_eq!(
+            DiskCli::from_str("file:disk.vhd,uh-nvme=nsid:10;controller:ctrl1")
+                .unwrap()
+                .underhill,
+            Some(UnderhillDiskSource::Nvme(
+                Some(10),
+                Some("ctrl1".to_string())
+            ))
+        );
+        assert_eq!(
+            DiskCli::from_str("file:disk.vhd,uh-nvme=nsid:10;controller:ctrl1,ro")
+                .unwrap()
+                .underhill,
+            Some(UnderhillDiskSource::Nvme(
+                Some(10),
+                Some("ctrl1".to_string())
+            ))
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub use cli_args::Options;
 use console_relay::ConsoleLaunchOptions;
 
 use crate::cli_args::SecureBootTemplateCli;
+use crate::storage_builder::NvmeControllerType;
 use anyhow::Context;
 use anyhow::bail;
 use chipset_resources::battery::HostBatteryUpdate;
@@ -597,7 +598,7 @@ async fn vm_config_from_command_line(
         ref kind,
         read_only,
         is_dvd,
-        underhill,
+        ref underhill,
         ref pcie_port,
     } in &opt.disk
     {
@@ -607,7 +608,7 @@ async fn vm_config_from_command_line(
 
         storage.add(
             vtl,
-            underhill,
+            underhill.clone(),
             storage_builder::DiskLocation::Scsi(None),
             kind,
             is_dvd,
@@ -638,14 +639,14 @@ async fn vm_config_from_command_line(
         ref kind,
         read_only,
         is_dvd,
-        underhill,
+        ref underhill,
         ref pcie_port,
     } in &opt.nvme
     {
         storage.add(
             vtl,
-            underhill,
-            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
+            underhill.clone(),
+            storage_builder::DiskLocation::Nvme(None, NvmeControllerType::Pcie(pcie_port.clone())),
             kind,
             is_dvd,
             read_only,
