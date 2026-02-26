@@ -99,20 +99,24 @@ impl Fuse for VirtioFs {
     }
 
     fn set_attr(&self, request: &Request, arg: &fuse_setattr_in) -> lx::Result<fuse_attr_out> {
-        // Block truncation and other modifications on readonly filesystems
-        if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
-            self.check_writable()?;
-        }
         let node_id = request.node_id();
 
         // If a file handle is specified, set the attributes on the open file. This is faster on
         // Windows and works if the file was deleted.
         let attr = if arg.valid & FATTR_FH != 0 {
             let file = self.get_file(arg.fh)?;
+            // Block truncation and other modifications on readonly filesystems
+            if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
+                self.check_writable()?;
+            }
             file.set_attr(arg, request.uid())?;
             file.get_attr()?
         } else {
             let inode = self.get_inode(node_id)?;
+            // Block truncation and other modifications on readonly filesystems
+            if arg.valid & !(FATTR_FH | FATTR_LOCKOWNER) != 0 {
+                self.check_writable()?;
+            }
             inode.set_attr(arg, request.uid())?
         };
 
@@ -158,8 +162,8 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_create_in,
     ) -> lx::Result<CreateOut> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         let (new_inode, attr, file) =
             inode.create(name, arg.flags, arg.mode, request.uid(), request.gid())?;
 
@@ -181,8 +185,8 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mkdir_in,
     ) -> lx::Result<fuse_entry_out> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         let (new_inode, attr) = inode.mkdir(name, arg.mode, request.uid(), request.gid())?;
         let (_, node_id) = self.insert_inode(new_inode);
         Ok(fuse_entry_out::new(
@@ -199,8 +203,8 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         arg: &fuse_mknod_in,
     ) -> lx::Result<fuse_entry_out> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         let (new_inode, attr) =
             inode.mknod(name, arg.mode, request.uid(), request.gid(), arg.rdev)?;
 
@@ -219,8 +223,8 @@ impl Fuse for VirtioFs {
         name: &lx::LxStr,
         target: &lx::LxStr,
     ) -> lx::Result<fuse_entry_out> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         let (new_inode, attr) = inode.symlink(name, target, request.uid(), request.gid())?;
 
         let (_, node_id) = self.insert_inode(new_inode);
@@ -233,9 +237,9 @@ impl Fuse for VirtioFs {
     }
 
     fn link(&self, request: &Request, name: &lx::LxStr, target: u64) -> lx::Result<fuse_entry_out> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let target_inode = self.get_inode(target)?;
+        self.check_writable()?;
         let attr = inode.link(name, &target_inode)?;
 
         // Use the target inode as the reply, with refreshed attributes.
@@ -261,8 +265,8 @@ impl Fuse for VirtioFs {
     }
 
     fn write(&self, request: &Request, arg: &fuse_write_in, data: &[u8]) -> lx::Result<usize> {
-        self.check_writable()?;
         let file = self.get_file(arg.fh)?;
+        self.check_writable()?;
         file.write(data, arg.offset, request.uid())
     }
 
@@ -291,12 +295,10 @@ impl Fuse for VirtioFs {
     }
 
     fn unlink(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
-        self.check_writable()?;
         self.unlink_helper(request, name, 0)
     }
 
     fn rmdir(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
-        self.check_writable()?;
         self.unlink_helper(request, name, lx::AT_REMOVEDIR)
     }
 
@@ -308,9 +310,9 @@ impl Fuse for VirtioFs {
         new_name: &lx::LxStr,
         flags: u32,
     ) -> lx::Result<()> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
         let new_inode = self.get_inode(new_dir)?;
+        self.check_writable()?;
         inode.rename(name, &new_inode, new_name, flags)
     }
 
@@ -351,8 +353,8 @@ impl Fuse for VirtioFs {
         value: &[u8],
         flags: u32,
     ) -> lx::Result<()> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         inode.set_xattr(name, value, flags)
     }
 
@@ -372,8 +374,8 @@ impl Fuse for VirtioFs {
     }
 
     fn remove_xattr(&self, request: &Request, name: &lx::LxStr) -> lx::Result<()> {
-        self.check_writable()?;
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         inode.remove_xattr(name)
     }
 
@@ -430,6 +432,7 @@ impl VirtioFs {
     /// Removes a file or directory.
     fn unlink_helper(&self, request: &Request, name: &lx::LxStr, flags: i32) -> lx::Result<()> {
         let inode = self.get_inode(request.node_id())?;
+        self.check_writable()?;
         inode.unlink(name, flags)
     }
 
