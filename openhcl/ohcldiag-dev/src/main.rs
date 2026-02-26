@@ -304,10 +304,10 @@ enum Command {
         ///
         /// Accepted values: "default" (errors+warnings), "info" (errors+warnings+info),
         /// "full" (all levels).
-        #[clap(default_value = "default")]
         log_level: EfiDiagnosticsLogLevel,
         /// The output destination.
-        #[clap(default_value = "stdout")]
+        ///
+        /// Accepted values: "stdout", "tracing".
         output: EfiDiagnosticsOutput,
     },
 }
@@ -968,7 +968,7 @@ pub fn main() -> anyhow::Result<()> {
                     output.as_inspect_value()
                 );
                 let value = client
-                    .update("vm/uefi/dump_efi_diagnostics", &arg)
+                    .update("vm/uefi/process_diagnostics", &arg)
                     .await
                     .context("failed to process EFI diagnostics")?;
                 match value.kind {

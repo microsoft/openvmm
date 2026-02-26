@@ -291,10 +291,10 @@ impl UefiDevice {
 
     /// Extra inspection fields for the UEFI device.
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
-        resp.field_mut_with("dump_efi_diagnostics", |v| {
+        resp.field_mut_with("process_diagnostics", |v| {
             let Some(value) = v else {
                 return Result::<_, std::convert::Infallible>::Ok(
-                    "Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/dump_efi_diagnostics".to_string(),
+                    "Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics".to_string(),
                 );
             };
 
@@ -305,7 +305,7 @@ impl UefiDevice {
                 "info" => Some(LogLevel::make_info()),
                 "full" => Some(LogLevel::make_full()),
                 _ => return Result::<_, std::convert::Infallible>::Ok(
-                    "Invalid log level. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/dump_efi_diagnostics".to_string(),
+                    "Invalid log level. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics".to_string(),
                 ),
             };
 
@@ -338,7 +338,7 @@ impl UefiDevice {
                     ))
                 }
                 _ => Result::<_, std::convert::Infallible>::Ok(
-                    "Invalid destination. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/dump_efi_diagnostics".to_string(),
+                    "Invalid destination. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics".to_string(),
                 ),
             }
         });
