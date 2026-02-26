@@ -1,6 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+// The version in this crate's Cargo.toml file should be updated using the
+// semver standard when changes are made, which triggers CI to automatically
+// publish a new version.
+
 #![expect(missing_docs)]
 
 mod storage_backend;
