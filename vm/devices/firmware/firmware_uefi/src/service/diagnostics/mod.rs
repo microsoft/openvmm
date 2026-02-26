@@ -34,6 +34,9 @@ mod processor;
 /// Default number of EfiDiagnosticsLogs emitted per period
 pub const DEFAULT_LOGS_PER_PERIOD: u32 = 150;
 
+/// Number of EfiDiagnosticsLogs emitted per period for watchdog timeouts
+pub const WATCHDOG_LOGS_PER_PERIOD: u32 = 2000;
+
 /// Emit a diagnostic log entry with rate limiting.
 ///
 /// # Arguments

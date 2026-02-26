@@ -73,6 +73,7 @@ use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
+use service::diagnostics::WATCHDOG_LOGS_PER_PERIOD;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
@@ -389,7 +390,9 @@ impl PollDevice for UefiDevice {
             // Here, we emit diagnostics to tracing with INFO level and no limit
             let _ = self.process_diagnostics(
                 false,
-                service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                service::diagnostics::DiagnosticsEmitter::Tracing {
+                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
+                },
                 Some(LogLevel::make_info()),
             );
         }
