@@ -213,6 +213,7 @@ pub enum DrainAfterRestore {
         counter: Arc<AtomicUsize>,
         #[inspect(skip)]
         signal: Arc<DeviceInterruptSource>,
+        pci_id: String,
     },
 
     // Empty queues (whether because they got drained already, or were initially
@@ -235,16 +236,18 @@ pub struct DrainAfterRestoreBuilder(Option<DrainAfterRestoreBuilderInner>);
 struct DrainAfterRestoreBuilderInner {
     counter: Arc<AtomicUsize>,
     signal: Arc<DeviceInterruptSource>,
+    pci_id: String,
 }
 
 impl DrainAfterRestoreBuilder {
-    pub fn new(num_queues: usize) -> Self {
+    pub fn new(num_queues: usize, pci_id: String) -> Self {
         if num_queues == 0 {
             DrainAfterRestoreBuilder(None)
         } else {
             DrainAfterRestoreBuilder(Some(DrainAfterRestoreBuilderInner {
                 counter: Arc::new(AtomicUsize::new(num_queues)),
                 signal: Arc::new(DeviceInterruptSource::new()),
+                pci_id,
             }))
         }
     }
@@ -254,6 +257,7 @@ impl DrainAfterRestoreBuilder {
             Some(inner) => DrainAfterRestore::Draining {
                 counter: inner.counter.clone(),
                 signal: inner.signal.clone(),
+                pci_id: inner.pci_id.clone(),
             },
             None => DrainAfterRestore::AllDrained,
         }
@@ -275,7 +279,12 @@ impl DrainAfterRestoreBuilder {
 
 impl DrainAfterRestore {
     fn mark_drained(&mut self) {
-        let Self::Draining { counter, signal } = self else {
+        let Self::Draining {
+            counter,
+            signal,
+            pci_id,
+        } = self
+        else {
             panic!("unexpected call to DrainAfterRestore::mark_drained when not draining");
         };
 
@@ -284,6 +293,7 @@ impl DrainAfterRestore {
         if old_counter == 1 {
             signal.signal_uncached();
             tracing::info!(
+                ?pci_id,
                 "drain-after-restore: all queues drained, sent signal to continue restore"
             );
         } else if old_counter == 0 {
@@ -1088,7 +1098,7 @@ impl<A: AerHandler> QueueHandler<A> {
                 Request(Req),
                 Command(Cmd),
                 Completion(spec::Completion),
-                NoOp,
+                DrainComplete,
             }
 
             let event = if matches!(self.drain_after_restore, DrainAfterRestore::AllDrained) {
@@ -1134,7 +1144,7 @@ impl<A: AerHandler> QueueHandler<A> {
                     if let DrainAfterRestore::SelfDrained { waiter } = &mut self.drain_after_restore
                     {
                         if waiter.poll(cx).is_ready() {
-                            return Event::NoOp.into();
+                            return Event::DrainComplete.into();
                         }
                     }
 
@@ -1198,7 +1208,7 @@ impl<A: AerHandler> QueueHandler<A> {
                     respond.complete(completion);
                     self.stats.completed.increment();
                 }
-                Event::NoOp => {
+                Event::DrainComplete => {
                     // No-op event to trigger marking all queues as drained.
                     self.drain_after_restore = DrainAfterRestore::AllDrained;
                 }

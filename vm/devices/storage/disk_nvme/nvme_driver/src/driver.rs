@@ -898,12 +898,17 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .iter()
             .filter(|q| !q.queue_data.handler_data.pending_cmds.commands.is_empty())
             .count();
-        tracing::info!(nonempty_queues, "drain-after-restore initialization");
+        tracing::info!(
+            nonempty_queues,
+            ?pci_id,
+            "drain-after-restore initialization"
+        );
         // This DrainAfterRestore template tracks which IO queues need to be
         // drained after restore. We initialize it with the number of non-empty queues
         // we are restoring eagerly here, but all queues (eagerly restored and
         // lazily restored) will wait for all (non-empty) queues to drain.
-        let drain_after_restore_template = DrainAfterRestoreBuilder::new(nonempty_queues);
+        let drain_after_restore_template =
+            DrainAfterRestoreBuilder::new(nonempty_queues, pci_id.clone());
 
         let proto_queues_count = saved_state
             .worker_data
