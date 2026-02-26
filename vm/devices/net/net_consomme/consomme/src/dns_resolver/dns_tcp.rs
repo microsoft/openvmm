@@ -81,7 +81,11 @@ impl DnsTcpHandler {
         }
 
         let total_offered: usize = data.iter().map(|c| c.len()).sum();
-        tracing::info!(total_offered, buf_len = self.buf.len(), "dns_tcp ingest: start");
+        tracing::info!(
+            total_offered,
+            buf_len = self.buf.len(),
+            "dns_tcp ingest: start"
+        );
 
         let mut total_consumed = 0;
         for chunk in data {
@@ -200,9 +204,8 @@ impl DnsTcpHandler {
 
                     // Build TCP-framed response: 2-byte length prefix + payload.
                     self.buf.clear();
-                    self.buf.reserve(
-                        (2 + payload_len).saturating_sub(self.buf.capacity()),
-                    );
+                    self.buf
+                        .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
                     self.buf
                         .extend_from_slice(&(payload_len as u16).to_be_bytes());
                     self.buf.extend(response.response_data);

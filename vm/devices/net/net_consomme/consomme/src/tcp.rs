@@ -806,9 +806,7 @@ impl TcpConnectionInner {
         self.send_next(sender);
         !(self.state == TcpState::TimeWait
             || self.state == TcpState::LastAck
-            || (self.state.tx_fin()
-                && self.state.rx_fin()
-                && self.tx_buffer.is_empty()))
+            || (self.state.tx_fin() && self.state.rx_fin() && self.tx_buffer.is_empty()))
     }
 
     /// Poll the real-socket TCP connection backend.
