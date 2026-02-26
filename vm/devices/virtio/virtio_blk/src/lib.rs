@@ -17,12 +17,13 @@ use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use pal_async::task::Spawn;
 use pal_async::wait::PolledWait;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
 use std::pin::Pin;
+use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::StopTask;
@@ -46,32 +47,33 @@ const MAX_IO_DEPTH: usize = 64;
 /// The virtio-blk device.
 #[derive(InspectMut)]
 pub struct VirtioBlkDevice {
-    disk: Disk,
-    #[inspect(skip)]
-    memory: GuestMemory,
-    #[inspect(skip)]
-    driver_source: VmTaskDriverSource,
+    #[inspect(flatten)]
+    worker: TaskControl<BlkWorker, BlkQueueState>,
     #[inspect(skip)]
     driver: VmTaskDriver,
     read_only: bool,
+    supports_discard: bool,
     config: VirtioBlkConfig,
-    worker: Option<Worker>,
 }
 
-#[derive(Inspect)]
-struct Worker {
-    #[inspect(flatten)]
-    task: TaskControl<WorkerTask, WorkerState>,
-}
-
-#[derive(Inspect)]
-struct WorkerState {
+/// Persistent worker state. Survives across enable/disable cycles.
+///
+/// Holds the disk backend, guest memory, stats counters, and the
+/// `FuturesUnordered` that tracks in-flight IOs. The IO futures
+/// live here (not in `BlkQueueState`) so they survive when the
+/// task is stopped — they're drained in `poll_disable()` before
+/// the queue state is removed.
+struct BlkWorker {
     disk: Disk,
-    #[inspect(skip)]
     memory: GuestMemory,
     read_only: bool,
-    #[inspect(flatten)]
     stats: WorkerStats,
+    ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
+}
+
+/// Transient queue state, created in `enable()` and removed in `poll_disable()`.
+struct BlkQueueState {
+    queue: VirtioQueue,
 }
 
 #[derive(Inspect, Default)]
@@ -83,15 +85,12 @@ struct WorkerStats {
     errors: Counter,
 }
 
-struct WorkerTask {
-    queue: VirtioQueue,
-}
-
-impl InspectTask<WorkerState> for WorkerTask {
-    fn inspect(&self, req: inspect::Request<'_>, state: Option<&WorkerState>) {
-        if let Some(state) = state {
-            state.inspect(req);
-        }
+impl InspectTask<BlkQueueState> for BlkWorker {
+    fn inspect(&self, req: inspect::Request<'_>, _state: Option<&BlkQueueState>) {
+        req.respond()
+            .field("read_only", self.read_only)
+            .field("in_flight_ios", self.ios.len())
+            .merge(&self.stats);
     }
 }
 
@@ -111,15 +110,42 @@ enum IoStat {
     None,
 }
 
-impl AsyncRun<WorkerState> for WorkerTask {
+impl BlkWorker {
+    /// Accumulate stats from a completed IO.
+    fn record_completion(&mut self, completion: IoCompletion) {
+        match completion.stat {
+            IoStat::Read => self.stats.read_ops.increment(),
+            IoStat::Write => self.stats.write_ops.increment(),
+            IoStat::Flush => self.stats.flush_ops.increment(),
+            IoStat::Discard => self.stats.discard_ops.increment(),
+            IoStat::Error => self.stats.errors.increment(),
+            IoStat::None => {}
+        }
+    }
+
+    /// Poll all in-flight IOs to completion.
+    ///
+    /// Called during `poll_disable()` after the worker task has been stopped.
+    /// The `FuturesUnordered` still holds any IOs that were in flight when
+    /// `until_stopped` returned. This drains them, ensuring all descriptor
+    /// completions are written to the used ring before the queue is dropped.
+    fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        loop {
+            match self.ios.poll_next_unpin(cx) {
+                Poll::Ready(Some(completion)) => self.record_completion(completion),
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+impl AsyncRun<BlkQueueState> for BlkWorker {
     async fn run(
         &mut self,
         stop: &mut StopTask<'_>,
-        state: &mut WorkerState,
+        state: &mut BlkQueueState,
     ) -> Result<(), task_control::Cancelled> {
-        let mut ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>> =
-            FuturesUnordered::new();
-
         stop.until_stopped(async {
             loop {
                 enum Event {
@@ -129,12 +155,12 @@ impl AsyncRun<WorkerState> for WorkerTask {
 
                 let event = std::future::poll_fn(|cx| {
                     // Poll for completed IOs first to free up slots.
-                    if let Poll::Ready(Some(completion)) = ios.poll_next_unpin(cx) {
+                    if let Poll::Ready(Some(completion)) = self.ios.poll_next_unpin(cx) {
                         return Poll::Ready(Event::Completed(completion));
                     }
                     // Accept new work if under the depth limit.
-                    if ios.len() < MAX_IO_DEPTH {
-                        if let Poll::Ready(item) = self.queue.poll_next_unpin(cx) {
+                    if self.ios.len() < MAX_IO_DEPTH {
+                        if let Poll::Ready(item) = state.queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::NewWork(item));
                         }
@@ -145,10 +171,10 @@ impl AsyncRun<WorkerState> for WorkerTask {
 
                 match event {
                     Event::NewWork(Ok(work)) => {
-                        let disk = state.disk.clone();
-                        let mem = state.memory.clone();
-                        let read_only = state.read_only;
-                        ios.push(Box::pin(async move {
+                        let disk = self.disk.clone();
+                        let mem = self.memory.clone();
+                        let read_only = self.read_only;
+                        self.ios.push(Box::pin(async move {
                             process_request(&disk, &mem, read_only, work).await
                         }));
                     }
@@ -159,16 +185,7 @@ impl AsyncRun<WorkerState> for WorkerTask {
                         );
                     }
                     Event::Completed(completion) => {
-                        match completion.stat {
-                            IoStat::Read => state.stats.read_ops.increment(),
-                            IoStat::Write => state.stats.write_ops.increment(),
-                            IoStat::Flush => state.stats.flush_ops.increment(),
-                            IoStat::Discard => state.stats.discard_ops.increment(),
-                            IoStat::Error => state.stats.errors.increment(),
-                            IoStat::None => {}
-                        }
-                        // work is completed inside process_request
-                        drop(completion);
+                        self.record_completion(completion);
                     }
                 }
             }
@@ -249,14 +266,20 @@ impl VirtioBlkDevice {
             _padding: [0; 4],
         };
 
+        let supports_discard = disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored;
+
         Self {
-            disk,
-            memory,
-            driver_source: driver_source.clone(),
+            worker: TaskControl::new(BlkWorker {
+                disk,
+                memory,
+                read_only,
+                stats: WorkerStats::default(),
+                ios: FuturesUnordered::new(),
+            }),
             driver: driver_source.simple(),
             read_only,
+            supports_discard,
             config,
-            worker: None,
         }
     }
 }
@@ -272,7 +295,7 @@ impl VirtioDevice for VirtioBlkDevice {
         if self.read_only {
             features |= VIRTIO_BLK_F_RO;
         }
-        if self.disk.unmap_behavior() != disk_backend::UnmapBehavior::Ignored {
+        if self.supports_discard {
             features |= VIRTIO_BLK_F_DISCARD;
             // FUTURE: investigate adding VIRTIO_BLK_F_WRITE_ZEROES support
             // by adding an explicit write_zeroes operation to the DiskIo
@@ -310,8 +333,6 @@ impl VirtioDevice for VirtioBlkDevice {
     }
 
     fn enable(&mut self, resources: Resources) {
-        self.disable();
-
         let queue_resources = resources.queues.into_iter().next();
         let Some(queue_resources) = queue_resources else {
             return;
@@ -335,7 +356,7 @@ impl VirtioDevice for VirtioBlkDevice {
         let queue = match VirtioQueue::new(
             resources.features,
             queue_resources.params,
-            self.memory.clone(),
+            self.worker.task().memory.clone(),
             queue_resources.notify,
             queue_event,
         ) {
@@ -349,30 +370,23 @@ impl VirtioDevice for VirtioBlkDevice {
             }
         };
 
-        let mut task = TaskControl::new(WorkerTask { queue });
-        task.insert(
-            self.driver_source.simple(),
-            "virtio-blk-worker",
-            WorkerState {
-                disk: self.disk.clone(),
-                memory: self.memory.clone(),
-                read_only: self.read_only,
-                stats: WorkerStats::default(),
-            },
-        );
-        task.start();
-
-        self.worker = Some(Worker { task });
+        self.worker
+            .insert(self.driver.clone(), "virtio-blk-worker", BlkQueueState { queue });
+        self.worker.start();
     }
 
-    fn disable(&mut self) {
-        if let Some(mut worker) = self.worker.take() {
-            self.driver
-                .spawn("shutdown-virtio-blk", async move {
-                    worker.task.stop().await;
-                })
-                .detach();
+    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // Stop the worker task (cancels the run loop via until_stopped).
+        ready!(self.worker.poll_stop(cx));
+        // Drain in-flight IOs to completion. The FuturesUnordered lives in
+        // BlkWorker and survives the stop — its pending disk IO futures are
+        // polled here until all descriptors are completed in the used ring.
+        ready!(self.worker.task_mut().poll_drain(cx));
+        // Remove the queue state (drops VirtioQueue).
+        if self.worker.has_state() {
+            self.worker.remove();
         }
+        Poll::Ready(())
     }
 }
 
