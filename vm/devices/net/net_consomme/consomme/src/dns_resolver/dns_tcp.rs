@@ -18,7 +18,7 @@ use std::task::Context;
 use std::task::Poll;
 
 // Maximum allowed DNS message size over TCP: 65535 bytes for the message
-// plus 2 bytes for the TCP length prefix. This is a sanity check to prevent 
+// plus 2 bytes for the TCP length prefix. This is a sanity check to prevent
 // unbounded memory growth.
 const MAX_DNS_TCP_PAYLOAD_SIZE: usize = (u16::MAX as usize) + 2;
 
