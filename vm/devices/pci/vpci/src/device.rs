@@ -929,10 +929,14 @@ impl ReadyState {
 
                         let mut locked_dev = dev.device.lock();
                         if let Some(tdisp) = locked_dev.supports_tdisp() {
+                            tracelimit::info_ratelimited!(
+                                "chipset device supports TDISP, handing off command for processing"
+                            );
                             let response = tdisp
                                 .tdisp_handle_guest_command(command)
                                 .map_err(PacketError::InvalidSerialization)?;
 
+                            tracing::debug!("host interface responded successfully with payload");
                             let response_serialized =
                                 tdisp::serialize_proto::serialize_response(&response);
 
@@ -958,6 +962,9 @@ impl ReadyState {
                                 response_serialized.as_bytes(),
                             )?;
                         } else {
+                            tracelimit::info_ratelimited!(
+                                "chipset device reported that TDISP is not supported, returning NOT_SUPPORTED"
+                            );
                             conn.send_completion(
                                 transaction_id,
                                 &protocol::Status::NOT_SUPPORTED,

@@ -578,6 +578,7 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "tdisp",
  "vm_resource",
  "vmcore",
 ]
@@ -4865,6 +4866,7 @@ dependencies = [
  "pci_resources",
  "scsi_buffers",
  "task_control",
+ "tdisp",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",

@@ -52,6 +52,7 @@ fn instantiate_controller(
             subsystem_id: Guid::new_random(),
         },
         fault_configuration,
+        false,
     );
 
     if let Some(intc) = int_controller {

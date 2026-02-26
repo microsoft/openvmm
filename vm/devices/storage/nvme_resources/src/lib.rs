@@ -57,6 +57,8 @@ pub struct NvmeFaultControllerHandle {
     pub namespaces: Vec<NamespaceDefinition>,
     /// Configuration for the fault
     pub fault_config: FaultConfiguration,
+    /// Enable TDISP capabilities for the OpenVMM host.
+    pub tdisp_capable: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

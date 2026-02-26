@@ -543,11 +543,6 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
 
         match res {
             Ok(interface_info) => {
-                tracing::info!(
-                    "Guest protocol negotiated successfully to: {:?}",
-                    interface_info
-                );
-
                 match TdispGuestProtocolType::from_i32(interface_info.guest_protocol_type) {
                     Some(guest_protocol_type) => {
                         if guest_protocol_type == TdispGuestProtocolType::Invalid {
@@ -557,7 +552,10 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
                             Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
                         } else {
                             self.guest_protocol_type = guest_protocol_type;
-                            tracing::info!("Guest protocol negotiated: {interface_info:?}");
+                            tracing::info!(
+                                "Guest protocol negotiated successfully to: {:?}",
+                                interface_info
+                            );
                             Ok(interface_info)
                         }
                     }

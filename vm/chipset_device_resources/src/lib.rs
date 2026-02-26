@@ -173,6 +173,10 @@ impl ChipsetDevice for ErasedChipsetDevice {
     ) -> Option<&mut dyn chipset_device::interrupt::AcknowledgePicInterrupt> {
         self.0.supports_acknowledge_pic_interrupt()
     }
+
+    fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+        self.0.supports_tdisp()
+    }
 }
 
 impl ProtobufSaveRestore for ErasedChipsetDevice {

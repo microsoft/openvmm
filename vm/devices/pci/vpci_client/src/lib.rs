@@ -1217,9 +1217,15 @@ impl WorkerState {
 
                     rpc.complete(host_response.map_err(mesh::error::RemoteError::new));
                 } else {
-                    rpc.fail(anyhow::anyhow!(
-                        "failed to send tdisp command: {status:#x?}",
-                    ));
+                    if status == protocol::Status::NOT_SUPPORTED {
+                        rpc.fail(anyhow::anyhow!(
+                            "TDISP interface is not supported by this device or host"
+                        ));
+                    } else {
+                        rpc.fail(anyhow::anyhow!(
+                            "vmbus server responded error status: {status:#x?}",
+                        ));
+                    }
                 }
             }
         }

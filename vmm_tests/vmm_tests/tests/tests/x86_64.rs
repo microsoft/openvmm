@@ -8,9 +8,13 @@ mod openhcl_uefi;
 mod storage;
 
 use anyhow::Context;
+use guid::Guid;
+use mesh::CellUpdater;
 use net_backend_resources::mac_address::MacAddress;
 use net_backend_resources::null::NullHandle;
 use nvme_resources::NvmeControllerHandle;
+use nvme_resources::NvmeFaultControllerHandle;
+use nvme_resources::fault::FaultConfiguration;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
 use petri::ApicMode;
@@ -207,6 +211,59 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
 
     // The virtio device should not have made it through, but the NVMe
     // controller should be there.
+    assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn vpci_relay_tdisp_device(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+
+    // Create a VPCI device to relay to VTL0 and run basic TDISP end-to-end
+    // tests on it.
+    let (vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_ENABLE_VPCI_RELAY=1")
+        // Tells VPCI relay that it should take the device through a mock TDISP
+        // flow with the OpenVMM host.
+        .with_openhcl_command_line("OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST")
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.extend([VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl0,
+                    instance_id: NVME_INSTANCE,
+
+                    // The NVMe fault controller device is a fake NVMe
+                    // controller that is repurposed for use in the TDISP test
+                    // flow.
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 1,
+                        max_io_queues: 1,
+                        namespaces: Vec::new(),
+                        fault_config: FaultConfiguration::new(CellUpdater::new(false).cell()),
+                        tdisp_capable: true,
+                    }
+                    .into_resource(),
+                }])
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+    let lspci_output = cmd!(sh, "lspci").read().await?;
+    let devices = lspci_output
+        .lines()
+        .map(|line| line.trim().split_once(' ').ok_or_else(|| line.trim()))
+        .collect::<Vec<_>>();
+
+    // The NVMe controller should be present after the HCL performs its TDISP test.
     assert_eq!(devices, vec![Ok(("00:00.0", "Class 0108: 1414:00a9"))]);
 
     agent.power_off().await?;

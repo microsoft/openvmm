@@ -65,6 +65,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
                 subsystem_id: resource.subsystem_id,
             },
             resource.fault_config,
+            resource.tdisp_capable,
         );
         for NamespaceDefinition {
             nsid,
