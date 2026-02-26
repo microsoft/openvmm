@@ -303,23 +303,18 @@ impl ReadyState {
     fn reset_tx_after_endpoint_stop(&mut self) {
         let state = &mut self.state;
 
-        // Clear tx_id from any pre-existing pending completions so they
-        // don't reference the old endpoint queue.
-        for pending in state.pending_tx_completions.iter_mut() {
-            pending.tx_id = None;
-        }
-
         // Queue completions for in-flight TX packets that were lost when the
         // endpoint stopped. They will get picked up when the worker restarts.
         let pending_tx = state
             .pending_tx_packets
             .iter_mut()
-            .filter_map(|inflight| {
+            .enumerate()
+            .filter_map(|(id, inflight)| {
                 if inflight.pending_packet_count > 0 {
                     inflight.pending_packet_count = 0;
                     Some(PendingTxCompletion {
                         transaction_id: inflight.transaction_id,
-                        tx_id: None,
+                        tx_id: Some(TxId(id as u32)),
                         status: protocol::Status::SUCCESS,
                     })
                 } else {
@@ -328,13 +323,6 @@ impl ReadyState {
             })
             .collect::<Vec<_>>();
         state.pending_tx_completions.extend(pending_tx);
-
-        // Restore all TX slots so the worker can process new packets and
-        // will call poll_ready() to unmask the ring.
-        state.free_tx_packets = (0..state.pending_tx_packets.len() as u32)
-            .rev()
-            .map(TxId)
-            .collect();
 
         // Clear leftover TX segments from the previous endpoint queue;
         // they cannot be submitted to the new queue.
