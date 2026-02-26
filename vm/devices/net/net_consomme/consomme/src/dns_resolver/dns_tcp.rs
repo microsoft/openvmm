@@ -7,13 +7,11 @@
 //! preceded by a 2-byte big-endian length prefix. This module intercepts
 //! TCP connections to the gateway on port 53 and resolves queries using
 //! the shared `DnsBackend`.
-
 use super::DnsBackend;
 use super::DnsFlow;
 use super::DnsRequest;
 use super::DnsResponse;
 use mesh_channel_core::Receiver;
-use std::collections::VecDeque;
 use std::io::IoSliceMut;
 use std::task::Context;
 use std::task::Poll;
@@ -24,17 +22,32 @@ use std::task::Poll;
 /// handle larger messages.
 const MAX_DNS_TCP_MESSAGE_SIZE: usize = 65535;
 
+/// Current phase of the DNS TCP handler state machine.
+enum Phase {
+    /// Accumulating an incoming TCP-framed DNS request.
+    Receiving,
+    /// Query submitted to the backend; awaiting response.
+    InFlight,
+    /// Writing a TCP-framed response back to the caller.
+    Responding,
+}
+
 pub struct DnsTcpHandler {
     receiver: Receiver<DnsResponse>,
     flow: DnsFlow,
-    /// Data received from the guest, accumulating DNS TCP framed messages.
-    rx_buf: VecDeque<u8>,
-    /// Length-prefixed DNS responses waiting to be sent to the guest.
-    tx_buf: VecDeque<u8>,
+    /// Shared buffer used for both the incoming request and the outgoing
+    /// response.  During [`Phase::Receiving`] it accumulates one TCP-framed
+    /// DNS message from the guest.  During [`Phase::Responding`] it holds
+    /// the TCP-framed response being drained to the caller.
+    buf: Vec<u8>,
+    /// Write offset into `buf` while draining a response to the caller.
+    /// Only meaningful during [`Phase::Responding`].
+    tx_offset: usize,
+    phase: Phase,
     /// The guest has sent FIN; no more data will arrive.
     guest_fin: bool,
-    /// Number of DNS queries submitted but not yet resolved.
-    in_flight: usize,
+    /// True if the TCP framing is invalid and the connection should be dropped.
+    protocol_error: bool,
 }
 
 impl DnsTcpHandler {
@@ -43,112 +56,211 @@ impl DnsTcpHandler {
         Self {
             receiver,
             flow,
-            rx_buf: VecDeque::new(),
-            tx_buf: VecDeque::new(),
+            buf: Vec::new(),
+            tx_offset: 0,
+            phase: Phase::Receiving,
             guest_fin: false,
-            in_flight: 0,
+            protocol_error: false,
         }
     }
 
     /// Feed data received from the guest into the handler.
-    /// Extracts complete DNS messages and submits them for resolution.
-    pub fn ingest(&mut self, data: &[&[u8]], backend: &dyn DnsBackend) {
+    ///
+    /// Consumes bytes from `data` to assemble one complete TCP-framed DNS
+    /// message. When a complete message is assembled, it is submitted to the
+    /// backend for resolution and no further data is accepted until the
+    /// response has been fully written out by [`poll_read`].
+    ///
+    /// Returns the number of bytes consumed from `data`. The caller should
+    /// only drain this many bytes from its receive buffer.
+    pub fn ingest(&mut self, data: &[&[u8]], backend: &impl DnsBackend) -> usize {
+        // Don't accept data while a query is in-flight, a response is pending,
+        // or we've hit a protocol error.
+        if !matches!(self.phase, Phase::Receiving) || self.protocol_error {
+            return 0;
+        }
+
+        let total_offered: usize = data.iter().map(|c| c.len()).sum();
+        tracing::info!(total_offered, buf_len = self.buf.len(), "dns_tcp ingest: start");
+
+        let mut total_consumed = 0;
         for chunk in data {
-            let remaining_capacity = MAX_DNS_TCP_MESSAGE_SIZE.saturating_sub(self.rx_buf.len());
-            let accepted = chunk.len().min(remaining_capacity);
-            if accepted > 0 {
-                self.rx_buf.extend(&chunk[..accepted]);
-            }
-            if accepted < chunk.len() {
-                tracelimit::warn_ratelimited!(
-                    dropped = chunk.len() - accepted,
-                    "DNS TCP rx_buf full, dropping excess data"
-                );
+            let mut pos = 0;
+            while pos < chunk.len() {
+                let need = self.bytes_needed();
+                if need == 0 {
+                    // Complete message already in rx_buf but not yet submitted
+                    // (should not happen in practice).
+                    break;
+                }
+                let accept = (chunk.len() - pos).min(need);
+                self.buf.extend_from_slice(&chunk[pos..pos + accept]);
+                pos += accept;
+                total_consumed += accept;
+
+                if self.try_submit(backend) {
+                    // Query submitted; stop accepting data.
+                    tracing::info!(total_consumed, "dns_tcp ingest: query submitted");
+                    return total_consumed;
+                }
+                if self.protocol_error {
+                    tracing::info!(total_consumed, "dns_tcp ingest: protocol error");
+                    return total_consumed;
+                }
             }
         }
-        self.extract_and_submit_queries(backend);
+
+        tracing::info!(
+            total_consumed,
+            buf_len = self.buf.len(),
+            "dns_tcp ingest: done (message incomplete)"
+        );
+        total_consumed
     }
 
-    /// Parse the rx buffer for complete DNS TCP-framed messages
-    /// (2-byte big-endian length prefix + payload) and submit each query.
-    fn extract_and_submit_queries(&mut self, backend: &dyn DnsBackend) {
-        loop {
-            if self.rx_buf.len() < 2 {
-                break;
-            }
-            let msg_len = u16::from_be_bytes([self.rx_buf[0], self.rx_buf[1]]) as usize;
-            if msg_len < super::DNS_HEADER_SIZE {
-                // Too small to be a valid DNS message; discard the length
-                // prefix and try to resync.
-                self.rx_buf.drain(..2);
-                continue;
-            }
-            if self.rx_buf.len() < 2 + msg_len {
-                // Incomplete message; wait for more data.
-                break;
-            }
-            // On Windows, the two byte prefix must be included in the buffer
-            // sent to the backend, as DnsQueryRaw expects the full TCP-framed
-            // message.
-            // On Unix, the backend expects just the raw DNS query without the TCP prefix,
-            // so we strip it before sending.
-            #[cfg(unix)]
-            let query_data = {
-                self.rx_buf.drain(..2);
-                self.rx_buf.drain(..msg_len).collect::<Vec<u8>>()
-            };
-            #[cfg(windows)]
-            let query_data = self.rx_buf.drain(..2 + msg_len).collect::<Vec<u8>>();
+    /// How many more bytes are needed to complete the current message.
+    fn bytes_needed(&self) -> usize {
+        if self.buf.len() < 2 {
+            return 2 - self.buf.len();
+        }
+        let msg_len = u16::from_be_bytes([self.buf[0], self.buf[1]]) as usize;
+        (2 + msg_len).saturating_sub(self.buf.len())
+    }
 
-            let request = DnsRequest {
-                flow: self.flow.clone(),
-                dns_query: &query_data,
-            };
-            backend.query(&request, self.receiver.sender());
-            self.in_flight += 1;
+    /// If a complete TCP-framed DNS message is in `rx_buf`, submit it to the
+    /// backend. Returns true if a query was submitted.
+    fn try_submit(&mut self, backend: &impl DnsBackend) -> bool {
+        if self.buf.len() < 2 {
+            return false;
+        }
+        let msg_len = u16::from_be_bytes([self.buf[0], self.buf[1]]) as usize;
+        if msg_len < super::DNS_HEADER_SIZE {
+            // Invalid DNS message length; flag a protocol error so the caller
+            // can reset the connection.
+            tracing::info!(msg_len, "dns_tcp: message length below DNS header minimum");
+            self.protocol_error = true;
+            return false;
+        }
+        if self.buf.len() < 2 + msg_len {
+            return false;
+        }
+
+        // Submit the raw DNS query (without the TCP length prefix).
+        tracing::info!(
+            msg_len,
+            src_port = self.flow.src_port,
+            "dns_tcp: submitting query to backend"
+        );
+        let request = DnsRequest {
+            flow: self.flow.clone(),
+            dns_query: &self.buf[2..2 + msg_len],
+        };
+        backend.query(&request, self.receiver.sender());
+        self.buf.clear();
+        self.phase = Phase::InFlight;
+        true
+    }
+
+    /// Poll for the next chunk of response data.
+    ///
+    /// Models the socket `poll_read_vectored` contract:
+    /// - `Poll::Ready(n)` where `n > 0`: wrote `n` bytes of response data.
+    /// - `Poll::Ready(0)`: EOF — the guest sent FIN and all responses have
+    ///   been drained. The caller should close the connection.
+    /// - `Poll::Pending`: waiting for a DNS response or for [`ingest`] to
+    ///   submit a new query.
+    pub fn poll_read(&mut self, cx: &mut Context<'_>, bufs: &mut [IoSliceMut<'_>]) -> Poll<usize> {
+        // Continue writing a partially-sent response.
+        if matches!(self.phase, Phase::Responding) {
+            let n = self.drain_tx(bufs);
+            tracing::info!(n, "dns_tcp poll_read: continuing drain");
+            return Poll::Ready(n);
+        }
+
+        // Wait for the in-flight response.
+        if matches!(self.phase, Phase::InFlight) {
+            match self.receiver.poll_recv(cx) {
+                Poll::Ready(Ok(response)) => {
+                    let payload_len = response.response_data.len();
+                    tracing::info!(
+                        payload_len,
+                        "dns_tcp poll_read: received response from backend"
+                    );
+                    if payload_len > MAX_DNS_TCP_MESSAGE_SIZE {
+                        tracelimit::warn_ratelimited!(
+                            size = payload_len,
+                            "DNS TCP response exceeds maximum message size, dropping"
+                        );
+                        // Discard the oversized response and return to
+                        // receiving so that ingest can accept the next query.
+                        self.phase = Phase::Receiving;
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+
+                    // Build TCP-framed response: 2-byte length prefix + payload.
+                    self.buf.clear();
+                    self.buf.reserve(
+                        (2 + payload_len).saturating_sub(self.buf.capacity()),
+                    );
+                    self.buf
+                        .extend_from_slice(&(payload_len as u16).to_be_bytes());
+                    self.buf.extend(response.response_data);
+                    self.tx_offset = 0;
+                    self.phase = Phase::Responding;
+
+                    let n = self.drain_tx(bufs);
+                    return Poll::Ready(n);
+                }
+                Poll::Ready(Err(_)) => {
+                    // Channel closed unexpectedly; return to receiving.
+                    tracing::info!("dns_tcp poll_read: response channel closed unexpectedly");
+                    self.phase = Phase::Receiving;
+                }
+                Poll::Pending => {
+                    tracing::info!("dns_tcp poll_read: awaiting backend response");
+                    return Poll::Pending;
+                }
+            }
+        }
+
+        // No in-flight query and no pending response.
+        if self.guest_fin {
+            tracing::info!("dns_tcp poll_read: EOF (guest FIN, no pending work)");
+            Poll::Ready(0)
+        } else {
+            tracing::info!("dns_tcp poll_read: idle, waiting for ingest");
+            Poll::Pending
         }
     }
 
-    /// Poll for completed DNS responses and write length-prefixed data
-    /// Returns the total number of bytes written.
-    pub fn poll_read(&mut self, cx: &mut Context<'_>, bufs: &mut [IoSliceMut<'_>]) -> usize {
-        while let Poll::Ready(Ok(response)) = self.receiver.poll_recv(cx) {
-            self.in_flight = self.in_flight.saturating_sub(1);
-            if response.response_data.len() > MAX_DNS_TCP_MESSAGE_SIZE {
-                tracelimit::warn_ratelimited!(
-                    size = response.response_data.len(),
-                    "DNS TCP response exceeds maximum message size, dropping"
-                );
-                continue;
-            }
-            #[cfg(unix)]
-            {
-                let len = response.response_data.len() as u16;
-                self.tx_buf.extend(&len.to_be_bytes());
-            }
-            self.tx_buf.extend(&response.response_data);
-        }
-        self.drain_buffered(bufs)
-    }
-
-    /// Drain buffered tx data into the provided buffers.
-    fn drain_buffered(&mut self, bufs: &mut [IoSliceMut<'_>]) -> usize {
-        let mut total = 0;
+    /// Write as much of `buf[tx_offset..]` into `bufs` as possible.
+    /// Clears `buf` when fully drained so it can be reused for the next
+    /// incoming request.
+    fn drain_tx(&mut self, bufs: &mut [IoSliceMut<'_>]) -> usize {
+        let remaining = &self.buf[self.tx_offset..];
+        let mut written = 0;
         for buf in bufs.iter_mut() {
-            if self.tx_buf.is_empty() {
+            let left = remaining.len() - written;
+            if left == 0 {
                 break;
             }
-            let n = buf.len().min(self.tx_buf.len());
-            for (dst, src) in buf[..n].iter_mut().zip(self.tx_buf.drain(..n)) {
-                *dst = src;
-            }
-            total += n;
+            let n = buf.len().min(left);
+            buf[..n].copy_from_slice(&remaining[written..written + n]);
+            written += n;
         }
-        total
+        self.tx_offset += written;
+        if self.tx_offset >= self.buf.len() {
+            self.buf.clear();
+            self.tx_offset = 0;
+            self.phase = Phase::Receiving;
+        }
+        written
     }
 
-    pub fn has_pending_tx(&self) -> bool {
-        !self.tx_buf.is_empty()
+    /// Returns true if the connection should be dropped due to invalid framing.
+    pub fn protocol_error(&self) -> bool {
+        self.protocol_error
     }
 
     pub fn guest_fin(&self) -> bool {
@@ -157,12 +269,6 @@ impl DnsTcpHandler {
 
     pub fn set_guest_fin(&mut self) {
         self.guest_fin = true;
-    }
-
-    /// Returns true when the guest has sent FIN, all in-flight queries
-    /// have been resolved, and all responses have been flushed.
-    pub fn should_close(&self) -> bool {
-        self.guest_fin && self.in_flight == 0 && self.tx_buf.is_empty()
     }
 }
 
@@ -209,26 +315,45 @@ mod tests {
         msg
     }
 
+    /// A 16-byte fake DNS query payload (>= 12-byte header minimum).
+    fn sample_query() -> Vec<u8> {
+        vec![
+            0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x66,
+            0x6F, 0x6F,
+        ]
+    }
+
+    struct NoopWaker;
+    impl std::task::Wake for NoopWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
     #[test]
     fn single_query_response() {
         let backend = Arc::new(EchoBackend);
         let mut handler = DnsTcpHandler::new(test_flow());
 
-        // 22-byte fake DNS query (> 12-byte header minimum)
-        let query = vec![
-            0x00, 0x14, 0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x03, 0x77, 0x77, 0x77, 0x03, 0x63, 0x6F, 0x6D,
-        ];
+        let query = sample_query();
         let msg = make_tcp_dns_message(&query);
 
-        handler.ingest(&[&msg], backend.as_ref());
+        let consumed = handler.ingest(&[&msg], backend.as_ref());
+        assert_eq!(consumed, msg.len());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
 
         let mut buf = vec![0u8; 256];
-        handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
-        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]) as usize, query.len());
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) {
+            Poll::Ready(n) => {
+                assert!(n > 0);
+                // First 2 bytes are the TCP length prefix.
+                let resp_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+                assert_eq!(resp_len, query.len());
+                // Response payload should match the query (echo backend).
+                assert_eq!(&buf[2..2 + resp_len], &query);
+            }
+            Poll::Pending => panic!("expected Ready"),
+        }
     }
 
     #[test]
@@ -236,37 +361,37 @@ mod tests {
         let backend = Arc::new(EchoBackend);
         let mut handler = DnsTcpHandler::new(test_flow());
 
-        let query = vec![
-            0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x66,
-            0x6F, 0x6F,
-        ];
+        let query = sample_query();
         let msg = make_tcp_dns_message(&query);
 
-        // Feed just the length prefix
-        handler.ingest(&[&msg[..2]], backend.as_ref());
+        // Feed just the length prefix.
+        let consumed = handler.ingest(&[&msg[..2]], backend.as_ref());
+        assert_eq!(consumed, 2);
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
         let mut buf = vec![0u8; 256];
-        assert_eq!(
+        assert!(matches!(
             handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]),
-            0
-        );
+            Poll::Pending
+        ));
 
-        // Feed the rest
-        handler.ingest(&[&msg[2..]], backend.as_ref());
-        assert!(handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) > 0);
+        // Feed the rest.
+        let consumed = handler.ingest(&[&msg[2..]], backend.as_ref());
+        assert_eq!(consumed, msg.len() - 2);
+
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) {
+            Poll::Ready(n) => assert!(n > 0),
+            Poll::Pending => panic!("expected Ready after completing message"),
+        }
     }
 
     #[test]
-    fn multiple_queries_in_one_write() {
+    fn backpressure_one_at_a_time() {
         let backend = Arc::new(EchoBackend);
         let mut handler = DnsTcpHandler::new(test_flow());
 
-        let q1 = vec![
-            0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x61,
-            0x61, 0x61,
-        ];
+        let q1 = sample_query();
         let q2 = vec![
             0x00, 0x02, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x62,
             0x62, 0x62,
@@ -274,45 +399,64 @@ mod tests {
         let mut combined = make_tcp_dns_message(&q1);
         combined.extend(make_tcp_dns_message(&q2));
 
-        handler.ingest(&[&combined], backend.as_ref());
+        // Only the first message should be consumed.
+        let consumed = handler.ingest(&[&combined], backend.as_ref());
+        assert_eq!(consumed, make_tcp_dns_message(&q1).len());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
 
-        let mut buf = vec![0u8; 512];
-        let n = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
-        // Each response is a 2-byte TCP length prefix + the DNS payload.
-        let per_response = q1.len() + 2; // 2-byte TCP prefix + DNS payload
-        assert_eq!(n, 2 * per_response);
+        // Drain the first response.
+        let mut buf = vec![0u8; 256];
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) {
+            Poll::Ready(n) => assert!(n > 0),
+            Poll::Pending => panic!("expected Ready for first response"),
+        }
+
+        // Now the second message can be ingested.
+        let remaining = &combined[consumed..];
+        let consumed2 = handler.ingest(&[remaining], backend.as_ref());
+        assert_eq!(consumed2, make_tcp_dns_message(&q2).len());
+
+        match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]) {
+            Poll::Ready(n) => assert!(n > 0),
+            Poll::Pending => panic!("expected Ready for second response"),
+        }
     }
 
     #[test]
-    fn should_close_after_fin_and_drain() {
+    fn eof_after_fin_and_drain() {
         let backend = Arc::new(EchoBackend);
         let mut handler = DnsTcpHandler::new(test_flow());
 
-        let query = vec![
-            0xAB, 0xCD, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x78,
-            0x78, 0x78,
-        ];
+        let query = sample_query();
         handler.ingest(&[&make_tcp_dns_message(&query)], backend.as_ref());
-        handler.set_guest_fin();
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
 
+        // Drain the response.
         let mut buf = vec![0u8; 256];
         let _ = handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]);
 
-        // tx_buf is now drained, but we need to verify should_close
-        // only returns true after all data is consumed.
-        assert!(!handler.has_pending_tx());
+        handler.set_guest_fin();
 
-        assert!(handler.should_close());
+        // Should now report EOF.
+        assert!(matches!(
+            handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)]),
+            Poll::Ready(0)
+        ));
     }
 
-    struct NoopWaker;
-    impl std::task::Wake for NoopWaker {
-        fn wake(self: Arc<Self>) {}
+    #[test]
+    fn protocol_error_on_invalid_length() {
+        let backend = Arc::new(EchoBackend);
+        let mut handler = DnsTcpHandler::new(test_flow());
+
+        // Craft a message with msg_len < DNS_HEADER_SIZE (12).
+        // Length prefix says 4 bytes, which is too small for a DNS header.
+        let bad_msg = [0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
+        handler.ingest(&[&bad_msg], backend.as_ref());
+        assert!(handler.protocol_error());
     }
 }

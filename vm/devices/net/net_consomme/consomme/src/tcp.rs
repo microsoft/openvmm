@@ -132,10 +132,19 @@ enum TcpBackend {
     Dns(DnsTcpHandler),
 }
 
-#[derive(Inspect)]
 struct TcpConnection {
-    #[inspect(skip)]
     backend: TcpBackend,
+    inner: TcpConnectionInner,
+}
+
+impl Inspect for TcpConnection {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        self.inner.inspect(req)
+    }
+}
+
+#[derive(Inspect)]
+struct TcpConnectionInner {
     loopback_port: LoopbackPortInfo,
     state: TcpState,
 
@@ -238,8 +247,8 @@ impl<T: Client> Access<'_, T> {
                         // This supports a guest owning both the sending and receiving ports.
                         if other_addr.ip().is_loopback() {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if connection.state == TcpState::Connecting && other_ft.dst.port() == *port {
-                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.loopback_port {
+                                if connection.inner.state == TcpState::Connecting && other_ft.dst.port() == *port {
+                                    if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.inner.loopback_port {
                                         if sending_port == other_addr.port() {
                                             other_addr.set_port(guest_port);
                                             break;
@@ -309,13 +318,11 @@ impl<T: Client> Access<'_, T> {
                 state: &mut self.inner.state,
                 client: self.client,
             };
-            // Temporarily take the backend to split the mutable borrow between
-            // the backend and the rest of TcpConnection's fields.
-            let mut backend = std::mem::replace(&mut conn.backend, TcpBackend::Socket(None));
-            let result = match &mut backend {
+            match &mut conn.backend {
                 TcpBackend::Dns(dns_handler) => match dns_backend {
                     Some(dns_backend) => {
-                        conn.poll_dns_backend(cx, &mut sender, dns_handler, dns_backend)
+                        conn.inner
+                            .poll_dns_backend(cx, &mut sender, dns_handler, dns_backend)
                     }
                     None => {
                         tracing::warn!("DNS TCP connection without DNS resolver, dropping");
@@ -323,11 +330,9 @@ impl<T: Client> Access<'_, T> {
                     }
                 },
                 TcpBackend::Socket(opt_socket) => {
-                    conn.poll_socket_backend(cx, &mut sender, opt_socket)
+                    conn.inner.poll_socket_backend(cx, &mut sender, opt_socket)
                 }
-            };
-            conn.backend = backend;
-            result
+            }
         })
     }
 
@@ -395,7 +400,7 @@ impl<T: Client> Access<'_, T> {
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
                 let conn = e.get_mut();
-                if !conn.handle_packet(&mut sender, &tcp)? {
+                if !conn.inner.handle_packet(&mut sender, &tcp)? {
                     e.remove();
                 }
             }
@@ -564,7 +569,7 @@ impl<T: Client> Sender<'_, T> {
     }
 }
 
-impl Default for TcpConnection {
+impl Default for TcpConnectionInner {
     fn default() -> Self {
         let mut rx_tx_seq = [0; 8];
         getrandom::fill(&mut rx_tx_seq[..]).expect("prng failure");
@@ -582,7 +587,6 @@ impl Default for TcpConnection {
         let tx_buffer_size = 16384;
 
         Self {
-            backend: TcpBackend::Socket(None),
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
             rx_buffer: VecDeque::with_capacity(rx_buffer_size),
@@ -609,8 +613,8 @@ impl Default for TcpConnection {
 
 impl TcpConnection {
     fn new(sender: &mut Sender<'_, impl Client>, tcp: &TcpRepr<'_>) -> Result<Self, DropReason> {
-        let mut this = Self::default();
-        this.initialize_from_first_client_packet(tcp)?;
+        let mut inner = TcpConnectionInner::default();
+        inner.initialize_from_first_client_packet(tcp)?;
 
         let socket = Socket::new(
             match sender.ft.dst {
@@ -652,7 +656,7 @@ impl TcpConnection {
                 }
                 Some(addr) => {
                     if addr.ip().is_loopback() {
-                        this.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
+                        inner.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
                             sending_port: addr.port(),
                             guest_port: sender.ft.src.port(),
                         };
@@ -660,23 +664,27 @@ impl TcpConnection {
                 }
             }
         }
-        this.backend = TcpBackend::Socket(Some(socket));
-        Ok(this)
+        Ok(Self {
+            backend: TcpBackend::Socket(Some(socket)),
+            inner,
+        })
     }
 
     fn new_from_accept(
         sender: &mut Sender<'_, impl Client>,
         socket: Socket,
     ) -> Result<Self, DropReason> {
-        let mut this = Self {
-            backend: TcpBackend::Socket(Some(
-                PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
-            )),
+        let mut inner = TcpConnectionInner {
             state: TcpState::SynSent,
             ..Default::default()
         };
-        this.send_syn(sender, None);
-        Ok(this)
+        inner.send_syn(sender, None);
+        Ok(Self {
+            backend: TcpBackend::Socket(Some(
+                PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
+            )),
+            inner,
+        })
     }
 
     /// Create a virtual DNS TCP connection (no real host socket).
@@ -686,8 +694,8 @@ impl TcpConnection {
         sender: &mut Sender<'_, impl Client>,
         tcp: &TcpRepr<'_>,
     ) -> Result<Self, DropReason> {
-        let mut this = Self::default();
-        this.initialize_from_first_client_packet(tcp)?;
+        let mut inner = TcpConnectionInner::default();
+        inner.initialize_from_first_client_packet(tcp)?;
 
         let flow = crate::dns_resolver::DnsFlow {
             src_addr: sender.ft.src.ip().into(),
@@ -699,15 +707,19 @@ impl TcpConnection {
             transport: crate::dns_resolver::DnsTransport::Tcp,
         };
 
-        this.backend = TcpBackend::Dns(DnsTcpHandler::new(flow));
         // Immediately transition to SynReceived so the handshake SYN-ACK is sent.
-        this.state = TcpState::SynReceived;
-        this.rx_window_cap = this.rx_buffer.capacity();
-        this.send_syn(sender, Some(this.rx_seq));
+        inner.state = TcpState::SynReceived;
+        inner.rx_window_cap = inner.rx_buffer.capacity();
+        inner.send_syn(sender, Some(inner.rx_seq));
 
-        Ok(this)
+        Ok(Self {
+            backend: TcpBackend::Dns(DnsTcpHandler::new(flow)),
+            inner,
+        })
     }
+}
 
+impl TcpConnectionInner {
     fn initialize_from_first_client_packet(&mut self, tcp: &TcpRepr<'_>) -> Result<(), DropReason> {
         // The TCPv4 default maximum segment size is 536. This can be bigger for
         // IPv6.
@@ -750,33 +762,45 @@ impl TcpConnection {
         cx: &mut Context<'_>,
         sender: &mut Sender<'_, impl Client>,
         dns_handler: &mut DnsTcpHandler,
-        dns_backend: &dyn DnsBackend,
+        dns_backend: &impl DnsBackend,
     ) -> bool {
-        // rx path: feed guest data into the DNS handler for query extraction.
-        let (a, b) = self.rx_buffer.as_slices();
-        dns_handler.ingest(&[a, b], dns_backend);
-        self.rx_buffer.clear();
-
+        // Propagate guest FIN before the tx path so that poll_read can
+        // detect EOF on the same iteration.
         if self.state.rx_fin() && !dns_handler.guest_fin() {
             dns_handler.set_guest_fin();
         }
 
-        // tx path: poll DNS responses directly into tx_buffer.
+        // tx path first: drain DNS responses into tx_buffer.
+        // This frees up backpressure so that ingest can make progress.
         while !self.tx_buffer.is_full() {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
             let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-            let n = dns_handler.poll_read(cx, &mut bufs);
-            if n == 0 {
-                break;
+            match dns_handler.poll_read(cx, &mut bufs) {
+                Poll::Ready(n) => {
+                    if n == 0 {
+                        // EOF — close the connection.
+                        if !self.state.tx_fin() {
+                            self.close();
+                        }
+                        break;
+                    }
+                    self.tx_buffer.extend_by(n);
+                }
+                Poll::Pending => break,
             }
-            self.tx_buffer.extend_by(n);
         }
 
-        let want_close = dns_handler.should_close() && !self.state.tx_fin();
-        let has_pending_tx = dns_handler.has_pending_tx();
+        // rx path: feed guest data into the DNS handler for query extraction.
+        let (a, b) = self.rx_buffer.as_slices();
+        let consumed = dns_handler.ingest(&[a, b], dns_backend);
+        if consumed > 0 {
+            self.rx_buffer.drain(..consumed);
+        }
 
-        if want_close {
-            self.close();
+        if dns_handler.protocol_error() {
+            // Invalid DNS TCP framing; reset the connection.
+            sender.rst(self.tx_send, Some(self.rx_seq));
+            return false;
         }
 
         self.send_next(sender);
@@ -784,8 +808,7 @@ impl TcpConnection {
             || self.state == TcpState::LastAck
             || (self.state.tx_fin()
                 && self.state.rx_fin()
-                && self.tx_buffer.is_empty()
-                && !has_pending_tx))
+                && self.tx_buffer.is_empty()))
     }
 
     /// Poll the real-socket TCP connection backend.

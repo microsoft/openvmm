@@ -20,6 +20,12 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+#[cfg(unix)]
+type PlatformDnsBackend = unix::UnixDnsResolverBackend;
+
+#[cfg(windows)]
+type PlatformDnsBackend = windows::WindowsDnsResolverBackend;
+
 static DNS_HEADER_SIZE: usize = 12;
 
 /// Transport protocol for a DNS query.
@@ -37,7 +43,9 @@ pub struct DnsFlow {
     pub dst_port: u16,
     pub gateway_mac: EthernetAddress,
     pub client_mac: EthernetAddress,
-    // Used by the glibc and Windows DNS backends, but not the musl backend.
+    // Used by the glibc and Windows DNS backends. The musl resolver
+    // implementation handles TCP internally, so this field is not
+    // used in the musl backend.
     #[allow(dead_code)]
     pub transport: DnsTransport,
 }
@@ -55,6 +63,12 @@ pub struct DnsResponse {
     pub response_data: Vec<u8>,
 }
 
+/// Backend trait for resolving DNS queries.
+///
+/// Both `dns_query` in [`DnsRequest`] and `response_data` in [`DnsResponse`]
+/// carry **raw DNS message bytes** with no transport-layer framing (e.g. no
+/// TCP 2-byte length prefix).  Transport framing is the responsibility of the
+/// caller (see [`dns_tcp::DnsTcpHandler`]).
 pub(crate) trait DnsBackend: Send + Sync {
     fn query(&self, request: &DnsRequest<'_>, response_sender: Sender<DnsResponse>);
 }
@@ -62,7 +76,7 @@ pub(crate) trait DnsBackend: Send + Sync {
 #[derive(Inspect)]
 pub struct DnsResolver {
     #[inspect(skip)]
-    backend: Arc<dyn DnsBackend>,
+    backend: Arc<PlatformDnsBackend>,
     #[inspect(skip)]
     receiver: Receiver<DnsResponse>,
     pending_requests: usize,
@@ -136,7 +150,7 @@ impl DnsResolver {
         }
     }
 
-    pub fn backend(&self) -> &Arc<dyn DnsBackend> {
+    pub fn backend(&self) -> &Arc<PlatformDnsBackend> {
         &self.backend
     }
 }
