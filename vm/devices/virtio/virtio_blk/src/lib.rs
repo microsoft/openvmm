@@ -63,11 +63,15 @@ pub struct VirtioBlkDevice {
 /// live here (not in `BlkQueueState`) so they survive when the
 /// task is stopped — they're drained in `poll_disable()` before
 /// the queue state is removed.
+#[derive(Inspect)]
 struct BlkWorker {
     disk: Disk,
+    #[inspect(skip)]
     memory: GuestMemory,
     read_only: bool,
+    #[inspect(flatten)]
     stats: WorkerStats,
+    #[inspect(skip)]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
 }
 
@@ -87,16 +91,15 @@ struct WorkerStats {
 
 impl InspectTask<BlkQueueState> for BlkWorker {
     fn inspect(&self, req: inspect::Request<'_>, _state: Option<&BlkQueueState>) {
-        req.respond()
-            .field("read_only", self.read_only)
-            .field("in_flight_ios", self.ios.len())
-            .merge(&self.stats);
+        Inspect::inspect(self, req);
     }
 }
 
 /// Result of a completed IO operation, returned from the spawned future
 /// back to the main task for stats accumulation and descriptor completion.
 struct IoCompletion {
+    work: VirtioQueueCallbackWork,
+    bytes_written: u32,
     stat: IoStat,
 }
 
@@ -111,8 +114,9 @@ enum IoStat {
 }
 
 impl BlkWorker {
-    /// Accumulate stats from a completed IO.
-    fn record_completion(&mut self, completion: IoCompletion) {
+    /// Complete a descriptor and accumulate stats.
+    fn finish_io(&mut self, mut completion: IoCompletion) {
+        completion.work.complete(completion.bytes_written);
         match completion.stat {
             IoStat::Read => self.stats.read_ops.increment(),
             IoStat::Write => self.stats.write_ops.increment(),
@@ -132,7 +136,7 @@ impl BlkWorker {
     fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         loop {
             match self.ios.poll_next_unpin(cx) {
-                Poll::Ready(Some(completion)) => self.record_completion(completion),
+                Poll::Ready(Some(completion)) => self.finish_io(completion),
                 Poll::Ready(None) => return Poll::Ready(()),
                 Poll::Pending => return Poll::Pending,
             }
@@ -185,7 +189,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                         );
                     }
                     Event::Completed(completion) => {
-                        self.record_completion(completion);
+                        self.finish_io(completion);
                     }
                 }
             }
@@ -314,16 +318,23 @@ impl VirtioDevice for VirtioBlkDevice {
     }
 
     fn read_registers_u32(&self, offset: u16) -> u32 {
+        // The transport reads the device config space as a sequence of u32s.
+        // We serialize VirtioBlkConfig to bytes and return the requested
+        // 4-byte window. Three cases:
         let config_bytes = self.config.as_bytes();
         let offset = offset as usize;
         if offset + 4 <= config_bytes.len() {
+            // Normal case: full u32 within bounds.
             u32::from_le_bytes(config_bytes[offset..offset + 4].try_into().unwrap())
         } else if offset < config_bytes.len() {
+            // Partial read at the end of config space: zero-pad the
+            // remaining bytes so the transport always gets a full u32.
             let mut bytes = [0u8; 4];
             let len = config_bytes.len() - offset;
             bytes[..len].copy_from_slice(&config_bytes[offset..]);
             u32::from_le_bytes(bytes)
         } else {
+            // Completely out of range: return zero.
             0
         }
     }
@@ -370,8 +381,11 @@ impl VirtioDevice for VirtioBlkDevice {
             }
         };
 
-        self.worker
-            .insert(self.driver.clone(), "virtio-blk-worker", BlkQueueState { queue });
+        self.worker.insert(
+            self.driver.clone(),
+            "virtio-blk-worker",
+            BlkQueueState { queue },
+        );
         self.worker.start();
     }
 
@@ -391,11 +405,15 @@ impl VirtioDevice for VirtioBlkDevice {
 }
 
 /// Process a single virtio-blk request.
+///
+/// Returns the work item back with completion info so the caller can
+/// write the used ring entry. This keeps completion in the main loop,
+/// which simplifies future queue API changes.
 async fn process_request(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
-    mut work: VirtioQueueCallbackWork,
+    work: VirtioQueueCallbackWork,
 ) -> IoCompletion {
     match process_request_inner(disk, mem, read_only, &work).await {
         Ok((bytes_written, stat)) => {
@@ -405,8 +423,11 @@ async fn process_request(
                     "failed to write status byte"
                 );
             }
-            work.complete(bytes_written + 1); // +1 for status byte
-            IoCompletion { stat }
+            IoCompletion {
+                work,
+                bytes_written: bytes_written + 1, // +1 for status byte
+                stat,
+            }
         }
         Err(status) => {
             if let Err(err) = write_status_byte(mem, &work, status) {
@@ -415,8 +436,9 @@ async fn process_request(
                     "failed to write error status byte"
                 );
             }
-            work.complete(1); // just the status byte
             IoCompletion {
+                work,
+                bytes_written: 1, // just the status byte
                 stat: IoStat::Error,
             }
         }
@@ -522,7 +544,7 @@ async fn do_io_per_descriptor(
     start_disk_sector: u64,
     is_read: bool,
 ) -> Result<u32, u8> {
-    let sector_size = disk.sector_size() as u64;
+    let sector_shift = disk.sector_shift();
     let mut current_sector = start_disk_sector;
     let mut total_data: u64 = 0;
 
@@ -538,10 +560,13 @@ async fn do_io_per_descriptor(
     };
 
     // For reads, the status byte is the last byte of the writable area.
+    // For writes, exclude the header bytes we need to skip.
+    // Use saturating_sub in both cases to guard against a malicious guest
+    // providing a descriptor chain shorter than expected.
     let data_len = if is_read {
         total_payload.saturating_sub(1)
     } else {
-        total_payload - skip_bytes
+        total_payload.saturating_sub(skip_bytes)
     };
 
     let mut remaining_data = data_len;
@@ -587,7 +612,7 @@ async fn do_io_per_descriptor(
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
         }
 
-        current_sector += chunk / sector_size;
+        current_sector += chunk >> sector_shift;
         total_data += chunk;
     }
 
