@@ -2,6 +2,39 @@
 // Licensed under the MIT License.
 
 //! Types representing contiguous and discontiguous ranges of guest memory.
+//!
+//! The primary type is [`PagedRange`], which describes a single logically
+//! contiguous byte range scattered across potentially-discontiguous guest
+//! pages. It is used throughout the storage and virtio stacks to describe
+//! IO buffers.
+//!
+//! # Memory model
+//!
+//! A `PagedRange` is defined by a GPN (guest page number) list, a starting
+//! byte offset, and a length. The byte range is a contiguous window into the
+//! flat byte space implied by concatenating the pages:
+//!
+//! ```text
+//!   gpns:   [ GPN_0 ]  [ GPN_1 ]  [ GPN_2 ]  [ GPN_3 ]
+//!   bytes:  0    4095  4096  8191  8192 12287 12288 16383
+//!
+//!                start                            end
+//!                  │                               │
+//!   GPN_0:  ░░░░░░░█████████   ◄── first page: partial (offset > 0)
+//!   GPN_1:  ██████████████████ ◄── interior page: always fully covered
+//!   GPN_2:  ██████████████████ ◄── interior page: always fully covered
+//!   GPN_3:  █████████░░░░░░░░░ ◄── last page: partial (end < page boundary)
+//! ```
+//!
+//! **Key constraint:** only the first and last pages may be partially
+//! covered. All interior pages are implicitly fully used. There is no way
+//! to express a gap or a non-zero starting offset on an interior page.
+//!
+//! This means you **cannot** combine two arbitrary guest memory regions
+//! (e.g., two virtio descriptors with arbitrary GPAs) into a single
+//! `PagedRange` unless every region boundary falls on a page boundary.
+//! See [`PagedRanges`] for a type that can represent multiple disjoint
+//! `PagedRange`s as a single logical buffer.
 
 #![warn(missing_docs)]
 
@@ -43,11 +76,33 @@ impl From<std::ops::Range<u64>> for AddressRange {
     }
 }
 
-/// A range of guest memory spanning multiple discontiguous pages.
+/// A single logically-contiguous byte range spread across guest pages.
 ///
-/// This is represented by an offset, a length, and a list of pages. The range
-/// may span the first and last pages only partially, but the interior pages are
-/// completely covered by the range.
+/// `PagedRange` is defined by a GPN (guest page number) slice, a byte
+/// offset into that slice's implied flat address space, and a length.
+///
+/// # Interior-page constraint
+///
+/// The first page may start at an arbitrary byte offset and the last page
+/// may end before the page boundary, but **all interior pages are fully
+/// covered**. There is no way to skip bytes within an interior page.
+///
+/// ```text
+///   VALID:     ░░████  ██████  ██████  ███░░░
+///   INVALID:   ░░████  ░░████  ██████  ███░░░
+///                       ▲ interior page cannot start at non-zero offset
+/// ```
+///
+/// This means two guest memory regions starting at arbitrary GPAs cannot
+/// always be represented by a single `PagedRange`. Use [`PagedRanges`]
+/// when you need to concatenate multiple independent regions.
+///
+/// # Construction
+///
+/// Use [`PagedRange::new(offset, len, gpns)`](PagedRange::new) where
+/// `offset` is the byte offset into the page list and `len` is the total
+/// byte length. The GPN slice must be large enough to cover
+/// `offset + len` bytes.
 #[derive(Debug, Copy, Clone)]
 pub struct PagedRange<'a> {
     /// The starting offset in bytes from the beginning of the range described
@@ -121,6 +176,10 @@ impl<'a> PagedRange<'a> {
     }
 
     /// Returns the byte offset into the first page of the range.
+    ///
+    /// This is always zero for interior and last pages — only the first
+    /// page may have a non-zero offset. This is a fundamental property
+    /// of the `PagedRange` memory model.
     pub fn offset(&self) -> usize {
         self.start % PAGE_SIZE
     }

@@ -1,8 +1,41 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Functionality for referencing locked memory buffers for the lifetime of an
-//! IO.
+//! Guest memory buffer abstractions for storage IO.
+//!
+//! This crate provides [`RequestBuffers`], the primary type used by disk
+//! backends to access guest memory during IO operations. It wraps a
+//! [`PagedRange`] (a single contiguous byte range across guest pages)
+//! with direction flags and provides:
+//!
+//! - Byte-level streaming via [`reader()`](RequestBuffers::reader) /
+//!   [`writer()`](RequestBuffers::writer)
+//! - DMA-ready locked buffers via [`lock()`](RequestBuffers::lock)
+//! - Alignment checking via [`is_aligned()`](RequestBuffers::is_aligned)
+//!
+//! # Alignment and bounce buffering
+//!
+//! Disk backends that use direct IO (O_DIRECT, io_uring) require buffers
+//! to be aligned to the disk's sector size. When guest-provided buffers
+//! are not aligned, a [`BounceBuffer`] is used: data is copied to/from a
+//! page-aligned temporary buffer for the actual disk IO.
+//!
+//! [`BounceBufferTracker`] manages a per-thread page budget to limit
+//! memory consumption from concurrent bounce-buffered IOs.
+//!
+//! # Important: `PagedRange` constraints
+//!
+//! `RequestBuffers` wraps a *single* `PagedRange`, which can only
+//! represent a contiguous byte range where interior pages are fully
+//! covered (see [`PagedRange`] docs). This means:
+//!
+//! - You cannot combine two guest memory regions with arbitrary GPAs
+//!   into one `RequestBuffers` unless every boundary falls on a page
+//!   boundary.
+//! - When a device (e.g., virtio-blk) receives multiple descriptors
+//!   forming a scatter-gather list, each descriptor typically gets its
+//!   own `RequestBuffers`. If a descriptor boundary falls mid-sector,
+//!   bounce buffering or coalescion is needed to issue correct IO.
 
 // UNSAFETY: Handling raw pointers and transmuting between types for different use cases.
 #![expect(unsafe_code)]
@@ -141,7 +174,20 @@ struct Page([u8; PAGE_SIZE]);
 
 const ZERO_PAGE: Page = Page([0; PAGE_SIZE]);
 
-/// A page-aligned buffer used to double-buffer IO data.
+/// A page-aligned temporary buffer used to double-buffer IO data.
+///
+/// When guest-provided buffers are not aligned to the disk's sector size
+/// (or when the `PagedRange` constraints prevent direct IO), data is
+/// copied through a `BounceBuffer`:
+///
+/// - **Reads:** IO is performed into the bounce buffer, then copied to
+///   guest memory via `RequestBuffers::writer()`.
+/// - **Writes:** Data is copied from guest memory via
+///   `RequestBuffers::reader()` into the bounce buffer, then IO is
+///   performed from the bounce buffer.
+///
+/// The buffer is always page-aligned (4096 bytes), satisfying the
+/// alignment requirements of O_DIRECT and io_uring.
 pub struct BounceBuffer {
     pages: Vec<Page>,
     io_vec: AtomicIoVec,
@@ -257,7 +303,29 @@ impl MemoryWrite for PermissionedMemoryWriter<'_> {
     }
 }
 
-/// An accessor for the memory associated with an IO request.
+/// An accessor for guest memory associated with a storage IO request.
+///
+/// Wraps a single [`PagedRange`] — a contiguous byte range scattered
+/// across guest pages — together with a `GuestMemory` reference and a
+/// read/write direction flag.
+///
+/// # One range per `RequestBuffers`
+///
+/// Because `PagedRange` requires interior pages to be fully covered,
+/// a `RequestBuffers` can only describe memory regions where every
+/// page boundary between the first and last page is fully spanned.
+/// Two guest memory regions with arbitrary starting GPAs generally
+/// cannot be combined into one `RequestBuffers`.
+///
+/// When a device has multiple disjoint memory regions for a single IO
+/// (e.g., a virtio descriptor chain whose descriptors don't align to
+/// page boundaries), options include:
+///
+/// - Issue separate IOs per region (only valid if each region is
+///   sector-aligned)
+/// - Use a [`BounceBuffer`] to coalesce into one contiguous buffer
+/// - Use multiple `RequestBuffers` with a multi-range disk backend
+///   API (not currently available)
 #[derive(Clone, Debug)]
 pub struct RequestBuffers<'a> {
     range: PagedRange<'a>,
@@ -295,10 +363,20 @@ impl<'a> RequestBuffers<'a> {
         self.range
     }
 
-    /// Returns whether the buffers are all aligned to at least `alignment`
-    /// bytes.
+    /// Returns whether the buffer is aligned to at least `alignment` bytes.
     ///
-    /// `alignment` must be a power of two.
+    /// Checks three things (all must be multiples of `alignment`):
+    /// 1. The byte offset into the first page (`range.offset()`)
+    /// 2. The total byte length (`range.len()`)
+    /// 3. The page size (4096) — always true for alignment ≤ 4096
+    ///
+    /// When this returns `false`, disk backends that require aligned
+    /// buffers (e.g., those using O_DIRECT or io_uring) must use a
+    /// [`BounceBuffer`] to perform the IO.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `alignment` is not a power of two.
     pub fn is_aligned(&self, alignment: usize) -> bool {
         assert!(alignment.is_power_of_two());
         ((self.range.offset() | self.range.len() | PAGE_SIZE) & (alignment - 1)) == 0
