@@ -604,5 +604,10 @@ pub struct GdmaChangeMsixVectorIndexForEq {
 pub mod test_hooks {
     /// When a packet with this length is received, the GDMA BNIC emulator
     /// will return CQE_RX_ERR_DISABLED_QUEUE to simulate an RX error.
-    pub const RX_ERROR_TRIGGER_PACKET_LEN: usize = 1234;
+    ///
+    /// The value (0xDEAD = 57,005 bytes) is chosen to be well above the maximum
+    /// jumbo frame size (MAX_MTU = 9,216 bytes), so that it does not collide with any
+    /// legitimate network packet, while remaining small enough to allocate
+    /// in test guest memory (2MB).
+    pub const RX_ERROR_TRIGGER_PACKET_LEN: usize = 0xDEAD;
 }

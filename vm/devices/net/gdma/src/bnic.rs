@@ -87,6 +87,13 @@ impl BufferAccess for GuestBuffers {
     }
 
     fn write_data(&mut self, id: RxId, mut data: &[u8]) {
+        // Test hook: skip the buffer write for error-trigger packets, which
+        // are intentionally too large.
+        #[cfg(feature = "test_hooks")]
+        if data.len() == gdma_defs::test_hooks::RX_ERROR_TRIGGER_PACKET_LEN {
+            return;
+        }
+
         self.guest_addresses(id);
         let mut addrs = self.buffer_segments.iter();
         while !data.is_empty() {
