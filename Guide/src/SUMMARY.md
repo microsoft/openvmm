@@ -86,7 +86,6 @@
   - [Virtio]()
       - [virtio-fs]()
       - [virtio-9p]()
-      - [virtio-serial]()
       - [virtio-net]()
       - [virtio-pmem]()
   - [VMBus]()
