@@ -819,6 +819,7 @@ pub struct VpciTdispCommandHeader {
     pub slot: SlotNumber,
     /// Length of the data payload to follow
     pub data_length: u64,
+    // <data_length bytes of data follow struct header>
     // pub data: [u8; data_length...],
 }
 
@@ -832,6 +833,7 @@ pub struct VpciTdispCommandHeaderReply {
     pub slot: SlotNumber,
     /// Length of the data payload to follow
     pub data_length: u64,
+    // <data_length bytes of data follow struct header>
     // pub data: [u8; data_length...],
 }
 

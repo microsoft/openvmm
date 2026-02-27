@@ -1417,6 +1417,7 @@ mod tests {
     use hvdef::HV_PAGE_SIZE;
     use inspect::Inspect;
     use inspect::InspectMut;
+    use openhcl_tdisp::make_get_device_interface_info_command;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
@@ -1434,12 +1435,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use tdisp::GuestToHostResponseExt;
     use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
     use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
     use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
     use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
-    use tdisp_proto::GuestToHostResponseExt;
     use test_with_tracing::test;
     use thiserror::Error;
     use vmbus_async::queue::IncomingPacket;
@@ -2167,15 +2168,11 @@ mod tests {
         let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
         guest_driver.start_device(0x1000000).await;
 
-        let guest_protocol_type = TDISP_MOCK_GUEST_PROTOCOL as i32;
-        let command = tdisp::GuestToHostCommand {
-            device_id: SlotNumber::new().into_bits() as u64,
-            command: Some(tdisp::Command::GetDeviceInterfaceInfo(
-                tdisp_proto::TdispCommandRequestGetDeviceInterfaceInfo {
-                    guest_protocol_type,
-                },
-            )),
-        };
+        let guest_protocol_type: tdisp::TdispGuestProtocolType = TDISP_MOCK_GUEST_PROTOCOL;
+        let command = make_get_device_interface_info_command(
+            SlotNumber::new().into_bits() as u64,
+            TDISP_MOCK_GUEST_PROTOCOL,
+        );
         let response = guest_driver.send_tdisp_command(command).await;
 
         let response = response.get_response::<TdispCommandResponseGetDeviceInterfaceInfo>();
@@ -2185,7 +2182,10 @@ mod tests {
                     .interface_info
                     .expect("interface_info must be set");
 
-                assert_eq!(interface_info.guest_protocol_type, guest_protocol_type);
+                assert_eq!(
+                    interface_info.guest_protocol_type,
+                    guest_protocol_type as i32
+                );
                 assert_eq!(
                     interface_info.supported_features,
                     TDISP_MOCK_SUPPORTED_FEATURES

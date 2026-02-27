@@ -45,7 +45,9 @@ use anyhow::Context;
 use parking_lot::Mutex;
 use std::sync::Arc;
 pub use tdisp_proto::GuestToHostCommand;
+pub use tdisp_proto::GuestToHostCommandExt;
 pub use tdisp_proto::GuestToHostResponse;
+pub use tdisp_proto::GuestToHostResponseExt;
 pub use tdisp_proto::TdispCommandResponseBind;
 pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
 pub use tdisp_proto::TdispCommandResponseGetTdiReport;
@@ -60,6 +62,7 @@ pub use tdisp_proto::TdispReportType;
 pub use tdisp_proto::TdispTdiState;
 pub use tdisp_proto::guest_to_host_command::Command;
 pub use tdisp_proto::guest_to_host_response::Response;
+
 use tracing::instrument;
 
 /// Callback for receiving TDISP commands from the guest.
