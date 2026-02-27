@@ -265,18 +265,8 @@ impl FlowNode for Node {
 
                     rt.sh.change_dir(cargo_work_dir);
                     let mut cmd = flowey::shell_cmd!(rt, "{argv0} {params...}");
-                    if !matches!(rt.backend(), FlowBackend::Local) {
-                        // if running in CI, no need to waste time with incremental
-                        // build artifacts
-                        with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
-                    } else {
-                        // if build locally, use per-package target dirs
-                        // to avoid rebuilding
-                        // TODO: remove this once cargo's caching improves
-                        cmd = cmd
-                            .arg("--target-dir")
-                            .arg(in_folder.join("target").join(&crate_name));
-                    }
+                    // Disable incremental compilation for reproducible builds.
+                    with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
                     cmd = cmd.envs(&with_env);
 
                     log::info!(

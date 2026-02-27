@@ -373,6 +373,23 @@ impl FlowNode for Node {
                 injected_env
             };
 
+            // Add --remap-path-prefix for the repo source path so that
+            // absolute checkout paths don't end up in binaries. This is done
+            // here (not in shell.nix) because in CI the shell.nix lives in
+            // the flowey_bootstrap checkout, not the actual build checkout.
+            let extra_env =
+                extra_env
+                    .zip(ctx, openvmm_repo_path.clone())
+                    .map(ctx, |(mut env, repo_path)| {
+                        if let Some(rustflags) = env.get_mut("RUSTFLAGS") {
+                            rustflags.push_str(&format!(
+                                " --remap-path-prefix={}=",
+                                repo_path.display()
+                            ));
+                        }
+                        env
+                    });
+
             let mut config = Vec::new();
 
             // If the target vendor is specified as `minimal_rt`, then this is

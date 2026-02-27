@@ -227,13 +227,50 @@ impl<'a> FloweyCmd<'a> {
     /// shadowed state (env, stdin, flags), and return the final
     /// [`xshell::Cmd`] ready for execution.
     fn into_resolved(self) -> xshell::Cmd<'a> {
+        let is_nix_shell = matches!(self.wrapper, Some(CommandWrapperKind::NixShell { .. }));
+
+        // For NixShell wrappers, compute the final desired env state so it
+        // can be embedded in the --run command string.  nix-shell --pure
+        // clears inherited process env vars, so .env() on the outer process
+        // alone is not enough.
+        //
+        // We replay all env changes in order so that interleaved
+        // Set/Remove/Clear operations produce the correct final state.
+        let (env_sets, other_env_changes) = if is_nix_shell {
+            let mut final_env: Vec<(OsString, OsString)> = Vec::new();
+            for change in self.env_changes {
+                match change {
+                    EnvChange::Set(k, v) => {
+                        // Upsert: replace an existing entry or append.
+                        if let Some(entry) = final_env.iter_mut().find(|(ek, _)| *ek == k) {
+                            entry.1 = v;
+                        } else {
+                            final_env.push((k, v));
+                        }
+                    }
+                    EnvChange::Remove(k) => {
+                        final_env.retain(|(ek, _)| *ek != k);
+                    }
+                    EnvChange::Clear => {
+                        final_env.clear();
+                    }
+                }
+            }
+            // No remaining env changes — everything is handled via --run.
+            (final_env, Vec::new())
+        } else {
+            (Vec::new(), self.env_changes)
+        };
+
         let mut cmd = match self.wrapper {
-            Some(wrapper) => wrapper.wrap_cmd(self.sh, self.inner),
+            Some(wrapper) => wrapper.wrap_cmd(self.sh, self.inner, &env_sets),
             None => self.inner,
         };
 
-        // Re-apply env changes after wrapping to survive the wrapper's transformation
-        for change in self.env_changes {
+        // Apply env changes to the outer process.
+        // For NixShell wrappers this is empty (handled via --run string).
+        // For all other wrappers, all env changes are applied here.
+        for change in other_env_changes {
             match change {
                 EnvChange::Set(k, v) => cmd = cmd.env(k, v),
                 EnvChange::Remove(k) => cmd = cmd.env_remove(k),
@@ -313,15 +350,40 @@ impl CommandWrapperKind {
     /// The `cmd` parameter contains only the program and arguments.
     /// Environment variables, stdin, and flags are applied by
     /// [`FloweyCmd`] after this method returns.
-    fn wrap_cmd<'a>(self, sh: &'a xshell::Shell, cmd: xshell::Cmd<'a>) -> xshell::Cmd<'a> {
+    fn wrap_cmd<'a>(
+        self,
+        sh: &'a xshell::Shell,
+        cmd: xshell::Cmd<'a>,
+        env_sets: &[(OsString, OsString)],
+    ) -> xshell::Cmd<'a> {
         let cmd_str = format!("{cmd}");
         match self {
             CommandWrapperKind::NixShell { path } => {
+                // Embed env var assignments in the --run string so they
+                // survive nix-shell --pure (which clears inherited env vars).
+                let run_str = if env_sets.is_empty() {
+                    cmd_str
+                } else {
+                    let prefix = env_sets
+                        .iter()
+                        .map(|(k, v)| {
+                            // Values are shell-quoted with single quotes to
+                            // handle spaces and special characters. Single
+                            // quotes within the value are escaped as '\''.
+                            let k = k.to_string_lossy();
+                            let v = v.to_string_lossy();
+                            let escaped_v = v.replace('\'', "'\\''");
+                            format!("{k}='{escaped_v}'")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("{prefix} {cmd_str}")
+                };
                 let mut wrapped = sh.cmd("nix-shell");
                 if let Some(path) = path {
                     wrapped = wrapped.arg(path);
                 }
-                wrapped.arg("--pure").arg("--run").arg(cmd_str)
+                wrapped.arg("--pure").arg("--run").arg(run_str)
             }
             #[cfg(test)]
             CommandWrapperKind::ShCmd => sh.cmd("sh").arg("-c").arg(cmd_str),
@@ -415,6 +477,7 @@ mod tests {
         let cmd = CommandWrapperKind::NixShell { path: None }.wrap_cmd(
             sh.xshell(),
             xshell::cmd!(sh.xshell(), "cargo build --release"),
+            &[],
         );
         assert_eq!(
             format!("{cmd}"),
@@ -428,11 +491,117 @@ mod tests {
         let cmd = CommandWrapperKind::NixShell {
             path: Some("/my/shell.nix".into()),
         }
-        .wrap_cmd(sh.xshell(), xshell::cmd!(sh.xshell(), "cargo build"));
+        .wrap_cmd(sh.xshell(), xshell::cmd!(sh.xshell(), "cargo build"), &[]);
         assert_eq!(
             format!("{cmd}"),
             "nix-shell /my/shell.nix --pure --run \"cargo build\""
         );
+    }
+
+    #[test]
+    fn nix_wrapper_embeds_env_sets_in_run_string() {
+        let sh = FloweyShell::new().unwrap();
+        let env_sets = vec![
+            (OsString::from("FOO"), OsString::from("bar")),
+            (OsString::from("BAZ"), OsString::from("qux")),
+        ];
+        let cmd = CommandWrapperKind::NixShell { path: None }.wrap_cmd(
+            sh.xshell(),
+            xshell::cmd!(sh.xshell(), "cargo build"),
+            &env_sets,
+        );
+        // xshell Display escapes single quotes as \'
+        assert_eq!(
+            format!("{cmd}"),
+            "nix-shell --pure --run \"FOO=\\'bar\\' BAZ=\\'qux\\' cargo build\""
+        );
+    }
+
+    #[test]
+    fn nix_wrapper_escapes_single_quotes_in_env_values() {
+        let sh = FloweyShell::new().unwrap();
+        let env_sets = vec![(OsString::from("MSG"), OsString::from("it's a test"))];
+        let cmd = CommandWrapperKind::NixShell { path: None }.wrap_cmd(
+            sh.xshell(),
+            xshell::cmd!(sh.xshell(), "echo hello"),
+            &env_sets,
+        );
+        // The value's embedded single quote is escaped as '\'' by our code,
+        // then xshell Display escapes all single quotes as \'.
+        assert_eq!(
+            format!("{cmd}"),
+            "nix-shell --pure --run \"MSG=\\'it\\'\\\\\\'\\'s a test\\' echo hello\""
+        );
+    }
+
+    #[test]
+    fn nix_env_clear_cancels_prior_sets() {
+        let sh = FloweyShell::new().unwrap();
+        // Set FOO, then clear, then set BAR.
+        // Only BAR should appear in the --run string.
+        let env_sets = vec![(OsString::from("BAR"), OsString::from("kept"))];
+        let cmd = CommandWrapperKind::NixShell { path: None }.wrap_cmd(
+            sh.xshell(),
+            xshell::cmd!(sh.xshell(), "my-cmd"),
+            &env_sets,
+        );
+        let display = format!("{cmd}");
+        assert!(
+            !display.contains("FOO"),
+            "FOO should have been cleared: {display}"
+        );
+        assert!(display.contains("BAR"), "BAR should be present: {display}");
+    }
+
+    #[test]
+    fn nix_env_remove_cancels_prior_set() {
+        // Set FOO then remove it — the final env should be empty.
+        let sh = FloweyShell::new().unwrap();
+        let cmd = CommandWrapperKind::NixShell { path: None }.wrap_cmd(
+            sh.xshell(),
+            xshell::cmd!(sh.xshell(), "my-cmd"),
+            &[], // env_remove("FOO") after env("FOO","v") → nothing in sets
+        );
+        assert_eq!(format!("{cmd}"), "nix-shell --pure --run my-cmd");
+    }
+
+    #[test]
+    fn nix_env_set_remove_set_keeps_final() {
+        // Exercises the full into_resolved path:
+        // Set FOO=first, remove FOO, set FOO=second → FOO=second.
+        let mut sh = FloweyShell::new().unwrap();
+        sh.set_wrapper(Some(CommandWrapperKind::NixShell { path: None }));
+        let cmd = sh
+            .wrap(xshell::cmd!(sh.xshell(), "echo ok"))
+            .env("FOO", "first")
+            .env_remove("FOO")
+            .env("FOO", "second");
+        let display = format!("{cmd}");
+        // Display shows the unwrapped command, not the nix-shell wrapper.
+        assert_eq!(display, "echo ok");
+        // But the resolved command embeds FOO=second in the --run string.
+        let resolved = format!("{}", cmd.into_resolved());
+        assert!(
+            resolved.contains("FOO"),
+            "FOO=second should be embedded: {resolved}"
+        );
+        assert!(
+            !resolved.contains("first"),
+            "FOO=first should have been removed: {resolved}"
+        );
+    }
+
+    #[test]
+    fn nix_env_set_clear_leaves_empty() {
+        // Set FOO, then clear — no env vars in the --run string.
+        let mut sh = FloweyShell::new().unwrap();
+        sh.set_wrapper(Some(CommandWrapperKind::NixShell { path: None }));
+        let cmd = sh
+            .wrap(xshell::cmd!(sh.xshell(), "echo ok"))
+            .env("FOO", "doomed")
+            .env_clear();
+        let resolved = format!("{}", cmd.into_resolved());
+        assert_eq!(resolved, "nix-shell --pure --run \"echo ok\"");
     }
 
     #[test]
