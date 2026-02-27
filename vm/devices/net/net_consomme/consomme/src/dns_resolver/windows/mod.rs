@@ -21,6 +21,7 @@ use std::ptr::null_mut;
 use std::sync::Arc;
 use windows_sys::Win32::Foundation::DNS_REQUEST_PENDING;
 use windows_sys::Win32::Foundation::NO_ERROR;
+use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_TCP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_PROTOCOL_UDP;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_NO_MULTICAST;
 use windows_sys::Win32::NetworkManagement::Dns::DNS_QUERY_RAW_CANCEL;
@@ -74,15 +75,30 @@ impl DnsBackend for WindowsDnsResolverBackend {
         // Clone the sender for error handling
         let response_sender_clone = response_sender.clone();
 
-        // Create internal request
+        // For TCP, DnsQueryRaw expects the 2-byte TCP length prefix in the
+        // query buffer. Prepend it here so that the DnsTcpHandler can remain
+        // platform-agnostic and always pass raw DNS bytes.
+        let wire_query = match request.flow.transport {
+            super::DnsTransport::Tcp => {
+                let len = request.dns_query.len() as u16;
+                let mut buf = Vec::with_capacity(2 + request.dns_query.len());
+                buf.extend_from_slice(&len.to_be_bytes());
+                buf.extend_from_slice(request.dns_query);
+                buf
+            }
+            super::DnsTransport::Udp => request.dns_query.to_vec(),
+        };
+
+        // Create internal request with raw DNS bytes (no TCP prefix) so that
+        // SERVFAIL generation works correctly.
         let internal_request = DnsRequestInternal {
             flow: request.flow.clone(),
             query: request.dns_query.to_vec(),
             response_sender,
         };
 
-        let dns_query_size = internal_request.query.len() as u32;
-        let dns_query = internal_request.query.as_ptr().cast_mut();
+        let dns_query_size = wire_query.len() as u32;
+        let dns_query = wire_query.as_ptr().cast_mut();
 
         // Pre-insert placeholder before calling DnsQueryRaw to avoid race condition
         // where callback fires before we can insert the cancel handle.
@@ -117,7 +133,10 @@ impl DnsBackend for WindowsDnsResolverBackend {
             queryRawOptions: 0,
             customServersSize: 0,
             customServers: null_mut(),
-            protocol: DNS_PROTOCOL_UDP,
+            protocol: match request.flow.transport {
+                super::DnsTransport::Tcp => DNS_PROTOCOL_TCP,
+                super::DnsTransport::Udp => DNS_PROTOCOL_UDP,
+            },
             Anonymous: DNS_QUERY_RAW_REQUEST_0::default(),
         };
 
@@ -229,10 +248,20 @@ unsafe extern "system" fn dns_query_raw_callback(
 
     // SAFETY: query_results is provided by Windows and will be freed after processing
     let response = match unsafe { process_dns_results(query_results) } {
-        Ok(response_data) => Some(DnsResponse {
-            flow: context.request.flow.clone(),
-            response_data,
-        }),
+        Ok(mut response_data) => {
+            // For TCP, DnsQueryRaw returns the response with a 2-byte TCP
+            // length prefix. Strip it so the DnsTcpHandler can add its own
+            // framing.
+            if context.request.flow.transport == super::DnsTransport::Tcp
+                && response_data.len() >= 2
+            {
+                response_data.drain(..2);
+            }
+            Some(DnsResponse {
+                flow: context.request.flow.clone(),
+                response_data,
+            })
+        }
         Err(DnsResultError::QueryFailed(status)) => {
             tracelimit::warn_ratelimited!(status, "DNS query failed, returning SERVFAIL");
             None

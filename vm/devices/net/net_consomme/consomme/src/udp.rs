@@ -53,7 +53,7 @@ use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
 
-pub const DNS_PORT: u16 = 53;
+use crate::DNS_PORT;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
@@ -204,7 +204,7 @@ impl<T: Client> Access<'_, T> {
             self.inner
                 .dns
                 .as_mut()
-                .and_then(|dns| match dns.poll_response(cx) {
+                .and_then(|dns| match dns.poll_udp_response(cx) {
                     Poll::Ready(resp) => resp,
                     Poll::Pending => None,
                 })
@@ -442,13 +442,14 @@ impl<T: Client> Access<'_, T> {
                 dst_port: udp.dst_port(),
                 gateway_mac: self.inner.state.params.gateway_mac,
                 client_mac: frame.src_addr,
+                transport: crate::dns_resolver::DnsTransport::Udp,
             },
             dns_query: udp.payload(),
         };
 
         // Submit the DNS query with addressing information
         // The response will be queued and sent later in poll_udp
-        dns.handle_dns(&request).map_err(|e| {
+        dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;
