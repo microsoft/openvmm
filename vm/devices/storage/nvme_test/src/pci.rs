@@ -65,7 +65,6 @@ pub struct NvmeFaultController {
     pci_fault_config: PciFaultConfig,
     #[inspect(skip)]
     fault_active: mesh::Cell<bool>,
-
     /// The NVMe fault controller is repurposed for use in TDISP tests.
     #[inspect(skip)]
     tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
@@ -494,15 +493,14 @@ impl ChipsetDevice for NvmeFaultController {
 
     /// The NVMe fault controller is repurposed for use in TDISP tests.
     fn supports_tdisp(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
+        tracing::debug!(
+            supported = self.tdisp_interface.is_some(),
+            "fault controller TDISP support in ChipsetDevice"
+        );
+
         match &mut self.tdisp_interface {
-            Some(tdisp) => {
-                tracing::debug!("fault controller reporting TDISP support in ChipsetDevice");
-                Some(tdisp.as_mut())
-            }
-            None => {
-                tracing::debug!("fault controller not reporting TDISP support in ChipsetDevice");
-                None
-            }
+            Some(tdisp) => Some(tdisp.as_mut()),
+            None => None,
         }
     }
 }
