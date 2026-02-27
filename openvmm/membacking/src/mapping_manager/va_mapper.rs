@@ -276,6 +276,7 @@ impl VaMapper {
     /// host.
     ///
     /// Only valid when private_ram mode is enabled.
+    #[allow(dead_code)] // Will be used by ballooning / memory hot-remove.
     pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         assert!(self.private_ram, "decommit requires private RAM mode");
         self.inner.mapping.decommit(offset, len)
