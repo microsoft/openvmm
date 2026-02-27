@@ -98,7 +98,12 @@ enum SnpGhcbError {
 
 #[derive(Debug, Error)]
 #[error("failed to run")]
-struct SnpRunVpError(#[source] hcl::ioctl::Error);
+enum SnpRunVpError {
+    #[error("Guest AVIC backing page is not validated or cannot be accessed.")]
+    VpNotRestartableError,
+    #[error("failed to run")]
+    RunVpError(#[source] hcl::ioctl::Error),
+}
 
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
@@ -1256,31 +1261,49 @@ impl UhProcessor<'_, SnpBacked> {
         let mut has_intercept = self
             .runner
             .run()
-            .map_err(|e| dev.fatal_error(SnpRunVpError(e).into()))?;
+            .map_err(|e| dev.fatal_error(SnpRunVpError::RunVpError(e).into()))?;
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
-        // TODO SNP: The guest busy bit needs to be tested and set atomically.
-        let inject = if vmsa.sev_features().alternate_injection() {
-            if vmsa.v_intr_cntrl().guest_busy() {
+        if vmsa.sev_features().alternate_injection() {
+            let was_busy = vmsa.guest_busy_bit_test_and_set();
+            if was_busy {
                 self.backing.general_stats[entered_from_vtl]
                     .guest_busy
                     .increment();
-                // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
-                // points to the instruction and the event should be re-generated when the
-                // instruction is re-executed. Note that hardware does not provide instruction
-                // length in this case so it's impossible to directly re-inject a software event if
-                // delivery generates an intercept.
-                //
-                // TODO SNP: Handle ICEBP.
-                let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
-                assert!(
-                    exit_int_info.valid(),
-                    "event inject info should be valid {exit_int_info:x?}"
-                );
 
-                match exit_int_info.interruption_type() {
+                let sev_error_code = SevExitCode(vmsa.guest_error_code());
+                match sev_error_code {
+                    SevExitCode::NOT_RESTARTABLE => {
+                        // The guest APIC backing page is not validated in the RMP.
+                        return Err(dev.fatal_error(SnpRunVpError::VpNotRestartableError.into()));
+                    }
+                    SevExitCode::NPF => {
+                        let exit_info = SevNpfInfo::from(vmsa.exit_info1());
+                        if exit_info.not_restartable() {
+                            // An access to the guest's APIC backing page by AVIC hardware resulted
+                            // in a nested page fault.
+                            return Err(
+                                dev.fatal_error(SnpRunVpError::VpNotRestartableError.into())
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
+            // points to the instruction and the event should be re-generated when the
+            // instruction is re-executed. Note that hardware does not provide instruction
+            // length in this case so it's impossible to directly re-inject a software event if
+            // delivery generates an intercept.
+            //
+            // TODO SNP: Handle ICEBP.
+            let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
+
+            if exit_int_info.valid() {
+                let inject = match exit_int_info.interruption_type() {
                     x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
                         if exit_int_info.vector() != 3 && exit_int_info.vector() != 4 {
                             // If the event is an exception, we can inject it.
@@ -1291,20 +1314,22 @@ impl UhProcessor<'_, SnpBacked> {
                     }
                     x86defs::snp::SEV_INTR_TYPE_SW => None,
                     _ => Some(exit_int_info),
+                };
+
+                // Since the exit interrupt information was processed, it must be
+                // cleared so that it is not examined again on a subsequent reentry to
+                // the HCL.
+                vmsa.set_exit_int_info(0);
+
+                if let Some(inject) = inject {
+                    vmsa.set_event_inject(inject);
                 }
             } else {
-                None
+                // Any previously injected event has been consumed.
             }
         } else {
             unimplemented!("Only alternate injection is supported for SNP")
         };
-
-        if let Some(inject) = inject {
-            vmsa.set_event_inject(inject);
-        }
-        if vmsa.sev_features().alternate_injection() {
-            vmsa.v_intr_cntrl_mut().set_guest_busy(true);
-        }
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
             self.backing.general_stats[entered_from_vtl]
