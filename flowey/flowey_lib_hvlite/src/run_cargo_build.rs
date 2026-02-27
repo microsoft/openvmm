@@ -76,8 +76,10 @@ pub enum BuildProfile {
     Debug,
     Release,
     UnderhillShip,
+    UnderhillShipReproducible,
     BootDev,
     BootRelease,
+    BootReleaseReproducible,
     Light,
 }
 
@@ -212,8 +214,14 @@ impl FlowNode for Node {
                     BuildProfile::UnderhillShip => {
                         CargoBuildProfile::Custom("underhill-ship".into())
                     }
+                    BuildProfile::UnderhillShipReproducible => {
+                        CargoBuildProfile::Custom("underhill-ship-reproducible".into())
+                    }
                     BuildProfile::BootDev => CargoBuildProfile::Custom("boot-dev".into()),
                     BuildProfile::BootRelease => CargoBuildProfile::Custom("boot-release".into()),
+                    BuildProfile::BootReleaseReproducible => {
+                        CargoBuildProfile::Custom("boot-release-reproducible".into())
+                    }
                     BuildProfile::Light => CargoBuildProfile::Custom("light".into()),
                 },
                 features,
