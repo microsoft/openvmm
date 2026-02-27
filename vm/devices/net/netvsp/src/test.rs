@@ -5832,16 +5832,6 @@ async fn rss_disable_when_already_disabled_skips_endpoint_restart(driver: Defaul
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     let builder = Nic::builder();
     let nic = builder.build(
-/// Requesting num_sub_channels == max_queues should be rejected
-/// because the subchannels plus the primary channel must fit within max_queues
-/// (i.e. subchannels must be strictly less than max_queues) or we panic.
-#[async_test]
-async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) {
-    const MAX_QUEUES: u16 = 2;
-
-    let endpoint_state = TestNicEndpointState::new();
-    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
-    let nic = Nic::builder().max_queues(MAX_QUEUES).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         Guid::new_random(),
         Box::new(endpoint),
@@ -5857,12 +5847,6 @@ async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) 
         .await;
 
     // RNDIS Initialize.
-        .initialize(
-            MAX_QUEUES as usize - 1,
-            protocol::NdisConfigCapabilities::new(),
-        )
-        .await;
-
     channel
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
@@ -5875,7 +5859,6 @@ async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) 
             &[],
         )
         .await;
-
     let _: rndisprot::InitializeComplete = channel
         .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
         .await
@@ -5954,6 +5937,52 @@ async fn rss_enable_then_disable_triggers_endpoint_restart(driver: DefaultDriver
         stop_after > stop_before,
         "endpoint.stop() should be called when transitioning from RSS enabled to disabled"
     );
+}
+
+/// Requesting num_sub_channels == max_queues should be rejected
+/// because the subchannels plus the primary channel must fit within max_queues
+/// (i.e. subchannels must be strictly less than max_queues) or we panic.
+#[async_test]
+async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) {
+    const MAX_QUEUES: u16 = 2;
+
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().max_queues(MAX_QUEUES).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(
+            MAX_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new(),
+        )
+        .await;
+
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
     let message = NvspMessage {
         header: protocol::MessageHeader {
             message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
