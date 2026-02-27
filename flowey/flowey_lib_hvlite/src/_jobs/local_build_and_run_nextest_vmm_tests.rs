@@ -371,6 +371,9 @@ impl SimpleFlowNode for Node {
                         if windows || ubuntu {
                             artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
                         }
+                        if linux {
+                            artifacts.push(KnownTestArtifacts::Alpine323X64Vhd);
+                        }
 
                         artifacts
                     }
@@ -386,6 +389,9 @@ impl SimpleFlowNode for Node {
                         }
                         if windows || ubuntu {
                             artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
+                        }
+                        if linux {
+                            artifacts.push(KnownTestArtifacts::Alpine323Aarch64Vhd);
                         }
 
                         artifacts
