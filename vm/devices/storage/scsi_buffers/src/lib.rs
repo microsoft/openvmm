@@ -35,7 +35,7 @@
 //! - When a device (e.g., virtio-blk) receives multiple descriptors
 //!   forming a scatter-gather list, each descriptor typically gets its
 //!   own `RequestBuffers`. If a descriptor boundary falls mid-sector,
-//!   bounce buffering or coalescion is needed to issue correct IO.
+//!   bounce buffering or coalescing is needed to issue correct IO.
 
 // UNSAFETY: Handling raw pointers and transmuting between types for different use cases.
 #![expect(unsafe_code)]
