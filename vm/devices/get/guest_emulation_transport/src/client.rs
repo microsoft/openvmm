@@ -411,6 +411,12 @@ impl GuestEmulationTransportClient {
             .notify(msg::Msg::SetDebugInterruptCallback(callback.into()));
     }
 
+    /// Set PostLiveMigration callback.
+    pub fn set_post_live_migration_callback(&mut self, callback: Box<dyn Fn() + Send + Sync>) {
+        self.control
+            .notify(msg::Msg::SetPostLiveMigrationCallback(callback.into()));
+    }
+
     /// Send the attestation request to the IGVM agent on the host.
     pub async fn igvm_attest(
         &self,

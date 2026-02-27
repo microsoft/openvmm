@@ -10,6 +10,7 @@ use crate::client::ModifyVtl2SettingsRequest;
 use crate::error::IgvmAttestError;
 use crate::error::TryIntoProtocolBool;
 use chipset_resources::battery::HostBatteryUpdate;
+use cvm_tracing::CVM_ALLOWED;
 use futures::FutureExt;
 use futures::TryFutureExt;
 use futures_concurrency::future::Race;
@@ -219,6 +220,8 @@ pub(crate) mod msg {
         /// Store the callback to trigger the debug interrupt.
         // TODO: Consider a strategy that avoids LocalOnly here.
         SetDebugInterruptCallback(LocalOnly<Box<dyn Fn(u8) + Send + Sync>>),
+        /// Notify that live migration has finished.
+        SetPostLiveMigrationCallback(LocalOnly<Box<dyn Fn() + Send + Sync>>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -536,6 +539,8 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     gpa_allocator: Option<Arc<dyn DmaClient>>,
     #[inspect(skip)]
     set_debug_interrupt: Option<Box<dyn Fn(u8) + Send + Sync>>,
+    #[inspect(skip)]
+    post_live_migration: Option<Box<dyn Fn() + Send + Sync>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -744,6 +749,7 @@ impl<T: RingMem> ProcessLoop<T> {
             },
             gpa_allocator: None,
             set_debug_interrupt: None,
+            post_live_migration: None,
         }
     }
 
@@ -1076,6 +1082,9 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::SetDebugInterruptCallback(callback) => {
                 self.set_debug_interrupt = Some(callback.0);
             }
+            Msg::SetPostLiveMigrationCallback(callback) => {
+                self.post_live_migration = Some(callback.0);
+            }
 
             // Late bound receivers for Guest Notifications
             Msg::TakeVtl2SettingsReceiver(req) => req.handle_sync(|()| {
@@ -1349,6 +1358,9 @@ impl<T: RingMem> ProcessLoop<T> {
             GuestNotifications::INJECT_DEBUG_INTERRUPT => {
                 self.handle_debug_interrupt_notification(read_guest_notification(id, buf)?)?;
             }
+            GuestNotifications::NOTIFY_POST_LIVE_MIGRATION => {
+                self.handle_post_live_migration_notification(read_guest_notification(id, buf)?);
+            }
             invalid_notification => {
                 tracing::error!(
                     ?invalid_notification,
@@ -1572,6 +1584,16 @@ impl<T: RingMem> ProcessLoop<T> {
         }
 
         Ok(())
+    }
+
+    fn handle_post_live_migration_notification(
+        &mut self,
+        _notification: get_protocol::PostLiveMigrationNotification,
+    ) {
+        tracing::info!(CVM_ALLOWED, "notify_post_live_migration");
+        if let Some(callback) = self.post_live_migration.as_ref() {
+            callback()
+        }
     }
 
     fn complete_modify_vtl2_settings(
