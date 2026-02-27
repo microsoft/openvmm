@@ -314,9 +314,11 @@ impl VpciRelay {
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
 
-        Self::tdisp_test_mock_flow(vpci_device.clone())
-            .await
-            .expect("failed to exercise TDISP flow test");
+        if self.options.test_tdisp_flow {
+            Self::tdisp_test_mock_flow(vpci_device.clone())
+                .await
+                .expect("failed to exercise TDISP flow test");
+        }
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
         let (device_unit, device) = chipset
