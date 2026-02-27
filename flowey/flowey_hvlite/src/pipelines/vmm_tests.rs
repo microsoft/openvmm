@@ -188,6 +188,7 @@ impl IntoPipeline for VmmTestsCli {
                 verbose: ReadVar::from_static(verbose),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             })
             .dep_on(|ctx| {
                 flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {

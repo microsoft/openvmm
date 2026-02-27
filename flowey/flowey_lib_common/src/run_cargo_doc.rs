@@ -10,7 +10,6 @@ use crate::_util::cargo_output;
 use flowey::node::prelude::*;
 use flowey::shell::FloweyCmd;
 use std::collections::BTreeMap;
-
 #[derive(Serialize, Deserialize)]
 pub struct CargoDocCommands {
     cmds: Vec<Vec<String>>,
@@ -189,7 +188,11 @@ impl FlowNode for Node {
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
 
-                    let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
+                    let crate::cfg_cargo_common_flags::Flags {
+                        locked,
+                        verbose,
+                        no_incremental: _,
+                    } = flags;
 
                     let mut cmds = Vec::new();
                     let ResolvedDocPackages {

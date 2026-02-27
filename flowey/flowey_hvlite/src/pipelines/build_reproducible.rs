@@ -57,10 +57,16 @@ impl IntoPipeline for BuildReproducibleCli {
         let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
             pipeline.new_artifact("x64-cvm-openhcl-igvm-extras");
 
+        let local_run_args = {
+            let mut args = crate::pipelines_shared::cfg_common_params::LocalRunArgs::default();
+            args.locked = true;
+            args.no_incremental = true;
+            args
+        };
         let cfg_common_params = crate::pipelines_shared::cfg_common_params::get_cfg_common_params(
             &mut pipeline,
             backend_hint,
-            None,
+            Some(local_run_args),
         )?;
 
         let openvmm_repo_source =
