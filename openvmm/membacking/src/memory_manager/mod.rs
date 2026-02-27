@@ -31,9 +31,9 @@ use vm_topology::memory::MemoryLayout;
 /// The OpenVMM memory manager.
 #[derive(Debug, Inspect)]
 pub struct GuestMemoryManager {
-    /// Guest RAM allocation.
+    /// Guest RAM allocation. None in private memory mode.
     #[inspect(skip)]
-    guest_ram: Mappable,
+    guest_ram: Option<Mappable>,
 
     #[inspect(skip)]
     ram_regions: Arc<Vec<RamRegion>>,
@@ -89,6 +89,15 @@ pub enum MemoryBuildError {
     /// Memory layout incompatible with x86 legacy support.
     #[error("x86 support requires RAM to start at 0 and contain at least 1MB")]
     InvalidRamForX86,
+    /// Private memory is incompatible with x86 legacy support.
+    #[error("private memory is incompatible with x86 legacy support")]
+    PrivateMemoryWithLegacy,
+    /// Private memory is incompatible with existing memory backing.
+    #[error("private memory is incompatible with existing memory backing")]
+    PrivateMemoryWithExistingBacking,
+    /// Failed to allocate private RAM range.
+    #[error("failed to allocate private RAM range")]
+    PrivateRamAlloc(#[source] std::io::Error),
 }
 
 /// A builder for [`GuestMemoryManager`].
@@ -98,6 +107,7 @@ pub struct GuestMemoryBuilder {
     prefetch_ram: bool,
     pin_mappings: bool,
     x86_legacy_support: bool,
+    private_memory: bool,
 }
 
 impl GuestMemoryBuilder {
@@ -109,6 +119,7 @@ impl GuestMemoryBuilder {
             pin_mappings: false,
             prefetch_ram: false,
             x86_legacy_support: false,
+            private_memory: false,
         }
     }
 
@@ -158,24 +169,54 @@ impl GuestMemoryBuilder {
         self
     }
 
+    /// Enables private anonymous memory for guest RAM.
+    ///
+    /// When set, guest RAM is backed by anonymous pages (`mmap
+    /// MAP_ANONYMOUS` on Linux, `VirtualAlloc` on Windows) rather than
+    /// shared file-backed sections. This supports decommit to release
+    /// physical pages back to the host.
+    ///
+    /// This is incompatible with [`x86_legacy_support`](Self::x86_legacy_support)
+    /// and [`existing_backing`](Self::existing_backing).
+    pub fn private_memory(mut self, enable: bool) -> Self {
+        self.private_memory = enable;
+        self
+    }
+
     /// Builds the memory backing, allocating memory if existing memory was not
     /// provided by [`existing_backing`](Self::existing_backing).
     pub async fn build(
         self,
         mem_layout: &MemoryLayout,
     ) -> Result<GuestMemoryManager, MemoryBuildError> {
+        // Validate private memory constraints.
+        if self.private_memory {
+            if self.x86_legacy_support {
+                return Err(MemoryBuildError::PrivateMemoryWithLegacy);
+            }
+            if self.existing_mapping.is_some() {
+                return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
+            }
+        }
+
         let ram_size = mem_layout.ram_size() + mem_layout.vtl2_range().map_or(0, |r| r.len());
 
-        let memory = if let Some(memory) = self.existing_mapping {
-            memory.guest_ram
+        let memory: Option<Mappable> = if self.private_memory {
+            // Private memory mode: no shared file-backed allocation.
+            // RAM will be backed by anonymous pages in the VaMapper's SparseMapping.
+            None
+        } else if let Some(memory) = self.existing_mapping {
+            Some(memory.guest_ram)
         } else {
-            sparse_mmap::alloc_shared_memory(
-                ram_size
-                    .try_into()
-                    .map_err(|_| MemoryBuildError::RamTooLarge(ram_size))?,
+            Some(
+                sparse_mmap::alloc_shared_memory(
+                    ram_size
+                        .try_into()
+                        .map_err(|_| MemoryBuildError::RamTooLarge(ram_size))?,
+                )
+                .map_err(MemoryBuildError::AllocationFailed)?
+                .into(),
             )
-            .map_err(MemoryBuildError::AllocationFailed)?
-            .into()
         };
 
         // Spawn a thread to handle memory requests.
@@ -196,11 +237,19 @@ impl GuestMemoryBuilder {
         };
 
         let mapping_manager = MappingManager::new(&spawner, max_addr);
-        let va_mapper = mapping_manager
-            .client()
-            .new_mapper()
-            .await
-            .map_err(MemoryBuildError::VaMapper)?;
+        let va_mapper = if self.private_memory {
+            mapping_manager
+                .client()
+                .new_private_mapper()
+                .await
+                .map_err(MemoryBuildError::VaMapper)?
+        } else {
+            mapping_manager
+                .client()
+                .new_mapper()
+                .await
+                .map_err(MemoryBuildError::VaMapper)?
+        };
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 
@@ -246,6 +295,17 @@ impl GuestMemoryBuilder {
             );
         }
 
+        // In private memory mode, eagerly commit all RAM ranges with
+        // anonymous memory. alloc_range() handles both Linux (mmap MAP_FIXED)
+        // and Windows (MEM_REPLACE_PLACEHOLDER).
+        if self.private_memory {
+            for range in &ram_ranges {
+                va_mapper
+                    .alloc_range(range.start() as usize, range.len() as usize)
+                    .map_err(MemoryBuildError::PrivateRamAlloc)?;
+            }
+        }
+
         let mut ram_regions = Vec::new();
         let mut start = 0;
         for range in &ram_ranges {
@@ -255,20 +315,25 @@ impl GuestMemoryBuilder {
                 .await
                 .expect("regions cannot overlap yet");
 
-            region
-                .add_mapping(
-                    MemoryRange::new(0..range.len()),
-                    memory.clone(),
-                    start,
-                    true,
-                )
-                .await;
+            if let Some(ref memory) = memory {
+                // File-backed mode: add mapping for this RAM range.
+                region
+                    .add_mapping(
+                        MemoryRange::new(0..range.len()),
+                        memory.clone(),
+                        start,
+                        true,
+                    )
+                    .await;
+            }
+            // In private_memory mode, skip add_mapping — no file-backed RAM.
+            // The SparseMapping VA is already committed via alloc_range() above.
 
             region
                 .map(MapParams {
                     writable: true,
                     executable: true,
-                    prefetch: self.prefetch_ram,
+                    prefetch: self.prefetch_ram && !self.private_memory,
                 })
                 .await;
 
@@ -355,7 +420,10 @@ impl GuestMemoryManager {
     /// type should be managing a given memory backing at a time, though, or the
     /// guest may see unpredictable results.
     pub fn shared_memory_backing(&self) -> SharedMemoryBacking {
-        let guest_ram = self.guest_ram.clone();
+        let guest_ram = self
+            .guest_ram
+            .clone()
+            .expect("shared memory backing is not available in private memory mode");
         SharedMemoryBacking { guest_ram }
     }
 
