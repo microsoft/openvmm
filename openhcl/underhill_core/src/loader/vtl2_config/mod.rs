@@ -26,6 +26,7 @@ use loader_defs::paravisor::ParavisorMeasuredVtl2Config;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use sparse_mmap::SparseMapping;
+use string_page_buf::Level;
 use string_page_buf::StringBuffer;
 use vm_topology::memory::MemoryRangeWithNode;
 use zerocopy::Immutable;
@@ -42,8 +43,16 @@ pub struct RuntimeParameters {
     cvm_cpuid_info: Option<Vec<u8>>,
     snp_secrets: Option<Vec<u8>>,
     #[inspect(iter_by_index)]
-    bootshim_logs: Vec<String>,
+    bootshim_logs: Vec<BootshimLogEntry>,
     bootshim_log_dropped: u16,
+}
+
+/// A single log entry from the bootshim.
+#[derive(Debug, Inspect)]
+pub struct BootshimLogEntry {
+    #[inspect(display)]
+    level: Level,
+    message: String,
 }
 
 impl RuntimeParameters {
@@ -396,13 +405,34 @@ pub fn read_vtl2_params() -> anyhow::Result<(RuntimeParameters, MeasuredVtl2Info
         }
 
         (
-            buf.contents().lines().map(|s| s.to_string()).collect(),
+            buf.entries()
+                .map(|entry| BootshimLogEntry {
+                    level: entry.level,
+                    message: entry.message.to_string(),
+                })
+                .collect::<Vec<BootshimLogEntry>>(),
             bootshim_log_dropped,
         )
     };
 
-    for line in &bootshim_logs {
-        tracing::info!(CVM_ALLOWED, line, "openhcl_boot log");
+    for log_entry in &bootshim_logs {
+        match log_entry.level {
+            Level::Error => {
+                tracing::error!(CVM_ALLOWED, boot_log = %log_entry.message, "openhcl_boot log")
+            }
+            Level::Warn => {
+                tracing::warn!(CVM_ALLOWED, boot_log = %log_entry.message, "openhcl_boot log")
+            }
+            Level::Info => {
+                tracing::info!(CVM_ALLOWED, boot_log = %log_entry.message, "openhcl_boot log")
+            }
+            Level::Debug => {
+                tracing::debug!(CVM_ALLOWED, boot_log = %log_entry.message, "openhcl_boot log")
+            }
+            Level::Trace => {
+                tracing::trace!(CVM_ALLOWED, boot_log = %log_entry.message, "openhcl_boot log")
+            }
+        }
     }
 
     let accepted_regions = if parsed_openhcl_boot.isolation != IsolationType::None {

@@ -7294,6 +7294,7 @@ dependencies = [
 name = "string_page_buf"
 version = "0.0.0"
 dependencies = [
+ "log",
  "thiserror 2.0.16",
  "zerocopy 0.8.27",
 ]
