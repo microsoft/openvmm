@@ -177,9 +177,8 @@ impl<'a> PagedRange<'a> {
 
     /// Returns the byte offset into the first page of the range.
     ///
-    /// This is always zero for interior and last pages — only the first
-    /// page may have a non-zero offset. This is a fundamental property
-    /// of the `PagedRange` memory model.
+    /// Only the first page can have a non-zero offset; all subsequent
+    /// pages covered by the range are implicitly page-aligned.
     pub fn offset(&self) -> usize {
         self.start % PAGE_SIZE
     }
