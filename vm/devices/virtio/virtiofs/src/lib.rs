@@ -142,14 +142,15 @@ impl Fuse for VirtioFs {
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
-        // On readonly filesystem, reject write access modes and write-implying flags.
+        let file = inode.open(flags)?;
+        // Since, ENOENT takes precedence over EROFS, check for the existence of the file before 
+        // checking if the filesystem is readonly.
         if self.readonly {
             let access_mode = (flags & lx::O_NOACCESS as u32) as i32;
             if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
                 return Err(lx::Error::EROFS);
             }
         }
-        let file = inode.open(flags)?;
         let fh = self.insert_file(file);
 
         // TODO: Optionally allow caching.
