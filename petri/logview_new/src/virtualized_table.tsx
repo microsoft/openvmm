@@ -116,6 +116,21 @@ export function VirtualizedTable<TData extends object>({
     }
   }, [scrollToIndex, rowVirtualizer, rows.length]);
 
+  // Ctrl+↑ scrolls to top, Ctrl+↓ scrolls to bottom (global shortcut).
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.key === "ArrowUp") {
+        e.preventDefault();
+        rowVirtualizer.scrollToIndex(0, { align: "start" });
+      } else if (e.ctrlKey && e.key === "ArrowDown") {
+        e.preventDefault();
+        rowVirtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [rowVirtualizer, rows.length]);
+
   return (
     <div>
       <div

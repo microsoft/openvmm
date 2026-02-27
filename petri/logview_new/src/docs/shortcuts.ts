@@ -60,6 +60,18 @@ export const shortcutSections: readonly ShortcutCategory[] = [
           "Copies a deep link URL to the selected log line (adds/updates `log=` in the hash-router query string).",
         ],
       },
+      {
+        shortcutParts: ["Ctrl", "↑"],
+        descriptions: [
+          "Scrolls the log table to the very top.",
+        ],
+      },
+      {
+        shortcutParts: ["Ctrl", "↓"],
+        descriptions: [
+          "Scrolls the log table to the very bottom.",
+        ],
+      },
     ],
   },
   {
