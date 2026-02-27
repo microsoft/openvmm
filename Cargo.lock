@@ -8924,7 +8924,8 @@ dependencies = [
  "vm_topology",
  "vmcore",
  "whp",
- "winapi",
+ "windows-result 0.4.0",
+ "windows-sys 0.61.0",
  "x86defs",
  "x86emu",
  "zerocopy 0.8.27",
@@ -10100,7 +10101,6 @@ dependencies = [
  "criterion",
  "guid",
  "pal",
- "winapi",
  "windows-sys 0.61.0",
 ]
 
