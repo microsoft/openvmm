@@ -336,6 +336,34 @@ impl SparseMapping {
         Ok(())
     }
 
+    /// Decommits a range of memory, releasing physical pages back to the host.
+    ///
+    /// The virtual address range remains accessible; the next access will get
+    /// fresh zero pages from the kernel.
+    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: the address and length have been validated above.
+        unsafe {
+            let addr = self.address.add(offset);
+            if libc::madvise(addr, len, libc::MADV_DONTNEED) < 0 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
+    /// Commits a range of memory, making it accessible.
+    ///
+    /// On Linux, this is a no-op because the kernel handles page faults
+    /// transparently for anonymous memory.
+    pub fn commit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        Ok(())
+    }
+
     /// Unmaps memory from the mapping.
     pub fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let _ = self.validate_offset_len(offset, len)?;
