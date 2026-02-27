@@ -304,6 +304,7 @@ impl PetriVmConfigOpenVmm {
                     MmioConfig::Custom(ranges) => ranges,
                 },
                 prefetch_memory: false,
+                private_memory: false,
                 pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             }
         };

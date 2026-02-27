@@ -897,6 +897,7 @@ impl InitializedVm {
             .existing_backing(shared_memory)
             .vtl0_alias_map(vtl0_alias_map)
             .prefetch_ram(cfg.memory.prefetch_memory)
+            .private_memory(cfg.memory.private_memory)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
