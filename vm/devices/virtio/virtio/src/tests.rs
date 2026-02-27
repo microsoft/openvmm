@@ -645,6 +645,10 @@ impl VirtioTestGuest {
     }
 
     fn add_indirect_to_avail_queue(&mut self, queue_index: u16) {
+        self.add_indirect_to_avail_queue_with_length(queue_index, 0x1000);
+    }
+
+    fn add_indirect_to_avail_queue_with_length(&mut self, queue_index: u16, indirect_length: u32) {
         let next_descriptor = self.reserve_descriptor(queue_index);
         // flags
         self.test_mem.modify_memory_map(
@@ -659,7 +663,7 @@ impl VirtioTestGuest {
             .modify_memory_map(buffer_addr, &0xffffffff00000000u64.to_le_bytes(), false);
         // length
         self.test_mem
-            .modify_memory_map(buffer_addr + 8, &0x1000u32.to_le_bytes(), false);
+            .modify_memory_map(buffer_addr + 8, &indirect_length.to_le_bytes(), false);
         // flags
         self.test_mem
             .modify_memory_map(buffer_addr + 12, &0u16.to_le_bytes(), false);
@@ -1916,4 +1920,132 @@ async fn verify_device_multi_queue_pci(driver: DefaultDriver) {
         .mmio_write(0x10000000000 + 20, &device_status.to_le_bytes())
         .unwrap();
     drop(dev);
+}
+
+#[test]
+fn indirect_descriptor_zero_length_rejected() {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let queue_size: u16 = 4;
+    let desc_base: u64 = 0x1000;
+    let avail_base: u64 = 0x2000;
+    let used_base: u64 = 0x3000;
+    let buffer_base: u64 = 0x4000;
+
+    // Set up descriptor 0: indirect flag, length = 0 (invalid)
+    let desc_addr = desc_base;
+    test_mem.modify_memory_map(desc_addr, &buffer_base.to_le_bytes(), false); // address
+    test_mem.modify_memory_map(desc_addr + 8, &0u32.to_le_bytes(), false); // length = 0
+    test_mem.modify_memory_map(
+        desc_addr + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    ); // flags
+    test_mem.modify_memory_map(desc_addr + 14, &0u16.to_le_bytes(), false); // next
+
+    // Fill remaining descriptors so the desc memory region is contiguous
+    for i in 1..queue_size {
+        let addr = desc_base + 0x10 * i as u64;
+        test_mem.modify_memory_map(addr, &[0u8; 16], false);
+    }
+
+    // Set up available ring: flags=0, idx=1, ring[0]=0
+    test_mem.modify_memory_map(avail_base, &0u16.to_le_bytes(), false); // flags
+    test_mem.modify_memory_map(avail_base + 2, &1u16.to_le_bytes(), false); // idx = 1
+    test_mem.modify_memory_map(avail_base + 4, &0u16.to_le_bytes(), false); // ring[0] = descriptor 0
+    for i in 1..queue_size {
+        test_mem.modify_memory_map(avail_base + 4 + 2 * i as u64, &0u16.to_le_bytes(), false);
+    }
+
+    // Set up used ring
+    test_mem.modify_memory_map(used_base, &0u16.to_le_bytes(), true); // flags
+    test_mem.modify_memory_map(used_base + 2, &0u16.to_le_bytes(), true); // idx
+    for i in 0..queue_size {
+        let addr = used_base + 4 + 8 * i as u64;
+        test_mem.modify_memory_map(addr, &0u32.to_le_bytes(), true); // id
+        test_mem.modify_memory_map(addr + 4, &0u32.to_le_bytes(), true); // len
+    }
+
+    let mem = GuestMemory::new("test", test_mem);
+    let features = VirtioDeviceFeatures::new()
+        .with_bank0(VirtioDeviceFeaturesBank0::new().with_ring_indirect_desc(true));
+    let params = QueueParams {
+        size: queue_size,
+        enable: true,
+        desc_addr: desc_base,
+        avail_addr: avail_base,
+        used_addr: used_base,
+    };
+    let mut queue = crate::queue::QueueCoreGetWork::new(features, mem, params).unwrap();
+    let result = queue.try_next_work();
+    assert!(
+        matches!(
+            result,
+            Err(crate::queue::QueueError::InvalidIndirectSize(0))
+        ),
+        "expected InvalidIndirectSize(0)"
+    );
+}
+
+#[test]
+fn indirect_descriptor_misaligned_length_rejected() {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let queue_size: u16 = 4;
+    let desc_base: u64 = 0x1000;
+    let avail_base: u64 = 0x2000;
+    let used_base: u64 = 0x3000;
+    let buffer_base: u64 = 0x4000;
+    let misaligned_len: u32 = 17; // not a multiple of 16
+
+    // Set up descriptor 0: indirect flag, length = 17 (misaligned)
+    let desc_addr = desc_base;
+    test_mem.modify_memory_map(desc_addr, &buffer_base.to_le_bytes(), false);
+    test_mem.modify_memory_map(desc_addr + 8, &misaligned_len.to_le_bytes(), false);
+    test_mem.modify_memory_map(
+        desc_addr + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+    test_mem.modify_memory_map(desc_addr + 14, &0u16.to_le_bytes(), false);
+
+    for i in 1..queue_size {
+        let addr = desc_base + 0x10 * i as u64;
+        test_mem.modify_memory_map(addr, &[0u8; 16], false);
+    }
+
+    // Available ring
+    test_mem.modify_memory_map(avail_base, &0u16.to_le_bytes(), false);
+    test_mem.modify_memory_map(avail_base + 2, &1u16.to_le_bytes(), false);
+    test_mem.modify_memory_map(avail_base + 4, &0u16.to_le_bytes(), false);
+    for i in 1..queue_size {
+        test_mem.modify_memory_map(avail_base + 4 + 2 * i as u64, &0u16.to_le_bytes(), false);
+    }
+
+    // Used ring
+    test_mem.modify_memory_map(used_base, &0u16.to_le_bytes(), true);
+    test_mem.modify_memory_map(used_base + 2, &0u16.to_le_bytes(), true);
+    for i in 0..queue_size {
+        let addr = used_base + 4 + 8 * i as u64;
+        test_mem.modify_memory_map(addr, &0u32.to_le_bytes(), true);
+        test_mem.modify_memory_map(addr + 4, &0u32.to_le_bytes(), true);
+    }
+
+    let mem = GuestMemory::new("test", test_mem);
+    let features = VirtioDeviceFeatures::new()
+        .with_bank0(VirtioDeviceFeaturesBank0::new().with_ring_indirect_desc(true));
+    let params = QueueParams {
+        size: queue_size,
+        enable: true,
+        desc_addr: desc_base,
+        avail_addr: avail_base,
+        used_addr: used_base,
+    };
+    let mut queue = crate::queue::QueueCoreGetWork::new(features, mem, params).unwrap();
+    let result = queue.try_next_work();
+    assert!(
+        matches!(
+            result,
+            Err(crate::queue::QueueError::InvalidIndirectSize(17))
+        ),
+        "expected InvalidIndirectSize(17)"
+    );
 }
