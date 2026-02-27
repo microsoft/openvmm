@@ -1019,7 +1019,14 @@ impl Worker {
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
-        let mut tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
+        let Some(mut tx_packet) = state
+            .pending_tx_packets
+            .get_mut(id.0 as usize)
+            .and_then(|p| p.take())
+        else {
+            tracing::error!(tx_id = id.0, "unexpected tx completion for unknown packet");
+            return Ok(());
+        };
         tx_packet.work.complete(0);
         self.active_state.stats.tx_packets.increment();
         Ok(())
