@@ -140,7 +140,6 @@ struct TcpConnection {
     inner: TcpConnectionInner,
 }
 
-
 #[derive(Inspect)]
 struct TcpConnectionInner {
     loopback_port: LoopbackPortInfo,

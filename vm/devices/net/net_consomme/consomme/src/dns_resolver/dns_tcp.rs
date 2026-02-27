@@ -143,10 +143,7 @@ impl DnsTcpHandler {
     /// Returns `Ok(true)` if the query was submitted, `Ok(false)` if the
     /// message is still incomplete, or `Err` if the framing is invalid or
     /// the query was rejected.
-    fn try_submit<B: DnsBackend>(
-        &mut self,
-        dns: &mut DnsResolver<B>,
-    ) -> Result<bool, DnsTcpError> {
+    fn try_submit<B: DnsBackend>(&mut self, dns: &mut DnsResolver<B>) -> Result<bool, DnsTcpError> {
         if self.buf.len() < 2 {
             return Ok(false);
         }
