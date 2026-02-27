@@ -3513,6 +3513,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "igvminspect"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "igvm",
+ "igvm_defs",
+ "tracing-subscriber",
+ "zerocopy",
+]
+
+[[package]]
 name = "image"
 version = "0.25.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
