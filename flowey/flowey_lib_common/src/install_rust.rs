@@ -120,21 +120,47 @@ impl FlowNode for Node {
                     anyhow::bail!("did not find `cargo` on $PATH");
                 }
 
-                let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
-                let rust_toolchain = rust_toolchain.as_ref();
+                // In a Nix environment rustup is never available — Nix
+                // provides Rust directly.
+                let has_rustup = !matches!(
+                    rt.platform(),
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                ) && which::which("rustup").is_ok();
 
-                // make sure the specific rust version was installed
-                flowey::shell_cmd!(rt, "rustc {rust_toolchain...} -vV").run()?;
+                // Check if the specified version is install - use rustup when available
+                // and use rustc to check if it's not (Nix)
+                if has_rustup {
+                    let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
+                    let rust_toolchain = rust_toolchain.as_ref();
+                    flowey::shell_cmd!(rt, "rustc {rust_toolchain...} -vV").run()?;
+                } else if let Some(ref version) = rust_toolchain {
+                    let output = flowey::shell_cmd!(rt, "rustc -vV").output()?;
+                    let stdout = String::from_utf8(output.stdout)?;
+                    let installed_version = stdout
+                        .lines()
+                        .find_map(|line| line.strip_prefix("release: "))
+                        .context("failed to parse rustc version output")?;
+                    if installed_version != version.as_str() {
+                        anyhow::bail!(
+                            "required Rust {version}, found {installed_version} \
+                             (rustup unavailable)"
+                        );
+                    }
+                } else {
+                    flowey::shell_cmd!(rt, "rustc -vV").run()?;
+                }
 
                 // make sure the additional target triples were installed
-                if let Ok(rustup) = which::which("rustup") {
+                if has_rustup {
+                    let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
+                    let rust_toolchain = rust_toolchain.as_ref();
                     for (thing, expected_things) in [
                         ("target", &additional_target_triples),
                         ("component", &additional_components),
                     ] {
                         let output = flowey::shell_cmd!(
                             rt,
-                            "{rustup} {rust_toolchain...} {thing} list --installed"
+                            "rustup {rust_toolchain...} {thing} list --installed"
                         )
                         .ignore_status()
                         .output()?;
@@ -222,6 +248,7 @@ impl FlowNode for Node {
                             if let Some(write_cargo_bin) = write_cargo_bin {
                                 rt.write(write_cargo_bin, &Some(crate::check_needs_relaunch::BinOrEnv::Bin("cargo".to_string())));
                             }
+
                             let rust_toolchain = rust_toolchain.clone();
                             if check_rust_install.clone()(rt).is_ok() {
                                 return Ok(());
@@ -331,16 +358,20 @@ impl FlowNode for Node {
                 let get_rust_toolchain = get_rust_toolchain.claim(ctx);
 
                 move |rt| {
+                    let has_rustup = !matches!(
+                        rt.platform(),
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                    ) && which::which("rustup").is_ok();
                     let rust_toolchain = match rust_toolchain {
-                        Some(toolchain) => Some(toolchain),
-                        None => {
-                            if matches!(
-                                rt.platform(),
-                                FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
-                            ) {
-                                // Nix will provide the right cargo version, no need to use rustup
+                        Some(toolchain) => {
+                            if has_rustup {
+                                Some(toolchain)
+                            } else {
                                 None
-                            } else if let Ok(rustup) = which::which("rustup") {
+                            }
+                        }
+                        None => {
+                            if has_rustup {
                                 // Unfortunately, `rustup` still doesn't have any stable way to emit
                                 // machine-readable output. See https://github.com/rust-lang/rustup/issues/450
                                 //
@@ -355,9 +386,8 @@ impl FlowNode for Node {
                                 //   $ rustup show active-toolchain
                                 //   stable-x86_64-unknown-linux-gnu
                                 //   active because: it's the default toolchain
-                                let output =
-                                    flowey::shell_cmd!(rt, "{rustup} show active-toolchain")
-                                        .output()?;
+                                let output = flowey::shell_cmd!(rt, "rustup show active-toolchain")
+                                    .output()?;
                                 let stdout = String::from_utf8(output.stdout)?;
                                 let line = stdout.lines().next().unwrap();
                                 Some(line.split(' ').next().unwrap().into())
