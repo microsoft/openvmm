@@ -26,6 +26,7 @@ flowey_request! {
         pub verbose: ReadVar<bool>,
         pub locked: bool,
         pub deny_warnings: bool,
+        pub no_incremental: bool,
     }
 }
 
@@ -64,6 +65,7 @@ impl SimpleFlowNode for Node {
             verbose,
             locked,
             deny_warnings,
+            no_incremental,
         } = request;
 
         if matches!(ctx.backend(), FlowBackend::Github) {
@@ -152,6 +154,7 @@ impl SimpleFlowNode for Node {
         ctx.requests::<flowey_lib_common::cfg_cargo_common_flags::Node>([
             flowey_lib_common::cfg_cargo_common_flags::Request::SetVerbose(verbose),
             flowey_lib_common::cfg_cargo_common_flags::Request::SetLocked(locked),
+            flowey_lib_common::cfg_cargo_common_flags::Request::SetNoIncremental(no_incremental),
         ]);
 
         ctx.req(

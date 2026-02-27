@@ -14,12 +14,14 @@ use flowey::node::prelude::*;
 pub struct Flags {
     pub locked: bool,
     pub verbose: bool,
+    pub no_incremental: bool,
 }
 
 flowey_request! {
     pub enum Request {
         SetLocked(bool),
         SetVerbose(ReadVar<bool>),
+        SetNoIncremental(bool),
         GetFlags(WriteVar<Flags>),
     }
 }
@@ -37,12 +39,16 @@ impl FlowNode for Node {
         let mut set_locked = None;
         let mut set_verbose = None;
         let mut get_flags = Vec::new();
+        let mut set_no_incremental = None;
 
         for req in requests {
             match req {
                 Request::SetLocked(v) => same_across_all_reqs("SetLocked", &mut set_locked, v)?,
                 Request::SetVerbose(v) => {
                     same_across_all_reqs_backing_var("SetVerbose", &mut set_verbose, v)?
+                }
+                Request::SetNoIncremental(v) => {
+                    same_across_all_reqs("SetNoIncremental", &mut set_no_incremental, v)?
                 }
                 Request::GetFlags(v) => get_flags.push(v),
             }
@@ -52,6 +58,7 @@ impl FlowNode for Node {
             set_locked.ok_or(anyhow::anyhow!("Missing essential request: SetLocked"))?;
         let set_verbose =
             set_verbose.ok_or(anyhow::anyhow!("Missing essential request: SetVerbose"))?;
+        let set_no_incremental = set_no_incremental.unwrap_or(false);
         let get_flags = get_flags;
 
         // -- end of req processing -- //
@@ -72,6 +79,7 @@ impl FlowNode for Node {
                         &Flags {
                             locked: set_locked,
                             verbose: set_verbose,
+                            no_incremental: set_no_incremental,
                         },
                     );
                 }
