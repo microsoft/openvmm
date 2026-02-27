@@ -284,6 +284,46 @@ struct ReadyState {
     data: ProcessingData,
 }
 
+impl ReadyState {
+    /// Any in-flight TX packets submitted to the old endpoint queues will
+    /// never be completed, so this method:
+    /// 1. Queues completions for all outstanding sends so the guest gets
+    ///    responses and the associated transmit slots are reclaimed, ensuring
+    ///    the worker is ready to poll post restart of the queues.
+    /// 2. Clears leftover transmit segments that referenced the old endpoint
+    ///    queue so they are not submitted to the new one.
+    ///
+    fn reset_tx_after_endpoint_stop(&mut self) {
+        let state = &mut self.state;
+
+        // Queue completions for in-flight TX packets that were lost when the
+        // endpoint stopped. They will get picked up when the worker restarts.
+        let pending_tx = state
+            .pending_tx_packets
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(id, inflight)| {
+                if inflight.pending_packet_count > 0 {
+                    inflight.pending_packet_count = 0;
+                    Some(PendingTxCompletion {
+                        transaction_id: inflight.transaction_id,
+                        tx_id: Some(TxId(id as u32)),
+                        status: protocol::Status::SUCCESS,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        state.pending_tx_completions.extend(pending_tx);
+
+        // Clear leftover TX segments from the previous endpoint queue;
+        // they cannot be submitted to the new queue.
+        self.data.tx_segments.clear();
+        self.data.tx_segments_sent = 0;
+    }
+}
+
 /// Represents a virtual function (VF) device used to expose accelerated
 /// networking to the guest.
 #[async_trait]
@@ -3494,12 +3534,17 @@ impl Adapter {
                 // TODO
             }
             rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS => {
-                self.oid_set_rss_parameters(reader, primary)?;
+                let rss_was_enabled = self.oid_set_rss_parameters(reader, primary)?;
 
                 // Endpoints cannot currently change RSS parameters without
                 // being restarted. This was a limitation driven by some DPDK
                 // PMDs, and should be fixed.
-                restart_endpoint = true;
+                //
+                // Skip the restart if RSS was already disabled and the guest
+                // is disabling it again — nothing has changed.
+                if rss_was_enabled || primary.rss_state.is_some() {
+                    restart_endpoint = true;
+                }
             }
             _ => {
                 tracelimit::warn_ratelimited!(?oid, "set of unknown OID");
@@ -3513,17 +3558,19 @@ impl Adapter {
         &self,
         mut reader: impl MemoryRead + Clone,
         primary: &mut PrimaryChannelState,
-    ) -> Result<(), OidError> {
+    ) -> Result<bool, OidError> {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
         let len = reader.len().min(size_of_val(&params));
         reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
+        let rss_was_enabled = primary.rss_state.is_some();
+
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
             || ((params.hash_information & NDIS_HASH_FUNCTION_MASK) == 0)
         {
             primary.rss_state = None;
-            return Ok(());
+            return Ok(rss_was_enabled);
         }
 
         if params.hash_secret_key_size != 40 {
@@ -3561,7 +3608,7 @@ impl Adapter {
             key,
             indirection_table: indirection_table.iter().map(|&x| x as u16).collect(),
         });
-        Ok(())
+        Ok(rss_was_enabled)
     }
 
     fn oid_set_packet_filter(
@@ -4549,9 +4596,11 @@ impl Coordinator {
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
                 worker.channel.packet_filter = self.active_packet_filter;
-                // Clear any pending RxIds as buffers were redistributed.
+                // Clear any pending RxIds as buffers were redistributed
+                // and reset TX tracking after the endpoint stop.
                 if let Some(ready_state) = worker.state.ready_mut() {
                     ready_state.state.pending_rx_packets.clear();
+                    ready_state.reset_tx_after_endpoint_stop();
                 }
             }
         }
@@ -5265,25 +5314,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 Ok(true)
             }
             Err(TxError::TryRestart(err)) => {
-                // Complete any pending tx prior to restarting queues.
-                let pending_tx = state
-                    .pending_tx_packets
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(id, inflight)| {
-                        if inflight.pending_packet_count > 0 {
-                            inflight.pending_packet_count = 0;
-                            Some(PendingTxCompletion {
-                                transaction_id: inflight.transaction_id,
-                                tx_id: Some(TxId(id as u32)),
-                                status: protocol::Status::SUCCESS,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                state.pending_tx_completions.extend(pending_tx);
+                // In-flight TX packets will be cleaned up by
+                // `reset_tx_after_endpoint_stop` during the queue restart.
                 Err(WorkerError::EndpointRequiresQueueRestart(err))
             }
             Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
