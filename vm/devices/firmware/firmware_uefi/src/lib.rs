@@ -291,56 +291,54 @@ impl UefiDevice {
 
     /// Extra inspection fields for the UEFI device.
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
+        const USAGE: &str =
+            "Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics";
+
         resp.field_mut_with("process_diagnostics", |v| {
-            let Some(value) = v else {
-                return Result::<_, std::convert::Infallible>::Ok(
-                    "Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics".to_string(),
-                );
-            };
+            let output = (|| {
+                let value = v?;
+                let (level_str, dest_str) = value.split_once(',').unwrap_or((value, "stdout"));
 
-            let (level_str, dest_str) = value.split_once(',').unwrap_or((value, "stdout"));
+                let log_level_override = match level_str {
+                    "default" => Some(LogLevel::make_default()),
+                    "info" => Some(LogLevel::make_info()),
+                    "full" => Some(LogLevel::make_full()),
+                    _ => return None,
+                };
 
-            let log_level_override = match level_str {
-                "default" => Some(LogLevel::make_default()),
-                "info" => Some(LogLevel::make_info()),
-                "full" => Some(LogLevel::make_full()),
-                _ => return Result::<_, std::convert::Infallible>::Ok(
-                    "Invalid log level. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics".to_string(),
-                ),
-            };
-
-            match dest_str {
-                "stdout" => {
-                    let result = self.process_diagnostics(
+                Some(match dest_str {
+                    "stdout" => match self.process_diagnostics(
                         true,
                         service::diagnostics::DiagnosticsEmitter::String,
                         log_level_override,
-                    );
-
-                    Result::<_, std::convert::Infallible>::Ok(match result {
+                    ) {
                         Ok(Some(output)) if output.is_empty() => {
                             "(no diagnostics entries found)".to_string()
                         }
                         Ok(Some(output)) => output,
-                        Err(error) => format!("error processing diagnostics: {error}"),
                         Ok(None) => unreachable!("String emitter should return output"),
-                    })
-                }
-                "tracing" => {
-                    let _ = self.process_diagnostics(
-                        true,
-                        service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
-                        log_level_override,
-                    );
-                    Result::<_, std::convert::Infallible>::Ok(format!(
-                        "attempted to process diagnostics through inspect (log_level_override: {})",
-                        level_str
-                    ))
-                }
-                _ => Result::<_, std::convert::Infallible>::Ok(
-                    "Invalid destination. Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics".to_string(),
-                ),
-            }
+                        Err(error) => format!("error processing diagnostics: {error}"),
+                    },
+                    "tracing" => {
+                        match self.process_diagnostics(
+                            true,
+                            service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                            log_level_override,
+                        ) {
+                            Ok(_) => format!(
+                                "processed diagnostics via tracing \
+                                 (log_level_override: {level_str})"
+                            ),
+                            Err(error) => {
+                                format!("error processing diagnostics: {error}")
+                            }
+                        }
+                    }
+                    _ => return None,
+                })
+            })();
+
+            Result::<_, std::convert::Infallible>::Ok(output.unwrap_or_else(|| USAGE.to_string()))
         });
     }
 }
