@@ -247,7 +247,7 @@ async fn vpci_relay_tdisp_device(
                         max_io_queues: 1,
                         namespaces: Vec::new(),
                         fault_config: FaultConfiguration::new(CellUpdater::new(false).cell()),
-                        tdisp_capable: true,
+                        enable_tdisp_tests: true,
                     }
                     .into_resource(),
                 }])

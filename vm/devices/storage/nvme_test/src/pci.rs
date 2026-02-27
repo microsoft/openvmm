@@ -44,8 +44,6 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
 use tdisp::TdispHostDeviceTarget;
-use tdisp::TdispHostDeviceTargetEmulator;
-use tdisp::test_helpers::make_null_tdisp_interface;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -70,7 +68,7 @@ pub struct NvmeFaultController {
 
     /// The NVMe fault controller is repurposed for use in TDISP tests.
     #[inspect(skip)]
-    tdisp_controller: Option<TdispHostDeviceTargetEmulator>,
+    tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
 }
 
 #[derive(Inspect)]
@@ -127,7 +125,7 @@ impl NvmeFaultController {
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         mut fault_configuration: FaultConfiguration,
-        tdisp_capable: bool,
+        tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
     ) -> Self {
         let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
         let bars = DeviceBars::new()
@@ -178,15 +176,6 @@ impl NvmeFaultController {
             fault_configuration,
         );
 
-        tracing::debug!("creating fault controller: tdisp_capable = {tdisp_capable}");
-
-        // The fault controller is repurposed for use in TDISP tests.
-        let tdisp_controller = if tdisp_capable {
-            Some(make_null_tdisp_interface("fault-controller-test"))
-        } else {
-            None
-        };
-
         Self {
             cfg_space,
             msix,
@@ -195,7 +184,7 @@ impl NvmeFaultController {
             qe_sizes,
             pci_fault_config,
             fault_active,
-            tdisp_controller,
+            tdisp_interface,
         }
     }
 
@@ -485,7 +474,7 @@ impl ChangeDeviceState for NvmeFaultController {
             workers,
             pci_fault_config: _,
             fault_active: _,
-            tdisp_controller: _,
+            tdisp_interface: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
@@ -505,10 +494,10 @@ impl ChipsetDevice for NvmeFaultController {
 
     /// The NVMe fault controller is repurposed for use in TDISP tests.
     fn supports_tdisp(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
-        match &mut self.tdisp_controller {
+        match &mut self.tdisp_interface {
             Some(tdisp) => {
                 tracing::debug!("fault controller reporting TDISP support in ChipsetDevice");
-                Some(tdisp)
+                Some(tdisp.as_mut())
             }
             None => {
                 tracing::debug!("fault controller not reporting TDISP support in ChipsetDevice");

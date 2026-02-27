@@ -864,7 +864,7 @@ async fn create_keepalive_test_config(
                             .into_resource(),
                         }],
                         fault_config: fault_configuration,
-                        tdisp_capable: false,
+                        enable_tdisp_tests: false,
                     }
                     .into_resource(),
                 })
