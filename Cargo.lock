@@ -4826,7 +4826,6 @@ dependencies = [
  "guid",
  "mesh",
  "nvme_spec",
- "tdisp",
  "vm_resource",
  "zerocopy 0.8.27",
 ]

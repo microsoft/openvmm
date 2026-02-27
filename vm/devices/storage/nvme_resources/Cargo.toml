@@ -7,7 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-tdisp.workspace = true
 vm_resource.workspace = true
 nvme_spec.workspace = true
 mesh.workspace = true
