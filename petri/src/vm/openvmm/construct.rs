@@ -305,6 +305,8 @@ impl PetriVmConfigOpenVmm {
                 pci_ecam_gaps: vec![],
                 pci_mmio_gaps: vec![],
                 prefetch_memory: false,
+                private_memory: false,
+                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             }
         };
 

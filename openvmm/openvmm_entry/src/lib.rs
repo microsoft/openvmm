@@ -1525,9 +1525,11 @@ async fn vm_config_from_command_line(
         memory: MemoryConfig {
             mem_size: opt.memory,
             mmio_gaps,
+            prefetch_memory: opt.prefetch,
+            private_memory: opt.private_memory,
             pci_ecam_gaps,
             pci_mmio_gaps,
-            prefetch_memory: opt.prefetch,
+            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
