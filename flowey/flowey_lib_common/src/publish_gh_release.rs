@@ -128,6 +128,10 @@ impl FlowNode for Node {
                         .collect::<Vec<_>>();
                     let draft = draft.then_some("--draft");
 
+                    // create the tag to make sure the release is associated with the right commit
+                    flowey::shell_cmd!(rt, "git tag -a {tag} -m {title}").run()?;
+                    flowey::shell_cmd!(rt, "git push origin {tag}").run()?;
+
                     flowey::shell_cmd!(rt, "{gh_cli} release create --repo {repo} {tag} --title {title} --notes TODO {draft...} {files...}").run()?;
                 }
 
