@@ -34,6 +34,12 @@ pub enum DnsTcpError {
     /// The query was rate-limited by the resolver backend.
     #[error("DNS TCP query rate-limited")]
     RateLimited,
+    /// The DNS response exceeded the maximum allowed TCP message size.
+    #[error("DNS TCP response too large")]
+    ResponseTooLarge,
+    /// The resolver backend dropped the query without sending a response.
+    #[error("DNS TCP query cancelled")]
+    QueryCancelled,
 }
 
 /// Current phase of the DNS TCP handler state machine.
@@ -120,11 +126,6 @@ impl DnsTcpHandler {
             }
         }
 
-        tracing::info!(
-            total_consumed,
-            buf_len = self.buf.len(),
-            "dns_tcp ingest: done (message incomplete)"
-        );
         Ok(total_consumed)
     }
 
@@ -198,16 +199,11 @@ impl DnsTcpHandler {
                         if payload_len > MAX_DNS_TCP_PAYLOAD_SIZE {
                             tracelimit::warn_ratelimited!(
                                 size = payload_len,
-                                "DNS TCP response exceeds maximum message size, dropping"
+                                "DNS TCP response exceeds maximum message size"
                             );
-                            // Discard the oversized response and return to
-                            // receiving so that ingest can accept the next query.
-                            self.phase = Phase::Receiving;
-                            cx.waker().wake_by_ref();
-                            return Poll::Pending;
+                            return Poll::Ready(Err(DnsTcpError::ResponseTooLarge));
                         }
 
-                        // Build TCP-framed response: 2-byte length prefix + payload.
                         self.buf.clear();
                         self.buf
                             .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
@@ -221,7 +217,8 @@ impl DnsTcpHandler {
                         return Poll::Ready(Ok(n));
                     }
                     Err(_) => {
-                        self.phase = Phase::Receiving;
+                        dns.complete_tcp_query();
+                        return Poll::Ready(Err(DnsTcpError::QueryCancelled));
                     }
                 }
             }
