@@ -49,6 +49,7 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "vm/cvmutil",
   # opentmk
   "opentmk",
 ]
@@ -372,6 +373,7 @@ vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }
 vmgs_format = { path = "vm/vmgs/vmgs_format" }
 vmgs_resources = { path = "vm/vmgs/vmgs_resources" }
+cvmutil = { path = "vm/cvmutil" }
 watchdog_core = { path = "vm/devices/watchdog/watchdog_core" }
 watchdog_vmgs_format = { path = "vm/devices/watchdog/watchdog_vmgs_format" }
 whp = { path = "vm/whp" }

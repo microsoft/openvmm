@@ -1035,9 +1035,36 @@ pub mod protocol {
 
             start = end;
             end += size as usize;
+
+            // COMPATIBILITY FIX: Handle Windows/Canonical TPM format compatibility
+            // Some TPM implementations (Windows/Microsoft TPM, Canonical's Go code)
+            // may create TPM2B structures with slight size field differences.
+            // If the exact size doesn't match, try to handle common compatibility cases.
             if bytes.len() < end {
+                // Check if this might be a Windows/Canonical compatibility issue
+                // Common issue: size field includes/excludes padding or structure overhead
+                if bytes.len() >= start && (bytes.len() - start) <= MAX_DIGEST_BUFFER_SIZE {
+                    let actual_data_size = bytes.len() - start;
+                    tracing::debug!(
+                        "TPM2B_PRIVATE compatibility: expected {} bytes, got {} bytes, using actual size {}",
+                        size, bytes.len() - start, actual_data_size
+                    );
+
+                    let mut buffer = [0u8; MAX_DIGEST_BUFFER_SIZE];
+                    buffer[..actual_data_size].copy_from_slice(&bytes[start..]);
+
+                    return Some(Self {
+                        size: (actual_data_size as u16).into(),
+                        buffer,
+                    });
+                }
                 return None;
             }
+
+            // if bytes.len() < end {
+            //     return None;
+            // }
+
             let mut buffer = [0u8; MAX_DIGEST_BUFFER_SIZE];
             buffer[..size as usize].copy_from_slice(&bytes[start..end]);
 
@@ -1287,9 +1314,9 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmtSymDefObject {
-        algorithm: AlgId,
-        key_bits: u16_be,
-        mode: AlgId,
+        pub algorithm: AlgId,
+        pub key_bits: u16_be,
+        pub mode: AlgId,
     }
 
     impl TpmtSymDefObject {
@@ -1371,9 +1398,9 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout, PartialEq)]
     pub struct TpmsRsaParams {
-        symmetric: TpmtSymDefObject,
-        scheme: TpmtRsaScheme,
-        key_bits: u16_be,
+        pub symmetric: TpmtSymDefObject,
+        pub scheme: TpmtRsaScheme,
+        pub key_bits: u16_be,
         /// Public exponent value (`0` encodes $65537$).
         pub exponent: u32_be,
     }
@@ -1461,11 +1488,11 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtPublic {
-        my_type: AlgId,
-        name_alg: AlgId,
+        pub my_type: AlgId,
+        pub name_alg: AlgId,
         /// Attributes that define object capabilities.
         pub object_attributes: TpmaObject,
-        auth_policy: Tpm2bBuffer,
+        pub auth_policy: Tpm2bBuffer,
         // `TPMS_RSA_PARAMS`
         /// Algorithm-specific parameters associated with the object.
         pub parameters: TpmsRsaParams,

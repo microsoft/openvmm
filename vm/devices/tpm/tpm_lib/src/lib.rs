@@ -65,8 +65,8 @@ const MAX_NV_INDEX_SIZE: u16 = 4096;
 // Scale this with maximum attestation payload
 const MAX_ATTESTATION_INDEX_SIZE: u16 = 2600;
 
-const RSA_2K_MODULUS_BITS: u16 = 2048;
-const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
+pub const RSA_2K_MODULUS_BITS: u16 = 2048;
+pub const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
 /// Operation types for provisioning telemetry.
@@ -1924,7 +1924,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
     /// * `duplicate` - The private part of the key to be imported.
     /// * `in_sym_seed` - The value associated with `duplicate`.
     ///
-    fn import(
+    pub fn import(
         &mut self,
         auth_handle: ReservedHandle,
         object_public: &Tpm2bPublic,
@@ -1969,7 +1969,7 @@ impl<E: TpmEngine> TpmEngineHelper<E> {
     /// * `in_private` - The private part of the key to be loaded.
     /// * `in_public` - The public part of the key to be loaded.
     ///
-    fn load(
+    pub fn load(
         &mut self,
         auth_handle: ReservedHandle,
         in_private: &Tpm2bBuffer,
@@ -2067,6 +2067,43 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
     Ok(in_public)
 }
 
+/// Returns the public template for SRK
+/// https://github.com/canonical/snapd/blob/9cb4b26eed4e49eba34ea2838e6fec3404621729/secboot/secboot_sb_test.go#L367C2-L367C19
+pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
+    let symmetric = TpmtSymDefObject::new(
+        AlgIdEnum::AES.into(),
+        Some(128),
+        Some(AlgIdEnum::CFB.into()),
+    );
+
+    //let scheme = TpmtRsaScheme::new(AlgIdEnum::RSA.into(), Some(AlgIdEnum::SHA256.into()));
+    // Define the RSA scheme as TPM2_ALG_NULL for general use
+    let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
+
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0); // 0 exponent means use default (2^16 + 1)
+
+    let object_attributes = TpmaObjectBits::new()
+        .with_fixed_tpm(true)
+        .with_fixed_parent(true)
+        .with_sensitive_data_origin(true)
+        .with_user_with_auth(true)
+        .with_no_da(true)
+        .with_restricted(true)
+        .with_decrypt(true);
+    
+    let in_public = TpmtPublic::new(
+        AlgIdEnum::RSA.into(),
+        AlgIdEnum::SHA256.into(),
+        object_attributes,
+        &[],
+        rsa_params,
+        &[0u8; crate::RSA_2K_MODULUS_SIZE],
+    )
+    .map_err(TpmHelperUtilityError::InvalidInputParameter)?;
+
+    Ok(in_public)
+}
+
 /// Helper function for converting `Tpm2bPublic` to `TpmRsa2kPublic`.
 fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUtilityError> {
     if public.public_area.parameters.exponent.get() != 0 {
@@ -2144,7 +2181,7 @@ mod tests {
         }
     }
 
-    fn create_tpm_engine_helper() -> TpmEngineHelper<MsTpm20RefPlatform> {
+    pub fn create_tpm_engine_helper() -> TpmEngineHelper<MsTpm20RefPlatform> {
         let result = MsTpm20RefPlatform::initialize(
             Box::new(TestPlatformCallbacks {
                 blob: vec![],
