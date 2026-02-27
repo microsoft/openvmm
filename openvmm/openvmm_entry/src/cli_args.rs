@@ -61,6 +61,10 @@ pub struct Options {
     #[clap(long)]
     pub prefetch: bool,
 
+    /// use private anonymous memory for guest RAM
+    #[clap(long)]
+    pub private_memory: bool,
+
     /// start in paused state
     #[clap(short = 'P', long)]
     pub paused: bool,

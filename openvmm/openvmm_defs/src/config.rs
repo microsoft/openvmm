@@ -271,6 +271,7 @@ pub struct MemoryConfig {
     pub mem_size: u64,
     pub mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
+    pub private_memory: bool,
     pub pcie_ecam_base: u64,
 }
 

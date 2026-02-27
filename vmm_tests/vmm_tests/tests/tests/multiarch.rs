@@ -16,6 +16,7 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
+use vmm_test_macros::openvmm_test;
 use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_no_agent;
@@ -84,6 +85,28 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     let (vm, agent) = config.run().await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with private anonymous memory instead of shared memory sections.
+#[openvmm_test(
+    linux_direct_x64,
+    // TODO: add linux_direct_aarch64 (GH #1798)
+)]
+async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                c.memory.private_memory = true;
+            })
+        })
+        .run()
+        .await?;
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
     Ok(())
 }
 

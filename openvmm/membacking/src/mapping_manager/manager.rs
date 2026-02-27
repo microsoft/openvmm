@@ -80,7 +80,24 @@ impl MappingManagerClient {
         // multiple VA ranges for this memory per process.
         MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                VaMapper::new(self.req_send.clone(), self.max_addr, None).await
+                VaMapper::new(self.req_send.clone(), self.max_addr, None, false).await
+            })
+            .await
+    }
+
+    /// Returns a VA mapper for this guest memory with private RAM mode enabled.
+    ///
+    /// In private RAM mode, guest RAM is backed by anonymous pages in the
+    /// VaMapper's SparseMapping rather than shared file-backed memory. Device
+    /// memory mappings still flow through the normal MappingManager path.
+    ///
+    /// Uses the mapper cache so that subsequent calls to [`Self::new_mapper`]
+    /// (e.g., from [`GuestMemoryClient::guest_memory`]) return the same
+    /// private mapper with its committed pages intact.
+    pub async fn new_private_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
+        MAPPER_CACHE
+            .get_or_insert_with(&self.id, async {
+                VaMapper::new(self.req_send.clone(), self.max_addr, None, true).await
             })
             .await
     }
@@ -94,7 +111,7 @@ impl MappingManagerClient {
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
         Ok(Arc::new(
-            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process)).await?,
+            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process), false).await?,
         ))
     }
 

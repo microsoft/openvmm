@@ -474,6 +474,7 @@ impl VmService {
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
+                private_memory: false,
                 pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,

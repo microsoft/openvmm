@@ -7,6 +7,7 @@
 
 use Memory::CreateFileMappingW;
 use Memory::MEM_COMMIT;
+use Memory::MEM_DECOMMIT;
 use Memory::MEM_RELEASE;
 use Memory::MEM_RESERVE;
 use Memory::MEMORY_MAPPED_VIEW_ADDRESS;
@@ -642,6 +643,55 @@ impl SparseMapping {
         }
 
         start_index
+    }
+
+    /// Decommits a range of memory, releasing physical pages back to the host.
+    ///
+    /// The virtual address range remains reserved; accessing decommitted
+    /// pages will cause an access violation until they are recommitted
+    /// with [`commit()`](Self::commit).
+    ///
+    /// This is only valid for ranges that were previously committed with
+    /// [`alloc()`](Self::alloc) or [`commit()`](Self::commit).
+    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        unsafe {
+            virtual_free(
+                self.process.as_ref(),
+                self.address.wrapping_add(offset),
+                len,
+                MEM_DECOMMIT,
+            )
+        }
+    }
+
+    /// Commits a range of previously reserved or decommitted memory.
+    ///
+    /// This is used to recommit pages after [`decommit()`](Self::decommit).
+    /// For the initial commit of anonymous pages (replacing placeholders),
+    /// use [`alloc()`](Self::alloc) instead.
+    ///
+    /// Committing already-committed pages is a no-op.
+    pub fn commit(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        unsafe {
+            virtual_alloc(
+                self.process.as_ref(),
+                self.address.wrapping_add(offset),
+                len,
+                MEM_COMMIT,
+                PAGE_READWRITE,
+                null_mut(),
+                0,
+            )?;
+        }
+        Ok(())
     }
 
     /// Unmaps a range of mappings.
