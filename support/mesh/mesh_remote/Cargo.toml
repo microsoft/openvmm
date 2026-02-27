@@ -16,6 +16,7 @@ pal_async.workspace = true
 tracing_helpers.workspace = true
 unix_socket = { workspace = true, features = ["mesh"] }
 
+async-channel.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true

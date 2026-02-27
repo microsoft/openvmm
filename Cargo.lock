@@ -4117,9 +4117,9 @@ dependencies = [
 name = "mesh_node"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
  "bitfield-struct 0.11.0",
  "futures",
- "futures-channel",
  "getrandom 0.3.3",
  "mesh_derive",
  "mesh_protobuf",
@@ -4174,6 +4174,7 @@ dependencies = [
 name = "mesh_remote"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
  "event-listener",
  "futures",
  "futures-concurrency",
@@ -5574,6 +5575,7 @@ dependencies = [
 name = "pal_uring"
 version = "0.0.0"
 dependencies = [
+ "async-channel",
  "futures",
  "inspect",
  "io-uring",

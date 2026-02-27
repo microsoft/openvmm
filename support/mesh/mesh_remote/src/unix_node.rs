@@ -23,7 +23,6 @@ use crate::common::InvitationAddress;
 use crate::protocol;
 use futures::FutureExt;
 use futures::StreamExt;
-use futures::channel::mpsc;
 use futures::future;
 use futures::future::BoxFuture;
 use io::ErrorKind;
@@ -398,7 +397,7 @@ enum SenderCommand {
 
 #[derive(Clone)]
 struct PacketSender {
-    send: mpsc::UnboundedSender<SenderCommand>,
+    send: async_channel::Sender<SenderCommand>,
     socket: Arc<UnixSocket>,
 }
 
@@ -435,9 +434,7 @@ impl SendEvent for PacketSender {
             )
             .is_err()
         {
-            let _ = self
-                .send
-                .unbounded_send(SenderCommand::Send { packet, fds });
+            let _ = self.send.send_blocking(SenderCommand::Send { packet, fds });
         }
     }
 }
@@ -494,7 +491,7 @@ impl Drop for PacketSender {
     fn drop(&mut self) {
         // Explicitly close the send channel so that the send task returns, even
         // though the send channel is also in use by the receive task.
-        self.send.close_channel();
+        self.send.close();
     }
 }
 
@@ -506,8 +503,7 @@ fn start_connection(
     handle: RemoteNodeHandle,
     socket: UnixSocket,
 ) {
-    #[expect(clippy::disallowed_methods)] // TODO
-    let (send, recv) = mpsc::unbounded();
+    let (send, recv) = async_channel::unbounded();
     let socket = Arc::new(socket);
     let sender = PacketSender {
         send: send.clone(),
@@ -533,8 +529,8 @@ fn start_connection(
 async fn run_connection(
     local_node: Arc<LocalNode>,
     remote_id: NodeId,
-    send_send: mpsc::UnboundedSender<SenderCommand>,
-    send_recv: mpsc::UnboundedReceiver<SenderCommand>,
+    send_send: async_channel::Sender<SenderCommand>,
+    send_recv: async_channel::Receiver<SenderCommand>,
     socket: Arc<UnixSocket>,
     handle: RemoteNodeHandle,
 ) {
@@ -620,7 +616,7 @@ async fn run_receive(
     local_node: &LocalNode,
     remote_id: &NodeId,
     socket: &UnixSocket,
-    send: &mpsc::UnboundedSender<SenderCommand>,
+    send: &async_channel::Sender<SenderCommand>,
 ) -> Result<(), ReceiveError> {
     let mut buf = vec![0; MAX_PACKET_SIZE];
     let mut fds = Vec::new();
@@ -631,18 +627,20 @@ async fn run_receive(
         }
         if cfg!(target_os = "macos") && !fds.is_empty() {
             // Tell the opposite endpoint to release the fds it sent.
-            let _ = send.unbounded_send(SenderCommand::Send {
-                packet: protocol::ReleaseFds {
-                    header: protocol::PacketHeader {
-                        packet_type: protocol::PacketType::RELEASE_FDS,
-                        ..FromZeros::new_zeroed()
-                    },
-                    count: fds.len() as u64,
-                }
-                .as_bytes()
-                .to_vec(),
-                fds: Vec::new(),
-            });
+            let _ = send
+                .send(SenderCommand::Send {
+                    packet: protocol::ReleaseFds {
+                        header: protocol::PacketHeader {
+                            packet_type: protocol::PacketType::RELEASE_FDS,
+                            ..FromZeros::new_zeroed()
+                        },
+                        count: fds.len() as u64,
+                    }
+                    .as_bytes()
+                    .to_vec(),
+                    fds: Vec::new(),
+                })
+                .await;
         }
 
         let buf = &buf[..len];
@@ -658,9 +656,11 @@ async fn run_receive(
                 let release_fds = protocol::ReleaseFds::read_from_prefix(buf)
                     .map_err(|_| ReceiveError::BadReleaseFds)?
                     .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-                let _ = send.unbounded_send(SenderCommand::ReleaseFds {
-                    count: release_fds.count as usize,
-                });
+                let _ = send
+                    .send(SenderCommand::ReleaseFds {
+                        count: release_fds.count as usize,
+                    })
+                    .await;
             }
             #[cfg(target_os = "linux")]
             protocol::PacketType::LARGE_EVENT => {
@@ -688,11 +688,11 @@ enum ProtocolError {
 
 /// Handles send processing for the socket.
 async fn run_send(
-    mut recv: mpsc::UnboundedReceiver<SenderCommand>,
+    recv: async_channel::Receiver<SenderCommand>,
     socket: &UnixSocket,
     retained_fds: &mut VecDeque<OsResource>,
 ) -> io::Result<()> {
-    while let Some(command) = recv.next().await {
+    while let Ok(command) = recv.recv().await {
         match command {
             SenderCommand::Send { packet, fds } => {
                 match socket.send(&packet, &fds).await {

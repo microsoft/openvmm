@@ -3,9 +3,6 @@
 
 //! Tests common to every executor.
 
-// Uses futures channels, but is only test code.
-#![expect(clippy::disallowed_methods)]
-
 use crate::driver::Driver;
 use crate::socket::PolledSocket;
 use crate::task::Spawn;
@@ -14,7 +11,6 @@ use crate::timer::Instant;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
-use futures::channel::oneshot;
 use futures::executor::block_on;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -31,12 +27,12 @@ use unix_socket::UnixStream;
 
 /// Runs waker-related tests.
 pub async fn waker_tests() {
-    let (send, recv) = oneshot::channel();
-    std::thread::spawn(|| {
+    let (send, recv) = async_channel::bounded(1);
+    std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(100));
-        send.send(()).unwrap();
+        send.send_blocking(()).unwrap();
     });
-    recv.await.unwrap();
+    recv.recv().await.unwrap();
 }
 
 /// Runs spawn-related tests.
@@ -75,8 +71,8 @@ where
     {
         let (spawn, run) = f();
         let t = std::thread::spawn(run);
-        let (send, recv) = oneshot::channel::<()>();
-        let mut h = spawn.spawn("pending", recv);
+        let (send, recv) = async_channel::bounded::<()>(1);
+        let mut h = spawn.spawn("pending", async move { recv.recv().await });
         drop(spawn);
         std::thread::sleep(Duration::from_millis(100));
         assert!((&mut h).now_or_never().is_none());
@@ -100,18 +96,18 @@ pub async fn sleep_tests(driver: impl Driver) {
     timer
         .lock()
         .set_deadline(started + Duration::from_secs(1000));
-    let (send, mut recv) = oneshot::channel();
+    let (send, recv) = async_channel::bounded(1);
     std::thread::spawn({
         let timer = timer.clone();
         move || {
             let now = block_on(poll_fn(|cx| timer.lock().poll_timer(cx, None)));
-            send.send(now).unwrap();
+            send.send_blocking(now).unwrap();
         }
     });
     std::thread::sleep(Duration::from_millis(100));
-    assert!((&mut recv).now_or_never().is_none());
+    assert!(recv.recv().now_or_never().is_none());
     timer.lock().set_deadline(started + duration);
-    let done_at = recv.await.unwrap();
+    let done_at = recv.recv().await.unwrap();
     let now = Instant::now();
     assert!(done_at >= started + duration);
     assert!(done_at <= now);

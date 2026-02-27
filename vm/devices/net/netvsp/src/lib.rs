@@ -362,7 +362,7 @@ struct QueueState {
 
 struct RxBufferRange {
     id_range: Range<u32>,
-    remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
+    remote_buffer_id_recv: Option<mesh::Receiver<u32>>,
     remote_ranges: Arc<RxBufferRanges>,
 }
 
@@ -370,7 +370,7 @@ impl RxBufferRange {
     fn new(
         ranges: Arc<RxBufferRanges>,
         id_range: Range<u32>,
-        remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
+        remote_buffer_id_recv: Option<mesh::Receiver<u32>>,
     ) -> Self {
         Self {
             id_range,
@@ -390,7 +390,7 @@ impl RxBufferRange {
             // the active queues. Any extra buffers are given to the last
             // queue, so redirect any larger values there.
             let i = (i as usize).min(self.remote_ranges.buffer_id_send.len() - 1);
-            let _ = self.remote_ranges.buffer_id_send[i].unbounded_send(id);
+            self.remote_ranges.buffer_id_send[i].send(id);
             true
         }
     }
@@ -398,14 +398,13 @@ impl RxBufferRange {
 
 struct RxBufferRanges {
     buffers_per_queue: u32,
-    buffer_id_send: Vec<mpsc::UnboundedSender<u32>>,
+    buffer_id_send: Vec<mesh::Sender<u32>>,
 }
 
 impl RxBufferRanges {
-    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
+    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mesh::Receiver<u32>>) {
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
-        #[expect(clippy::disallowed_methods)] // TODO
-        let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
+        let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mesh::channel()).unzip();
         (
             Self {
                 buffers_per_queue,

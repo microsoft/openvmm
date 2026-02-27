@@ -11,7 +11,6 @@ use crate::common::InvitationAddress;
 use crate::protocol;
 use futures::FutureExt;
 use futures::StreamExt;
-use futures::channel::mpsc;
 use futures::future::AbortHandle;
 use futures::future::abortable;
 use mesh_node::common::Address;
@@ -88,7 +87,7 @@ pub struct AlpcNode {
     recv_abort: AbortHandle,
     recv_task: Task<()>,
     connect_task: Task<()>,
-    connect_send: mpsc::UnboundedSender<(NodeId, RemoteNodeHandle)>,
+    connect_send: async_channel::Sender<(NodeId, RemoteNodeHandle)>,
 }
 
 trait InvitationDriver: Spawn + Send {}
@@ -179,8 +178,7 @@ impl AlpcNode {
         let port = PolledWait::new(&driver, port)?;
 
         let invitations = Default::default();
-        #[expect(clippy::disallowed_methods)] // TODO
-        let (connect_send, connect_recv) = mpsc::unbounded();
+        let (connect_send, connect_recv) = async_channel::unbounded();
         let local_node = Arc::new(LocalNode::with_id(
             local_id,
             Box::new(AlpcConnector {
@@ -223,15 +221,16 @@ impl AlpcNode {
         driver: &(impl ?Sized + Driver),
         local_id: NodeId,
         directory: Arc<OwnedHandle>,
-        mut connect_recv: mpsc::UnboundedReceiver<(NodeId, RemoteNodeHandle)>,
+        connect_recv: async_channel::Receiver<(NodeId, RemoteNodeHandle)>,
     ) {
         let teardowns: Mutex<HashMap<NodeId, mesh_channel::OneshotSender<()>>> = Default::default();
         let mut connect_tasks = FuturesUnordered::new();
+        let mut recv = std::pin::pin!(connect_recv);
         loop {
             // Receive a new request or drive any in-progress connection tasks
             // forward.
             let (remote_id, handle) = futures::select! { // merge semantics
-                msg = connect_recv.next().fuse() => {
+                msg = recv.next().fuse() => {
                     match msg {
                         Some(msg) => msg,
                         None => break,
@@ -498,7 +497,7 @@ impl AlpcNode {
     /// returns, data loss could occur for other mesh nodes.
     pub async fn shutdown(self) {
         self.local_node.wait_for_ports(false).await;
-        self.connect_send.close_channel();
+        self.connect_send.close();
         self.connect_task.await;
         self.recv_abort.abort();
         self.recv_task.await;
@@ -510,7 +509,7 @@ impl AlpcNode {
         local_node: Arc<LocalNode>,
         mut port: PolledWait<alpc::Port>,
         invitations: InvitationMap,
-        connect_send: mpsc::UnboundedSender<(NodeId, RemoteNodeHandle)>,
+        connect_send: async_channel::Sender<(NodeId, RemoteNodeHandle)>,
     ) -> io::Result<()> {
         struct Connection {
             comm: alpc::Port,
@@ -595,7 +594,7 @@ impl AlpcNode {
                             // If this is a connection from a node that was invited,
                             // then it's now safe to connect to the node. Send the
                             // deferred connection to the connection task.
-                            let _ = connect_send.unbounded_send((node_id, handle.clone()));
+                            let _ = connect_send.send_blocking((node_id, handle.clone()));
                             handle
                         } else {
                             // Otherwise, establish a connection now to get a
@@ -658,13 +657,13 @@ impl AlpcNode {
 /// Connector for connecting to remote ALPC nodes.
 #[derive(Debug)]
 struct AlpcConnector {
-    connect_send: mpsc::UnboundedSender<(NodeId, RemoteNodeHandle)>,
+    connect_send: async_channel::Sender<(NodeId, RemoteNodeHandle)>,
 }
 
 impl Connect for AlpcConnector {
     fn connect(&self, remote_id: NodeId, handle: RemoteNodeHandle) {
         // Send the handle to the connect task.
-        let _ = self.connect_send.unbounded_send((remote_id, handle));
+        let _ = self.connect_send.send_blocking((remote_id, handle));
     }
 }
 
