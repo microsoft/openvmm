@@ -553,6 +553,7 @@ version = "0.0.0"
 dependencies = [
  "inspect",
  "mesh",
+ "tdisp",
 ]
 
 [[package]]
@@ -577,6 +578,7 @@ dependencies = [
  "chipset_device",
  "guestmem",
  "inspect",
+ "tdisp",
  "vm_resource",
  "vmcore",
 ]
@@ -4863,6 +4865,7 @@ dependencies = [
  "pci_resources",
  "scsi_buffers",
  "task_control",
+ "tdisp",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
@@ -5025,6 +5028,15 @@ dependencies = [
  "user_driver",
  "virt",
  "vmcore",
+]
+
+[[package]]
+name = "openhcl_tdisp"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "tdisp",
+ "tdisp_proto",
 ]
 
 [[package]]
@@ -7374,11 +7386,13 @@ name = "tdisp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bitfield-struct 0.11.0",
  "parking_lot",
  "prost",
+ "static_assertions",
  "tdisp_proto",
- "thiserror 2.0.16",
  "tracing",
+ "zerocopy 0.8.27",
 ]
 
 [[package]]
@@ -7388,6 +7402,7 @@ dependencies = [
  "inspect",
  "prost",
  "prost-build",
+ "thiserror 2.0.16",
 ]
 
 [[package]]
@@ -9874,10 +9889,12 @@ dependencies = [
  "hvdef",
  "inspect",
  "mesh",
+ "openhcl_tdisp",
  "pal_async",
  "parking_lot",
  "pci_core",
  "task_control",
+ "tdisp",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
@@ -9903,11 +9920,13 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "openhcl_tdisp",
  "pal_async",
  "parking_lot",
  "pci_core",
  "slab",
  "task_control",
+ "tdisp",
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
@@ -9944,6 +9963,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "mesh",
+ "openhcl_tdisp",
  "pci_core",
  "slab",
  "sparse_mmap",

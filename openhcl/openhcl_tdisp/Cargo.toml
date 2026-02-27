@@ -2,14 +2,15 @@
 # Licensed under the MIT License.
 
 [package]
-name = "chipset_device"
-edition.workspace = true
+name = "openhcl_tdisp"
 rust-version.workspace = true
+edition.workspace = true
 
 [dependencies]
-mesh.workspace = true
-inspect.workspace = true
 tdisp.workspace = true
+tdisp_proto.workspace = true
+
+anyhow.workspace = true
 
 [lints]
 workspace = true

@@ -57,6 +57,8 @@ pub struct NvmeFaultControllerHandle {
     pub namespaces: Vec<NamespaceDefinition>,
     /// Configuration for the fault
     pub fault_config: FaultConfiguration,
+    /// Enable TDISP testing on this device when presented by a TDISP host.
+    pub enable_tdisp_tests: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

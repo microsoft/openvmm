@@ -7,7 +7,9 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+openhcl_tdisp.workspace = true
 pci_core.workspace = true
+tdisp.workspace = true
 vpci_protocol.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
