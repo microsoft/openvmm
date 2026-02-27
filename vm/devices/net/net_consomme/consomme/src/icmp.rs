@@ -8,7 +8,6 @@ use super::Access;
 use super::Client;
 use super::ConsommeState;
 use super::DropReason;
-use super::SocketAddress;
 use crate::ChecksumState;
 use crate::Ipv4Addresses;
 
@@ -36,13 +35,14 @@ use std::mem::MaybeUninit;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 use std::net::SocketAddr;
+use std::net::SocketAddrV4;
 use std::task::Context;
 use std::task::Poll;
 
 const ICMPV4_HEADER_LEN: usize = 8;
 
 pub(crate) struct Icmp {
-    connections: HashMap<SocketAddress, IcmpConnection>,
+    connections: HashMap<SocketAddrV4, IcmpConnection>,
 }
 
 impl Icmp {
@@ -57,7 +57,7 @@ impl Inspect for Icmp {
     fn inspect(&self, req: inspect::Request<'_>) {
         let mut resp = req.respond();
         for (addr, conn) in &self.connections {
-            resp.field(&format!("{}:{}", addr.ip, addr.port), conn);
+            resp.field(&format!("{}:{}", addr.ip(), addr.port()), conn);
         }
     }
 }
@@ -83,7 +83,7 @@ impl IcmpConnection {
     fn poll_conn(
         &mut self,
         cx: &mut Context<'_>,
-        dst_addr: &SocketAddress,
+        dst_addr: &SocketAddrV4,
         state: &mut ConsommeState,
         client: &mut impl Client,
     ) {
@@ -106,7 +106,7 @@ impl IcmpConnection {
                     eth.set_src_addr(state.params.gateway_mac);
                     eth.set_dst_addr(self.guest_mac);
                     let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-                    ipv4.set_dst_addr(dst_addr.ip);
+                    ipv4.set_dst_addr(*dst_addr.ip());
                     ipv4.fill_checksum();
                     let len = ETHERNET_HEADER_LEN + n;
                     client.recv(&eth.as_ref()[..len], &ChecksumState::IPV4_ONLY);
@@ -160,10 +160,7 @@ impl<T: Client> Access<'_, T> {
         hop_limit: u8,
     ) -> Result<(), DropReason> {
         let icmp_packet = smoltcp::wire::Icmpv4Packet::new_unchecked(payload);
-        let guest_addr = SocketAddress {
-            ip: addresses.src_addr,
-            port: 0,
-        };
+        let guest_addr = SocketAddrV4::new(addresses.src_addr, 0);
 
         let entry = self.inner.icmp.connections.entry(guest_addr);
         let conn = match entry {

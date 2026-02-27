@@ -119,6 +119,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             input.encrypted_guest_memory.clone(),
             ppi_store.0,
             nvram_store.0,
+            resource.nvram_size,
             monotonic_timer,
             resource.refresh_tpm_seeds,
             input.is_restoring,

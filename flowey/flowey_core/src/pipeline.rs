@@ -609,6 +609,7 @@ impl Pipeline {
             arch,
             cond_param_idx: None,
             timeout_minutes: None,
+            command_wrapper: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -1223,6 +1224,19 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Set a [`CommandWrapperKind`] that will be applied to all shell
+    /// commands executed in this job's steps.
+    ///
+    /// The wrapper is applied both when running locally (via direct run)
+    /// and when running in CI (the kind is serialized into
+    /// `pipeline.json` and reconstructed at runtime).
+    ///
+    /// [`CommandWrapperKind`]: crate::shell::CommandWrapperKind
+    pub fn set_command_wrapper(self, wrapper: crate::shell::CommandWrapperKind) -> Self {
+        self.pipeline.jobs[self.job_idx].command_wrapper = Some(wrapper);
+        self
+    }
+
     /// Add a flow node which will be run as part of the job.
     pub fn dep_on<R: IntoRequest + 'static>(
         self,
@@ -1413,6 +1427,7 @@ pub mod internal {
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
         pub timeout_minutes: Option<u32>,
+        pub command_wrapper: Option<crate::shell::CommandWrapperKind>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,

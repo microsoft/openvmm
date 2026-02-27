@@ -23,14 +23,14 @@ pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
 pub const MDBOOK_ADMONISH: &str = "1.18.0";
 pub const MDBOOK_MERMAID: &str = "0.14.0";
-pub const MU_MSVM: &str = "25.1.10";
+pub const MU_MSVM: &str = "25.1.11";
 pub const NEXTEST: &str = "0.9.101";
 pub const NODEJS: &str = "24.x";
 // N.B. Kernel version numbers for dev and stable branches are not directly
 //      comparable. They originate from separate branches, and the fourth digit
 //      increases with each release from the respective branch.
-pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.4";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.4";
+pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.5";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.5";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 
@@ -48,6 +48,8 @@ flowey_request! {
             kernel: PathBuf,
             modules: PathBuf,
         },
+        /// Override UEFI mu_msvm with a local MSVM.fd path for this architecture
+        LocalUefi(CommonArch, PathBuf),
     }
 }
 
@@ -78,6 +80,7 @@ impl FlowNode for Node {
         let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
         let mut local_protoc: Option<PathBuf> = None;
         let mut local_kernel: BTreeMap<CommonArch, (PathBuf, PathBuf)> = BTreeMap::new();
+        let mut local_uefi: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
 
         for req in requests {
             match req {
@@ -113,6 +116,18 @@ impl FlowNode for Node {
                         local_kernel.insert(arch, paths);
                     }
                 }
+                Request::LocalUefi(arch, path) => {
+                    if let Some(existing) = local_uefi.get(&arch) {
+                        if existing != &path {
+                            anyhow::bail!(
+                                "LocalUefi for {:?} must be consistent across requests",
+                                arch
+                            );
+                        }
+                    } else {
+                        local_uefi.insert(arch, path);
+                    }
+                }
             }
         }
 
@@ -120,6 +135,7 @@ impl FlowNode for Node {
         let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
         let has_local_protoc = local_protoc.is_some();
         let has_local_kernel = !local_kernel.is_empty();
+        let has_local_uefi = !local_uefi.is_empty();
 
         // Set up local paths for openvmm_deps if provided
         for (arch, path) in local_openvmm_deps {
@@ -154,6 +170,15 @@ impl FlowNode for Node {
             });
         }
 
+        // Set up local paths for UEFI if provided
+        for (arch, path) in local_uefi {
+            let uefi_arch = match arch {
+                CommonArch::X86_64 => crate::download_uefi_mu_msvm::MuMsvmArch::X86_64,
+                CommonArch::Aarch64 => crate::download_uefi_mu_msvm::MuMsvmArch::Aarch64,
+            };
+            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPath(uefi_arch, path));
+        }
+
         // Only set kernel versions if we don't have local paths
         // (versions are only needed for downloading)
         if !has_local_kernel {
@@ -165,7 +190,9 @@ impl FlowNode for Node {
         if !has_local_openvmm_deps {
             ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         }
-        ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        if !has_local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        }
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));

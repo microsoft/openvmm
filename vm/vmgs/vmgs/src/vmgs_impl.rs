@@ -5,8 +5,6 @@ use crate::error::Error;
 use crate::logger::VmgsLogEvent;
 use crate::logger::VmgsLogger;
 use crate::storage::VmgsStorage;
-use anyhow::Context;
-use anyhow::anyhow;
 use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
 #[cfg(feature = "inspect")]
@@ -35,6 +33,8 @@ use vmgs_format::VmgsFileTable;
 use vmgs_format::VmgsHeader;
 use vmgs_format::VmgsMarkers;
 use vmgs_format::VmgsNonce;
+use vmgs_format::VmgsProvisioningMarker;
+use vmgs_format::VmgsProvisioningReason;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -128,11 +128,11 @@ impl ResolvedFileControlBlock {
         VmgsFileInfo {
             allocated_bytes: block_count_to_byte_count(self.allocated_blocks.get()),
             valid_bytes: self.valid_bytes,
-            encrypted: self.is_encrypted(),
+            encrypted: self.encrypted(),
         }
     }
 
-    fn is_encrypted(&self) -> bool {
+    fn encrypted(&self) -> bool {
         self.attributes.encrypted() || self.attributes.authenticated()
     }
 
@@ -201,11 +201,11 @@ impl ResolvedFileControlBlock {
             )?;
 
             if encrypted.len() as u64 != self.valid_bytes {
-                return Err(Error::Other(anyhow!(
-                    "Encrypted bytes should be {}, got {}",
-                    self.valid_bytes,
-                    encrypted.len()
-                )));
+                return Err(Error::UnexpectedLength(
+                    "encrypted data",
+                    self.valid_bytes as usize,
+                    encrypted.len(),
+                ));
             }
 
             Ok(encrypted)
@@ -233,11 +233,11 @@ impl ResolvedFileControlBlock {
             )?;
 
             if decrypted.len() as u64 != self.valid_bytes {
-                return Err(Error::Other(anyhow!(
-                    "Decrypted bytes should be {}, got {}",
-                    self.valid_bytes,
-                    decrypted.len()
-                )));
+                return Err(Error::UnexpectedLength(
+                    "decrypted data",
+                    self.valid_bytes as usize,
+                    decrypted.len(),
+                ));
             }
 
             Ok(decrypted)
@@ -379,7 +379,7 @@ struct VmgsState {
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
     reprovisioned: bool,
-    provisioned_this_boot: bool,
+    provisioning_reason: Option<VmgsProvisioningReason>,
 }
 
 #[cfg(feature = "inspect")]
@@ -437,11 +437,11 @@ impl Vmgs {
             Ok(vmgs) => Ok(vmgs),
             Err(Error::EmptyFile) if format_on_empty => {
                 tracing::info!(CVM_ALLOWED, "empty vmgs file, formatting");
-                Self::format_new(disk, logger).await
+                Self::format_new_with_reason(disk, VmgsProvisioningReason::Empty, logger).await
             }
             Err(err) if format_on_failure => {
                 tracing::warn!(CVM_ALLOWED, ?err, "vmgs initialization error, reformatting");
-                Self::format_new(disk, logger).await
+                Self::format_new_with_reason(disk, VmgsProvisioningReason::Failure, logger).await
             }
             Err(err) => {
                 let event_log_id = match err {
@@ -471,13 +471,23 @@ impl Vmgs {
         disk: Disk,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
+        Self::format_new_with_reason(disk, VmgsProvisioningReason::Request, logger).await
+    }
+
+    /// Format and open a new VMGS file.
+    pub async fn format_new_with_reason(
+        disk: Disk,
+        reason: VmgsProvisioningReason,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
         tracing::info!(
             CVM_ALLOWED,
             op_type = ?LogOpType::VmgsProvision,
+            ?reason,
             "formatting and initializing VMGS datastore"
         );
         let storage = VmgsStorage::new_validated(disk).map_err(Error::Initialization)?;
-        Self::format_new_inner(storage, VMGS_VERSION_3_0, logger).await
+        Self::format_new_inner(storage, VMGS_VERSION_3_0, reason, logger).await
     }
 
     /// Format and open a new VMGS file.
@@ -494,7 +504,13 @@ impl Vmgs {
             }
             _ => {
                 tracing::info!(CVM_ALLOWED, "formatting vmgs file on request");
-                let mut vmgs = Vmgs::format_new_inner(storage, VMGS_VERSION_3_0, logger).await?;
+                let mut vmgs = Vmgs::format_new_inner(
+                    storage,
+                    VMGS_VERSION_3_0,
+                    VmgsProvisioningReason::Request,
+                    logger,
+                )
+                .await?;
 
                 // set the reprovisioned marker to prevent the vmgs from
                 // repeatedly being reset
@@ -558,7 +574,7 @@ impl Vmgs {
             .await?;
         vmgs.state.fcbs = initialize_file_metadata(
             VmgsFileTable::ref_from_bytes(&file_table_buffer)
-                .map_err(|_| anyhow!("incorrect file table size"))?,
+                .map_err(|_| Error::InvalidFormat("incorrect file table size".into()))?,
             vmgs.state.version,
             vmgs.storage.block_capacity(),
         )?;
@@ -566,11 +582,16 @@ impl Vmgs {
         Ok(vmgs)
     }
 
-    fn new(storage: VmgsStorage, version: u32, logger: Option<Arc<dyn VmgsLogger>>) -> Vmgs {
+    fn new(
+        storage: VmgsStorage,
+        version: u32,
+        reason: VmgsProvisioningReason,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Vmgs {
         Self {
             storage,
 
-            state: VmgsState::new(version),
+            state: VmgsState::new(version, Some(reason)),
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
@@ -583,11 +604,12 @@ impl Vmgs {
     async fn format_new_inner(
         storage: VmgsStorage,
         version: u32,
+        reason: VmgsProvisioningReason,
         logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
         tracing::info!(CVM_ALLOWED, "Formatting new VMGS file.");
 
-        let mut vmgs = Self::new(storage, version, logger);
+        let mut vmgs = Self::new(storage, version, reason, logger);
 
         // zero out the active header, the other one will be populated below
         vmgs.write_header_internal(&VmgsHeader::new_zeroed(), vmgs.state.active_header_index)
@@ -625,8 +647,13 @@ impl Vmgs {
             .state
             .fcbs
             .get(&file_id)
-            .ok_or(Error::FileInfoNotAllocated)?
+            .ok_or(Error::FileInfoNotAllocated(file_id))?
             .file_info())
+    }
+
+    /// Returns whether a file id is allocated
+    pub fn check_file_allocated(&self, file_id: FileId) -> bool {
+        self.state.fcbs.contains_key(&file_id)
     }
 
     /// Get info about all the files currently in the file table
@@ -667,18 +694,18 @@ impl Vmgs {
 
         let mut temp_state = self.temp_state();
 
-        if encrypt && !temp_state.is_encrypted_and_unlocked() {
+        if encrypt && !temp_state.encrypted_and_unlocked() {
             tracing::trace!(
                 CVM_ALLOWED,
                 "VMGS file not encrypted and unlocked, performing plaintext write"
             );
         }
 
-        let encrypt = encrypt && temp_state.is_encrypted_and_unlocked();
+        let encrypt = encrypt && temp_state.encrypted_and_unlocked();
         let existing_encrypted = temp_state
             .fcbs
             .get(&file_id)
-            .is_some_and(|fcb| fcb.is_encrypted());
+            .is_some_and(|fcb| fcb.encrypted());
 
         if !encrypt && existing_encrypted {
             if overwrite_encrypted {
@@ -725,7 +752,7 @@ impl Vmgs {
             FileId::FILE_TABLE,
             AllocRequest::new(RefOrOwned::placeholder::<VmgsFileTable>(), false),
         );
-        if state.is_encrypted_and_unlocked() {
+        if state.encrypted_and_unlocked() {
             files.insert(
                 FileId::EXTENDED_FILE_TABLE,
                 AllocRequest::new(RefOrOwned::placeholder::<VmgsExtendedFileTable>(), true),
@@ -739,7 +766,7 @@ impl Vmgs {
         // table, which hasn't been generated yet.
         for (file_id, res) in files.iter_mut() {
             if *file_id != FileId::EXTENDED_FILE_TABLE {
-                if res.fcb.is_encrypted() {
+                if res.fcb.encrypted() {
                     res.encrypt()?;
                 }
                 state.fcbs.insert(*file_id, res.fcb.clone());
@@ -748,7 +775,7 @@ impl Vmgs {
 
         // generate and encrypt the extended file table
         if let Some(res) = files.get_mut(&FileId::EXTENDED_FILE_TABLE) {
-            if state.is_encrypted_and_unlocked() {
+            if state.encrypted_and_unlocked() {
                 // clear encryption key so we don't try to decrypt with the old key
                 res.fcb.clear_encryption();
                 let new_extended_file_table = state.make_extended_file_table()?;
@@ -758,7 +785,7 @@ impl Vmgs {
             state
                 .fcbs
                 .insert(FileId::EXTENDED_FILE_TABLE, res.fcb.clone());
-            if state.is_encrypted_and_unlocked() {
+            if state.encrypted_and_unlocked() {
                 state.encrypt_metadata_key()?;
             }
         }
@@ -868,7 +895,7 @@ impl Vmgs {
         let fcb = state
             .fcbs
             .get(&file_id)
-            .ok_or(Error::FileInfoNotAllocated)?;
+            .ok_or(Error::FileInfoNotAllocated(file_id))?;
 
         // read the file
         let buf = {
@@ -892,8 +919,8 @@ impl Vmgs {
         // decrypt if necessary
         if decrypt
             && state.version >= VMGS_VERSION_3_0
-            && state.is_encrypted()
-            && fcb.is_encrypted()
+            && state.encrypted_and_unlocked()
+            && fcb.encrypted()
         {
             match fcb.decrypt(&buf) {
                 Err(e) => {
@@ -905,8 +932,8 @@ impl Vmgs {
                 }
                 Ok(b) => Ok(b),
             }
-        } else if fcb.is_encrypted() && decrypt {
-            Err(Error::ReadEncrypted)
+        } else if fcb.encrypted() && decrypt {
+            Err(Error::NeedsUnlock)
         } else {
             Ok(buf)
         }
@@ -923,7 +950,7 @@ impl Vmgs {
         self.write_file_inner(file_id, buf, false, false).await
     }
 
-    /// Writes `buf` to a file_id without encrypting it, allowing overrites of
+    /// Writes `buf` to a file_id without encrypting it, allowing overwrites of
     /// an already-encrypted file.
     pub async fn write_file_allow_overwrite_encrypted(
         &mut self,
@@ -964,7 +991,7 @@ impl Vmgs {
         let fcb = temp_state
             .fcbs
             .remove(&src)
-            .ok_or(Error::FileInfoNotAllocated)?;
+            .ok_or(Error::FileInfoNotAllocated(src))?;
         temp_state.fcbs.insert(dst, fcb);
 
         // write the new file table(s)
@@ -989,7 +1016,7 @@ impl Vmgs {
         temp_state
             .fcbs
             .remove(&file_id)
-            .ok_or(Error::FileInfoNotAllocated)?;
+            .ok_or(Error::FileInfoNotAllocated(file_id))?;
 
         // write the new file table(s)
         self.write_files_internal(BTreeMap::new(), Some(&mut temp_state))
@@ -1006,14 +1033,10 @@ impl Vmgs {
     #[cfg(with_encryption)]
     pub async fn unlock_with_encryption_key(&mut self, encryption_key: &[u8]) -> Result<(), Error> {
         if self.state.version < VMGS_VERSION_3_0 {
-            return Err(Error::Other(anyhow!(
-                "unlock_with_encryption_key() not supported with VMGS version"
-            )));
+            return Err(Error::EncryptionNotSupported);
         }
-        if !self.is_encrypted() {
-            return Err(Error::Other(anyhow!(
-                "unlock_with_encryption_key() not supported with None EncryptionAlgorithm"
-            )));
+        if !self.encrypted() {
+            return Err(Error::NotEncrypted);
         }
 
         let mut temp_state = self.temp_state();
@@ -1047,7 +1070,7 @@ impl Vmgs {
                 let fcb = temp_state
                     .fcbs
                     .get_mut(&FileId::EXTENDED_FILE_TABLE)
-                    .context("Missing extended file table")?;
+                    .ok_or(Error::FileInfoNotAllocated(FileId::EXTENDED_FILE_TABLE))?;
                 // older implementations didn't write unencrypted attributes
                 // so configure them here so that the table is decrypted below
                 fcb.attributes.set_encrypted(true);
@@ -1067,22 +1090,19 @@ impl Vmgs {
                     error = &errs[1].take().unwrap() as &dyn std::error::Error,
                     "second index failed to decrypt",
                 );
-                return Err(Error::Other(anyhow!(
-                    "failed to use the root key provided to decrypt VMGS metadata key"
-                )));
+                return Err(Error::DecryptMetadataKey);
             }
         }
 
         // Read and decrypt the extended file table
         let extended_file_table_buffer = self
             .read_file_internal(FileId::EXTENDED_FILE_TABLE, true, Some(&temp_state))
-            .await
-            .context("failed to decrypt extended file table")?;
+            .await?;
 
         // Update the cached extended file table
         let extended_file_table =
             VmgsExtendedFileTable::ref_from_bytes(extended_file_table_buffer.as_bytes())
-                .map_err(|_| anyhow!("Invalid decrypted extended file table"))?;
+                .map_err(|_| Error::InvalidFormat("incorrect extended file table size".into()))?;
 
         for (file_id, fcb) in temp_state.fcbs.iter_mut() {
             if *file_id != FileId::EXTENDED_FILE_TABLE {
@@ -1141,34 +1161,26 @@ impl Vmgs {
         encryption_algorithm: EncryptionAlgorithm,
     ) -> Result<(), Error> {
         if self.state.version < VMGS_VERSION_3_0 {
-            return Err(Error::Other(anyhow!(
-                "add_new_encryption_key() not supported with VMGS version"
-            )));
+            return Err(Error::EncryptionNotSupported);
         }
-        if self.state.encryption_algorithm != EncryptionAlgorithm::NONE
-            && self.state.active_datastore_key_index.is_none()
-        {
-            return Err(Error::Other(anyhow!(
-                "add_new_encryption_key() invalid datastore key index"
-            )));
+        if self.encrypted() && !self.state.unlocked() {
+            return Err(Error::NeedsUnlock);
         }
         if self.state.datastore_key_count == self.state.datastore_keys.len() as u8 {
             return Err(Error::DatastoreKeysFull);
         }
         if is_empty_key(encryption_key) {
-            return Err(Error::Other(anyhow!("Trying to add empty encryption key")));
+            return Err(Error::InvalidArgument("empty encryption key"));
         }
         if encryption_algorithm == EncryptionAlgorithm::NONE {
-            return Err(Error::Other(anyhow!(
-                "Encryption not supported for VMGS file"
-            )));
+            return Err(Error::InvalidArgument(
+                "encryption algorithm cannot be none",
+            ));
         }
-        if self.state.encryption_algorithm != EncryptionAlgorithm::NONE
-            && encryption_algorithm != self.state.encryption_algorithm
-        {
-            return Err(Error::Other(anyhow!(
-                "Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm."
-            )));
+        if self.encrypted() && encryption_algorithm != self.state.encryption_algorithm {
+            return Err(Error::InvalidArgument(
+                "Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm.",
+            ));
         }
 
         let new_key_index = self
@@ -1204,23 +1216,15 @@ impl Vmgs {
     #[cfg(with_encryption)]
     async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
         if self.state.version < VMGS_VERSION_3_0 {
-            return Err(Error::Other(anyhow!(
-                "remove_encryption_key() not supported with VMGS version."
-            )));
+            return Err(Error::EncryptionNotSupported);
         }
-        if self.state.encryption_algorithm != EncryptionAlgorithm::NONE
-            && self.state.active_datastore_key_index.is_none()
-        {
-            return Err(Error::Other(anyhow!(
-                "remove_encryption_key() invalid datastore key index or encryption algorithm."
-            )));
+        if self.encrypted() && !self.state.unlocked() {
+            return Err(Error::NeedsUnlock);
         }
         if self.state.datastore_key_count != self.state.datastore_keys.len() as u8
             && self.state.active_datastore_key_index != Some(key_index)
         {
-            return Err(Error::Other(anyhow!(
-                "remove_encryption_key() invalid key_index"
-            )));
+            return Err(Error::InvalidArgument("key index"));
         }
 
         let mut temp_state = self.temp_state();
@@ -1258,13 +1262,30 @@ impl Vmgs {
     }
 
     /// Whether the VMGS file is encrypted
-    pub fn is_encrypted(&self) -> bool {
-        self.state.is_encrypted()
+    pub fn encrypted(&self) -> bool {
+        self.state.encrypted()
     }
 
     /// Whether the VMGS file was provisioned during the most recent boot
     pub fn was_provisioned_this_boot(&self) -> bool {
-        self.state.provisioned_this_boot
+        self.state.provisioning_reason.is_some()
+    }
+
+    /// Why this VMGS file was provisioned
+    pub fn provisioning_reason(&self) -> Option<VmgsProvisioningReason> {
+        self.state.provisioning_reason
+    }
+
+    /// Write a provisioning marker to this VMGS file
+    pub async fn write_provisioning_marker(
+        &mut self,
+        marker: &VmgsProvisioningMarker,
+    ) -> Result<(), Error> {
+        self.write_file(
+            FileId::PROVISIONING_MARKER,
+            serde_json::to_string(marker)?.as_bytes(),
+        )
+        .await
     }
 
     async fn set_reprovisioned(&mut self, value: bool) -> Result<(), Error> {
@@ -1300,7 +1321,7 @@ impl Vmgs {
 }
 
 impl VmgsState {
-    fn new(version: u32) -> Self {
+    fn new(version: u32, provisioning_reason: Option<VmgsProvisioningReason>) -> Self {
         Self {
             active_header_index: 1,
             active_header_sequence_number: 0,
@@ -1313,16 +1334,15 @@ impl VmgsState {
             unused_metadata_key: VmgsDatastoreKey::new_zeroed(),
             encrypted_metadata_keys: std::array::from_fn(|_| VmgsEncryptionKey::new_zeroed()),
             reprovisioned: false,
-            provisioned_this_boot: true,
+            provisioning_reason,
         }
     }
 
     fn from_header(header: VmgsHeader, header_index: usize) -> Self {
-        let mut state = Self::new(header.version);
+        let mut state = Self::new(header.version, None);
 
         state.active_header_index = header_index;
         state.active_header_sequence_number = header.sequence;
-        state.provisioned_this_boot = false;
 
         if header.version >= VMGS_VERSION_3_0 {
             state.encryption_algorithm = header.encryption_algorithm;
@@ -1375,24 +1395,27 @@ impl VmgsState {
     }
 
     /// Whether the VMGS file is encrypted
-    pub fn is_encrypted(&self) -> bool {
+    fn encrypted(&self) -> bool {
         self.encryption_algorithm != EncryptionAlgorithm::NONE
     }
 
-    /// Whether the VMGS file is encrypted
-    pub fn is_encrypted_and_unlocked(&self) -> bool {
-        self.is_encrypted() && self.active_datastore_key_index.is_some()
+    /// Whether the VMGS file is unlocked
+    fn unlocked(&self) -> bool {
+        self.active_datastore_key_index.is_some()
+    }
+
+    /// Whether the VMGS file is encrypted and unlocked
+    fn encrypted_and_unlocked(&self) -> bool {
+        self.encrypted() && self.unlocked()
     }
 
     /// Update the metadata key
     fn encrypt_metadata_key(&mut self) -> Result<(), Error> {
-        let current_index = self
-            .active_datastore_key_index
-            .context("cannot update metadata key without datastore key")?;
+        let current_index = self.active_datastore_key_index.ok_or(Error::NeedsUnlock)?;
         let metadata_key = &self
             .fcbs
             .get(&FileId::EXTENDED_FILE_TABLE)
-            .context("missing extended file table")?
+            .ok_or(Error::FileInfoNotAllocated(FileId::EXTENDED_FILE_TABLE))?
             .encryption_key;
 
         self.unused_metadata_key.copy_from_slice(metadata_key);
@@ -1725,11 +1748,11 @@ fn encrypt_metadata_key(
             crate::encrypt::vmgs_encrypt(encryption_key, nonce, metadata_key, authentication_tag)?;
 
         if encrypted_metadata_key.len() != metadata_key.len() {
-            return Err(Error::Other(anyhow!(format!(
-                "encrypted metadata key length ({}) doesn't match metadata key length ({})",
+            return Err(Error::UnexpectedLength(
+                "encrypted metadata key",
                 encrypted_metadata_key.len(),
-                metadata_key.len()
-            ))));
+                metadata_key.len(),
+            ));
         }
         Ok(encrypted_metadata_key)
     }
@@ -1750,11 +1773,11 @@ fn decrypt_metadata_key(
         let decrypted_metadata_key =
             crate::encrypt::vmgs_decrypt(datastore_key, nonce, metadata_key, authentication_tag)?;
         if decrypted_metadata_key.len() != metadata_key.len() {
-            return Err(Error::Other(anyhow!(format!(
-                "decrypted metadata key length ({}) doesn't match metadata key length ({})",
+            return Err(Error::UnexpectedLength(
+                "decrypted metadata key",
+                metadata_key.len(),
                 decrypted_metadata_key.len(),
-                metadata_key.len()
-            ))));
+            ));
         }
 
         Ok(decrypted_metadata_key)
@@ -1983,7 +2006,7 @@ pub mod save_restore {
                         }
                     }),
                     reprovisioned,
-                    provisioned_this_boot: false,
+                    provisioning_reason: None,
                 },
 
                 logger,
@@ -2015,7 +2038,7 @@ pub mod save_restore {
                         unused_metadata_key: metadata_key,
                         encrypted_metadata_keys,
                         reprovisioned,
-                        provisioned_this_boot: _,
+                        provisioning_reason: _,
                     },
 
                 logger: _,
@@ -2081,21 +2104,18 @@ pub mod save_restore {
 mod tests {
     use super::*;
     use pal_async::async_test;
-    #[cfg(with_encryption)]
     use parking_lot::Mutex;
-    #[cfg(with_encryption)]
     use std::sync::Arc;
     #[cfg(with_encryption)]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
+    use vmgs_format::VmgsProvisioner;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
-    #[cfg(with_encryption)]
     struct TestVmgsLogger {
         data: Arc<Mutex<String>>,
     }
 
-    #[cfg(with_encryption)]
     #[async_trait::async_trait]
     impl VmgsLogger for TestVmgsLogger {
         async fn log_event_fatal(&self, _event: VmgsLogEvent) {
@@ -2685,11 +2705,11 @@ mod tests {
         // Remove the old datastore key
         vmgs.remove_encryption_key(0).await.unwrap();
         let result = vmgs.unlock_with_encryption_key(&encryption_key).await;
-        assert!(matches!(result, Err(Error::Other(_))));
+        assert!(matches!(result, Err(Error::DecryptMetadataKey)));
 
         // Try to remove the old datastore key again
         let result = vmgs.remove_encryption_key(0).await;
-        assert!(matches!(result, Err(Error::Other(_))));
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
 
         // Remove the new datastore key and try to read file content, which should be in encrypted state
         vmgs.remove_encryption_key(1).await.unwrap();
@@ -2947,5 +2967,35 @@ mod tests {
             513
         );
         allocate_helper(&mut allocation_list, 1, block_capacity).unwrap_err();
+    }
+
+    #[async_test]
+    async fn test_provisioning_marker() {
+        const EXPECTED_MARKER: &str = r#"{"provisioner":"openhcl","reason":"empty","tpm_version":"1.38","tpm_nvram_size":32768,"akcert_size":4096,"akcert_attrs":"0x42060004","provisioner_version":"unit test"}"#;
+
+        let disk = new_test_file();
+        let data = Arc::new(Mutex::new(String::new()));
+        let mut vmgs = Vmgs::format_new_with_reason(
+            disk.clone(),
+            VmgsProvisioningReason::Empty,
+            Some(Arc::new(TestVmgsLogger { data: data.clone() })),
+        )
+        .await
+        .unwrap();
+
+        let marker = VmgsProvisioningMarker {
+            provisioner: VmgsProvisioner::OpenHcl,
+            reason: vmgs.provisioning_reason().unwrap(),
+            tpm_version: "1.38".to_string(),
+            tpm_nvram_size: 32768,
+            akcert_size: 4096,
+            akcert_attrs: "0x42060004".to_string(),
+            provisioner_version: "unit test".to_string(),
+        };
+
+        vmgs.write_provisioning_marker(&marker).await.unwrap();
+
+        let read_buf = vmgs.read_file(FileId::PROVISIONING_MARKER).await.unwrap();
+        assert_eq!(EXPECTED_MARKER.as_bytes(), read_buf);
     }
 }

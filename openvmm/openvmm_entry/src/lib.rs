@@ -73,6 +73,8 @@ use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
+use nvme_resources::NamespaceDefinition;
+use nvme_resources::NvmeControllerRequest;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
@@ -105,7 +107,6 @@ use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
-use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -114,7 +115,6 @@ use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
-use serial_io::SerialIo;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
 use std::fmt::Write as _;
@@ -199,9 +199,169 @@ struct VmResources {
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
     kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
+    nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
+    vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     #[cfg(windows)]
     switch_ports: Vec<vmswitch::kernel::SwitchPort>,
+}
+
+impl VmResources {
+    /// Modify the cached VTL2 settings and send them to OpenHCL via the GED.
+    ///
+    /// This follows the same pattern as petri's `modify_vtl2_settings`: the cache
+    /// is modified locally, then the entire settings are sent to OpenHCL.
+    async fn modify_vtl2_settings(
+        &mut self,
+        f: impl FnOnce(&mut vtl2_settings_proto::Vtl2Settings),
+    ) -> anyhow::Result<()> {
+        let mut settings_copy = self
+            .vtl2_settings
+            .clone()
+            .context("vtl2 settings not configured")?;
+
+        f(&mut settings_copy);
+
+        let ged_rpc = self.ged_rpc.as_ref().context("no GED configured")?;
+
+        ged_rpc
+            .call_failable(
+                get_resources::ged::GuestEmulationRequest::ModifyVtl2Settings,
+                prost::Message::encode_to_vec(&settings_copy),
+            )
+            .await?;
+
+        // Settings successfully applied, update our cache
+        self.vtl2_settings = Some(settings_copy);
+        Ok(())
+    }
+
+    /// Add a VTL0 SCSI LUN backed by a VTL2 storage device.
+    ///
+    /// This modifies the VTL2 settings to add a new LUN to the specified SCSI controller,
+    /// backed by the given VTL2 device (NVMe namespace or SCSI disk).
+    async fn add_vtl0_scsi_disk(
+        &mut self,
+        controller_guid: Guid,
+        lun: u32,
+        device_type: vtl2_settings_proto::physical_device::DeviceType,
+        device_path: Guid,
+        sub_device_path: u32,
+    ) -> anyhow::Result<()> {
+        let mut not_found = false;
+        self.modify_vtl2_settings(|settings| {
+            let dynamic = settings.dynamic.get_or_insert_with(Default::default);
+
+            // Find the SCSI controller, bail out if not found (we can't create new controllers at runtime)
+            let scsi_controller = dynamic.storage_controllers.iter_mut().find(|c| {
+                c.instance_id == controller_guid.to_string()
+                    && c.protocol
+                        == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi as i32
+            });
+
+            let Some(scsi_controller) = scsi_controller else {
+                not_found = true;
+                return;
+            };
+
+            // Add the LUN backed by the VTL2 storage device. If the LUN exists already, UH will reject the settings
+            scsi_controller.luns.push(vtl2_settings_proto::Lun {
+                location: lun,
+                device_id: Guid::new_random().to_string(),
+                vendor_id: "OpenVMM".to_string(),
+                product_id: "Disk".to_string(),
+                product_revision_level: "1.0".to_string(),
+                serial_number: "0".to_string(),
+                model_number: "1".to_string(),
+                physical_devices: Some(vtl2_settings_proto::PhysicalDevices {
+                    r#type: vtl2_settings_proto::physical_devices::BackingType::Single.into(),
+                    device: Some(vtl2_settings_proto::PhysicalDevice {
+                        device_type: device_type.into(),
+                        device_path: device_path.to_string(),
+                        sub_device_path,
+                    }),
+                    devices: Vec::new(),
+                }),
+                is_dvd: false,
+                ..Default::default()
+            });
+        })
+        .await?;
+
+        if not_found {
+            anyhow::bail!("SCSI controller {} not found", controller_guid);
+        }
+        Ok(())
+    }
+
+    /// Remove a VTL0 SCSI LUN.
+    ///
+    /// This modifies the VTL2 settings to remove a LUN from the specified SCSI controller.
+    async fn remove_vtl0_scsi_disk(
+        &mut self,
+        controller_guid: Guid,
+        lun: u32,
+    ) -> anyhow::Result<()> {
+        self.modify_vtl2_settings(|settings| {
+            let dynamic = settings.dynamic.as_mut();
+            if let Some(dynamic) = dynamic {
+                // Find the SCSI controller
+                if let Some(scsi_controller) = dynamic.storage_controllers.iter_mut().find(|c| {
+                    c.instance_id == controller_guid.to_string()
+                        && c.protocol
+                            == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi as i32
+                }) {
+                    // Remove the LUN
+                    scsi_controller.luns.retain(|l| l.location != lun);
+                }
+            }
+        })
+        .await
+    }
+
+    /// Find and remove a VTL0 SCSI LUN backed by a specific NVMe namespace.
+    ///
+    /// Returns the LUN number that was removed, or None if no matching LUN was found.
+    async fn remove_vtl0_scsi_disk_by_nvme_nsid(
+        &mut self,
+        controller_guid: Guid,
+        nvme_controller_guid: Guid,
+        nsid: u32,
+    ) -> anyhow::Result<Option<u32>> {
+        let mut removed_lun = None;
+        self.modify_vtl2_settings(|settings| {
+            let dynamic = settings.dynamic.as_mut();
+            if let Some(dynamic) = dynamic {
+                // Find the SCSI controller
+                if let Some(scsi_controller) = dynamic.storage_controllers.iter_mut().find(|c| {
+                    c.instance_id == controller_guid.to_string()
+                        && c.protocol
+                            == vtl2_settings_proto::storage_controller::StorageProtocol::Scsi as i32
+                }) {
+                    // Find and remove the LUN backed by this NVMe namespace
+                    let nvme_controller_str = nvme_controller_guid.to_string();
+                    scsi_controller.luns.retain(|l| {
+                        let dominated_by_nsid = l.physical_devices.as_ref().is_some_and(|pd| {
+                            pd.device.as_ref().is_some_and(|d| {
+                                d.device_type
+                                    == vtl2_settings_proto::physical_device::DeviceType::Nvme as i32
+                                    && d.device_path == nvme_controller_str
+                                    && d.sub_device_path == nsid
+                            })
+                        });
+                        if dominated_by_nsid {
+                            removed_lun = Some(l.location);
+                            false // Remove this LUN
+                        } else {
+                            true // Keep this LUN
+                        }
+                    });
+                }
+            }
+        })
+        .await?;
+        Ok(removed_lun)
+    }
 }
 
 struct ConsoleState<'a> {
@@ -317,83 +477,11 @@ async fn vm_config_from_command_line(
         })
     };
 
-    // TODO: unify virtio serial handling and remove this.
-    let setup_serial_virtio = |name, cli_cfg, device| -> anyhow::Result<_> {
-        Ok(match cli_cfg {
-            SerialConfigCli::Console => {
-                if console_state.borrow().is_some() {
-                    bail!("console already set");
-                }
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_out(name, term::raw_stdout());
-                *console_state.borrow_mut() = Some(ConsoleState {
-                    device,
-                    input: Box::new(PolledPipe::new(&serial_driver, io.input.unwrap())?),
-                });
-                Some(io.config)
-            }
-            SerialConfigCli::Stderr => {
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_out(name, term::raw_stderr());
-                // Ensure there is no input so that the serial devices don't see
-                // EOF and think the port is disconnected.
-                io.config.input = None;
-                Some(io.config)
-            }
-            SerialConfigCli::File(path) => {
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                let file = fs_err::File::create(path).context("failed to create file")?;
-                io.spawn_copy_out(name, file);
-                // Ensure there is no input so that the serial devices don't see
-                // EOF and think the port is disconnected.
-                io.config.input = None;
-                Some(io.config)
-            }
-            SerialConfigCli::None => None,
-            SerialConfigCli::Pipe(path) => {
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_listener(serial_driver.clone(), name, &path)
-                    .with_context(|| format!("listening on pipe {}", path.display()))?
-                    .detach();
-                Some(io.config)
-            }
-            SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
-            SerialConfigCli::NewConsole(app, window_title) => {
-                let path = console_relay::random_console_path();
-
-                let mut io = SerialIo::new().context("creating serial IO")?;
-                io.spawn_copy_listener(serial_driver.clone(), name, &path)
-                    .with_context(|| format!("listening on pipe {}", path.display()))?
-                    .detach();
-
-                let window_title =
-                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
-
-                console_relay::launch_console(
-                    app.or_else(openvmm_terminal_app).as_deref(),
-                    &path,
-                    ConsoleLaunchOptions {
-                        window_title: Some(window_title),
-                    },
-                )
-                .context("failed to launch console")?;
-                Some(io.config)
-            }
-        })
-    };
-
-    let virtio_console = opt.virtio_console || opt.virtio_console_pci;
     let mut vmbus_devices = Vec::new();
 
     let serial0_cfg = setup_serial(
         "com1",
-        opt.com1.clone().unwrap_or({
-            if !virtio_console {
-                SerialConfigCli::Console
-            } else {
-                SerialConfigCli::None
-            }
-        }),
+        opt.com1.clone().unwrap_or(SerialConfigCli::Console),
         if cfg!(guest_arch = "x86_64") {
             "ttyS0"
         } else {
@@ -425,21 +513,6 @@ async fn vm_config_from_command_line(
             "ttyS3"
         } else {
             "ttyAMA3"
-        },
-    )?;
-    let virtio_serial_cfg = setup_serial_virtio(
-        "virtio_serial",
-        opt.virtio_serial.clone().unwrap_or({
-            if virtio_console {
-                SerialConfigCli::Console
-            } else {
-                SerialConfigCli::None
-            }
-        }),
-        if opt.virtio_console_pci {
-            "hvc1"
-        } else {
-            "hvc0"
         },
     )?;
     let with_vmbus_com1_serial = if let Some(vmbus_com1_cfg) = setup_serial(
@@ -1003,11 +1076,14 @@ async fn vm_config_from_command_line(
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
             fixed: Some(Default::default()),
             dynamic: Some(vtl2_settings_proto::Vtl2SettingsDynamic {
-                storage_controllers: storage.build_underhill(),
+                storage_controllers: storage.build_underhill(opt.vmbus_redirect),
                 nic_devices: underhill_nics,
             }),
             namespace_settings: Vec::default(),
         };
+
+        // Cache the VTL2 settings for later modification via the interactive console.
+        resources.vtl2_settings = Some(vtl2_settings.clone());
 
         let (send, guest_request_recv) = mesh::channel();
         resources.ged_rpc = Some(send);
@@ -1125,6 +1201,7 @@ async fn vm_config_from_command_line(
                 device: TpmDeviceHandle {
                     ppi_store,
                     nvram_store,
+                    nvram_size: None,
                     refresh_tpm_seeds: false,
                     ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                     register_layout,
@@ -1465,8 +1542,6 @@ async fn vm_config_from_command_line(
         framebuffer,
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
-        virtio_console_pci: opt.virtio_console_pci,
-        virtio_serial: virtio_serial_cfg,
         virtio_devices,
         vmbus: with_hv.then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
@@ -1918,7 +1993,7 @@ enum InteractiveCommand {
         interval: Option<u64>,
     },
 
-    /// Hot add a disk.
+    /// Hot add a disk to the VTL0 guest.
     #[clap(visible_alias = "d")]
     AddDisk {
         #[clap(long = "ro")]
@@ -1936,7 +2011,7 @@ enum InteractiveCommand {
         file_path: Option<PathBuf>,
     },
 
-    /// Hot remove a disk.
+    /// Hot remove a disk from the VTL0 guest.
     #[clap(visible_alias = "D")]
     RmDisk {
         #[clap(long)]
@@ -1945,6 +2020,38 @@ enum InteractiveCommand {
         path: u8,
         #[clap(long)]
         lun: u8,
+    },
+
+    /// Manage VTL2 settings (storage controllers, NICs exposed to VTL0).
+    #[clap(subcommand)]
+    Vtl2Settings(Vtl2SettingsCommand),
+
+    /// Hot add an NVMe namespace to VTL2, and optionally to VTL0.
+    AddNvmeNs {
+        #[clap(long = "ro")]
+        read_only: bool,
+        /// The namespace ID.
+        #[clap(long)]
+        nsid: u32,
+        /// Create a RAM-backed namespace of the specified size in bytes.
+        #[clap(long)]
+        ram: Option<u64>,
+        /// Path to a file to use as the backing store.
+        file_path: Option<PathBuf>,
+        /// Also expose this namespace to VTL0 via VTL2 settings as a SCSI disk
+        /// with the specified LUN number.
+        #[clap(long)]
+        vtl0_lun: Option<u32>,
+    },
+
+    /// Hot remove an NVMe namespace from VTL2.
+    RmNvmeNs {
+        /// The namespace ID to remove.
+        #[clap(long)]
+        nsid: u32,
+        /// Also remove the VTL0 SCSI disk backed by this namespace.
+        #[clap(long)]
+        vtl0: bool,
     },
 
     /// Inspect program state.
@@ -2072,6 +2179,51 @@ enum InteractiveCommand {
     Kvp(kvp::KvpCommand),
 }
 
+/// Subcommands for managing VTL2 settings.
+#[derive(clap::Subcommand)]
+enum Vtl2SettingsCommand {
+    /// Show the current VTL2 settings.
+    Show,
+
+    /// Add a SCSI disk to VTL0 backed by a VTL2 storage device.
+    ///
+    /// The backing device can be either a VTL2 NVMe namespace or a VTL2 SCSI disk.
+    AddScsiDisk {
+        /// The VTL0 SCSI controller instance ID (GUID). Defaults to the standard
+        /// OpenVMM VTL0 SCSI instance.
+        #[clap(long)]
+        controller: Option<String>,
+        /// The SCSI LUN to expose to VTL0.
+        #[clap(long)]
+        lun: u32,
+        /// The backing VTL2 NVMe namespace ID.
+        #[clap(
+            long,
+            conflicts_with = "backing_scsi_lun",
+            required_unless_present = "backing_scsi_lun"
+        )]
+        backing_nvme_nsid: Option<u32>,
+        /// The backing VTL2 SCSI LUN.
+        #[clap(
+            long,
+            conflicts_with = "backing_nvme_nsid",
+            required_unless_present = "backing_nvme_nsid"
+        )]
+        backing_scsi_lun: Option<u32>,
+    },
+
+    /// Remove a SCSI disk from VTL0.
+    RmScsiDisk {
+        /// The SCSI controller instance ID (GUID). Defaults to the standard
+        /// OpenVMM VTL0 SCSI instance.
+        #[clap(long)]
+        controller: Option<String>,
+        /// The SCSI LUN to remove.
+        #[clap(long)]
+        lun: u32,
+    },
+}
+
 struct CommandParser {
     app: clap::Command,
 }
@@ -2114,7 +2266,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .with_context(|| format!("binding to VNC port {}", opt.vnc_port))?;
 
         let input_send = vm_config.input.sender();
-        let framebuffer = resources.framebuffer_access.expect("synth video enabled");
+        let framebuffer = resources
+            .framebuffer_access
+            .take()
+            .expect("synth video enabled");
 
         let vnc_host = mesh
             .make_host("vnc", None)
@@ -2211,7 +2366,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let (console_command_send, console_command_recv) = mesh::channel();
     let (inspect_completion_engine_send, inspect_completion_engine_recv) = mesh::channel();
 
-    let mut console_in = resources.console_in;
+    let mut console_in = resources.console_in.take();
     thread::Builder::new()
         .name("stdio-thread".to_string())
         .spawn(move || {
@@ -2780,6 +2935,201 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     tracing::error!(error = error.as_error(), "error removing disk")
                 }
             }
+            InteractiveCommand::Vtl2Settings(cmd) => {
+                if resources.vtl2_settings.is_none() {
+                    eprintln!("error: no VTL2 settings (not running with VTL2?)");
+                    continue;
+                }
+                let action = async {
+                    match cmd {
+                        Vtl2SettingsCommand::Show => {
+                            let settings = resources.vtl2_settings.as_ref().unwrap();
+                            println!("{:#?}", settings);
+                        }
+                        Vtl2SettingsCommand::AddScsiDisk {
+                            controller,
+                            lun,
+                            backing_nvme_nsid,
+                            backing_scsi_lun,
+                        } => {
+                            // Determine the backing device type and path
+                            let (device_type, device_path, sub_device_path) = match (
+                                backing_nvme_nsid,
+                                backing_scsi_lun,
+                            ) {
+                                (Some(nsid), None) => (
+                                    vtl2_settings_proto::physical_device::DeviceType::Nvme,
+                                    storage_builder::NVME_VTL2_INSTANCE_ID,
+                                    nsid,
+                                ),
+                                (None, Some(scsi_lun)) => (
+                                    vtl2_settings_proto::physical_device::DeviceType::Vscsi,
+                                    storage_builder::SCSI_VTL2_INSTANCE_ID,
+                                    scsi_lun,
+                                ),
+                                (Some(_), Some(_)) => {
+                                    anyhow::bail!(
+                                        "can't specify both --backing-nvme-nsid and --backing-scsi-lun"
+                                    );
+                                }
+                                (None, None) => {
+                                    anyhow::bail!(
+                                        "must specify either --backing-nvme-nsid or --backing-scsi-lun"
+                                    );
+                                }
+                            };
+
+                            // Default to the standard OpenVMM VTL0 SCSI instance
+                            let controller_guid = controller
+                                .map(|s| s.parse())
+                                .transpose()
+                                .context("invalid controller GUID")?
+                                .unwrap_or(storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE);
+
+                            resources
+                                .add_vtl0_scsi_disk(
+                                    controller_guid,
+                                    lun,
+                                    device_type,
+                                    device_path,
+                                    sub_device_path,
+                                )
+                                .await?;
+
+                            let backing_desc = if backing_nvme_nsid.is_some() {
+                                format!("nvme_nsid={}", sub_device_path)
+                            } else {
+                                format!("scsi_lun={}", sub_device_path)
+                            };
+                            println!(
+                                "Added VTL0 SCSI disk: controller={}, lun={}, backing={}",
+                                controller_guid, lun, backing_desc
+                            );
+                        }
+                        Vtl2SettingsCommand::RmScsiDisk { controller, lun } => {
+                            // Default to the standard OpenVMM VTL0 SCSI instance
+                            let controller_guid = controller
+                                .map(|s| s.parse())
+                                .transpose()
+                                .context("invalid controller GUID")?
+                                .unwrap_or(storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE);
+
+                            resources
+                                .remove_vtl0_scsi_disk(controller_guid, lun)
+                                .await?;
+
+                            println!(
+                                "Removed VTL0 SCSI disk: controller={}, lun={}",
+                                controller_guid, lun
+                            );
+                        }
+                    }
+                    anyhow::Ok(())
+                };
+
+                if let Err(error) = action.await {
+                    eprintln!("error: {}", error);
+                }
+            }
+            InteractiveCommand::AddNvmeNs {
+                read_only,
+                nsid,
+                ram,
+                file_path,
+                vtl0_lun,
+            } => {
+                if resources.vtl2_settings.is_none() {
+                    eprintln!("error: add-nvme-ns requires --vtl2 mode");
+                    continue;
+                }
+                let action = async {
+                    let nvme = resources
+                        .nvme_vtl2_rpc
+                        .as_ref()
+                        .context("no vtl2 nvme controller")?;
+                    let disk_type = match (ram, file_path) {
+                        (None, Some(path)) => open_disk_type(path.as_ref(), read_only)
+                            .with_context(|| format!("failed to open {}", path.display()))?,
+                        (Some(size), None) => {
+                            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
+                                RamDiskLayerHandle { len: Some(size) },
+                            ))
+                        }
+                        (None, None) => {
+                            anyhow::bail!("must specify either file path or --ram");
+                        }
+                        (Some(_), Some(_)) => {
+                            anyhow::bail!("cannot specify both file path and --ram");
+                        }
+                    };
+
+                    let ns = NamespaceDefinition {
+                        nsid,
+                        read_only,
+                        disk: disk_type,
+                    };
+
+                    nvme.call_failable(NvmeControllerRequest::AddNamespace, ns)
+                        .await?;
+                    println!("Added namespace {}", nsid);
+
+                    // If --vtl0-lun was specified, add a SCSI disk to VTL0 backed by the NVMe namespace
+                    if let Some(lun) = vtl0_lun {
+                        resources
+                            .add_vtl0_scsi_disk(
+                                storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE,
+                                lun,
+                                vtl2_settings_proto::physical_device::DeviceType::Nvme,
+                                storage_builder::NVME_VTL2_INSTANCE_ID,
+                                nsid,
+                            )
+                            .await?;
+                        println!("Exposed namespace {} to VTL0 as SCSI lun={}", nsid, lun);
+                    }
+
+                    Ok(())
+                };
+
+                if let Err(error) = action.await {
+                    eprintln!("error adding nvme namespace: {}", error);
+                }
+            }
+            InteractiveCommand::RmNvmeNs { nsid, vtl0 } => {
+                if resources.vtl2_settings.is_none() {
+                    eprintln!("error: rm-nvme-ns requires --vtl2 mode");
+                    continue;
+                }
+                let action = async {
+                    // If --vtl0 was specified, find and remove the SCSI disk backed by this namespace
+                    if vtl0 {
+                        let removed_lun = resources
+                            .remove_vtl0_scsi_disk_by_nvme_nsid(
+                                storage_builder::UNDERHILL_VTL0_SCSI_INSTANCE,
+                                storage_builder::NVME_VTL2_INSTANCE_ID,
+                                nsid,
+                            )
+                            .await?;
+                        if let Some(lun) = removed_lun {
+                            println!("Removed VTL0 SCSI lun={}", lun);
+                        } else {
+                            println!("No VTL0 SCSI disk found backed by NVMe nsid={}", nsid);
+                        }
+                    }
+
+                    let nvme = resources
+                        .nvme_vtl2_rpc
+                        .as_ref()
+                        .context("no vtl2 nvme controller")?;
+                    nvme.call_failable(NvmeControllerRequest::RemoveNamespace, nsid)
+                        .await?;
+                    println!("Removed NVMe namespace {}", nsid);
+                    anyhow::Ok(())
+                };
+
+                if let Err(error) = action.await {
+                    eprintln!("error removing nvme namespace: {}", error);
+                }
+            }
             InteractiveCommand::Inspect {
                 recursive,
                 limit,
@@ -2936,6 +3286,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 // Work around the detached SCSI task holding up worker stop.
                 // TODO: Fix the underlying bug
                 resources.scsi_rpc = None;
+                resources.nvme_vtl2_rpc = None;
 
                 vm_worker.stop();
                 quit = true;

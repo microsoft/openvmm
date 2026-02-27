@@ -175,6 +175,7 @@ async fn vpci_filter(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Res
                             msix_count: 1,
                             max_io_queues: 1,
                             namespaces: Vec::new(),
+                            requests: None,
                         }
                         .into_resource(),
                     },

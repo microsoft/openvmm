@@ -1,10 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::queue::QueueCore;
+use crate::queue::QueueCoreCompleteWork;
+use crate::queue::QueueCoreGetWork;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
+use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
+use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -16,7 +19,6 @@ use guestmem::GuestMemoryError;
 use guestmem::MappedMemoryRegion;
 use pal_async::DefaultPool;
 use pal_async::driver::Driver;
-use pal_async::task::Spawn;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -31,8 +33,6 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
-use vmcore::vm_task::VmTaskDriver;
-use vmcore::vm_task::VmTaskDriverSource;
 
 #[async_trait]
 pub trait VirtioQueueWorkerContext {
@@ -41,17 +41,15 @@ pub trait VirtioQueueWorkerContext {
 
 #[derive(Debug)]
 pub struct VirtioQueueUsedHandler {
-    core: QueueCore,
-    last_used_index: u16,
+    core: QueueCoreCompleteWork,
     outstanding_desc_count: Arc<Mutex<(u16, event_listener::Event)>>,
     notify_guest: Interrupt,
 }
 
 impl VirtioQueueUsedHandler {
-    fn new(core: QueueCore, notify_guest: Interrupt) -> Self {
+    fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
         Self {
             core,
-            last_used_index: 0,
             outstanding_desc_count: Arc::new(Mutex::new((0, event_listener::Event::new()))),
             notify_guest,
         }
@@ -62,21 +60,8 @@ impl VirtioQueueUsedHandler {
         *count += 1;
     }
 
-    pub fn await_outstanding_descriptors(&self) -> event_listener::EventListener {
-        let (count, event) = &*self.outstanding_desc_count.lock();
-        let listener = event.listen();
-        if *count == 0 {
-            event.notify(usize::MAX);
-        }
-        listener
-    }
-
-    pub fn complete_descriptor(&mut self, descriptor_index: u16, bytes_written: u32) {
-        match self.core.complete_descriptor(
-            &mut self.last_used_index,
-            descriptor_index,
-            bytes_written,
-        ) {
+    pub fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
+        match self.core.complete_descriptor(work, bytes_written) {
             Ok(true) => {
                 self.notify_guest.deliver();
             }
@@ -99,24 +84,24 @@ impl VirtioQueueUsedHandler {
 }
 
 pub struct VirtioQueueCallbackWork {
-    pub payload: Vec<VirtioQueuePayload>,
     used_queue_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
-    descriptor_index: u16,
+    work: QueueWork,
+    pub payload: Vec<VirtioQueuePayload>,
     completed: bool,
 }
 
 impl VirtioQueueCallbackWork {
     pub fn new(
-        payload: Vec<VirtioQueuePayload>,
+        mut work: QueueWork,
         used_queue_handler: &Arc<Mutex<VirtioQueueUsedHandler>>,
-        descriptor_index: u16,
     ) -> Self {
         let used_queue_handler = used_queue_handler.clone();
+        let payload = std::mem::take(&mut work.payload);
         used_queue_handler.lock().add_outstanding_descriptor();
         Self {
+            work,
             payload,
             used_queue_handler,
-            descriptor_index,
             completed: false,
         }
     }
@@ -125,12 +110,12 @@ impl VirtioQueueCallbackWork {
         assert!(!self.completed);
         self.used_queue_handler
             .lock()
-            .complete_descriptor(self.descriptor_index, bytes_written);
+            .complete_descriptor(&self.work, bytes_written);
         self.completed = true;
     }
 
     pub fn descriptor_index(&self) -> u16 {
-        self.descriptor_index
+        self.work.descriptor_index()
     }
 
     // Determine the total size of all readable or all writeable payload buffers.
@@ -227,8 +212,7 @@ impl Drop for VirtioQueueCallbackWork {
 
 #[derive(Debug)]
 pub struct VirtioQueue {
-    core: QueueCore,
-    last_avail_index: u16,
+    core: QueueCoreGetWork,
     used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     queue_event: PolledWait<Event>,
 }
@@ -241,44 +225,31 @@ impl VirtioQueue {
         notify: Interrupt,
         queue_event: PolledWait<Event>,
     ) -> Result<Self, QueueError> {
-        let core = QueueCore::new(features, mem, params)?;
+        let (get_work, complete_work) = new_queue(features, mem, params)?;
         let used_handler = Arc::new(Mutex::new(VirtioQueueUsedHandler::new(
-            core.clone(),
+            complete_work,
             notify,
         )));
         Ok(Self {
-            core,
-            last_avail_index: 0,
+            core: get_work,
             used_handler,
             queue_event,
         })
-    }
-
-    async fn wait_for_outstanding_descriptors(&self) {
-        let wait_for_descriptors = self.used_handler.lock().await_outstanding_descriptors();
-        wait_for_descriptors.await;
     }
 
     fn poll_next_buffer(
         &mut self,
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<VirtioQueueCallbackWork>, QueueError>> {
-        let descriptor_index = loop {
-            if let Some(descriptor_index) = self.core.descriptor_index(self.last_avail_index)? {
-                break descriptor_index;
+        let work = loop {
+            if let Some(work) = self.core.try_next_work()? {
+                break work;
             };
             ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
         };
-        let payload = self
-            .core
-            .reader(descriptor_index)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.last_avail_index = self.last_avail_index.wrapping_add(1);
         Poll::Ready(Ok(Some(VirtioQueueCallbackWork::new(
-            payload,
+            work,
             &self.used_handler,
-            descriptor_index,
         ))))
     }
 }
@@ -424,17 +395,6 @@ impl AsyncRun<VirtioQueueState> for VirtioQueueWorker {
     }
 }
 
-pub struct VirtioRunningState {
-    pub features: VirtioDeviceFeatures,
-    pub enabled_queues: Vec<bool>,
-}
-
-pub enum VirtioState {
-    Unknown,
-    Running(VirtioRunningState),
-    Stopped,
-}
-
 pub(crate) struct VirtioDoorbells {
     registration: Option<Arc<dyn DoorbellRegistration>>,
     doorbells: Vec<Box<dyn Send + Sync>>,
@@ -477,14 +437,6 @@ pub struct DeviceTraits {
     pub shared_memory: DeviceTraitsSharedMemory,
 }
 
-pub trait LegacyVirtioDevice: Send {
-    fn traits(&self) -> DeviceTraits;
-    fn read_registers_u32(&self, offset: u16) -> u32;
-    fn write_registers_u32(&mut self, offset: u16, val: u32);
-    fn get_work_callback(&mut self, index: u16) -> Box<dyn VirtioQueueWorkerContext + Send>;
-    fn state_change(&mut self, state: &VirtioState);
-}
-
 pub trait VirtioDevice: Send {
     fn traits(&self) -> DeviceTraits;
     fn read_registers_u32(&self, offset: u16) -> u32;
@@ -504,102 +456,4 @@ pub struct Resources {
     pub queues: Vec<QueueResources>,
     pub shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     pub shared_memory_size: u64,
-}
-
-/// Wraps an object implementing [`LegacyVirtioDevice`] and implements [`VirtioDevice`].
-pub struct LegacyWrapper<T: LegacyVirtioDevice> {
-    device: T,
-    driver: VmTaskDriver,
-    mem: GuestMemory,
-    workers: Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
-    exit_event: event_listener::Event,
-}
-
-impl<T: LegacyVirtioDevice> LegacyWrapper<T> {
-    pub fn new(driver_source: &VmTaskDriverSource, device: T, mem: &GuestMemory) -> Self {
-        Self {
-            device,
-            driver: driver_source.simple(),
-            mem: mem.clone(),
-            workers: Vec::new(),
-            exit_event: event_listener::Event::new(),
-        }
-    }
-}
-
-impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
-    fn traits(&self) -> DeviceTraits {
-        self.device.traits()
-    }
-
-    fn read_registers_u32(&self, offset: u16) -> u32 {
-        self.device.read_registers_u32(offset)
-    }
-
-    fn write_registers_u32(&mut self, offset: u16, val: u32) {
-        self.device.write_registers_u32(offset, val)
-    }
-
-    fn enable(&mut self, resources: Resources) {
-        let running_state = VirtioRunningState {
-            features: resources.features.clone(),
-            enabled_queues: resources
-                .queues
-                .iter()
-                .map(|QueueResources { params, .. }| params.enable)
-                .collect(),
-        };
-
-        self.device
-            .state_change(&VirtioState::Running(running_state));
-        self.workers = resources
-            .queues
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, queue_resources)| {
-                if !queue_resources.params.enable {
-                    return None;
-                }
-                let worker = VirtioQueueWorker::new(
-                    self.driver.clone(),
-                    self.device.get_work_callback(i as u16),
-                );
-                Some(worker.into_running_task(
-                    "virtio-queue".to_string(),
-                    self.mem.clone(),
-                    resources.features.clone(),
-                    queue_resources,
-                    self.exit_event.listen(),
-                ))
-            })
-            .collect();
-    }
-
-    fn disable(&mut self) {
-        if self.workers.is_empty() {
-            return;
-        }
-        self.exit_event.notify(usize::MAX);
-        self.device.state_change(&VirtioState::Stopped);
-        let mut workers = self.workers.drain(..).collect::<Vec<_>>();
-        self.driver
-            .spawn("shutdown-legacy-virtio-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(async |worker| {
-                    worker.stop().await;
-                    if let Some(VirtioQueueStateInner::Running { queue, .. }) =
-                        worker.state_mut().map(|s| &s.inner)
-                    {
-                        queue.wait_for_outstanding_descriptors().await;
-                    }
-                }))
-                .await;
-            })
-            .detach();
-    }
-}
-
-impl<T: LegacyVirtioDevice> Drop for LegacyWrapper<T> {
-    fn drop(&mut self) {
-        self.disable();
-    }
 }

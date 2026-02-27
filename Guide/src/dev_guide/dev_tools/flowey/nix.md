@@ -29,3 +29,19 @@ error: Cannot build '/nix/store/spg5vbm6mzmsxpg5v2ibg97qrz8khc70-openhcl-kernel-
 ```
 
 Given this error, you would update the corresponding hash to `sha256-An1N76i1MPb+rrQ1nBpoiuxnNeD0E+VuwqXdkPzaZn0=` in the `openhcl_kernel.nix` file.
+
+## Updating the Rust Version
+
+The Nix shell derives its Rust toolchain version from `rust-version` in the root `Cargo.toml` and resolves it against a pinned [rust-overlay](https://github.com/oxalica/rust-overlay) commit in `shell.nix`. When `rust-version` is bumped in `Cargo.toml`, the pinned rust-overlay may not yet include the new version, causing an error like:
+
+```bash
+error: No rust version matching 1.XX.* found in rust-overlay
+```
+
+To fix this, update the rust-overlay pin in `shell.nix` to a commit that includes the new Rust version:
+
+1. Go to the [rust-overlay stable branch commits](https://github.com/oxalica/rust-overlay/commits/stable) and copy the latest commit SHA
+2. In `shell.nix`, find the `rust_overlay` `fetchTarball` block and replace the commit SHA in the `url` with the new one (the long hex string in the URL path, e.g., `https://github.com/oxalica/rust-overlay/archive/<commit-sha>.tar.gz`)
+3. Clear the `sha256` field to an empty string — this is a _content_ hash of the tarball (not the commit SHA), and Nix will compute the correct value for you
+4. Run `nix-shell --pure` and use the printed error to get the new `sha256`
+5. Update the `sha256` with the correct hash from the error

@@ -22,7 +22,6 @@ use futures::executor::block_on;
 use futures::future::try_join_all;
 use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
-use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use ide_resources::GuestMedia;
@@ -59,7 +58,6 @@ use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
-use openvmm_defs::config::SerialPipes;
 use openvmm_defs::config::VirtioBus;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
@@ -78,7 +76,6 @@ use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
-use pci_core::msi::MsiInterruptSet;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
@@ -90,21 +87,16 @@ use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::fs::File;
-use std::io::Read;
-use std::io::Write;
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use storvsp::ScsiControllerDisk;
-use tracing_helpers::ErrorValueExt;
 use virt::ProtoPartition;
 use virt::VpIndex;
-use virtio::LegacyWrapper;
 use virtio::PciInterruptModel;
 use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
-use virtio_serial::VirtioSerialDevice;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
@@ -152,6 +144,7 @@ use vmotherboard::ChipsetDevices;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
+#[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
@@ -187,8 +180,6 @@ impl Manifest {
             framebuffer: config.framebuffer,
             vga_firmware: config.vga_firmware,
             vtl2_gfx: config.vtl2_gfx,
-            virtio_console_pci: config.virtio_console_pci,
-            virtio_serial: config.virtio_serial,
             virtio_devices: config.virtio_devices,
             vmbus: config.vmbus,
             vtl2_vmbus: config.vtl2_vmbus,
@@ -236,8 +227,6 @@ pub struct Manifest {
     framebuffer: Option<framebuffer::Framebuffer>,
     vga_firmware: Option<RomFileLocation>,
     vtl2_gfx: bool,
-    virtio_console_pci: bool,
-    virtio_serial: Option<SerialPipes>,
     virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     vmbus: Option<VmbusConfig>,
     vtl2_vmbus: Option<VmbusConfig>,
@@ -569,9 +558,6 @@ struct LoadedVmInner {
 
     input_distributor: SpawnedUnit<InputDistributor>,
     vtl2_framebuffer_gpa_base: Option<u64>,
-
-    // TODO reclaim these from existing threads
-    virtio_serial: Option<SerialPipes>,
 
     chipset_cfg: BaseChipsetManifest,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1120,16 +1106,6 @@ impl InitializedVm {
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
 
-        // Save the serial handles for restart.
-        //
-        // TODO: instead, take the handles back from the serial device and input threads.
-        let virtio_serial_dup = cfg
-            .virtio_serial
-            .as_ref()
-            .map(|p| p.try_clone())
-            .transpose()
-            .context("cloning virtio_serial")?;
-
         let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
 
         let logger = Box::new(emuplat::firmware::MeshLogger::new(
@@ -1273,7 +1249,7 @@ impl InitializedVm {
                             num_lock_enabled: false,
                             // TODO: these are all very bogus values, and need to be swapped out with something better
                             smbios: firmware_pcat::config::SmbiosConstants {
-                                bios_guid: Guid {
+                                bios_guid: guid::Guid {
                                     data1: 0xC4066C45,
                                     data2: 0x503D,
                                     data3: 0x40E8,
@@ -1761,7 +1737,6 @@ impl InitializedVm {
         let mut vmbus_proxy = None;
         #[cfg(windows)]
         let mut kernel_vmnics = Vec::new();
-        let mut vpci_serial: Option<virtio_serial::SerialIo> = None;
         let mut vmbus_server = None;
         let mut vtl2_vmbus_server = None;
         let mut vtl2_hvsock_relay = None;
@@ -1856,7 +1831,7 @@ impl InitializedVm {
                 dev_cfg.resource,
                 partition.clone().into_doorbell_registration(Vtl::Vtl0),
                 Some(&mapper),
-                partition.clone().into_msi_target(Vtl::Vtl0),
+                partition.clone().into_signal_msi(Vtl::Vtl0),
             )
             .await?;
         }
@@ -1963,71 +1938,17 @@ impl InitializedVm {
             vtl2_vmbus_server = vtl2_vmbus;
         }
 
-        fn make_ids(name: &str, instance_id: Option<Guid>) -> (String, String, Guid, u64) {
-            let guid = instance_id.unwrap_or_else(Guid::new_random);
+        #[cfg(all(windows, feature = "virt_whp"))]
+        fn make_ids(
+            name: &str,
+            instance_id: Option<guid::Guid>,
+        ) -> (String, String, guid::Guid, u64) {
+            let guid = instance_id.unwrap_or_else(guid::Guid::new_random);
             // TODO: clarify how the device ID is constructed
             let device_id = (guid.data2 as u64) << 16 | (guid.data3 as u64 & 0xfff8);
             let vpci_device_name = format!("vpci:{guid}");
             let device_name = format!("{name}:vpci-{guid}");
             (vpci_device_name, device_name, guid, device_id)
-        }
-
-        async fn add_virtio_vpci(
-            driver_source: &VmTaskDriverSource,
-            partition: &Arc<dyn HvlitePartition>,
-            vmbus_server: &Option<VmbusServerHandle>,
-            mapper: &dyn guestmem::MemoryMapper,
-            device_name: &str,
-            chipset_builder: &mut vmotherboard::ChipsetBuilder<'_>,
-            device: Box<dyn virtio::VirtioDevice>,
-        ) -> anyhow::Result<()> {
-            let (vpci_device_name, device_name, instance_id, device_id) =
-                make_ids(device_name, None);
-
-            let mut msi_set = MsiInterruptSet::new();
-            let device = chipset_builder
-                .arc_mutex_device(device_name)
-                .with_external_pci()
-                .try_add(|services| {
-                    VirtioPciDevice::new(
-                        device,
-                        PciInterruptModel::Msix(&mut msi_set),
-                        partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                        &mut services.register_mmio(),
-                        Some(mapper),
-                    )
-                    .context("failed to create a virtio pci device")
-                })?;
-
-            chipset_builder
-                .arc_mutex_device(vpci_device_name)
-                .try_add_async(async |services| {
-                    let mut mmio = services.register_mmio();
-                    let vmbus = vmbus_server.as_ref().context("vmbus not configured")?;
-                    let hv_device = partition
-                        .new_virtual_device(Vtl::Vtl0, device_id)
-                        .context("failed to create virtual device")?;
-
-                    let msi_controller = hv_device.clone().target();
-                    let interrupt_mapper = hv_device.clone().interrupt_mapper();
-                    msi_set.connect(msi_controller.as_ref());
-
-                    let bus = VpciBus::new(
-                        driver_source,
-                        instance_id,
-                        device,
-                        &mut mmio,
-                        vmbus.control().as_ref(),
-                        interrupt_mapper,
-                        None,
-                    )
-                    .await?;
-
-                    anyhow::Ok(bus)
-                })
-                .await?;
-
-            Ok(())
         }
 
         // Synthetic devices
@@ -2057,7 +1978,7 @@ impl InitializedVm {
             #[cfg(windows)]
             for nic_config in cfg.kernel_vmnics {
                 let mut nic = vmswitch::kernel::KernelVmNic::new(
-                    &Guid::new_random(),
+                    &guid::Guid::new_random(),
                     "nic",
                     "nic",
                     nic_config.mac_address.into(),
@@ -2080,21 +2001,6 @@ impl InitializedVm {
             }
 
             if partition.supports_virtual_devices() {
-                if vmbus_server.is_some() {
-                    let serial = VirtioSerialDevice::new(1, &gm);
-                    vpci_serial = Some(serial.io());
-                    add_virtio_vpci(
-                        &driver_source,
-                        &partition,
-                        &vmbus_server,
-                        &mapper,
-                        "virtio-serial-vpci",
-                        &mut chipset_builder,
-                        Box::new(LegacyWrapper::new(&driver_source, serial, &gm)),
-                    )
-                    .await?;
-                }
-
                 for dev_cfg in cfg.vpci_devices {
                     let vmbus = match dev_cfg.vtl {
                         DeviceVtl::Vtl0 => vmbus_server.as_ref().context("vmbus not enabled")?,
@@ -2215,10 +2121,6 @@ impl InitializedVm {
 
         // add virtio devices
 
-        // virtio-mmio does not currently work with UEFI or PCAT because the
-        // DSDT does not get updated and the reported MMIO ranges conflict.
-        let with_virtio_serial_mmio = matches!(cfg.load_mode, LoadMode::Linux { .. });
-
         // Construct virtio devices.
         //
         // TODO: allocate PCI and MMIO space better.
@@ -2298,92 +2200,6 @@ impl InitializedVm {
                             )
                         })?;
                 }
-            }
-        }
-
-        let mut virt_serial_io = None;
-        {
-            if with_virtio_serial_mmio {
-                // Consoles only have one port, or need to implement VIRTIO_CONSOLE_CONSOLE_PORT
-                let virt_serial = VirtioSerialDevice::new(1, &gm);
-                virt_serial_io = Some(virt_serial.io());
-                chipset_builder
-                    .arc_mutex_device("virtio-serial")
-                    .add(|services| {
-                        VirtioMmioDevice::new(
-                            Box::new(LegacyWrapper::new(&driver_source, virt_serial, &gm)),
-                            services.new_line(IRQ_LINE_SET, "interrupt", virtio_mmio_irq),
-                            partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                            virtio_mmio_start - 0x1000,
-                            0x1000,
-                        )
-                    })?;
-                virtio_mmio_start -= 0x1000;
-            }
-        }
-
-        let (virtio_serial_input, mut virtio_serial_output) =
-            cfg.virtio_serial.map(|x| (x.input, x.output)).unzip();
-        if let Some(Some(mut input)) = virtio_serial_input {
-            let virtio_serial = if cfg.virtio_console_pci {
-                vpci_serial.clone()
-            } else {
-                virt_serial_io.clone()
-            };
-            if let Some(mut virtio_serial) = virtio_serial {
-                thread::Builder::new()
-                    .name("virtio serial input".into())
-                    .spawn(move || {
-                        let mut buf = [0; 32];
-                        loop {
-                            let n = input.read(&mut buf).unwrap_or(0);
-                            if n == 0 {
-                                break;
-                            }
-                            virtio_serial.queue_input_bytes(&buf[..n]).unwrap();
-                        }
-                    })
-                    .unwrap();
-            }
-        }
-
-        {
-            let virtio_serial = if cfg.virtio_console_pci {
-                vpci_serial
-            } else {
-                virt_serial_io.clone()
-            };
-            if let Some(virtio_serial) = virtio_serial {
-                virtio_serial.open_port(0);
-                let virt_serial_read = virtio_serial.get_port_read_fn(0);
-                thread::Builder::new()
-                    .name("virtio serial out".into())
-                    .spawn(move || {
-                        loop {
-                            let data = (virt_serial_read)();
-                            if data.is_empty() {
-                                break;
-                            }
-                            if let Some(Some(stdout)) = &mut virtio_serial_output {
-                                let result = stdout.write_all(data.as_slice());
-                                if let Err(error) = result {
-                                    tracing::error!(
-                                        error = error.as_error(),
-                                        "virtio console write failed"
-                                    );
-                                    break;
-                                }
-                                let result = stdout.flush();
-                                if let Err(error) = result {
-                                    tracing::error!(
-                                        error = error.as_error(),
-                                        "virtio console flush failed"
-                                    );
-                                }
-                            }
-                        }
-                    })
-                    .unwrap();
             }
         }
 
@@ -2480,7 +2296,6 @@ impl InitializedVm {
                 vmbus_redirect,
                 input_distributor,
                 vtl2_framebuffer_gpa_base,
-                virtio_serial: virtio_serial_dup,
                 #[cfg(windows)]
                 _vmbus_proxy: vmbus_proxy,
                 #[cfg(windows)]
@@ -3118,11 +2933,9 @@ impl LoadedVm {
             #[cfg(windows)]
             kernel_vmnics: vec![], // TODO
             input,
-            framebuffer: None,         // TODO
-            vga_firmware: None,        // TODO
-            vtl2_gfx: false,           // TODO
-            virtio_console_pci: false, // TODO
-            virtio_serial: self.inner.virtio_serial,
+            framebuffer: None,      // TODO
+            vga_firmware: None,     // TODO
+            vtl2_gfx: false,        // TODO
             virtio_devices: vec![], // TODO
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: vec![], // TODO

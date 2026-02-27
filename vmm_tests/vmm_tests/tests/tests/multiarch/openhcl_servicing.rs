@@ -502,6 +502,72 @@ async fn servicing_keepalive_fault_if_identify(
     Ok(())
 }
 
+/// Test that disabling keepalive through inspect actually disables it.
+/// We test this by disabling keepalive and waiting for IDENTIFY.
+/// We should only receive IDENTIFY if (and only if) keepalive is disabled.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_test_keepalive_disable_through_inspect(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let (identify_verify_send, identify_verify_recv) = mesh::oneshot::<()>();
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::IDENTIFY.0)
+                    .build(),
+                AdminQueueFaultBehavior::Verify(Some(identify_verify_send)),
+            ),
+        );
+
+    let mut flags = config.default_servicing_flags();
+    // Enable keepalive, then disable it later via inspect
+    flags.enable_nvme_keepalive = true;
+    // We need to disabled MANA KA since if either of the KA flasgs in on, DMA manager will save its state
+    // which includes NVMe regions and restore verification will fail ("unrestored allocations found"),
+    // since NVMe KA is off and we don't save anything).
+    flags.enable_mana_keepalive = false;
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+    let sh = agent.unix_shell();
+
+    // Make sure the disk showed up.
+    cmd!(sh, "ls /dev/sda").run().await?;
+
+    fault_start_updater.set(true).await;
+
+    // Disable keepalive via inspect
+    vm.inspect_update_openhcl("vm/nvme_keepalive_mode", "disabled")
+        .await?;
+
+    vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    agent.ping().await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(30))
+        .until_cancelled(identify_verify_recv)
+        .await
+        .expect("IDENTIFY should be observed within 30 seconds of vm restore after servicing with keepalive disabled")
+        .expect("IDENTIFY verification should pass and return a valid result.");
+
+    fault_start_updater.set(false).await;
+
+    Ok(())
+}
+
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_verify_no_duplicate_aers(
@@ -635,14 +701,93 @@ async fn servicing_keepalive_with_io_queue_full(
     fault_start_updater.set(true).await;
     let _io_child = large_read_from_disk(&agent, disk_path).await?;
 
-    // 60 seconds should be plenty of time for the servicing to complete. If
+    // 60 seconds should be plenty of time for the save to complete. If
     // save is stuck it will be exposed here.
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(vm.restart_openhcl(igvm_file.clone(), flags))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM restart did not complete within 60 seconds, even though it should have. Save is stuck.")
-        .expect("VM restart failed");
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck.")
+        .expect("VM save failed");
+
+    vm.restore_openhcl().await?;
+
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    Ok(())
+}
+
+/// Verifies behavior when device io is slow/stuck and we repeatedly
+/// try to service. When draining IO queues after restore, nvme_driver should
+/// still be responsive on Save commands.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_with_unresponsive_io(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let flags = config.default_servicing_flags();
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay (120s). Draining IO after restore will now be excessively slow.
+    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
+        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+            IoQueueFaultBehavior::Delay(Duration::from_secs(120)),
+        ),
+    );
+
+    let scsi_controller_guid = Guid::new_random();
+    let (mut vm, agent) = create_keepalive_test_config(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
+
+    agent.ping().await?;
+
+    // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+    // to /dev/sda or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (DEFAULT_DISK_SIZE / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // At this point the guest should be booted and the disk should be stable
+    // with no other ongoing IO. Start some reads.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // 60 seconds should be plenty of time for the save to complete. Save should
+    // NEVER get stuck. Keeping a timeout to avoid long running tests.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Stuck on first save attempt.")
+        .expect("VM save failed");
+    vm.restore_openhcl().await?;
+    agent.ping().await?;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore.")
+        .expect("VM save failed");
+    vm.restore_openhcl().await?;
 
     fault_start_updater.set(false).await;
     agent.ping().await?;

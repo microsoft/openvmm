@@ -58,7 +58,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.91"
+rust-version = "1.93"
 edition = "2024"
 
 [workspace.dependencies]
@@ -144,6 +144,7 @@ pal_async_test = { path = "support/pal/pal_async_test" }
 pal_event = { path = "support/pal/pal_event" }
 pal_uring = { path = "support/pal/pal_uring" }
 powershell_builder = { path = "support/powershell_builder" }
+resource_dll_parser = { path = "support/resource_dll_parser" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
@@ -176,6 +177,7 @@ lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
 minimal_rt_reloc = { path = "openhcl/minimal_rt_reloc" }
+mem_profile_tracing = { path = "openhcl/mem_profile_tracing" }
 openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
@@ -263,6 +265,8 @@ nvme_resources = { path = "vm/devices/storage/nvme_resources" }
 nvme_spec = { path = "vm/devices/storage/nvme_spec" }
 nvme_test = { path = "vm/devices/storage/nvme_test" }
 storage_string = { path = "vm/devices/storage/storage_string" }
+tdisp = { path = "vm/devices/tdisp" }
+tdisp_proto = { path = "vm/devices/tdisp_proto" }
 vmswitch = { path = "vm/devices/net/vmswitch" }
 pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
@@ -334,7 +338,6 @@ virtio_p9 = { path = "vm/devices/virtio/virtio_p9" }
 virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
-virtio_serial = { path = "vm/devices/virtio/virtio_serial" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
 vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
@@ -435,6 +438,7 @@ criterion = { version = "0.7", default-features = false }
 crossterm = { version = "0.29.0", default-features = false }
 ctrlc = "3.4.0"
 der = "0.7"
+dhat = "0.3.3"
 dirs = "6.0"
 elfcore = "1.1.5"
 embed-resource = "3.0.2"
@@ -542,7 +546,7 @@ syn = "2"
 target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
-time = "0.3"
+time = "0.3.47"
 toml_edit = "0.23"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
@@ -560,6 +564,7 @@ win_etw_provider = "0.1.11"
 win_etw_tracing = "0.1.4"
 winapi = "0.3"
 windows = "0.62"
+windows-result = "0.4"
 windows-service = "0.8"
 windows-sys = "0.61"
 windows-version = "0.1.4"

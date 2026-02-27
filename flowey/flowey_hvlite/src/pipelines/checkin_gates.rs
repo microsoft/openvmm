@@ -17,6 +17,7 @@ use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
 use flowey_lib_hvlite::run_cargo_build::common::CommonProfile;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
@@ -64,6 +65,8 @@ impl IntoPipeline for CheckinGatesCli {
         };
 
         let mut pipeline = Pipeline::new();
+
+        let mut vmgstools = BTreeMap::new();
 
         // configure pr/ci branch triggers and add gh pipeline name
         {
@@ -356,6 +359,17 @@ impl IntoPipeline for CheckinGatesCli {
 
             all_jobs.push(job.finish());
 
+            let vmgstool_target = CommonTriple::Common {
+                arch,
+                platform: CommonPlatform::WindowsMsvc,
+            };
+            if vmgstools
+                .insert(vmgstool_target.to_string(), use_vmgstool.clone())
+                .is_some()
+            {
+                anyhow::bail!("multiple vmgstools for the same target");
+            }
+
             // emit a job for artifacts which _are_ in the VMM tests "hot path"
             let mut job = pipeline
                 .new_job(
@@ -413,10 +427,7 @@ impl IntoPipeline for CheckinGatesCli {
                     prep_steps: ctx.publish_typed_artifact(pub_prep_steps),
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::WindowsMsvc,
-                    },
+                    target: vmgstool_target,
                     profile: CommonProfile::from_release(release),
                     with_crypto: true,
                     with_test_helpers: true,
@@ -485,7 +496,7 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-igvmfilegen"));
             let (pub_vmgs_lib, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgs_lib"));
-            let (pub_vmgstool, _) =
+            let (pub_vmgstool, use_vmgstool) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool"));
             let (pub_ohcldiag_dev, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
@@ -522,6 +533,17 @@ impl IntoPipeline for CheckinGatesCli {
                 }
             }
 
+            let vmgstool_target = CommonTriple::Common {
+                arch,
+                platform: CommonPlatform::LinuxGnu,
+            };
+            if vmgstools
+                .insert(vmgstool_target.to_string(), use_vmgstool.clone())
+                .is_some()
+            {
+                anyhow::bail!("multiple vmgstools for the same target");
+            }
+
             let mut job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -548,10 +570,7 @@ impl IntoPipeline for CheckinGatesCli {
                     }
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: CommonTriple::Common {
-                        arch,
-                        platform: CommonPlatform::LinuxGnu,
-                    },
+                    target: vmgstool_target,
                     profile: CommonProfile::from_release(release),
                     with_crypto: true,
                     with_test_helpers: true,
@@ -1065,12 +1084,18 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
             KnownTestArtifacts::VmgsWithBootEntry,
+            KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
         let cvm_filter = |arch| {
             let mut filter = format!(
-                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs) + test(hyperv_openhcl_pcat)"
+                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
             );
+            // OpenHCL PCAT tests are flakey on AMD SNP runners, so only run on TDX for now
+            if arch == "tdx" {
+                filter.push_str(" + test(hyperv_openhcl_pcat)");
+            }
+
             // See comment for standard filter. Run hyper-v servicing tests on CVM runners.
             match backend_hint {
                 PipelineBackendHint::Ado => {
@@ -1089,6 +1114,7 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
             KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
             KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
+            KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
         for VmmTestJobParams {
@@ -1171,6 +1197,7 @@ impl IntoPipeline for CheckinGatesCli {
                     KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
                     KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
                     KnownTestArtifacts::VmgsWithBootEntry,
+                    KnownTestArtifacts::VmgsWith16kTpm,
                 ],
                 needs_prep_run: false,
             },
@@ -1296,6 +1323,37 @@ impl IntoPipeline for CheckinGatesCli {
 
             for job in all_jobs.iter() {
                 pipeline.non_artifact_dep(&all_good_job, job);
+            }
+        }
+
+        if matches!(config, PipelineConfig::Ci)
+            && matches!(backend_hint, PipelineBackendHint::Github)
+        {
+            let publish_vmgstool_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "publish vmgstool",
+                )
+                .gh_grant_permissions::<flowey_lib_common::publish_gh_release::Node>([(
+                    GhPermission::Contents,
+                    GhPermissionValue::Write,
+                )])
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release::Request {
+                        vmgstools: vmgstools
+                            .into_iter()
+                            .map(|(t, v)| (t, ctx.use_typed_artifact(&v)))
+                            .collect(),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .finish();
+
+            // All other jobs must succeed in order to publish
+            for job in all_jobs.iter() {
+                pipeline.non_artifact_dep(&publish_vmgstool_job, job);
             }
         }
 

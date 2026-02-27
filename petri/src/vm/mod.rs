@@ -22,6 +22,7 @@ use crate::vtl2_settings::Vtl2StorageControllerBuilder;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
+use memory_range::MemoryRange;
 use mesh::CancelContext;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use pal_async::DefaultDriver;
@@ -162,7 +163,7 @@ pub struct PetriVmConfig {
     pub firmware: Firmware,
     /// The amount of memory, in bytes, to assign to the VM
     pub memory: MemoryConfig,
-    /// The processor tology for the VM
+    /// The processor topology for the VM
     pub proc_topology: ProcessorTopology,
     /// VM guest state
     pub vmgs: PetriVmgsResource,
@@ -849,7 +850,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Set the VM to use the specified processor topology.
+    /// Set the VM to use the specified memory config.
     pub fn with_memory(mut self, memory: MemoryConfig) -> Self {
         self.config.memory = memory;
         self
@@ -1283,6 +1284,25 @@ impl<T: PetriVmmBackend> PetriVm<T> {
             .await
     }
 
+    /// Invoke Update (Inspect protocol) on the running OpenHCL instance.
+    ///
+    /// IMPORTANT: As mentioned in the Guide, inspect output is *not* guaranteed
+    /// to be stable. Use this to test that components in OpenHCL are working as
+    /// you would expect. But, if you are adding a test simply to verify that
+    /// the inspect output as some other tool depends on it, then that is
+    /// incorrect.
+    ///
+    /// - `path` and `value` are passed to the [`inspect::Inspect`] machinery.
+    pub async fn inspect_update_openhcl(
+        &self,
+        path: impl Into<String>,
+        value: impl Into<String>,
+    ) -> anyhow::Result<inspect::Value> {
+        self.openhcl_diag()?
+            .inspect_update(path.into(), value.into())
+            .await
+    }
+
     /// Test that we are able to inspect OpenHCL.
     pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
         self.inspect_openhcl("", None, None).await.map(|_| ())
@@ -1699,6 +1719,16 @@ pub enum ApicMode {
     X2apicEnabled,
 }
 
+/// Mmio configuration.
+#[derive(Debug)]
+pub enum MmioConfig {
+    /// The platform provided default.
+    Platform,
+    /// Custom mmio gaps.
+    /// TODO: Not supported on all platforms (ie Hyper-V).
+    Custom(Vec<MemoryRange>),
+}
+
 /// Common memory configuration information for the VM.
 #[derive(Debug)]
 pub struct MemoryConfig {
@@ -1709,6 +1739,8 @@ pub struct MemoryConfig {
     ///
     /// Dynamic memory will be disabled if this is `None`.
     pub dynamic_memory_range: Option<(u64, u64)>,
+    /// Specifies the mmio gaps to use, either platform or custom.
+    pub mmio_gaps: MmioConfig,
 }
 
 impl Default for MemoryConfig {
@@ -1716,6 +1748,7 @@ impl Default for MemoryConfig {
         Self {
             startup_bytes: 0x1_0000_0000,
             dynamic_memory_range: None,
+            mmio_gaps: MmioConfig::Platform,
         }
     }
 }

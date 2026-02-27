@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "mem_profile_tracing"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+dhat.workspace = true
+
+[lints]
+workspace = true

@@ -59,14 +59,24 @@ export const createColumns = (runId: string): ColumnDef<TestResult>[] => [
       const encodedArchitecture = encodeURIComponent(architecturePart);
       const encodedRemainder = encodeURIComponent(restParts.join("/"));
       return (
-        <Link
-          to={`/runs/${runId}/${encodedArchitecture}/${encodedRemainder}`}
-          state={{ testResult: info.row.original }}
-          className="common-table-link"
-          title={`${fullTestName}`}
-        >
-          {testName}
-        </Link>
+        <div className="run-details-testname-cell" title={fullTestName}>
+          <Link
+            to={`/runs/${runId}/${encodedArchitecture}/${encodedRemainder}`}
+            state={{ testResult: info.row.original }}
+            className="common-table-link run-details-testname-link"
+            title={fullTestName}
+          >
+            {testName}
+          </Link>
+          <Link
+            to={`/tests/${encodedArchitecture}/${encodedRemainder}`}
+            className="run-details-testname-perf"
+            aria-label={`View perf for ${fullTestName}`}
+            title={`View perf for ${fullTestName}`}
+          >
+            perf
+          </Link>
+        </div>
       );
     },
     enableSorting: true,

@@ -9,6 +9,8 @@ rust-version.workspace = true
 [features]
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
+# Enable profiler tracing (heap profiling) support
+mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-tracing"]
 
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
@@ -28,6 +30,7 @@ vmotherboard = { workspace = true, features = [
 ] }
 build_info.workspace = true
 cvm_tracing.workspace = true
+mem_profile_tracing = { workspace = true, optional = true }
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
@@ -85,6 +88,7 @@ serial_16550_resources.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
+tpm_protocol.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
@@ -131,6 +135,7 @@ vmcore.workspace = true
 vm_resource.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
 vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+vmgs_format.workspace = true
 vmgs_resources.workspace = true
 x86defs.workspace = true
 

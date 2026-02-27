@@ -8,6 +8,7 @@
 use anyhow::Context;
 use anyhow::bail;
 use inspect::Inspect;
+use inspect::InspectMut;
 use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -79,7 +80,7 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
-#[derive(Clone, Debug, MeshPayload, Inspect)]
+#[derive(Clone, Debug, MeshPayload, Inspect, InspectMut)]
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
@@ -91,10 +92,10 @@ impl FromStr for KeepAliveConfig {
 
     fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
         match s.to_lowercase().as_str() {
-            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "host,privatepool" | "enabled" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
-            x if x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
+            x if x == "disabled" || x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
     }
@@ -103,6 +104,15 @@ impl FromStr for KeepAliveConfig {
 impl KeepAliveConfig {
     pub fn is_enabled(&self) -> bool {
         matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
+    }
+
+    /// Returns the string representation matching the inspect rename attributes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KeepAliveConfig::EnabledHostAndPrivatePoolPresent => "enabled",
+            KeepAliveConfig::DisabledHostAndPrivatePoolPresent => "nohost,privatepool",
+            KeepAliveConfig::Disabled => "disabled",
+        }
     }
 }
 
@@ -274,6 +284,11 @@ pub struct Options {
     /// Timeout in seconds for VM configuration operations, both initial
     /// configuration and subsequent modifications.
     pub config_timeout_in_seconds: u64,
+
+    /// (OPENHCL_SERVICING_TIMEOUT_DUMP_COLLECTION_IN_MS=\<number\>) (default: 500)
+    /// The default time to wait in milliseconds for dump collection during a
+    /// panic in servicing.
+    pub servicing_timeout_dump_collection_in_ms: u64,
 }
 
 impl Options {
@@ -350,6 +365,9 @@ impl Options {
         let parse_legacy_env_number = |name| {
             parse_number(read_legacy_openhcl_env(name))
                 .context(format!("parsing legacy env number: {name}"))
+        };
+        let parse_env_number = |name: &str| {
+            parse_number(read_env(name)).context(format!("parsing env number: {name}"))
         };
 
         let mut wait_for_start = parse_legacy_env_bool("OPENHCL_WAIT_FOR_START");
@@ -448,6 +466,8 @@ impl Options {
         let disable_lower_vtl_timer_virt = parse_env_bool("OPENHCL_DISABLE_LOWER_VTL_TIMER_VIRT");
         let config_timeout_in_seconds =
             parse_legacy_env_number("OPENHCL_CONFIG_TIMEOUT_IN_SECONDS")?.unwrap_or(5);
+        let servicing_timeout_dump_collection_in_ms =
+            parse_env_number("OPENHCL_SERVICING_TIMEOUT_DUMP_COLLECTION_IN_MS")?.unwrap_or(500);
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -514,6 +534,7 @@ impl Options {
             disable_proxy_redirect,
             disable_lower_vtl_timer_virt,
             config_timeout_in_seconds,
+            servicing_timeout_dump_collection_in_ms,
         })
     }
 

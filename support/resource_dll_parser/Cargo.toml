@@ -2,18 +2,14 @@
 # Licensed under the MIT License.
 
 [package]
-name = "virtio_serial"
+name = "resource_dll_parser"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-virtio.workspace = true
-guestmem.workspace = true
-
 anyhow.workspace = true
-async-trait.workspace = true
-parking_lot.workspace = true
-tracing.workspace = true
+fs-err.workspace = true
+object = { workspace = true, features = ["pe", "read_core", "std"] }
 
 [lints]
 workspace = true

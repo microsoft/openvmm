@@ -33,7 +33,7 @@ use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::cfg_space_emu::IntxInterrupt;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -50,7 +50,7 @@ use vmcore::save_restore::SaveRestore;
 
 /// What kind of PCI interrupts [`VirtioPciDevice`] should use.
 pub enum PciInterruptModel<'a> {
-    Msix(&'a mut dyn RegisterMsi),
+    Msix(&'a MsiTarget),
     IntX(PciInterruptPin, LineInterrupt),
 }
 
@@ -100,7 +100,7 @@ pub struct VirtioPciDevice {
 impl VirtioPciDevice {
     pub fn new(
         device: Box<dyn VirtioDevice>,
-        mut interrupt_model: PciInterruptModel<'_>,
+        interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
         shared_mem_mapper: Option<&dyn MemoryMapper>,
@@ -161,10 +161,10 @@ impl VirtioPciDevice {
             ),
         );
 
-        let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(register_msi) =
-            &mut interrupt_model
+        let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(msi_target) =
+            interrupt_model
         {
-            let (msix, msix_capability) = MsixEmulator::new(2, 64, *register_msi);
+            let (msix, msix_capability) = MsixEmulator::new(2, 64, msi_target);
             // setting msix as the first cap so that we don't have to update unit tests
             // i.e: there's no reason why this can't be a .push() instead of .insert()
             caps.insert(0, Box::new(msix_capability));

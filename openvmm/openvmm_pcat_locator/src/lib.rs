@@ -7,12 +7,11 @@
 
 use anyhow::Context;
 use mesh::MeshPayload;
+use resource_dll_parser::DllResourceDescriptor;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-
-mod resource_dll_parser;
 
 #[derive(Debug, MeshPayload)]
 /// The location of discovered ROM data.
@@ -150,29 +149,4 @@ fn parse_rom_file(
         start,
         len,
     })
-}
-
-pub(crate) struct DllResourceDescriptor {
-    /// 4 characters encoded in LE UTF-16
-    resource_type: [u8; 8],
-    id: u32,
-}
-
-impl DllResourceDescriptor {
-    const fn new(resource_type: &[u8; 4], id: u32) -> Self {
-        Self {
-            id,
-            // Convert to LE UTF-16, only support ASCII names today
-            resource_type: [
-                resource_type[0],
-                0,
-                resource_type[1],
-                0,
-                resource_type[2],
-                0,
-                resource_type[3],
-                0,
-            ],
-        }
-    }
 }

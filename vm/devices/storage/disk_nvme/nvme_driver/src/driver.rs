@@ -11,6 +11,8 @@ use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
 use crate::namespace::Namespace;
 use crate::queue_pair::AdminAerHandler;
+use crate::queue_pair::DrainAfterRestore;
+use crate::queue_pair::DrainAfterRestoreBuilder;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::MAX_CQ_ENTRIES;
 use crate::queue_pair::MAX_SQ_ENTRIES;
@@ -176,10 +178,10 @@ pub enum DeviceError {
     Other(anyhow::Error),
 }
 
-#[derive(Debug, Clone)]
 struct ProtoIoQueue {
     save_state: IoQueueSavedState,
     mem: MemoryBlock,
+    drain_after_restore: DrainAfterRestore,
 }
 
 #[derive(Inspect)]
@@ -206,6 +208,7 @@ impl<D: DeviceBacking> IoQueue<D> {
         device_id: &str,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         let IoQueueSavedState {
             cpu,
@@ -221,6 +224,7 @@ impl<D: DeviceBacking> IoQueue<D> {
             queue_data,
             bounce_buffer,
             NoOpAerHandler,
+            drain_after_restore,
         )?;
 
         Ok(Self {
@@ -835,6 +839,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     a,
                     bounce_buffer,
                     AdminAerHandler::new(),
+                    DrainAfterRestoreBuilder::new_no_drain(), // admin queue doesn't need draining
                 )
                 .expect("failed to restore admin queue pair")
             })
@@ -887,6 +892,50 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // (1) Restore qid1 and any queues that have pending commands.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
         let mut max_seen_qid = 1;
+        let nonempty_queues = saved_state
+            .worker_data
+            .io
+            .iter()
+            .filter(|q| !q.queue_data.handler_data.pending_cmds.commands.is_empty())
+            .count();
+        tracing::info!(
+            nonempty_queues,
+            ?pci_id,
+            "drain-after-restore initialization"
+        );
+        // This DrainAfterRestore template tracks which IO queues need to be
+        // drained after restore. We initialize it with the number of non-empty queues
+        // we are restoring eagerly here, but all queues (eagerly restored and
+        // lazily restored) will wait for all (non-empty) queues to drain.
+        let drain_after_restore_template =
+            DrainAfterRestoreBuilder::new(nonempty_queues, pci_id.clone());
+
+        let proto_queues_count = saved_state
+            .worker_data
+            .io
+            .iter()
+            .filter(|q| {
+                q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+            })
+            .count();
+
+        // Precreate waiters for proto queues and for QID 1 (when empty) before
+        // creating and starting eager queues. This ensures that if all eager
+        // non-empty queues drain before we're able to create the proto queues
+        // (or before QID 1's turn in the loop), they will still receive the
+        // signal and not wait forever.
+        let drain_after_restore_for_proto_queues: Vec<_> = (0..proto_queues_count)
+            .map(|_| drain_after_restore_template.new_self_drained())
+            .collect();
+
+        let mut drain_after_restore_for_qid1 = saved_state
+            .worker_data
+            .io
+            .iter()
+            .find(|q| q.queue_data.qid == 1)
+            .filter(|q| q.queue_data.handler_data.pending_cmds.commands.is_empty())
+            .map(|_| drain_after_restore_template.new_self_drained());
+
         worker.io = saved_state
             .worker_data
             .io
@@ -922,6 +971,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     &pci_id,
                     q,
                     bounce_buffer,
+                    if q.queue_data.handler_data.pending_cmds.commands.is_empty() {
+                        drain_after_restore_for_qid1
+                            .take()
+                            .expect("only QID 1 should be empty in eager restore")
+                    } else {
+                        drain_after_restore_template.new_draining()
+                    },
                 )?;
                 tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
                 let issuer = IoIssuer {
@@ -942,7 +998,8 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .filter(|q| {
                 q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
             })
-            .map(|q| {
+            .zip(drain_after_restore_for_proto_queues)
+            .map(|(q, drain_after_restore)| {
                 // Create a prototype IO queue entry.
                 tracing::info!(
                     qid = q.queue_data.qid,
@@ -963,6 +1020,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     ProtoIoQueue {
                         save_state: q.clone(),
                         mem: mem_block,
+                        drain_after_restore,
                     },
                 )
             })
@@ -1105,11 +1163,10 @@ impl IoIssuers {
             .await
             .map_err(RequestError::Gone)?;
 
-        Ok(self.per_cpu[cpu as usize]
+        Ok(&self.per_cpu[cpu as usize]
             .get()
             .expect("issuer was set by rpc")
-            .issuer
-            .as_ref())
+            .issuer)
     }
 }
 
@@ -1184,6 +1241,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             &pci_id,
             &proto.save_state,
             self.bounce_buffer,
+            proto.drain_after_restore,
         )
         .with_context(|| format!("failed to restore io queue for {}, cpu {}", pci_id, cpu))?;
 
