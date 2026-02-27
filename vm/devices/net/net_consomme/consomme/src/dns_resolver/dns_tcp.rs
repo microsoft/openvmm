@@ -16,11 +16,25 @@ use mesh_channel_core::Receiver;
 use std::io::IoSliceMut;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
+use thiserror::Error;
 
 // Maximum allowed DNS message size over TCP: 65535 bytes for the message
 // plus 2 bytes for the TCP length prefix. This is a sanity check to prevent
 // unbounded memory growth.
 const MAX_DNS_TCP_PAYLOAD_SIZE: usize = (u16::MAX as usize) + 2;
+
+/// Errors returned by [`DnsTcpHandler::ingest`] and [`DnsTcpHandler::poll_read`]
+/// when the DNS TCP framing is invalid or the query cannot be processed.
+#[derive(Debug, Error)]
+pub enum DnsTcpError {
+    /// The TCP length prefix specified a message size too small for a valid DNS header.
+    #[error("invalid DNS TCP message length")]
+    InvalidMessageLength,
+    /// The query was rate-limited by the resolver backend.
+    #[error("DNS TCP query rate-limited")]
+    RateLimited,
+}
 
 /// Current phase of the DNS TCP handler state machine.
 enum Phase {
@@ -46,8 +60,6 @@ pub struct DnsTcpHandler {
     phase: Phase,
     /// The guest has sent FIN; no more data will arrive.
     guest_fin: bool,
-    /// True if the TCP framing is invalid and the connection should be dropped.
-    protocol_error: bool,
 }
 
 impl DnsTcpHandler {
@@ -60,7 +72,6 @@ impl DnsTcpHandler {
             tx_offset: 0,
             phase: Phase::Receiving,
             guest_fin: false,
-            protocol_error: false,
         }
     }
 
@@ -73,11 +84,17 @@ impl DnsTcpHandler {
     ///
     /// Returns the number of bytes consumed from `data`. The caller should
     /// only drain this many bytes from its receive buffer.
-    pub fn ingest<B: DnsBackend>(&mut self, data: &[&[u8]], dns: &mut DnsResolver<B>) -> usize {
-        // Don't accept data while a query is in-flight, a response is pending,
-        // or we've hit a protocol error.
-        if !matches!(self.phase, Phase::Receiving) || self.protocol_error {
-            return 0;
+    ///
+    /// Returns an error if the TCP framing is invalid or the query cannot be
+    /// submitted, in which case the caller should reset the connection.
+    pub fn ingest<B: DnsBackend>(
+        &mut self,
+        data: &[&[u8]],
+        dns: &mut DnsResolver<B>,
+    ) -> Result<usize, DnsTcpError> {
+        // Don't accept data while a query is in-flight or a response is pending.
+        if !matches!(self.phase, Phase::Receiving) {
+            return Ok(0);
         }
 
         let mut total_consumed = 0;
@@ -95,11 +112,10 @@ impl DnsTcpHandler {
                 pos += accept;
                 total_consumed += accept;
 
-                if self.try_submit(dns) {
-                    return total_consumed;
-                }
-                if self.protocol_error {
-                    return total_consumed;
+                match self.try_submit(dns) {
+                    Ok(true) => return Ok(total_consumed),
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
                 }
             }
         }
@@ -109,7 +125,7 @@ impl DnsTcpHandler {
             buf_len = self.buf.len(),
             "dns_tcp ingest: done (message incomplete)"
         );
-        total_consumed
+        Ok(total_consumed)
     }
 
     /// How many more bytes are needed to complete the current message.
@@ -122,21 +138,24 @@ impl DnsTcpHandler {
     }
 
     /// If a complete TCP-framed DNS message is in `buf`, submit it to the
-    /// resolver via [`DnsResolver::submit_tcp_query`]. Returns true if the query
-    /// was accepted.
-    fn try_submit<B: DnsBackend>(&mut self, dns: &mut DnsResolver<B>) -> bool {
+    /// resolver via [`DnsResolver::submit_tcp_query`].
+    ///
+    /// Returns `Ok(true)` if the query was submitted, `Ok(false)` if the
+    /// message is still incomplete, or `Err` if the framing is invalid or
+    /// the query was rejected.
+    fn try_submit<B: DnsBackend>(
+        &mut self,
+        dns: &mut DnsResolver<B>,
+    ) -> Result<bool, DnsTcpError> {
         if self.buf.len() < 2 {
-            return false;
+            return Ok(false);
         }
         let msg_len = u16::from_be_bytes([self.buf[0], self.buf[1]]) as usize;
         if msg_len <= super::DNS_HEADER_SIZE {
-            // Invalid DNS message length; flag a protocol error so the caller
-            // can reset the connection.
-            self.protocol_error = true;
-            return false;
+            return Err(DnsTcpError::InvalidMessageLength);
         }
         if self.buf.len() < 2 + msg_len {
-            return false;
+            return Ok(false);
         }
 
         // Submit the raw DNS query (without the TCP length prefix).
@@ -145,27 +164,26 @@ impl DnsTcpHandler {
             dns_query: &self.buf[2..2 + msg_len],
         };
         if !dns.submit_tcp_query(&request, self.receiver.sender()) {
-            // Request limit hit; flag an error so the caller
-            // resets the connection.
             tracelimit::warn_ratelimited!(
                 msg_len,
                 src_port = self.flow.src_port,
                 "dns_tcp: query rate-limited, closing connection"
             );
-            self.protocol_error = true;
-            return false;
+            return Err(DnsTcpError::RateLimited);
         }
         self.buf.clear();
         self.phase = Phase::InFlight;
-        true
+        Ok(true)
     }
 
     /// Poll for the next chunk of response data.
     ///
     /// Models the socket `poll_read_vectored` contract:
-    /// - `Poll::Ready(n)` where `n > 0`: wrote `n` bytes of response data.
-    /// - `Poll::Ready(0)`: EOF — the guest sent FIN and all responses have
+    /// - `Poll::Ready(Ok(n))` where `n > 0`: wrote `n` bytes of response data.
+    /// - `Poll::Ready(Ok(0))`: EOF — the guest sent FIN and all responses have
     ///   been drained. The caller should close the connection.
+    /// - `Poll::Ready(Err(_))`: a protocol error occurred; the caller should
+    ///   reset the connection.
     /// - `Poll::Pending`: waiting for a DNS response or for [`ingest`] to
     ///   submit a new query.
     pub fn poll_read<B: DnsBackend>(
@@ -173,61 +191,53 @@ impl DnsTcpHandler {
         cx: &mut Context<'_>,
         bufs: &mut [IoSliceMut<'_>],
         dns: &mut DnsResolver<B>,
-    ) -> Poll<usize> {
-        // Continue writing a partially-sent response.
-        if matches!(self.phase, Phase::Responding) {
-            let n = self.drain_tx(bufs);
-            return Poll::Ready(n);
-        }
+    ) -> Poll<Result<usize, DnsTcpError>> {
+        match self.phase {
+            Phase::InFlight => {
+                match ready!(self.receiver.poll_recv(cx)) {
+                    Ok(response) => {
+                        dns.complete_tcp_query();
+                        let payload_len = response.response_data.len();
+                        if payload_len > MAX_DNS_TCP_PAYLOAD_SIZE {
+                            tracelimit::warn_ratelimited!(
+                                size = payload_len,
+                                "DNS TCP response exceeds maximum message size, dropping"
+                            );
+                            // Discard the oversized response and return to
+                            // receiving so that ingest can accept the next query.
+                            self.phase = Phase::Receiving;
+                            cx.waker().wake_by_ref();
+                            return Poll::Pending;
+                        }
 
-        // Wait for the in-flight response.
-        if matches!(self.phase, Phase::InFlight) {
-            match self.receiver.poll_recv(cx) {
-                Poll::Ready(Ok(response)) => {
-                    dns.complete_tcp_query();
-                    let payload_len = response.response_data.len();
-                    if payload_len > MAX_DNS_TCP_PAYLOAD_SIZE {
-                        tracelimit::warn_ratelimited!(
-                            size = payload_len,
-                            "DNS TCP response exceeds maximum message size, dropping"
-                        );
-                        // Discard the oversized response and return to
-                        // receiving so that ingest can accept the next query.
-                        self.phase = Phase::Receiving;
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
+                        // Build TCP-framed response: 2-byte length prefix + payload.
+                        self.buf.clear();
+                        self.buf
+                            .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
+                        self.buf
+                            .extend_from_slice(&(payload_len as u16).to_be_bytes());
+                        self.buf.extend(response.response_data);
+                        self.tx_offset = 0;
+                        self.phase = Phase::Responding;
+
+                        let n = self.drain_tx(bufs);
+                        return Poll::Ready(Ok(n));
                     }
-
-                    // Build TCP-framed response: 2-byte length prefix + payload.
-                    self.buf.clear();
-                    self.buf
-                        .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
-                    self.buf
-                        .extend_from_slice(&(payload_len as u16).to_be_bytes());
-                    self.buf.extend(response.response_data);
-                    self.tx_offset = 0;
-                    self.phase = Phase::Responding;
-
-                    let n = self.drain_tx(bufs);
-                    return Poll::Ready(n);
-                }
-                Poll::Ready(Err(_)) => {
-                    // Channel closed unexpectedly; return to receiving.
-                    tracelimit::warn_ratelimited!(
-                        "dns_tcp poll_read: response channel closed unexpectedly"
-                    );
-                    self.phase = Phase::Receiving;
-                }
-                Poll::Pending => {
-                    tracelimit::warn_ratelimited!("dns_tcp poll_read: awaiting backend response");
-                    return Poll::Pending;
+                    Err(_) => {
+                        self.phase = Phase::Receiving;
+                    }
                 }
             }
+            Phase::Responding => {
+                let n = self.drain_tx(bufs);
+                return Poll::Ready(Ok(n));
+            }
+            Phase::Receiving => {}
         }
 
         // No in-flight query and no pending response.
         if self.guest_fin {
-            Poll::Ready(0)
+            Poll::Ready(Ok(0))
         } else {
             Poll::Pending
         }
@@ -255,11 +265,6 @@ impl DnsTcpHandler {
             self.phase = Phase::Receiving;
         }
         written
-    }
-
-    /// Returns true if the connection should be dropped due to invalid framing.
-    pub fn protocol_error(&self) -> bool {
-        self.protocol_error
     }
 
     pub fn guest_fin(&self) -> bool {
@@ -338,7 +343,7 @@ mod tests {
         let query = sample_query();
         let msg = make_tcp_dns_message(&query);
 
-        let consumed = handler.ingest(&[&msg], &mut dns);
+        let consumed = handler.ingest(&[&msg], &mut dns).unwrap();
         assert_eq!(consumed, msg.len());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
@@ -346,7 +351,7 @@ mod tests {
 
         let mut buf = vec![0u8; 256];
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
-            Poll::Ready(n) => {
+            Poll::Ready(Ok(n)) => {
                 assert!(n > 0);
                 // First 2 bytes are the TCP length prefix.
                 let resp_len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
@@ -354,6 +359,7 @@ mod tests {
                 // Response payload should match the query (echo backend).
                 assert_eq!(&buf[2..2 + resp_len], &query);
             }
+            Poll::Ready(Err(e)) => panic!("unexpected error: {e}"),
             Poll::Pending => panic!("expected Ready"),
         }
     }
@@ -367,7 +373,7 @@ mod tests {
         let msg = make_tcp_dns_message(&query);
 
         // Feed just the length prefix.
-        let consumed = handler.ingest(&[&msg[..2]], &mut dns);
+        let consumed = handler.ingest(&[&msg[..2]], &mut dns).unwrap();
         assert_eq!(consumed, 2);
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
@@ -379,11 +385,12 @@ mod tests {
         ));
 
         // Feed the rest.
-        let consumed = handler.ingest(&[&msg[2..]], &mut dns);
+        let consumed = handler.ingest(&[&msg[2..]], &mut dns).unwrap();
         assert_eq!(consumed, msg.len() - 2);
 
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
-            Poll::Ready(n) => assert!(n > 0),
+            Poll::Ready(Ok(n)) => assert!(n > 0),
+            Poll::Ready(Err(e)) => panic!("unexpected error: {e}"),
             Poll::Pending => panic!("expected Ready after completing message"),
         }
     }
@@ -402,7 +409,7 @@ mod tests {
         combined.extend(make_tcp_dns_message(&q2));
 
         // Only the first message should be consumed.
-        let consumed = handler.ingest(&[&combined], &mut dns);
+        let consumed = handler.ingest(&[&combined], &mut dns).unwrap();
         assert_eq!(consumed, make_tcp_dns_message(&q1).len());
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
@@ -411,17 +418,19 @@ mod tests {
         // Drain the first response.
         let mut buf = vec![0u8; 256];
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
-            Poll::Ready(n) => assert!(n > 0),
+            Poll::Ready(Ok(n)) => assert!(n > 0),
+            Poll::Ready(Err(e)) => panic!("unexpected error: {e}"),
             Poll::Pending => panic!("expected Ready for first response"),
         }
 
         // Now the second message can be ingested.
         let remaining = &combined[consumed..];
-        let consumed2 = handler.ingest(&[remaining], &mut dns);
+        let consumed2 = handler.ingest(&[remaining], &mut dns).unwrap();
         assert_eq!(consumed2, make_tcp_dns_message(&q2).len());
 
         match handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns) {
-            Poll::Ready(n) => assert!(n > 0),
+            Poll::Ready(Ok(n)) => assert!(n > 0),
+            Poll::Ready(Err(e)) => panic!("unexpected error: {e}"),
             Poll::Pending => panic!("expected Ready for second response"),
         }
     }
@@ -432,7 +441,9 @@ mod tests {
         let mut handler = DnsTcpHandler::new(test_flow());
 
         let query = sample_query();
-        handler.ingest(&[&make_tcp_dns_message(&query)], &mut dns);
+        handler
+            .ingest(&[&make_tcp_dns_message(&query)], &mut dns)
+            .unwrap();
 
         let waker = std::task::Waker::from(Arc::new(NoopWaker));
         let mut cx = Context::from_waker(&waker);
@@ -446,7 +457,7 @@ mod tests {
         // Should now report EOF.
         assert!(matches!(
             handler.poll_read(&mut cx, &mut [IoSliceMut::new(&mut buf)], &mut dns),
-            Poll::Ready(0)
+            Poll::Ready(Ok(0))
         ));
     }
 
@@ -458,7 +469,9 @@ mod tests {
         // Craft a message with msg_len <= DNS_HEADER_SIZE (12).
         // Length prefix says 4 bytes, which is too small for a DNS header.
         let bad_msg = [0x00, 0x04, 0x01, 0x02, 0x03, 0x04];
-        handler.ingest(&[&bad_msg], &mut dns);
-        assert!(handler.protocol_error());
+        assert!(matches!(
+            handler.ingest(&[&bad_msg], &mut dns),
+            Err(DnsTcpError::InvalidMessageLength)
+        ));
     }
 }

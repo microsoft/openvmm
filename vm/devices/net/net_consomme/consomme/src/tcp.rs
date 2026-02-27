@@ -132,16 +132,14 @@ enum TcpBackend {
     Dns(DnsTcpHandler),
 }
 
+#[derive(Inspect)]
 struct TcpConnection {
+    #[inspect(skip)]
     backend: TcpBackend,
+    #[inspect(flatten)]
     inner: TcpConnectionInner,
 }
 
-impl Inspect for TcpConnection {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.inner.inspect(req)
-    }
-}
 
 #[derive(Inspect)]
 struct TcpConnectionInner {
@@ -774,7 +772,7 @@ impl TcpConnectionInner {
             let (a, b) = self.tx_buffer.unwritten_slices_mut();
             let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
             match dns_handler.poll_read(cx, &mut bufs, dns) {
-                Poll::Ready(n) => {
+                Poll::Ready(Ok(n)) => {
                     if n == 0 {
                         // EOF — close the connection.
                         if !self.state.tx_fin() {
@@ -784,21 +782,26 @@ impl TcpConnectionInner {
                     }
                     self.tx_buffer.extend_by(n);
                 }
+                Poll::Ready(Err(_)) => {
+                    sender.rst(self.tx_send, Some(self.rx_seq));
+                    return false;
+                }
                 Poll::Pending => break,
             }
         }
 
         // rx path: feed guest data into the DNS handler for query extraction.
         let (a, b) = self.rx_buffer.as_slices();
-        let consumed = dns_handler.ingest(&[a, b], dns);
-        if consumed > 0 {
-            self.rx_buffer.drain(..consumed);
-        }
-
-        if dns_handler.protocol_error() {
-            // Invalid DNS TCP framing; reset the connection.
-            sender.rst(self.tx_send, Some(self.rx_seq));
-            return false;
+        match dns_handler.ingest(&[a, b], dns) {
+            Ok(consumed) if consumed > 0 => {
+                self.rx_buffer.drain(..consumed);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // Invalid DNS TCP framing; reset the connection.
+                sender.rst(self.tx_send, Some(self.rx_seq));
+                return false;
+            }
         }
 
         self.send_next(sender);
