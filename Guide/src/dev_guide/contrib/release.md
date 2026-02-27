@@ -42,6 +42,8 @@ We track the state of candidates for a given release by tagging the PRs with the
   * N.B.: A maintainer will _remove_ this tag if the fix is not accepted into the release.
 * `backported_<RELEASE>`: This PR (to `main`) has been cherry-picked to the release branch.
 
+The [`repo_support/relabel_backported.py`](https://github.com/microsoft/openvmm/blob/main/repo_support/relabel_backported.py) script can be used to automatically transition PRs from `backport_<RELEASE>` to `backported_<RELEASE>` once they have been cherry-picked to the release branch.
+
 #### Seeking Approval for Backport
 
 To seek approval to include a change in a release branch, follow these steps:
