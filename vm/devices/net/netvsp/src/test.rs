@@ -5832,6 +5832,16 @@ async fn rss_disable_when_already_disabled_skips_endpoint_restart(driver: Defaul
     let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
     let builder = Nic::builder();
     let nic = builder.build(
+/// Requesting num_sub_channels == max_queues should be rejected
+/// because the subchannels plus the primary channel must fit within max_queues
+/// (i.e. subchannels must be strictly less than max_queues) or we panic.
+#[async_test]
+async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) {
+    const MAX_QUEUES: u16 = 2;
+
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().max_queues(MAX_QUEUES).build(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         Guid::new_random(),
         Box::new(endpoint),
@@ -5847,6 +5857,12 @@ async fn rss_disable_when_already_disabled_skips_endpoint_restart(driver: Defaul
         .await;
 
     // RNDIS Initialize.
+        .initialize(
+            MAX_QUEUES as usize - 1,
+            protocol::NdisConfigCapabilities::new(),
+        )
+        .await;
+
     channel
         .send_rndis_control_message(
             rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
@@ -5859,6 +5875,7 @@ async fn rss_disable_when_already_disabled_skips_endpoint_restart(driver: Defaul
             &[],
         )
         .await;
+
     let _: rndisprot::InitializeComplete = channel
         .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
         .await
@@ -5937,4 +5954,42 @@ async fn rss_enable_then_disable_triggers_endpoint_restart(driver: DefaultDriver
         stop_after > stop_before,
         "endpoint.stop() should be called when transitioning from RSS enabled to disabled"
     );
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: MAX_QUEUES as u32, // subchannels == max_queues == 2
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+
+    // Request should be rejected because num_sub_channels == max_queues.
+    // Would require max_queues + 1 total queues, exceeding the worker count.
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(
+                    completion_data.status,
+                    protocol::Status::FAILURE,
+                    "subchannel request with num_sub_channels == max_queues should be rejected"
+                );
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
 }

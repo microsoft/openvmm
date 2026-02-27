@@ -3832,6 +3832,138 @@ jobs:
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 22 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
       shell: bash
+  job23:
+    name: publish vmgstool
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    needs:
+    - job0
+    - job1
+    - job10
+    - job11
+    - job12
+    - job13
+    - job14
+    - job15
+    - job16
+    - job17
+    - job18
+    - job19
+    - job2
+    - job20
+    - job21
+    - job22
+    - job3
+    - job4
+    - job5
+    - job6
+    - job7
+    - job8
+    - job9
+    if: github.event.pull_request.draft == false
+    steps:
+    - name: 🌼📦 Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-8,aarch64-linux-vmgstool,aarch64-windows-vmgstool,x64-linux-vmgstool,x64-windows-vmgstool}'
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-8" >> $GITHUB_PATH
+      shell: bash
+      name: 🌼📦 Add flowey to PATH
+    - name: 🌼🛫 Initialize job
+      run: |
+        AgentTempDirNormal="${{ runner.temp }}"
+        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
+
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-8/flowey
+
+        echo '"debug"' | flowey v 23 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey v 23 '_internal_WORKING_DIR' --is-raw-string update
+
+        cat <<'EOF' | flowey v 23 'verbose' update
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        EOF
+        echo "$AgentTempDirNormal/used_artifacts/aarch64-linux-vmgstool" | flowey v 23 'artifact_use_from_aarch64-linux-vmgstool' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/aarch64-windows-vmgstool" | flowey v 23 'artifact_use_from_aarch64-windows-vmgstool' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-linux-vmgstool" | flowey v 23 'artifact_use_from_x64-linux-vmgstool' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-vmgstool" | flowey v 23 'artifact_use_from_x64-windows-vmgstool' --is-raw-string update
+      shell: bash
+    - name: create gh cache dir
+      run: flowey e 23 flowey_lib_common::download_gh_cli 0
+      shell: bash
+    - name: Pre-processing cache vars
+      run: |-
+        flowey e 23 flowey_lib_common::cache 0
+        flowey v 23 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar2
+        flowey v 23 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
+      shell: bash
+    - id: flowey_lib_common__cache__1
+      uses: actions/cache@v4
+      with:
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
+      name: 'Restore cache: gh-cli'
+    - name: installing gh
+      run: |-
+        flowey v 23 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --is-raw-string update --env-source steps.flowey_lib_common__cache__1.outputs.cache-hit <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
+        flowey e 23 flowey_lib_common::cache 2
+        flowey e 23 flowey_lib_common::download_gh_cli 1
+        flowey v 23 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
+        ${{ github.token }}
+        EOF
+      shell: bash
+    - name: setup gh cli
+      run: |-
+        flowey e 23 flowey_lib_common::use_gh_cli 0
+        flowey e 23 flowey_core::pipeline::artifact::resolve 1
+        flowey e 23 flowey_core::pipeline::artifact::resolve 0
+        flowey e 23 flowey_core::pipeline::artifact::resolve 3
+        flowey e 23 flowey_core::pipeline::artifact::resolve 2
+      shell: bash
+    - name: enumerate vmgstool release files
+      run: flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 0
+      shell: bash
+    - name: check if openvmm needs to be cloned
+      run: |-
+        flowey e 23 flowey_lib_common::git_checkout 0
+        flowey v 23 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
+        flowey v 23 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar1 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey v 23 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey e 23 flowey_lib_common::git_checkout 3
+        flowey e 23 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+        flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 1
+      shell: bash
+    - name: get cargo crate version
+      run: |-
+        flowey e 23 flowey_lib_common::get_cargo_crate_version 0
+        flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 2
+        flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 3
+        flowey e 23 flowey_lib_hvlite::_jobs::publish_vmgstool_gh_release 4
+      shell: bash
+    - name: publish github releases
+      run: flowey e 23 flowey_lib_common::publish_gh_release 0
+      shell: bash
+    - name: 'validate cache entry: gh-cli'
+      run: flowey e 23 flowey_lib_common::cache 3
+      shell: bash
   job3:
     name: build artifacts (for VMM tests) [aarch64-windows]
     runs-on:

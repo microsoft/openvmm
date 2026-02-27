@@ -2109,11 +2109,11 @@ pub mod steps {
         ///
         /// For more details on how these values affect a particular scope, refer to:
         /// <https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs>
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
         pub enum GhPermissionValue {
-            Read,
-            Write,
-            None,
+            None = 0,
+            Read = 1,
+            Write = 2,
         }
 
         /// Refers to the scope of a permission granted to the GITHUB_TOKEN
@@ -2147,6 +2147,7 @@ pub mod steps {
         use crate::node::FlowPlatform;
         use crate::node::ReadVarValue;
         use crate::node::RuntimeVarDb;
+        use crate::shell::FloweyShell;
         use serde::Serialize;
         use serde::de::DeserializeOwned;
 
@@ -2162,9 +2163,7 @@ pub mod steps {
                 platform,
                 arch,
                 has_read_secret: false,
-                // This is an extension point so that we can swap out the shell implementation to wrap commands using `nix-shell --pure --run <cmd>` in the future
-                #[expect(clippy::disallowed_methods)]
-                sh: xshell::Shell::new()?,
+                sh: FloweyShell::new()?,
             })
         }
 
@@ -2174,8 +2173,12 @@ pub mod steps {
             platform: FlowPlatform,
             arch: FlowArch,
             has_read_secret: bool,
-            /// A pre-initialized xshell::Shell for running commands.
-            pub sh: xshell::Shell,
+            /// A pre-initialized [`FloweyShell`] for running commands.
+            ///
+            /// This wraps [`xshell::Shell`] and supports transparent command
+            /// wrapping. Implements [`Deref<Target = xshell::Shell>`](std::ops::Deref)
+            /// so methods like `change_dir()`, `set_var()`, etc. work directly.
+            pub sh: FloweyShell,
         }
 
         impl RustRuntimeServices<'_> {
@@ -3032,10 +3035,14 @@ macro_rules! flowey_request {
 
 /// Construct a command to run via the flowey shell.
 ///
-/// This is a thin wrapper around [`xshell::cmd!`] that abstracts the
-/// underlying shell implementation, making it possible to swap in a
-/// different shell backend in the future (e.g. wrapping commands in `nix-shell --pure`)
+/// This is a wrapper around [`xshell::cmd!`] that returns a [`FloweyCmd`]
+/// instead of a raw [`xshell::Cmd`]. The [`FloweyCmd`] applies any
+/// [`CommandWrapperKind`] configured on the shell at execution time, making it
+/// possible to transparently wrap commands (e.g. in `nix-shell --pure`)
 /// without touching every callsite.
+///
+/// [`FloweyCmd`]: crate::shell::FloweyCmd
+/// [`CommandWrapperKind`]: crate::shell::CommandWrapperKind
 ///
 /// # Example
 ///
@@ -3045,9 +3052,8 @@ macro_rules! flowey_request {
 #[macro_export]
 macro_rules! shell_cmd {
     ($rt:expr, $cmd:literal) => {{
-        // This is an extension point so that we can swap out the shell implementation to wrap commands using `nix-shell --pure --run <cmd>` in the future
+        let flowey_sh = &$rt.sh;
         #[expect(clippy::disallowed_macros)]
-        let __cmd = $crate::reexports::xshell::cmd!($rt.sh, $cmd);
-        __cmd
+        flowey_sh.wrap($crate::reexports::xshell::cmd!(flowey_sh.xshell(), $cmd))
     }};
 }

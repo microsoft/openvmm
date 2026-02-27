@@ -77,6 +77,7 @@ pub fn ado_yaml(
         flow_backend: crate::cli::FlowBackendCli::Ado,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
     };
 
     let mut ado_jobs = Vec::new();
@@ -91,6 +92,7 @@ pub fn ado_yaml(
             cond_param_idx,
             ref ado_pool,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             gh_override_if: _,
             gh_global_env: _,
             gh_pool: _,
@@ -121,6 +123,12 @@ pub fn ado_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
         }
 
         let mut ado_steps = Vec::new();

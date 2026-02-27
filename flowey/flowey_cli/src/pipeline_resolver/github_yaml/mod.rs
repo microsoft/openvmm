@@ -76,6 +76,7 @@ pub fn github_yaml(
         flow_backend: crate::cli::FlowBackendCli::Github,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -90,6 +91,7 @@ pub fn github_yaml(
             ref external_read_vars,
             ado_pool: _,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
@@ -127,6 +129,12 @@ pub fn github_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
         }
 
         let mut gh_steps = Vec::new();
@@ -534,17 +542,14 @@ EOF
         let mut job_permissions = BTreeMap::new();
         for permission_map in gh_permissions.values() {
             for (permission, value) in permission_map {
-                if let Some(old_value) = job_permissions.insert(permission.clone(), value.clone()) {
-                    if old_value != *value {
-                        anyhow::bail!(
-                            "permission {:?} was to conflicting values in job {:?}: {:?} and {:?}",
-                            permission,
-                            label,
-                            old_value,
-                            value
-                        )
-                    }
-                };
+                // Use the most permissible value set (this allows individual
+                // jobs to override the value set in inject_all_jobs_with)
+                if job_permissions
+                    .get(permission)
+                    .is_none_or(|old_value| *old_value < *value)
+                {
+                    job_permissions.insert(permission.clone(), value.clone());
+                }
             }
         }
 

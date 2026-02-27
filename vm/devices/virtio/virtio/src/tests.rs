@@ -7,15 +7,14 @@
 #![cfg(test)]
 
 use crate::DeviceTraits;
-use crate::LegacyVirtioDevice;
-use crate::LegacyWrapper;
 use crate::PciInterruptModel;
 use crate::QueueResources;
+use crate::Resources;
+use crate::VirtioDevice;
 use crate::VirtioQueueCallbackWork;
 use crate::VirtioQueueState;
 use crate::VirtioQueueWorker;
 use crate::VirtioQueueWorkerContext;
-use crate::VirtioState;
 use crate::queue::QueueParams;
 use crate::spec::pci::*;
 use crate::spec::queue::*;
@@ -33,6 +32,7 @@ use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
+use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -781,15 +781,31 @@ type TestDeviceQueueWorkFn = Arc<dyn Fn(u16, VirtioQueueCallbackWork) + Send + S
 struct TestDevice {
     traits: DeviceTraits,
     queue_work: Option<TestDeviceQueueWorkFn>,
+    driver: vmcore::vm_task::VmTaskDriver,
+    mem: GuestMemory,
+    workers: Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
+    exit_event: event_listener::Event,
 }
 
 impl TestDevice {
-    fn new(traits: DeviceTraits, queue_work: Option<TestDeviceQueueWorkFn>) -> Self {
-        Self { traits, queue_work }
+    fn new(
+        driver_source: &VmTaskDriverSource,
+        traits: DeviceTraits,
+        queue_work: Option<TestDeviceQueueWorkFn>,
+        mem: &GuestMemory,
+    ) -> Self {
+        Self {
+            traits,
+            queue_work,
+            driver: driver_source.simple(),
+            mem: mem.clone(),
+            workers: Vec::new(),
+            exit_event: event_listener::Event::new(),
+        }
     }
 }
 
-impl LegacyVirtioDevice for TestDevice {
+impl VirtioDevice for TestDevice {
     fn traits(&self) -> DeviceTraits {
         self.traits.clone()
     }
@@ -800,14 +816,48 @@ impl LegacyVirtioDevice for TestDevice {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn get_work_callback(&mut self, index: u16) -> Box<dyn VirtioQueueWorkerContext + Send> {
-        Box::new(TestDeviceWorker {
-            index,
-            queue_work: self.queue_work.clone(),
-        })
+    fn enable(&mut self, resources: Resources) {
+        self.workers = resources
+            .queues
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, queue_resources)| {
+                if !queue_resources.params.enable {
+                    return None;
+                }
+                let worker = VirtioQueueWorker::new(
+                    self.driver.clone(),
+                    Box::new(TestDeviceWorker {
+                        index: i as u16,
+                        queue_work: self.queue_work.clone(),
+                    }),
+                );
+                Some(worker.into_running_task(
+                    "virtio-test-queue".to_string(),
+                    self.mem.clone(),
+                    resources.features.clone(),
+                    queue_resources,
+                    self.exit_event.listen(),
+                ))
+            })
+            .collect();
     }
 
-    fn state_change(&mut self, _state: &VirtioState) {}
+    fn disable(&mut self) {
+        if self.workers.is_empty() {
+            return;
+        }
+        self.exit_event.notify(usize::MAX);
+        let mut workers = self.workers.drain(..).collect::<Vec<_>>();
+        self.driver
+            .spawn("shutdown-test-virtio-queues".to_owned(), async move {
+                futures::future::join_all(workers.iter_mut().map(async |worker| {
+                    worker.stop().await;
+                }))
+                .await;
+            })
+            .detach();
+    }
 }
 
 struct TestDeviceWorker {
@@ -842,20 +892,19 @@ impl VirtioPciTestDevice {
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
         let mem = GuestMemory::new("test", test_mem.clone());
         let msi_conn = MsiConnection::new();
+        let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
         let dev = VirtioPciDevice::new(
-            Box::new(LegacyWrapper::new(
-                &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
-                TestDevice::new(
-                    DeviceTraits {
-                        device_id: 3,
-                        device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
-                        max_queues: num_queues,
-                        device_register_length: 12,
-                        ..Default::default()
-                    },
-                    queue_work,
-                ),
+            Box::new(TestDevice::new(
+                &driver_source,
+                DeviceTraits {
+                    device_id: 3,
+                    device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                    max_queues: num_queues,
+                    device_register_length: 12,
+                    ..Default::default()
+                },
+                queue_work,
                 &mem,
             )),
             PciInterruptModel::Msix(msi_conn.target()),
@@ -889,24 +938,23 @@ impl VirtioPciTestDevice {
 
 #[async_test]
 async fn verify_chipset_config(driver: DefaultDriver) {
-    let mem = VirtioTestMemoryAccess::new();
-    let doorbell_registration: Arc<dyn DoorbellRegistration> = mem.clone();
-    let mem = GuestMemory::new("test", mem);
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem);
     let interrupt = LineInterrupt::detached();
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
 
     let mut dev = VirtioMmioDevice::new(
-        Box::new(LegacyWrapper::new(
-            &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
-            TestDevice::new(
-                DeviceTraits {
-                    device_id: 3,
-                    device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
-                    max_queues: 1,
-                    device_register_length: 0,
-                    ..Default::default()
-                },
-                None,
-            ),
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            None,
             &mem,
         )),
         interrupt,
@@ -1682,19 +1730,18 @@ async fn verify_device_queue_simple(driver: DefaultDriver) {
         assert_eq!(work.payload[0].length, 0x1000);
         work.complete(123);
     });
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut dev = VirtioMmioDevice::new(
-        Box::new(LegacyWrapper::new(
-            &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
-            TestDevice::new(
-                DeviceTraits {
-                    device_id: 3,
-                    device_features: features.clone(),
-                    max_queues: 1,
-                    device_register_length: 0,
-                    ..Default::default()
-                },
-                Some(queue_work),
-            ),
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: features.clone(),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            Some(queue_work),
             &mem,
         )),
         interrupt,
@@ -1751,19 +1798,18 @@ async fn verify_device_multi_queue(driver: DefaultDriver) {
         assert_eq!(work.payload[0].length, 0x1000);
         work.complete(123 * i as u32);
     });
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut dev = VirtioMmioDevice::new(
-        Box::new(LegacyWrapper::new(
-            &VmTaskDriverSource::new(SingleDriverBackend::new(driver)),
-            TestDevice::new(
-                DeviceTraits {
-                    device_id: 3,
-                    device_features: features.clone(),
-                    max_queues: num_queues + 1,
-                    device_register_length: 0,
-                    ..Default::default()
-                },
-                Some(queue_work),
-            ),
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: features.clone(),
+                max_queues: num_queues + 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            Some(queue_work),
             &mem,
         )),
         interrupt,
