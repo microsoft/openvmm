@@ -191,37 +191,35 @@ impl DnsTcpHandler {
         dns: &mut DnsResolver<B>,
     ) -> Poll<Result<usize, DnsTcpError>> {
         match self.phase {
-            Phase::InFlight => {
-                match ready!(self.receiver.poll_recv(cx)) {
-                    Ok(response) => {
-                        dns.complete_tcp_query();
-                        let payload_len = response.response_data.len();
-                        if payload_len > MAX_DNS_TCP_PAYLOAD_SIZE {
-                            tracelimit::warn_ratelimited!(
-                                size = payload_len,
-                                "DNS TCP response exceeds maximum message size"
-                            );
-                            return Poll::Ready(Err(DnsTcpError::ResponseTooLarge));
-                        }
-
-                        self.buf.clear();
-                        self.buf
-                            .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
-                        self.buf
-                            .extend_from_slice(&(payload_len as u16).to_be_bytes());
-                        self.buf.extend(response.response_data);
-                        self.tx_offset = 0;
-                        self.phase = Phase::Responding;
-
-                        let n = self.drain_tx(bufs);
-                        return Poll::Ready(Ok(n));
+            Phase::InFlight => match ready!(self.receiver.poll_recv(cx)) {
+                Ok(response) => {
+                    dns.complete_tcp_query();
+                    let payload_len = response.response_data.len();
+                    if payload_len > MAX_DNS_TCP_PAYLOAD_SIZE {
+                        tracelimit::warn_ratelimited!(
+                            size = payload_len,
+                            "DNS TCP response exceeds maximum message size"
+                        );
+                        return Poll::Ready(Err(DnsTcpError::ResponseTooLarge));
                     }
-                    Err(_) => {
-                        dns.complete_tcp_query();
-                        return Poll::Ready(Err(DnsTcpError::QueryCancelled));
-                    }
+
+                    self.buf.clear();
+                    self.buf
+                        .reserve((2 + payload_len).saturating_sub(self.buf.capacity()));
+                    self.buf
+                        .extend_from_slice(&(payload_len as u16).to_be_bytes());
+                    self.buf.extend(response.response_data);
+                    self.tx_offset = 0;
+                    self.phase = Phase::Responding;
+
+                    let n = self.drain_tx(bufs);
+                    return Poll::Ready(Ok(n));
                 }
-            }
+                Err(_) => {
+                    dns.complete_tcp_query();
+                    return Poll::Ready(Err(DnsTcpError::QueryCancelled));
+                }
+            },
             Phase::Responding => {
                 let n = self.drain_tx(bufs);
                 return Poll::Ready(Ok(n));
