@@ -22,7 +22,8 @@ pub enum ReproducibleOpenHclRecipe {
     X64Cvm,
 }
 
-/// Build reproducible artifacts locally. DO NOT USE IN CI.
+/// Build reproducible artifacts locally. DO NOT USE IN CI (unless you know what
+/// you're doing — see [`bail_if_running_in_ci`]).
 #[derive(clap::Args)]
 pub struct BuildReproducibleCli {
     /// Specify which OpenHCL recipe to build / customize off-of.
@@ -43,11 +44,43 @@ pub struct BuildReproducibleCli {
     pub release: bool,
 }
 
+pub fn bail_if_running_in_ci() -> anyhow::Result<()> {
+    const OVERRIDE_ENV: &str = "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_REPRODUCIBLE_IN_CI";
+
+    if std::env::var(OVERRIDE_ENV).is_ok() {
+        return Ok(());
+    }
+
+    for ci_env in ["TF_BUILD", "GITHUB_ACTIONS"] {
+        if std::env::var(ci_env).is_ok() {
+            log::warn!("Detected that {ci_env} is set");
+            log::warn!("");
+            log::warn!("Do not use `build-reproducible` in CI scripts!");
+            log::warn!(
+                "This is a local-only tool to build reproducible IGVM files, with an UNSTABLE CLI."
+            );
+            log::warn!("");
+            log::warn!(
+                "Automated pipelines should use the underlying `flowey` nodes that power build-reproducible directly, _without_ relying on its CLI!"
+            );
+            log::warn!("");
+            log::warn!(
+                "If you _really_ know what you're doing, you can set {OVERRIDE_ENV} to disable this error."
+            );
+            anyhow::bail!("attempted to run `build-reproducible` in CI")
+        }
+    }
+
+    Ok(())
+}
+
 impl IntoPipeline for BuildReproducibleCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
             anyhow::bail!("build-reproducible is for local use only")
         }
+
+        bail_if_running_in_ci()?;
 
         let Self { recipe, release } = self;
 

@@ -42,6 +42,7 @@ pub mod install_cargo_nextest;
 pub mod install_dist_pkg;
 pub mod install_dotnet_cli;
 pub mod install_git;
+pub mod install_nix;
 pub mod install_nodejs;
 pub mod install_rust;
 pub mod nuget_install_package;
