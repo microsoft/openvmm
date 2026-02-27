@@ -68,22 +68,10 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 use underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME;
 use zerocopy::FromBytes;
-use zerocopy::IntoBytes;
 
 #[derive(Parser)]
 #[clap(name = "igvmfilegen", about = "Tool to generate IGVM files")]
 enum Options {
-    /// Dumps the contents of an IGVM file in a human-readable format.
-    ///
-    /// Accepts either a raw IGVM file or a `vmfirmwareigvm` resource DLL
-    /// (`vmfirmwareigvm.dll` / `vmfirmwarecvm.dll`); for a DLL, the embedded
-    /// IGVM is extracted automatically.
-    // TODO: Move into its own tool.
-    Dump {
-        /// Dump file path
-        #[clap(short, long = "filepath")]
-        file_path: PathBuf,
-    },
     /// Dump CoRIM (Concise Reference Integrity Manifest) headers and payloads from an IGVM file.
     ///
     /// This command scans the IGVM variable headers for CoRIM-related entries and prints or
@@ -313,18 +301,6 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match opts {
-        Options::Dump { file_path } => {
-            let image = firmware_dll::read_igvm_image(&file_path)?;
-            let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())
-                .expect("Invalid fixed header")
-                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-
-            let igvm_data = IgvmFile::new_from_binary(&image, None).expect("should be valid");
-            println!("Total file size: {} bytes\n", fixed_header.total_file_size);
-            println!("{:#X?}", fixed_header);
-            println!("{}", igvm_data);
-            Ok(())
-        }
         Options::DumpCorim {
             file_path,
             header_type,
