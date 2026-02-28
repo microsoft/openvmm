@@ -18,13 +18,11 @@ fuse.workspace = true
 lx.workspace = true
 lxutil.workspace = true
 pal.workspace = true
-pal_async.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
 event-listener.workspace = true
-futures.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

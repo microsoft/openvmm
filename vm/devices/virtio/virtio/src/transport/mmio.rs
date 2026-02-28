@@ -11,6 +11,7 @@ use crate::spec::*;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
+use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
@@ -43,6 +44,7 @@ pub struct VirtioMmioDevice {
     events: Vec<pal_event::Event>,
     queues: Vec<QueueParams>,
     device_status: VirtioDeviceStatus,
+    disabling: bool,
     config_generation: u32,
     doorbells: VirtioDoorbells,
     interrupt_state: Arc<Mutex<InterruptState>>,
@@ -123,6 +125,7 @@ impl VirtioMmioDevice {
             events,
             queues,
             device_status: VirtioDeviceStatus::new(),
+            disabling: false,
             config_generation: 0,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             interrupt_state,
@@ -136,12 +139,6 @@ impl VirtioMmioDevice {
                 .lock()
                 .update(true, VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE);
         }
-    }
-}
-
-impl Drop for VirtioMmioDevice {
-    fn drop(&mut self) {
-        self.device.disable();
     }
 }
 
@@ -354,14 +351,24 @@ impl VirtioMmioDevice {
             // Device status
             112 => {
                 if val == 0 {
+                    if self.disabling {
+                        return;
+                    }
                     let started = self.device_status.driver_ok();
-                    self.device_status = VirtioDeviceStatus::new();
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
-                        self.device.disable();
+                        let waker = std::task::Waker::noop();
+                        let mut cx = std::task::Context::from_waker(&waker);
+                        if self.device.poll_disable(&mut cx).is_pending() {
+                            self.disabling = true;
+                            return;
+                        }
                     }
+                    // Fast path: disable completed synchronously.
+                    self.device_status = VirtioDeviceStatus::new();
                     self.interrupt_state.lock().update(false, !0);
+                    return;
                 }
 
                 let new_status = VirtioDeviceStatus::from(val as u8);
@@ -474,12 +481,35 @@ impl ChangeDeviceState for VirtioMmioDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        // TODO
+        if self.device_status.driver_ok() || self.disabling {
+            self.doorbells.clear();
+            std::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+        }
+        self.device_status = VirtioDeviceStatus::new();
+        self.disabling = false;
+        self.config_generation = 0;
+        self.interrupt_state.lock().update(false, !0);
+    }
+}
+
+impl PollDevice for VirtioMmioDevice {
+    fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        if self.disabling {
+            if self.device.poll_disable(cx).is_ready() {
+                self.device_status = VirtioDeviceStatus::new();
+                self.disabling = false;
+                self.interrupt_state.lock().update(false, !0);
+            }
+        }
     }
 }
 
 impl ChipsetDevice for VirtioMmioDevice {
     fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+        Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
         Some(self)
     }
 }
