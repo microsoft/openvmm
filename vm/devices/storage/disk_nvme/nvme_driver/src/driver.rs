@@ -1396,7 +1396,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             None => DrainAfterRestoreBuilder::new_no_drain(),
         };
 
-        if matches!(drain_after_restore, DrainAfterRestore::SelfDrained { .. }) {
+        if matches!(&drain_after_restore, DrainAfterRestore::SelfDrained { .. }) {
             tracing::info!(
                 qid,
                 cpu,
