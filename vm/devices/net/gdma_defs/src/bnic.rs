@@ -73,6 +73,10 @@ pub struct ManaQueryDeviceCfgResp {
     pub max_num_vports: u16,
     pub reserved: u16,
     pub max_num_eqs: u32,
+    // OVL3 fields
+    pub adapter_mtu: u16,
+    pub reserved2: u16,
+    pub adapter_link_speed_mbps: u32,
 }
 
 impl std::fmt::Debug for ManaQueryDeviceCfgResp {
@@ -85,6 +89,9 @@ impl std::fmt::Debug for ManaQueryDeviceCfgResp {
             .field("max_num_vports", &self.max_num_vports)
             .field("reserved", &self.reserved)
             .field("max_num_eqs", &self.max_num_eqs)
+            .field("adapter_mtu", &self.adapter_mtu)
+            .field("reserved2", &self.reserved2)
+            .field("adapter_link_speed_mbps", &self.adapter_link_speed_mbps)
             .finish()
     }
 }
@@ -98,6 +105,17 @@ impl ManaQueryDeviceCfgResp {
     }
     pub fn cap_filter_state_query(&self) -> bool {
         self.pf_cap_flags1.query_filter_state() != 0
+    }
+    /// Returns the adapter link speed in bits per second.
+    /// Falls back to a default of 200 Gbps when the hardware does not report
+    /// a link speed (OVL2 or lower responses return 0).
+    pub fn link_speed_bps(&self) -> u64 {
+        if self.adapter_link_speed_mbps > 0 {
+            self.adapter_link_speed_mbps as u64 * 1000 * 1000
+        } else {
+            // Default to 200 Gbps for V1 hardware that does not report speed.
+            200 * 1000 * 1000 * 1000
+        }
     }
 }
 
