@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { LogEntry, LogLink } from "../data_defs";
+import { stripAnsi } from "../ansi_span";
 
 /**
  * Fetch the raw petri.jsonl log content for a given run / architecture / test path.
@@ -216,7 +217,8 @@ export async function fetchProcessedLog(
       severity,
       source,
       logMessage: {
-        message: message,
+        message: stripAnsi(message),
+        rawMessage: message,
         link_string: links_text.trim(),
         links: logLinks,
       },

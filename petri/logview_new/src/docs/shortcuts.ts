@@ -63,6 +63,24 @@ export const shortcutSections: readonly ShortcutCategory[] = [
     ],
   },
   {
+    title: "Tables",
+    note: "These shortcuts apply to any table.",
+    shortcuts: [
+      {
+        shortcutParts: ["Ctrl", "↑"],
+        descriptions: [
+          "Scrolls the table to the very top. It will not fire if a text input, textarea, or other editable element is focused.",
+        ],
+      },
+      {
+        shortcutParts: ["Ctrl", "↓"],
+        descriptions: [
+          "Scrolls the table to the very bottom. It will not fire if a text input, textarea, or other editable element is focused.",
+        ],
+      },
+    ],
+  },
+  {
     title: "Inspect Viewer",
     note: "These apply to the Inspect overlay in parsed/tree mode (not raw mode). Arrow-key navigation is disabled while typing in inputs.",
     shortcuts: [

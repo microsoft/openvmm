@@ -60,7 +60,8 @@ export interface LogEntry {
 }
 
 export interface LogMessage {
-  message: string;
+  message: string;      // Plain text (ANSI stripped) — used for search/filter/copy
+  rawMessage: string;   // Original message with ANSI escape codes — used for colored rendering
   link_string: string;  // This is a space-separated string of link texts for searching/sorting
   links: LogLink[];
 }
