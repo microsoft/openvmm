@@ -119,6 +119,7 @@ export function VirtualizedTable<TData extends object>({
   // Ctrl+↑ scrolls to top, Ctrl+↓ scrolls to bottom (global shortcut).
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (rows.length === 0) return;
       if (e.ctrlKey && e.key === "ArrowUp") {
         e.preventDefault();
         rowVirtualizer.scrollToIndex(0, { align: "start" });
