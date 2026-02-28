@@ -120,11 +120,15 @@ export function VirtualizedTable<TData extends object>({
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (rows.length === 0) return;
+
+      // Only fire when nothing interactive is focused (or the table itself is).
+      // This prevents swallowing Ctrl+Arrow in the search bar, text inputs, etc.
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+
       if (e.ctrlKey && e.key === "ArrowUp") {
-        e.preventDefault();
         rowVirtualizer.scrollToIndex(0, { align: "start" });
       } else if (e.ctrlKey && e.key === "ArrowDown") {
-        e.preventDefault();
         rowVirtualizer.scrollToIndex(rows.length - 1, { align: "end" });
       }
     };
