@@ -60,16 +60,22 @@ export const shortcutSections: readonly ShortcutCategory[] = [
           "Copies a deep link URL to the selected log line (adds/updates `log=` in the hash-router query string).",
         ],
       },
+    ],
+  },
+  {
+    title: "Tables",
+    note: "These shortcuts apply to any table.",
+    shortcuts: [
       {
         shortcutParts: ["Ctrl", "↑"],
         descriptions: [
-          "Scrolls the log table to the very top.",
+          "Scrolls the table to the very top. It will not fire if a text input, textarea, or other editable element is focused.",
         ],
       },
       {
         shortcutParts: ["Ctrl", "↓"],
         descriptions: [
-          "Scrolls the log table to the very bottom.",
+          "Scrolls the table to the very bottom. It will not fire if a text input, textarea, or other editable element is focused.",
         ],
       },
     ],
