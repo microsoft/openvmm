@@ -162,8 +162,8 @@ fn direct_run_do_work(
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
-                    flow_platform,
-                    flow_arch,
+                    platform,
+                    arch,
                     patches.clone(),
                     root_nodes
                         .clone()
@@ -342,7 +342,7 @@ fn direct_run_do_work(
             &mut in_mem_var_db,
             FlowBackend::Local,
             platform,
-            flow_arch,
+            arch,
         )?;
 
         if let Some(wrapper) = command_wrapper {
