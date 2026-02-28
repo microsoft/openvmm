@@ -1159,6 +1159,11 @@ impl NicBuilder {
             link_speed: endpoint.link_speed(),
         });
 
+        tracing::info!(
+            link_speed_bps = adapter.link_speed,
+            "adapter link speed configured"
+        );
+
         let coordinator = TaskControl::new(CoordinatorState {
             endpoint,
             adapter: adapter.clone(),
@@ -3377,6 +3382,11 @@ impl Adapter {
             }
             rndisprot::Oid::OID_GEN_LINK_SPEED => {
                 let speed: u32 = (self.link_speed / 100) as u32; // In 100bps units
+                tracing::info!(
+                    link_speed_bps = self.link_speed,
+                    speed_100bps = speed,
+                    "OID_GEN_LINK_SPEED"
+                );
                 writer.write(speed.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_TRANSMIT_BUFFER_SPACE
@@ -3438,6 +3448,11 @@ impl Adapter {
                     pause_functions: 0, /* NdisPauseFunctionsUnsupported */
                     auto_negotiation_flags: 0,
                 };
+                tracing::info!(
+                    xmit_link_speed = self.link_speed,
+                    rcv_link_speed = self.link_speed,
+                    "OID_GEN_LINK_STATE"
+                );
                 writer.write(link_state.as_bytes())?;
             }
             rndisprot::Oid::OID_GEN_MAX_LINK_SPEED => {
@@ -3445,6 +3460,11 @@ impl Adapter {
                     xmit: self.link_speed,
                     rcv: self.link_speed,
                 };
+                tracing::info!(
+                    xmit = self.link_speed,
+                    rcv = self.link_speed,
+                    "OID_GEN_MAX_LINK_SPEED"
+                );
                 writer.write(link_speed.as_bytes())?;
             }
             rndisprot::Oid::OID_TCP_OFFLOAD_HARDWARE_CAPABILITIES => {
