@@ -6,6 +6,9 @@ name = "tee_call"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+dev_snp_ohcl_tio_support = ["sev_guest_device/dev_snp_ohcl_tio_support"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 hvdef.workspace = true

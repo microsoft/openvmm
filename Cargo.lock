@@ -6911,9 +6911,20 @@ name = "sev_guest_device"
 version = "0.0.0"
 dependencies = [
  "nix 0.30.1",
+ "sev_guest_device_tio",
  "static_assertions",
  "thiserror 2.0.16",
+ "tracing",
  "x86defs",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "sev_guest_device_tio"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "static_assertions",
  "zerocopy 0.8.27",
 ]
 

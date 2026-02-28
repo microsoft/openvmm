@@ -148,6 +148,7 @@ resource_dll_parser = { path = "support/resource_dll_parser" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
+sev_guest_device_tio = { path = "support/sev_guest_device/sev_guest_device_tio" }
 sparse_mmap = { path = "support/sparse_mmap" }
 string_page_buf = { path = "support/string_page_buf" }
 task_control = { path = "support/task_control" }

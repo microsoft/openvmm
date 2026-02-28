@@ -21,6 +21,9 @@ uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worke
 nvme = ["openvmm_hcl_resources/nvme", "vpci"]
 vpci = ["underhill_entry/vpci"]
 
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["underhill_entry/dev_snp_ohcl_tio_support"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_entry.workspace = true
 openvmm_hcl_resources.workspace = true
