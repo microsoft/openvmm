@@ -1087,12 +1087,12 @@ impl IntoPipeline for CheckinGatesCli {
             KnownTestArtifacts::VmgsWith16kTpm,
         ];
 
-        let cvm_filter = |arch| {
+        let cvm_filter = |isolation_type| {
             let mut filter = format!(
-                "test({arch}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
+                "test({isolation_type}) + (test(vbs) & test(hyperv)) + test(very_heavy) + test(openvmm_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_vbs)"
             );
             // OpenHCL PCAT tests are flakey on AMD SNP runners, so only run on TDX for now
-            if arch == "tdx" {
+            if isolation_type == "tdx" {
                 filter.push_str(" + test(hyperv_openhcl_pcat)");
             }
 
@@ -1106,6 +1106,11 @@ impl IntoPipeline for CheckinGatesCli {
                 _ => {
                     filter.push_str(" + (test(servicing) & test(hyperv))");
                 }
+            }
+
+            // Exclude any PCAT tests that were picked up by other filters
+            if isolation_type == "snp" {
+                filter = format!("({filter}) & !test(pcat)")
             }
             filter
         };
