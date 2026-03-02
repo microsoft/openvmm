@@ -6,13 +6,9 @@ name = "sev_guest_device_tio"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-dev_snp_ohcl_tio_support = []
-
 [dependencies]
 static_assertions.workspace = true
 zerocopy.workspace = true
-[target.'cfg(target_os = "linux")'.dependencies]
 bitfield-struct.workspace = true
 
 [lints]
