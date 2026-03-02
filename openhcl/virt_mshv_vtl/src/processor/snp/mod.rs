@@ -1500,7 +1500,7 @@ impl UhProcessor<'_, SnpBacked> {
 
             SevExitCode::NPF => &mut self.backing.exit_stats[entered_from_vtl].npf_no_intercept,
 
-            SevExitCode::HLT => {
+            SevExitCode::HLT | SevExitCode::IDLE_HLT => {
                 self.backing.cvm.lapics[entered_from_vtl].activity = MpState::Halted;
                 // RIP has already advanced. Clear interrupt shadow.
                 vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
@@ -1559,8 +1559,7 @@ impl UhProcessor<'_, SnpBacked> {
             | SevExitCode::PAUSE
             | SevExitCode::SMI
             | SevExitCode::VMGEXIT
-            | SevExitCode::BUSLOCK
-            | SevExitCode::IDLE_HLT => {
+            | SevExitCode::BUSLOCK => {
                 // Ignore intercept processing if the guest exited due to an automatic exit.
                 &mut self.backing.exit_stats[entered_from_vtl].automatic_exit
             }

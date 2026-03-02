@@ -140,6 +140,10 @@ struct TestNicEndpointState {
     pub stop_endpoint_counter: usize,
     pub link_status_updater: Option<mesh::Sender<VecDeque<bool>>>,
     pub queues: Vec<mesh::Sender<Vec<u8>>>,
+    /// When true (default), `TestNicQueue::tx_avail` returns `(true, N)` so
+    /// TX packets are completed synchronously.  When false it returns
+    /// `(false, N)`, leaving packets in-flight.
+    pub sync_tx: bool,
 }
 
 impl TestNicEndpointState {
@@ -152,6 +156,7 @@ impl TestNicEndpointState {
             stop_endpoint_counter: 0,
             link_status_updater: None,
             queues: Vec::new(),
+            sync_tx: true,
         }))
     }
 
@@ -228,16 +233,20 @@ impl net_backend::Endpoint for TestNicEndpoint {
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
         queues.clear();
+        let inner = self.inner.lock().await;
+        let sync_tx = inner
+            .endpoint_state
+            .as_ref()
+            .is_none_or(|s| s.lock().sync_tx);
         let senders = config
             .into_iter()
             .map(|config| {
                 let (tx, rx) = mesh::channel();
-                queues.push(Box::new(TestNicQueue::new(config, rx)));
+                queues.push(Box::new(TestNicQueue::new(config, rx, sync_tx)));
                 tx
             })
             .collect::<Vec<_>>();
 
-        let inner = self.inner.lock().await;
         if let Some(endpoint_state) = &inner.endpoint_state {
             let mut locked_data = endpoint_state.lock();
             locked_data.queues = senders;
@@ -329,16 +338,18 @@ struct TestNicQueue {
     #[inspect(skip)]
     rx: mesh::Receiver<Vec<u8>>,
     next_rx_packet: Option<Vec<u8>>,
+    sync_tx: bool,
 }
 
 impl TestNicQueue {
-    pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>) -> Self {
+    pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>, sync_tx: bool) -> Self {
         let rx_ids = config.initial_rx.iter().copied().collect();
         Self {
             pool: config.pool,
             rx_ids,
             rx,
             next_rx_packet: None,
+            sync_tx,
         }
     }
 }
@@ -405,7 +416,7 @@ impl NetQueue for TestNicQueue {
     }
 
     fn tx_avail(&mut self, packets: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
-        Ok((true, packets.len()))
+        Ok((self.sync_tx, packets.len()))
     }
 
     fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
@@ -5588,6 +5599,346 @@ async fn rndis_send_tcp_checksum_packet(driver: DefaultDriver) {
     assert_eq!(completion.status, protocol::Status::SUCCESS);
 }
 
+/// Helper: builds an RSS-enable parameter block that the set_rss_parameter
+/// OID path accepts.
+fn build_rss_enable_params() -> Vec<u8> {
+    #[repr(C)]
+    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 1],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 4,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        indirection_table: [0],
+    };
+    rss_params.as_bytes().to_vec()
+}
+
+/// Helper: builds an RSS-disable parameter block (sets
+/// `NDIS_RSS_PARAM_FLAG_DISABLE_RSS`).
+fn build_rss_disable_params() -> Vec<u8> {
+    #[repr(C)]
+    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 1],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: NDIS_RSS_PARAM_FLAG_DISABLE_RSS,
+            base_cpu_number: 0,
+            hash_information: 0,
+            indirection_table_size: 4,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        indirection_table: [0],
+    };
+    rss_params.as_bytes().to_vec()
+}
+
+/// Helper: send an RSS OID SET and consume the SET_CMPLT + completion.
+async fn send_rss_oid_and_complete(channel: &mut TestNicChannel<'_>, rss_bytes: &[u8]) {
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: rss_bytes.len() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_bytes,
+        )
+        .await;
+
+    let rndis_parser = channel.rndis_message_parser();
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (header, _external_ranges) = rndis_parser.parse_control_message(packet);
+                assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                packet.transaction_id().unwrap()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("RSS completion message");
+
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+}
+
+/// Verifies that in-flight TX packets receive completions after an endpoint
+/// restart triggered by an RSS parameter change.
+///
+/// Uses `TestNicEndpoint` with `sync_tx` set to `false` so queues return
+/// `sync=false` from `tx_avail`, leaving TX packets in the
+/// `pending_tx_packets` state. When `restart_queues()` stops the endpoint,
+/// `reset_tx_after_endpoint_stop()` should queue completions so the guest
+/// is unblocked.
+#[async_test]
+async fn tx_inflight_packets_completed_after_endpoint_restart(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    endpoint_state.lock().sync_tx = false;
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+
+    // Send RNDIS init so the device enters the active state.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _init_complete: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    let stop_before = endpoint_state.lock().stop_endpoint_counter;
+
+    // Send a data packet. Because `sync_tx` is false, `tx_avail` returns
+    // `(false, N)`, the packet stays in-flight (pending_packet_count > 0).
+    let frame = vec![0xBB; 60];
+    channel
+        .send_rndis_control_message_no_completion(
+            rndisprot::MESSAGE_TYPE_PACKET_MSG,
+            rndisprot::Packet {
+                data_offset: size_of::<rndisprot::MessageHeader>() as u32,
+                data_length: frame.len() as u32,
+                oob_data_offset: 0,
+                oob_data_length: 0,
+                num_oob_data_elements: 0,
+                per_packet_info_offset: 0,
+                per_packet_info_length: 0,
+                vc_handle: 0,
+                reserved: 0,
+            },
+            frame.as_slice(),
+        )
+        .await;
+
+    // The TX is NOT completed synchronously because the mock endpoint is
+    // async. A completion should NOT arrive yet.
+    // (We don't assert no-completion here because the worker may not have
+    // processed the packet yet; instead we proceed to trigger the restart.)
+
+    // Trigger an RSS parameter change, which causes restart_queues() →
+    // endpoint.stop() → reset_tx_after_endpoint_stop().
+    let rss_bytes = build_rss_enable_params();
+    send_rss_oid_and_complete(&mut channel, &rss_bytes).await;
+
+    // Endpoint should have been stopped once more.
+    let stop_after = endpoint_state.lock().stop_endpoint_counter;
+    assert!(
+        stop_after > stop_before,
+        "endpoint.stop() should have been called during restart_queues()"
+    );
+
+    // The in-flight TX packet should now have a completion queued by
+    // reset_tx_after_endpoint_stop(). Read it.
+    let completion = channel
+        .read_rndis_packet_complete_message_with_timeout(Duration::from_secs(2))
+        .await;
+    assert!(
+        completion.is_some(),
+        "Expected TX completion for in-flight packet after endpoint restart"
+    );
+    assert_eq!(completion.unwrap().status, protocol::Status::SUCCESS);
+}
+
+/// Verifies that disabling RSS when RSS is already disabled does NOT trigger
+/// a redundant endpoint restart.
+///
+/// The PR optimizes `handle_oid_set` to skip `restart_endpoint = true` when
+/// `!had_rss && primary.rss_state.is_none()`.
+#[async_test]
+async fn rss_disable_when_already_disabled_skips_endpoint_restart(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+
+    // RNDIS Initialize.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Record stop counter after init (init itself causes one stop).
+    let stop_before = endpoint_state.lock().stop_endpoint_counter;
+
+    // RSS is not enabled yet. Send an RSS-disable OID — this should be a
+    // no-op that skips the endpoint restart.
+    let rss_disable_bytes = build_rss_disable_params();
+    send_rss_oid_and_complete(&mut channel, &rss_disable_bytes).await;
+
+    let stop_after = endpoint_state.lock().stop_endpoint_counter;
+    assert_eq!(
+        stop_before, stop_after,
+        "endpoint.stop() should NOT be called when RSS was already disabled"
+    );
+}
+
+/// Verifies that disabling RSS when RSS was previously enabled DOES trigger
+/// an endpoint restart (the skip optimization only applies when both states
+/// are disabled).
+#[async_test]
+async fn rss_enable_then_disable_triggers_endpoint_restart(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let builder = Nic::builder();
+    let nic = builder.build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+
+    // RNDIS Initialize.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Enable RSS first.
+    let rss_enable_bytes = build_rss_enable_params();
+    send_rss_oid_and_complete(&mut channel, &rss_enable_bytes).await;
+
+    // Record stop counter after RSS enable.
+    let stop_before = endpoint_state.lock().stop_endpoint_counter;
+
+    // Now disable RSS — since RSS was previously enabled, this MUST trigger
+    // an endpoint restart.
+    let rss_disable_bytes = build_rss_disable_params();
+    send_rss_oid_and_complete(&mut channel, &rss_disable_bytes).await;
+
+    let stop_after = endpoint_state.lock().stop_endpoint_counter;
+    assert!(
+        stop_after > stop_before,
+        "endpoint.stop() should be called when transitioning from RSS enabled to disabled"
+    );
+}
+
 /// Requesting num_sub_channels == max_queues should be rejected
 /// because the subchannels plus the primary channel must fit within max_queues
 /// (i.e. subchannels must be strictly less than max_queues) or we panic.
@@ -5627,7 +5978,6 @@ async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) 
             &[],
         )
         .await;
-
     let _: rndisprot::InitializeComplete = channel
         .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
         .await
