@@ -490,7 +490,7 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::VPCI_TDISP_COMMAND => {
             let (header, rest) = Ref::<_, protocol::VpciTdispCommandHeader>::from_prefix(buf)
-                .map_err(|_| PacketError::PacketTooSmall("tdisp_command_header"))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                .map_err(|_| PacketError::PacketTooSmall("tdisp_command_header"))?;
 
             let data_len = header.data_length as usize;
             if data_len > MAX_VPCI_TDISP_COMMAND_SIZE {
@@ -1752,9 +1752,10 @@ mod tests {
                     assert_eq!(completion.transaction_id(), transaction_id);
 
                     // Read the entire completion payload at once before splitting it.
-                    let mut reader = completion.reader();
-                    let mut all_bytes = vec![0u8; reader.len()];
-                    reader.read(&mut all_bytes).unwrap();
+                    let all_bytes = completion
+                        .reader()
+                        .read_all()
+                        .expect("reader should read entire payload");
 
                     let (reply_header, proto_bytes) =
                         protocol::VpciTdispCommandHeaderReply::read_from_prefix(&all_bytes)
