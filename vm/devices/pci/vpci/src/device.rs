@@ -1417,7 +1417,7 @@ mod tests {
     use hvdef::HV_PAGE_SIZE;
     use inspect::Inspect;
     use inspect::InspectMut;
-    use openhcl_tdisp::make_get_device_interface_info_command;
+    use openhcl_tdisp::new_get_device_interface_info_command;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
@@ -2000,7 +2000,7 @@ mod tests {
                             BarMemoryKind::Intercept(register_mmio.new_io_region("bar2", 0x2000)),
                         ),
                 ),
-                tdisp_interface: tdisp::test_helpers::make_null_tdisp_interface("vpci-unit-test"),
+                tdisp_interface: tdisp::test_helpers::new_null_tdisp_interface("vpci-unit-test"),
             }
         }
 
@@ -2169,7 +2169,7 @@ mod tests {
         guest_driver.start_device(0x1000000).await;
 
         let guest_protocol_type: tdisp::TdispGuestProtocolType = TDISP_MOCK_GUEST_PROTOCOL;
-        let command = make_get_device_interface_info_command(
+        let command = new_get_device_interface_info_command(
             SlotNumber::new().into_bits() as u64,
             TDISP_MOCK_GUEST_PROTOCOL,
         );

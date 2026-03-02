@@ -657,7 +657,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         let target_protocol_type = TdispGuestProtocolType::AmdSevTioV1;
 
         let res = self
-            .send_tdisp_command(openhcl_tdisp::make_get_device_interface_info_command(
+            .send_tdisp_command(openhcl_tdisp::new_get_device_interface_info_command(
                 self.dev.id.slot.into_bits() as u64,
                 target_protocol_type,
             ))
@@ -675,7 +675,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 
     async fn tdisp_bind_interface(&self) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(openhcl_tdisp::make_bind_command(
+            .send_tdisp_command(openhcl_tdisp::new_bind_command(
                 self.dev.id.slot.into_bits() as u64,
             ))
             .await?;
@@ -690,7 +690,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 
     async fn tdisp_start_device(&self) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(openhcl_tdisp::make_start_tdi_command(
+            .send_tdisp_command(openhcl_tdisp::new_start_tdi_command(
                 self.dev.id.slot.into_bits() as u64,
             ))
             .await?;
@@ -708,7 +708,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         report_type: &TdispReportType,
     ) -> anyhow::Result<Vec<u8>> {
         let res = self
-            .send_tdisp_command(openhcl_tdisp::make_get_tdi_report_command(
+            .send_tdisp_command(openhcl_tdisp::new_get_tdi_report_command(
                 self.dev.id.slot.into_bits() as u64,
                 *report_type,
             ))
@@ -748,7 +748,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
 
     async fn tdisp_unbind(&self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(openhcl_tdisp::make_unbind_command(
+            .send_tdisp_command(openhcl_tdisp::new_unbind_command(
                 self.dev.id.slot.into_bits() as u64,
                 reason,
             ))

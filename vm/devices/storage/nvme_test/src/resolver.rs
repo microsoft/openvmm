@@ -12,7 +12,7 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeFaultControllerHandle;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
-use tdisp::test_helpers::make_null_tdisp_interface;
+use tdisp::test_helpers::new_null_tdisp_interface;
 use thiserror::Error;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
@@ -59,7 +59,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeFaultControllerHandle>
         // for the device from OpenVMM.
         let tdisp_interface: Option<Box<dyn tdisp::TdispHostDeviceTarget>> =
             if resource.enable_tdisp_tests {
-                Some(Box::new(make_null_tdisp_interface("fault-controller-test")))
+                Some(Box::new(new_null_tdisp_interface("fault-controller-test")))
             } else {
                 None
             };

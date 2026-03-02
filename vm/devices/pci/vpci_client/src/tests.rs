@@ -22,7 +22,7 @@ use tdisp::TdispHostDeviceTargetEmulator;
 use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
 use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
-use tdisp::test_helpers::make_null_tdisp_interface;
+use tdisp::test_helpers::new_null_tdisp_interface;
 use test_with_tracing::test;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmcore::vpci_msi::MapVpciInterrupt;
@@ -85,7 +85,7 @@ impl super::MemoryAccess for BusWrapper {
 
 fn make_noop_device() -> Arc<CloseableMutex<NoopDevice>> {
     Arc::new(CloseableMutex::new(NoopDevice {
-        tdisp_interface: make_null_tdisp_interface("vpci-unit-test"),
+        tdisp_interface: new_null_tdisp_interface("vpci-unit-test"),
     }))
 }
 

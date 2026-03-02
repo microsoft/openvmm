@@ -85,7 +85,7 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
-pub fn make_get_device_interface_info_command(
+pub fn new_get_device_interface_info_command(
     device_id: u64,
     guest_protocol_type: TdispGuestProtocolType,
 ) -> GuestToHostCommand {
@@ -100,7 +100,7 @@ pub fn make_get_device_interface_info_command(
 }
 
 /// Creates a [`GuestToHostCommand`] for the `Bind` command.
-pub fn make_bind_command(device_id: u64) -> GuestToHostCommand {
+pub fn new_bind_command(device_id: u64) -> GuestToHostCommand {
     GuestToHostCommand {
         device_id,
         command: Some(Command::Bind(TdispCommandRequestBind {})),
@@ -108,7 +108,7 @@ pub fn make_bind_command(device_id: u64) -> GuestToHostCommand {
 }
 
 /// Creates a [`GuestToHostCommand`] for the `StartTdi` command.
-pub fn make_start_tdi_command(device_id: u64) -> GuestToHostCommand {
+pub fn new_start_tdi_command(device_id: u64) -> GuestToHostCommand {
     GuestToHostCommand {
         device_id,
         command: Some(Command::StartTdi(TdispCommandRequestStartTdi {})),
@@ -116,7 +116,7 @@ pub fn make_start_tdi_command(device_id: u64) -> GuestToHostCommand {
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetTdiReport` command.
-pub fn make_get_tdi_report_command(
+pub fn new_get_tdi_report_command(
     device_id: u64,
     report_type: TdispReportType,
 ) -> GuestToHostCommand {
@@ -129,7 +129,7 @@ pub fn make_get_tdi_report_command(
 }
 
 /// Creates a [`GuestToHostCommand`] for the `Unbind` command.
-pub fn make_unbind_command(device_id: u64, reason: TdispGuestUnbindReason) -> GuestToHostCommand {
+pub fn new_unbind_command(device_id: u64, reason: TdispGuestUnbindReason) -> GuestToHostCommand {
     GuestToHostCommand {
         device_id,
         command: Some(Command::Unbind(TdispCommandRequestUnbind {

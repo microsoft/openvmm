@@ -53,7 +53,7 @@ impl TdispHostDeviceInterface for NullTdispHostInterface {
 }
 
 /// Implements the host side of the TDISP interface for a mock device that does nothing.
-pub fn make_null_tdisp_interface(debug_device_id: &str) -> TdispHostDeviceTargetEmulator {
+pub fn new_null_tdisp_interface(debug_device_id: &str) -> TdispHostDeviceTargetEmulator {
     TdispHostDeviceTargetEmulator::new(
         Arc::new(Mutex::new(NullTdispHostInterface {})),
         debug_device_id,
