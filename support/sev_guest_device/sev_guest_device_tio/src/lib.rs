@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 //! The module includes the definitions of data structures according to the SEV-TIO Firmware Interface Specification.
+//! https://docs.amd.com/v/u/en-US/58271_0.91 AMD Document #58271 2025-07-02
 
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
