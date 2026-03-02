@@ -947,7 +947,7 @@ filter Trace-CimMethodExecution {
         }
 
         while ($job.JobState -eq 4) {
-            if (($timer -ne $null) -and ($timer.Elapsed.Seconds -gt $TimeoutSeconds)) {
+            if (($timer -ne $null) -and ($timer.Elapsed.TotalSeconds -gt $TimeoutSeconds)) {
                 throw "Job did not complete within $TimeoutSeconds seconds!"
             }
             Write-Progress -Activity $caption -Status ("{0} - {1}%" -f $jobStatus, $percentComplete) -PercentComplete $percentComplete
