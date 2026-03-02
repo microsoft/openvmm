@@ -230,16 +230,6 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             }
         }
         let state_after = self.machine.state();
-
-        match error {
-            TdispGuestOperationError::Success => {
-                tracing::info!("tdisp_handle_guest_command: Success");
-            }
-            _ => {
-                tracing::error!("tdisp_handle_guest_command: Error: {error:?}");
-            }
-        }
-
         let error_code: TdispGuestOperationErrorCode = error.into();
         let resp = GuestToHostResponse {
             result: error_code.into(),
@@ -248,7 +238,14 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             response,
         };
 
-        tracing::info!("tdisp_handle_guest_command: response = {resp:?}");
+        match error {
+            TdispGuestOperationError::Success => {
+                tracing::info!(?resp, "tdisp_handle_guest_command success");
+            }
+            _ => {
+                tracing::error!(?resp, "tdisp_handle_guest_command error");
+            }
+        }
 
         Ok(resp)
     }
@@ -550,28 +547,30 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
                     Some(guest_protocol_type) => {
                         if guest_protocol_type == TdispGuestProtocolType::Invalid {
                             tracing::error!(
-                                "Guest protocol negotiated with invalid value: {guest_protocol_type:?}"
+                                ?guest_protocol_type,
+                                "Guest protocol negotiated with invalid value"
                             );
                             Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
                         } else {
                             self.guest_protocol_type = guest_protocol_type;
                             tracing::info!(
-                                "Guest protocol negotiated successfully to: {:?}",
-                                interface_info
+                                ?interface_info,
+                                "Guest protocol negotiated successfully to"
                             );
                             Ok(interface_info)
                         }
                     }
                     None => {
                         tracing::error!(
-                            "Guest protocol negotiated with none value: {interface_info:?}"
+                            ?interface_info,
+                            "Guest protocol negotiated with none value"
                         );
                         Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to negotiate protocol with host interface: {e:?}");
+                tracing::error!(?e, "Failed to negotiate protocol with host interface");
                 Err(TdispGuestOperationError::HostFailedToProcessCommand)
             }
         }
