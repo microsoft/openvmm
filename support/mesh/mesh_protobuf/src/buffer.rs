@@ -70,7 +70,7 @@ impl Buffer for Buf<'_> {
 #[cfg(feature = "std")]
 impl Buffer for std::io::Cursor<&mut [u8]> {
     unsafe fn unwritten(&mut self) -> &mut [MaybeUninit<u8>] {
-        let pos = self.position() as usize;
+        let pos = core::cmp::min(self.position(), self.get_ref().len() as u64) as usize;
         let slice = self.get_mut();
         let slice = &mut slice[pos..];
         // SAFETY: the caller promises not to uninitialize any initialized data.
@@ -232,5 +232,18 @@ mod tests {
 
         assert_eq!(cursor.position(), 5);
         assert_eq!(&backing[..5], &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_cursor_position_beyond_slice() {
+        let mut backing = [0u8; 4];
+        let mut cursor = std::io::Cursor::new(&mut backing[..]);
+        cursor.set_position(100); // way past the end
+
+        // Should get an empty unwritten region, not panic.
+        write_with(&mut cursor, |buf| {
+            assert_eq!(buf.remaining(), 0);
+        });
     }
 }
