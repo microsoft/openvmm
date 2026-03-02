@@ -1047,11 +1047,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_crash_msr(&self, msr: u32, _vtl: GuestVtl) -> Result<u64, MsrError> {
         let v = match msr {
-            // Reads of CRASH_CTL report our supported capabilities, not the
-            // current value.
+            // Reads of CRASH_CTL report our supported capabilities, not any
+            // previously written value.
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => hvdef::GuestCrashCtl::new()
                 .with_crash_notify(true)
                 .with_crash_message(true)
+                .with_no_crash_dump(true)
+                .with_pre_os_id(0b111)
                 .into(),
             hvdef::HV_X64_MSR_GUEST_CRASH_P0 => self.crash_reg[0],
             hvdef::HV_X64_MSR_GUEST_CRASH_P1 => self.crash_reg[1],
