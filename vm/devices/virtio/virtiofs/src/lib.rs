@@ -143,7 +143,7 @@ impl Fuse for VirtioFs {
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
         let file = inode.open(flags)?;
-        // Since, ENOENT takes precedence over EROFS, check for the existence of the file before 
+        // Since, ENOENT takes precedence over EROFS, check for the existence of the file before
         // checking if the filesystem is readonly.
         if self.readonly {
             let access_mode = (flags & lx::O_NOACCESS as u32) as i32;
