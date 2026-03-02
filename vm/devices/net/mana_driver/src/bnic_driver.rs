@@ -66,6 +66,9 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
                 },
             )
             .await?;
+
+        tracing::info!(?resp, "query_dev_config response");
+
         Ok(resp)
     }
 
