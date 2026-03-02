@@ -20,11 +20,11 @@ include!(concat!(env!("OUT_DIR"), "/tdisp.rs"));
 
 pub trait GuestToHostCommandExt {
     /// Returns the command type name of the command.
-    fn get_type_name(&self) -> Option<&str>;
+    fn type_name(&self) -> Option<&str>;
 }
 
 impl GuestToHostCommandExt for GuestToHostCommand {
-    fn get_type_name(&self) -> Option<&str> {
+    fn type_name(&self) -> Option<&str> {
         match self.command {
             Some(Command::GetDeviceInterfaceInfo(_)) => Some("GetDeviceInterfaceInfo"),
             Some(Command::Bind(_)) => Some("Bind"),
@@ -36,7 +36,7 @@ impl GuestToHostCommandExt for GuestToHostCommand {
     }
 }
 
-/// Implemented by each response payload type so that [`GuestToHostResponseExt::get_response`]
+/// Implemented by each response payload type so that [`GuestToHostResponseExt::response`]
 /// can extract it generically from a [`Response`] oneof variant.
 pub trait GuestToHostResponseVariant: Sized {
     fn from_response_variant(response: Response) -> Option<Self>;
@@ -90,10 +90,10 @@ impl GuestToHostResponseVariant for TdispCommandResponseUnbind {
 /// Provides helper methods for common operations on [`GuestToHostResponse`].
 pub trait GuestToHostResponseExt {
     /// Returns the error code of the response, if any.
-    fn get_error_code(&self) -> Option<TdispGuestOperationErrorCode>;
+    fn error_code(&self) -> Option<TdispGuestOperationErrorCode>;
 
     /// Returns the packet type name of the response.
-    fn get_type_name(&self) -> Option<&str>;
+    fn type_name(&self) -> Option<&str>;
 
     /// Consumes the response and returns the inner payload if the result is
     /// [`TdispGuestOperationError::Success`] and the oneof variant matches `T`.
@@ -101,17 +101,17 @@ pub trait GuestToHostResponseExt {
     ///
     /// # Example
     /// ```ignore
-    /// let bind = resp.get_response::<TdispCommandResponseBind>()?;
+    /// let bind = resp.response::<TdispCommandResponseBind>()?;
     /// ```
-    fn get_response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError>;
+    fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError>;
 }
 
 impl GuestToHostResponseExt for GuestToHostResponse {
-    fn get_error_code(&self) -> Option<TdispGuestOperationErrorCode> {
+    fn error_code(&self) -> Option<TdispGuestOperationErrorCode> {
         TdispGuestOperationErrorCode::from_i32(self.result)
     }
 
-    fn get_type_name(&self) -> Option<&str> {
+    fn type_name(&self) -> Option<&str> {
         match self.response {
             Some(Response::GetDeviceInterfaceInfo(_)) => Some("GetDeviceInterfaceInfo"),
             Some(Response::Bind(_)) => Some("Bind"),
@@ -122,8 +122,8 @@ impl GuestToHostResponseExt for GuestToHostResponse {
         }
     }
 
-    fn get_response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError> {
-        match self.get_error_code() {
+    fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError> {
+        match self.error_code() {
             Some(TdispGuestOperationErrorCode::Success) => {
                 match self.response.and_then(T::from_response_variant) {
                     Some(r) => Ok(r),

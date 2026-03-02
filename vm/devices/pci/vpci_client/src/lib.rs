@@ -637,12 +637,12 @@ impl TdispVirtualDeviceInterface for VpciDevice {
                 anyhow::anyhow!("failed to send tdisp command")
             })?;
 
-        match res.get_error_code() {
+        match res.error_code() {
             Some(TdispGuestOperationErrorCode::Success) => Ok(res),
             _ => {
                 let err_msg = format!(
                     "send_tdisp_command {:?} failed because host responded with an error: {:?}",
-                    payload.get_type_name(),
+                    payload.type_name(),
                     res.result
                 );
 
@@ -663,7 +663,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ))
             .await?;
 
-        match res.get_response::<TdispCommandResponseGetDeviceInterfaceInfo>() {
+        match res.response::<TdispCommandResponseGetDeviceInterfaceInfo>() {
             Ok(info) => info.interface_info.ok_or_else(|| {
                 anyhow::anyhow!("missing interface_info after validation, this should never happen")
             }),
@@ -680,7 +680,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ))
             .await?;
 
-        match res.get_response::<TdispCommandResponseBind>() {
+        match res.response::<TdispCommandResponseBind>() {
             Ok(_) => Ok(()),
             Err(err) => Err(anyhow::anyhow!(
                 "error response in tdisp_bind_interface: {err}"
@@ -695,7 +695,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ))
             .await?;
 
-        match res.get_response::<TdispCommandResponseStartTdi>() {
+        match res.response::<TdispCommandResponseStartTdi>() {
             Ok(_) => Ok(()),
             Err(err) => Err(anyhow::anyhow!(
                 "error response in tdisp_start_device: {err}"
@@ -714,7 +714,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ))
             .await?;
 
-        match res.get_response::<TdispCommandResponseGetTdiReport>() {
+        match res.response::<TdispCommandResponseGetTdiReport>() {
             Ok(r) => Ok(r.report_buffer),
             Err(err) => Err(anyhow::anyhow!(
                 "error response in tdisp_get_device_report: {err}"
@@ -754,7 +754,7 @@ impl TdispVirtualDeviceInterface for VpciDevice {
             ))
             .await?;
 
-        match res.get_response::<TdispCommandResponseUnbind>() {
+        match res.response::<TdispCommandResponseUnbind>() {
             Ok(_) => Ok(()),
             Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
         }

@@ -2176,7 +2176,7 @@ mod tests {
         );
         let response = guest_driver.send_tdisp_command(command).await;
 
-        let response = response.get_response::<TdispCommandResponseGetDeviceInterfaceInfo>();
+        let response = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
         match response {
             Ok(info_resp) => {
                 let interface_info = info_resp
