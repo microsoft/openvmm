@@ -303,7 +303,7 @@ impl SevGuestDevice {
         let resp = ResponseType::new_zeroed();
 
         tracing::info!(
-            msg = "tio_guest_request issuing ioctl",
+            "tio_guest_request issuing ioctl",
             msg_type = &msg_type as u64,
             req = ?req
         );
@@ -327,10 +327,7 @@ impl SevGuestDevice {
                 .map_err(Error::TioGuestRequestIoctl)?;
         }
 
-        tracing::info!(
-            msg = "tio_guest_request completed successfully",
-            resp = ?resp
-        );
+        tracing::info!("tio_guest_request completed successfully", ?resp);
 
         Ok(resp)
     }
@@ -419,10 +416,8 @@ impl SevGuestDevice {
         use sev_guest_device_tio::SdtePart3;
         use sev_guest_device_tio::TioMsgSdteWriteReq;
 
+        tracing::info!(?vmpl, ?vtom, "sending SDTE write request");
         let msg_type = TioGuestMessageId::TioMsgSdteWriteReq;
-        tracing::info!(
-            msg = format!("Sending SDTE write request for VMPL {vmpl:?} and vtom {vtom:x?}...")
-        );
         let sdte = Sdte {
             part1: SdtePart1::new().with_v(true).with_ir(true).with_iw(true),
             _reserved0: 0,
@@ -435,9 +430,6 @@ impl SevGuestDevice {
             _reserved3: 0,
             _reserved4: 0,
         };
-
-        // Print sdte as a byte buffer
-        tracing::info!(msg = format!("SDTE: {:?}", sdte.as_bytes()));
 
         let req = TioMsgSdteWriteReq {
             guest_device_id,
