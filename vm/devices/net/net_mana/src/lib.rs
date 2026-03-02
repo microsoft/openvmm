@@ -564,7 +564,9 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     fn link_speed(&self) -> u64 {
-        self.vport.link_speed_bps()
+        let speed = self.vport.link_speed_bps();
+        tracing::info!(link_speed_bps = speed, "MANA endpoint link speed",);
+        speed
     }
 }
 

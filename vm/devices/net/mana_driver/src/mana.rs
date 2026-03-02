@@ -394,7 +394,13 @@ impl<T: DeviceBacking> Vport<T> {
     /// device configuration. Falls back to 200 Gbps when the hardware does
     /// not report a speed (V1 firmware).
     pub fn link_speed_bps(&self) -> u64 {
-        self.inner.dev_config.link_speed_bps()
+        let speed = self.inner.dev_config.link_speed_bps();
+        tracing::info!(
+            adapter_link_speed_mbps = self.inner.dev_config.adapter_link_speed_mbps,
+            link_speed_bps = speed,
+            "vport reporting link speed",
+        );
+        speed
     }
 
     /// Creates a new event queue.
