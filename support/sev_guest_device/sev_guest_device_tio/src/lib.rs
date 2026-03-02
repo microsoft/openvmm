@@ -92,7 +92,6 @@ pub struct TioMsgMmioValidateReq {
     pub _reserved2: [u8; 12],
 }
 
-// Assert the size of the structure
 static_assertions::const_assert_eq!(48, size_of::<TioMsgMmioValidateReq>());
 
 /// See `TIO_MSG_MMIO_VALIDATE_RSP` in Table 64, "SEV-TIO Firmware Interface Specification", Revision 0.91.
@@ -130,7 +129,6 @@ pub struct TioMsgMmioValidateRsp {
     pub _reserved2: [u8; 12],
 }
 
-// Assert the size of the structure
 static_assertions::const_assert_eq!(48, size_of::<TioMsgMmioValidateRsp>());
 
 /// See `TIO_MSG_MMIO_CONFIG_REQ` in Table 65, "SEV-TIO Firmware Interface Specification", Revision 0.91.
