@@ -70,7 +70,9 @@ impl Buffer for Buf<'_> {
 #[cfg(feature = "std")]
 impl Buffer for std::io::Cursor<&mut [u8]> {
     unsafe fn unwritten(&mut self) -> &mut [MaybeUninit<u8>] {
+        let pos = self.position() as usize;
         let slice = self.get_mut();
+        let slice = &mut slice[pos..];
         // SAFETY: the caller promises not to uninitialize any initialized data.
         unsafe { core::slice::from_raw_parts_mut(slice.as_mut_ptr().cast(), slice.len()) }
     }
@@ -210,5 +212,25 @@ mod tests {
             buf.push(7);
         });
         assert_eq!(&v, &[1, 2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    #[cfg(feature = "std")]
+    fn test_cursor_multiple_writes() {
+        let mut backing = [0u8; 8];
+        let mut cursor = std::io::Cursor::new(&mut backing[..]);
+
+        // First write: fills positions 0..3.
+        write_with(&mut cursor, |mut buf| {
+            buf.append(&[1, 2, 3]);
+        });
+
+        // Second write: must continue at position 3, not overwrite from 0.
+        write_with(&mut cursor, |mut buf| {
+            buf.append(&[4, 5]);
+        });
+
+        assert_eq!(cursor.position(), 5);
+        assert_eq!(&backing[..5], &[1, 2, 3, 4, 5]);
     }
 }
