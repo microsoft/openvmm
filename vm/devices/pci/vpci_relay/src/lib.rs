@@ -368,7 +368,6 @@ impl VpciRelay {
     }
 
     /// Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-    /// Configured with the OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST environment variable.
     async fn tdisp_test_mock_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
         // For now, exercise just the "get device interface" flow and ensure that the device responds as
         // TDISP capable and with the right mocked device information.
