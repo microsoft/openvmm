@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The module includes the definitions of data structures according to SEV-SNP specification.
+//! The module includes the definitions of data structures according to the SEV-TIO Firmware Interface Specification.
 
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
@@ -227,7 +227,7 @@ pub struct SdtePart1 {
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SdtePart2 {
     #[bits(49)]
-    pub _reserved0: u64,
+    _reserved0: u64,
 
     #[bits(2)]
     pub vmpl: u64,
@@ -287,6 +287,8 @@ pub struct TioMsgSdteWriteReq {
     /// sDTE to use to configure the guest controlled fields.
     pub sdte: Sdte,
 }
+
+static_assertions::const_assert_eq!(size_of::<TioMsgSdteWriteReq>(), 80);
 
 /// See `TIO_MSG_SDTE_WRITE_RSP` in Table 69, "SEV-TIO Firmware Interface Specification", Revision 0.91.
 #[repr(C)]

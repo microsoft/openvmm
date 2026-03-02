@@ -69,16 +69,16 @@ struct SnpGuestRequestIoctl {
 /// this structure replaces the SnpGuestRequestIoctl structure.
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 #[repr(C)]
-pub struct TioGuestRequestIoctl {
+struct TioGuestRequestIoctl {
     /// Message version number (must be non-zero).
     msg_version: u32,
     /// Request struct address.
     req_data: u64,
     /// Response struct address.
     resp_data: u64,
-    /// VMM error code.
-    exitinfo1: VmmErrorCode,
     /// TDISP TODO: Exitinfo1
+    exitinfo1: VmmErrorCode,
+    /// TDISP TODO: Exitinfo2
     exitinfo2: u64,
     /// TDISP TODO: tio_msg type
     msg_type: u64,
@@ -88,8 +88,22 @@ pub struct TioGuestRequestIoctl {
     resp_size: u64,
     /// TDISP TODO: pci_id
     pci_id: u64,
-    /// TDISP TODO: additional_arg / additional_arg
+    /// TDISP TODO: additional_arg
     additional_arg: u64,
+}
+
+/// Message type IDs for the `TIO_GUEST_REQUEST` ioctl.
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
+#[repr(u64)]
+pub enum TioGuestMessageId {
+    /// `TIO_MSG_TDI_INFO_REQ`
+    TioMsgTdiInfoReq = 19,
+    /// `TIO_MSG_MMIO_VALIDATE_REQ`
+    TioMsgMmioValidateReq = 21,
+    /// `TIO_MSG_MMIO_CONFIG_REQ`
+    TioMsgMmioConfigReq = 23,
+    /// `TIO_MSG_SDTE_WRITE_REQ`
+    TioMsgSdteWriteReq = 25,
 }
 
 /// VMM error code.
@@ -277,8 +291,8 @@ impl SevGuestDevice {
     /// Invoke the `TIO_GUEST_REQUEST` ioctl via the device.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     fn tio_guest_request<RequestType, ResponseType>(
-        &mut self,
-        msg_type: u64,
+        &self,
+        msg_type: TioGuestMessageId,
         guest_device_id: u16,
         req: RequestType,
     ) -> Result<ResponseType, Error>
@@ -290,7 +304,7 @@ impl SevGuestDevice {
 
         tracing::info!(
             msg = "tio_guest_request issuing ioctl",
-            msg_type,
+            msg_type = &msg_type as u64,
             req = ?req
         );
 
@@ -300,7 +314,7 @@ impl SevGuestDevice {
             resp_data: resp.as_bytes().as_ptr() as u64,
             exitinfo1: VmmErrorCode::new_zeroed(),
             exitinfo2: 0,
-            msg_type,
+            msg_type: msg_type as u64,
             req_size: req.as_bytes().len() as u64,
             resp_size: resp.as_bytes().len() as u64,
             pci_id: guest_device_id as u64,
@@ -323,13 +337,10 @@ impl SevGuestDevice {
 
     /// Invoke the `TIO_MSG_TDI_INFO_REQ` to a given TDISP guest device ID.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
-    pub fn tio_msg_tdi_info_req(
-        &mut self,
-        guest_device_id: u16,
-    ) -> Result<TioMsgTdiInfoRsp, Error> {
+    pub fn tio_msg_tdi_info_req(&self, guest_device_id: u16) -> Result<TioMsgTdiInfoRsp, Error> {
         use sev_guest_device_tio::TioMsgTdiInfoReq;
 
-        let msg_type = 19; // TIO_MSG_TDI_INFO_REQ
+        let msg_type = TioGuestMessageId::TioMsgTdiInfoReq;
 
         let req = TioMsgTdiInfoReq {
             guest_device_id,
@@ -342,13 +353,13 @@ impl SevGuestDevice {
     /// Invoke the `TIO_MSG_MMIO_CONFIG_REQ` to a given TDISP guest device ID.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_mmio_config_req(
-        &mut self,
+        &self,
         guest_device_id: u16,
         range_id: u16,
     ) -> Result<TioMsgMmioConfigRsp, Error> {
         use sev_guest_device_tio::TioMsgMmioConfigReq;
 
-        let msg_type = 23; // TIO_MSG_MMIO_CONFIG_REQ
+        let msg_type = TioGuestMessageId::TioMsgMmioConfigReq;
 
         let req = TioMsgMmioConfigReq {
             guest_device_id,
@@ -365,7 +376,7 @@ impl SevGuestDevice {
     /// Invoke the `TIO_MSG_MMIO_VALIDATE_REQ` to a given TDISP guest device ID.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_mmio_validate_req(
-        &mut self,
+        &self,
         guest_device_id: u16,
         subrange_base: u64,
         subrange_page_count: u32,
@@ -377,7 +388,7 @@ impl SevGuestDevice {
         use sev_guest_device_tio::TioMsgMmioValidateReq;
         use sev_guest_device_tio::TioMsgMmioValidateReqFlags;
 
-        let msg_type = 21; // TIO_MSG_MMIO_VALIDATE_REQ 
+        let msg_type = TioGuestMessageId::TioMsgMmioValidateReq;
 
         let req = TioMsgMmioValidateReq {
             guest_device_id,
@@ -397,8 +408,10 @@ impl SevGuestDevice {
     /// Invoke the `TIO_MSG_SDTE_WRITE_REQ` to update the SDTE to allow DMA to the guest.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub fn tio_msg_sdte_write_req(
-        &mut self,
+        &self,
         guest_device_id: u16,
+        vtom: u32,
+        vmpl: u64,
     ) -> Result<TioMsgSdteWriteRsp, Error> {
         use sev_guest_device_tio::Sdte;
         use sev_guest_device_tio::SdtePart1;
@@ -406,13 +419,7 @@ impl SevGuestDevice {
         use sev_guest_device_tio::SdtePart3;
         use sev_guest_device_tio::TioMsgSdteWriteReq;
 
-        let msg_type = 25; // TIO_MSG_SDTE_WRITE_REQ
-
-        // TDISP TODO: Required value for the current Turin implementation
-        let vtom = 0x7fffffff;
-
-        // TDISP TODO: Update with proper VMPL calculation
-        let vmpl = 2;
+        let msg_type = TioGuestMessageId::TioMsgSdteWriteReq;
         tracing::info!(
             msg = format!("Sending SDTE write request for VMPL {vmpl:?} and vtom {vtom:x?}...")
         );
