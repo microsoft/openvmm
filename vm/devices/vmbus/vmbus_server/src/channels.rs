@@ -94,6 +94,8 @@ pub enum ChannelError {
     Paused,
     #[error("invalid target VP")]
     InvalidTargetVp,
+    #[error("interrupts are disabled for this channel")]
+    InterruptsDisabled,
 }
 
 #[derive(Debug, Error)]
@@ -3391,6 +3393,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             } => (params, modify_state),
             _ => return Err(ChannelError::InvalidChannelState),
         };
+
+        if open_request.target_vp.is_none() {
+            return Err(ChannelError::InterruptsDisabled);
+        }
 
         if let ModifyState::Modifying { pending_target_vp } = modify_state {
             if self.inner.state.check_version(Version::Iron) {
