@@ -143,14 +143,16 @@ impl Fuse for VirtioFs {
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
         if self.readonly {
-            // Check if the file exists and is accessible before allowing it to be opened read-only
-            // The possible errors from get_attr are a subset of the possible errors from open, 
-            //so this won't cause any new errors to be returned.
+            // O_CREAT implies intent to create a file, so reject immediately with EROFS
+            // without checking existence (ENOENT would be wrong here).
+            if flags & lx::O_CREAT as u32 != 0 {
+                return Err(lx::Error::EROFS);
+            }
+            // For all other flags, check existence first so ENOENT takes precedence over
+            // EROFS.
             inode.get_attr()?;
             let access_mode = (flags & lx::O_NOACCESS as u32) as i32;
-            if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR)
-                || flags & lx::O_TRUNC as u32 != 0
-            {
+            if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
                 return Err(lx::Error::EROFS);
             }
         }
