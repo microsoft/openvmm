@@ -121,7 +121,7 @@ First, build the test artifacts from Linux or WSL using `vmm-tests --build-only`
 The IGVM must be built on Linux:
 
 ```shell
-cargo xflowey vmm-tests --build-only --dir <out> x64-openhcl-linux-direct-tests
+cargo xflowey vmm-tests --build-only --dir <out> --target windows-x64
 ```
 
 This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
