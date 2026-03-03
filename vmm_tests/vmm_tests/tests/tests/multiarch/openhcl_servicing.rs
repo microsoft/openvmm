@@ -803,10 +803,11 @@ async fn servicing_keepalive_with_unresponsive_io(
 /// boot-time activity. After boot, inspect is used to find a CPU that has
 /// no IO issuer — this makes the test deterministic. After keepalive restore
 /// (with a phantom AER from a namespace change), IO is directed to that CPU
-/// via `taskset`, which forces the NVMe driver's `create_io_queue` path —
-/// including CREATE_IO_CQ and CREATE_IO_SQ admin commands sent to the
-/// kept-alive controller. A second servicing cycle validates that the new
-/// queue state is fully consistent.
+/// via a cpuset cgroup (the minimal linux direct initrd has no `taskset`), which
+/// forces the NVMe driver's `create_io_queue` path — including CREATE_IO_CQ
+/// and CREATE_IO_SQ admin commands sent to the kept-alive controller. A
+/// second servicing cycle validates that the new queue state is fully
+/// consistent.
 ///
 /// NOTE: This test validates driver-side correctness only. The emulated
 /// controller handles interrupts via in-process signals, so it cannot catch
@@ -933,17 +934,32 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     vm.restore_openhcl().await?;
     fault_start_updater.set(false).await;
 
+    // Mount sysfs and cgroup2, then create a cpuset cgroup to pin IO to
+    // the target CPU. The minimal Alpine initrd has neither `taskset` nor
+    // sysfs mounted, so we set this up manually.
+    let sh = agent.unix_shell();
+    let setup_cpuset = format!(
+        "mount -t sysfs none /sys 2>/dev/null || true; \
+         mkdir -p /sys/fs/cgroup; \
+         mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true; \
+         echo '+cpuset' > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \
+         mkdir -p /sys/fs/cgroup/pin{target_cpu}; \
+         echo {target_cpu} > /sys/fs/cgroup/pin{target_cpu}/cpuset.cpus; \
+         echo 0 > /sys/fs/cgroup/pin{target_cpu}/cpuset.mems"
+    );
+    cmd!(sh, "sh -c {setup_cpuset}").run().await?;
+
     // Force IO on the target CPU. This CPU has no IO queue, so the NVMe
     // driver will call create_io_queue() to create one via admin commands.
     // The dd command must complete successfully — a hang here means the admin
     // command didn't complete (the exact production failure scenario).
-    let sh = agent.unix_shell();
-    let taskset_dd = format!(
-        "taskset -c {target_cpu} dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct"
+    let pinned_dd = format!(
+        "echo $$ > /sys/fs/cgroup/pin{target_cpu}/cgroup.procs; \
+         dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct"
     );
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(cmd!(sh, "sh -c {taskset_dd}").run())
+        .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
         .await
         .expect("IO on target CPU did not complete within 60 seconds after keepalive restore. create_io_queue may be stuck.")
         .expect("dd command failed");
@@ -961,7 +977,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     // second servicing cycle.
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
-        .until_cancelled(cmd!(sh, "sh -c {taskset_dd}").run())
+        .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
         .await
         .expect(
             "IO on target CPU did not complete within 60 seconds after second keepalive restore.",
