@@ -357,7 +357,6 @@ impl SevGuestDevice {
         use sev_guest_device_tio::TioMsgMmioConfigReq;
 
         let msg_type = TioGuestMessageId::TioMsgMmioConfigReq;
-
         let req = TioMsgMmioConfigReq {
             guest_device_id,
             _reserved0: [0; 2],
@@ -386,7 +385,6 @@ impl SevGuestDevice {
         use sev_guest_device_tio::TioMsgMmioValidateReqFlags;
 
         let msg_type = TioGuestMessageId::TioMsgMmioValidateReq;
-
         let req = TioMsgMmioValidateReq {
             guest_device_id,
             _reserved0: [0; 14],
