@@ -95,15 +95,16 @@ struct TioGuestRequestIoctl {
 /// Message type IDs for the `TIO_GUEST_REQUEST` ioctl.
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 #[repr(u64)]
+#[allow(clippy::enum_variant_names)]
 pub enum TioGuestMessageId {
     /// `TIO_MSG_TDI_INFO_REQ`
-    TioMsgTdiInfoReq = 19,
+    TdiInfoReq = 19,
     /// `TIO_MSG_MMIO_VALIDATE_REQ`
-    TioMsgMmioValidateReq = 21,
+    MmioValidateReq = 21,
     /// `TIO_MSG_MMIO_CONFIG_REQ`
-    TioMsgMmioConfigReq = 23,
+    MmioConfigReq = 23,
     /// `TIO_MSG_SDTE_WRITE_REQ`
-    TioMsgSdteWriteReq = 25,
+    SdteWriteReq = 25,
 }
 
 /// VMM error code.
@@ -338,7 +339,7 @@ impl SevGuestDevice {
     pub fn tio_msg_tdi_info_req(&self, guest_device_id: u16) -> Result<TioMsgTdiInfoRsp, Error> {
         use sev_guest_device_tio::TioMsgTdiInfoReq;
 
-        let msg_type = TioGuestMessageId::TioMsgTdiInfoReq;
+        let msg_type = TioGuestMessageId::TdiInfoReq;
 
         let req = TioMsgTdiInfoReq {
             guest_device_id,
@@ -357,7 +358,7 @@ impl SevGuestDevice {
     ) -> Result<TioMsgMmioConfigRsp, Error> {
         use sev_guest_device_tio::TioMsgMmioConfigReq;
 
-        let msg_type = TioGuestMessageId::TioMsgMmioConfigReq;
+        let msg_type = TioGuestMessageId::MmioConfigReq;
         let req = TioMsgMmioConfigReq {
             guest_device_id,
             _reserved0: [0; 2],
@@ -385,7 +386,7 @@ impl SevGuestDevice {
         use sev_guest_device_tio::TioMsgMmioValidateReq;
         use sev_guest_device_tio::TioMsgMmioValidateReqFlags;
 
-        let msg_type = TioGuestMessageId::TioMsgMmioValidateReq;
+        let msg_type = TioGuestMessageId::MmioValidateReq;
         let req = TioMsgMmioValidateReq {
             guest_device_id,
             _reserved0: [0; 14],
@@ -416,7 +417,7 @@ impl SevGuestDevice {
         use sev_guest_device_tio::TioMsgSdteWriteReq;
 
         tracing::info!(?vmpl, ?vtom, "sending SDTE write request");
-        let msg_type = TioGuestMessageId::TioMsgSdteWriteReq;
+        let msg_type = TioGuestMessageId::SdteWriteReq;
         let sdte = Sdte {
             part1: SdtePart1::new().with_v(true).with_ir(true).with_iw(true),
             _reserved0: 0,
