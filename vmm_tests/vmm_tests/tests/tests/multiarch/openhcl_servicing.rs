@@ -33,6 +33,7 @@ use petri::PetriGuestStateLifetime;
 use petri::PetriVm;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
@@ -52,7 +53,6 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_RELEASE_STANDARD_X
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64;
 #[allow(unused_imports)]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
-use petri::ProcessorTopology;
 use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
@@ -886,11 +886,8 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     // Only CPUs with initialized issuers appear in the per_cpu map (unset
     // OnceLock entries are absent). This makes the test deterministic —
     // we guarantee we target a CPU that triggers create_io_queue().
-    let devices = vm
-        .inspect_openhcl("vm/nvme/devices", None, None)
-        .await?;
-    let devices: serde_json::Value =
-        serde_json::from_str(&format!("{}", devices.json()))?;
+    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
     let device = devices
         .as_object()
         .expect("devices should be an object")
@@ -898,9 +895,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
         .next()
         .expect("should have at least one NVMe device");
     let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
-    let per_cpu_map = per_cpu
-        .as_object()
-        .expect("per_cpu should be an object");
+    let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
     let target_cpu = (0u32..4)
         .find(|cpu| !per_cpu_map.contains_key(&cpu.to_string()))
         .expect(
@@ -968,7 +963,9 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
         .with_timeout(Duration::from_secs(60))
         .until_cancelled(cmd!(sh, "sh -c {taskset_dd}").run())
         .await
-        .expect("IO on target CPU did not complete within 60 seconds after second keepalive restore.")
+        .expect(
+            "IO on target CPU did not complete within 60 seconds after second keepalive restore.",
+        )
         .expect("dd command failed after second restore");
 
     agent.ping().await?;
