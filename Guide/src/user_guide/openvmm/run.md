@@ -111,6 +111,46 @@ useful when iterating on OpenVMM code, since booting the VM becomes repeatable
 and you don't have to worry about shutting down properly. Use `file` instead for
 normal persistent storage.
 
+### OpenHCL, via Linux Direct Boot
+
+This example will boot OpenHCL in Linux direct mode, running a minimal shell
+inside VTL2. This is the same configuration used by the `openhcl_linux_direct_x64`
+integration tests.
+
+First, build the test artifacts from Linux or WSL using `vmm-tests --build-only`.
+The IGVM must be built on Linux:
+
+```shell
+cargo xflowey vmm-tests --build-only --dir <out> x64-openhcl-linux-direct-tests
+```
+
+This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
+`<out>` directory. Then, on Windows, from the `<out>` directory:
+
+```powershell
+.\openvmm.exe `
+    --hv `
+    --vtl2 `
+    --igvm openhcl-x64-test-linux-direct.bin `
+    -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
+    --com3 "term,name=VTL2 OpenHCL" `
+    -m 2GB `
+    --vmbus-com1-serial "term,name=VTL0 Linux" `
+    --vmbus-com2-serial "term,name=COM2" `
+    --vtl2-vsock-path $env:temp\ohcldiag-dev
+```
+
+```admonish warning
+Serial terminals **must** be configured when using Linux direct boot with
+`rdinit=/bin/sh`. The shell running as PID 1 requires a controlling terminal
+(tty) to function. Without serial ports configured, the shell exits immediately,
+causing a kernel panic — and because the cmdline includes `panic=-1
+reboot=triple`, the VM enters an infinite reboot loop with no visible output.
+```
+
+For more details on running OpenHCL on OpenVMM, including VMBus relay and device
+assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
+
 ### DOS, via PCAT BIOS
 
 While DOS in particular is not a scenario that the OpenVMM has heavily invested
