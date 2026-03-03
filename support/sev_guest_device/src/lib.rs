@@ -301,11 +301,12 @@ impl SevGuestDevice {
         ResponseType: FromZeros + IntoBytes + Immutable + std::fmt::Debug,
     {
         let resp = ResponseType::new_zeroed();
+        let msg_type = msg_type as u64;
 
         tracing::info!(
+            req = ?req,
+            msg_type = msg_type,
             "tio_guest_request issuing ioctl",
-            msg_type = &msg_type as u64,
-            req = ?req
         );
 
         let mut snp_guest_request = TioGuestRequestIoctl {
@@ -314,7 +315,7 @@ impl SevGuestDevice {
             resp_data: resp.as_bytes().as_ptr() as u64,
             exitinfo1: VmmErrorCode::new_zeroed(),
             exitinfo2: 0,
-            msg_type: msg_type as u64,
+            msg_type,
             req_size: req.as_bytes().len() as u64,
             resp_size: resp.as_bytes().len() as u64,
             pci_id: guest_device_id as u64,
@@ -327,7 +328,7 @@ impl SevGuestDevice {
                 .map_err(Error::TioGuestRequestIoctl)?;
         }
 
-        tracing::info!("tio_guest_request completed successfully", ?resp);
+        tracing::info!(?resp, "tio_guest_request completed successfully");
 
         Ok(resp)
     }
