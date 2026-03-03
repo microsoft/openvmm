@@ -349,7 +349,7 @@ impl ProxyTask {
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
                     NodeNumber: self
                         .vp_to_physical_node_map
-                        .get_numa_node(open_request.open_data.target_vp),
+                        .get_numa_node(open_request.open_data.target_vp.unwrap_or_default()),
                     Padding: 0,
                 },
                 maybe_wrapped.event(),
