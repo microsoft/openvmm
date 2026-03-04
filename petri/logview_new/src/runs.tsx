@@ -7,7 +7,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { SortingState } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { RunData } from "./data_defs";
-import { fetchRunData } from "./fetch/fetch_runs_data.tsx";
+import { fetchRunData } from "./utils/fetch_runs_data.ts";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
 import { Link, useSearchParams } from "react-router-dom";
@@ -55,7 +55,7 @@ export function Runs(): React.JSX.Element {
   const columns = useMemo(() => createColumns(), []);
   const filteredRuns = useMemo(
     () => filterRuns(runs, branchFilter, searchFilter),
-    [runs, branchFilter, searchFilter]
+    [runs, branchFilter, searchFilter],
   );
 
   return (
@@ -124,10 +124,8 @@ export function RunsHeader({
         </div>
         {!loadingSuccess && (
           <div className="header-loading-indicator">
-              <div className="header-loading-spinner"></div>
-              <div className="header-loading-text">
-                  Fetching runs ...
-              </div>
+            <div className="header-loading-spinner"></div>
+            <div className="header-loading-text">Fetching runs ...</div>
           </div>
         )}
       </div>
@@ -151,7 +149,7 @@ export function RunsHeader({
 function filterRuns(
   runs: RunData[],
   branchFilter: string,
-  searchFilter: string
+  searchFilter: string,
 ): RunData[] {
   let branchFiltered =
     branchFilter === "all"

@@ -413,7 +413,10 @@ impl ProxyTask {
 
     async fn handle_gpadl_teardown(&self, proxy_id: u64, gpadl_id: GpadlId) {
         if let Some(gpadls) = self.gpadls.lock().get_mut(&proxy_id) {
-            assert!(gpadls.remove(&gpadl_id), "gpadl is registered");
+            assert!(
+                gpadls.remove(&gpadl_id),
+                "gpadl {gpadl_id:?} for proxy ID {proxy_id} should be registered"
+            );
         } else {
             return;
         }

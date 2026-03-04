@@ -601,6 +601,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             inner,
             external_requests: self.external_requests,
             next_seq: 0,
+            perform_post_restore_on_start: false,
             unstick_on_start: false,
             channel_unstickers: FuturesUnordered::new(),
             channel_unstick_delay: self.channel_unstick_delay,
@@ -722,6 +723,7 @@ struct ServerTask {
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     /// Next value for [`Channel::seq`].
     next_seq: u64,
+    perform_post_restore_on_start: bool,
     unstick_on_start: bool,
     channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferInstanceId>>>>,
     channel_unstick_delay: Option<Duration>,
@@ -1083,6 +1085,7 @@ impl ServerTask {
             VmbusRequest::Restore(rpc) => {
                 rpc.handle(async |state| {
                     self.unstick_on_start = !state.lost_synic_bug_fixed;
+                    self.perform_post_restore_on_start = true;
                     if let Some(sender) = &self.inner.saved_state_notify {
                         tracing::trace!("sending saved state to proxy");
                         if let Err(err) = sender
@@ -1111,19 +1114,24 @@ impl ServerTask {
             VmbusRequest::Start => {
                 if !self.inner.running {
                     self.inner.running = true;
-                    if let Some(sender) = self.inner.saved_state_notify.as_ref() {
-                        // Indicate to the proxy that the server is starting and that it should
-                        // clear its saved state cache.
-                        tracing::trace!("sending clear saved state message to proxy");
-                        sender
-                            .call(SavedStateRequest::Clear, ())
-                            .await
-                            .expect("failed to clear proxy saved state");
+                    if self.perform_post_restore_on_start {
+                        if let Some(sender) = self.inner.saved_state_notify.as_ref() {
+                            // Indicate to the proxy that the server is starting and that it should
+                            // clear its saved state cache.
+                            tracing::trace!("sending clear saved state message to proxy");
+                            sender
+                                .call(SavedStateRequest::Clear, ())
+                                .await
+                                .expect("failed to clear proxy saved state");
+                        }
+
+                        self.server
+                            .with_notifier(&mut self.inner)
+                            .revoke_unclaimed_channels();
+
+                        self.perform_post_restore_on_start = false;
                     }
 
-                    self.server
-                        .with_notifier(&mut self.inner)
-                        .revoke_unclaimed_channels();
                     if self.unstick_on_start {
                         tracing::info!(
                             "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."

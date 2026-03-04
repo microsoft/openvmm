@@ -19,6 +19,9 @@ gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 # The build process requires a C compiler, perl, and make.
 openssl-vendored = ["underhill_attestation/openssl-vendored"]
 
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
+
 # Enable VPCI device support
 vpci = []
 
