@@ -64,6 +64,11 @@ Configure test runs using `.config/nextest.toml` for resource management and tim
 - **VMM tests**: Integration tests in `vmm_tests/` using the petri framework for Hyper-V and OpenVMM VMs (requires additional setup)
 - **Fuzz tests**: Nondeterministic tests ensuring no panics across trust boundaries
 
+## Line Endings
+
+This repository enforces **LF line endings** on all platforms (see `.gitattributes`).
+When creating or editing files, always use LF (`\n`), never CRLF (`\r\n`).
+
 ## Linting and Formatting
 
 ### Required Before Each Commit

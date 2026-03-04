@@ -231,10 +231,13 @@ pub enum DrainAfterRestore {
     AllDrained,
 }
 
+#[derive(Clone, Inspect)]
 pub struct DrainAfterRestoreBuilder(Option<DrainAfterRestoreBuilderInner>);
 
+#[derive(Clone, Inspect)]
 struct DrainAfterRestoreBuilderInner {
     counter: Arc<AtomicUsize>,
+    #[inspect(skip)]
     signal: Arc<DeviceInterruptSource>,
     pci_id: String,
 }
@@ -274,6 +277,41 @@ impl DrainAfterRestoreBuilder {
 
     pub fn new_no_drain() -> DrainAfterRestore {
         DrainAfterRestore::AllDrained
+    }
+
+    /// Returns true if all queues have finished draining (or if there was
+    /// nothing to drain). This checks the atomic counter and is safe to call
+    /// from any thread.
+    pub fn is_drain_complete(&self) -> bool {
+        match &self.0 {
+            Some(inner) => inner.counter.load(Ordering::Acquire) == 0,
+            None => true,
+        }
+    }
+
+    /// Returns the drain state appropriate for a newly created IO queue,
+    /// considering whether a global drain is still in progress.
+    ///
+    /// If draining is complete, returns `AllDrained`. Otherwise, returns a
+    /// `SelfDrained` waiter that will be signaled when all pre-save IOs
+    /// finish draining. Uses a double-check pattern to handle the race
+    /// where the drain completes between the initial check and waiter
+    /// creation.
+    pub fn new_for_new_queue(&self) -> DrainAfterRestore {
+        if self.is_drain_complete() {
+            return DrainAfterRestore::AllDrained;
+        }
+        // Drain is still in progress. Create a waiter so this queue blocks
+        // new IO until all pre-save commands complete.
+        let drain = self.new_self_drained();
+        // Double-check: the drain may have completed between our first check
+        // and the waiter registration. If so, the waiter might not have
+        // received the signal, so fall back to AllDrained.
+        if self.is_drain_complete() {
+            DrainAfterRestore::AllDrained
+        } else {
+            drain
+        }
     }
 }
 
@@ -351,6 +389,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         registers: Arc<DeviceRegisters<D>>,
         bounce_buffer: bool,
         aer_handler: A,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
         // allocating the sum total together. This can increase the likelihood
@@ -385,7 +424,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
             None,
             bounce_buffer,
             aer_handler,
-            DrainAfterRestoreBuilder::new_no_drain(),
+            drain_after_restore,
         )
     }
 
@@ -468,7 +507,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
-                    drain_after_restore: DrainAfterRestoreBuilder::new_no_drain(),
+                    drain_after_restore,
                     aer_handler,
                     device_id: device_id.into(),
                     qid,

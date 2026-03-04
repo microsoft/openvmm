@@ -11,22 +11,12 @@ unstable_whp = []
 
 [dependencies]
 pal.workspace = true
-windows-sys.workspace = true
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Power"] }
 guid.workspace = true
-
-[target.'cfg(windows)'.dependencies.winapi]
-workspace = true
-features = [
-    "handleapi",
-    "libloaderapi",
-    "memoryapi",
-    "std",
-    "synchapi",
-    "winerror",
-]
 
 [target.'cfg(windows)'.dev-dependencies]
 criterion = { workspace = true, features = ["rayon", "cargo_bench_support"] }
+windows-sys = { workspace = true, features = ["Win32_System_Memory", "Win32_System_Threading"] }
 
 [[bench]]
 name = "primitives"
