@@ -251,7 +251,7 @@ fn download_all_reqs(
                 );
 
                 if matches!(rt.platform(), FlowPlatform::Windows) {
-                    cmd = cmd.arg("--ssl-no-revoke");
+                    cmd = cmd.arg("--ssl-revoke-best-effort");
                 }
 
                 cmd.run()?;
