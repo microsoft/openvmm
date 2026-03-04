@@ -70,6 +70,10 @@ impl BuildInfo {
     pub fn scm_branch(&self) -> &'static str {
         self.branch
     }
+
+    pub fn openhcl_version(&self) -> &'static str {
+        self.openhcl_version
+    }
 }
 
 // Placing into a separate section to make easier to discover
