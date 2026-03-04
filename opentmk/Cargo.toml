@@ -10,7 +10,6 @@ rust-version.workspace = true
 bitfield-struct.workspace = true
 cfg-if.workspace  = true
 hvdef.workspace = true
-lazy_static = { workspace = true, features = ["spin_no_std"] }
 linked_list_allocator.workspace = true
 log.workspace = true
 memory_range.workspace = true

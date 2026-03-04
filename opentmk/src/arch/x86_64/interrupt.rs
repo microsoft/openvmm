@@ -2,11 +2,10 @@
 // Licensed under the MIT License.
 
 //! x86_64-specific interrupt handling implementation.
-//!
 
 use alloc::boxed::Box;
 
-use lazy_static::lazy_static;
+use spin::Lazy;
 use spin::Mutex;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use x86_64::structures::idt::InterruptStackFrame;
@@ -14,14 +13,12 @@ use x86_64::structures::idt::InterruptStackFrame;
 use super::interrupt_handler_register::register_interrupt_handler;
 use super::interrupt_handler_register::set_common_handler;
 
-lazy_static! {
-    static ref IDT: InterruptDescriptorTable = {
-        let mut idt = InterruptDescriptorTable::new();
-        register_interrupt_handler(&mut idt);
-        idt.double_fault.set_handler_fn(handler_double_fault);
-        idt
-    };
-}
+static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
+    let mut idt = InterruptDescriptorTable::new();
+    register_interrupt_handler(&mut idt);
+    idt.double_fault.set_handler_fn(handler_double_fault);
+    idt
+});
 
 static mut HANDLERS: [Option<Box<dyn Fn() + 'static>>; 256] = [const { None }; 256];
 static MUTEX: Mutex<()> = Mutex::new(());

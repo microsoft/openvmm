@@ -5114,7 +5114,6 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",
- "lazy_static",
  "linked_list_allocator",
  "log",
  "memory_range",
