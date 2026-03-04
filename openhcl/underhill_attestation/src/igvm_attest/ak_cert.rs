@@ -124,13 +124,6 @@ mod tests {
 
     #[test]
     fn test_parse_response_small_size() {
-        // Construct a response where:
-        //   - version = VERSION_1 (0x01)  →  header_size = size_of::<IgvmAttestCommonResponseHeader>() = 8
-        //   - data_size = 4               →  less than header_size
-        //   - response buffer is 8 bytes  →  passes parse_response_header's size check
-        //
-        // parse_response_header succeeds (data_size=4 <= response.len()=8),
-        // but parse_response tries to slice response[8..4] → panic!
         let mut response = [0u8; 8];
         // data_size = 4 (little-endian u32)
         response[0..4].copy_from_slice(&4u32.to_le_bytes());
