@@ -390,6 +390,12 @@ impl<T: DeviceBacking> Vport<T> {
         self.config.num_indirection_ent
     }
 
+    /// Returns the adapter link speed in bits per second, as reported by the
+    /// device configuration.
+    pub fn link_speed_bps(&self) -> u64 {
+        self.inner.dev_config.link_speed_bps()
+    }
+
     /// Creates a new event queue.
     pub async fn new_eq(
         &self,
