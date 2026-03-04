@@ -7,6 +7,8 @@
 #![expect(unsafe_code)]
 
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
+use sev_guest_device_tio::TioMsgMmioConfigReqFlags;
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgMmioConfigRsp;
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 use sev_guest_device_tio::TioMsgMmioValidateRsp;
@@ -49,6 +51,8 @@ pub enum Error {
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[error("TIO_GUEST_REQUEST ioctl failed")]
     TioGuestRequestIoctl(#[source] nix::Error),
+    #[error("Invalid TIO request parameters")]
+    InvalidTioRequestParameters(String),
 }
 
 /// Ioctl struct defined by Linux.
@@ -355,16 +359,25 @@ impl SevGuestDevice {
         &self,
         guest_device_id: u16,
         range_id: u16,
+        write: bool,
+        flags: TioMsgMmioConfigReqFlags,
     ) -> Result<TioMsgMmioConfigRsp, Error> {
         use sev_guest_device_tio::TioMsgMmioConfigReq;
+
+        // Ensure that is_non_tee_mem flag is not set at the same time as WRITE (Table 65)
+        if flags.non_tee_mem() && write {
+            return Err(Error::InvalidTioRequestParameters(
+                "is_non_tee_mem flag cannot be set for WRITE MMIO config request".to_string(),
+            ));
+        }
 
         let msg_type = TioGuestMessageId::MmioConfigReq;
         let req = TioMsgMmioConfigReq {
             guest_device_id,
             _reserved0: [0; 2],
-            flags: 0,
+            flags,
             range_id,
-            write: 0,
+            write: write as u32,
             _reserved2: [0; 4],
         };
 

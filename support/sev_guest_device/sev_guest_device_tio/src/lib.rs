@@ -131,6 +131,22 @@ pub struct TioMsgMmioValidateRsp {
 
 static_assertions::const_assert_eq!(48, size_of::<TioMsgMmioValidateRsp>());
 
+/// See `TIO_MSG_MMIO_CONFIG_REQ` flags in Table 65, "SEV-TIO Firmware Interface Specification", Revision 0.91.
+#[bitfield(u16)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TioMsgMmioConfigReqFlags {
+    #[bits(2)]
+    _reserved0: u16,
+
+    /// 0: Can be mapped only into guest private memory.
+    /// 1: Can be mapped into either guest private memory or shared memory.
+    /// Ignored if WRITE is 0.
+    pub non_tee_mem: bool,
+
+    #[bits(13)]
+    _reserved1: u16,
+}
+
 /// See `TIO_MSG_MMIO_CONFIG_REQ` in Table 65, "SEV-TIO Firmware Interface Specification", Revision 0.91.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
@@ -140,7 +156,7 @@ pub struct TioMsgMmioConfigReq {
     /// Reserved.
     pub _reserved0: [u8; 2],
     /// Flags for the range.
-    pub flags: u16,
+    pub flags: TioMsgMmioConfigReqFlags,
     /// Range ID of the MMIO range.
     pub range_id: u16,
     /// WRITE flag.
@@ -149,18 +165,23 @@ pub struct TioMsgMmioConfigReq {
     pub _reserved2: [u8; 4],
 }
 
-impl TioMsgMmioConfigReq {
-    /// 0: Can be mapped only into guest private
-    /// memory.
-    /// 1: Can be mapped into either guest
-    /// private memory or shared memory.
-    /// Ignored if WRITE is 0.
-    pub fn is_non_tee_mem(&self) -> bool {
-        (self.flags & (1 << 2)) != 0
-    }
-}
-
 static_assertions::const_assert_eq!(16, size_of::<TioMsgMmioConfigReq>());
+
+/// See `TIO_MSG_MMIO_CONFIG_RSP` flags in Table 66, "SEV-TIO Firmware Interface Specification", Revision 0.91.
+#[bitfield(u16)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct TioMsgMmioConfigRspFlags {
+    /// Indicates if the range maps MSI-X table.
+    pub msix_table: bool,
+    /// Indicates if this range maps MSI-X PBA.
+    pub msix_pba: bool,
+    /// Indicates if the range can be mapped into either guest private memory or shared memory.
+    pub non_tee_mem: bool,
+    /// Indicates if certain TDISP flags can be updated.
+    pub mem_attr_updateable: bool,
+    #[bits(12)]
+    _reserved0: u16,
+}
 
 /// See `TIO_MSG_MMIO_CONFIG_RSP` in Table 66, "SEV-TIO Firmware Interface Specification", Revision 0.91.
 #[repr(C)]
@@ -171,35 +192,13 @@ pub struct TioMsgMmioConfigRsp {
     /// Status of the operation.
     pub status: u16,
     /// Flags for the range.
-    pub flags: u16,
+    pub flags: TioMsgMmioConfigRspFlags,
     /// Range ID of the MMIO range.
     pub range_id: u16,
     /// WRITE flag.
     pub write: u32,
     /// Reserved.
     pub _reserved1: [u8; 4],
-}
-
-impl TioMsgMmioConfigRsp {
-    /// Indicates if certain TDISP flags can be updated.
-    pub fn is_mem_attr_updateable(&self) -> bool {
-        (self.flags & (1 << 3)) != 0
-    }
-
-    /// Indicates if the range can be mapped into either guest private memory or shared memory.
-    pub fn is_non_tee_mem(&self) -> bool {
-        (self.flags & (1 << 2)) != 0
-    }
-
-    /// Indicates if this range maps MSI-X PBA.
-    pub fn msix_pba(&self) -> bool {
-        (self.flags & (1 << 1)) != 0
-    }
-
-    /// Indicates if the range maps MSI-X table.
-    pub fn msix_table(&self) -> bool {
-        (self.flags & 1) != 0
-    }
 }
 
 static_assertions::const_assert_eq!(16, size_of::<TioMsgMmioConfigRsp>());
