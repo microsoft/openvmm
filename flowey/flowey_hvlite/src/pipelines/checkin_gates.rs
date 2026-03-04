@@ -312,7 +312,16 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
 
-            let job = pipeline
+            let vmgstool_release = release.then(|| {
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool-release"))
+            });
+
+            let vmgstool_target = CommonTriple::Common {
+                arch,
+                platform: CommonPlatform::WindowsMsvc,
+            };
+
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Windows,
                     FlowArch::X86_64,
@@ -357,18 +366,24 @@ impl IntoPipeline for CheckinGatesCli {
                     ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
                 });
 
-            all_jobs.push(job.finish());
+            if let Some((pub_vmgstool_release, use_vmgstool_release)) = vmgstool_release {
+                job = job.dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: vmgstool_target.clone(),
+                    profile: CommonProfile::Release,
+                    with_crypto: true,
+                    with_test_helpers: false,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool_release),
+                });
 
-            let vmgstool_target = CommonTriple::Common {
-                arch,
-                platform: CommonPlatform::WindowsMsvc,
-            };
-            if vmgstools
-                .insert(vmgstool_target.to_string(), use_vmgstool.clone())
-                .is_some()
-            {
-                anyhow::bail!("multiple vmgstools for the same target");
+                if vmgstools
+                    .insert(vmgstool_target.to_string(), use_vmgstool_release.clone())
+                    .is_some()
+                {
+                    anyhow::bail!("multiple vmgstools for the same target");
+                }
             }
+
+            all_jobs.push(job.finish());
 
             // emit a job for artifacts which _are_ in the VMM tests "hot path"
             let mut job = pipeline
@@ -496,7 +511,10 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-igvmfilegen"));
             let (pub_vmgs_lib, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgs_lib"));
-            let (pub_vmgstool, use_vmgstool) =
+
+            let vmgstool_release = release
+                .then(|| pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool-release")));
+            let (pub_vmgstool, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool"));
             let (pub_ohcldiag_dev, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
@@ -537,12 +555,6 @@ impl IntoPipeline for CheckinGatesCli {
                 arch,
                 platform: CommonPlatform::LinuxGnu,
             };
-            if vmgstools
-                .insert(vmgstool_target.to_string(), use_vmgstool.clone())
-                .is_some()
-            {
-                anyhow::bail!("multiple vmgstools for the same target");
-            }
 
             let mut job = pipeline
                 .new_job(
@@ -570,7 +582,7 @@ impl IntoPipeline for CheckinGatesCli {
                     }
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
-                    target: vmgstool_target,
+                    target: vmgstool_target.clone(),
                     profile: CommonProfile::from_release(release),
                     with_crypto: true,
                     with_test_helpers: true,
@@ -620,6 +632,23 @@ impl IntoPipeline for CheckinGatesCli {
                     profile: CommonProfile::from_release(release),
                     tpm_guest_tests: ctx.publish_typed_artifact(pub_tpm_guest_tests),
                 });
+
+            if let Some((pub_vmgstool_release, use_vmgstool_release)) = vmgstool_release {
+                job = job.dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: vmgstool_target.clone(),
+                    profile: CommonProfile::Release,
+                    with_crypto: true,
+                    with_test_helpers: false,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool_release),
+                });
+
+                if vmgstools
+                    .insert(vmgstool_target.to_string(), use_vmgstool_release.clone())
+                    .is_some()
+                {
+                    anyhow::bail!("multiple vmgstools for the same target");
+                }
+            }
 
             // Hang building the linux VMM tests off this big linux job.
             //
