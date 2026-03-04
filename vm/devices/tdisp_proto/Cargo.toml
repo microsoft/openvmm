@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 inspect.workspace = true
-
+thiserror.workspace = true
 prost.workspace = true
 
 [build-dependencies]

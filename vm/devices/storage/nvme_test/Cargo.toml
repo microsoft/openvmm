@@ -16,6 +16,7 @@ scsi_buffers.workspace = true
 device_emulators.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
+tdisp.workspace = true
 
 chipset_device.workspace = true
 guestmem.workspace = true

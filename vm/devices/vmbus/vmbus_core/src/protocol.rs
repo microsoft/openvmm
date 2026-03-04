@@ -657,6 +657,11 @@ pub struct GpadlCreated {
 /// Target VP index value that indicates that interrupts should be disabled for the channel.
 pub const VP_INDEX_DISABLE_INTERRUPT: u32 = u32::MAX;
 
+/// Helper that returns `None` if the VP index indicates interrupts should be disabled.
+pub fn vp_index_if_enabled(vp_index: u32) -> Option<u32> {
+    (vp_index != VP_INDEX_DISABLE_INTERRUPT).then_some(vp_index)
+}
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct OpenChannel {

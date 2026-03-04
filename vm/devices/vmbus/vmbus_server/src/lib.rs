@@ -794,8 +794,19 @@ struct ReservedState {
 struct ChannelOpenState {
     open_params: OpenParams,
     _event_port: Box<dyn Send>,
-    guest_event_port: Box<dyn GuestEventPort>,
+    guest_event_port: Option<Box<dyn GuestEventPort>>,
     host_to_guest_interrupt: Interrupt,
+}
+
+impl ChannelOpenState {
+    fn set_event_port_target_vp(&mut self, vp: u32) -> anyhow::Result<()> {
+        let Some(guest_event_port) = self.guest_event_port.as_mut() else {
+            anyhow::bail!("cannot set target VP if the channel interrupt is disabled");
+        };
+
+        guest_event_port.set_target_vp(vp)?;
+        Ok(())
+    }
 }
 
 enum ChannelState {
@@ -1588,32 +1599,34 @@ impl Notifier for ServerTaskInner {
                 )
             }
             channels::Action::Modify { target_vp } => {
-                if let ChannelState::Open(state) = &mut channel.state {
-                    if let Err(err) = state.guest_event_port.set_target_vp(target_vp) {
-                        tracelimit::error_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            channel = %channel.key,
-                            "could not modify channel",
-                        );
-                        let seq = channel.seq;
-                        Box::pin(async move {
-                            (
-                                offer_id,
-                                seq,
-                                Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
-                            )
-                        })
-                    } else {
-                        handle(
-                            offer_id,
-                            channel,
-                            ChannelRequest::Modify,
-                            ModifyRequest::TargetVp { target_vp },
-                            ChannelResponse::Modify,
-                        )
-                    }
-                } else {
+                let ChannelState::Open(state) = &mut channel.state else {
                     unreachable!();
+                };
+
+                if let Err(err) = state.set_event_port_target_vp(target_vp) {
+                    tracelimit::error_ratelimited!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        channel = %channel.key,
+                        "could not modify channel",
+                    );
+
+                    // Send an immediate error response.
+                    let seq = channel.seq;
+                    Box::pin(async move {
+                        (
+                            offer_id,
+                            seq,
+                            Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
+                        )
+                    })
+                } else {
+                    handle(
+                        offer_id,
+                        channel,
+                        ChannelRequest::Modify,
+                        ModifyRequest::TargetVp { target_vp },
+                        ChannelResponse::Modify,
+                    )
                 }
             }
         };
@@ -1785,30 +1798,39 @@ impl ServerTaskInner {
         // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
         // bitmap is used instead of the event flag.
         let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
-            (0, 0)
+            (Some(0), 0)
         } else {
             (open_params.open_data.target_vp, open_params.event_flag)
         };
-        let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-            (self.redirect_vtl, self.redirect_sint)
+
+        let (guest_event_port, interrupt) = if let Some(target_vp) = target_vp {
+            let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
+                (self.redirect_vtl, self.redirect_sint)
+            } else {
+                (self.vtl, VMBUS_SINT)
+            };
+
+            let guest_event_port = self.synic.new_guest_event_port(
+                VmbusServer::get_child_event_port_id(open_params.channel_id, VMBUS_SINT, self.vtl),
+                target_vtl,
+                target_vp,
+                target_sint,
+                event_flag,
+                open_params.monitor_info,
+            )?;
+
+            let interrupt = ChannelBitmap::create_interrupt(
+                &self.channel_bitmap,
+                guest_event_port.interrupt(),
+                open_params.event_flag,
+            );
+
+            (Some(guest_event_port), interrupt)
         } else {
-            (self.vtl, VMBUS_SINT)
+            // Use a dummy interrupt which does nothing, but make sure it has an event to avoid
+            // proxy_integration from trying to wrap it.
+            (None, Interrupt::null_event())
         };
-
-        let guest_event_port = self.synic.new_guest_event_port(
-            VmbusServer::get_child_event_port_id(open_params.channel_id, VMBUS_SINT, self.vtl),
-            target_vtl,
-            target_vp,
-            target_sint,
-            event_flag,
-            open_params.monitor_info,
-        )?;
-
-        let interrupt = ChannelBitmap::create_interrupt(
-            &self.channel_bitmap,
-            guest_event_port.interrupt(),
-            open_params.event_flag,
-        );
 
         // Delete any previously reserved state.
         channel.reserved_state.message_port = None;

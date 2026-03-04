@@ -32,34 +32,45 @@
 /// Protobuf serialization of guest commands and responses.
 pub mod serialize_proto;
 
+/// Serialization code from PCI standard structures reported from the TDISP device directly.
+pub mod devicereport;
+
 #[cfg(test)]
 mod tests;
+
+/// Mocks for the host interface and the emulator.
+pub mod test_helpers;
 
 use anyhow::Context;
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tdisp_proto::GuestToHostCommand;
-use tdisp_proto::GuestToHostResponse;
-use tdisp_proto::TdispCommandResponseBind;
-use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
-use tdisp_proto::TdispCommandResponseGetTdiReport;
-use tdisp_proto::TdispCommandResponseStartTdi;
-use tdisp_proto::TdispCommandResponseUnbind;
-use tdisp_proto::TdispDeviceInterfaceInfo;
-use tdisp_proto::TdispGuestOperationErrorCode;
-use tdisp_proto::TdispGuestProtocolType;
-use tdisp_proto::TdispGuestUnbindReason;
-use tdisp_proto::TdispReportType;
-use tdisp_proto::TdispTdiState;
-use tdisp_proto::guest_to_host_command::Command;
-use tdisp_proto::guest_to_host_response::Response;
-use thiserror::Error;
+pub use tdisp_proto::GuestToHostCommand;
+pub use tdisp_proto::GuestToHostCommandExt;
+pub use tdisp_proto::GuestToHostResponse;
+pub use tdisp_proto::GuestToHostResponseExt;
+pub use tdisp_proto::TdispCommandResponseBind;
+pub use tdisp_proto::TdispCommandResponseGetDeviceInterfaceInfo;
+pub use tdisp_proto::TdispCommandResponseGetTdiReport;
+pub use tdisp_proto::TdispCommandResponseStartTdi;
+pub use tdisp_proto::TdispCommandResponseUnbind;
+pub use tdisp_proto::TdispDeviceInterfaceInfo;
+pub use tdisp_proto::TdispGuestOperationError;
+pub use tdisp_proto::TdispGuestOperationErrorCode;
+pub use tdisp_proto::TdispGuestProtocolType;
+pub use tdisp_proto::TdispGuestUnbindReason;
+pub use tdisp_proto::TdispReportType;
+pub use tdisp_proto::TdispTdiState;
+pub use tdisp_proto::guest_to_host_command::Command;
+pub use tdisp_proto::guest_to_host_response::Response;
+
 use tracing::instrument;
 
 /// Callback for receiving TDISP commands from the guest.
 pub type TdispCommandCallback = dyn Fn(&GuestToHostCommand) -> anyhow::Result<()> + Send + Sync;
 
-/// Trait used by the emulator to call back into the host.
+/// Describes the interface that host software should implement to provide TDISP
+/// functionality for a device. These interfaces might dispatch to a physical
+/// device, or might be implemented by a software emulator.
 pub trait TdispHostDeviceInterface: Send + Sync {
     /// Request versioning and protocol negotiation from the host.
     fn tdisp_negotiate_protocol(
@@ -219,16 +230,6 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             }
         }
         let state_after = self.machine.state();
-
-        match error {
-            TdispGuestOperationError::Success => {
-                tracing::info!("tdisp_handle_guest_command: Success");
-            }
-            _ => {
-                tracing::error!("tdisp_handle_guest_command: Error: {error:?}");
-            }
-        }
-
         let error_code: TdispGuestOperationErrorCode = error.into();
         let resp = GuestToHostResponse {
             result: error_code.into(),
@@ -237,7 +238,14 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
             response,
         };
 
-        tracing::info!("tdisp_handle_guest_command: response = {resp:?}");
+        match error {
+            TdispGuestOperationError::Success => {
+                tracing::info!(?resp, "tdisp_handle_guest_command success");
+            }
+            _ => {
+                tracing::error!(?resp, "tdisp_handle_guest_command error");
+            }
+        }
 
         Ok(resp)
     }
@@ -444,100 +452,6 @@ impl TdispHostStateMachine {
     }
 }
 
-/// Error returned by TDISP operations dispatched by the guest.
-#[derive(Error, Debug, Copy, Clone)]
-#[expect(missing_docs)]
-pub enum TdispGuestOperationError {
-    #[error("unknown error code")]
-    Unknown,
-    #[error("the operation was successful")]
-    Success,
-    #[error("the requested guest protocol type was not valid for this host")]
-    InvalidGuestProtocolRequest,
-    #[error("the current TDI state is incorrect for this operation")]
-    InvalidDeviceState,
-    #[error("the reason for this unbind is invalid")]
-    InvalidGuestUnbindReason,
-    #[error("invalid TDI command ID")]
-    InvalidGuestCommandId,
-    #[error("operation requested was not implemented")]
-    NotImplemented,
-    #[error("host failed to process command")]
-    HostFailedToProcessCommand,
-    #[error(
-        "the device was not in the Locked or Run state when the attestation report was requested"
-    )]
-    InvalidGuestAttestationReportState,
-    #[error("invalid attestation report type requested")]
-    InvalidGuestAttestationReportType,
-}
-
-impl From<TdispGuestOperationErrorCode> for TdispGuestOperationError {
-    fn from(err_code: TdispGuestOperationErrorCode) -> Self {
-        match err_code {
-            TdispGuestOperationErrorCode::Unknown => TdispGuestOperationError::Unknown,
-            TdispGuestOperationErrorCode::Success => TdispGuestOperationError::Success,
-            TdispGuestOperationErrorCode::InvalidGuestProtocolRequest => {
-                TdispGuestOperationError::InvalidGuestProtocolRequest
-            }
-            TdispGuestOperationErrorCode::InvalidDeviceState => {
-                TdispGuestOperationError::InvalidDeviceState
-            }
-            TdispGuestOperationErrorCode::InvalidGuestUnbindReason => {
-                TdispGuestOperationError::InvalidGuestUnbindReason
-            }
-            TdispGuestOperationErrorCode::InvalidGuestCommandId => {
-                TdispGuestOperationError::InvalidGuestCommandId
-            }
-            TdispGuestOperationErrorCode::NotImplemented => {
-                TdispGuestOperationError::NotImplemented
-            }
-            TdispGuestOperationErrorCode::HostFailedToProcessCommand => {
-                TdispGuestOperationError::HostFailedToProcessCommand
-            }
-            TdispGuestOperationErrorCode::InvalidGuestAttestationReportState => {
-                TdispGuestOperationError::InvalidGuestAttestationReportState
-            }
-            TdispGuestOperationErrorCode::InvalidGuestAttestationReportType => {
-                TdispGuestOperationError::InvalidGuestAttestationReportType
-            }
-        }
-    }
-}
-
-impl From<TdispGuestOperationError> for TdispGuestOperationErrorCode {
-    fn from(err: TdispGuestOperationError) -> Self {
-        match err {
-            TdispGuestOperationError::Unknown => TdispGuestOperationErrorCode::Unknown,
-            TdispGuestOperationError::Success => TdispGuestOperationErrorCode::Success,
-            TdispGuestOperationError::InvalidGuestProtocolRequest => {
-                TdispGuestOperationErrorCode::InvalidGuestProtocolRequest
-            }
-            TdispGuestOperationError::InvalidDeviceState => {
-                TdispGuestOperationErrorCode::InvalidDeviceState
-            }
-            TdispGuestOperationError::InvalidGuestUnbindReason => {
-                TdispGuestOperationErrorCode::InvalidGuestUnbindReason
-            }
-            TdispGuestOperationError::InvalidGuestCommandId => {
-                TdispGuestOperationErrorCode::InvalidGuestCommandId
-            }
-            TdispGuestOperationError::NotImplemented => {
-                TdispGuestOperationErrorCode::NotImplemented
-            }
-            TdispGuestOperationError::HostFailedToProcessCommand => {
-                TdispGuestOperationErrorCode::HostFailedToProcessCommand
-            }
-            TdispGuestOperationError::InvalidGuestAttestationReportState => {
-                TdispGuestOperationErrorCode::InvalidGuestAttestationReportState
-            }
-            TdispGuestOperationError::InvalidGuestAttestationReportType => {
-                TdispGuestOperationErrorCode::InvalidGuestAttestationReportType
-            }
-        }
-    }
-}
-
 /// Represents an interface by which guest commands can be dispatched to a
 /// backing TDISP state handler in the host. This could be an emulated TDISP device or an
 /// assigned TDISP device that is actually connected to the guest.
@@ -629,34 +543,34 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
 
         match res {
             Ok(interface_info) => {
-                tracing::info!(
-                    "Guest protocol negotiated successfully to: {:?}",
-                    interface_info
-                );
-
                 match TdispGuestProtocolType::from_i32(interface_info.guest_protocol_type) {
                     Some(guest_protocol_type) => {
                         if guest_protocol_type == TdispGuestProtocolType::Invalid {
                             tracing::error!(
-                                "Guest protocol negotiated with invalid value: {guest_protocol_type:?}"
+                                ?guest_protocol_type,
+                                "Guest protocol negotiated with invalid value"
                             );
                             Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
                         } else {
                             self.guest_protocol_type = guest_protocol_type;
-                            tracing::info!("Guest protocol negotiated: {interface_info:?}");
+                            tracing::info!(
+                                ?interface_info,
+                                "Guest protocol negotiated successfully to"
+                            );
                             Ok(interface_info)
                         }
                     }
                     None => {
                         tracing::error!(
-                            "Guest protocol negotiated with none value: {interface_info:?}"
+                            ?interface_info,
+                            "Guest protocol negotiated with none value"
                         );
                         Err(TdispGuestOperationError::InvalidGuestProtocolRequest)
                     }
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to negotiate protocol with host interface: {e:?}");
+                tracing::error!(?e, "Failed to negotiate protocol with host interface");
                 Err(TdispGuestOperationError::HostFailedToProcessCommand)
             }
         }

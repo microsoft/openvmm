@@ -3229,6 +3229,13 @@ async fn new_underhill_vm(
                         )
                     },
                     vtom,
+                    VpciRelayOptions {
+                        // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
+                        test_tdisp_flow: matches!(
+                            env_cfg.test_configuration,
+                            Some(TestScenarioConfig::VpciTdispFlow)
+                        ),
+                    },
                 );
 
                 // Allow NVMe devices.
