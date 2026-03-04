@@ -9,6 +9,7 @@ use crate::resources::Resource;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
+use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_REQUEST_V1;
 use gdma_defs::bnic::MANA_QUERY_DEV_CONFIG_RESPONSE_V4;
 use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_REQUEST_V1;
 use gdma_defs::bnic::MANA_VTL2_ASSIGN_SERIAL_NUMBER_RESPONSE_V1;
@@ -54,7 +55,7 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
             .gdma
             .request_version(
                 ManaCommandCode::MANA_QUERY_DEV_CONFIG.0,
-                MANA_QUERY_DEV_CONFIG_RESPONSE_V4,
+                MANA_QUERY_DEV_CONFIG_REQUEST_V1,
                 ManaCommandCode::MANA_QUERY_DEV_CONFIG.0,
                 MANA_QUERY_DEV_CONFIG_RESPONSE_V4,
                 self.dev_id,

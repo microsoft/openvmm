@@ -27,6 +27,7 @@ open_enum! {
     }
 }
 
+pub const MANA_QUERY_DEV_CONFIG_REQUEST_V1: u16 = 1;
 pub const MANA_QUERY_DEV_CONFIG_RESPONSE_V4: u16 = 4;
 pub const MANA_VTL2_MOVE_FILTER_REQUEST_V2: u16 = 2;
 pub const MANA_VTL2_MOVE_FILTER_RESPONSE_V1: u16 = 1;
