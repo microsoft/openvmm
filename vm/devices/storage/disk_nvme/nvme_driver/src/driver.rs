@@ -817,11 +817,6 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .map_interrupt(0, 0)
             .with_context(|| format!("failed to map interrupt 0 for {}", pci_id))?;
 
-        // Clone the interrupt before handing it to the queue pair, so we can
-        // do a one-shot poll after restore to detect spurious interrupts from
-        // the keepalive window.
-        let mut interrupt0_probe = interrupt0.clone();
-
         let dma_client = worker.device.dma_client();
         let restored_memory = dma_client
             .attach_pending_buffers()
@@ -886,32 +881,6 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     "admin CQ peek after restore: no phantom completion at head"
                 );
             }
-        }
-
-        // One-shot poll of interrupt 0 to detect whether the device fired a
-        // spurious interrupt during the keepalive window (e.g. completing the
-        // in-flight AER). The probe clone was created before the QueuePair
-        // consumed the original interrupt, so it shares the same backing signal.
-        {
-            let signaled = std::future::poll_fn(|cx| {
-                std::task::Poll::Ready(interrupt0_probe.poll(cx).is_ready())
-            })
-            .await;
-            if signaled {
-                tracing::warn!(
-                    ?pci_id,
-                    "interrupt 0 was already signaled at restore — \
-                     device likely completed something during the keepalive window"
-                );
-            } else {
-                tracing::info!(
-                    ?pci_id,
-                    "interrupt 0 not signaled at restore — no spurious interrupt from keepalive"
-                );
-            }
-            // Drop the probe so it doesn't consume future signals meant for the
-            // QueueHandler.
-            drop(interrupt0_probe);
         }
 
         // Spawn a task to handle asynchronous events.

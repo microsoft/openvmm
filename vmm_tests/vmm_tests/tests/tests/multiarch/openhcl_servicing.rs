@@ -859,6 +859,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
                             .into_resource(),
                         }],
                         fault_config: fault_configuration,
+                        enable_tdisp_tests: false,
                     }
                     .into_resource(),
                 })
