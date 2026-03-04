@@ -3302,27 +3302,29 @@ mod tests {
         #[derive(Inspect)]
         struct Baz {
             #[inspect(safe)]
-            a: u32,
+            b: u32,
             #[inspect(safe)]
-            b: Qux,
+            c: Qux,
         }
 
         #[derive(Inspect)]
         struct Qux {
             #[inspect(sensitive)]
-            a: u32,
-            b: u32,
+            d: u32,
+            e: u32,
+            #[inspect(safe)]
+            f: u32,
         }
 
         let obj = Indexed {
             a: vec![
                 Baz {
-                    a: 0,
-                    b: Qux { a: 0, b: 0 },
+                    b: 0,
+                    c: Qux { d: 0, e: 0, f: 0 },
                 },
                 Baz {
-                    a: 0,
-                    b: Qux { a: 0, b: 0 },
+                    b: 0,
+                    c: Qux { d: 0, e: 0, f: 0 },
                 },
             ],
         };
@@ -3330,18 +3332,22 @@ mod tests {
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &obj),
             expect!([r#"
-            {
-                a: {
-                    0: {
-                        a: 0,
-                        b: {},
+                {
+                    a: {
+                        0: {
+                            b: 0,
+                            c: {
+                                f: 0,
+                            },
+                        },
+                        1: {
+                            b: 0,
+                            c: {
+                                f: 0,
+                            },
+                        },
                     },
-                    1: {
-                        a: 0,
-                        b: {},
-                    },
-                },
-            }|{"a":{"0":{"a":0,"b":{}},"1":{"a":0,"b":{}}}}"#]),
+                }|{"a":{"0":{"b":0,"c":{"f":0}},"1":{"b":0,"c":{"f":0}}}}"#]),
         );
     }
 
