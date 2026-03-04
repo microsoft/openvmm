@@ -44,6 +44,19 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params { arch, kernel_kind } = request;
 
+        // aarch64 CVM kernels don't exist - only x64 has CVM variants
+        if matches!(arch, CommonArch::Aarch64)
+            && matches!(
+                kernel_kind,
+                OpenhclKernelPackageKind::Cvm | OpenhclKernelPackageKind::CvmDev
+            )
+        {
+            anyhow::bail!(
+                "aarch64 does not have a CVM kernel variant (requested {:?})",
+                kernel_kind
+            );
+        }
+
         let arch_suffix = match arch {
             CommonArch::X86_64 => "X64",
             CommonArch::Aarch64 => "AARCH64",
