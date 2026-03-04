@@ -475,7 +475,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     ) -> Result<OpenOutput> {
         let open_request = OpenRequest {
             open_data: OpenData {
-                target_vp: 0,
+                target_vp: Some(0),
                 ring_offset: 2,
                 ring_gpadl_id,
                 event_flag: !0,
