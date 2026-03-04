@@ -141,6 +141,7 @@ pub struct PciFaultConfig {
 ///             // Define `NamespaceDefinitions` here
 ///         ],
 ///         fault_config: fault_configuration,
+///         enable_tdisp_tests: false,
 ///     };
 ///
 ///     // Send the namespace change notification and await processing.
@@ -368,6 +369,7 @@ pub struct CommandMatch {
 ///             // Define NamespaceDefinitions here
 ///         ],
 ///         fault_config: fault_configuration,
+///         enable_tdisp_tests: false,
 ///     };
 ///     // Pass the controller handle in to the vm config to create and attach the fault controller. At this point the fault is inactive.
 ///     fault_start_updater.set(true); // Activate the fault injection.

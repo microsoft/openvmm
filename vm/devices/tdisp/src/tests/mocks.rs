@@ -5,13 +5,14 @@ use crate::TdispGuestRequestInterface;
 use crate::TdispHostDeviceInterface;
 use crate::TdispHostDeviceTargetEmulator;
 use crate::TdispHostStateMachine;
+use crate::test_helpers::TDISP_MOCK_DEVICE_ID;
+use crate::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
+use crate::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tdisp_proto::TdispDeviceInterfaceInfo;
 use tdisp_proto::TdispGuestProtocolType;
 use tdisp_proto::TdispReportType;
-
-pub const TDISP_MOCK_GUEST_PROTOCOL: TdispGuestProtocolType = TdispGuestProtocolType::AmdSevTioV10;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum LastCall {
@@ -63,8 +64,8 @@ impl TdispHostDeviceInterface for TrackingHostInterface {
         *self.last_call.lock() = Some(LastCall::NegotiateProtocol);
         Ok(TdispDeviceInterfaceInfo {
             guest_protocol_type: TDISP_MOCK_GUEST_PROTOCOL as i32,
-            supported_features: 0xDEAD,
-            tdisp_device_id: 99,
+            supported_features: TDISP_MOCK_SUPPORTED_FEATURES,
+            tdisp_device_id: TDISP_MOCK_DEVICE_ID,
         })
     }
 }
