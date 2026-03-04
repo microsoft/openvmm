@@ -126,10 +126,16 @@ export function VirtualizedTable<TData extends object>({
       const active = document.activeElement as HTMLElement | null;
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
 
-      if (e.ctrlKey && e.key === "ArrowUp") {
-        rowVirtualizer.scrollToIndex(0, { align: "start" });
-      } else if (e.ctrlKey && e.key === "ArrowDown") {
-        rowVirtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+      if (e.ctrlKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+        try {
+          if (e.key === "ArrowUp") {
+            rowVirtualizer.scrollToIndex(0, { align: "start" });
+          } else {
+            rowVirtualizer.scrollToIndex(rows.length - 1, { align: "end" });
+          }
+        } catch {
+          /* no-op */
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
