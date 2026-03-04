@@ -9,6 +9,7 @@ pub mod vtl2_settings_worker;
 use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
+use crate::emuplat::netvsp::NetworkAdapterIndexSavedState;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::manager::NvmeManager;
 use crate::options::KeepAliveConfig;
@@ -135,7 +136,13 @@ pub trait LoadedVmNetworkSettings: Inspect {
     ) -> anyhow::Result<PacketCaptureParams<Socket>>;
 
     /// Save the network state for restoration after servicing.
-    async fn save(&mut self) -> Option<Vec<ManaSavedState>>;
+    async fn save(
+        &mut self,
+        keep_vf_alive: bool,
+    ) -> (
+        Option<Vec<ManaSavedState>>,
+        Option<Vec<NetworkAdapterIndexSavedState>>,
+    );
 }
 
 /// A VM that has been loaded and can be run.
@@ -931,14 +938,14 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
-
-        let mana_state = if let Some(network_settings) = &mut self.network_settings
-            && mana_keepalive_mode.is_enabled()
-        {
-            network_settings.save().await
-        } else {
-            None
-        };
+        let (mana_state, network_adapter_index_save_state) =
+            if let Some(network_settings) = &mut self.network_settings {
+                network_settings
+                    .save(mana_keepalive_mode.is_enabled())
+                    .await
+            } else {
+                (None, None)
+            };
 
         let vmgs = if let Some((vmgs_thin_client, vmgs_disk_metadata, _)) = self.vmgs.as_ref() {
             Some((
@@ -969,6 +976,7 @@ impl LoadedVm {
                 dma_manager_state,
                 vmbus_client,
                 mana_state,
+                network_adapter_index: network_adapter_index_save_state,
             },
             units,
         };

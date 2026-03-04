@@ -1219,9 +1219,9 @@ impl Nic {
         }
     }
 
-    pub fn shutdown(self) -> Box<dyn Endpoint> {
+    pub fn shutdown(self) -> (Box<dyn Endpoint>, MacAddress) {
         let (state, _) = self.coordinator.into_inner();
-        state.endpoint
+        (state.endpoint, self.adapter.mac_address)
     }
 }
 
