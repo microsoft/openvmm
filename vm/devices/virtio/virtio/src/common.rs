@@ -437,7 +437,7 @@ pub struct DeviceTraits {
     pub shared_memory: DeviceTraitsSharedMemory,
 }
 
-pub trait VirtioDevice: Send {
+pub trait VirtioDevice: inspect::InspectMut + Send {
     fn traits(&self) -> DeviceTraits;
     fn read_registers_u32(&self, offset: u16) -> u32;
     fn write_registers_u32(&mut self, offset: u16, val: u32);

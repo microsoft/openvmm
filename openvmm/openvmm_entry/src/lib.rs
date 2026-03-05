@@ -1438,7 +1438,7 @@ async fn vm_config_from_command_line(
         }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         add_virtio_device(
-            VirtioBusCli::Auto,
+            VirtioBusCli::Mmio,
             virtio_resources::net::VirtioNetHandle {
                 max_queues: vport.max_queues,
                 mac_address: vport.mac_address,
