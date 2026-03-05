@@ -69,6 +69,8 @@ impl RangeKey for u64 {
 ///
 /// For example: `0x40-0x4f,0x63,?` would filter addresses 0x40 through 0x4f, address
 /// 0x63, and any unknown addresses.
+///
+/// The string "all" is a special case that will match everything.
 #[derive(Debug)]
 pub struct AddressFilter<T> {
     unknown: bool,
