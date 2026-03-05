@@ -12,6 +12,7 @@ use crate::IpAddresses;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
+use inspect::InspectMut;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
@@ -60,9 +61,35 @@ struct FourTuple {
     dst: SocketAddr,
 }
 
+impl core::fmt::Display for FourTuple {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{}:{}-{}:{}",
+            self.src.ip(),
+            self.src.port(),
+            self.dst.ip(),
+            self.dst.port()
+        )
+    }
+}
+
+#[derive(InspectMut)]
 pub(crate) struct Tcp {
+    #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
+    #[inspect(iter_by_key)]
     listeners: HashMap<u16, TcpListener>,
+    #[inspect(mut)]
+    connection_params: ConnectionParams,
+}
+
+#[derive(InspectMut)]
+struct ConnectionParams {
+    #[inspect(mut)]
+    rx_buffer_size: usize,
+    #[inspect(mut)]
+    tx_buffer_size: usize,
 }
 
 #[derive(Debug, Error)]
@@ -81,32 +108,15 @@ pub enum TcpError {
     InvalidWindowScale,
 }
 
-impl Inspect for Tcp {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        for (addr, conn) in &self.connections {
-            resp.field(
-                &format!(
-                    "{}:{}-{}:{}",
-                    addr.src.ip(),
-                    addr.src.port(),
-                    addr.dst.ip(),
-                    addr.dst.port()
-                ),
-                conn,
-            );
-        }
-        for port in self.listeners.keys() {
-            resp.field("listening port", port);
-        }
-    }
-}
-
 impl Tcp {
     pub fn new() -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
+            connection_params: ConnectionParams {
+                rx_buffer_size: 16384,
+                tx_buffer_size: 16384,
+            },
         }
     }
 }
@@ -266,6 +276,7 @@ impl<T: Client> Access<'_, T> {
                                 let conn = match TcpConnection::new_from_accept(
                                     &mut sender,
                                     socket,
+                                    &self.inner.tcp.connection_params,
                                 ) {
                                     Ok(conn) => conn,
                                     Err(err) => {
@@ -368,7 +379,8 @@ impl<T: Client> Access<'_, T> {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
-                    let conn = TcpConnection::new(&mut sender, &tcp)?;
+                    let conn =
+                        TcpConnection::new(&mut sender, &tcp, &self.inner.tcp.connection_params)?;
                     e.insert(conn);
                 } else {
                     // Ignore the packet.
@@ -521,8 +533,8 @@ impl<T: Client> Sender<'_, T> {
     }
 }
 
-impl Default for TcpConnection {
-    fn default() -> Self {
+impl TcpConnection {
+    fn new_base(params: &ConnectionParams) -> Self {
         let mut rx_tx_seq = [0; 8];
         getrandom::fill(&mut rx_tx_seq[..]).expect("prng failure");
         let rx_seq = TcpSeqNumber(i32::from_ne_bytes(
@@ -532,11 +544,11 @@ impl Default for TcpConnection {
             rx_tx_seq[4..8].try_into().expect("invalid length"),
         ));
 
-        let rx_buffer_size: usize = 16384;
+        let rx_buffer_size: usize = params.rx_buffer_size.max(16384);
         let rx_window_scale =
             (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
 
-        let tx_buffer_size = 16384;
+        let tx_buffer_size = params.tx_buffer_size.max(16384).next_power_of_two();
 
         Self {
             socket: None,
@@ -562,11 +574,13 @@ impl Default for TcpConnection {
             tx_fin_buffered: false,
         }
     }
-}
 
-impl TcpConnection {
-    fn new(sender: &mut Sender<'_, impl Client>, tcp: &TcpRepr<'_>) -> Result<Self, DropReason> {
-        let mut this = Self::default();
+    fn new(
+        sender: &mut Sender<'_, impl Client>,
+        tcp: &TcpRepr<'_>,
+        params: &ConnectionParams,
+    ) -> Result<Self, DropReason> {
+        let mut this = Self::new_base(params);
         this.initialize_from_first_client_packet(tcp)?;
 
         let socket = Socket::new(
@@ -624,13 +638,14 @@ impl TcpConnection {
     fn new_from_accept(
         sender: &mut Sender<'_, impl Client>,
         socket: Socket,
+        params: &ConnectionParams,
     ) -> Result<Self, DropReason> {
         let mut this = Self {
             socket: Some(
                 PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
             ),
             state: TcpState::SynSent,
-            ..Default::default()
+            ..Self::new_base(params)
         };
         this.send_syn(sender, None);
         Ok(this)
@@ -645,27 +660,17 @@ impl TcpConnection {
             if tx_window_scale > 14 {
                 return Err(TcpError::InvalidWindowScale.into());
             }
-        }
-
-        let max_rx_buffer_size = if tcp.window_scale.is_some() {
-            u32::MAX as usize
+            self.enable_window_scaling = true;
+            self.tx_window_scale = tx_window_scale;
         } else {
-            u16::MAX as usize
-        };
-        let rx_buffer_size = 16384.min(max_rx_buffer_size);
-        let rx_window_scale =
-            (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
-
-        assert!(tcp.window_scale.is_some() || rx_window_scale == 0);
-        if self.rx_buffer.capacity() < rx_buffer_size {
-            self.rx_buffer.reserve_exact(rx_buffer_size);
+            // Disable rx window scale.
+            self.enable_window_scaling = false;
+            self.rx_buffer.truncate(u16::MAX as usize);
+            self.rx_window_scale = 0;
         }
 
-        self.rx_window_scale = rx_window_scale;
         self.rx_seq = tcp.seq_number + 1;
         self.tx_window_rx_seq = tcp.seq_number + 1;
-        self.enable_window_scaling = tcp.window_scale.is_some();
-        self.tx_window_scale = tcp.window_scale.unwrap_or(0);
         self.tx_mss = tx_mss;
         Ok(())
     }
@@ -680,44 +685,7 @@ impl TcpConnection {
             {
                 Poll::Ready(r) => {
                     if r.has_err() {
-                        let err = take_socket_error(self.socket.as_mut().unwrap());
-                        let reset = match err.kind() {
-                            ErrorKind::TimedOut => {
-                                // Avoid resetting so that the guest doesn't
-                                // think there is a responding TCP stack at this
-                                // address. The guest will time out on its own.
-                                tracing::debug!(
-                                    error = &err as &dyn std::error::Error,
-                                    "connect timed out"
-                                );
-                                false
-                            }
-                            ErrorKind::ConnectionRefused => {
-                                // Presumably the remote TCP stack send a RST.
-                                // Send a reset but don't log anything.
-                                tracing::debug!(
-                                    error = &err as &dyn std::error::Error,
-                                    "connection refused"
-                                );
-                                true
-                            }
-                            _ => {
-                                // Something unexpected happened. Log and reset.
-                                //
-                                // FUTURE: Handle more cases, especially
-                                // ENETUNREACH and similar, once we figure out
-                                // the right behavior for these. They might
-                                // require sending ICMP packets.
-                                tracing::warn!(
-                                    error = &err as &dyn std::error::Error,
-                                    "unhandled connect failure"
-                                );
-                                true
-                            }
-                        };
-                        if reset {
-                            sender.rst(self.tx_send, Some(self.rx_seq));
-                        }
+                        self.handle_connect_error(sender);
                         return false;
                     }
 
@@ -822,6 +790,41 @@ impl TcpConnection {
         // Send whatever needs to be sent.
         self.send_next(sender);
         true
+    }
+
+    fn handle_connect_error(&mut self, sender: &mut Sender<'_, impl Client>) {
+        let err = take_socket_error(self.socket.as_mut().unwrap());
+        let reset = match err.kind() {
+            ErrorKind::TimedOut => {
+                // Avoid resetting so that the guest doesn't
+                // think there is a responding TCP stack at this
+                // address. The guest will time out on its own.
+                tracing::debug!(error = &err as &dyn std::error::Error, "connect timed out");
+                false
+            }
+            ErrorKind::ConnectionRefused => {
+                // Presumably the remote TCP stack send a RST.
+                // Send a reset but don't log anything.
+                tracing::debug!(error = &err as &dyn std::error::Error, "connection refused");
+                true
+            }
+            _ => {
+                // Something unexpected happened. Log and reset.
+                //
+                // FUTURE: Handle more cases, especially
+                // ENETUNREACH and similar, once we figure out
+                // the right behavior for these. They might
+                // require sending ICMP packets.
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    "unhandled connect failure"
+                );
+                true
+            }
+        };
+        if reset {
+            sender.rst(self.tx_send, Some(self.rx_seq));
+        }
     }
 
     fn rx_window_len(&self) -> u16 {
