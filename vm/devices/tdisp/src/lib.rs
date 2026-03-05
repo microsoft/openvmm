@@ -145,10 +145,10 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
         let state_before = self.machine.state();
         match &command.command {
             Some(Command::GetDeviceInterfaceInfo(req)) => {
-                let protocol_type = TdispGuestProtocolType::from_i32(req.guest_protocol_type);
+                let protocol_type = TdispGuestProtocolType::try_from(req.guest_protocol_type);
 
                 match protocol_type {
-                    Some(protocol_type) => {
+                    Ok(protocol_type) => {
                         let interface_info = self.machine.tdisp_negotiate_protocol(protocol_type);
                         match interface_info {
                             Ok(interface_info) => {
@@ -163,7 +163,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                             }
                         }
                     }
-                    None => {
+                    Err(_) => {
                         error = TdispGuestOperationError::InvalidGuestProtocolRequest;
                     }
                 }
@@ -185,25 +185,25 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                 }
             }
             Some(Command::Unbind(cmd)) => {
-                let unbind_reason = TdispGuestUnbindReason::from_i32(cmd.unbind_reason);
+                let unbind_reason = TdispGuestUnbindReason::try_from(cmd.unbind_reason);
 
                 match unbind_reason {
-                    Some(reason) => {
+                    Ok(reason) => {
                         let unbind_res = self.machine.request_unbind(reason);
                         if let Err(err) = unbind_res {
                             error = err;
                         }
                         response = Some(Response::Unbind(TdispCommandResponseUnbind {}));
                     }
-                    None => {
+                    Err(_) => {
                         error = TdispGuestOperationError::InvalidGuestUnbindReason;
                     }
                 }
             }
             Some(Command::GetTdiReport(cmd)) => {
-                let report_type = TdispReportType::from_i32(cmd.report_type);
+                let report_type = TdispReportType::try_from(cmd.report_type);
                 match report_type {
-                    Some(report_type) => {
+                    Ok(report_type) => {
                         let report_buffer = self.machine.request_attestation_report(report_type);
 
                         match report_buffer {
@@ -220,7 +220,7 @@ impl TdispHostDeviceTarget for TdispHostDeviceTargetEmulator {
                             }
                         }
                     }
-                    None => {
+                    Err(_) => {
                         error = TdispGuestOperationError::InvalidGuestAttestationReportType;
                     }
                 }
@@ -543,8 +543,8 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
 
         match res {
             Ok(interface_info) => {
-                match TdispGuestProtocolType::from_i32(interface_info.guest_protocol_type) {
-                    Some(guest_protocol_type) => {
+                match TdispGuestProtocolType::try_from(interface_info.guest_protocol_type) {
+                    Ok(guest_protocol_type) => {
                         if guest_protocol_type == TdispGuestProtocolType::Invalid {
                             tracing::error!(
                                 ?guest_protocol_type,
@@ -560,7 +560,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
                             Ok(interface_info)
                         }
                     }
-                    None => {
+                    Err(_) => {
                         tracing::error!(
                             ?interface_info,
                             "Guest protocol negotiated with none value"
