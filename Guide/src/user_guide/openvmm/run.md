@@ -53,7 +53,7 @@ To fix this, **explicitly pass the firmware** using `--uefi-firmware`:
 openvmm --uefi --uefi-firmware path/to/MSVM.fd --disk memdiff:path/to/disk.vhdx
 ```
 
-If you built via `cargo xflowey restore-packages`, the firmware is at:
+If you ran `cargo xflowey restore-packages`, the firmware is at:
 
 ```text
 .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd        # x64
