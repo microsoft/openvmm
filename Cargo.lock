@@ -2038,10 +2038,12 @@ dependencies = [
  "home",
  "log",
  "rlimit",
+ "roxmltree",
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
  "target-lexicon",
+ "tempfile",
  "toml_edit",
  "which 8.0.0",
  "xshell",
@@ -6412,6 +6414,12 @@ checksum = "7043b63bd0cd1aaa628e476b80e6d4023a3b50eb32789f2728908107bd0c793a"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsa"
