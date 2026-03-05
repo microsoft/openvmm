@@ -10,7 +10,6 @@ use crate::serial_io::bind_serial;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use awaitgroup::WaitGroup;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
@@ -49,6 +48,7 @@ use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
+use pal_async::task::Task;
 use parking_lot::Mutex;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
@@ -131,7 +131,7 @@ impl Worker for TtrpcWorker {
                 driver,
                 vm: None,
                 worker_handle: None,
-                rpc_wait_group: WaitGroup::new(),
+                rpc_tasks: Vec::new(),
                 transport: self.transport,
             };
             service.run(self.listener, recv).await?;
@@ -225,7 +225,7 @@ impl VmService {
         }
 
         // Drain any remaining RPCs.
-        self.rpc_wait_group.wait().await;
+        futures::future::join_all(self.rpc_tasks.drain(..)).await;
         if let Some(vm) = self.vm.take() {
             let _ = Arc::try_unwrap(vm).ok().expect("no more VM references");
         }
@@ -237,7 +237,7 @@ impl VmService {
     }
 
     fn start_rpc<F, R>(
-        &self,
+        &mut self,
         response: mesh::OneshotSender<Result<R, Status>>,
         r: anyhow::Result<F>,
     ) where
@@ -246,13 +246,10 @@ impl VmService {
     {
         match r {
             Ok(fut) => {
-                let worker = self.rpc_wait_group.worker();
-                self.driver
-                    .spawn("ttrpc-rpc", async move {
-                        response.send(map_grpc(fut.await));
-                        worker.done();
-                    })
-                    .detach();
+                let task = self.driver.spawn("ttrpc-rpc", async move {
+                    response.send(map_grpc(fut.await));
+                });
+                self.rpc_tasks.push(task);
             }
             Err(err) => response.send(Err(grpc_error(err))),
         }
@@ -269,7 +266,7 @@ struct VmService {
     driver: DefaultDriver,
     vm: Option<Arc<Vm>>,
     worker_handle: Option<mesh_worker::WorkerHandle>,
-    rpc_wait_group: WaitGroup,
+    rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
 }
 

@@ -424,7 +424,6 @@ arrayvec = { version = "0.7", default-features = false }
 async-channel = "2.3"
 async-task = "4.4"
 async-trait = "0.1"
-awaitgroup = "0.7"
 base64 = "0.22.1"
 base64-serde = "0.8"
 bitfield-struct = "0.11.0"

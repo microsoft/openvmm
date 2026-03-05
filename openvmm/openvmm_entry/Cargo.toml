@@ -86,7 +86,6 @@ tracelimit.workspace = true
 tracing_helpers.workspace = true
 
 anyhow.workspace = true
-awaitgroup.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }
 dirs.workspace = true
 fs-err.workspace = true
