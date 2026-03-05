@@ -25,17 +25,6 @@ pub struct LocalRunArgs {
     /// Don't prompt user when running certain interactive commands.
     #[clap(long)]
     non_interactive: bool,
-
-    /// (WSL2 only) Force the use of `mono` to download nuget packages.
-    #[clap(long)]
-    force_nuget_mono: bool,
-
-    /// Claim that nuget is using an external auth mechanism.
-    ///
-    /// This will skip the check to make sure Azure Credential Provider is
-    /// installed.
-    #[clap(long)]
-    external_nuget_auth: bool,
 }
 
 pub type FulfillCommonRequestsParamsResolver =
@@ -50,16 +39,12 @@ fn get_params_local(
             locked,
             auto_install_deps,
             non_interactive,
-            force_nuget_mono,
-            external_nuget_auth,
         } = local_run_args.clone().unwrap_or_default();
 
         flowey_lib_hvlite::_jobs::cfg_common::Params {
             local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                 interactive: !non_interactive,
                 auto_install: auto_install_deps,
-                force_nuget_mono,
-                external_nuget_auth,
                 ignore_rust_version: true,
             }),
             verbose: ReadVar::from_static(verbose),

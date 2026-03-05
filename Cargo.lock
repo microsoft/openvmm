@@ -2042,6 +2042,7 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
+ "tempfile",
  "toml_edit",
  "which 8.0.0",
  "xshell",
