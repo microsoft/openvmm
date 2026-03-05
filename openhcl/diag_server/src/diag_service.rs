@@ -13,6 +13,7 @@ use diag_proto::ExecResponse;
 use diag_proto::FILE_LINE_MAX;
 use diag_proto::FileRequest;
 use diag_proto::KmsgRequest;
+use diag_proto::MemoryProfileTraceRequest;
 use diag_proto::NetworkPacketCaptureRequest;
 use diag_proto::NetworkPacketCaptureResponse;
 use diag_proto::OpenhclDiag;
@@ -89,6 +90,9 @@ pub enum DiagRequest {
     /// Profile VTL2
     #[cfg(feature = "profiler")]
     Profile(FailableRpc<profiler_worker::ProfilerRequest, ()>),
+    /// Get memory profile trace
+    #[cfg(feature = "mem-profile-tracing")]
+    MemoryProfileTrace(FailableRpc<i32, Vec<u8>>),
 }
 
 /// Additional parameters provided as part of a delayed start request.
@@ -247,12 +251,16 @@ impl DiagServiceHandler {
         &self,
         _driver: &(impl Driver + Spawn + Clone),
         req: OpenhclDiag,
-        _ctx: CancelContext,
+        mut ctx: CancelContext,
     ) {
         match req {
             OpenhclDiag::Ping((), response) => {
                 response.send(Ok(()));
             }
+            OpenhclDiag::MemoryProfileTrace(request, response) => response.send(grpc_result(
+                ctx.until_cancelled(self.handle_memory_profile_trace(&request))
+                    .await,
+            )),
         }
     }
 
@@ -722,6 +730,28 @@ impl DiagServiceHandler {
             .await?;
 
         Ok(diag_proto::DumpSavedStateResponse { data })
+    }
+
+    async fn handle_memory_profile_trace(
+        &self,
+        request: &MemoryProfileTraceRequest,
+    ) -> anyhow::Result<diag_proto::MemoryProfileTraceResponse> {
+        cfg_if::cfg_if! {
+            if #[cfg(feature = "mem-profile-tracing")]
+            {
+                let data = self
+                    .request_send
+                    .call_failable(DiagRequest::MemoryProfileTrace, request.pid)
+                    .await?;
+
+                Ok(diag_proto::MemoryProfileTraceResponse { data })
+            } else {
+                let _ = request;
+                anyhow::bail!(
+                    "Profiler tracing feature disabled: rebuild with the `mem-profile-tracing` feature enabled"
+                )
+            }
+        }
     }
 }
 

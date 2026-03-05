@@ -123,14 +123,12 @@ impl FlowNode for Node {
                         }
                     }
 
-                    let sh = xshell::Shell::new()?;
-
-                    sh.change_dir(in_folder);
+                    rt.sh.change_dir(in_folder);
 
                     let mut cmd = if let Some(rust_toolchain) = &rust_toolchain {
-                        xshell::cmd!(sh, "rustup run {rust_toolchain} cargo")
+                        flowey::shell_cmd!(rt, "rustup run {rust_toolchain} cargo")
                     } else {
-                        xshell::cmd!(sh, "cargo")
+                        flowey::shell_cmd!(rt, "cargo")
                     };
 
                     // if running in CI, no need to waste time with incremental

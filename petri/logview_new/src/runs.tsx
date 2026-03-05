@@ -7,10 +7,10 @@ import React, { useState, useMemo, useEffect } from "react";
 import { SortingState } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import { RunData } from "./data_defs";
-import { fetchRunData } from "./fetch/fetch_runs_data.tsx";
+import { fetchRunData } from "./utils/fetch_runs_data.ts";
 import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table.tsx";
-import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { SearchInput } from "./search";
 import { run_filters } from "./branch_quick_filters";
 import {
@@ -20,7 +20,6 @@ import {
 } from "./table_defs/runs";
 
 export function Runs(): React.JSX.Element {
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const branchFromUrl = searchParams.get("branchFilter") || "all";
   const [branchFilter, setBranchFilterState] = useState<string>(branchFromUrl);
@@ -53,16 +52,10 @@ export function Runs(): React.JSX.Element {
 
   // Get the table definition (columns and default sorting)
   const [sorting, setSorting] = useState<SortingState>(defaultSorting);
-  const columns = useMemo(
-    () =>
-      createColumns((runId: string) => {
-        navigate(`/runs/${runId}`);
-      }),
-    [navigate]
-  );
+  const columns = useMemo(() => createColumns(), []);
   const filteredRuns = useMemo(
     () => filterRuns(runs, branchFilter, searchFilter),
-    [runs, branchFilter, searchFilter]
+    [runs, branchFilter, searchFilter],
   );
 
   return (
@@ -131,10 +124,8 @@ export function RunsHeader({
         </div>
         {!loadingSuccess && (
           <div className="header-loading-indicator">
-              <div className="header-loading-spinner"></div>
-              <div className="header-loading-text">
-                  Fetching runs ...
-              </div>
+            <div className="header-loading-spinner"></div>
+            <div className="header-loading-text">Fetching runs ...</div>
           </div>
         )}
       </div>
@@ -158,7 +149,7 @@ export function RunsHeader({
 function filterRuns(
   runs: RunData[],
   branchFilter: string,
-  searchFilter: string
+  searchFilter: string,
 ): RunData[] {
   let branchFiltered =
     branchFilter === "all"

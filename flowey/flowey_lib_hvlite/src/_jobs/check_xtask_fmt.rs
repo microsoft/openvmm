@@ -40,9 +40,9 @@ impl SimpleFlowNode for Node {
                     crate::build_xtask::XtaskOutput::WindowsBin { exe, .. } => exe,
                 };
 
-                let sh = xshell::Shell::new()?;
-                sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(sh, "{xtask} fmt --no-parallel")
+                let path = rt.read(openvmm_repo_path);
+                rt.sh.change_dir(path);
+                flowey::shell_cmd!(rt, "{xtask} fmt --no-parallel")
                     // CI runs with trace logging, but that results in a lot of
                     // spam when running the xtask flowey check
                     .env("FLOWEY_LOG", "info")

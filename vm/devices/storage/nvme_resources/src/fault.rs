@@ -43,6 +43,9 @@ pub enum IoQueueFaultBehavior {
     CustomPayload(Vec<u8>),
     /// Panic
     Panic(String),
+    /// Delay. Note: This delay is not asynchronously applied. i.e. Subsequent
+    /// commands will be processed until the delay is over.
+    Delay(Duration),
 }
 
 /// Supported fault behaviour for PCI faults
@@ -93,6 +96,8 @@ pub enum NamespaceChange {
 pub struct PciFaultConfig {
     /// Fault to apply to cc.en() bit during enablement
     pub controller_management_fault_enable: PciFaultBehavior,
+    /// Custom MQES value to return in CAP register reads. 1 based value.
+    pub max_queue_size: Option<u16>,
 }
 
 /// A fault config to trigger spurious namespace change notifications from the controller.
@@ -136,6 +141,7 @@ pub struct PciFaultConfig {
 ///             // Define `NamespaceDefinitions` here
 ///         ],
 ///         fault_config: fault_configuration,
+///         enable_tdisp_tests: false,
 ///     };
 ///
 ///     // Send the namespace change notification and await processing.
@@ -363,6 +369,7 @@ pub struct CommandMatch {
 ///             // Define NamespaceDefinitions here
 ///         ],
 ///         fault_config: fault_configuration,
+///         enable_tdisp_tests: false,
 ///     };
 ///     // Pass the controller handle in to the vm config to create and attach the fault controller. At this point the fault is inactive.
 ///     fault_start_updater.set(true); // Activate the fault injection.
@@ -430,12 +437,19 @@ impl PciFaultConfig {
     pub fn new() -> Self {
         Self {
             controller_management_fault_enable: PciFaultBehavior::Default,
+            max_queue_size: None,
         }
     }
 
     /// Add a cc.en() fault
     pub fn with_cc_enable_fault(mut self, behaviour: PciFaultBehavior) -> Self {
         self.controller_management_fault_enable = behaviour;
+        self
+    }
+
+    /// Add a custom CAP.MQES value to return on register reads
+    pub fn with_max_queue_size(mut self, max_queue_size: u16) -> Self {
+        self.max_queue_size = Some(max_queue_size);
         self
     }
 }

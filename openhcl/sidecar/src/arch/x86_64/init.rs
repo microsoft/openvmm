@@ -205,7 +205,7 @@ fn init(
         // SAFETY: no concurrent accessors.
         let idt = unsafe { &mut *addr_of_mut!(IDT) };
 
-        let offset = exc_pf as usize as u64;
+        let offset = exc_pf as *const () as u64;
         idt[Exception::PAGE_FAULT.0 as usize] = IdtEntry64 {
             offset_low: offset as u16,
             selector: 2 * 8,
@@ -215,7 +215,7 @@ fn init(
             reserved: 0,
         };
 
-        let offset = exc_gpf as usize as u64;
+        let offset = exc_gpf as *const () as u64;
         idt[Exception::GENERAL_PROTECTION_FAULT.0 as usize] = IdtEntry64 {
             offset_low: offset as u16,
             selector: 2 * 8,
@@ -225,7 +225,7 @@ fn init(
             reserved: 0,
         };
 
-        let offset = irq_entry as usize as u64;
+        let offset = irq_entry as *const () as u64;
         idt[IRQ as usize] = IdtEntry64 {
             offset_low: offset as u16,
             selector: 2 * 8,
@@ -512,7 +512,7 @@ impl NodeDefinition {
             pad: [0; 3],
         };
         let context = hvdef::hypercall::InitialVpContextX64 {
-            rip: ap_init as usize as u64,
+            rip: ap_init as *const () as u64,
             rsp: addr_space::stack().end() - 8, // start unaligned to match calling convention
             rflags: x86defs::RFlags::at_reset().into(),
             cs,

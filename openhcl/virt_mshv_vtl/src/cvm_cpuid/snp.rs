@@ -127,7 +127,6 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
     }
 
     fn extended_max_function(&self) -> u32 {
-        // TODO SNP: This is 0x80000026 in the OS repo
         CpuidFunction::ExtendedAmdMaximum.0
     }
 
@@ -459,6 +458,10 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             hv1_emulator::cpuid::make_isolated_hv_cpuid_leaves(hardware_features, isolation_config);
 
         [l0, l1, l2, l3, l4]
+    }
+
+    fn update_xsave_dependencies(&self, _xsave_support: u64, _results: &mut CpuidResults) {
+        // No SNP-specific updates
     }
 }
 

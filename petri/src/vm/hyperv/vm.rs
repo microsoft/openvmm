@@ -227,6 +227,7 @@ impl HyperVVM {
                     "failed to copy hyper-v crash dump file"
                 );
             }
+            tracing::info!("copied hyper-v crash dump file {filename}");
         }
     }
 
@@ -300,36 +301,54 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub async fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<(u32, Guid)> {
-        let (controller_number, vsid) =
-            powershell::run_add_vm_scsi_controller(&self.ps_mod, &self.vmid).await?;
-        if target_vtl != 0 {
-            powershell::run_set_vm_scsi_controller_target_vtl(
-                &self.ps_mod,
-                &self.vmid,
-                controller_number,
-                target_vtl,
-            )
-            .await?;
-        }
-        Ok((controller_number, vsid))
+    pub async fn add_scsi_controller(
+        &mut self,
+        vsid: &Guid,
+        target_vtl: u32,
+    ) -> anyhow::Result<()> {
+        powershell::run_add_vm_scsi_controller_with_id(&self.ps_mod, &self.vmid, vsid, target_vtl)
+            .await
     }
 
-    /// Add a VHD
-    pub async fn add_vhd(
+    /// Add a drive to the scsi controller
+    pub async fn set_drive_scsi(
         &mut self,
-        path: &Path,
-        controller_type: powershell::ControllerType,
-        controller_location: Option<u8>,
-        controller_number: Option<u32>,
+        controller_vsid: &Guid,
+        controller_location: u8,
+        path: Option<&Path>,
+        dvd: bool,
+        allow_modify_existing: bool,
     ) -> anyhow::Result<()> {
-        powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
-            vmid: &self.vmid,
-            controller_type,
+        powershell::run_set_vm_drive_scsi(
+            &self.ps_mod,
+            &self.vmid,
+            controller_vsid,
             controller_location,
+            path,
+            dvd,
+            allow_modify_existing,
+        )
+        .await
+    }
+
+    /// Add a drive to the ide controller
+    pub async fn set_drive_ide(
+        &mut self,
+        controller_number: u32,
+        controller_location: u8,
+        path: Option<&Path>,
+        dvd: bool,
+        allow_modify_existing: bool,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_vm_drive_ide(
+            &self.ps_mod,
+            &self.vmid,
             controller_number,
-            path: Some(path),
-        })
+            controller_location,
+            path,
+            dvd,
+            allow_modify_existing,
+        )
         .await
     }
 
@@ -545,12 +564,21 @@ impl HyperVVM {
 
     async fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
-            let res_off = hvc::hvc_ensure_off(&self.vmid).await;
+            let res_off = hvc::hvc_ensure_off(&self.vmid)
+                .await
+                .inspect_err(|e| tracing::error!("failed to stop vm: {e:?}"));
 
+            // Wait for logs to propagate and any crash dumps to be written
+            std::thread::sleep(Duration::from_secs(1));
             // Flush logs before we remove the VM so we can capture any
             // interesting files before they get deleted.
-            let res_flush = self.flush_logs().await;
-            let res_remove = powershell::run_remove_vm(&self.vmid).await;
+            let res_flush = self
+                .flush_logs()
+                .await
+                .inspect_err(|e| tracing::error!("failed to flush logs: {e:?}"));
+            let res_remove = powershell::run_remove_vm(&self.vmid)
+                .await
+                .inspect_err(|e| tracing::error!("failed to remove vm: {e:?}"));
 
             res_off?;
             res_remove?;

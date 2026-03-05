@@ -5,6 +5,7 @@
 //! require to run.
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
 use crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
@@ -55,6 +56,8 @@ flowey_request! {
         pub register_tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
         /// Register a Linux tpm_guest_tests binary
         pub register_tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
+        /// Register a Windows test_igvm_agent_rpc_server binary
+        pub register_test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
@@ -91,6 +94,7 @@ impl SimpleFlowNode for Node {
             register_vmgstool,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
+            register_test_igvm_agent_rpc_server,
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
@@ -134,6 +138,7 @@ impl SimpleFlowNode for Node {
             let tmk_vmm = register_tmk_vmm.claim(ctx);
             let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
             let vmgstool = register_vmgstool.claim(ctx);
+            let test_igvm_agent_rpc_server = register_test_igvm_agent_rpc_server.claim(ctx);
             let tpm_guest_tests_windows = register_tpm_guest_tests_windows.claim(ctx);
             let tpm_guest_tests_linux = register_tpm_guest_tests_linux.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
@@ -158,18 +163,36 @@ impl SimpleFlowNode for Node {
                     );
 
                 let working_dir_ref = test_content_dir.as_path();
+                let disk_image_dir = disk_image_dir.map(|v| rt.read(v));
+
                 let working_dir_win = windows_via_wsl2.then(|| {
-                    flowey_lib_common::_util::wslpath::linux_to_win(working_dir_ref)
+                    flowey_lib_common::_util::wslpath::linux_to_win(rt, working_dir_ref)
                         .display()
                         .to_string()
                 });
-                let maybe_convert_path = |path: &Path| -> anyhow::Result<String> {
-                    let path = if windows_via_wsl2 {
-                        flowey_lib_common::_util::wslpath::linux_to_win(path)
+
+                // Convert a path via wslpath if running under WSL2,
+                // otherwise just make it absolute.
+                let wsl_convert_path = |path: &Path| -> anyhow::Result<PathBuf> {
+                    if windows_via_wsl2 {
+                        Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
                     } else {
                         path.absolute()
-                            .with_context(|| format!("invalid path {}", path.display()))?
-                    };
+                            .with_context(|| format!("invalid path {}", path.display()))
+                    }
+                };
+
+                // Eagerly convert all known paths.
+                let converted_content_dir = wsl_convert_path(&test_content_dir)?;
+                let test_log_dir = test_content_dir.join("test_results");
+                let converted_log_dir = wsl_convert_path(&test_log_dir)?;
+                let converted_disk_image_dir = disk_image_dir
+                    .as_ref()
+                    .map(|p| wsl_convert_path(p))
+                    .transpose()?;
+
+                // Make a converted path relative if requested.
+                let make_portable_path = |path: PathBuf| -> anyhow::Result<String> {
                     let path = if use_relative_paths {
                         if windows_via_wsl2 {
                             let working_dir_trimmed =
@@ -204,23 +227,22 @@ impl SimpleFlowNode for Node {
 
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
-                    maybe_convert_path(&test_content_dir)?,
+                    make_portable_path(converted_content_dir)?,
                 );
 
                 // use a subdir for test logs
-                let test_log_dir = test_content_dir.join("test_results");
                 if !test_log_dir.exists() {
                     fs_err::create_dir(&test_log_dir)?
                 };
                 env.insert(
                     "TEST_OUTPUT_PATH".into(),
-                    maybe_convert_path(&test_log_dir)?,
+                    make_portable_path(converted_log_dir)?,
                 );
 
-                if let Some(disk_image_dir) = disk_image_dir {
+                if let Some(disk_image_dir) = converted_disk_image_dir {
                     env.insert(
                         "VMM_TEST_IMAGES".into(),
-                        maybe_convert_path(&rt.read(disk_image_dir))?,
+                        make_portable_path(disk_image_dir)?,
                     );
                 }
 
@@ -327,6 +349,12 @@ impl SimpleFlowNode for Node {
                     let dst = test_content_dir.join("tpm_guest_tests");
                     fs_err::copy(bin, &dst)?;
                     dst.make_executable()?;
+                }
+
+                if let Some(test_igvm_agent_rpc_server) = test_igvm_agent_rpc_server {
+                    let TestIgvmAgentRpcServerOutput { exe, .. } =
+                        rt.read(test_igvm_agent_rpc_server);
+                    fs_err::copy(exe, test_content_dir.join("test_igvm_agent_rpc_server.exe"))?;
                 }
 
                 if let Some(openhcl_igvm_files) = openhcl_igvm_files {

@@ -92,11 +92,9 @@ impl FlowNode for Node {
                     let target = target.to_string();
 
                     if !matches!(rt.read(hitvar), CacheHit::Hit) {
-                        let sh = xshell::Shell::new()?;
-
                         let nextest_archive = "nextest.tar.gz";
-                        xshell::cmd!(sh, "curl --fail -L https://get.nexte.st/{version}/{target}.tar.gz -o {nextest_archive}").run()?;
-                        xshell::cmd!(sh, "tar -xf {nextest_archive}").run()?;
+                        flowey::shell_cmd!(rt, "curl --fail -L https://get.nexte.st/{version}/{target}.tar.gz -o {nextest_archive}").run()?;
+                        flowey::shell_cmd!(rt, "tar -xf {nextest_archive}").run()?;
 
                         // move the downloaded bin into the cache dir
                         fs_err::create_dir_all(&cache_dir)?;

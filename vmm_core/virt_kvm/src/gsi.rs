@@ -80,6 +80,7 @@ impl GsiRouting {
 
 impl KvmPartitionInner {
     /// Reserves a new route, optionally with an associated irqfd event.
+    #[expect(dead_code)]
     pub(crate) fn new_route(self: &Arc<Self>, irqfd_event: Option<Event>) -> Option<GsiRoute> {
         let gsi = self.gsi_routing.lock().alloc()?;
         Some(GsiRoute {
@@ -138,6 +139,7 @@ impl GsiRoute {
     }
 
     /// Enables the route and associated irqfd.
+    #[expect(dead_code)]
     pub fn enable(&self, entry: kvm::RoutingEntry) {
         let partition = self.set_entry(Some(entry));
         let _lock = self.enable_mutex.lock();
@@ -172,13 +174,15 @@ impl GsiRoute {
     }
 
     /// Returns the configured irqfd event, if there is one.
+    #[expect(dead_code)]
     pub fn irqfd_event(&self) -> Option<&Event> {
         self.irqfd_event.as_ref()
     }
 
     /// Signals the interrupt if it is enabled.
     #[allow(clippy::assertions_on_constants)]
-    pub fn _signal(&self) {
+    #[expect(dead_code)]
+    pub fn signal(&self) {
         // Use a relaxed atomic read to avoid extra synchronization in this
         // path. It's up to callers to synchronize this with `enable`/`disable`
         // if strict ordering is necessary.

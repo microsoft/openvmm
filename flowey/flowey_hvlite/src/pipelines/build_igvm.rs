@@ -140,7 +140,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// Path to kernel modules, none means the packaged kernel modules will be
     /// used.
-    #[clap(long)]
+    #[clap(long, requires = "custom_kernel")]
     pub custom_kernel_modules: Option<PathBuf>,
 
     /// Path to custom vtl0 linux kernel to use if the manifest includes a
@@ -178,12 +178,16 @@ pub struct BuildIgvmCliCustomizations {
 
     /// (experimental) Only use local dependencies to build. Keeps flowey from
     /// downloading any dependencies from the internet.
-    #[clap(long, requires_all = ["custom_openvmm_deps"])]
+    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc", "custom_kernel", "custom_kernel_modules", "custom_uefi"])]
     pub use_local_deps: bool,
 
     /// Use a custom openvmm_deps directory.
     #[clap(long)]
     pub custom_openvmm_deps: Option<PathBuf>,
+
+    /// Use a custom protoc directory.
+    #[clap(long)]
+    pub custom_protoc: Option<PathBuf>,
 }
 
 #[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
@@ -304,7 +308,8 @@ impl IntoPipeline for BuildIgvmCli {
                     mut custom_extra_rootfs,
                     max_trace_level,
                     custom_openvmm_deps,
-                    use_local_deps,
+                    custom_protoc,
+                    use_local_deps: _, // Clap already validated that all required fields are present
                 },
         } = self;
 
@@ -327,23 +332,64 @@ impl IntoPipeline for BuildIgvmCli {
             OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
         };
 
+        // Use the effective arch, accounting for any --override-arch
+        let effective_arch = override_arch
+            .map(|a| match a {
+                BuildIgvmArch::X86_64 => CommonArch::X86_64,
+                BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
+            })
+            .unwrap_or(recipe_arch);
+
         let mut job = pipeline.new_job(
             FlowPlatform::host(backend_hint),
             FlowArch::host(backend_hint),
             "build-igvm",
         );
 
-        job = if use_local_deps {
-            let openvmm_deps_path = custom_openvmm_deps.unwrap();
-            job.dep_on(move |_| {
-                flowey_lib_hvlite::_jobs::cfg_versions::Request::Local(
-                    recipe_arch,
+        // Initialize cfg_versions job, this makes sure everything will be downloaded
+        // and versions are set up correctly unless overriden by other parameters.
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+
+        // Override openvmm_deps with a local path if specified
+        if let Some(openvmm_deps_path) = custom_openvmm_deps {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
+                    effective_arch,
                     openvmm_deps_path,
                 )
-            })
-        } else {
-            job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Download)
-        };
+            });
+        }
+
+        // Override protoc with a local path if specified
+        if let Some(protoc_path) = custom_protoc {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(protoc_path)
+            });
+        }
+
+        // Override kernel with local paths if both kernel and modules are specified
+        if let (Some(kernel_path), Some(modules_path)) =
+            (custom_kernel.clone(), custom_kernel_modules.clone())
+        {
+            job =
+                job.dep_on(
+                    move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
+                        arch: effective_arch,
+                        kernel: kernel_path,
+                        modules: modules_path,
+                    },
+                );
+        }
+
+        // Override UEFI with a local path if specified
+        if let Some(uefi_path) = custom_uefi {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
+                    effective_arch,
+                    uefi_path,
+                )
+            });
+        }
 
         job.dep_on(
             |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
@@ -403,9 +449,7 @@ impl IntoPipeline for BuildIgvmCli {
                 override_max_trace_level: max_trace_level.map(Into::into),
                 custom_openvmm_hcl,
                 custom_openhcl_boot,
-                custom_uefi,
                 custom_kernel,
-                custom_kernel_modules,
                 custom_vtl0_kernel,
                 custom_layer,
                 custom_directory,

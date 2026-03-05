@@ -77,10 +77,6 @@ pub struct GdmaDriverSavedState {
     /// Link status by vport index
     #[mesh(12)]
     pub link_toggle: Vec<(u32, bool)>,
-
-    /// Whether a VF reconfiguration event is pending
-    #[mesh(13)]
-    pub vf_reconfiguration_pending: bool,
 }
 
 /// The saved state of a completion queue or event queue for restoration

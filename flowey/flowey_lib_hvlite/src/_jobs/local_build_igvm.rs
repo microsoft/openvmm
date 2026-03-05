@@ -25,13 +25,11 @@ use crate::run_igvmfilegen::IgvmOutput;
 pub struct Customizations {
     pub build_label: Option<String>,
     pub custom_directory: Vec<PathBuf>,
-    pub custom_kernel_modules: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_layer: Vec<PathBuf>,
     pub custom_openhcl_boot: Option<PathBuf>,
     pub custom_openvmm_hcl: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
-    pub custom_uefi: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
     pub override_arch: Option<CommonArch>,
@@ -83,14 +81,12 @@ impl SimpleFlowNode for Node {
         let Customizations {
             build_label,
             custom_directory,
-            custom_kernel_modules,
             custom_kernel,
             custom_layer,
             override_manifest,
             custom_openhcl_boot,
             custom_openvmm_hcl,
             custom_sidecar,
-            custom_uefi,
             custom_vtl0_kernel,
             override_arch,
             override_kernel_pkg,
@@ -155,11 +151,9 @@ impl SimpleFlowNode for Node {
                         .into_iter()
                         .map(|p| p.absolute())
                         .collect::<Result<_, _>>()?,
-                    custom_kernel_modules,
                 }),
                 custom_openvmm_hcl: custom_openvmm_hcl.map(|p| p.absolute()).transpose()?,
                 custom_openhcl_boot: custom_openhcl_boot.map(|p| p.absolute()).transpose()?,
-                custom_uefi: custom_uefi.map(|p| p.absolute()).transpose()?,
                 custom_kernel: custom_kernel.map(|p| p.absolute()).transpose()?,
                 custom_sidecar: custom_sidecar.map(|p| p.absolute()).transpose()?,
                 custom_extra_rootfs: custom_extra_rootfs

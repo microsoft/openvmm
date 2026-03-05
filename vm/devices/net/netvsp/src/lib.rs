@@ -15,8 +15,6 @@ mod saved_state;
 mod test;
 
 use crate::buffers::GuestBuffers;
-use crate::protocol::Message1RevokeReceiveBuffer;
-use crate::protocol::Message1RevokeSendBuffer;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
 use crate::protocol::Version;
 use crate::rndisprot::NDIS_HASH_FUNCTION_MASK;
@@ -167,7 +165,7 @@ enum CoordinatorMessage {
 
 struct Worker<T: RingMem> {
     channel_idx: u16,
-    target_vp: u32,
+    target_vp: Option<u32>,
     mem: GuestMemory,
     channel: NetChannel<T>,
     state: WorkerState,
@@ -284,6 +282,46 @@ struct ReadyState {
     buffers: Arc<ChannelBuffers>,
     state: ActiveState,
     data: ProcessingData,
+}
+
+impl ReadyState {
+    /// Any in-flight TX packets submitted to the old endpoint queues will
+    /// never be completed, so this method:
+    /// 1. Queues completions for all outstanding sends so the guest gets
+    ///    responses and the associated transmit slots are reclaimed, ensuring
+    ///    the worker is ready to poll post restart of the queues.
+    /// 2. Clears leftover transmit segments that referenced the old endpoint
+    ///    queue so they are not submitted to the new one.
+    ///
+    fn reset_tx_after_endpoint_stop(&mut self) {
+        let state = &mut self.state;
+
+        // Queue completions for in-flight TX packets that were lost when the
+        // endpoint stopped. They will get picked up when the worker restarts.
+        let pending_tx = state
+            .pending_tx_packets
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(id, inflight)| {
+                if inflight.pending_packet_count > 0 {
+                    inflight.pending_packet_count = 0;
+                    Some(PendingTxCompletion {
+                        transaction_id: inflight.transaction_id,
+                        tx_id: Some(TxId(id as u32)),
+                        status: protocol::Status::SUCCESS,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        state.pending_tx_completions.extend(pending_tx);
+
+        // Clear leftover TX segments from the previous endpoint queue;
+        // they cannot be submitted to the new queue.
+        self.data.tx_segments.clear();
+        self.data.tx_segments_sent = 0;
+    }
 }
 
 /// Represents a virtual function (VF) device used to expose accelerated
@@ -1263,7 +1301,11 @@ impl VmbusDevice for Nic {
 
     async fn close(&mut self, channel_idx: u16) {
         if !self.coordinator.has_state() {
-            tracing::error!("Close called while vmbus channel is already closed");
+            tracing::error!(
+                channel_idx,
+                instance_id = %self.instance_id,
+                "Close called while vmbus channel is already closed"
+            );
             return;
         }
 
@@ -1320,7 +1362,7 @@ impl VmbusDevice for Nic {
 
         if let Some(worker_state) = worker_state {
             // Update the target VP in the worker state.
-            worker_state.target_vp = target_vp;
+            worker_state.target_vp = Some(target_vp);
             if let Some(queue_state) = &mut net_queue.queue_state {
                 // Tell the worker to re-set the target VP on next run.
                 queue_state.target_vp_set = false;
@@ -1365,7 +1407,11 @@ impl SaveRestoreVmbusDevice for Nic {
     ) -> Result<(), RestoreError> {
         let state: saved_state::SavedState = state.parse()?;
         if let Err(err) = self.restore_state(control, state).await {
-            tracing::error!(err = &err as &dyn std::error::Error, instance_id = %self.instance_id, "Failed restoring network vmbus state");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                instance_id = %self.instance_id,
+                "Failed restoring network vmbus state"
+            );
             Err(err.into())
         } else {
             Ok(())
@@ -1387,11 +1433,13 @@ impl Nic {
         let coordinator = self.coordinator.state_mut().unwrap();
 
         // Retarget the driver now that the channel is open.
+        // N.B. VMBus doesn't provide a target VP if the channel is not using interrupts. Run on VP
+        //      0 in that case.
         let driver = coordinator.workers[channel_idx as usize]
             .task()
             .driver
             .clone();
-        driver.retarget_vp(open_request.open_data.target_vp);
+        driver.retarget_vp(open_request.open_data.target_vp.unwrap_or_default());
 
         let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
             .map_err(OpenError::Ring)?;
@@ -2008,8 +2056,8 @@ enum PacketData {
     SendNdisVersion(protocol::Message1SendNdisVersion),
     SendReceiveBuffer(protocol::Message1SendReceiveBuffer),
     SendSendBuffer(protocol::Message1SendSendBuffer),
-    RevokeReceiveBuffer(Message1RevokeReceiveBuffer),
-    RevokeSendBuffer(Message1RevokeSendBuffer),
+    RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer),
+    RevokeSendBuffer(protocol::Message1RevokeSendBuffer),
     RndisPacket(protocol::Message1SendRndisPacket),
     RndisPacketComplete(protocol::Message1SendRndisPacketComplete),
     SendNdisConfig(protocol::Message2SendNdisConfig),
@@ -2579,7 +2627,7 @@ impl<T: RingMem> NetChannel<T> {
             tracing::info!(
                 available = serial_number.is_some(),
                 serial_number,
-                "sending VF association message."
+                "sending VF association message"
             );
             // N.B. MIN_CONTROL_RING_SIZE reserves room to send this packet.
             let message = {
@@ -2671,7 +2719,10 @@ impl<T: RingMem> NetChannel<T> {
                 queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
             });
         if let Err(err) = result {
-            tracing::error!(err = %err, "Failed to notify guest about the send indirection table");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "Failed to notify guest about the send indirection table"
+            );
         }
     }
 
@@ -2695,16 +2746,16 @@ impl<T: RingMem> NetChannel<T> {
             })
             .map_err(|err| match err {
                 queue::TryWriteError::Full(len) => {
-                    tracing::error!(
-                        len,
-                        "failed to write MESSAGE4_TYPE_SWITCH_DATA_PATH message"
-                    );
+                    tracing::error!(len, "failed to write switch data path message");
                     WorkerError::OutOfSpace
                 }
                 queue::TryWriteError::Queue(err) => WorkerError::Queue(err),
             });
         if let Err(err) = result {
-            tracing::error!(err = %err, "Failed to notify guest that data path is now synthetic");
+            tracing::error!(
+                error = &err as &dyn std::error::Error,
+                "Failed to notify guest that data path is now synthetic"
+            );
         }
     }
 
@@ -2777,16 +2828,21 @@ impl<T: RingMem> NetChannel<T> {
                     let result = result.expect("DataPathSwitchPending should have been processed");
                     // Complete the data path switch request.
                     self.send_completion(id, None)?;
-                    if result {
-                        if to_guest {
-                            PrimaryChannelGuestVfState::DataPathSwitched
-                        } else {
-                            PrimaryChannelGuestVfState::Ready
-                        }
-                    } else {
-                        if to_guest {
+
+                    match (to_guest, result) {
+                        // Switching to guest VF successful.
+                        (true, true) => PrimaryChannelGuestVfState::DataPathSwitched,
+                        // Switching to guest VF failed, stay synthetic.
+                        (true, false) => {
+                            tracing::error!(
+                                "Failure switching to guest VF, remaining on synthetic"
+                            );
                             PrimaryChannelGuestVfState::DataPathSynthetic
-                        } else {
+                        }
+                        // Switching to synthetic successful.
+                        (false, true) => PrimaryChannelGuestVfState::Ready,
+                        // Switching to synthetic failed, assume VF remains active.
+                        (false, false) => {
                             tracing::error!(
                                 "Failure when guest requested switch back to synthetic"
                             );
@@ -2932,7 +2988,11 @@ impl<T: RingMem> NetChannel<T> {
                         rndisprot::STATUS_SUCCESS
                     }
                     Err(err) => {
-                        tracelimit::warn_ratelimited!(oid = ?request.oid, error = &err as &dyn std::error::Error, "oid failure");
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            oid = ?request.oid,
+                            "oid set failure"
+                        );
                         err.as_status()
                     }
                 };
@@ -3476,12 +3536,17 @@ impl Adapter {
                 // TODO
             }
             rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS => {
-                self.oid_set_rss_parameters(reader, primary)?;
+                let rss_was_enabled = self.oid_set_rss_parameters(reader, primary)?;
 
                 // Endpoints cannot currently change RSS parameters without
                 // being restarted. This was a limitation driven by some DPDK
                 // PMDs, and should be fixed.
-                restart_endpoint = true;
+                //
+                // Skip the restart if RSS was already disabled and the guest
+                // is disabling it again — nothing has changed.
+                if rss_was_enabled || primary.rss_state.is_some() {
+                    restart_endpoint = true;
+                }
             }
             _ => {
                 tracelimit::warn_ratelimited!(?oid, "set of unknown OID");
@@ -3495,17 +3560,19 @@ impl Adapter {
         &self,
         mut reader: impl MemoryRead + Clone,
         primary: &mut PrimaryChannelState,
-    ) -> Result<(), OidError> {
+    ) -> Result<bool, OidError> {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
         let len = reader.len().min(size_of_val(&params));
         reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
+        let rss_was_enabled = primary.rss_state.is_some();
+
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
             || ((params.hash_information & NDIS_HASH_FUNCTION_MASK) == 0)
         {
             primary.rss_state = None;
-            return Ok(());
+            return Ok(rss_was_enabled);
         }
 
         if params.hash_secret_key_size != 40 {
@@ -3543,7 +3610,7 @@ impl Adapter {
             key,
             indirection_table: indirection_table.iter().map(|&x| x as u16).collect(),
         });
-        Ok(())
+        Ok(rss_was_enabled)
     }
 
     fn oid_set_packet_filter(
@@ -4272,7 +4339,7 @@ impl Coordinator {
                 _ => primary.guest_vf_state,
             };
         } else {
-            // If the device was just removed, make sure the the data path is synthetic.
+            // If the device was just removed, make sure the data path is synthetic.
             match primary.guest_vf_state {
                 PrimaryChannelGuestVfState::DataPathSwitchPending { to_guest, .. }
                 | PrimaryChannelGuestVfState::Restoring(
@@ -4531,9 +4598,11 @@ impl Coordinator {
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
                 worker.channel.packet_filter = self.active_packet_filter;
-                // Clear any pending RxIds as buffers were redistributed.
+                // Clear any pending RxIds as buffers were redistributed
+                // and reset TX tracking after the endpoint stop.
                 if let Some(ready_state) = worker.state.ready_mut() {
                     ready_state.state.pending_rx_packets.clear();
+                    ready_state.reset_tx_after_endpoint_stop();
                 }
             }
         }
@@ -4569,8 +4638,8 @@ impl<T: RingMem + 'static + Sync> AsyncRun<Worker<T>> for NetQueue {
             Err(WorkerError::Cancelled(cancelled)) => return Err(cancelled),
             Err(err) => {
                 tracing::error!(
-                    channel_idx = worker.channel_idx,
                     error = &err as &dyn std::error::Error,
+                    channel_idx = worker.channel_idx,
                     "netvsp error"
                 );
             }
@@ -4619,16 +4688,16 @@ impl<T: RingMem + 'static> Worker<T> {
                 }
                 WorkerState::Ready(state) => {
                     let queue_state = if let Some(queue_state) = &mut queue.queue_state {
-                        if !queue_state.target_vp_set
-                            && self.target_vp != vmbus_core::protocol::VP_INDEX_DISABLE_INTERRUPT
-                        {
-                            tracing::debug!(
-                                channel_idx = self.channel_idx,
-                                target_vp = self.target_vp,
-                                "updating target VP"
-                            );
-                            queue_state.queue.update_target_vp(self.target_vp).await;
-                            queue_state.target_vp_set = true;
+                        if !queue_state.target_vp_set {
+                            if let Some(target_vp) = self.target_vp {
+                                tracing::debug!(
+                                    channel_idx = self.channel_idx,
+                                    target_vp,
+                                    "updating target VP"
+                                );
+                                queue_state.queue.update_target_vp(target_vp).await;
+                                queue_state.target_vp_set = true;
+                            }
                         }
 
                         queue_state
@@ -5247,25 +5316,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 Ok(true)
             }
             Err(TxError::TryRestart(err)) => {
-                // Complete any pending tx prior to restarting queues.
-                let pending_tx = state
-                    .pending_tx_packets
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(id, inflight)| {
-                        if inflight.pending_packet_count > 0 {
-                            inflight.pending_packet_count = 0;
-                            Some(PendingTxCompletion {
-                                transaction_id: inflight.transaction_id,
-                                tx_id: Some(TxId(id as u32)),
-                                status: protocol::Status::SUCCESS,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                state.pending_tx_completions.extend(pending_tx);
+                // In-flight TX packets will be cleaned up by
+                // `reset_tx_after_endpoint_stop` during the queue restart.
                 Err(WorkerError::EndpointRequiresQueueRestart(err))
             }
             Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
@@ -5370,7 +5422,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         }
                         Err(err) => {
                             tracelimit::error_ratelimited!(
-                                err = &err as &dyn std::error::Error,
+                                error = &err as &dyn std::error::Error,
                                 "failed to handle RNDIS packet"
                             );
                             self.complete_tx_packet(state, id, protocol::Status::FAILURE)?;
@@ -5431,8 +5483,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         self.restart = Some(CoordinatorMessage::Restart);
                     }
                 }
-                PacketData::RevokeReceiveBuffer(Message1RevokeReceiveBuffer { id })
-                | PacketData::RevokeSendBuffer(Message1RevokeSendBuffer { id })
+                PacketData::RevokeReceiveBuffer(protocol::Message1RevokeReceiveBuffer { id })
+                | PacketData::RevokeSendBuffer(protocol::Message1RevokeSendBuffer { id })
                     if state.primary.is_some() =>
                 {
                     tracing::debug!(

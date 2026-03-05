@@ -627,10 +627,9 @@ impl Node {
                                 anyhow::bail!("`LocalOnlyRequireExistingClones` is active, all repos must be registered using `RepoKind::ExistingClone`");
                             }
                             RepoSource::LocalOnlyNewClone { url, path, ignore_existing_clone } => {
-                                let sh = xshell::Shell::new()?;
-                                if sh.path_exists(path) {
-                                    sh.change_dir(path);
-                                    if xshell::cmd!(sh, "git status").run().is_ok()
+                                if rt.sh.path_exists(path) {
+                                    rt.sh.change_dir(path);
+                                    if flowey::shell_cmd!(rt, "git status").run().is_ok()
                                         && *ignore_existing_clone
                                     {
                                         rt.write(repo_path, path);
@@ -639,9 +638,9 @@ impl Node {
                                 }
                                 if let Some(depth_arg) = depth {
                                     let depth_arg_string = depth_arg.to_string();
-                                    xshell::cmd!(sh, "git clone --depth {depth_arg_string} {url} {path}").run()?;
+                                    flowey::shell_cmd!(rt, "git clone --depth {depth_arg_string} {url} {path}").run()?;
                                 } else {
-                                    xshell::cmd!(sh, "git clone {url} {path}").run()?;
+                                    flowey::shell_cmd!(rt, "git clone {url} {path}").run()?;
                                 }
                                 found_path = Some(path.clone());
                                 break;

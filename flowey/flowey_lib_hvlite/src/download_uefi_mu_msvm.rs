@@ -16,6 +16,8 @@ flowey_request! {
     pub enum Request {
         /// Specify version of mu_msvm to use
         Version(String),
+        /// Use a local MSVM.fd path for a specific architecture
+        LocalPath(MuMsvmArch, PathBuf),
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
             arch: MuMsvmArch,
@@ -36,16 +38,37 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut version = None;
+        let mut local_paths: BTreeMap<MuMsvmArch, PathBuf> = BTreeMap::new();
         let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
                 Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
+                Request::LocalPath(arch, path) => {
+                    if let Some(existing) = local_paths.get(&arch) {
+                        if existing != &path {
+                            anyhow::bail!(
+                                "Conflicting LocalPath requests for {:?}: {:?} vs {:?}",
+                                arch,
+                                existing,
+                                path
+                            );
+                        }
+                    } else {
+                        local_paths.insert(arch, path);
+                    }
+                }
                 Request::GetMsvmFd { arch, msvm_fd } => reqs.entry(arch).or_default().push(msvm_fd),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        if version.is_some() && !local_paths.is_empty() {
+            anyhow::bail!("Cannot specify both Version and LocalPath requests");
+        }
+
+        if version.is_none() && local_paths.is_empty() {
+            anyhow::bail!("Must specify a Version or LocalPath request");
+        }
 
         // -- end of req processing -- //
 
@@ -53,6 +76,35 @@ impl FlowNode for Node {
             return Ok(());
         }
 
+        if !local_paths.is_empty() {
+            ctx.emit_rust_step("use local mu_msvm UEFI", |ctx| {
+                let reqs = reqs.claim(ctx);
+                let local_paths = local_paths.clone();
+                move |rt| {
+                    for (arch, out_vars) in reqs {
+                        let msvm_fd = local_paths.get(&arch).ok_or_else(|| {
+                            anyhow::anyhow!("No local path specified for architecture {:?}", arch)
+                        })?;
+                        for var in out_vars {
+                            log::info!(
+                                "using local uefi for {} at path {:?}",
+                                match arch {
+                                    MuMsvmArch::X86_64 => "x64",
+                                    MuMsvmArch::Aarch64 => "aarch64",
+                                },
+                                msvm_fd
+                            );
+                            rt.write(var, msvm_fd);
+                        }
+                    }
+                    Ok(())
+                }
+            });
+
+            return Ok(());
+        }
+
+        let version = version.expect("local paths handled above");
         let extract_zip_deps = flowey_lib_common::_util::extract::extract_zip_if_new_deps(ctx);
 
         for (arch, out_vars) in reqs {

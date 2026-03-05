@@ -893,6 +893,7 @@ impl<T: RingMem> Worker<T> {
                             _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
                                 if version >= Version::Win7
                                 {
+                                    tracing::debug!("rescan notification received, sending ENUMERATE_BUS");
                                     self.inner.send_packet(&mut self.queue.split().1, storvsp_protocol::Operation::ENUMERATE_BUS, storvsp_protocol::NtStatus::SUCCESS, &())?;
                                 }
                             }
@@ -1522,10 +1523,13 @@ impl StorageDevice {
     ) -> anyhow::Result<&mut Worker> {
         let controller = self.controller.clone();
 
+        // VMBus doesn't provide a target VP if the channel is not using interrupts. Run on VP 0 in
+        // that case.
+        let target_vp = open_request.open_data.target_vp.unwrap_or_default();
         let driver = self
             .driver_source
             .builder()
-            .target_vp(open_request.open_data.target_vp)
+            .target_vp(target_vp)
             .run_on_target(true)
             .build(format!("storvsp-{}-{}", self.instance_id, channel_index));
 
@@ -1562,7 +1566,7 @@ impl StorageDevice {
 
         self.workers[channel_index as usize]
             .driver
-            .retarget_vp(open_request.open_data.target_vp);
+            .retarget_vp(target_vp);
 
         Ok(self.workers[channel_index as usize].worker.insert(
             &driver,

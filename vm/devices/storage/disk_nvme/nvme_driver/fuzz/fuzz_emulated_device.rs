@@ -13,7 +13,7 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
@@ -28,8 +28,8 @@ pub struct FuzzEmulatedDevice<T: InspectMut, U> {
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> FuzzEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
-        let device = EmulatedDevice::new(device, msi_set, dma_client);
+    pub fn new(device: T, msi_conn: MsiConnection, dma_client: Arc<U>) -> Self {
+        let device = EmulatedDevice::new(device, msi_conn, dma_client);
 
         Self { device }
     }

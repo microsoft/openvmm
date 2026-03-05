@@ -34,18 +34,22 @@ impl SimpleFlowNode for Node {
 
         let host_arch = ctx.arch();
         let platform = ctx.platform();
-        let (objcopy_pkg, objcopy_bin) = match arch {
+
+        let (objcopy_pkg, objcopy_bin): (Option<&str>, &str) = match arch {
             CommonArch::X86_64 => match platform {
                 FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                    FlowPlatformLinuxDistro::Fedora => {
-                        ("binutils-x86_64-linux-gnu", "x86_64-linux-gnu-objcopy")
-                    }
-                    FlowPlatformLinuxDistro::Ubuntu => {
-                        ("binutils-x86-64-linux-gnu", "x86_64-linux-gnu-objcopy")
-                    }
+                    FlowPlatformLinuxDistro::Fedora => (
+                        Some("binutils-x86_64-linux-gnu"),
+                        "x86_64-linux-gnu-objcopy",
+                    ),
+                    FlowPlatformLinuxDistro::Ubuntu => (
+                        Some("binutils-x86-64-linux-gnu"),
+                        "x86_64-linux-gnu-objcopy",
+                    ),
                     FlowPlatformLinuxDistro::Arch => {
-                        match_arch!(host_arch, FlowArch::X86_64, ("binutils", "objcopy"))
+                        match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
                     }
+                    FlowPlatformLinuxDistro::Nix => (None, "x86_64-linux-gnu-objcopy"),
                     FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
                 },
                 _ => anyhow::bail!("Unsupported platform"),
@@ -54,11 +58,16 @@ impl SimpleFlowNode for Node {
                 let pkg = match platform {
                     FlowPlatform::Linux(linux_distribution) => match linux_distribution {
                         FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => {
-                            "binutils-aarch64-linux-gnu"
+                            Some("binutils-aarch64-linux-gnu")
                         }
                         FlowPlatformLinuxDistro::Arch => {
-                            match_arch!(host_arch, FlowArch::X86_64, "aarch64-linux-gnu-binutils")
+                            match_arch!(
+                                host_arch,
+                                FlowArch::X86_64,
+                                Some("aarch64-linux-gnu-binutils")
+                            )
                         }
+                        FlowPlatformLinuxDistro::Nix => None,
                         FlowPlatformLinuxDistro::Unknown => {
                             anyhow::bail!("Unknown Linux distribution")
                         }
@@ -69,27 +78,27 @@ impl SimpleFlowNode for Node {
             }
         };
 
-        let installed_objcopy =
+        let installed_objcopy = objcopy_pkg.map(|objcopy_pkg| {
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: vec![objcopy_pkg.into()],
                     done: side_effect,
                 },
-            );
+            )
+        });
 
         ctx.emit_rust_step("split debug symbols", |ctx| {
-            installed_objcopy.clone().claim(ctx);
+            installed_objcopy.claim(ctx);
             let in_bin = in_bin.claim(ctx);
             let out_bin = out_bin.claim(ctx);
             let out_dbg_info = out_dbg_info.claim(ctx);
             move |rt| {
                 let in_bin = rt.read(in_bin);
 
-                let sh = xshell::Shell::new()?;
-                let output = sh.current_dir().join(in_bin.file_name().unwrap());
-                xshell::cmd!(sh, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
-                xshell::cmd!(
-                    sh,
+                let output = rt.sh.current_dir().join(in_bin.file_name().unwrap());
+                flowey::shell_cmd!(rt, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
+                flowey::shell_cmd!(
+                    rt,
                     "{objcopy_bin} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
                 )
                 .run()?;

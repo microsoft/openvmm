@@ -523,6 +523,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             anyhow::bail!("cannot save/restore after HWC failure");
         }
 
+        if self.vf_reconfiguration_pending {
+            anyhow::bail!("cannot save/restore with VF reconfiguration pending");
+        }
+
         self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
@@ -543,7 +547,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
-            vf_reconfiguration_pending: self.vf_reconfiguration_pending,
         })
     }
 
@@ -669,7 +672,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_failure: false,
             state_saved: false,
             db_id: db_id as u32,
-            vf_reconfiguration_pending: saved_state.vf_reconfiguration_pending,
+            vf_reconfiguration_pending: false,
         };
 
         this.eq.arm();

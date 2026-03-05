@@ -304,8 +304,9 @@ impl HwControl {
                 0
             }
             GdmaRequestType::GDMA_GENERATE_RECONFIG_VF_EVENT => {
-                let req: GdmaGenerateTestEventReq =
-                    read.read_plain().context("reading test eqe request")?;
+                let req: GdmaGenerateTestEventReq = read
+                    .read_plain()
+                    .context("reading test vf reconfig request")?;
                 self.state
                     .queues
                     .post_eq(req.queue_index, GDMA_EQE_HWC_RECONFIG_VF, &[]);

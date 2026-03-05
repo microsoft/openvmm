@@ -115,7 +115,7 @@ impl FlowNode for Node {
             let additional_target_triples = additional_target_triples.clone();
             let additional_components = additional_components.clone();
 
-            move |_: &mut RustRuntimeServices<'_>| {
+            move |rt: &mut RustRuntimeServices<'_>| {
                 if which::which("cargo").is_err() {
                     anyhow::bail!("did not find `cargo` on $PATH");
                 }
@@ -124,8 +124,7 @@ impl FlowNode for Node {
                 let rust_toolchain = rust_toolchain.as_ref();
 
                 // make sure the specific rust version was installed
-                let sh = xshell::Shell::new()?;
-                xshell::cmd!(sh, "rustc {rust_toolchain...} -vV").run()?;
+                flowey::shell_cmd!(rt, "rustc {rust_toolchain...} -vV").run()?;
 
                 // make sure the additional target triples were installed
                 if let Ok(rustup) = which::which("rustup") {
@@ -133,8 +132,8 @@ impl FlowNode for Node {
                         ("target", &additional_target_triples),
                         ("component", &additional_components),
                     ] {
-                        let output = xshell::cmd!(
-                            sh,
+                        let output = flowey::shell_cmd!(
+                            rt,
                             "{rustup} {rust_toolchain...} {thing} list --installed"
                         )
                         .ignore_status()
@@ -228,7 +227,6 @@ impl FlowNode for Node {
                                 return Ok(());
                             }
 
-                            let sh = xshell::Shell::new()?;
                             match rt.platform() {
                                 FlowPlatform::Linux(_) => {
                                     let interactive_prompt = Some("-y");
@@ -238,14 +236,14 @@ impl FlowNode for Node {
                                         default_toolchain.push(ver)
                                     };
 
-                                    xshell::cmd!(
-                                        sh,
+                                    flowey::shell_cmd!(
+                                        rt,
                                         "curl --fail --proto =https --tlsv1.2 -sSf https://sh.rustup.rs -o rustup-init.sh"
                                     )
                                     .run()?;
-                                    xshell::cmd!(sh, "chmod +x ./rustup-init.sh").run()?;
-                                    xshell::cmd!(
-                                        sh,
+                                    flowey::shell_cmd!(rt, "chmod +x ./rustup-init.sh").run()?;
+                                    flowey::shell_cmd!(
+                                        rt,
                                         "./rustup-init.sh {interactive_prompt...} {default_toolchain...}"
                                     )
                                     .run()?;
@@ -264,12 +262,12 @@ impl FlowNode for Node {
                                         arch => anyhow::bail!("unsupported arch {arch}"),
                                     };
 
-                                    xshell::cmd!(
-                                        sh,
+                                    flowey::shell_cmd!(
+                                        rt,
                                         "curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/{arch} --output rustup-init"
                                     ).run()?;
-                                    xshell::cmd!(
-                                        sh,
+                                    flowey::shell_cmd!(
+                                        rt,
                                         "./rustup-init.exe {interactive_prompt...} {default_toolchain...}"
                                     )
                                     .run()?;
@@ -278,11 +276,11 @@ impl FlowNode for Node {
                             }
 
                             if !additional_target_triples.is_empty() {
-                                xshell::cmd!(sh, "rustup target add {additional_target_triples...}")
+                                flowey::shell_cmd!(rt, "rustup target add {additional_target_triples...}")
                                     .run()?;
                             }
                             if !additional_components.is_empty() {
-                                xshell::cmd!(sh, "rustup component add {additional_components...}")
+                                flowey::shell_cmd!(rt, "rustup component add {additional_components...}")
                                     .run()?;
                             }
 
@@ -336,7 +334,6 @@ impl FlowNode for Node {
                     let rust_toolchain = match rust_toolchain {
                         Some(toolchain) => Some(toolchain),
                         None => {
-                            let sh = xshell::Shell::new()?;
                             if let Ok(rustup) = which::which("rustup") {
                                 // Unfortunately, `rustup` still doesn't have any stable way to emit
                                 // machine-readable output. See https://github.com/rust-lang/rustup/issues/450
@@ -353,7 +350,8 @@ impl FlowNode for Node {
                                 //   stable-x86_64-unknown-linux-gnu
                                 //   active because: it's the default toolchain
                                 let output =
-                                    xshell::cmd!(sh, "{rustup} show active-toolchain").output()?;
+                                    flowey::shell_cmd!(rt, "{rustup} show active-toolchain")
+                                        .output()?;
                                 let stdout = String::from_utf8(output.stdout)?;
                                 let line = stdout.lines().next().unwrap();
                                 Some(line.split(' ').next().unwrap().into())

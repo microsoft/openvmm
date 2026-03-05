@@ -13,9 +13,9 @@ use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
-use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
-use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch;
+use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::BuildProfile;
 use crate::run_cargo_build::common::CommonArch;
@@ -36,8 +36,6 @@ pub enum OpenhclKernelPackage {
     Dev,
     /// CVM kernel from the hcl-dev brnach
     CvmDev,
-    /// Path to a custom local package
-    CustomLocal(PathBuf),
 }
 
 /// Vtl0 kernel type
@@ -76,7 +74,6 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub openhcl_initrd_extra_params: Option<OpenhclInitrdExtraParams>,
     pub custom_openvmm_hcl: Option<PathBuf>,
     pub custom_openhcl_boot: Option<PathBuf>,
-    pub custom_uefi: Option<PathBuf>,
     pub custom_kernel: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
@@ -274,7 +271,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openhcl_initrd::Node>();
         ctx.import::<crate::build_openvmm_hcl::Node>();
         ctx.import::<crate::build_sidecar::Node>();
-        ctx.import::<crate::download_openhcl_kernel_package::Node>();
+        ctx.import::<crate::resolve_openhcl_kernel_package::Node>();
         ctx.import::<crate::resolve_openvmm_deps::Node>();
         ctx.import::<crate::download_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
@@ -312,7 +309,6 @@ impl SimpleFlowNode for Node {
             openhcl_initrd_extra_params,
             custom_openvmm_hcl,
             custom_openhcl_boot,
-            custom_uefi,
             custom_kernel,
             custom_sidecar,
             custom_extra_rootfs,
@@ -321,7 +317,6 @@ impl SimpleFlowNode for Node {
             openhcl_initrd_extra_params: None,
             custom_openvmm_hcl: None,
             custom_openhcl_boot: None,
-            custom_uefi: None,
             custom_kernel: None,
             custom_sidecar: None,
             custom_extra_rootfs: Vec::new(),
@@ -333,59 +328,56 @@ impl SimpleFlowNode for Node {
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let vtl2_kernel_package_root = {
-            let arch = match arch {
-                CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
-                CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
-            };
-
-            enum DownloadOrLocal {
-                Local(PathBuf),
-                Download(OpenhclKernelPackageKind),
-            }
-
-            let download_kind = match openhcl_kernel_package {
-                OpenhclKernelPackage::Main => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Main)
-                }
-                OpenhclKernelPackage::Cvm => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Cvm)
-                }
-                OpenhclKernelPackage::Dev => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::Dev)
-                }
-                OpenhclKernelPackage::CvmDev => {
-                    DownloadOrLocal::Download(OpenhclKernelPackageKind::CvmDev)
-                }
-                OpenhclKernelPackage::CustomLocal(path) => DownloadOrLocal::Local(path),
-            };
-
-            match download_kind {
-                DownloadOrLocal::Local(path) => ReadVar::from_static(path),
-                DownloadOrLocal::Download(kind) => {
-                    ctx.reqv(
-                        |v| crate::download_openhcl_kernel_package::Request::GetPackage {
-                            kind,
-                            arch,
-                            pkg: v,
-                        },
-                    )
-                }
-            }
+        let kernel_arch = match arch {
+            CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
+            CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
         };
 
+        let kernel_kind = match openhcl_kernel_package {
+            OpenhclKernelPackage::Main => OpenhclKernelPackageKind::Main,
+            OpenhclKernelPackage::Cvm => OpenhclKernelPackageKind::Cvm,
+            OpenhclKernelPackage::Dev => OpenhclKernelPackageKind::Dev,
+            OpenhclKernelPackage::CvmDev => OpenhclKernelPackageKind::CvmDev,
+        };
+
+        // Get the kernel package root for initrd building (needs metadata)
+        let vtl2_kernel_package_root =
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetPackageRoot {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    pkg: v,
+                },
+            );
+
+        // Get the modules path from the resolve node
+        let vtl2_kernel_modules =
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetModules {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    modules: v,
+                },
+            );
+
+        // Get the kernel metadata path from the resolve node
+        let vtl2_kernel_metadata =
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetMetadata {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    metadata: v,
+                },
+            );
+
         let uefi_resource = with_uefi.then(|| UefiResource {
-            msvm_fd: if let Some(path) = custom_uefi {
-                ReadVar::from_static(path)
-            } else {
-                ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
-                    arch: match arch {
-                        CommonArch::X86_64 => MuMsvmArch::X86_64,
-                        CommonArch::Aarch64 => MuMsvmArch::Aarch64,
-                    },
-                    msvm_fd: v,
-                })
-            },
+            msvm_fd: ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+                arch: match arch {
+                    CommonArch::X86_64 => MuMsvmArch::X86_64,
+                    CommonArch::Aarch64 => MuMsvmArch::Aarch64,
+                },
+                msvm_fd: v,
+            }),
         });
 
         let vtl0_kernel_resource = vtl0_kernel_type.map(|typ| {
@@ -578,22 +570,24 @@ impl SimpleFlowNode for Node {
                 rootfs_config,
                 extra_env: None,
                 kernel_package_root: vtl2_kernel_package_root.clone(),
+                kernel_modules: vtl2_kernel_modules,
+                kernel_metadata: vtl2_kernel_metadata,
                 bin_openhcl: openvmm_hcl_bin,
                 initrd: v,
             })
         };
 
-        let kernel =
-            if let Some(path) = custom_kernel {
-                ReadVar::from_static(path)
-            } else {
-                match arch {
-                    CommonArch::X86_64 => vtl2_kernel_package_root
-                        .map(ctx, |p| p.join("build/native/bin/x64/vmlinux")),
-                    CommonArch::Aarch64 => vtl2_kernel_package_root
-                        .map(ctx, |p| p.join("build/native/bin/arm64/Image")),
-                }
-            };
+        let kernel = if let Some(path) = custom_kernel {
+            ReadVar::from_static(path)
+        } else {
+            ctx.reqv(
+                |v| crate::resolve_openhcl_kernel_package::Request::GetKernel {
+                    kind: kernel_kind,
+                    arch: kernel_arch,
+                    kernel: v,
+                },
+            )
+        };
 
         let resources = ctx.emit_minor_rust_stepv("enumerate igvm resources", |ctx| {
             let initrd = initrd.claim(ctx);

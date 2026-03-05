@@ -8,6 +8,7 @@ use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_prep_steps::PrepStepsOutput;
+use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
 use crate::build_tmk_vmm::TmkVmmOutput;
 use crate::build_tmks::TmksOutput;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
@@ -32,6 +33,7 @@ pub struct VmmTestsDepArtifacts {
     pub vmgstool: Option<ReadVar<VmgstoolOutput>>,
     pub tpm_guest_tests_windows: Option<ReadVar<TpmGuestTestsOutput>>,
     pub tpm_guest_tests_linux: Option<ReadVar<TpmGuestTestsOutput>>,
+    pub test_igvm_agent_rpc_server: Option<ReadVar<TestIgvmAgentRpcServerOutput>>,
 }
 
 flowey_request! {
@@ -75,6 +77,8 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::install_vmm_tests_deps::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<crate::run_prep_steps::Node>();
+        ctx.import::<crate::run_test_igvm_agent_rpc_server::Node>();
+        ctx.import::<crate::stop_test_igvm_agent_rpc_server::Node>();
         ctx.import::<crate::test_nextest_vmm_tests_archive::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -112,6 +116,7 @@ impl SimpleFlowNode for Node {
             vmgstool: register_vmgstool,
             tpm_guest_tests_windows: register_tpm_guest_tests_windows,
             tpm_guest_tests_linux: register_tpm_guest_tests_linux,
+            test_igvm_agent_rpc_server: register_test_igvm_agent_rpc_server,
         } = dep_artifact_dirs;
 
         let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
@@ -179,6 +184,7 @@ impl SimpleFlowNode for Node {
             register_vmgstool,
             register_tpm_guest_tests_windows,
             register_tpm_guest_tests_linux,
+            register_test_igvm_agent_rpc_server,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
@@ -186,6 +192,18 @@ impl SimpleFlowNode for Node {
             release_igvm_files,
             use_relative_paths: false,
         });
+
+        // Start the test_igvm_agent_rpc_server before running tests (Windows only).
+        // This must happen after init_vmm_tests_env which copies the binary.
+        // The server runs in the background for the duration of the test run.
+        if matches!(ctx.platform(), FlowPlatform::Windows) {
+            pre_run_deps.push(
+                ctx.reqv(|done| crate::run_test_igvm_agent_rpc_server::Request {
+                    env: extra_env.clone(),
+                    done,
+                }),
+            );
+        }
 
         if needs_prep_run {
             pre_run_deps.push(ctx.reqv(|done| crate::run_prep_steps::Request {
@@ -210,6 +228,20 @@ impl SimpleFlowNode for Node {
             results: v,
         });
 
+        // Stop the test_igvm_agent_rpc_server after tests complete (Windows only).
+        // This ensures we clean up the background process.
+        let rpc_server_stopped = if matches!(ctx.platform(), FlowPlatform::Windows) {
+            let after_tests = results.map(ctx, |_| ());
+            Some(
+                ctx.reqv(|done| crate::stop_test_igvm_agent_rpc_server::Request {
+                    after_tests,
+                    done,
+                }),
+            )
+        } else {
+            None
+        };
+
         // Bind the externally generated output paths together with the results
         // to create a dependency on the VMM tests having actually run.
         let test_log_path = test_log_path.depending_on(ctx, &results);
@@ -225,6 +257,9 @@ impl SimpleFlowNode for Node {
 
         ctx.emit_rust_step("report test results to overall pipeline status", |ctx| {
             reported_results.claim(ctx);
+            if let Some(rpc_server_stopped) = rpc_server_stopped {
+                rpc_server_stopped.claim(ctx);
+            }
             done.claim(ctx);
 
             let results = results.clone().claim(ctx);

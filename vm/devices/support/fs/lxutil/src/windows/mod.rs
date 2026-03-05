@@ -192,7 +192,7 @@ impl LxVolume {
         Ok(())
     }
 
-    pub fn lstat(&self, path: &Path) -> lx::Result<lx::Stat> {
+    pub fn lstat(&self, path: &Path) -> lx::Result<lx::StatEx> {
         assert!(path.is_relative());
 
         // Special-case returning attributes of the root itself to just use the existing handle.
@@ -969,13 +969,9 @@ impl LxVolume {
 
         match result {
             Ok(_) => result,
-            Err(e) => {
-                // Read-only files can fail to be deleted with EIO if:
-                // - The file system didn't support FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE.
-                // - The file system's permission check for that flag failed.
-                if e.value() == lx::EIO {
-                    result
-                } else {
+            Err(e) => match fs::analyze_delete_error(e, handle) {
+                fs::DeleteErrorAction::ReturnError(err) => Err(err),
+                fs::DeleteErrorAction::TryReadOnlyWorkaround => {
                     // Reopen with the correct permissions to query and clear the read-only attribute,
                     // and try again.
                     let handle = util::reopen_file(
@@ -985,7 +981,7 @@ impl LxVolume {
 
                     fs::delete_read_only_file(&self.state.fs_context, &handle)
                 }
-            }
+            },
         }
     }
 
@@ -1088,6 +1084,7 @@ impl LxVolume {
             &self.state.options,
             self.state.block_size,
         )
+        .map(|x| x.into())
     }
 }
 
@@ -1103,7 +1100,7 @@ pub struct LxFile {
 }
 
 impl LxFile {
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         let mut info = self.state.get_attributes_by_handle(&self.handle)?;
         *self.is_app_exec_alias.lock() = info.is_app_execution_alias;
         util::file_info_to_stat(
@@ -1199,9 +1196,9 @@ impl LxFile {
                 && self.kill_priv.swap(false, Ordering::AcqRel)
             {
                 let stat = self.fstat()?;
-                if stat.mode & (lx::S_ISUID | lx::S_ISGID) != 0 {
+                if stat.mode as u32 & (lx::S_ISUID | lx::S_ISGID) != 0 {
                     let mut attr = SetAttributes::default();
-                    attr.mode = Some(stat.mode & !(lx::S_ISUID | lx::S_ISGID));
+                    attr.mode = Some(stat.mode as u32 & !(lx::S_ISUID | lx::S_ISGID));
                     self.set_attr(attr)?;
                 }
             }

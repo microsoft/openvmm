@@ -713,6 +713,10 @@ fn init_vmsa(
     vmsa.v_intr_cntrl_mut().set_guest_busy(true);
     vmsa.sev_features_mut().set_debug_swap(true);
 
+    // Note: The VMSA pages for VTL0 and VTL1 are converted to a VMSA page
+    // in the RMP by the kernel, in mshv_configure_vmsa_page. The VTL2 VMSA
+    // page is converted via SNP_LAUNCH_UPDATE.
+
     let vmpl = match vtl {
         GuestVtl::Vtl0 => Vmpl::Vmpl2,
         GuestVtl::Vtl1 => Vmpl::Vmpl1,
@@ -956,6 +960,10 @@ impl UhProcessor<'_, SnpBacked> {
             .as_message::<hvdef::HvX64VmgexitInterceptMessage>();
 
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
+        let flags = message.flags;
+        let sw_exit_code = message.ghcb_page.standard.sw_exit_code;
+        let sw_exit_info1 = message.ghcb_page.standard.sw_exit_info1;
+        let sw_exit_info2 = message.ghcb_page.standard.sw_exit_info2;
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
 
         match x86defs::snp::GhcbInfo(ghcb_msr.info()) {
@@ -1025,7 +1033,17 @@ impl UhProcessor<'_, SnpBacked> {
                             )
                             .map_err(SnpGhcbError::GhcbPageAccess)?;
                     }
-                    usage => unimplemented!("ghcb usage {usage:?}"),
+                    usage => unimplemented!(
+                        r#"
+                        Invalid ghcb message.
+                        usage {usage:?}
+                        flags {flags:?}
+                        ghcb_msr {ghcb_msr:?}
+                        sw_exit_code {sw_exit_code:?}
+                        sw_exit_info1 {sw_exit_info1:?}
+                        sw_exit_info2 {sw_exit_info2:?}
+                    "#
+                    ),
                 }
             }
             info => unimplemented!("ghcb info {info:?}"),
@@ -1482,7 +1500,7 @@ impl UhProcessor<'_, SnpBacked> {
 
             SevExitCode::NPF => &mut self.backing.exit_stats[entered_from_vtl].npf_no_intercept,
 
-            SevExitCode::HLT => {
+            SevExitCode::HLT | SevExitCode::IDLE_HLT => {
                 self.backing.cvm.lapics[entered_from_vtl].activity = MpState::Halted;
                 // RIP has already advanced. Clear interrupt shadow.
                 vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
@@ -1541,8 +1559,7 @@ impl UhProcessor<'_, SnpBacked> {
             | SevExitCode::PAUSE
             | SevExitCode::SMI
             | SevExitCode::VMGEXIT
-            | SevExitCode::BUSLOCK
-            | SevExitCode::IDLE_HLT => {
+            | SevExitCode::BUSLOCK => {
                 // Ignore intercept processing if the guest exited due to an automatic exit.
                 &mut self.backing.exit_stats[entered_from_vtl].automatic_exit
             }
@@ -1552,7 +1569,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // for injection but injection cannot complete due to the intercept. Rewind the pending
                 // virtual interrupt so it is reinjected as a fixed interrupt.
 
-                // TODO SNP: Rewind the interrupt.
+                // TODO SNP ALTERNATE INJECTION: Rewind the interrupt.
                 unimplemented!("SevExitCode::VINTR");
             }
 
@@ -1649,9 +1666,8 @@ impl UhProcessor<'_, SnpBacked> {
                 }
                 HvMessageType::HvMessageTypeX64Halt
                 | HvMessageType::HvMessageTypeExceptionIntercept => {
-                    // Ignore.
-                    //
-                    // TODO SNP: Figure out why we are getting these.
+                    // Ignore. Note: it is possible to get the ExceptionIntercept
+                    // message for reflect #VC.
                 }
                 message_type => {
                     tracelimit::error_ratelimited!(

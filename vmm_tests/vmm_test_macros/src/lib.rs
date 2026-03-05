@@ -40,12 +40,12 @@ enum Firmware {
     Pcat(PcatGuest),
     Uefi(UefiGuest),
     OpenhclLinuxDirect,
+    OpenhclPcat(PcatGuest),
     OpenhclUefi(OpenhclUefiOptions, UefiGuest),
 }
 
 #[derive(Default)]
 struct OpenhclUefiOptions {
-    nvme: bool,
     isolation: Option<IsolationType>,
 }
 
@@ -104,12 +104,13 @@ impl Config {
             Firmware::Pcat(_) => "pcat",
             Firmware::Uefi(_) => "uefi",
             Firmware::OpenhclLinuxDirect => "openhcl_linux",
+            Firmware::OpenhclPcat(..) => "openhcl_pcat",
             Firmware::OpenhclUefi(..) => "openhcl_uefi",
         };
 
         let guest_prefix = match &self.firmware {
             Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => None,
-            Firmware::Pcat(guest) => Some(guest.name_prefix()),
+            Firmware::Pcat(guest) | Firmware::OpenhclPcat(guest) => Some(guest.name_prefix()),
             Firmware::Uefi(guest) | Firmware::OpenhclUefi(_, guest) => guest.name_prefix(),
         };
 
@@ -117,7 +118,8 @@ impl Config {
             Firmware::LinuxDirect
             | Firmware::Pcat(_)
             | Firmware::Uefi(_)
-            | Firmware::OpenhclLinuxDirect => None,
+            | Firmware::OpenhclLinuxDirect
+            | Firmware::OpenhclPcat(_) => None,
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
@@ -206,12 +208,15 @@ impl ToTokens for FirmwareAndArch {
             Firmware::OpenhclLinuxDirect => {
                 quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
             }
-            Firmware::OpenhclUefi(OpenhclUefiOptions { nvme, isolation }, guest) => {
+            Firmware::OpenhclPcat(guest) => {
+                quote!(::petri::Firmware::openhcl_pcat(resolver, #guest))
+            }
+            Firmware::OpenhclUefi(OpenhclUefiOptions { isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
                 };
-                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation, #nvme))
+                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation))
             }
         })
     }
@@ -275,6 +280,10 @@ impl Parse for Config {
             "uefi_aarch64" => (
                 MachineArch::Aarch64,
                 Firmware::Uefi(parse_uefi_guest(input)?),
+            ),
+            "openhcl_pcat_x64" => (
+                MachineArch::X86_64,
+                Firmware::OpenhclPcat(parse_pcat_guest(input)?),
             ),
             "openhcl_uefi_x64" => (
                 MachineArch::X86_64,
@@ -416,6 +425,12 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         "ubuntu_2504_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64
         )),
+        "alpine_3_23_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64
+        )),
+        "alpine_3_23_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64
+        )),
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
         )),
@@ -457,13 +472,6 @@ impl OpenhclUefiOptions {
                 IsolationType::Tdx => "tdx",
             });
         }
-        if self.nvme {
-            if !prefix.is_empty() {
-                prefix.push('_');
-            }
-            prefix.push_str("nvme");
-        }
-
         if prefix.is_empty() {
             None
         } else {
@@ -479,9 +487,6 @@ impl Parse for OpenhclUefiOptions {
         let words = input.parse_terminated(|stream| stream.parse::<Ident>(), Token![,])?;
         for word in words {
             match &*word.to_string() {
-                "nvme" => {
-                    options.nvme = true;
-                }
                 "vbs" => {
                     if options.isolation.is_some() {
                         return Err(Error::new(word.span(), "isolation type already specified"));
@@ -545,6 +550,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
 /// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
 /// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
+/// - `{vmm}_openhcl_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration with OpenHCL
 /// - `{vmm}_openhcl_uefi_{arch}[list,of,options](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
 ///
 /// Valid VMMs are:
@@ -565,6 +571,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid x64 VHD options are:
+/// - `alpine_3_23_x64`: Alpine Linux 3.23 cloud image
 /// - `ubuntu_2404_server_x64`: Ubuntu Linux 24.04 cloudimg from Canonical
 /// - `ubuntu_2504_server_x64`: Ubuntu Linux 25.04 cloudimg from Canonical
 /// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
@@ -574,6 +581,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid aarch64 VHD options are:
+/// - `alpine_3_23_aarch64`: Alpine Linux 3.23 cloud image
 /// - `ubuntu_2404_server_aarch64`: Ubuntu Linux 24.04 cloudimg from Canonical
 /// - `windows_11_enterprise_aarch64`: Windows 11 Enterprise from the Azure Marketplace
 ///
@@ -758,7 +766,6 @@ fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Opt
     if let Firmware::OpenhclUefi(
         OpenhclUefiOptions {
             isolation: Some(isolation),
-            ..
         },
         _,
     ) = firmware

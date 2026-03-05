@@ -59,6 +59,7 @@ async fn nvme_relay_test_core(
             ]
             .into(),
         ))
+        .with_boot_device_type(petri::BootDeviceType::ScsiViaNvme)
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect(true)
         .with_processor_topology(processor_topology.unwrap_or(ProcessorTopology {
@@ -176,7 +177,7 @@ async fn nvme_relay_test_core(
 
 /// Test an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     nvme_relay_test_core(config, NvmeRelayTestParams::default()).await
 }
@@ -185,7 +186,7 @@ async fn nvme_relay(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), a
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 ///
 /// Use the private pool override to test the private pool dma path.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_explicit_private_pool(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -211,7 +212,7 @@ async fn nvme_relay_explicit_private_pool(
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
 #[cfg(debug_assertions)]
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -242,7 +243,7 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
 #[cfg(not(debug_assertions))]
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -276,7 +277,7 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
 /// This test uses 500MB of private pool memory, which does *not* match any
 /// of the heuristics exactly, but there should still be private pool memory.
 #[cfg(not(debug_assertions))]
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {
@@ -306,7 +307,7 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
 ///
 /// There _should_ be enough private pool memory for the NVMe driver to
 /// allocate all of its buffers contiguously.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2504_server_x64)))]
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
 async fn nvme_relay_32vp_768mb_very_heavy(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
 ) -> Result<(), anyhow::Error> {

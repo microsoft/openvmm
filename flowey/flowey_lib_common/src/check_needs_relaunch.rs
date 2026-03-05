@@ -52,9 +52,8 @@ impl SimpleFlowNode for Node {
         };
 
         let check_env = {
-            move |_: &mut RustRuntimeServices<'_>, env: &String, expected: &String| {
-                let sh = xshell::Shell::new()?;
-                let env = sh.var(env)?;
+            move |rt: &mut RustRuntimeServices<'_>, env: &String, expected: &String| {
+                let env = rt.sh.var(env)?;
 
                 if !env.contains(expected) {
                     anyhow::bail!(format!("did not find '{}' in {}", expected, env));

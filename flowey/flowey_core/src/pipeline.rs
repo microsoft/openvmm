@@ -61,6 +61,16 @@ pub mod user_facing {
 }
 
 fn linux_distro() -> FlowPlatformLinuxDistro {
+    // Check for nix environment first - takes precedence over distro detection
+    if std::env::var("IN_NIX_SHELL").is_ok() {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
+    // A `nix develop` shell doesn't set `IN_NIX_SHELL`, but the PATH should include a nix store path
+    if std::env::var("PATH").is_ok_and(|path| path.contains("/nix/store")) {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
     if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
         if etc_os_release.contains("ID=ubuntu") {
             FlowPlatformLinuxDistro::Ubuntu
@@ -599,6 +609,7 @@ impl Pipeline {
             arch,
             cond_param_idx: None,
             timeout_minutes: None,
+            command_wrapper: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -1213,6 +1224,19 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Set a [`CommandWrapperKind`] that will be applied to all shell
+    /// commands executed in this job's steps.
+    ///
+    /// The wrapper is applied both when running locally (via direct run)
+    /// and when running in CI (the kind is serialized into
+    /// `pipeline.json` and reconstructed at runtime).
+    ///
+    /// [`CommandWrapperKind`]: crate::shell::CommandWrapperKind
+    pub fn set_command_wrapper(self, wrapper: crate::shell::CommandWrapperKind) -> Self {
+        self.pipeline.jobs[self.job_idx].command_wrapper = Some(wrapper);
+        self
+    }
+
     /// Add a flow node which will be run as part of the job.
     pub fn dep_on<R: IntoRequest + 'static>(
         self,
@@ -1288,7 +1312,7 @@ pub enum PipelineBackendHint {
 /// impl IntoPipeline for MyPipeline {
 ///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
 ///         let mut pipeline = Pipeline::new();
-///         
+///
 ///         // Define a job that runs on Linux x86_64
 ///         let _job = pipeline
 ///             .new_job(
@@ -1297,7 +1321,7 @@ pub enum PipelineBackendHint {
 ///                 "build"
 ///             )
 ///             .finish();
-///         
+///
 ///         Ok(pipeline)
 ///     }
 /// }
@@ -1314,7 +1338,7 @@ pub enum PipelineBackendHint {
 /// impl IntoPipeline for BuildPipeline {
 ///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
 ///         let mut pipeline = Pipeline::new();
-///         
+///
 ///         // Define a runtime parameter
 ///         let enable_tests = pipeline.new_parameter_bool(
 ///             "enable_tests",
@@ -1322,10 +1346,10 @@ pub enum PipelineBackendHint {
 ///             ParameterKind::Stable,
 ///             Some(true) // default value
 ///         );
-///         
+///
 ///         // Create an artifact for passing data between jobs
 ///         let (publish_build, use_build) = pipeline.new_artifact("build-output");
-///         
+///
 ///         // Job 1: Build
 ///         let build_job = pipeline
 ///             .new_job(
@@ -1338,7 +1362,7 @@ pub enum PipelineBackendHint {
 ///                 output_dir: ctx.publish_artifact(publish_build),
 ///             })
 ///             .finish();
-///         
+///
 ///         // Job 2: Test (conditionally run based on parameter)
 ///         let _test_job = pipeline
 ///             .new_job(
@@ -1351,7 +1375,7 @@ pub enum PipelineBackendHint {
 ///                 input_dir: ctx.use_artifact(&use_build),
 ///             })
 ///             .finish();
-///         
+///
 ///         Ok(pipeline)
 ///     }
 /// }
@@ -1403,6 +1427,7 @@ pub mod internal {
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
         pub timeout_minutes: Option<u32>,
+        pub command_wrapper: Option<crate::shell::CommandWrapperKind>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,

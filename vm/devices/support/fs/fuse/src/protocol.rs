@@ -10,6 +10,7 @@
 #![allow(non_camel_case_types)]
 #![expect(unused_parens)]
 
+use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -66,6 +67,40 @@ pub struct fuse_attr {
     pub rdev: u32,
     pub blksize: u32,
     pub padding: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct fuse_sx_time {
+    pub sec: i64,
+    pub nsec: u32,
+    pub _rsvd: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct fuse_statx {
+    pub mask: u32,
+    pub blksize: u32,
+    pub attributes: u64,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub _rsvd1: u16,
+    pub ino: u64,
+    pub size: u64,
+    pub blocks: u64,
+    pub attributes_mask: u64,
+    pub atime: fuse_sx_time,
+    pub btime: fuse_sx_time,
+    pub ctime: fuse_sx_time,
+    pub mtime: fuse_sx_time,
+    pub rdev_major: u32,
+    pub rdev_minor: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub _rsvd2: [u64; 14],
 }
 
 #[repr(C)]
@@ -306,6 +341,8 @@ pub const FUSE_COPY_FILE_RANGE: u32 = 47;
 pub const FUSE_SETUPMAPPING: u32 = 48;
 pub const FUSE_REMOVEMAPPING: u32 = 49;
 pub const FUSE_SYNCFS: u32 = 50;
+pub const FUSE_TMPFILE: u32 = 51;
+pub const FUSE_STATX: u32 = 52;
 /* Special Android FUSE operation */
 pub const FUSE_CANONICAL_PATH: u32 = 2016;
 
@@ -871,4 +908,35 @@ pub struct fuse_removemapping_one {
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct fuse_syncfs_in {
     pub padding: u64,
+}
+
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct StatxFlags {
+    #[bits(13)]
+    _rsvd1: u32,
+    pub force_sync: bool,
+    pub dont_sync: bool,
+    #[bits(17)]
+    _rsvd2: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct fuse_statx_in {
+    pub getattr_flags: u32,
+    _rsvd: u32,
+    pub fh: u64,
+    pub flags: StatxFlags,
+    pub mask: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct fuse_statx_out {
+    pub attr_valid: u64, /* Cache timeout for the attributes */
+    pub attr_valid_nsec: u32,
+    pub flags: StatxFlags,
+    pub _rsvd: [u64; 2],
+    pub statx: fuse_statx,
 }

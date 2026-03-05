@@ -188,10 +188,10 @@ impl SimpleFlowNode for Node {
                     merge_run.commit, merge_run.id
                 );
 
-                let sh = xshell::Shell::new()?;
-                sh.change_dir(rt.read(openvmm_repo_path));
-                xshell::cmd!(
-                    sh,
+                let path = rt.read(openvmm_repo_path);
+                rt.sh.change_dir(path);
+                flowey::shell_cmd!(
+                    rt,
                     "{xtask} verify-size --original {old_path} --new {new_path}"
                 )
                 .run()?;

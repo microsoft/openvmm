@@ -5,14 +5,17 @@
     "@tanstack/react-virtual": "^3.13.12",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
-    "react-router-dom": "^7.9.3"
+    "react-router-dom": "^7.12.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.3",
+    "autoprefixer": "^10.4.24",
     "globals": "^16.4.0",
+    "postcss": "^8.5.6",
     "prettier": "^3.6.2",
+    "tailwindcss": "^3.4.19",
     "typescript": "^5.9.2",
     "vite": "^7.1.11"
   },

@@ -23,8 +23,8 @@ use virt::VpIndex;
 use vmcore::interrupt::Interrupt;
 use vmcore::monitor::MonitorId;
 use vmcore::synic::GuestEventPort;
-use winapi::shared::winerror::ERROR_PROC_NOT_FOUND;
-use winapi::shared::winerror::HRESULT_FROM_WIN32;
+use windows_result::HRESULT;
+use windows_sys::Win32::Foundation::ERROR_PROC_NOT_FOUND;
 
 struct RegisteredPort {
     partition: Weak<WhpPartitionInner>,
@@ -63,7 +63,7 @@ impl virt::Synic for WhpPartition {
                 );
                 match result {
                     Ok(handle) => Some(Ok((vtl, handle))),
-                    Err(e) if e.code() == HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND) => {
+                    Err(e) if e.code() == HRESULT::from_win32(ERROR_PROC_NOT_FOUND).0 => {
                         // notification ports are not supported; TODO-remove once old Iron builds age out
                         None
                     }
@@ -437,24 +437,23 @@ impl Drop for WhpDoorbellEntry {
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
     use crate::WhpPartitionAndVtl;
-    use pci_core::msi::MsiInterruptTarget;
+    use pci_core::msi::SignalMsi;
     use tracing_helpers::ErrorValueExt;
     use virt::irqcon::MsiRequest;
 
-    impl MsiInterruptTarget for WhpPartitionAndVtl {
-        fn new_interrupt(&self) -> Box<dyn pci_core::msi::MsiControl> {
-            let partition = self.partition.clone();
-            let vtl = self.vtl;
-            Box::new(move |address, data| {
-                if let Err(err) = partition.interrupt(vtl, MsiRequest { address, data }) {
-                    tracelimit::warn_ratelimited!(
-                        address,
-                        data,
-                        error = err.as_error(),
-                        "failed to deliver MSI"
-                    );
-                }
-            })
+    impl SignalMsi for WhpPartitionAndVtl {
+        fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+            if let Err(err) = self
+                .partition
+                .interrupt(self.vtl, MsiRequest { address, data })
+            {
+                tracelimit::warn_ratelimited!(
+                    address,
+                    data,
+                    error = err.as_error(),
+                    "failed to deliver MSI"
+                );
+            }
         }
     }
 }

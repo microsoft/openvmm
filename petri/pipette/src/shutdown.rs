@@ -15,14 +15,18 @@ pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Re
         pipette_protocol::ShutdownType::Reboot => "reboot",
     };
     let mut command = std::process::Command::new(program);
-    if std::fs::read("/proc/1/cmdline")
-        .context("failed to read cmdline")?
-        .starts_with(b"/bin/sh")
-    {
-        // init is just a shell and can't handle power requests, so pass the
-        // force flag.
+
+    // Check if we should use the force flag. This is needed when:
+    // 1. init is just a shell (linux-direct boot)
+    // 2. We're not running under systemd (e.g., OpenRC on Alpine)
+    let init_cmdline = std::fs::read("/proc/1/cmdline").context("failed to read cmdline")?;
+    let is_shell_init = init_cmdline.starts_with(b"/bin/sh");
+    let is_systemd = std::path::Path::new("/run/systemd/system").exists();
+
+    if is_shell_init || !is_systemd {
         command.arg("-f");
     }
+
     let output = command
         .output()
         .with_context(|| format!("failed to launch {}", program))?;

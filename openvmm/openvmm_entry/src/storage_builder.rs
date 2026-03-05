@@ -61,10 +61,13 @@ impl From<UnderhillDiskSource> for DiskLocation {
 // Arbitrary but constant instance IDs to maintain the same device IDs
 // across reboots.
 const NVME_VTL0_INSTANCE_ID: Guid = guid::guid!("008091f6-9688-497d-9091-af347dc9173c");
-const NVME_VTL2_INSTANCE_ID: Guid = guid::guid!("f9b90f6f-b129-4596-8171-a23481b8f718");
+/// The VTL2 NVMe controller instance ID used by OpenVMM.
+pub const NVME_VTL2_INSTANCE_ID: Guid = guid::guid!("f9b90f6f-b129-4596-8171-a23481b8f718");
 const SCSI_VTL0_INSTANCE_ID: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
-const SCSI_VTL2_INSTANCE_ID: Guid = guid::guid!("73d3aa59-b82b-4fe7-9e15-e2b0b5575cf8");
-const UNDERHILL_VTL0_SCSI_INSTANCE: Guid = guid::guid!("e1c5bd94-d0d6-41d4-a2b0-88095a16ded7");
+/// The VTL2 SCSI controller instance ID used by OpenVMM.
+pub const SCSI_VTL2_INSTANCE_ID: Guid = guid::guid!("73d3aa59-b82b-4fe7-9e15-e2b0b5575cf8");
+/// The VTL0 SCSI controller instance ID used by OpenHCL to expose disks to VTL0.
+pub const UNDERHILL_VTL0_SCSI_INSTANCE: Guid = guid::guid!("e1c5bd94-d0d6-41d4-a2b0-88095a16ded7");
 const UNDERHILL_VTL0_NVME_INSTANCE: Guid = guid::guid!("09a59b81-2bf6-4164-81d7-3a0dc977ba65");
 
 // PCIe controllers don't have VMBUS channel instance IDs the way VPCI
@@ -379,6 +382,7 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: None,
                 }
                 .into_resource(),
             });
@@ -394,15 +398,19 @@ impl StorageBuilder {
             }
         }
 
-        if !self.vtl2_nvme_namespaces.is_empty() {
-            if config
-                .hypervisor
-                .with_vtl2
-                .as_ref()
-                .is_none_or(|c| c.vtl0_alias_map)
-            {
+        if config
+            .hypervisor
+            .with_vtl2
+            .as_ref()
+            .is_none_or(|c| c.vtl0_alias_map)
+        {
+            if !self.vtl2_nvme_namespaces.is_empty() {
                 anyhow::bail!("must specify --vtl2 and --no-alias-map to offer disks to VTL2");
             }
+        } else {
+            // If VTL2 is being used, always add an NVMe controller, even
+            // if there are no namespaces, to allow for hot-plugging.
+            let (send, recv) = mesh::channel();
             config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: NVME_VTL2_INSTANCE_ID,
@@ -411,9 +419,11 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: Some(recv),
                 }
                 .into_resource(),
             });
+            resources.nvme_vtl2_rpc = Some(send);
         }
 
         let owned_pcie_controllers = std::mem::take(&mut self.pcie_nvme_controllers);
@@ -434,6 +444,7 @@ impl StorageBuilder {
                     namespaces,
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: None,
                 }
                 .into_resource(),
             });
@@ -444,9 +455,11 @@ impl StorageBuilder {
 
     /// Generate VTL2 settings for storage devices offered to the guest via
     /// OpenHCL.
-    pub fn build_underhill(&self) -> Vec<StorageController> {
+    pub fn build_underhill(&self, vmbus_redirect: bool) -> Vec<StorageController> {
         let mut storage_controllers = Vec::new();
-        if !self.underhill_scsi_luns.is_empty() {
+        // Only create a SCSI controller if there are LUNs configured, or if
+        // vmbus redirection is enabled (to allow hot-plugging at runtime).
+        if !self.underhill_scsi_luns.is_empty() || vmbus_redirect {
             let controller = StorageController {
                 instance_id: UNDERHILL_VTL0_SCSI_INSTANCE.to_string(),
                 protocol: storage_controller::StorageProtocol::Scsi.into(),

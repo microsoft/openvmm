@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::*;
+use futures::poll;
 use inspect::InspectMut;
 use mesh::CancelReason;
 use pal_async::DefaultDriver;
@@ -518,6 +519,37 @@ async fn test_save_restore(spawner: DefaultDriver) {
     env.synic.send_message(protocol::RelIdReleased {
         channel_id: ChannelId(1),
     });
+}
+
+#[async_test]
+async fn test_pause_resume(spawner: DefaultDriver) {
+    let mut env = TestEnv::new(spawner);
+    let mut channel = env.offer(1, false).await;
+    env.vmbus.start();
+    env.connect(1, protocol::FeatureFlags::new(), false).await;
+
+    // Create a GPADL for the channel.
+    env.gpadl(1, 10, &mut channel).await;
+
+    // Start tearing it down.
+    env.synic.send_message(protocol::GpadlTeardown {
+        channel_id: ChannelId(1),
+        gpadl_id: GpadlId(10),
+    });
+
+    // Wait for the teardown request here to make sure the server has processed the teardown
+    // message, but do not complete it to leave the gpadl in the tearing down state.
+    let _rpc = channel.get_gpadl_teardown().await;
+    env.vmbus.stop().await;
+    env.vmbus.start();
+
+    // Create a second gpadl for the channel. This will panic with wrong request if the teardown
+    // request was repeated after resume, because it expects the gpadl creation to be the next
+    // request.
+    env.gpadl(1, 20, &mut channel).await;
+
+    // Ensure no other requests are pending.
+    assert!(matches!(poll!(channel.request_recv.next()), Poll::Pending));
 }
 
 struct TestDeviceState {

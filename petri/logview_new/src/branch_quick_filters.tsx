@@ -16,4 +16,5 @@ export const test_filters: string[] = [
     "main",
     "release/1.7.2511",
     "release/2505",
+    "all",
 ];

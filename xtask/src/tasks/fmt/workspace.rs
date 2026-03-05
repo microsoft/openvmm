@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::Xtask;
+use crate::shell::XtaskShell;
 use anyhow::Context;
 use clap::Parser;
 use rayon::prelude::*;
@@ -118,7 +119,7 @@ struct Package {
 }
 
 fn workspace_manifests() -> anyhow::Result<HashSet<PathBuf>> {
-    let json = xshell::Shell::new()?
+    let json = XtaskShell::new()?
         .cmd("cargo")
         .arg("metadata")
         .arg("--no-deps")

@@ -5,11 +5,14 @@
 
 use super::spec;
 use crate::NVME_PAGE_SHIFT;
-use crate::Namespace;
 use crate::NamespaceError;
+use crate::NamespaceHandle;
 use crate::RequestError;
 use crate::driver::save_restore::IoQueueSavedState;
+use crate::namespace::Namespace;
 use crate::queue_pair::AdminAerHandler;
+use crate::queue_pair::DrainAfterRestore;
+use crate::queue_pair::DrainAfterRestoreBuilder;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::MAX_CQ_ENTRIES;
 use crate::queue_pair::MAX_SQ_ENTRIES;
@@ -35,6 +38,7 @@ use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::Weak;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::TaskControl;
@@ -76,15 +80,40 @@ pub struct NvmeDriver<D: DeviceBacking> {
     rescan_notifiers: Arc<RwLock<HashMap<u32, mesh::Sender<()>>>>,
     /// NVMe namespaces associated with this driver. Mapping nsid to NamespaceHandle.
     #[inspect(skip)]
-    namespaces: HashMap<u32, NamespaceHandle>,
+    namespaces: HashMap<u32, WeakOrStrong<Namespace>>,
     /// Keeps the controller connected (CC.EN==1) while servicing.
     nvme_keepalive: bool,
     bounce_buffer: bool,
 }
 
-struct NamespaceHandle {
-    namespace: Arc<Namespace>,
-    in_use: bool,
+/// A container that can hold either a weak or strong reference to a value.
+///
+/// During normal operation, the driver ONLY stores weak references. After restore
+/// strong references are temporarily held until the StorageController retrieves them.
+/// Once retrieved, the strong reference is downgraded to a weak one, resuming
+/// normal behavior.
+enum WeakOrStrong<T> {
+    Weak(Weak<T>),
+    Strong(Arc<T>),
+}
+
+impl<T> WeakOrStrong<T> {
+    /// Returns a strong reference to the underlying value when possible.
+    /// Implicitly downgrades Strong to Weak when this function is invoked.
+    pub fn get_arc(&mut self) -> Option<Arc<T>> {
+        match self {
+            WeakOrStrong::Strong(arc) => {
+                let strong = arc.clone();
+                *self = WeakOrStrong::Weak(Arc::downgrade(arc));
+                Some(strong)
+            }
+            WeakOrStrong::Weak(weak) => weak.upgrade(),
+        }
+    }
+
+    pub fn is_weak(&self) -> bool {
+        matches!(self, WeakOrStrong::Weak(_))
+    }
 }
 
 #[derive(Inspect)]
@@ -115,6 +144,13 @@ struct DriverWorkerTask<D: DeviceBacking> {
     #[inspect(skip)]
     recv: mesh::Receiver<NvmeWorkerRequest>,
     bounce_buffer: bool,
+    /// Shared drain-after-restore barrier builder, present while a drain is
+    /// in progress after restore. Newly created IO queues use this to obtain
+    /// a waiter so they don't accept new guest IO until all pre-save commands
+    /// have drained. Cleared lazily when `create_io_issuer` detects the drain
+    /// has completed, or `None` when the driver was not restored from saved
+    /// state.
+    drain_after_restore_builder: Option<DrainAfterRestoreBuilder>,
 }
 
 #[derive(Inspect)]
@@ -149,10 +185,10 @@ pub enum DeviceError {
     Other(anyhow::Error),
 }
 
-#[derive(Debug, Clone)]
 struct ProtoIoQueue {
     save_state: IoQueueSavedState,
     mem: MemoryBlock,
+    drain_after_restore: DrainAfterRestore,
 }
 
 #[derive(Inspect)]
@@ -176,8 +212,10 @@ impl<D: DeviceBacking> IoQueue<D> {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<D>>,
         mem_block: MemoryBlock,
+        device_id: &str,
         saved_state: &IoQueueSavedState,
         bounce_buffer: bool,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         let IoQueueSavedState {
             cpu,
@@ -189,9 +227,11 @@ impl<D: DeviceBacking> IoQueue<D> {
             interrupt,
             registers.clone(),
             mem_block,
+            device_id,
             queue_data,
             bounce_buffer,
             NoOpAerHandler,
+            drain_after_restore,
         )?;
 
         Ok(Self {
@@ -311,6 +351,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 io_issuers: io_issuers.clone(),
                 recv,
                 bounce_buffer,
+                drain_after_restore_builder: None,
             })),
             admin: None,
             identify: None,
@@ -354,6 +395,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             worker.registers.clone(),
             self.bounce_buffer,
             AdminAerHandler::new(),
+            DrainAfterRestoreBuilder::new_no_drain(),
         )
         .context("failed to create admin queue pair")?;
 
@@ -576,19 +618,23 @@ impl<D: DeviceBacking> NvmeDriver<D> {
     }
 
     /// Gets the namespace with namespace ID `nsid`.
-    pub async fn namespace(&mut self, nsid: u32) -> Result<Arc<Namespace>, NamespaceError> {
-        if let Some(handle) = self.namespaces.get_mut(&nsid) {
-            // After reboot ns will be present but unused.
-            if !handle.in_use {
-                handle.in_use = true;
-                return Ok(handle.namespace.clone());
-            }
+    pub async fn namespace(&mut self, nsid: u32) -> Result<NamespaceHandle, NamespaceError> {
+        if let Some(namespace) = self.namespaces.get_mut(&nsid) {
+            // After restore we will have a strong ref -> downgrade and return.
+            // If we have a weak ref, make sure it is not upgradeable (that means we have a duplicate somewhere).
+            let is_weak = namespace.is_weak(); // This value will change after invoking get_arc().
+            let namespace = namespace.get_arc();
+            if let Some(namespace) = namespace {
+                if is_weak && namespace.check_active().is_ok() {
+                    return Err(NamespaceError::Duplicate(nsid));
+                }
 
-            // Prevent multiple references to the same Namespace.
-            // Allowing this could lead to undefined behavior if multiple components
-            // concurrently read or write to the same namespace. To avoid this,
-            // return an error if the namespace is already requested.
-            return Err(NamespaceError::DuplicateRequest { nsid });
+                tracing::debug!(
+                    "reusing existing namespace nsid={}. This should only happen after restore.",
+                    nsid
+                );
+                return Ok(NamespaceHandle::new(namespace));
+            }
         }
 
         let (send, recv) = mesh::channel::<()>();
@@ -603,18 +649,13 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             )
             .await?,
         );
-        self.namespaces.insert(
-            nsid,
-            NamespaceHandle {
-                namespace: namespace.clone(),
-                in_use: true,
-            },
-        );
+        self.namespaces
+            .insert(nsid, WeakOrStrong::Weak(Arc::downgrade(&namespace)));
 
         // Append the sender to the list of notifiers for this nsid.
         let mut notifiers = self.rescan_notifiers.write();
         notifiers.insert(nsid, send);
-        Ok(namespace)
+        Ok(NamespaceHandle::new(namespace))
     }
 
     /// Returns the number of CPUs that are in fallback mode (that are using a
@@ -655,13 +696,19 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     "saving namespaces",
                 );
                 let mut saved_namespaces = vec![];
-                for (nsid, handle) in self.namespaces.iter() {
-                    saved_namespaces.push(handle.namespace.save().with_context(|| {
-                        format!(
-                            "failed to save namespace nsid {} device {}",
-                            nsid, self.device_id
-                        )
-                    })?);
+                for (nsid, namespace) in self.namespaces.iter_mut() {
+                    let is_weak = namespace.is_weak(); // This value will change after invoking get_arc().
+                    if let Some(ns) = namespace.get_arc()
+                        && ns.check_active().is_ok()
+                        && is_weak
+                    {
+                        saved_namespaces.push(ns.save().with_context(|| {
+                            format!(
+                                "failed to save namespace nsid {} device {}",
+                                nsid, self.device_id
+                            )
+                        })?);
+                    }
                 }
                 Ok(NvmeDriverSavedState {
                     identify_ctrl: spec::IdentifyController::read_from_bytes(
@@ -746,6 +793,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                 io_issuers: io_issuers.clone(),
                 recv,
                 bounce_buffer,
+                drain_after_restore_builder: None, // Updated below after computing drain state.
             })),
             admin: None, // Updated below.
             identify: Some(Arc::new(
@@ -797,9 +845,11 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     interrupt0,
                     registers.clone(),
                     mem_block,
+                    &pci_id,
                     a,
                     bounce_buffer,
                     AdminAerHandler::new(),
+                    DrainAfterRestoreBuilder::new_no_drain(), // admin queue doesn't need draining
                 )
                 .expect("failed to restore admin queue pair")
             })
@@ -852,6 +902,58 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // (1) Restore qid1 and any queues that have pending commands.
         // Interrupt vector 0 is shared between Admin queue and I/O queue #1.
         let mut max_seen_qid = 1;
+        let nonempty_queues = saved_state
+            .worker_data
+            .io
+            .iter()
+            .filter(|q| !q.queue_data.handler_data.pending_cmds.commands.is_empty())
+            .count();
+        tracing::info!(
+            nonempty_queues,
+            ?pci_id,
+            "drain-after-restore initialization"
+        );
+        // This DrainAfterRestore template tracks which IO queues need to be
+        // drained after restore. We initialize it with the number of non-empty queues
+        // we are restoring eagerly here, but all queues (eagerly restored and
+        // lazily restored) will wait for all (non-empty) queues to drain.
+        let drain_after_restore_template =
+            DrainAfterRestoreBuilder::new(nonempty_queues, pci_id.clone());
+
+        // Store the builder in the worker so that any newly created IO queues
+        // (not from saved state) also participate in the drain barrier.
+        worker.drain_after_restore_builder = if nonempty_queues > 0 {
+            Some(drain_after_restore_template.clone())
+        } else {
+            None
+        };
+
+        let proto_queues_count = saved_state
+            .worker_data
+            .io
+            .iter()
+            .filter(|q| {
+                q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+            })
+            .count();
+
+        // Precreate waiters for proto queues and for QID 1 (when empty) before
+        // creating and starting eager queues. This ensures that if all eager
+        // non-empty queues drain before we're able to create the proto queues
+        // (or before QID 1's turn in the loop), they will still receive the
+        // signal and not wait forever.
+        let drain_after_restore_for_proto_queues: Vec<_> = (0..proto_queues_count)
+            .map(|_| drain_after_restore_template.new_self_drained())
+            .collect();
+
+        let mut drain_after_restore_for_qid1 = saved_state
+            .worker_data
+            .io
+            .iter()
+            .find(|q| q.queue_data.qid == 1)
+            .filter(|q| q.queue_data.handler_data.pending_cmds.commands.is_empty())
+            .map(|_| drain_after_restore_template.new_self_drained());
+
         worker.io = saved_state
             .worker_data
             .io
@@ -884,8 +986,16 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     interrupt,
                     registers.clone(),
                     mem_block,
+                    &pci_id,
                     q,
                     bounce_buffer,
+                    if q.queue_data.handler_data.pending_cmds.commands.is_empty() {
+                        drain_after_restore_for_qid1
+                            .take()
+                            .expect("only QID 1 should be empty in eager restore")
+                    } else {
+                        drain_after_restore_template.new_draining()
+                    },
                 )?;
                 tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
                 let issuer = IoIssuer {
@@ -906,7 +1016,8 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .filter(|q| {
                 q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
             })
-            .map(|q| {
+            .zip(drain_after_restore_for_proto_queues)
+            .map(|(q, drain_after_restore)| {
                 // Create a prototype IO queue entry.
                 tracing::info!(
                     qid = q.queue_data.qid,
@@ -927,6 +1038,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     ProtoIoQueue {
                         save_state: q.clone(),
                         mem: mem_block,
+                        drain_after_restore,
                     },
                 )
             })
@@ -951,17 +1063,14 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             let (send, recv) = mesh::channel::<()>();
             this.namespaces.insert(
                 ns.nsid,
-                NamespaceHandle {
-                    namespace: Arc::new(Namespace::restore(
-                        &driver,
-                        admin.issuer().clone(),
-                        recv,
-                        this.identify.clone().unwrap(),
-                        &this.io_issuers,
-                        ns,
-                    )?),
-                    in_use: false,
-                },
+                WeakOrStrong::Strong(Arc::new(Namespace::restore(
+                    &driver,
+                    admin.issuer().clone(),
+                    recv,
+                    this.identify.clone().unwrap(),
+                    &this.io_issuers,
+                    ns,
+                )?)),
             );
             this.rescan_notifiers.write().insert(ns.nsid, send);
         }
@@ -1072,11 +1181,10 @@ impl IoIssuers {
             .await
             .map_err(RequestError::Gone)?;
 
-        Ok(self.per_cpu[cpu as usize]
+        Ok(&self.per_cpu[cpu as usize]
             .get()
             .expect("issuer was set by rpc")
-            .issuer
-            .as_ref())
+            .issuer)
     }
 }
 
@@ -1148,8 +1256,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             interrupt,
             self.registers.clone(),
             proto.mem,
+            &pci_id,
             &proto.save_state,
             self.bounce_buffer,
+            proto.drain_after_restore,
         )
         .with_context(|| format!("failed to restore io queue for {}, cpu {}", pci_id, cpu))?;
 
@@ -1246,6 +1356,14 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             .set(issuer)
             .ok()
             .unwrap();
+
+        // Lazily clear the drain-after-restore builder once draining is done,
+        // to free the shared Arc resources.
+        if let Some(builder) = &self.drain_after_restore_builder {
+            if builder.is_drain_complete() {
+                self.drain_after_restore_builder = None;
+            }
+        }
     }
 
     async fn create_io_queue(
@@ -1270,6 +1388,23 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             .map_interrupt(iv.into(), cpu)
             .map_err(DeviceError::InterruptMapFailure)?;
 
+        // Determine the drain-after-restore state for this new queue. If a
+        // drain is in progress, the queue must wait until all pre-save IOs
+        // complete before accepting new guest IO.
+        let drain_after_restore = match &self.drain_after_restore_builder {
+            Some(builder) => builder.new_for_new_queue(),
+            None => DrainAfterRestoreBuilder::new_no_drain(),
+        };
+
+        if matches!(&drain_after_restore, DrainAfterRestore::SelfDrained { .. }) {
+            tracing::info!(
+                qid,
+                cpu,
+                pci_id = ?self.device.id(),
+                "created io queue in SelfDrained state"
+            );
+        }
+
         let queue = QueuePair::new(
             self.driver.clone(),
             self.device.deref(),
@@ -1280,6 +1415,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             self.registers.clone(),
             self.bounce_buffer,
             NoOpAerHandler,
+            drain_after_restore,
         )
         .map_err(|err| DeviceError::IoQueuePairCreationFailure(err, qid))?;
 
@@ -1368,15 +1504,53 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
         &mut self,
         worker_state: &mut WorkerState,
     ) -> anyhow::Result<NvmeDriverWorkerSavedState> {
+        tracing::info!(pci_id = ?self.device.id(), "saving nvme driver worker state: admin queue");
         let admin = match self.admin.as_ref() {
-            Some(a) => Some(a.save().await?),
-            None => None,
+            Some(a) => match a.save().await {
+                Ok(admin_state) => {
+                    tracing::info!(
+                        pci_id = ?self.device.id(),
+                        id = admin_state.qid,
+                        pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
+                        "saved admin queue",
+                    );
+                    Some(admin_state)
+                }
+                Err(e) => {
+                    tracing::error!(
+                            pci_id = ?self.device.id(),
+                            error = e.as_ref() as &dyn std::error::Error,
+                            "failed to save admin queue",
+                    );
+                    return Err(e);
+                }
+            },
+            None => {
+                tracing::warn!(pci_id = ?self.device.id(), "no admin queue saved");
+                None
+            }
         };
 
-        let io: Vec<IoQueueSavedState> = join_all(self.io.drain(..).map(async |q| q.save().await))
-            .await
+        tracing::info!(pci_id = ?self.device.id(), "saving nvme driver worker state: io queues");
+        let (ok, errs): (Vec<_>, Vec<_>) =
+            join_all(self.io.drain(..).map(async |q| q.save().await))
+                .await
+                .into_iter()
+                .partition(Result::is_ok);
+        if !errs.is_empty() {
+            for e in errs.into_iter().map(Result::unwrap_err) {
+                tracing::error!(
+                    pci_id = ?self.device.id(),
+                    error = e.as_ref() as &dyn std::error::Error,
+                    "failed to save io queue",
+                );
+            }
+            return Err(anyhow::anyhow!("failed to save one or more io queues"));
+        }
+
+        let io: Vec<IoQueueSavedState> = ok
             .into_iter()
-            .flatten()
+            .map(Result::unwrap)
             // Don't forget to include any queues that were saved from a _previous_ save, but were never restored
             // because they didn't see any IO.
             .chain(
@@ -1385,16 +1559,6 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                     .map(|(_cpu, proto_queue)| proto_queue.save_state),
             )
             .collect();
-
-        match admin {
-            None => tracing::warn!(pci_id = ?self.device.id(), "no admin queue saved"),
-            Some(ref admin_state) => tracing::info!(
-                pci_id = ?self.device.id(),
-                id = admin_state.qid,
-                pending_commands_count = admin_state.handler_data.pending_cmds.commands.len(),
-                "saved admin queue",
-            ),
-        }
 
         match io.is_empty() {
             true => tracing::warn!(pci_id = ?self.device.id(), "no io queues saved"),

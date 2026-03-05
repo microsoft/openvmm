@@ -14,7 +14,7 @@ pub use x64::*;
 use std::ffi::c_void;
 use std::fmt::Debug;
 use std::fmt::Display;
-use winapi::shared::ntdef::LUID;
+use windows_sys::Win32::Foundation::LUID;
 
 macro_rules! bitops_base {
     ($t:ty) => {
@@ -36,6 +36,7 @@ macro_rules! bitops_base {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) use bitops_base;
 
 macro_rules! bitops {
@@ -69,6 +70,7 @@ macro_rules! bitops {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
 pub(crate) use bitops;
 
 #[repr(C)]

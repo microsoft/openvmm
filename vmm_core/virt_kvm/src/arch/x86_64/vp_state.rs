@@ -22,10 +22,11 @@ pub struct KvmVpStateAccess<'a> {
 }
 
 impl KvmPartitionInner {
+    #[track_caller]
     pub fn vp_state_access(&self, vp_index: VpIndex) -> KvmVpStateAccess<'_> {
         KvmVpStateAccess {
             partition: self,
-            vp_info: self.vp(vp_index).vp_info,
+            vp_info: self.vp(vp_index).unwrap().vp_info,
         }
     }
 }

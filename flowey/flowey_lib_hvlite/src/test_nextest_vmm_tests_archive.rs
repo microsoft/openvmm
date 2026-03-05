@@ -68,9 +68,8 @@ impl SimpleFlowNode for Node {
         {
             pre_run_deps.push({
                 ctx.emit_rust_step("ensure /dev/kvm is accessible", |_| {
-                    |_| {
-                        let sh = xshell::Shell::new()?;
-                        xshell::cmd!(sh, "sudo chmod a+rw /dev/kvm").run()?;
+                    |rt| {
+                        flowey::shell_cmd!(rt, "sudo chmod a+rw /dev/kvm").run()?;
                         Ok(())
                     }
                 })

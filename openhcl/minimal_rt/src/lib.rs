@@ -11,5 +11,6 @@
 pub mod arch;
 pub mod enlightened_panic;
 pub mod reftime;
-pub mod reloc;
 pub mod rt;
+
+pub use minimal_rt_reloc as reloc;

@@ -288,14 +288,12 @@ enum AzCopyAuthMethod {
 fn download_blobs_from_azure(
     // pass dummy _rt to ensure no-one accidentally calls this at graph
     // resolution time
-    _rt: &mut RustRuntimeServices<'_>,
+    rt: &mut RustRuntimeServices<'_>,
     azcopy_bin: &PathBuf,
     azcopy_auth_method: Option<AzCopyAuthMethod>,
     files_to_download: Vec<(String, u64)>,
     output_folder: &Path,
 ) -> anyhow::Result<()> {
-    let sh = xshell::Shell::new()?;
-
     //
     // Use azcopy to download the files
     //
@@ -314,7 +312,7 @@ fn download_blobs_from_azure(
     });
 
     if let Some(auth_method) = auth_method {
-        sh.set_var("AZCOPY_AUTO_LOGIN_TYPE", auth_method);
+        rt.sh.set_var("AZCOPY_AUTO_LOGIN_TYPE", auth_method);
     }
     // instead of using return codes to signal success/failure,
     // azcopy forces you to parse execution logs in order to find
@@ -323,13 +321,15 @@ fn download_blobs_from_azure(
     // thanks azcopy. very cool.
     //
     // <https://learn.microsoft.com/en-us/azure/storage/common/storage-use-azcopy-configure#review-the-logs-for-errors>
-    sh.set_var("AZCOPY_JOB_PLAN_LOCATION", sh.current_dir());
-    sh.set_var("AZCOPY_LOG_LOCATION", sh.current_dir());
+    let current_dir = rt.sh.current_dir();
+    rt.sh
+        .set_var("AZCOPY_JOB_PLAN_LOCATION", current_dir.clone());
+    rt.sh.set_var("AZCOPY_LOG_LOCATION", current_dir.clone());
 
     // setting `--overwrite true` since we do our own pre-download
     // filtering
-    let result = xshell::cmd!(
-        sh,
+    let result = flowey::shell_cmd!(
+        rt,
         "{azcopy_bin} copy
             {url}
             {output_folder}
@@ -341,17 +341,17 @@ fn download_blobs_from_azure(
     .run();
 
     if result.is_err() {
-        xshell::cmd!(
-            sh,
+        flowey::shell_cmd!(
+            rt,
             "df -h --output=source,fstype,size,used,avail,pcent,target -x tmpfs -x devtmpfs"
         )
         .run()?;
-        let dir_contents = sh.read_dir(sh.current_dir())?;
+        let dir_contents = rt.sh.read_dir(current_dir)?;
         for log in dir_contents
             .iter()
             .filter(|p| p.extension() == Some("log".as_ref()))
         {
-            println!("{}:\n{}\n", log.display(), sh.read_file(log)?);
+            println!("{}:\n{}\n", log.display(), rt.sh.read_file(log)?);
         }
         return result.context("failed to download VMM test disk images");
     }

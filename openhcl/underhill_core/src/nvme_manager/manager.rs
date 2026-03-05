@@ -159,7 +159,7 @@ impl NvmeManager {
 enum Request {
     Inspect(inspect::Deferred),
     ForceLoadDriver(inspect::DeferredUpdate),
-    GetNamespace(Rpc<(String, u32), anyhow::Result<Arc<nvme_driver::Namespace>>>),
+    GetNamespace(Rpc<(String, u32), anyhow::Result<nvme_driver::NamespaceHandle>>),
     Save(Rpc<(), anyhow::Result<NvmeManagerSavedState>>),
     Shutdown {
         span: tracing::Span,
@@ -177,7 +177,7 @@ impl NvmeManagerClient {
         &self,
         pci_id: String,
         nsid: u32,
-    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
+    ) -> anyhow::Result<nvme_driver::NamespaceHandle> {
         self.sender
             .call(Request::GetNamespace, (pci_id.clone(), nsid))
             .instrument(tracing::info_span!(
@@ -382,7 +382,7 @@ impl NvmeManagerWorker {
         pci_id: String,
         nsid: u32,
         context: NvmeWorkerContext,
-    ) -> anyhow::Result<Arc<nvme_driver::Namespace>> {
+    ) -> anyhow::Result<nvme_driver::NamespaceHandle> {
         // If the driver is already created, use it.
         let mut client: Option<NvmeDriverManagerClient> = None;
         {
@@ -557,7 +557,6 @@ mod tests {
     use futures::future::join_all;
     use inspect::Inspect;
     use inspect::InspectionBuilder;
-    use nvme_driver::Namespace;
     use nvme_driver::save_restore::NvmeDriverSavedState;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
@@ -641,7 +640,7 @@ mod tests {
         async fn namespace(
             &mut self,
             _nsid: u32,
-        ) -> Result<Arc<Namespace>, nvme_driver::NamespaceError> {
+        ) -> Result<nvme_driver::NamespaceHandle, nvme_driver::NamespaceError> {
             // Record start time for concurrency analysis
             {
                 let mut start_times = self.namespace_start_times.write();

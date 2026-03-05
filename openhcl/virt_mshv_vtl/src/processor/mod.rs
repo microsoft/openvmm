@@ -1047,11 +1047,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_crash_msr(&self, msr: u32, _vtl: GuestVtl) -> Result<u64, MsrError> {
         let v = match msr {
-            // Reads of CRASH_CTL report our supported capabilities, not the
-            // current value.
+            // Reads of CRASH_CTL report our supported capabilities, not any
+            // previously written value.
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => hvdef::GuestCrashCtl::new()
                 .with_crash_notify(true)
                 .with_crash_message(true)
+                .with_no_crash_dump(true)
+                .with_pre_os_id(0b111)
                 .into(),
             hvdef::HV_X64_MSR_GUEST_CRASH_P0 => self.crash_reg[0],
             hvdef::HV_X64_MSR_GUEST_CRASH_P1 => self.crash_reg[1],
@@ -1368,5 +1370,39 @@ impl<T, B: Backing> hv1_hypercall::ExtendedQueryCapabilities for UhHypercallHand
         // hypercall. Return InvalidHypercallCode as the error status. This is the same as not
         // implementing this at all, but has the advantage of not causing generating error messages.
         Err(HvError::InvalidHypercallCode)
+    }
+}
+
+impl<T, B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, '_, T, B> {
+    fn restore_partition_time(
+        &mut self,
+        partition_id: u64,
+        tsc_sequence: u32,
+        reference_time_in_100_ns: u64,
+        tsc: u64,
+    ) -> hvdef::HvResult<()> {
+        tracelimit::info_ratelimited!(
+            partition_id,
+            tsc_sequence,
+            reference_time_in_100_ns,
+            tsc,
+            "handling restore partition time intercept"
+        );
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidParameter);
+        }
+
+        if let Err(e) = self.vp.partition.hcl.restore_partition_time(
+            tsc_sequence,
+            reference_time_in_100_ns,
+            tsc,
+        ) {
+            tracelimit::error_ratelimited!(
+                error = &e as &dyn std::error::Error,
+                "failed to restore partition time"
+            );
+            return Err(HvError::InvalidParameter);
+        }
+        Ok(())
     }
 }
