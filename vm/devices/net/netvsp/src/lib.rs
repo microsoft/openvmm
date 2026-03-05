@@ -2224,8 +2224,8 @@ impl NvspMessage {
         // Note that vmbus packets are always 8-byte multiples, so round the
         // protocol package size up.
         let len = match self.size {
-            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.next_multiple_of(8) / 8 },
-            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.next_multiple_of(8) / 8 },
+            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.div_ceil(8) },
+            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.div_ceil(8) },
         };
         &self.buf[..len]
     }
