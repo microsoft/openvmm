@@ -729,10 +729,8 @@ fn parse_nic_config(
         instance_id: nic.nic_id.parse().context("invalid instance ID")?,
         mac_address: nic
             .mac_address
-            .parse::<macaddr::MacAddr6>()
-            .context("invalid mac address")?
-            .into_array()
-            .into(),
+            .parse::<net_backend_resources::mac_address::MacAddress>()
+            .context("invalid mac address")?,
         endpoint,
         max_queues: None,
     };
