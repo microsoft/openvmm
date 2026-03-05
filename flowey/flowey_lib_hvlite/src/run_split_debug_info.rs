@@ -46,6 +46,9 @@ impl SimpleFlowNode for Node {
                         Some("binutils-x86-64-linux-gnu"),
                         "x86_64-linux-gnu-objcopy",
                     ),
+                    FlowPlatformLinuxDistro::AzureLinux => {
+                        match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
+                    }
                     FlowPlatformLinuxDistro::Arch => {
                         match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
                     }
@@ -57,9 +60,9 @@ impl SimpleFlowNode for Node {
             CommonArch::Aarch64 => {
                 let pkg = match platform {
                     FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => {
-                            Some("binutils-aarch64-linux-gnu")
-                        }
+                        FlowPlatformLinuxDistro::Fedora
+                        | FlowPlatformLinuxDistro::Ubuntu
+                        | FlowPlatformLinuxDistro::AzureLinux => Some("binutils-aarch64-linux-gnu"),
                         FlowPlatformLinuxDistro::Arch => {
                             match_arch!(
                                 host_arch,

@@ -1,4 +1,12 @@
 #!/bin/sh
 
 script_dir="$(dirname "$0")"
-MUSL_ARCH=aarch64 MUSL_SYSROOT="$AARCH64_SYSROOT" exec "${REALGCC:-aarch64-linux-gnu-gcc}" "$@" -specs "$script_dir/musl-gcc.specs"
+
+# Determine the GCC binary to use.
+# - REALGCC env var takes precedence (explicit override)
+# - aarch64-linux-gnu-gcc (standard cross-compiler prefix)
+if [ -z "$REALGCC" ]; then
+    REALGCC=aarch64-linux-gnu-gcc
+fi
+
+MUSL_ARCH=aarch64 MUSL_SYSROOT="$AARCH64_SYSROOT" exec "$REALGCC" "$@" -specs "$script_dir/musl-gcc.specs"
