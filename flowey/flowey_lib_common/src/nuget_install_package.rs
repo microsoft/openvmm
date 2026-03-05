@@ -1,12 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Install a nuget package
+//! Download NuGet packages using `dotnet restore` with a synthetic `.csproj`.
+//!
+//! On CI (ADO/GitHub), relies on ambient pipeline credentials.
+//! Locally, uses `az account get-access-token` to obtain an Azure DevOps
+//! bearer token, exchanges it for a session token via the Azure DevOps
+//! REST API, and passes it to the credential provider via the
+//! `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` environment variable.
 
-use crate::download_nuget_exe::NugetInstallPlatform;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 pub struct NugetPackage {
@@ -16,7 +20,7 @@ pub struct NugetPackage {
 
 flowey_request! {
     pub enum Request {
-        /// A bundle of packages to install in one nuget invocation
+        /// A bundle of packages to install in one dotnet restore invocation
         Install {
             /// Path to a nuget.config file
             nuget_config_file: ReadVar<PathBuf>,
@@ -30,8 +34,6 @@ flowey_request! {
             /// e.g: requiring that a nuget credentials manager has been installed
             pre_install_side_effects: Vec<ReadVar<SideEffect>>,
         },
-        /// Whether to pass `-NonInteractive` to `nuget install`
-        LocalOnlyInteractive(bool),
     }
 }
 
@@ -48,20 +50,14 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<super::install_nuget_azure_credential_provider::Node>();
-        ctx.import::<super::download_nuget_exe::Node>();
+        ctx.import::<super::install_dotnet_cli::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut interactive = None;
         let mut install = Vec::new();
 
         for request in requests {
             match request {
-                Request::LocalOnlyInteractive(v) => {
-                    same_across_all_reqs("LocalOnlyInteractive", &mut interactive, v)?
-                }
-
                 Request::Install {
                     packages,
                     nuget_config_file,
@@ -76,30 +72,29 @@ impl FlowNode for Node {
             }
         }
 
-        let interactive = if matches!(ctx.backend(), FlowBackend::Ado | FlowBackend::Github) {
-            if interactive.is_some() {
-                anyhow::bail!("can only use `LocalOnlyInteractive` when using the Local backend");
-            }
-            false
-        } else if matches!(ctx.backend(), FlowBackend::Local) {
-            interactive.ok_or(anyhow::anyhow!(
-                "Missing essential request: LocalOnlyInteractive",
-            ))?
-        } else {
-            anyhow::bail!("unsupported backend")
-        };
-
         // -- end of req processing -- //
 
         if install.is_empty() {
             return Ok(());
         }
 
-        // need nuget to be installed
-        let nuget_bin = ctx.reqv(super::download_nuget_exe::Request::NugetBin);
+        Self::emit_dotnet_restore(ctx, install)
+    }
+}
 
-        let nuget_config_platform =
-            ctx.reqv(super::download_nuget_exe::Request::NugetInstallPlatform);
+impl Node {
+    /// Use `dotnet restore` with a synthetic `.csproj` containing
+    /// `PackageDownload` items.
+    ///
+    /// On Local, obtains a session token from `az` CLI and passes it
+    /// to the credential provider via `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS`.
+    /// On CI, relies on ambient pipeline credentials (set by
+    /// `NuGetAuthenticate@1` or equivalent).
+    fn emit_dotnet_restore(
+        ctx: &mut NodeCtx<'_>,
+        install: Vec<InstallRequest>,
+    ) -> anyhow::Result<()> {
+        let dotnet_bin = ctx.reqv(super::install_dotnet_cli::Request::DotnetBin);
 
         for InstallRequest {
             packages,
@@ -108,9 +103,8 @@ impl FlowNode for Node {
             pre_install_side_effects,
         } in install
         {
-            ctx.emit_rust_step("restore nuget packages", |ctx| {
-                let nuget_bin = nuget_bin.clone().claim(ctx);
-                let nuget_config_platform = nuget_config_platform.clone().claim(ctx);
+            ctx.emit_rust_step("restore nuget packages via dotnet restore", |ctx| {
+                let dotnet_bin = dotnet_bin.clone().claim(ctx);
                 let install_dir = install_dir.claim(ctx);
                 pre_install_side_effects.claim(ctx);
 
@@ -121,8 +115,7 @@ impl FlowNode for Node {
                 let nuget_config_file = nuget_config_file.claim(ctx);
 
                 move |rt| {
-                    let nuget_bin = rt.read(nuget_bin);
-                    let nuget_config_platform = rt.read(nuget_config_platform);
+                    let dotnet_bin = rt.read(dotnet_bin);
                     let nuget_config_file = rt.read(nuget_config_file);
                     let install_dir = rt.read(install_dir);
 
@@ -134,71 +127,117 @@ impl FlowNode for Node {
                         pkgmap
                     };
 
-                    // for whatever reason, unlike most other package managers,
-                    // nuget doesn't actually let you pass a list of arbitrary
-                    // packages to restore directly from the CLI. Unless you
-                    // want to constantly re-invoke nuget.exe, you're forced to
-                    // maintain a packages.config.
-                    //
-                    // To work around this, simply generate a packages.config on
-                    // the fly.
-                    let packages_config = {
-                        let mut packages_config = String::new();
-                        let _ =
-                            writeln!(packages_config, r#"<?xml version="1.0" encoding="utf-8"?>"#);
-                        let _ = writeln!(packages_config, r#"<packages>"#);
-                        for NugetPackage { id, version } in packages.keys() {
-                            let _ = writeln!(
-                                packages_config,
-                                r#"  <package id="{}" version="{}" />"#,
-                                id, version
-                            );
-                        }
-                        let _ = writeln!(packages_config, r#"</packages>"#);
-                        packages_config
+                    // Generate a synthetic .csproj with PackageDownload items.
+                    // PackageDownload downloads the nupkg without resolving
+                    // transitive dependencies.
+                    let csproj_content = {
+                        let items: String = packages
+                            .keys()
+                            .map(|NugetPackage { id, version }| {
+                                format!(
+                                    r#"    <PackageDownload Include="{id}" Version="[{version}]" />"#
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
+                        format!(
+r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+{items}
+  </ItemGroup>
+</Project>
+"#
+                        )
                     };
 
-                    log::debug!("generated package.config:\n{}", packages_config);
+                    log::debug!("generated .csproj:\n{}", csproj_content);
 
-                    let packages_config_filepath = PathBuf::from("./packages.config");
+                    // Write the synthetic project to a unique temp directory
+                    // so we don't pollute the repo and avoid collisions
+                    // with concurrent runs. The TempDir is cleaned up on
+                    // drop, even if we bail out early due to an error.
+                    let restore_work_dir = tempfile::tempdir()?;
+                    let restore_work_dir_path = restore_work_dir.path();
 
-                    fs_err::write(&packages_config_filepath, packages_config)?;
+                    let csproj_path = restore_work_dir_path.join("NuGetRestore.csproj");
+                    fs_err::write(&csproj_path, csproj_content)?;
 
-                    // If we're crossing the WSL boundary we need to translate our config paths.
-                    let (packages_config_filepath, config_filepath) =
-                        if crate::_util::running_in_wsl(rt)
-                            && matches!(nuget_config_platform, NugetInstallPlatform::Windows)
-                        {
-                            (
-                                crate::_util::wslpath::linux_to_win(rt, &packages_config_filepath),
-                                crate::_util::wslpath::linux_to_win(rt, &nuget_config_file),
-                            )
-                        } else {
-                            (packages_config_filepath, nuget_config_file)
-                        };
+                    let restore_packages_dir = restore_work_dir_path.join("packages");
+                    fs_err::create_dir_all(&restore_packages_dir)?;
 
-                    // now, run the nuget install command
-                    let non_interactive = (!interactive).then_some("-NonInteractive");
+                    // Copy the nuget.config alongside the .csproj so dotnet
+                    // picks it up automatically, filtering out the
+                    // packages.config-era `repositoryPath` setting.
+                    let local_nuget_config = restore_work_dir_path.join("nuget.config");
+                    let config_content = fs_err::read_to_string(&nuget_config_file)?;
+                    let filtered_config = config_content
+                        .lines()
+                        .filter(|line| {
+                            !line.to_lowercase().contains("key=\"repositorypath\"")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    fs_err::write(&local_nuget_config, &filtered_config)?;
 
-                    // FUTURE: add checks to avoid having to invoke
-                    // nuget at all (a-la the "expected_hashes" in the
-                    // old ci/restore.sh)
-                    flowey::shell_cmd!(
+                    // On the Local backend, obtain an Azure DevOps session
+                    // token from `az` CLI and pass it to the credential
+                    // provider via the VSS_NUGET_EXTERNAL_FEED_ENDPOINTS
+                    // env var (the same mechanism ADO CI uses).
+                    let feed_endpoints_json = if matches!(rt.backend(), FlowBackend::Local) {
+                        get_feed_endpoints_json(rt, &filtered_config)?
+                    } else {
+                        None
+                    };
+
+                    let mut cmd = flowey::shell_cmd!(
                         rt,
-                        "{nuget_bin}
-                                    install
-                                    {non_interactive...}
-                                    -ExcludeVersion
-                                    -OutputDirectory {install_dir}
-                                    -ConfigFile {config_filepath}
-                                    {packages_config_filepath}
-                                "
-                    )
-                    .run()?;
+                        "{dotnet_bin} restore {csproj_path} --packages {restore_packages_dir}"
+                    );
+                    if let Some(json) = &feed_endpoints_json {
+                        cmd = cmd.env("VSS_NUGET_EXTERNAL_FEED_ENDPOINTS", json);
+                    }
+                    cmd.run()?;
+
+                    // Post-process: flatten from the dotnet restore layout
+                    // ({id_lower}/{version}/) into the expected layout
+                    // ({original_case_id}/) in install_dir.
+                    //
+                    // dotnet restore stores packages with lowercased IDs, but
+                    // downstream code expects original-case directory names.
+                    fs_err::create_dir_all(&install_dir)?;
 
                     for (package, package_out_dir) in packages {
+                        let pkg_id_lower = package.id.to_lowercase();
+                        let version_lower = package.version.to_lowercase();
+                        let src_dir = restore_packages_dir
+                            .join(&pkg_id_lower)
+                            .join(&version_lower);
+
+                        let dest_dir = install_dir.join(&package.id);
+
+                        if dest_dir.exists() {
+                            // Remove any previous version.
+                            fs_err::remove_dir_all(&dest_dir)?;
+                        }
+
+                        if src_dir.exists() {
+                            move_dir(&src_dir, &dest_dir)?;
+                        } else {
+                            anyhow::bail!(
+                                "Package '{}' version '{}' was not found in restore output at '{}'",
+                                package.id,
+                                package.version,
+                                src_dir.display()
+                            );
+                        }
+
+                        let dest_abs = dest_dir.absolute()?;
                         for var in package_out_dir {
-                            rt.write(var, &install_dir.join(&package.id).absolute()?);
+                            rt.write(var, &dest_abs);
                         }
                     }
 
@@ -209,4 +248,185 @@ impl FlowNode for Node {
 
         Ok(())
     }
+}
+
+/// Obtain an Azure DevOps session token via `az` CLI and build the
+/// `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` JSON for the credential provider.
+///
+/// This uses the same env var that ADO's `NuGetAuthenticate@1` task sets
+/// in CI pipelines — the credential provider reads it and supplies the
+/// credentials to `dotnet restore` transparently.
+///
+/// Why not just let the credential provider authenticate interactively?
+/// Because many orgs enforce Conditional Access Policies that block MSAL
+/// interactive auth from non-compliant devices (like WSL). The `az` CLI
+/// works because it runs on the Windows host (via WSL interop), which is
+/// already authenticated and compliant.
+///
+/// The flow:
+/// 1. `az account get-access-token --resource 499b84ac-...` → JWT bearer
+/// 2. Exchange the JWT for a session token via the Azure DevOps REST API
+/// 3. Build the `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` JSON with the token
+///
+/// Returns `None` if no package sources are found in the nuget.config.
+fn get_feed_endpoints_json(
+    rt: &mut RustRuntimeServices<'_>,
+    config_content: &str,
+) -> anyhow::Result<Option<String>> {
+    let feed_urls = parse_nuget_feed_urls(config_content);
+    if feed_urls.is_empty() {
+        log::info!("no package sources found in nuget.config, skipping auth");
+        return Ok(None);
+    }
+
+    // 1. Get a bearer token from az CLI.
+    // The resource ID 499b84ac-1321-427f-aa17-267ca6975798 is Azure DevOps.
+    let bearer_token = flowey::shell_cmd!(
+        rt,
+        "az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv"
+    )
+    .read()
+    .map_err(|e| anyhow::anyhow!(
+        "failed to get Azure DevOps access token from `az` CLI. \
+         Ensure you are logged in with `az login`. Error: {e}"
+    ))?;
+
+    if bearer_token.is_empty() {
+        anyhow::bail!(
+            "az CLI returned an empty access token. \
+             Ensure you are logged in with `az login`."
+        );
+    }
+
+    // 2. Exchange the bearer token for a short-lived session token.
+    // Session tokens work with NuGet's Basic auth (unlike JWT bearer tokens).
+    let session_token_body = serde_json::json!({
+        "scope": "vso.packaging",
+        "displayName": "flowey-nuget-restore",
+    });
+
+    let session_response = flowey::shell_cmd!(
+        rt,
+        "curl -s --fail -X POST https://app.vssps.visualstudio.com/_apis/token/sessiontokens?api-version=5.0-preview.1 -H Content-Type:application/json"
+    )
+    .arg("-H")
+    .arg(format!("Authorization: Bearer {bearer_token}"))
+    .arg("-d")
+    .arg(session_token_body.to_string())
+    .secret()
+    .read()
+    .map_err(|e| anyhow::anyhow!("failed to exchange bearer token for session token: {e}"))?;
+
+    let session_json: serde_json::Value = serde_json::from_str(&session_response)
+        .map_err(|_| anyhow::anyhow!("failed to parse session token response from Azure DevOps"))?;
+
+    let session_token = session_json["token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("session token response missing 'token' field"))?;
+
+    log::info!("obtained Azure DevOps session token for nuget auth");
+
+    // 3. Build the VSS_NUGET_EXTERNAL_FEED_ENDPOINTS JSON.
+    // This is the same format that NuGetAuthenticate@1 uses in ADO CI.
+    // Only include Azure DevOps feeds — avoid sending the session token
+    // to public or third-party NuGet sources (e.g. nuget.org).
+    let ado_feeds: Vec<&String> = feed_urls
+        .iter()
+        .filter(|url| is_azure_devops_feed(url))
+        .collect();
+
+    if ado_feeds.is_empty() {
+        log::info!("no Azure DevOps feeds found in nuget.config, skipping auth");
+        return Ok(None);
+    }
+
+    let endpoints: Vec<serde_json::Value> = ado_feeds
+        .iter()
+        .map(|url| {
+            serde_json::json!({
+                "endpoint": url,
+                "password": session_token,
+            })
+        })
+        .collect();
+
+    let feed_json = serde_json::json!({
+        "endpointCredentials": endpoints,
+    })
+    .to_string();
+
+    Ok(Some(feed_json))
+}
+
+/// Move a directory, falling back to recursive copy + delete if rename fails
+/// (e.g. across filesystem boundaries where rename returns EXDEV).
+fn move_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
+    match fs_err::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // rename(2) fails with EXDEV (errno 18 on Linux, error 17 on
+            // Windows) when src and dest are on different filesystems.
+            // Fall back to a recursive copy + delete.
+            log::debug!(
+                "rename failed ({}), falling back to copy+delete for {}",
+                e,
+                src.display()
+            );
+            copy_dir_all(src, dest)?;
+            fs_err::remove_dir_all(src)?;
+            Ok(())
+        }
+    }
+}
+
+/// Recursively copy a directory tree.
+fn copy_dir_all(src: &Path, dest: &Path) -> anyhow::Result<()> {
+    fs_err::create_dir_all(dest)?;
+    for entry in fs_err::read_dir(src)? {
+        let entry = entry?;
+        let dest_path = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &dest_path)?;
+        } else {
+            fs_err::copy(entry.path(), &dest_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// Check whether a feed URL is an Azure DevOps Artifacts feed.
+fn is_azure_devops_feed(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    lower.contains("pkgs.dev.azure.com") || lower.contains(".pkgs.visualstudio.com")
+}
+
+/// Parse `<packageSources>` from nuget.config XML and return the feed URLs.
+fn parse_nuget_feed_urls(config_content: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    let mut in_package_sources = false;
+    for line in config_content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<packageSources") {
+            in_package_sources = true;
+            continue;
+        }
+        if trimmed.starts_with("</packageSources") {
+            in_package_sources = false;
+            continue;
+        }
+        if !in_package_sources {
+            continue;
+        }
+        // Match lines like: <add key="DepsFeed" value="https://..." />
+        if trimmed.starts_with("<add ") && trimmed.contains("value=\"") {
+            if let Some(val_start) = trimmed.find("value=\"") {
+                let after_val = &trimmed[val_start + 7..];
+                if let Some(val_end) = after_val.find('"') {
+                    let url = &after_val[..val_end];
+                    urls.push(url.to_string());
+                }
+            }
+        }
+    }
+    urls
 }
