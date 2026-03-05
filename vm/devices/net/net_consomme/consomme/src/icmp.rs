@@ -10,6 +10,7 @@ use super::ConsommeState;
 use super::DropReason;
 use crate::ChecksumState;
 use crate::Ipv4Addresses;
+use crate::MIN_MTU;
 
 use inspect::Inspect;
 use inspect_counters::Counter;
@@ -22,6 +23,9 @@ use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::Icmpv4Message;
+use smoltcp::wire::Icmpv4Packet;
+use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
 use socket2::Domain;
 use socket2::Protocol;
@@ -151,6 +155,66 @@ impl<T: Client> Access<'_, T> {
         }
     }
 
+    /// Handle an ICMP echo request destined for the gateway IP by
+    /// generating a reply directly, without involving a host socket.
+    /// This allows the guest to measure VMM round-trip latency via ping.
+    fn handle_icmp_gateway_echo(
+        &mut self,
+        frame: &EthernetRepr,
+        addresses: &Ipv4Addresses,
+        payload: &[u8],
+    ) -> Result<(), DropReason> {
+        if payload.len() < ICMPV4_HEADER_LEN {
+            return Err(DropReason::MalformedPacket);
+        }
+
+        let icmp_packet = Icmpv4Packet::new_unchecked(payload);
+        if icmp_packet.msg_type() != Icmpv4Message::EchoRequest {
+            // The gateway only responds to echo requests; silently drop
+            // anything else (e.g. timestamp, info request).
+            return Ok(());
+        }
+
+        let icmp_len = payload.len();
+        let ipv4_total_len = IPV4_HEADER_LEN + icmp_len;
+        let eth_total_len = ETHERNET_HEADER_LEN + ipv4_total_len;
+        if eth_total_len > MIN_MTU {
+            return Err(DropReason::MalformedPacket);
+        }
+
+        let mut buffer = [0u8; MIN_MTU];
+
+        // Ethernet header
+        let mut eth = EthernetFrame::new_unchecked(&mut buffer[..]);
+        eth.set_ethertype(EthernetProtocol::Ipv4);
+        eth.set_src_addr(self.inner.state.params.gateway_mac);
+        eth.set_dst_addr(frame.src_addr);
+
+        // IPv4 header (buffer is zeroed, so fields like dscp/ecn/ident/frag are
+        // already correct).
+        let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
+        ipv4.set_version(4);
+        ipv4.set_header_len(IPV4_HEADER_LEN as u8);
+        ipv4.set_total_len(ipv4_total_len as u16);
+        ipv4.set_dont_frag(true);
+        ipv4.set_hop_limit(64);
+        ipv4.set_next_header(IpProtocol::Icmp);
+        ipv4.set_src_addr(self.inner.state.params.gateway_ip);
+        ipv4.set_dst_addr(addresses.src_addr);
+        ipv4.fill_checksum();
+
+        // ICMP echo reply — copy the request payload and change the type.
+        let icmp_buf = &mut ipv4.payload_mut()[..icmp_len];
+        icmp_buf.copy_from_slice(payload);
+        let mut icmp_reply = Icmpv4Packet::new_unchecked(icmp_buf);
+        icmp_reply.set_msg_type(Icmpv4Message::EchoReply);
+        icmp_reply.fill_checksum();
+
+        self.client
+            .recv(&buffer[..eth_total_len], &ChecksumState::NONE);
+        Ok(())
+    }
+
     pub(crate) fn handle_icmp(
         &mut self,
         frame: &EthernetRepr,
@@ -159,7 +223,13 @@ impl<T: Client> Access<'_, T> {
         _checksum: &ChecksumState,
         hop_limit: u8,
     ) -> Result<(), DropReason> {
-        let icmp_packet = smoltcp::wire::Icmpv4Packet::new_unchecked(payload);
+        // Respond to pings aimed at the gateway directly, giving the guest
+        // a way to measure VMM round-trip time without host socket overhead.
+        if addresses.dst_addr == self.inner.state.params.gateway_ip {
+            return self.handle_icmp_gateway_echo(frame, addresses, payload);
+        }
+
+        let icmp_packet = Icmpv4Packet::new_unchecked(payload);
         let guest_addr = SocketAddrV4::new(addresses.src_addr, 0);
 
         let entry = self.inner.icmp.connections.entry(guest_addr);
