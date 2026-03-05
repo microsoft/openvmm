@@ -7,6 +7,9 @@
 mod buffers;
 pub mod resolver;
 
+#[cfg(test)]
+mod tests;
+
 // use anyhow::Context;
 use crate::buffers::VirtioWorkPool;
 use bitfield_struct::bitfield;
