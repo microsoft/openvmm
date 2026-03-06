@@ -100,7 +100,10 @@ impl GenericPcieRootComplex {
         ecam_range: MemoryRange,
         ports: Vec<GenericPcieRootPortDefinition>,
     ) -> Self {
-        assert!(ecam_size_from_bus_numbers(start_bus, end_bus) == ecam_range.len());
+        assert_eq!(
+            ecam_size_from_bus_numbers(start_bus, end_bus),
+            ecam_range.len()
+        );
 
         let mut ecam = register_mmio.new_io_region("ecam", ecam_range.len());
         ecam.map(ecam_range.start());

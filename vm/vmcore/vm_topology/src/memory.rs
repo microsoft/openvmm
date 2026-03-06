@@ -332,13 +332,15 @@ impl MemoryLayout {
 
     /// One past the last byte of RAM, MMIO, PCI ECAM, or PCI MMIO.
     pub fn end_of_layout(&self) -> u64 {
-        std::cmp::max(
-            std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram()),
-            std::cmp::max(
-                self.pci_ecam.last().map(|r| r.end()).unwrap_or(0),
-                self.pci_mmio.last().map(|r| r.end()).unwrap_or(0),
-            ),
-        )
+        [
+            self.mmio.last().expect("mmio set").end(),
+            self.end_of_ram(),
+            self.pci_ecam.last().map(|r| r.end()).unwrap_or(0),
+            self.pci_mmio.last().map(|r| r.end()).unwrap_or(0),
+        ]
+        .into_iter()
+        .max()
+        .unwrap()
     }
 
     /// Probe a given address to see if it is in the memory layout described by
