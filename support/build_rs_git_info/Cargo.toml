@@ -2,15 +2,12 @@
 # Licensed under the MIT License.
 
 [package]
-name = "build_info"
+name = "build_rs_git_info"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-inspect.workspace = true
-
-[build-dependencies]
-build_rs_git_info.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true

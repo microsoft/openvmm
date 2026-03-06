@@ -401,8 +401,15 @@ dependencies = [
 name = "build_info"
 version = "0.0.0"
 dependencies = [
+ "build_rs_git_info",
  "inspect",
- "vergen",
+]
+
+[[package]]
+name = "build_rs_git_info"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
 ]
 
 [[package]]
@@ -7575,7 +7582,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
 dependencies = [
  "deranged",
- "itoa",
  "libc",
  "num-conv",
  "num_threads",
@@ -8352,6 +8358,7 @@ name = "underhill_crash"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "build_rs_git_info",
  "fs-err",
  "futures",
  "get_protocol",
@@ -8362,7 +8369,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "underhill_confidentiality",
- "vergen",
  "vmbus_async",
  "vmbus_user_channel",
  "zerocopy",
@@ -8400,13 +8406,13 @@ name = "underhill_init"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "build_rs_git_info",
  "fs-err",
  "kmsg_defs",
  "libc",
  "log",
  "nix 0.30.1",
  "underhill_confidentiality",
- "vergen",
  "walkdir",
 ]
 
@@ -8589,18 +8595,6 @@ name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
-
-[[package]]
-name = "vergen"
-version = "8.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2990d9ea5967266ea0ccf413a4aa5c42a93dbcfda9cb49a97de6931726b12566"
-dependencies = [
- "anyhow",
- "cfg-if",
- "rustversion",
- "time",
-]
 
 [[package]]
 name = "version_check"
