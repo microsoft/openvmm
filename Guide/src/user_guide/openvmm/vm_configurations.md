@@ -78,9 +78,10 @@ cargo run -- \
 ```
 
 ```admonish note
-PCAT (BIOS) boot with OpenHCL on openvmm is not well tested. On Hyper-V, PCAT
-firmware is provided by the host — the IGVM does not bundle it. If you need
-Gen1-style boot with OpenHCL, use Hyper-V rather than openvmm standalone.
+OpenVMM does not currently support OpenHCL with PCAT (Gen1-style) boot.
+OpenHCL + PCAT is supported on Hyper-V, where the host provides the PCAT
+firmware. If you need Gen1-style boot with OpenHCL, use
+[Hyper-V](../openhcl/run/hyperv.md) rather than openvmm standalone.
 ```
 
 See [Running OpenHCL with OpenVMM](../openhcl/run/openvmm.md)
