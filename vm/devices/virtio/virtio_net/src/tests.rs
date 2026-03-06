@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(test)]
-
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -62,8 +60,8 @@ const TX_USED_ADDR: u64 = 0x12000;
 const DATA_BASE: u64 = 0x20000;
 const TOTAL_MEM_SIZE: usize = 0x30000;
 
-// Virtio-net header size (offset_of!(VirtioNetHeader, hash_value) = 12)
-const NET_HEADER_SIZE: u32 = 12;
+// Virtio-net header size, derived from the actual layout.
+const NET_HEADER_SIZE: u32 = crate::header_size() as u32;
 
 // --- Simplified segment info for assertions ---
 
@@ -142,8 +140,8 @@ impl net_backend::Queue for MockQueue {
     fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
         let mut ready = self.rx_ready.lock();
         let n = ready.len().min(packets.len());
-        for i in 0..n {
-            packets[i] = ready.pop_front().unwrap();
+        for packet in packets.iter_mut().take(n) {
+            *packet = ready.pop_front().unwrap();
         }
         Ok(n)
     }
@@ -396,7 +394,7 @@ fn init_used_ring(mem: &GuestMemory, used_addr: u64) {
     mem.write_at(used_addr + 2, &0u16.to_le_bytes()).unwrap(); // idx
 }
 
-/// Post a TX packet as a descriptor chain. Returns the head descriptor index.
+/// Post a TX packet as a descriptor chain.
 ///
 /// The first descriptor covers the virtio-net header. Subsequent descriptors
 /// cover data segments. All descriptors are chained via the `next` field.
@@ -407,7 +405,6 @@ fn post_tx_packet(
     header_len: u32,
     data_segments: &[(u64, u32)],
 ) {
-    let total_descs = 1 + data_segments.len();
     // Write header descriptor
     let has_next = !data_segments.is_empty();
     let header_flags = DescriptorFlags::new().with_next(has_next);
@@ -430,7 +427,6 @@ fn post_tx_packet(
         let next = if is_last { 0 } else { desc_idx + 1 };
         write_descriptor(mem, TX_DESC_ADDR, desc_idx, gpa, len, flags, next);
     }
-    let _ = total_descs;
 }
 
 /// Make a descriptor index available in the avail ring and bump the index.
@@ -585,14 +581,12 @@ impl TestHarness {
         self.device.enable(resources);
 
         // Wait for the mock endpoint to provide a queue handle
-        let handle = mesh::CancelContext::new()
+        mesh::CancelContext::new()
             .with_timeout(Duration::from_secs(5))
             .until_cancelled(self.queue_handle_rx.next())
             .await
             .expect("timed out waiting for mock queue handle")
-            .expect("channel closed");
-
-        handle
+            .expect("channel closed")
     }
 
     /// Allocate a data region in guest memory and return its GPA.
@@ -801,7 +795,7 @@ async fn three_sequential_sync_packets(driver: DefaultDriver) {
 }
 
 /// Partial submit with multiple packets — Phase 2 contract test.
-#[ignore]
+#[ignore = "requires partial-consume backend support not yet implemented"]
 #[async_test]
 async fn partial_submit_multi_packet(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
