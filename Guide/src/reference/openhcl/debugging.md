@@ -61,7 +61,7 @@ init crashes.
 ## Enabling COM3 on Hyper-V
 
 COM3 support requires a host OS build that includes the `EnableAdditionalComPorts`
-code path. This was added in Windows builds based on `br_release` (build 28000+).
+code path. This was added in Windows 11 26H1 (build 28000+, Insider Canary channel).
 It is **not available** on Windows 11 24H2, 25H2, or Windows Server 2025.
 
 To enable COM3 on a supported build:
@@ -85,14 +85,20 @@ tests, you'll be prompted to allow the registry change.
 
 ## Recommended host OS for OpenHCL development
 
-We recommend running a **Windows Insider flight** (Canary channel, build 28000+)
-on your development machine. This gives you COM3 support via the registry key
-above, plus access to the latest Hyper-V features. This matches the OS used on
-the project's self-hosted CI runners.
+We recommend running a **Windows 11 26H1** Insider flight (Canary channel,
+build 28000+) on your development machine, if it is available for your device.
+This gives you COM3 support via the registry key above, plus access to the
+latest Hyper-V features. This matches the OS used on the project's self-hosted
+CI runners.
+
+Note that 26H1 Insider builds may not be available for all hardware — see
+[What to know about Windows 11 version 26H1](https://techcommunity.microsoft.com/blog/windows-itpro-blog/what-to-know-about-windows-11-version-26h1/4491941)
+for details and the
+[Windows Insider Flight Hub](https://learn.microsoft.com/en-us/windows-insider/flight-hub/)
+for availability.
 
 If you're on Windows 11 24H2/25H2 (builds 26100/26200), COM3 is not available
-via the registry key. Use `ohcldiag-dev` for kernel logs instead, or install an
-Insider build.
+via the registry key. Use `ohcldiag-dev` for kernel logs instead.
 
 ## ARM64 limitation
 
