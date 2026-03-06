@@ -31,12 +31,12 @@ impl BuildInfo {
         // structure to be closer to PODs.
         Self {
             crate_name: env!("CARGO_PKG_NAME"),
-            revision: if let Some(r) = option_env!("VERGEN_GIT_SHA") {
+            revision: if let Some(r) = option_env!("BUILD_GIT_SHA") {
                 r
             } else {
                 ""
             },
-            branch: if let Some(b) = option_env!("VERGEN_GIT_BRANCH") {
+            branch: if let Some(b) = option_env!("BUILD_GIT_BRANCH") {
                 b
             } else {
                 ""

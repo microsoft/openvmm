@@ -95,6 +95,7 @@ pipette_protocol = { path = "petri/pipette_protocol" }
 
 # support crates
 address_filter = { path = "support/address_filter" }
+build_rs_git_info = { path = "support/build_rs_git_info" }
 arc_cyclic_builder = { path = "support/arc_cyclic_builder" }
 atomic_ringbuf = { path = "support/atomic_ringbuf" }
 cache_topology = { path = "support/cache_topology" }
@@ -553,7 +554,6 @@ typed-path = "0.11"
 uefi = "0.35.0"
 unicycle = "0.10.2"
 urlencoding = "2.1.3"
-vergen = "8.2"
 vfio-bindings = "0.4.0"
 walkdir = "2.3"
 wchar = "0.11"
