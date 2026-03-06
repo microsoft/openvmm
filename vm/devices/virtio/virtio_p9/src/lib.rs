@@ -9,6 +9,7 @@ pub mod resolver;
 
 use async_trait::async_trait;
 use guestmem::GuestMemory;
+use inspect::InspectMut;
 use pal_async::task::Spawn;
 use plan9::Plan9FileSystem;
 use std::sync::Arc;
@@ -28,12 +29,17 @@ const VIRTIO_DEVICE_TYPE_9P_TRANSPORT: u16 = 9;
 
 const VIRTIO_9P_F_MOUNT_TAG: u32 = 1;
 
+#[derive(InspectMut)]
 pub struct VirtioPlan9Device {
+    #[inspect(skip)]
     fs: Arc<Plan9FileSystem>,
+    #[inspect(skip)]
     tag: Vec<u8>,
     memory: GuestMemory,
     driver: VmTaskDriver,
+    #[inspect(skip)]
     worker: Option<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
+    #[inspect(skip)]
     exit_event: event_listener::Event,
 }
 

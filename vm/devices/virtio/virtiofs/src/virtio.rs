@@ -1,13 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
-
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
+use inspect::InspectMut;
 use pal_async::task::Spawn;
 use std::io;
 use std::io::Write;
@@ -39,16 +38,22 @@ struct VirtioFsDeviceConfig {
 }
 
 /// A virtio-fs PCI device.
+#[derive(InspectMut)]
 pub struct VirtioFsDevice {
     name: Box<str>,
 
     driver: VmTaskDriver,
+    #[inspect(skip)]
     config: VirtioFsDeviceConfig,
     memory: GuestMemory,
+    #[inspect(skip)]
     fs: Arc<fuse::Session>,
+    #[inspect(skip)]
     workers: Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
+    #[inspect(skip)]
     exit_event: event_listener::Event,
     shmem_size: u64,
+    #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
 }
 

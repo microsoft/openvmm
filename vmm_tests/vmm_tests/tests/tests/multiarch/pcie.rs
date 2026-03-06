@@ -3,6 +3,8 @@
 
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
+use memory_range::MemoryRange;
+use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use petri::PetriVmBuilder;
@@ -111,18 +113,32 @@ async fn parse_guest_pci_devices(
     // uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const ECAM_SIZE: u64 = 256 * 1024 * 1024; // 256 MB
+    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
+
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
         .modify_backend(|b| {
             b.with_custom_config(|c| {
+                let low_mmio_start = c.memory.mmio_gaps[0].start();
+                let high_mmio_end = c.memory.mmio_gaps[1].end();
+                let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
+                let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
+                let ecam_range =
+                    MemoryRange::new(DEFAULT_PCIE_ECAM_BASE..DEFAULT_PCIE_ECAM_BASE + ECAM_SIZE);
+                c.memory.pci_ecam_gaps.push(ecam_range);
+                c.memory.pci_mmio_gaps.push(pcie_low);
+                c.memory.pci_mmio_gaps.push(pcie_high);
                 c.pcie_root_complexes.push(PcieRootComplexConfig {
                     index: 0,
                     name: "rc0".into(),
                     segment: 0,
                     start_bus: 0,
                     end_bus: 255,
-                    low_mmio_size: 1024 * 1024,
-                    high_mmio_size: 1024 * 1024 * 1024,
+                    ecam_range,
+                    low_mmio: pcie_low,
+                    high_mmio: pcie_high,
                     ports: vec![
                         PcieRootPortConfig {
                             name: "rp0".into(),

@@ -6,6 +6,7 @@
 
 - [OpenVMM](./user_guide/openvmm.md)
   - [Running OpenVMM](./user_guide/openvmm/run.md)
+  - [VM Configurations](./user_guide/openvmm/vm_configurations.md)
   - [Troubleshooting](./user_guide/openvmm/troubleshooting.md)
   - [Next Steps](./user_guide/openvmm/next_steps.md)
 - [OpenHCL](./user_guide/openhcl.md)
@@ -27,6 +28,7 @@
     - [Building a Custom Kernel](./dev_guide/getting_started/build_ohcl_kernel.md)
   - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
   - [Cross Compiling for Windows](./dev_guide/getting_started/cross_compile.md)
+  - [Running from WSL2](./dev_guide/getting_started/running_from_wsl.md)
 - [Testing](./dev_guide/tests.md)
   - [Unit Tests](./dev_guide/tests/unit.md)
   - [VMM Tests](./dev_guide/tests/vmm.md)
@@ -57,6 +59,7 @@
   - [Submitting Changes](./dev_guide/contrib/pr.md)
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
+  - [Style Guide](./dev_guide/contrib/style_guide.md)
 
 # Reference
 
@@ -75,6 +78,7 @@
     - [Network packet capture (PCAP)](./reference/openhcl/diag/ohcldiag_dev/pcap.md)
     - [Performance analysis](./reference/openhcl/diag/ohcldiag_dev/perf.md)
     - [Tracing](./reference/openhcl/diag/tracing.md)
+  - [Debugging](./reference/openhcl/debugging.md)
 - [Developer Features]()
   - [Hardware Debugging (gdbstub)](./reference/dev_feats/gdbstub.md)
   - [Kernel Debugging (KDNET)](./reference/dev_feats/kdnet.md)

@@ -9,6 +9,7 @@ pub mod resolver;
 use anyhow::Context;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
+use inspect::InspectMut;
 use pal_async::task::Spawn;
 use std::fs;
 use std::sync::Arc;
@@ -25,14 +26,18 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
+#[derive(InspectMut)]
 pub struct Device {
     driver: VmTaskDriver,
     file: Arc<fs::File>,
+    #[inspect(skip)]
     mappable: sparse_mmap::Mappable,
     len: u64,
     writable: bool,
+    #[inspect(skip)]
     worker: Option<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
     memory: GuestMemory,
+    #[inspect(skip)]
     exit_event: event_listener::Event,
 }
 

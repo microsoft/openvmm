@@ -30,6 +30,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
+use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::task::Spawn;
@@ -778,6 +779,8 @@ struct VirtioPciTestDevice {
 
 type TestDeviceQueueWorkFn = Arc<dyn Fn(u16, VirtioQueueCallbackWork) + Send + Sync>;
 
+#[derive(InspectMut)]
+#[inspect(skip)]
 struct TestDevice {
     traits: DeviceTraits,
     queue_work: Option<TestDeviceQueueWorkFn>,
