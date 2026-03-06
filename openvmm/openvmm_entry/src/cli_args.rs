@@ -648,8 +648,8 @@ Examples:
     --pcie-remote rc0rp0,hu=1,controller=0
 
     # Multiple devices on different ports
-    --pcie-remote rc0rp0,socket=/tmp/dev0.sock
-    --pcie-remote rc0rp1,socket=/tmp/dev1.sock
+    --pcie-remote rc0rp0,socket=0.0.0.0:48914
+    --pcie-remote rc0rp1,socket=0.0.0.0:48915
 
 Syntax: <port_name>[,opt=arg,...]
 
@@ -2487,18 +2487,18 @@ mod tests {
             PcieRemoteCli::from_str("rc0rp0").unwrap(),
             PcieRemoteCli {
                 port_name: "rc0rp0".to_string(),
-                socket_path: None,
+                socket_addr: None,
                 hu: 0,
                 controller: 0,
             }
         );
 
-        // With socket path
+        // With socket address
         assert_eq!(
-            PcieRemoteCli::from_str("rc0rp0,socket=/tmp/custom.sock").unwrap(),
+            PcieRemoteCli::from_str("rc0rp0,socket=localhost:22567").unwrap(),
             PcieRemoteCli {
                 port_name: "rc0rp0".to_string(),
-                socket_path: Some("/tmp/custom.sock".to_string()),
+                socket_addr: Some("localhost:22567".to_string()),
                 hu: 0,
                 controller: 0,
             }
@@ -2506,10 +2506,10 @@ mod tests {
 
         // With all options
         assert_eq!(
-            PcieRemoteCli::from_str("myport,socket=/tmp/dev.sock,hu=1,controller=2").unwrap(),
+            PcieRemoteCli::from_str("myport,socket=localhost:22568,hu=1,controller=2").unwrap(),
             PcieRemoteCli {
                 port_name: "myport".to_string(),
-                socket_path: Some("/tmp/dev.sock".to_string()),
+                socket_addr: Some("localhost:22568".to_string()),
                 hu: 1,
                 controller: 2,
             }
@@ -2520,7 +2520,7 @@ mod tests {
             PcieRemoteCli::from_str("port0,hu=5,controller=3").unwrap(),
             PcieRemoteCli {
                 port_name: "port0".to_string(),
-                socket_path: None,
+                socket_addr: None,
                 hu: 5,
                 controller: 3,
             }

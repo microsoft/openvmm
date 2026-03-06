@@ -12,10 +12,6 @@ use vm_resource::kind::PciDeviceHandleKind;
 /// Default TCP address for PCIe remote device communication.
 pub const DEFAULT_SOCKET_ADDR: &str = "localhost:48914";
 
-/// Deprecated alias for [`DEFAULT_SOCKET_ADDR`].
-#[deprecated(note = "renamed to DEFAULT_SOCKET_ADDR")]
-pub const DEFAULT_SOCKET_PATH: &str = DEFAULT_SOCKET_ADDR;
-
 /// Handle for a PCIe remote device.
 ///
 /// This device acts as a generic PCIe proxy, forwarding all PCIe operations
