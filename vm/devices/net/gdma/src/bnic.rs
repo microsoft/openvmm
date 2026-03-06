@@ -239,6 +239,9 @@ impl BasicNic {
                     max_num_vports: self.vports.len() as u16,
                     reserved: 0,
                     max_num_eqs: 64,
+                    adapter_mtu: 0,
+                    reserved2: 0,
+                    adapter_link_speed_mbps: 0,
                 };
 
                 write.write(resp.as_bytes())?;

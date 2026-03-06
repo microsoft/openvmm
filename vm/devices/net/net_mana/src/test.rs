@@ -568,6 +568,9 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
         max_num_vports: 1,
         reserved: 0,
         max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
     };
     let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
     let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
@@ -729,6 +732,9 @@ async fn test_endpoint(
         max_num_vports: 1,
         reserved: 0,
         max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 0,
     };
     let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
     let vport = thing.new_vport(0, None, &dev_config).await.unwrap();

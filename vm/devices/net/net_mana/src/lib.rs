@@ -564,8 +564,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     fn link_speed(&self) -> u64 {
-        // Hard code to 200Gbps until MANA supports querying this.
-        200 * 1000 * 1000 * 1000
+        self.vport.link_speed_bps()
     }
 }
 
