@@ -63,14 +63,7 @@ struct FourTuple {
 
 impl core::fmt::Display for FourTuple {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{}:{}-{}:{}",
-            self.src.ip(),
-            self.src.port(),
-            self.dst.ip(),
-            self.dst.port()
-        )
+        write!(f, "{}-{}", self.src, self.dst)
     }
 }
 
@@ -544,18 +537,21 @@ impl TcpConnection {
             rx_tx_seq[4..8].try_into().expect("invalid length"),
         ));
 
-        let rx_buffer_size: usize = params.rx_buffer_size.max(16384);
+        let rx_buffer_size: usize = params.rx_buffer_size.clamp(16384, 4 << 20);
         let rx_window_scale =
             (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
 
-        let tx_buffer_size = params.tx_buffer_size.max(16384).next_power_of_two();
+        let tx_buffer_size = params
+            .tx_buffer_size
+            .clamp(16384, 4 << 20)
+            .next_power_of_two();
 
         Self {
             socket: None,
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
-            rx_buffer: VecDeque::with_capacity(rx_buffer_size),
-            rx_window_cap: 0,
+            rx_buffer: VecDeque::new(),
+            rx_window_cap: rx_buffer_size,
             rx_window_scale,
             rx_seq,
             needs_ack: false,
@@ -663,9 +659,11 @@ impl TcpConnection {
             self.enable_window_scaling = true;
             self.tx_window_scale = tx_window_scale;
         } else {
-            // Disable rx window scale.
+            // Disable rx window scale. Cap the buffer and window to u16::MAX
+            // since without window scaling, the window field is only 16 bits.
             self.enable_window_scaling = false;
             self.rx_buffer.truncate(u16::MAX as usize);
+            self.rx_window_cap = self.rx_window_cap.min(u16::MAX as usize);
             self.rx_window_scale = 0;
         }
 
@@ -691,7 +689,6 @@ impl TcpConnection {
 
                     tracing::debug!("connection established");
                     self.state = TcpState::SynReceived;
-                    self.rx_window_cap = self.rx_buffer.capacity();
                 }
                 Poll::Pending => return true,
             }
@@ -857,7 +854,11 @@ impl TcpConnection {
             control: TcpControl::Syn,
             seq_number: self.tx_send,
             ack_number,
-            window_len: self.rx_window_len(),
+            window_len: if ack_number.is_some() {
+                self.rx_window_len()
+            } else {
+                0
+            },
             window_scale,
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
@@ -1022,7 +1023,6 @@ impl TcpConnection {
 
         self.initialize_from_first_client_packet(tcp)?;
         self.tx_window_tx_seq = ack_number;
-        self.rx_window_cap = self.rx_buffer.capacity();
         self.tx_window_len = tcp.window_len;
 
         // Send an ACK to complete the initial SYN handshake.
