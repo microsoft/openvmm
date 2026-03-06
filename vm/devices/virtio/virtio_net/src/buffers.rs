@@ -77,14 +77,18 @@ impl BufferAccess for VirtioWorkPool {
     fn write_data(&mut self, id: RxId, data: &[u8]) {
         let mut locked_packet = self.rx_packets[id.0 as usize].lock();
         let work = locked_packet.work.as_ref().expect("invalid buffer index");
-        if let Err(err) = work.write_at_offset(header_size() as u64, &self.mem, data) {
-            tracing::warn!(
-                len = data.len(),
-                error = &err as &dyn std::error::Error,
-                "rx memory write failure"
-            );
+        match work.write_at_offset(header_size() as u64, &self.mem, data) {
+            Ok(()) => {
+                locked_packet.len = (header_size() + data.len()) as u32;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    len = data.len(),
+                    error = &err as &dyn std::error::Error,
+                    "rx memory write failure"
+                );
+            }
         }
-        locked_packet.len = (header_size() + data.len()) as u32;
     }
 
     fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment] {
@@ -124,6 +128,10 @@ impl BufferAccess for VirtioWorkPool {
             ..FromZeros::new_zeroed()
         };
         let locked_packet = self.rx_packets[id.0 as usize].lock();
+        if locked_packet.len == 0 {
+            // write_data failed; skip header and let the packet complete with zero length.
+            return;
+        }
         let work = locked_packet.work.as_ref().expect("invalid buffer index");
         assert_eq!(metadata.len + header_size(), locked_packet.len as usize);
         if let Err(err) = work.write(&self.mem, &virtio_net_header.as_bytes()[..header_size()]) {
