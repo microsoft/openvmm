@@ -17,6 +17,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
@@ -84,6 +85,9 @@ pub struct VirtioPciDevice {
     interrupt_status: Arc<Mutex<u32>>,
     #[inspect(hex)]
     device_status: VirtioDeviceStatus,
+    disabling: bool,
+    #[inspect(skip)]
+    poll_waker: Option<std::task::Waker>,
     config_generation: u32,
     config_space: ConfigSpaceType0Emulator,
 
@@ -233,6 +237,8 @@ impl VirtioPciDevice {
             msix_vectors,
             interrupt_status: Arc::new(Mutex::new(0)),
             device_status: VirtioDeviceStatus::new(),
+            disabling: false,
+            poll_waker: None,
             config_generation: 0,
             interrupt_kind,
             config_space,
@@ -400,14 +406,31 @@ impl VirtioPciDevice {
                 self.queue_select = val >> 16;
                 let val = val & 0xff;
                 if val == 0 {
+                    if self.disabling {
+                        return;
+                    }
                     let started = self.device_status.driver_ok();
-                    self.device_status = VirtioDeviceStatus::new();
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
-                        self.device.disable();
+                        // Try the fast path: poll with a noop waker to see if
+                        // the device can disable synchronously.
+                        let waker = std::task::Waker::noop();
+                        let mut cx = std::task::Context::from_waker(waker);
+                        if self.device.poll_disable(&mut cx).is_pending() {
+                            self.disabling = true;
+                            // Wake the real poll waker so that poll_device will
+                            // re-poll with a real waker, replacing the noop one.
+                            if let Some(waker) = self.poll_waker.take() {
+                                waker.wake();
+                            }
+                            return;
+                        }
                     }
+                    // Fast path: disable completed synchronously.
+                    self.device_status = VirtioDeviceStatus::new();
                     *self.interrupt_status.lock() = 0;
+                    return;
                 }
 
                 let new_status = VirtioDeviceStatus::from(val as u8);
@@ -558,13 +581,6 @@ impl VirtioPciDevice {
     }
 }
 
-impl Drop for VirtioPciDevice {
-    fn drop(&mut self) {
-        // TODO conditionalize
-        self.device.disable();
-    }
-}
-
 impl VirtioPciDevice {
     fn read_bar_u32(&mut self, bar: u8, offset: u16) -> u32 {
         match bar {
@@ -599,7 +615,27 @@ impl ChangeDeviceState for VirtioPciDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        // TODO
+        if self.device_status.driver_ok() || self.disabling {
+            self.doorbells.clear();
+            std::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+        }
+        self.device_status = VirtioDeviceStatus::new();
+        self.disabling = false;
+        self.config_generation = 0;
+        *self.interrupt_status.lock() = 0;
+    }
+}
+
+impl PollDevice for VirtioPciDevice {
+    fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.poll_waker = Some(cx.waker().clone());
+        if self.disabling {
+            if self.device.poll_disable(cx).is_ready() {
+                self.device_status = VirtioDeviceStatus::new();
+                self.disabling = false;
+                *self.interrupt_status.lock() = 0;
+            }
+        }
     }
 }
 
@@ -609,6 +645,10 @@ impl ChipsetDevice for VirtioPciDevice {
     }
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+        Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
         Some(self)
     }
 }

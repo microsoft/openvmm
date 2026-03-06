@@ -442,7 +442,15 @@ pub trait VirtioDevice: Send {
     fn read_registers_u32(&self, offset: u16) -> u32;
     fn write_registers_u32(&mut self, offset: u16, val: u32);
     fn enable(&mut self, resources: Resources);
-    fn disable(&mut self);
+    /// Poll the device to complete a disable/reset operation.
+    ///
+    /// This is called when the guest writes status=0 (device reset). The device
+    /// should stop workers and drain any in-flight IO. Returns `Poll::Ready(())`
+    /// when the disable is complete, or `Poll::Pending` if more work is needed.
+    ///
+    /// Devices that don't need async cleanup can return `Poll::Ready(())`
+    /// immediately.
+    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()>;
 }
 
 pub struct QueueResources {

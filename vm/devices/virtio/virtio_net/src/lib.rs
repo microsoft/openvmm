@@ -31,6 +31,7 @@ use pal_async::wait::PolledWait;
 use std::future::pending;
 use std::mem::offset_of;
 use std::sync::Arc;
+use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::InspectTaskMut;
@@ -336,10 +337,11 @@ impl VirtioDevice for Device {
         self.coordinator.start();
     }
 
-    fn disable(&mut self) {
+    fn poll_disable(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
         if let Some(send) = self.coordinator_send.take() {
             send.send(CoordinatorMessage::Disable);
         }
+        Poll::Ready(())
     }
 }
 
