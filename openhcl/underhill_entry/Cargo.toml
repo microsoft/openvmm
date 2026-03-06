@@ -19,6 +19,9 @@ mem-profile-tracing = ["dep:dhat", "underhill_core/mem-profile-tracing"]
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["underhill_core/dev_snp_ohcl_tio_support"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_core.workspace = true
 underhill_init.workspace = true

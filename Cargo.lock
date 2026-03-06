@@ -220,12 +220,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "awaitgroup"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a872ceb3db05a391fbe7cf8eba07a1239b2d946eee66f9e942be9bff06206302"
-
-[[package]]
 name = "azure_profiler_proto"
 version = "0.0.0"
 dependencies = [
@@ -3933,12 +3927,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "macaddr"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baee0bbc17ce759db233beb01648088061bf678383130602a298e6998eedb2d8"
-
-[[package]]
 name = "make_imc_hive"
 version = "0.0.0"
 dependencies = [
@@ -5114,7 +5102,6 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",
- "lazy_static",
  "linked_list_allocator",
  "log",
  "memory_range",
@@ -5257,7 +5244,6 @@ name = "openvmm_entry"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "awaitgroup",
  "build_rs_guest_arch",
  "chipset_device_worker_defs",
  "chipset_resources",
@@ -5286,7 +5272,6 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
- "macaddr",
  "mcr_resources",
  "mesh",
  "mesh_process",
@@ -6923,9 +6908,20 @@ name = "sev_guest_device"
 version = "0.0.0"
 dependencies = [
  "nix 0.30.1",
+ "sev_guest_device_tio",
  "static_assertions",
  "thiserror 2.0.16",
+ "tracing",
  "x86defs",
+ "zerocopy 0.8.27",
+]
+
+[[package]]
+name = "sev_guest_device_tio"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "static_assertions",
  "zerocopy 0.8.27",
 ]
 

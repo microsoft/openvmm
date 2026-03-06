@@ -148,6 +148,7 @@ resource_dll_parser = { path = "support/resource_dll_parser" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
+sev_guest_device_tio = { path = "support/sev_guest_device/sev_guest_device_tio" }
 sparse_mmap = { path = "support/sparse_mmap" }
 string_page_buf = { path = "support/string_page_buf" }
 task_control = { path = "support/task_control" }
@@ -423,7 +424,6 @@ arrayvec = { version = "0.7", default-features = false }
 async-channel = "2.3"
 async-task = "4.4"
 async-trait = "0.1"
-awaitgroup = "0.7"
 base64 = "0.22.1"
 base64-serde = "0.8"
 bitfield-struct = "0.11.0"
@@ -489,7 +489,6 @@ jiff = "0.2.14"
 kvm-bindings = "0.14.0"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.4.1"
-lazy_static = "1.4.0"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
@@ -497,7 +496,6 @@ linked_list_allocator = "0.10.5"
 linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
-macaddr = "1.0"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"

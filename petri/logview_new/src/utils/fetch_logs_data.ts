@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 import { LogEntry, LogLink } from "../data_defs";
+import { stripAnsi } from "./ansi";
 
 /**
  * Fetch the raw petri.jsonl log content for a given run / architecture / test path.
@@ -13,7 +14,7 @@ import { LogEntry, LogLink } from "../data_defs";
 export async function fetchLog(
   runId: string,
   architecture: string | undefined,
-  testNameRemainder: string
+  testNameRemainder: string,
 ): Promise<{ url: string; text: string }> {
   if (!runId) throw new Error("runId required");
   const parts: string[] = [runId];
@@ -23,7 +24,7 @@ export async function fetchLog(
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(
-      `Failed to fetch log (${response.status} ${response.statusText}) for ${url}`
+      `Failed to fetch log (${response.status} ${response.statusText}) for ${url}`,
     );
   }
   const text = await response.text();
@@ -112,7 +113,7 @@ function removeTimestampPrefix(orig: string, entryTimestamp: Date): string {
 
 function extractSeverity(
   orig: string,
-  defaultSeverity: string
+  defaultSeverity: string,
 ): { message: string; severity: string } {
   const severityLevels = ["ERROR", "WARN", "INFO", "DEBUG"];
   const trimmed = orig.trim();
@@ -138,13 +139,9 @@ function formatRelative(start: string, current: string): string {
 export async function fetchProcessedLog(
   runId: string,
   architecture: string | undefined,
-  testNameRemainder: string
+  testNameRemainder: string,
 ): Promise<LogEntry[]> {
-  const { url, text } = await fetchLog(
-    runId,
-    architecture,
-    testNameRemainder
-  );
+  const { url, text } = await fetchLog(runId, architecture, testNameRemainder);
   if (!text) return [];
   const raw = parseLogText(text);
   const entries: LogEntry[] = [];
@@ -216,7 +213,8 @@ export async function fetchProcessedLog(
       severity,
       source,
       logMessage: {
-        message: message,
+        message: stripAnsi(message),
+        rawMessage: message,
         link_string: links_text.trim(),
         links: logLinks,
       },

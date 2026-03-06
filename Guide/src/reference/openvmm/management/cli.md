@@ -11,6 +11,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
 * `--uefi`: Boot using `mu_msvm` UEFI
+* `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
 * `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also pass `--hv`. The `DISK` argument can be:
   * A flat binary disk image
