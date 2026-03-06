@@ -29,8 +29,10 @@ use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
+use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
@@ -220,6 +222,7 @@ struct Adapter {
     max_queues: u16,
     tx_fast_completions: bool,
     mac_address: MacAddress,
+    tx_offload_support: TxOffloadSupport,
 }
 
 pub struct Device {
@@ -232,11 +235,24 @@ pub struct Device {
 
 impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
-        // TODO: Add network features based on endpoint capabilities (NetworkFeatures::VIRTIO_NET_F_*)
+        let offloads = &self.adapter.tx_offload_support;
+
+        // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
+        let csum = offloads.tcp || offloads.udp;
+        // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
+        let host_tso4 = offloads.tso && offloads.tcp;
+        let host_tso6 = offloads.tso && offloads.tcp;
+
+        let features_bank0 = NetworkFeaturesBank0::new()
+            .with_mac(true)
+            .with_csum(csum)
+            .with_guest_csum(true)
+            .with_host_tso4(host_tso4)
+            .with_host_tso6(host_tso6);
+
         DeviceTraits {
             device_id: 1,
-            device_features: VirtioDeviceFeatures::new()
-                .with_bank(0, NetworkFeaturesBank0::new().with_mac(true).into_bits()),
+            device_features: VirtioDeviceFeatures::new().with_bank(0, features_bank0.into_bits()),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
@@ -383,6 +399,7 @@ struct QueueStats {
 
 #[derive(Inspect)]
 struct ActiveState {
+    mem: GuestMemory,
     #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
     pending_rx_packets: VirtioWorkPool,
@@ -394,9 +411,10 @@ impl ActiveState {
     fn new(mem: GuestMemory, rx_queue_size: u16, tx_queue_size: u16) -> Self {
         Self {
             pending_tx_packets: (0..tx_queue_size).map(|_| None).collect(),
-            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size),
+            pending_rx_packets: VirtioWorkPool::new(mem.clone(), rx_queue_size),
             data: ProcessingData::new(rx_queue_size, tx_queue_size),
             stats: Default::default(),
+            mem,
         }
     }
 }
@@ -430,11 +448,13 @@ impl NicBuilder {
         let max_queues = 1;
 
         let driver = driver_source.simple();
+        let tx_offload_support = endpoint.tx_offload_support();
         let adapter = Arc::new(Adapter {
             driver,
             max_queues,
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
+            tx_offload_support,
         });
 
         let coordinator = TaskControl::new(CoordinatorState {
@@ -805,6 +825,25 @@ impl Worker {
     }
 
     fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
+        // Read the virtio-net header + enough of the Ethernet frame to parse
+        // the EtherType (and a potential VLAN tag).
+        const ETH_PEEK: usize = 18; // 14 standard + 4 for VLAN tag
+        let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
+        let bytes_read = work
+            .read(
+                &self.active_state.mem,
+                &mut peek_buf[..header_size() + ETH_PEEK],
+            )
+            .unwrap_or(0);
+        let header = VirtioNetHeader::read_from_prefix(&peek_buf)
+            .map(|(h, _)| h)
+            .ok();
+        let packet_prefix = if bytes_read > header_size() {
+            &peek_buf[header_size()..bytes_read]
+        } else {
+            &[]
+        };
+
         let mut header_bytes_remaining = header_size() as u32;
         let mut segments = work
             .payload
@@ -837,19 +876,162 @@ impl Worker {
             return Err(WorkerError::Packet(PacketError::Empty));
         }
         let idx = work.descriptor_index();
+        let packet_len: u32 = (work.get_payload_length(false) as usize - header_size())
+            .try_into()
+            .unwrap();
+
+        // Map virtio-net header fields to TxMetadata offload flags.
+        let tx_metadata = Self::parse_tx_offloads(header.as_ref(), packet_prefix, packet_len);
+
         segments[0].ty = TxSegmentType::Head(TxMetadata {
             id: TxId(idx.into()),
             segment_count: segments.len().try_into().unwrap(),
-            len: (work.get_payload_length(false) as usize - header_size())
-                .try_into()
-                .unwrap(),
-            ..Default::default()
+            len: packet_len,
+            ..tx_metadata
         });
         let state = &mut self.active_state;
         state.data.tx_segments.append(&mut segments);
         assert!(state.pending_tx_packets[idx as usize].is_none());
         state.pending_tx_packets[idx as usize] = Some(PendingTxPacket { work });
         Ok(())
+    }
+
+    /// Parse virtio-net header offload fields into a `TxMetadata` template.
+    ///
+    /// `packet_prefix` should contain at least the first 18 bytes of the
+    /// Ethernet frame (enough to read the EtherType and a potential VLAN tag).
+    ///
+    /// The returned `TxMetadata` has `id`, `segment_count`, and `len` set to
+    /// defaults — the caller must overwrite those.
+    fn parse_tx_offloads(
+        header: Option<&VirtioNetHeader>,
+        packet_prefix: &[u8],
+        packet_len: u32,
+    ) -> TxMetadata {
+        let Some(header) = header else {
+            return TxMetadata {
+                len: packet_len,
+                ..Default::default()
+            };
+        };
+
+        let flags_byte = VirtioNetHeaderFlags::from(header.flags);
+        let gso = VirtioNetHeaderGso::from(header.gso_type);
+        let gso_protocol = gso.protocol();
+
+        let mut flags = TxFlags::new();
+        let mut l2_len: u8 = 0;
+        let mut l3_len: u16 = 0;
+        let mut l4_len: u8 = 0;
+        let mut max_tcp_segment_size: u16 = 0;
+
+        // Determine IP version from GSO type when available.
+        let is_ipv4_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV4;
+        let is_ipv6_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV6;
+
+        // Parse the Ethernet header to determine IP version and L2 length.
+        // EtherType is at offset 12. If it's 0x8100 (VLAN), the real
+        // EtherType is at offset 16 and L2 is 18 bytes.
+        let (parsed_l2_len, is_ipv4_from_eth, is_ipv6_from_eth) =
+            Self::parse_ethertype(packet_prefix);
+
+        if flags_byte.needs_csum() {
+            // The guest requests partial checksum offload.
+            // csum_start is the byte offset (from packet start) of the L4
+            // header. csum_offset is the byte offset within the L4 header
+            // of the checksum field.
+            l2_len = parsed_l2_len;
+            if header.csum_start >= l2_len as u16 {
+                l3_len = header.csum_start - l2_len as u16;
+            }
+
+            // Determine TCP vs UDP from csum_offset:
+            //   TCP checksum is at offset 16 within the TCP header.
+            //   UDP checksum is at offset 6 within the UDP header.
+            let is_tcp = header.csum_offset == 16;
+            let is_udp = header.csum_offset == 6;
+
+            if is_tcp {
+                flags.set_offload_tcp_checksum(true);
+            } else if is_udp {
+                flags.set_offload_udp_checksum(true);
+            }
+
+            // Prefer GSO-derived IP version, then EtherType-derived.
+            let is_ipv4 = is_ipv4_from_gso || (!is_ipv6_from_gso && is_ipv4_from_eth);
+            let is_ipv6 = is_ipv6_from_gso || (!is_ipv4_from_gso && is_ipv6_from_eth);
+            flags.set_is_ipv4(is_ipv4);
+            flags.set_is_ipv6(is_ipv6);
+            if is_ipv4 {
+                flags.set_offload_ip_header_checksum(true);
+            }
+        }
+
+        // GSO (segmentation offload)
+        if gso_protocol == VirtioNetHeaderGsoProtocol::TCPV4
+            || gso_protocol == VirtioNetHeaderGsoProtocol::TCPV6
+        {
+            flags.set_offload_tcp_segmentation(true);
+            flags.set_offload_tcp_checksum(true);
+            max_tcp_segment_size = header.gso_size;
+
+            if l2_len == 0 {
+                l2_len = parsed_l2_len;
+            }
+
+            flags.set_is_ipv4(is_ipv4_from_gso);
+            flags.set_is_ipv6(is_ipv6_from_gso);
+            if is_ipv4_from_gso {
+                flags.set_offload_ip_header_checksum(true);
+            }
+
+            // Derive l3_len from csum_start if we haven't already.
+            if l3_len == 0 && header.csum_start >= l2_len as u16 {
+                l3_len = header.csum_start - l2_len as u16;
+            }
+
+            // Derive l4_len from hdr_len if available:
+            //   hdr_len = l2_len + l3_len + l4_len (total header length)
+            let total_hdr = header.hdr_len as u32;
+            let l2_l3 = l2_len as u32 + l3_len as u32;
+            if total_hdr > l2_l3 {
+                l4_len = (total_hdr - l2_l3) as u8;
+            }
+        }
+
+        TxMetadata {
+            flags,
+            l2_len,
+            l3_len,
+            l4_len,
+            max_tcp_segment_size,
+            ..Default::default()
+        }
+    }
+
+    /// Parse the EtherType from the start of an Ethernet frame.
+    ///
+    /// Returns `(l2_len, is_ipv4, is_ipv6)`. Handles 802.1Q VLAN tags.
+    fn parse_ethertype(packet: &[u8]) -> (u8, bool, bool) {
+        const ETHERTYPE_IPV4: u16 = 0x0800;
+        const ETHERTYPE_IPV6: u16 = 0x86DD;
+        const ETHERTYPE_VLAN: u16 = 0x8100;
+
+        if packet.len() < 14 {
+            return (14, false, false);
+        }
+
+        let ethertype = u16::from_be_bytes([packet[12], packet[13]]);
+        if ethertype == ETHERTYPE_VLAN {
+            // VLAN-tagged: real EtherType is 4 bytes further.
+            if packet.len() < 18 {
+                return (18, false, false);
+            }
+            let inner = u16::from_be_bytes([packet[16], packet[17]]);
+            (18, inner == ETHERTYPE_IPV4, inner == ETHERTYPE_IPV6)
+        } else {
+            (14, ethertype == ETHERTYPE_IPV4, ethertype == ETHERTYPE_IPV6)
+        }
     }
 
     fn process_virtio_rx(

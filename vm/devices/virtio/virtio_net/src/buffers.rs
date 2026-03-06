@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::VirtioNetHeader;
+use crate::VirtioNetHeaderFlags;
 use crate::header_size;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -127,13 +128,14 @@ impl BufferAccess for VirtioWorkPool {
         assert_eq!(metadata.offset, 0);
         assert!(metadata.len > 0);
 
-        // let flags = if let RxChecksumState::Good = metadata.ip_checksum {
-        //     VirtioNetHeaderFlags::VIRTIO_NET_HDR_F_DATA_VALID.bits()
-        // } else {
-        //     0
-        // };
+        // Map RxMetadata checksum state to virtio-net header flags.
+        // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums are
+        // known good, telling the guest it can skip re-verification.
+        let data_valid = metadata.ip_checksum.is_valid() && metadata.l4_checksum.is_valid();
+        let flags = VirtioNetHeaderFlags::new().with_data_valid(data_valid);
 
         let virtio_net_header = VirtioNetHeader {
+            flags: flags.into(),
             num_buffers: 1,
             ..FromZeros::new_zeroed()
         };
