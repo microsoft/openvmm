@@ -96,14 +96,15 @@ impl FlowNode for Node {
             move |rt| {
                 let azcopy_archive = rt.read(azcopy_archive);
 
-                let sh = xshell::Shell::new()?;
-                sh.change_dir(azcopy_archive.parent().unwrap());
+                rt.sh.change_dir(azcopy_archive.parent().unwrap());
 
                 if is_tar {
-                    xshell::cmd!(sh, "tar -xf {azcopy_archive} --strip-components=1").run()?;
+                    flowey::shell_cmd!(rt, "tar -xf {azcopy_archive} --strip-components=1")
+                        .run()?;
                 } else {
                     let bsdtar = crate::_util::bsdtar_name(rt);
-                    xshell::cmd!(sh, "{bsdtar} -xf {azcopy_archive} --strip-components=1").run()?;
+                    flowey::shell_cmd!(rt, "{bsdtar} -xf {azcopy_archive} --strip-components=1")
+                        .run()?;
                 }
 
                 let path_to_azcopy = azcopy_archive

@@ -3,10 +3,10 @@
 
 use super::abi::*;
 use std::ffi::c_void;
-use winapi::shared::winerror::HRESULT;
-use winapi::um::winnt::DEVICE_POWER_STATE;
-use winapi::um::winnt::HANDLE;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::System::Power::DEVICE_POWER_STATE;
 use windows_sys::core::GUID;
+use windows_sys::core::HRESULT;
 
 pub const WHV_E_UNKNOWN_CAPABILITY: HRESULT = 0x80370300u32 as HRESULT;
 pub const WHV_E_INSUFFICIENT_BUFFER: HRESULT = 0x80370301u32 as HRESULT;

@@ -130,13 +130,12 @@ impl SimpleFlowNode for Node {
                             openvmm_repo_path.join("vm/vmgs/vmgs_lib/examples/vmgs_testlib.c");
 
                         if which::which("clang").is_ok() {
-                            let sh = xshell::Shell::new()?;
-                            xshell::cmd!(
-                                sh,
+                            flowey::shell_cmd!(
+                                rt,
                                 "clang {vmgs_testlib_c} {so} -rpath {so_dir} -o ./vmgs_lib_test"
                             )
                             .run()?;
-                            xshell::cmd!(sh, "./vmgs_lib_test").run()?;
+                            flowey::shell_cmd!(rt, "./vmgs_lib_test").run()?;
                         } else {
                             log::warn!("skipping vmgs_lib test (could not find clang)");
                         }
@@ -190,13 +189,12 @@ impl SimpleFlowNode for Node {
                         fs_err::copy(dll_lib, "vmgs_lib.dll.lib")?;
                         fs_err::copy(dll, "vmgs_lib.dll")?;
 
-                        let sh = xshell::Shell::new()?;
-                        xshell::cmd!(
-                            sh,
+                        flowey::shell_cmd!(
+                            rt,
                             "clang {vmgs_testlib_c} -o vmgs_lib_test.exe -l vmgs_lib.dll"
                         )
                         .run()?;
-                        xshell::cmd!(sh, "./vmgs_lib_test.exe").run()?;
+                        flowey::shell_cmd!(rt, "./vmgs_lib_test.exe").run()?;
 
                         Ok(())
                     }

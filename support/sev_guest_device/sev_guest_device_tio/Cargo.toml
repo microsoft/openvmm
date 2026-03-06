@@ -2,18 +2,14 @@
 # Licensed under the MIT License.
 
 [package]
-name = "virtio_serial"
+name = "sev_guest_device_tio"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-virtio.workspace = true
-guestmem.workspace = true
-
-anyhow.workspace = true
-async-trait.workspace = true
-parking_lot.workspace = true
-tracing.workspace = true
+static_assertions.workspace = true
+zerocopy.workspace = true
+bitfield-struct.workspace = true
 
 [lints]
 workspace = true

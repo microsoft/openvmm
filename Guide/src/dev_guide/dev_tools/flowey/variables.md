@@ -14,7 +14,7 @@ Variables can only be claimed inside step closures using the `claim()` method.
 
 **Nested closure pattern and related contexts:**
 
-```rust
+```rust,ignore
 // Inside a SimpleFlowNode's process_request() method
 fn process_request(&self, request: Self::Request, ctx: &mut NodeCtx<'_>) {
     // Assume a single Request provided an input ReadVar and output WriteVar
@@ -79,7 +79,7 @@ The type system ensures that `claim()` is the only way to convert from `VarNotCl
 
 Sometimes you know a value at build-time:
 
-```rust
+```rust,ignore
 // Create a ReadVar with a static value
 let version = ReadVar::from_static("1.2.3".to_string());
 

@@ -95,11 +95,10 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let in_bin = rt.read(in_bin);
 
-                let sh = xshell::Shell::new()?;
-                let output = sh.current_dir().join(in_bin.file_name().unwrap());
-                xshell::cmd!(sh, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
-                xshell::cmd!(
-                    sh,
+                let output = rt.sh.current_dir().join(in_bin.file_name().unwrap());
+                flowey::shell_cmd!(rt, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
+                flowey::shell_cmd!(
+                    rt,
                     "{objcopy_bin} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
                 )
                 .run()?;

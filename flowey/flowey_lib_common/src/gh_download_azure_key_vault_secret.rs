@@ -61,9 +61,8 @@ impl FlowNode for Node {
                     |rt| {
                         let az_cli_bin = rt.read(az_cli_bin);
                         let key_vault_name = key_vault_name;
-                        let sh = xshell::Shell::new()?;
                         for (secret, vars) in secrets_and_vars {
-                            let secret_value = xshell::cmd!(sh, "{az_cli_bin} keyvault secret show --name {secret} --vault-name {key_vault_name} --query value --output tsv").read()?;
+                            let secret_value = flowey::shell_cmd!(rt, "{az_cli_bin} keyvault secret show --name {secret} --vault-name {key_vault_name} --query value --output tsv").read()?;
                             for var in vars {
                                 rt.write_secret(var, &secret_value);
                             }

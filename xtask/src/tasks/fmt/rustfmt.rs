@@ -3,9 +3,9 @@
 
 use crate::Xtask;
 use crate::fs_helpers::git_diffed;
+use crate::shell::XtaskShell;
 use clap::Parser;
 use std::path::PathBuf;
-use xshell::cmd;
 
 #[derive(Parser)]
 #[clap(about = "Check that all repo files are formatted using rustfmt")]
@@ -53,13 +53,16 @@ impl Xtask for Rustfmt {
 
         log::trace!("running rustfmt on {:?}", files);
 
-        let sh = xshell::Shell::new()?;
+        let sh = XtaskShell::new()?;
         let rust_toolchain = sh.var("RUST_TOOLCHAIN").map(|s| format!("+{s}")).ok();
         let fmt_check = (!self.fix).then_some("--check");
 
         match files {
             Files::All => {
-                cmd!(sh, "cargo {rust_toolchain...} fmt -- {fmt_check...}")
+                sh.cmd("cargo")
+                    .args(rust_toolchain)
+                    .args(["fmt", "--"])
+                    .args(fmt_check)
                     .quiet()
                     .run()?;
             }
@@ -68,7 +71,11 @@ impl Xtask for Rustfmt {
                 files.retain(|f| f.extension().unwrap_or_default() == "rs");
 
                 if !files.is_empty() {
-                    let res = cmd!(sh, "rustfmt {rust_toolchain...} {fmt_check...} {files...}")
+                    let res = sh
+                        .cmd("rustfmt")
+                        .args(rust_toolchain)
+                        .args(fmt_check)
+                        .args(&files)
                         .quiet()
                         .run();
 
@@ -80,7 +87,10 @@ impl Xtask for Rustfmt {
             Files::Specific(files) => {
                 assert!(!files.is_empty());
 
-                cmd!(sh, "rustfmt {rust_toolchain...} {fmt_check...} {files...}")
+                sh.cmd("rustfmt")
+                    .args(rust_toolchain)
+                    .args(fmt_check)
+                    .args(&files)
                     .quiet()
                     .run()?;
             }

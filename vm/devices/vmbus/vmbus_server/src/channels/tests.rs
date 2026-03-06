@@ -528,7 +528,7 @@ fn test_channel_lifetime_helper(version: Version, feature_flags: FeatureFlags) {
     };
     assert_eq!(op.open_data.ring_gpadl_id, GpadlId(1));
     assert_eq!(op.open_data.ring_offset, 2);
-    assert_eq!(op.open_data.target_vp, 3);
+    assert_eq!(op.open_data.target_vp, Some(3));
     assert_eq!(op.open_data.event_flag, event_flag);
     assert_eq!(op.open_data.connection_id, connection_id);
     assert_eq!(op.connection_id, connection_id);

@@ -455,16 +455,19 @@ impl StorageBuilder {
 
     /// Generate VTL2 settings for storage devices offered to the guest via
     /// OpenHCL.
-    pub fn build_underhill(&self) -> Vec<StorageController> {
+    pub fn build_underhill(&self, vmbus_redirect: bool) -> Vec<StorageController> {
         let mut storage_controllers = Vec::new();
-        // Always create a SCSI controller, even if no LUNs configured, to allow hot-plugging
-        let controller = StorageController {
-            instance_id: UNDERHILL_VTL0_SCSI_INSTANCE.to_string(),
-            protocol: storage_controller::StorageProtocol::Scsi.into(),
-            luns: self.underhill_scsi_luns.clone(),
-            io_queue_depth: None,
-        };
-        storage_controllers.push(controller);
+        // Only create a SCSI controller if there are LUNs configured, or if
+        // vmbus redirection is enabled (to allow hot-plugging at runtime).
+        if !self.underhill_scsi_luns.is_empty() || vmbus_redirect {
+            let controller = StorageController {
+                instance_id: UNDERHILL_VTL0_SCSI_INSTANCE.to_string(),
+                protocol: storage_controller::StorageProtocol::Scsi.into(),
+                luns: self.underhill_scsi_luns.clone(),
+                io_queue_depth: None,
+            };
+            storage_controllers.push(controller);
+        }
 
         if !self.underhill_nvme_luns.is_empty() {
             let controller = StorageController {

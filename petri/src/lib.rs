@@ -66,9 +66,6 @@ pub enum CommandError {
     /// command exited with non-zero status
     #[error("command exited with non-zero status ({0}): {1}")]
     Command(std::process::ExitStatus, String),
-    /// command output is not utf-8
-    #[error("command output is not utf-8")]
-    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 /// Run a command on the host and return the output
@@ -97,5 +94,5 @@ pub async fn run_host_cmd(mut cmd: Command) -> Result<String, CommandError> {
         return Err(CommandError::Command(output.status, stderr_str));
     }
 
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    Ok(stdout_str.trim().to_owned())
 }

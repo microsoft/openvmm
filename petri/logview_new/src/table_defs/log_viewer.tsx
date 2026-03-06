@@ -3,6 +3,7 @@
 
 import { ColumnDef } from '@tanstack/react-table';
 import { LogEntry } from '../data_defs';
+import { AnsiSpan } from '../ansi_span';
 
 export const defaultSorting = [
   { id: "relative", desc: false }, // Sort by status ascending, failed tests first
@@ -45,7 +46,7 @@ export function createColumns(
             header: 'Message',
             cell: (info) => (
                 <>
-                    <div>{info.row.original.logMessage.message}</div>
+                    <div><AnsiSpan text={info.row.original.logMessage.rawMessage} /></div>
                     {info.row.original.logMessage.links?.map((link, idx) => (
                         <a
                             key={idx}

@@ -161,8 +161,6 @@ impl Node {
             let install_dir = install_dir.clone().claim(ctx);
             let broadcast_nuget_tool_kind = broadcast_nuget_tool_kind.claim(ctx);
             move |rt| {
-                let sh = xshell::Shell::new()?;
-
                 let install_dir = rt.read(install_dir);
 
                 let nuget_exe_path = install_dir.join("nuget.exe");
@@ -171,21 +169,20 @@ impl Node {
                 if !nuget_exe_path.exists() {
                     let nuget_install_latest_url =
                         "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe";
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "curl --fail -o {nuget_exe_path} {nuget_install_latest_url}"
                     )
                     .run()?;
                 }
 
-                let write_mono_shim = || {
-                    let sh = xshell::Shell::new()?;
+                let write_mono_shim = |rt: &mut RustRuntimeServices<'_>| {
                     fs::write(
                         "./nuget-shim.sh",
                         format!("#!/bin/sh\nmono {}/nuget.exe \"$@\"", install_dir.display()),
                     )?;
-                    xshell::cmd!(sh, "chmod +x ./nuget-shim.sh").run()?;
-                    anyhow::Ok(sh.current_dir().join("nuget-shim.sh").absolute()?)
+                    flowey::shell_cmd!(rt, "chmod +x ./nuget-shim.sh").run()?;
+                    anyhow::Ok(rt.sh.current_dir().join("nuget-shim.sh").absolute()?)
                 };
 
                 let nuget_exec_path = match rt.platform() {
@@ -194,10 +191,10 @@ impl Node {
                         // allow reusing the windows config directory from wsl2, if available
                         {
                             let windows_userprofile =
-                                xshell::cmd!(sh, "cmd.exe /c echo %UserProfile%").read()?;
+                                flowey::shell_cmd!(rt, "cmd.exe /c echo %UserProfile%").read()?;
 
                             let windows_dot_nuget_path =
-                                crate::_util::wslpath::win_to_linux(windows_userprofile)
+                                crate::_util::wslpath::win_to_linux(rt, windows_userprofile)
                                     .join(".nuget");
 
                             let linux_dot_nuget_path =
@@ -208,8 +205,8 @@ impl Node {
                             if windows_dot_nuget_path.exists()
                                 && fs_err::symlink_metadata(&linux_dot_nuget_path).is_err()
                             {
-                                xshell::cmd!(
-                                    sh,
+                                flowey::shell_cmd!(
+                                    rt,
                                     "ln -s {windows_dot_nuget_path} {linux_dot_nuget_path}"
                                 )
                                 .run()?;
@@ -217,7 +214,7 @@ impl Node {
                         }
 
                         if force_mono_nuget_exe_wsl2 {
-                            write_mono_shim()?
+                            write_mono_shim(rt)?
                         } else {
                             // rely on magical wsl2 interop
 
@@ -225,17 +222,18 @@ impl Node {
                             // nuget.exe will only work correctly when launched
                             // from a windows filesystem.
                             let windows_tempdir = crate::_util::wslpath::win_to_linux(
-                                xshell::cmd!(sh, "cmd.exe /c echo %Temp%").read()?,
+                                rt,
+                                flowey::shell_cmd!(rt, "cmd.exe /c echo %Temp%").read()?,
                             );
                             let flowey_nuget = windows_tempdir.join("flowey_nuget.exe");
                             if !flowey_nuget.exists() {
                                 fs_err::copy(nuget_exe_path, &flowey_nuget)?;
                             }
-                            xshell::cmd!(sh, "chmod +x {flowey_nuget}").run()?;
+                            flowey::shell_cmd!(rt, "chmod +x {flowey_nuget}").run()?;
                             flowey_nuget
                         }
                     }
-                    FlowPlatform::Linux(_) => write_mono_shim()?,
+                    FlowPlatform::Linux(_) => write_mono_shim(rt)?,
                     platform => anyhow::bail!("unsupported platform {platform}"),
                 };
 

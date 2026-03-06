@@ -8,6 +8,7 @@
 use anyhow::Context;
 use anyhow::bail;
 use inspect::Inspect;
+use inspect::InspectMut;
 use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -20,6 +21,9 @@ pub enum TestScenarioConfig {
     SaveFail,
     RestoreStuck,
     SaveStuck,
+
+    /// Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
+    VpciTdispFlow,
 }
 
 impl FromStr for TestScenarioConfig {
@@ -30,6 +34,7 @@ impl FromStr for TestScenarioConfig {
             "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::SaveFail),
             "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::RestoreStuck),
             "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
+            "TDISP_VPCI_FLOW_TEST" => Ok(TestScenarioConfig::VpciTdispFlow),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
     }
@@ -79,7 +84,7 @@ impl FromStr for GuestStateEncryptionPolicyCli {
     }
 }
 
-#[derive(Clone, Debug, MeshPayload, Inspect)]
+#[derive(Clone, Debug, MeshPayload, Inspect, InspectMut)]
 pub enum KeepAliveConfig {
     EnabledHostAndPrivatePoolPresent,
     DisabledHostAndPrivatePoolPresent,
@@ -91,10 +96,10 @@ impl FromStr for KeepAliveConfig {
 
     fn from_str(s: &str) -> Result<KeepAliveConfig, anyhow::Error> {
         match s.to_lowercase().as_str() {
-            "host,privatepool" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
+            "host,privatepool" | "enabled" => Ok(KeepAliveConfig::EnabledHostAndPrivatePoolPresent),
             "nohost,privatepool" => Ok(KeepAliveConfig::DisabledHostAndPrivatePoolPresent),
             "nohost,noprivatepool" => Ok(KeepAliveConfig::Disabled),
-            x if x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
+            x if x == "disabled" || x.starts_with("disabled,") => Ok(KeepAliveConfig::Disabled),
             _ => Err(anyhow::anyhow!("Invalid keepalive config: {}", s)),
         }
     }
@@ -103,6 +108,15 @@ impl FromStr for KeepAliveConfig {
 impl KeepAliveConfig {
     pub fn is_enabled(&self) -> bool {
         matches!(self, KeepAliveConfig::EnabledHostAndPrivatePoolPresent)
+    }
+
+    /// Returns the string representation matching the inspect rename attributes.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KeepAliveConfig::EnabledHostAndPrivatePoolPresent => "enabled",
+            KeepAliveConfig::DisabledHostAndPrivatePoolPresent => "nohost,privatepool",
+            KeepAliveConfig::Disabled => "disabled",
+        }
     }
 }
 

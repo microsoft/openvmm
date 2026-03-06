@@ -97,8 +97,6 @@ impl FlowNode for Node {
             let get_reqs = get_reqs.claim(ctx);
             let gh_bin_path = gh_bin_path.claim(ctx);
             |rt| {
-                let sh = xshell::Shell::new()?;
-
                 let gh_bin_path = rt.read(gh_bin_path).display().to_string();
                 let gh_token = match auth {
                     GhCliAuth::LocalOnlyInteractive => String::new(),
@@ -135,14 +133,14 @@ impl FlowNode for Node {
                     file.write_all(shim_txt.as_bytes())?;
                     dst.absolute()?
                 };
-                if !xshell::cmd!(sh, "{path} auth status")
+                if !flowey::shell_cmd!(rt, "{path} auth status")
                     .ignore_status()
                     .output()?
                     .status
                     .success()
                 {
                     if matches!(rt.backend(), FlowBackend::Local) {
-                        xshell::cmd!(sh, "{path} auth login").run()?;
+                        flowey::shell_cmd!(rt, "{path} auth login").run()?;
                     } else {
                         anyhow::bail!("unable to authenticate with github - is GhCliAuth valid?")
                     }

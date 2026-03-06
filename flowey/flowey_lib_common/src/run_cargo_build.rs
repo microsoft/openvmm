@@ -261,12 +261,10 @@ impl FlowNode for Node {
                         crate_type,
                     } = cmd;
 
-                    let sh = xshell::Shell::new()?;
+                    let out_dir = rt.sh.current_dir();
 
-                    let out_dir = sh.current_dir();
-
-                    sh.change_dir(cargo_work_dir);
-                    let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
+                    rt.sh.change_dir(cargo_work_dir);
+                    let mut cmd = flowey::shell_cmd!(rt, "{argv0} {params...}");
                     if !matches!(rt.backend(), FlowBackend::Local) {
                         // if running in CI, no need to waste time with incremental
                         // build artifacts
@@ -296,7 +294,7 @@ impl FlowNode for Node {
                             .collect::<Result<_, _>>()
                             .context("failed to deserialize cargo output")?;
 
-                    sh.change_dir(out_dir.clone());
+                    rt.sh.change_dir(out_dir.clone());
 
                     let build_output =
                         rename_output(&messages, &crate_name, &out_name, crate_type, &out_dir)?;

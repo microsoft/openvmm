@@ -9,7 +9,7 @@ import { Menu } from "./menu";
 import { VirtualizedTable } from "./virtualized_table";
 import { Link, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { fetchRunDetails } from "./fetch/fetch_runs_data";
+import { fetchRunDetails } from "./utils/fetch_runs_data";
 import { SearchInput } from "./search";
 import {
   createColumns,
@@ -37,7 +37,7 @@ export function RunDetails(): React.JSX.Element {
   // Conditional AND wildcard search
   const filteredTests = useMemo(
     () => filterTests(runDetails?.tests, searchFilter),
-    [runDetails?.tests, searchFilter]
+    [runDetails?.tests, searchFilter],
   );
 
   // Check if the original data has no tests (not due to filtering)
@@ -102,12 +102,10 @@ function RunDetailsHeader({
           </Link>
         </div>
         {!loadingSuccess && (
-        <div className="header-loading-indicator">
+          <div className="header-loading-indicator">
             <div className="header-loading-spinner"></div>
-            <div className="header-loading-text">
-                Fetching run details ...
-            </div>
-        </div>
+            <div className="header-loading-text">Fetching run details ...</div>
+          </div>
         )}
       </div>
       <div className="common-header-right">
@@ -128,7 +126,7 @@ function RunDetailsHeader({
  */
 function filterTests(
   tests: TestResult[] | undefined,
-  searchFilter: string
+  searchFilter: string,
 ): TestResult[] {
   if (!tests) return [];
   const terms = searchFilter.trim().toLowerCase().split(/\s+/).filter(Boolean);

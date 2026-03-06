@@ -19,23 +19,22 @@ pub enum Error {
 /// Enables VT and UTF-8 output.
 #[cfg(windows)]
 pub fn enable_vt_and_utf8() {
-    use winapi::um::consoleapi;
-    use winapi::um::processenv;
-    use winapi::um::winbase;
-    use winapi::um::wincon;
-    use winapi::um::winnls;
+    use windows_sys::Win32::Globalization::CP_UTF8;
+    use windows_sys::Win32::System::Console::ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    use windows_sys::Win32::System::Console::GetConsoleMode;
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
+    use windows_sys::Win32::System::Console::SetConsoleMode;
+    use windows_sys::Win32::System::Console::SetConsoleOutputCP;
     // SAFETY: calling Windows APIs as documented.
     unsafe {
-        let conout = processenv::GetStdHandle(winbase::STD_OUTPUT_HANDLE);
+        let conout = GetStdHandle(STD_OUTPUT_HANDLE);
         let mut mode = 0;
-        if consoleapi::GetConsoleMode(conout, &mut mode) != 0 {
-            if mode & wincon::ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0 {
-                consoleapi::SetConsoleMode(
-                    conout,
-                    mode | wincon::ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-                );
+        if GetConsoleMode(conout, &mut mode) != 0 {
+            if mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING == 0 {
+                SetConsoleMode(conout, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
             }
-            wincon::SetConsoleOutputCP(winnls::CP_UTF8);
+            SetConsoleOutputCP(CP_UTF8);
         }
     }
 }

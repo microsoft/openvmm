@@ -26,6 +26,9 @@ use std::path::Path;
 use toml_edit::Item;
 use toml_edit::Table;
 
+/// List of packages that are allowed to have a version
+static VERSION_EXCEPTIONS: &[&str] = &["vmgstool"];
+
 pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     if f.file_name() != Some(OsStr::new("Cargo.toml")) {
         return Ok(());
@@ -62,7 +65,7 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
 
     let package = parsed
         .get_mut("package")
-        .unwrap()
+        .with_context(|| format!("missing package section in {}", f.display()))?
         .as_table_mut()
         .with_context(|| format!("invalid package section in {}", f.display()))?;
 
@@ -76,9 +79,19 @@ pub fn check_package_info(f: &Path, fix: bool) -> anyhow::Result<()> {
     edition_field.insert("workspace", Item::Value(true.into()));
     let old_edition_field = package.insert("edition", Item::Table(edition_field.clone()));
 
+    let package_name = package
+        .get("name")
+        .with_context(|| format!("missing package name in {}", f.display()))?
+        .as_str()
+        .with_context(|| format!("invalid package name in {}", f.display()))?;
+    let check_version = !VERSION_EXCEPTIONS.contains(&package_name);
+
     // Note careful use of non-short-circuiting or.
     let invalid = package.remove("authors").is_some()
-        | package.remove("version").is_some()
+        | check_version
+            .then(|| package.remove("version"))
+            .flatten()
+            .is_some()
         | (!excluded_from_workspace
             && (old_lints_table.map(|o| o.to_string()) != Some(lints_table.to_string()))
                 | (old_rust_version.map(|o| o.to_string())

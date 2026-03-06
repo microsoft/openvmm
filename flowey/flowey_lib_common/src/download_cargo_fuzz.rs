@@ -93,13 +93,12 @@ impl FlowNode for Node {
                 } else {
                     let root = rt.read(cargo_install_persistent_dir).unwrap_or("./".into());
 
-                    let sh = xshell::Shell::new()?;
                     let rust_toolchain = rt.read(rust_toolchain);
                     let run = |offline| {
                         let rust_toolchain = rust_toolchain.as_ref().map(|s| format!("+{s}"));
 
-                        xshell::cmd!(
-                            sh,
+                        flowey::shell_cmd!(
+                            rt,
                             "cargo {rust_toolchain...}
                                 install
                                 --locked

@@ -74,7 +74,6 @@ impl FlowNode for Node {
                     let write_commands = write_commands.claim(ctx);
 
                     move |rt| {
-                        let sh = xshell::Shell::new()?;
                         let mut commands = Vec::new();
 
                         if !matches!(rt.platform(), FlowPlatform::Windows)
@@ -96,7 +95,7 @@ impl FlowNode for Node {
 
                         // Check if features are already enabled
                         if installing && !features_to_enable.is_empty() {
-                            let features = xshell::cmd!(sh, "DISM.exe /Online /Get-Features").output()?;
+                            let features = flowey::shell_cmd!(rt, "DISM.exe /Online /Get-Features").output()?;
                             assert!(features.status.success());
                             let features = String::from_utf8_lossy(&features.stdout).to_string();
                             let mut feature = None;
@@ -147,7 +146,7 @@ Otherwise, press `ctrl-c` to cancel the run.
                         // Install the features
                         for feature in features_to_enable {
                             if installing {
-                                xshell::cmd!(sh, "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}").run()?;
+                                flowey::shell_cmd!(rt, "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}").run()?;
                             }
                             commands.push(format!("DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}"));
                         }
@@ -167,7 +166,7 @@ Otherwise, press `ctrl-c` to cancel the run.
 
                         // Check if reg keys are set
                         if installing && !reg_keys_to_set.is_empty() {
-                            let output = xshell::cmd!(sh, "reg.exe query {VIRT_REG_PATH}").output()?;
+                            let output = flowey::shell_cmd!(rt, "reg.exe query {VIRT_REG_PATH}").output()?;
                             if output.status.success() {
                                 let output = String::from_utf8_lossy(&output.stdout).to_string();
                                 for line in output.lines() {
@@ -210,7 +209,7 @@ Otherwise, press `ctrl-c` to cancel the run.
                             // TODO: figure out why reg.exe is not found if I
                             // render the command as a string first and share
                             if installing {
-                                xshell::cmd!(sh, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
+                                flowey::shell_cmd!(rt, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
                             }
                             commands.push(format!("reg.exe add \"{VIRT_REG_PATH}\" /v {v} /t REG_DWORD /d 1 /f"));
                         }

@@ -39,15 +39,17 @@ flowey_request! {
         /// Initialize the node, defaults to downloading everything
         Init,
         /// Override openvmm_deps with a local path for this architecture
-        LocalOpenvmmDeps(CommonArch, PathBuf),
+        LocalOpenvmmDeps(CommonArch, ReadVar<PathBuf>),
         /// Override protoc with a local path
-        LocalProtoc(PathBuf),
+        LocalProtoc(ReadVar<PathBuf>),
         /// Override kernel with local paths (kernel binary, modules directory)
         LocalKernel {
             arch: CommonArch,
-            kernel: PathBuf,
-            modules: PathBuf,
+            kernel: ReadVar<PathBuf>,
+            modules: ReadVar<PathBuf>,
         },
+        /// Override UEFI mu_msvm with a local MSVM.fd path for this architecture
+        LocalUefi(CommonArch, ReadVar<PathBuf>),
     }
 }
 
@@ -75,9 +77,10 @@ impl FlowNode for Node {
 
     #[rustfmt::skip]
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut local_openvmm_deps: BTreeMap<CommonArch, PathBuf> = BTreeMap::new();
-        let mut local_protoc: Option<PathBuf> = None;
-        let mut local_kernel: BTreeMap<CommonArch, (PathBuf, PathBuf)> = BTreeMap::new();
+        let mut local_openvmm_deps: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
+        let mut local_protoc: Option<ReadVar<PathBuf>> = None;
+        let mut local_kernel: BTreeMap<CommonArch, (ReadVar<PathBuf>, ReadVar<PathBuf>)> = BTreeMap::new();
+        let mut local_uefi: BTreeMap<CommonArch, ReadVar<PathBuf>> = BTreeMap::new();
 
         for req in requests {
             match req {
@@ -85,33 +88,37 @@ impl FlowNode for Node {
                     // No-op, just ensures the node runs with defaults
                 }
                 Request::LocalOpenvmmDeps(arch, path) => {
-                    // Check that for every arch that shows up, the path is always the same
-                    if let Some(existing_path) = local_openvmm_deps.get(&arch) {
-                        if existing_path != &path {
-                            anyhow::bail!(
-                                "OpenvmmDepsPath for {:?} must be consistent across requests",
-                                arch
-                            );
-                        }
-                    } else {
-                        local_openvmm_deps.insert(arch, path);
+                    if local_openvmm_deps.contains_key(&arch) {
+                        anyhow::bail!(
+                            "OpenvmmDepsPath for {:?} must not be specified multiple times",
+                            arch
+                        );
                     }
+                    local_openvmm_deps.insert(arch, path);
                 }
                 Request::LocalProtoc(path) => {
-                    same_across_all_reqs("ProtocPath", &mut local_protoc, path)?;
+                    if local_protoc.is_some() {
+                        anyhow::bail!("ProtocPath must not be specified multiple times");
+                    }
+                    local_protoc = Some(path);
                 }
                 Request::LocalKernel { arch, kernel, modules } => {
-                    let paths = (kernel, modules);
-                    if let Some(existing) = local_kernel.get(&arch) {
-                        if existing != &paths {
-                            anyhow::bail!(
-                                "LocalKernel for {:?} must be consistent across requests",
-                                arch
-                            );
-                        }
-                    } else {
-                        local_kernel.insert(arch, paths);
+                    if local_kernel.contains_key(&arch) {
+                        anyhow::bail!(
+                            "LocalKernel for {:?} must not be specified multiple times",
+                            arch
+                        );
                     }
+                    local_kernel.insert(arch, (kernel, modules));
+                }
+                Request::LocalUefi(arch, path) => {
+                    if local_uefi.contains_key(&arch) {
+                        anyhow::bail!(
+                            "LocalUefi for {:?} must not be specified multiple times",
+                            arch
+                        );
+                    }
+                    local_uefi.insert(arch, path);
                 }
             }
         }
@@ -120,6 +127,7 @@ impl FlowNode for Node {
         let has_local_openvmm_deps = !local_openvmm_deps.is_empty();
         let has_local_protoc = local_protoc.is_some();
         let has_local_kernel = !local_kernel.is_empty();
+        let has_local_uefi = !local_uefi.is_empty();
 
         // Set up local paths for openvmm_deps if provided
         for (arch, path) in local_openvmm_deps {
@@ -154,6 +162,15 @@ impl FlowNode for Node {
             });
         }
 
+        // Set up local paths for UEFI if provided
+        for (arch, path) in local_uefi {
+            let uefi_arch = match arch {
+                CommonArch::X86_64 => crate::download_uefi_mu_msvm::MuMsvmArch::X86_64,
+                CommonArch::Aarch64 => crate::download_uefi_mu_msvm::MuMsvmArch::Aarch64,
+            };
+            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPath(uefi_arch, path));
+        }
+
         // Only set kernel versions if we don't have local paths
         // (versions are only needed for downloading)
         if !has_local_kernel {
@@ -165,7 +182,9 @@ impl FlowNode for Node {
         if !has_local_openvmm_deps {
             ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
         }
-        ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        if !has_local_uefi {
+            ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+        }
         ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
         ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
         ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));

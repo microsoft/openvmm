@@ -467,13 +467,13 @@ impl<T: Client> Sender<'_, T> {
                 let ipv4_packet = Ipv4Packet::new_unchecked(&*ip_packet_buf);
                 let total_len = ipv4_packet.total_len() as usize;
                 let payload_offset = ipv4_packet.header_len() as usize;
-                (&mut ip_packet_buf[payload_offset..], total_len)
+                (&mut ip_packet_buf[payload_offset..total_len], total_len)
             }
             SocketAddr::V6(_) => {
                 let ipv6_packet = Ipv6Packet::new_unchecked(&*ip_packet_buf);
                 let total_len = ipv6_packet.total_len();
                 let payload_offset = IPV6_HEADER_LEN;
-                (&mut ip_packet_buf[payload_offset..], total_len)
+                (&mut ip_packet_buf[payload_offset..total_len], total_len)
             }
         };
 
