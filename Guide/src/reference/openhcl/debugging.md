@@ -23,9 +23,11 @@ VMBus. On Windows hosts, these dumps are collected by Windows Error Reporting
 
 Kernel-mode crash dumps (kdump) are **not currently supported** in OpenHCL. The
 OpenHCL kernel does not have `CONFIG_KDUMP` or `CONFIG_KEXEC` compiled in. If
-the kernel panics, no dump is generated. The only diagnostic output from a kernel
-panic is serial console output (if COM3 is enabled) or whatever was captured by
-`ohcldiag-dev` before the panic.
+the kernel panics, no dump is generated. The only diagnostic output is COM3
+serial (if enabled), which captures the panic message in real time. If the
+diagnostic service was running before the panic, `ohcldiag-dev` may have ring
+buffer messages up to that point, but it cannot capture the panic itself since
+the service is terminated by the panic.
 
 For debugging kernel-level issues, the best approach is to enable serial output
 via COM3 (see below) — it captures output from the very first instruction of
@@ -33,21 +35,24 @@ kernel boot.
 
 ## Getting OpenHCL kernel logs (COM3 vs ohcldiag-dev)
 
-Two methods exist for capturing OpenHCL kernel (`kmsg`) output. They differ in
-when they become available during boot:
+Two methods exist for capturing OpenHCL kernel (`kmsg`) output:
+
+**COM3 serial** uses direct UART I/O — it streams output from the very first
+instruction of OpenHCL boot in real time.
+
+**ohcldiag-dev** connects over vsock to the diagnostic service, which reads
+`/dev/kmsg`. Because `/dev/kmsg` preserves the kernel ring buffer, early boot
+messages are **replayed** when you connect — you get them even if you connect
+late. However, `ohcldiag-dev` only works if the diagnostic service successfully
+starts.
 
 | Boot phase | COM3 serial | ohcldiag-dev |
 |------------|:-----------:|:------------:|
-| Very early kernel (entry → memory setup) | ✅ | ❌ |
-| Device initialization (VMBus, etc.) | ✅ | ❌ |
-| Kernel panic before userspace | ✅ | ❌ missed |
-| Init/startup failures | ✅ | ❌ missed |
-| After diagnostic service starts | ✅ | ✅ |
-
-COM3 serial output uses direct UART I/O — it's available from the very first
-instruction of OpenHCL boot. `ohcldiag-dev` connects over vsock (VMBus), so it's
-only available after the kernel boots, VMBus initializes, and the diagnostic
-worker starts in userspace.
+| Very early kernel (entry → memory setup) | ✅ live | ✅ replayed from ring buffer |
+| Device initialization (VMBus, etc.) | ✅ live | ✅ replayed from ring buffer |
+| Kernel panic before userspace | ✅ live | ❌ service never starts |
+| Boot hang (kernel stuck) | ✅ live | ❌ service never starts |
+| After diagnostic service starts | ✅ live | ✅ live |
 
 For most development, `ohcldiag-dev` is sufficient — boot succeeds and you get
 logs. COM3 is essential for debugging early boot failures, kernel panics, and
