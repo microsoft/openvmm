@@ -39,6 +39,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<cfg_versions::Node>();
+        ctx.import::<flowey_lib_common::install_nix::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -75,9 +76,12 @@ impl SimpleFlowNode for Node {
             CommonArch::Aarch64 => "Image",
         };
 
+        let nix_installed = ctx.reqv(flowey_lib_common::install_nix::Request::EnsureInstalled);
+
         let (nix_config_read, nix_config_write) = ctx.new_var::<NixConfig>();
 
         ctx.emit_rust_step("resolve nix dependency paths", |ctx| {
+            nix_installed.claim(ctx);
             let nix_config_write = nix_config_write.claim(ctx);
             move |rt| {
                 let openvmm_deps =

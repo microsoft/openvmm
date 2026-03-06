@@ -945,7 +945,7 @@ pub enum FlowPlatformKind {
 }
 
 /// The kind platform the flow is being running on, Windows or Unix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FlowPlatformLinuxDistro {
     /// Fedora (including WSL2)
     Fedora,
@@ -960,7 +960,7 @@ pub enum FlowPlatformLinuxDistro {
 }
 
 /// What platform the flow is being running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FlowPlatform {
     /// Windows
@@ -1005,7 +1005,7 @@ impl std::fmt::Display for FlowPlatform {
 }
 
 /// What architecture the flow is being running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FlowArch {
     X86_64,
