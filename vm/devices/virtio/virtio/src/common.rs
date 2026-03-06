@@ -237,20 +237,37 @@ impl VirtioQueue {
         })
     }
 
+    /// Polls until the queue is kicked by the guest, indicating new work may be available.
+    pub fn poll_kick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        Poll::Ready(())
+    }
+
+    /// Try to get the next work item from the queue. Returns `Ok(None)` if no
+    /// work is currently available, or an error if there was an issue accessing
+    /// the queue.
+    ///
+    /// If `None` is returned, then the queue will be armed so that the guest
+    /// will kick it when new work is available; the caller can use
+    /// [`poll_kick`](Self::poll_kick) to wait for this.
+    pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
+        Ok(self
+            .core
+            .try_next_work()
+            .map_err(|e| Error::other(e))?
+            .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
+    }
+
     fn poll_next_buffer(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<VirtioQueueCallbackWork>, QueueError>> {
-        let work = loop {
-            if let Some(work) = self.core.try_next_work()? {
-                break work;
-            };
-            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
-        };
-        Poll::Ready(Ok(Some(VirtioQueueCallbackWork::new(
-            work,
-            &self.used_handler,
-        ))))
+    ) -> Poll<Result<Option<VirtioQueueCallbackWork>, Error>> {
+        loop {
+            if let Some(work) = self.try_next()? {
+                return Ok(Some(work)).into();
+            }
+            ready!(self.poll_kick(cx));
+        }
     }
 }
 
