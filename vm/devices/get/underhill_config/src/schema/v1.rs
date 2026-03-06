@@ -144,7 +144,7 @@ pub(crate) fn validate_version(
     version: i32,
     errors: &mut ParseErrors<'_>,
 ) -> Result<(), ParsingStopped> {
-    match vtl2_settings_base::Version::from_i32(version)
+    match vtl2_settings_base::Version::try_from(version)
         .unwrap_or(vtl2_settings_base::Version::Unknown)
     {
         vtl2_settings_base::Version::Unknown => {

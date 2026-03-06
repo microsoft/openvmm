@@ -508,15 +508,15 @@ openssl = "0.10.72"
 openssl-sys = "0.9"
 parking_lot = "0.12"
 paste = "1.0"
-pbjson = "0.5"
-pbjson-build = "0.5"
-pbjson-types = "0.5"
+pbjson = "0.9"
+pbjson-build = "0.9"
+pbjson-types = "0.9"
 pcap-file = "2.0.0"
 petgraph = "0.8.0"
 proc-macro2 = "1.0"
-prost = "0.11"
-prost-build = "0.11"
-prost-types = "0.11"
+prost = "0.14"
+prost-build = "0.14"
+prost-types = "0.14"
 quote = "1.0"
 range_map_vec = "0.2.0"
 rayon = "1.5"
@@ -638,8 +638,6 @@ overflow-checks = false
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
 bitvec = { git = "https://github.com/smalis-msft/bitvec", branch = "set-aliased-previous-val" }
-# Pending <https://github.com/influxdata/pbjson/pull/94>
-pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
 
 [workspace.lints.rust]
 # Lint groups need a priority lower than individual lints so they get applied first.

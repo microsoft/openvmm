@@ -108,7 +108,7 @@ pub trait GuestToHostResponseExt {
 
 impl GuestToHostResponseExt for GuestToHostResponse {
     fn error_code(&self) -> Option<TdispGuestOperationErrorCode> {
-        TdispGuestOperationErrorCode::from_i32(self.result)
+        TdispGuestOperationErrorCode::try_from(self.result).ok()
     }
 
     fn type_name(&self) -> Option<&str> {

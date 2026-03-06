@@ -28,7 +28,7 @@ macro_rules! require_field {
 /// within the range of the enum.
 macro_rules! require_enum {
     ($field:expr, $enum_ty:ty) => {
-        <$enum_ty>::from_i32($field).ok_or_else(|| {
+        <$enum_ty>::try_from($field).map_err(|_| {
             anyhow::anyhow!(
                 "proto validation: {} is not a valid {}: {}",
                 stringify!($field),
