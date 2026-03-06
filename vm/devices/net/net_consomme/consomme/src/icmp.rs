@@ -17,6 +17,7 @@ use inspect_counters::Counter;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
+use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
@@ -27,6 +28,7 @@ use smoltcp::wire::Icmpv4Message;
 use smoltcp::wire::Icmpv4Packet;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
+use smoltcp::wire::Ipv4Repr;
 use socket2::Domain;
 use socket2::Protocol;
 use socket2::SockAddr;
@@ -185,23 +187,24 @@ impl<T: Client> Access<'_, T> {
         let mut buffer = [0u8; MIN_MTU];
 
         // Ethernet header
+        let resp_eth = EthernetRepr {
+            src_addr: self.inner.state.params.gateway_mac,
+            dst_addr: frame.src_addr,
+            ethertype: EthernetProtocol::Ipv4,
+        };
         let mut eth = EthernetFrame::new_unchecked(&mut buffer[..]);
-        eth.set_ethertype(EthernetProtocol::Ipv4);
-        eth.set_src_addr(self.inner.state.params.gateway_mac);
-        eth.set_dst_addr(frame.src_addr);
+        resp_eth.emit(&mut eth);
 
-        // IPv4 header (buffer is zeroed, so fields like dscp/ecn/ident/frag are
-        // already correct).
+        // IPv4 header
+        let resp_ipv4 = Ipv4Repr {
+            src_addr: self.inner.state.params.gateway_ip,
+            dst_addr: addresses.src_addr,
+            next_header: IpProtocol::Icmp,
+            payload_len: icmp_len,
+            hop_limit: 64,
+        };
         let mut ipv4 = Ipv4Packet::new_unchecked(eth.payload_mut());
-        ipv4.set_version(4);
-        ipv4.set_header_len(IPV4_HEADER_LEN as u8);
-        ipv4.set_total_len(ipv4_total_len as u16);
-        ipv4.set_dont_frag(true);
-        ipv4.set_hop_limit(64);
-        ipv4.set_next_header(IpProtocol::Icmp);
-        ipv4.set_src_addr(self.inner.state.params.gateway_ip);
-        ipv4.set_dst_addr(addresses.src_addr);
-        ipv4.fill_checksum();
+        resp_ipv4.emit(&mut ipv4, &ChecksumCapabilities::default());
 
         // ICMP echo reply — copy the request payload and change the type.
         let icmp_buf = &mut ipv4.payload_mut()[..icmp_len];
@@ -211,7 +214,7 @@ impl<T: Client> Access<'_, T> {
         icmp_reply.fill_checksum();
 
         self.client
-            .recv(&buffer[..eth_total_len], &ChecksumState::NONE);
+            .recv(&buffer[..eth_total_len], &ChecksumState::IPV4_ONLY);
         Ok(())
     }
 
