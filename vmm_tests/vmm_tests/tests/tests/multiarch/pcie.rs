@@ -44,16 +44,13 @@ async fn parse_guest_pci_devices(
                 let device_sysfs_path = format!("{PCI_SYSFS_PATH}/{ls_device}");
 
                 let vendor_output = cmd!(sh, "cat {device_sysfs_path}/vendor").read().await?;
-                let vendor_id =
-                    u16::from_str_radix(&vendor_output.strip_prefix("0x").unwrap(), 16)?;
+                let vendor_id = u16::from_str_radix(vendor_output.strip_prefix("0x").unwrap(), 16)?;
 
                 let device_output = cmd!(sh, "cat {device_sysfs_path}/device").read().await?;
-                let device_id =
-                    u16::from_str_radix(&device_output.strip_prefix("0x").unwrap(), 16)?;
+                let device_id = u16::from_str_radix(device_output.strip_prefix("0x").unwrap(), 16)?;
 
                 let class_output = cmd!(sh, "cat {device_sysfs_path}/class").read().await?;
-                let class_code =
-                    u32::from_str_radix(&class_output.strip_prefix("0x").unwrap(), 16)?;
+                let class_code = u32::from_str_radix(class_output.strip_prefix("0x").unwrap(), 16)?;
 
                 devs.push(ParsedPciDevice {
                     vendor_id,

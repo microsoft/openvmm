@@ -862,7 +862,7 @@ async fn vm_config_from_command_line(
             .context("pci low mmio underflow")?;
         let ecam_start = low_pci_mmio_start
             .checked_sub(ecam_size)
-            .context("pci ecam undeflow")?;
+            .context("pci ecam underflow")?;
         low_mmio_start = ecam_start;
         high_mmio_end = high_mmio_end
             .checked_add(high_mmio_size)
