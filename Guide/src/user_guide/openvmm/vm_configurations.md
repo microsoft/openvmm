@@ -33,7 +33,7 @@ cargo run -- \
 
 Key flags:
 - `--uefi` — boot using `mu_msvm` UEFI firmware (implicitly enables Hyper-V
-  enlightenments and VMBus)
+  enlightenments and VMBus, so `--hv` is not needed separately)
 - `--disk` — exposes a disk over VMBus (SCSI-equivalent)
 
 ## Gen1-equivalent (PCAT BIOS boot)
@@ -59,16 +59,28 @@ details on PCAT boot, including floppy and optical boot order.
 
 ## With OpenHCL (VTL2)
 
-To run with OpenHCL, add `--vtl2` and `--igvm` to a UEFI configuration. OpenHCL
-requires UEFI — it does not work with PCAT.
+To run with OpenHCL, add `--hv --vtl2` and `--igvm`. You don't need to
+separately specify `--uefi` or `--pcat` — the IGVM file contains the OpenHCL
+paravisor, and most IGVM builds bundle the
+[mu_msvm UEFI firmware](../../reference/devices/firmware/mu_msvm_uefi.md)
+for VTL0 guest boot. The build recipe controls whether UEFI is included
+(see [IGVM architecture](../../reference/architecture/openhcl/igvm.md)).
+
+Note: `--vtl2` requires `--hv` to be passed explicitly on the command line,
+even though other flags like `--uefi` imply it internally.
 
 ```bash
 cargo run -- \
-  --uefi \
   --hv --vtl2 \
   --igvm path/to/openhcl.igvm \
   --disk memdiff:file:path/to/disk.vhdx \
   -p 4 -m 4GB
+```
+
+```admonish note
+PCAT (BIOS) boot with OpenHCL on openvmm is not well tested. On Hyper-V, PCAT
+firmware is provided by the host — the IGVM does not bundle it. If you need
+Gen1-style boot with OpenHCL, use Hyper-V rather than openvmm standalone.
 ```
 
 See [Running OpenHCL with OpenVMM](../openhcl/run/openvmm.md)
@@ -81,6 +93,6 @@ for full setup instructions.
 | Modern Windows/Linux guest | `--uefi --disk memdiff:file:disk.vhdx` | Most common |
 | With graphical console | add `--gfx` | VNC-based, see [Graphical Console](../../reference/openvmm/graphical_console.md) |
 | With networking | add `--nic` | Consomme user-mode NAT |
-| With OpenHCL | add `--vtl2 --igvm path/to/openhcl.igvm` | Requires `--uefi` |
+| With OpenHCL | `--hv --vtl2 --igvm path/to/openhcl.igvm --disk memdiff:file:disk.vhdx` | IGVM carries the paravisor; no `--uefi`/`--pcat` needed |
 | Legacy OS (DOS, old Windows) | `--pcat --ide memdiff:file:disk.vhd --gfx` | IDE storage, BIOS boot |
 | Linux direct boot (no firmware) | `--kernel vmlinux --initrd initrd` | Skips UEFI/PCAT entirely |
