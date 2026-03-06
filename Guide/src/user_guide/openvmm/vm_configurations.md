@@ -46,14 +46,14 @@ boot (most Linux distributions, Windows 10+).
 ```bash
 cargo run -- \
   --pcat \
-  --disk memdiff:file:path/to/disk.vhd \
+  --ide memdiff:file:path/to/disk.vhd \
   --gfx
 ```
 
 Key flags:
 - `--pcat` — boot using the Microsoft Hyper-V PCAT BIOS
-- IDE storage is used automatically with PCAT (no `--hv` required for basic
-  disk access)
+- `--ide` — expose a disk via emulated IDE controller (the traditional Gen1
+  storage path, no `--hv` required)
 
 See the [PCAT BIOS reference](../../reference/devices/firmware/pcat_bios.md) for more
 details on PCAT boot, including floppy and optical boot order.
@@ -83,5 +83,5 @@ for full setup instructions.
 | With graphical console | add `--gfx` | VNC-based, see [Graphical Console](../../reference/openvmm/graphical_console.md) |
 | With networking | add `--nic` | Consomme user-mode NAT |
 | With OpenHCL | add `--vtl2 --igvm path/to/openhcl.igvm` | Requires `--uefi --hv` |
-| Legacy OS (DOS, old Windows) | `--pcat --gfx` | IDE storage, BIOS boot |
+| Legacy OS (DOS, old Windows) | `--pcat --ide memdiff:file:disk.vhd --gfx` | IDE storage, BIOS boot |
 | Linux direct boot (no firmware) | `--kernel vmlinux --initrd initrd` | Skips UEFI/PCAT entirely |

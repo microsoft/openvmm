@@ -76,21 +76,48 @@ Always specify the language. Never leave a code fence unlabeled.
 
 ### Placeholders
 
-Use `<ANGLE_BRACKETS>` with `SCREAMING_SNAKE_CASE` for values the reader must
-customize. Always explain what to substitute, either in a comment or in text
-before the block.
+### Placeholders
 
-Good:
+Two conventions are used for placeholder values. Use whichever is clearest
+in context:
 
-~~~bash
-cargo run -- --uefi --disk memdiff:file:<PATH_TO_VHDX>
-~~~
+- **`path/to/...` style** — for file paths where the structure is obvious.
+  This is the predominant style in the existing guide.
+  ```bash
+  cargo run -- --uefi --disk memdiff:file:path/to/disk.vhdx
+  ```
+
+- **`<SCREAMING_SNAKE_CASE>` style** — for values that need extra emphasis or
+  where the expected format isn't obvious (build numbers, VM names, keys).
+  ```bash
+  Set-VMComPort -VMName <VM_NAME> -Number 3 -Path \\.\pipe\<PIPE_NAME>
+  ```
 
 Bad (hardcoded path that won't work for the reader):
 
 ~~~bash
 cargo run -- --uefi --disk memdiff:file:/home/alice/disks/myvm.vhdx
 ~~~
+
+### File paths in code examples
+
+Use **forward slashes** (Unix-style) for file paths in `bash` code blocks,
+even when the path refers to a Windows filesystem location accessed via WSL:
+
+```bash
+# Good — forward slashes in bash
+cargo run -- --disk memdiff:file:path/to/disk.vhdx
+
+# Good — wslpath output uses backslashes, but that's a Windows path
+cargo run -- --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/disk.vhdx)"
+```
+
+Use **backslashes** for paths in `powershell` code blocks:
+
+```powershell
+# Good — backslashes in PowerShell
+cargo run -- --disk memdiff:file:C:\vhds\disk.vhdx
+```
 
 ### Length
 
