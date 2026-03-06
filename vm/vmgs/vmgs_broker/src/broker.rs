@@ -22,7 +22,7 @@ pub enum VmgsBrokerError {
 impl From<vmgs::Error> for VmgsBrokerError {
     fn from(value: vmgs::Error) -> Self {
         match value {
-            vmgs::Error::FileInfoNotAllocated => VmgsBrokerError::FileInfoNotAllocated,
+            vmgs::Error::FileInfoNotAllocated(_) => VmgsBrokerError::FileInfoNotAllocated,
             other => VmgsBrokerError::Other(RemoteError::new(other)),
         }
     }

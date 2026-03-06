@@ -30,7 +30,6 @@ pub struct Customizations {
     pub custom_openhcl_boot: Option<PathBuf>,
     pub custom_openvmm_hcl: Option<PathBuf>,
     pub custom_sidecar: Option<PathBuf>,
-    pub custom_uefi: Option<PathBuf>,
     pub custom_vtl0_kernel: Option<PathBuf>,
     pub custom_extra_rootfs: Vec<PathBuf>,
     pub override_arch: Option<CommonArch>,
@@ -88,7 +87,6 @@ impl SimpleFlowNode for Node {
             custom_openhcl_boot,
             custom_openvmm_hcl,
             custom_sidecar,
-            custom_uefi,
             custom_vtl0_kernel,
             override_arch,
             override_kernel_pkg,
@@ -156,7 +154,6 @@ impl SimpleFlowNode for Node {
                 }),
                 custom_openvmm_hcl: custom_openvmm_hcl.map(|p| p.absolute()).transpose()?,
                 custom_openhcl_boot: custom_openhcl_boot.map(|p| p.absolute()).transpose()?,
-                custom_uefi: custom_uefi.map(|p| p.absolute()).transpose()?,
                 custom_kernel: custom_kernel.map(|p| p.absolute()).transpose()?,
                 custom_sidecar: custom_sidecar.map(|p| p.absolute()).transpose()?,
                 custom_extra_rootfs: custom_extra_rootfs

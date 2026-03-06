@@ -4,10 +4,10 @@ let
     url = "https://github.com/NixOS/nixpkgs/archive/50ab793786d9de88ee30ec4e4c24fb4236fc2674.tar.gz";
     sha256 = "1s2gr5rcyqvpr58vxdcb095mdhblij9bfzaximrva2243aal3dgx";
   };
-  # Pinned rust-overlay from stable branch
+  # Pinned rust-overlay from stable branch which has our current rust version (1.93)
   rust_overlay = import (builtins.fetchTarball {
-    url = "https://github.com/oxalica/rust-overlay/archive/2ef5b3362af585a83bafd34e7fc9b1f388c2e5e2.tar.gz";
-    sha256 = "138a0p83qzflw8wj4a7cainqanjmvjlincx8imr3yq1b924lg9cz";
+    url = "https://github.com/oxalica/rust-overlay/archive/ec6a3d5cdf14bb5a1dd03652bd3f6351004d2188.tar.gz";
+    sha256 = "0pik603mmxsgs2gndk681j9rkxjlrx3lxbpwd9linn2rn8vacg0a";
   });
   pkgs = import nixpkgs { overlays = [ rust_overlay ]; };
 
@@ -156,6 +156,17 @@ in pkgs.mkShell {
   OPENVMM_DEPS_X64 = x64BaseDeps.openvmm_deps;
   OPENVMM_DEPS_AARCH64 = aarch64BaseDeps.openvmm_deps;
 
+  # Export dep paths so that flowey can find them at runtime
+  NIX_PROTOC = "${protoc}";
+  NIX_UEFI_X64 = "${x64BaseDeps.uefi_mu_msvm}/MSVM.fd";
+  NIX_UEFI_AARCH64 = "${aarch64BaseDeps.uefi_mu_msvm}/MSVM.fd";
+  NIX_KERNEL_X64 = "${x64Kernel}";
+  NIX_KERNEL_X64_CVM = "${x64KernelCvm}";
+  NIX_KERNEL_X64_DEV = "${x64KernelDev}";
+  NIX_KERNEL_X64_CVM_DEV = "${x64KernelCvmDev}";
+  NIX_KERNEL_AARCH64 = "${aarch64Kernel}";
+  NIX_KERNEL_AARCH64_DEV = "${aarch64KernelDev}";
+
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
 
@@ -180,18 +191,5 @@ in pkgs.mkShell {
     ln -sf ${x64CrossGcc}/bin/x86_64-unknown-linux-gnu-objcopy $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-objcopy
     ''}
     export PATH="$NIX_CC_WRAPPER_DIR:$PATH"
-
-    echo "OpenVMM Nix Shell"
-    echo "================="
-    echo "Host architecture: ${hostArch}"
-    echo ""
-    echo "Build commands:"
-    echo "  cargo xflowey build-igvm x64 \$CARGO_BUILD_ARGS_X64"
-    echo "  cargo xflowey build-igvm x64-cvm \$CARGO_BUILD_ARGS_X64_CVM"
-    echo "  cargo xflowey build-igvm x64-devkern \$CARGO_BUILD_ARGS_X64_DEVKERN"
-    echo "  cargo xflowey build-igvm x64-cvm-devkern \$CARGO_BUILD_ARGS_X64_CVM_DEVKERN"
-    echo "  cargo xflowey build-igvm aarch64 \$CARGO_BUILD_ARGS_AARCH64"
-    echo "  cargo xflowey build-igvm aarch64-devkern \$CARGO_BUILD_ARGS_AARCH64_DEVKERN"
-    echo ""
   '';
 }

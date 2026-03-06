@@ -14,6 +14,15 @@ pub mod process;
 pub mod unix;
 pub mod windows;
 
+// Re-export windows_sys and windows_result so that the delayload! macro works
+// when used in other crates
+#[cfg(windows)]
+#[doc(hidden)]
+pub use windows_result;
+#[cfg(windows)]
+#[doc(hidden)]
+pub use windows_sys;
+
 pub use sys::close_stdout;
 pub use sys::pipe::pair as pipe_pair;
 

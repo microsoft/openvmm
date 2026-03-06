@@ -55,6 +55,14 @@ impl VirtioFsInode {
         *path = new_path;
     }
 
+    /// Increments the lookup count without updating the path.
+    ///
+    /// This is used when returning an existing inode in a FUSE reply (e.g., for hard links)
+    /// where the kernel will track the reference and later send a forget.
+    pub fn inc_lookup(&self) {
+        self.lookup_count.fetch_add(1, Ordering::AcqRel);
+    }
+
     /// Decrements the lookup count, and returns the new count.
     pub fn forget(&self, node_id: u64, lookup_count: u64) -> u64 {
         let mut old_count = self.lookup_count.load(Ordering::Acquire);

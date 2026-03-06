@@ -5,16 +5,8 @@
 #![expect(unsafe_code)]
 
 use crate::error::Error;
-use anyhow::anyhow;
 use std::marker::PhantomData;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
-use windows::Win32::Security::Cryptography::BCryptCloseAlgorithmProvider;
-use windows::Win32::Security::Cryptography::BCryptDecrypt;
-use windows::Win32::Security::Cryptography::BCryptDestroyKey;
-use windows::Win32::Security::Cryptography::BCryptEncrypt;
-use windows::Win32::Security::Cryptography::BCryptImportKey;
-use windows::Win32::Security::Cryptography::BCryptOpenAlgorithmProvider;
-use windows::Win32::Security::Cryptography::BCryptSetProperty;
 use windows::Win32::Security::Cryptography::BCRYPT_AES_ALGORITHM;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO;
@@ -24,7 +16,16 @@ use windows::Win32::Security::Cryptography::BCRYPT_KEY_DATA_BLOB;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_DATA_BLOB_MAGIC;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_DATA_BLOB_VERSION1;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
-use zerocopy::IntoBytes; use zerocopy::Immutable; use zerocopy::KnownLayout; 
+use windows::Win32::Security::Cryptography::BCryptCloseAlgorithmProvider;
+use windows::Win32::Security::Cryptography::BCryptDecrypt;
+use windows::Win32::Security::Cryptography::BCryptDestroyKey;
+use windows::Win32::Security::Cryptography::BCryptEncrypt;
+use windows::Win32::Security::Cryptography::BCryptImportKey;
+use windows::Win32::Security::Cryptography::BCryptOpenAlgorithmProvider;
+use windows::Win32::Security::Cryptography::BCryptSetProperty;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // BCryptImportKey expects a key header immediately followed by a key of size key_len
 #[repr(C)]
@@ -40,7 +41,7 @@ impl KeyBlob {
     fn new(key: &[u8]) -> Result<Self, Error> {
         let key_a: [u8; VMGS_ENCRYPTION_KEY_SIZE] = key
             .try_into()
-            .map_err(|e| Error::Other(anyhow!("KeyBlob: invalid key size: {}", e)))?;
+            .map_err(|_| Error::UnexpectedLength("KeyBlob", VMGS_ENCRYPTION_KEY_SIZE, key.len()))?;
 
         Ok(KeyBlob {
             header_magic: BCRYPT_KEY_DATA_BLOB_MAGIC,
@@ -122,7 +123,7 @@ pub fn vmgs_encrypt(key: &[u8], iv: &[u8], data: &[u8], tag: &mut [u8]) -> Resul
             Default::default(),
         )
         .ok()
-        .map_err(|e| Error::Other(anyhow!("BCrypt: Failed to perform encryption: {:?}", e)))?;
+        .map_err(|e| Error::BCrypt(e, "performing encryption"))?;
     }
     assert_eq!(encrypted_len as usize, encrypted_data.len());
     Ok(encrypted_data)
@@ -150,7 +151,7 @@ pub fn vmgs_decrypt(key: &[u8], iv: &[u8], data: &[u8], tag: &[u8]) -> Result<Ve
             Default::default(),
         )
         .ok()
-        .map_err(|e| Error::Other(anyhow!("BCrypt: Failed to perform decryption: {:?}", e,)))?;
+        .map_err(|e| Error::BCrypt(e, "performing decryption"))?;
     }
     assert_eq!(decrypted_len as usize, decrypted_data.len());
     Ok(decrypted_data)
@@ -168,7 +169,7 @@ fn import_bcrypt_key(key: &[u8]) -> Result<KeyWrapper, Error> {
         let alg_handle = {
             BCryptOpenAlgorithmProvider(&mut alg, BCRYPT_AES_ALGORITHM, None, Default::default())
                 .ok()
-                .map_err(|e| Error::Other(anyhow!("BCrypt: Failed to set GCM Property: {}", e)))?;
+                .map_err(|e| Error::BCrypt(e, "opening algorithm provider"))?;
             AlgWrapper { alg }
         };
 
@@ -179,7 +180,7 @@ fn import_bcrypt_key(key: &[u8]) -> Result<KeyWrapper, Error> {
             Default::default(),
         )
         .ok()
-        .map_err(|e| Error::Other(anyhow!("BCrypt: Failed to set GCM Property: {}", e)))?;
+        .map_err(|e| Error::BCrypt(e, "setting GCM Property"))?;
 
         BCryptImportKey(
             alg_handle.alg,
@@ -191,7 +192,7 @@ fn import_bcrypt_key(key: &[u8]) -> Result<KeyWrapper, Error> {
             Default::default(),
         )
         .ok()
-        .map_err(|e| Error::Other(anyhow!("BCrypt: Failed to import key {}", e)))?;
+        .map_err(|e| Error::BCrypt(e, "importing key"))?;
         Ok(KeyWrapper { key: bcrypt_key })
     }
 }

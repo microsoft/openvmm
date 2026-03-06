@@ -47,7 +47,7 @@ fn do_fuzz(input: DiagnosticsInput) {
 
     // Set GPA to point somewhere in our fuzzed buffer
     diagnostics.set_gpa(buffer_gpa);
-    let _ = diagnostics.process_diagnostics(input.allow_reprocess, &gm, |_log| {
+    let _ = diagnostics.process_diagnostics(input.allow_reprocess, &gm, None, |_log| {
         // Log handler - just discard logs during fuzzing
     });
 }

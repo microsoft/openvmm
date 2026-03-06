@@ -230,14 +230,6 @@ options:
     #[clap(long, default_value = "auto", value_parser = parse_x2apic)]
     pub x2apic: X2ApicConfig,
 
-    /// use virtio console
-    #[clap(long)]
-    pub virtio_console: bool,
-
-    /// use virtio console enumerated via VPCI
-    #[clap(long, conflicts_with("virtio_console"))]
-    pub virtio_console_pci: bool,
-
     /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
@@ -253,10 +245,6 @@ options:
     /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
-
-    /// virtio serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
-    #[clap(long, value_name = "SERIAL")]
-    pub virtio_serial: Option<SerialConfigCli>,
 
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
@@ -573,10 +561,6 @@ options:
     #[clap(long)]
     pub default_boot_always_attempt: bool,
 
-    /// Enable Azure Identity HSM support in UEFI
-    #[clap(long)]
-    pub azi_hsm_enabled: bool,
-
     /// Attach a PCI Express root complex to the VM
     #[clap(long_help = r#"
 Attach root complexes to the VM.
@@ -591,7 +575,7 @@ Options:
     `segment=<value>`              configures the PCI Express segment, default 0
     `start_bus=<value>`            lowest valid bus number, default 0
     `end_bus=<value>`              highest valid bus number, default 255
-    `low_mmio=<size>`              low MMIO window size, default 4M
+    `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
 "#)]
     #[clap(long, conflicts_with("pcat"))]
@@ -1521,7 +1505,7 @@ impl FromStr for PcieRootComplexCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 4 * 1024 * 1024; // 4M
+        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 64 * 1024 * 1024; // 64M
         const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
 
         let mut opts = s.split(',');
@@ -2282,7 +2266,7 @@ mod tests {
         const ONE_MB: u64 = 1024 * 1024;
         const ONE_GB: u64 = 1024 * ONE_MB;
 
-        const DEFAULT_LOW_MMIO: u32 = (4 * ONE_MB) as u32;
+        const DEFAULT_LOW_MMIO: u32 = (64 * ONE_MB) as u32;
         const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
 
         assert_eq!(

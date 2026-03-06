@@ -6,6 +6,9 @@ name = "sev_guest_device"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio"]
+
 [dependencies]
 static_assertions.workspace = true
 zerocopy.workspace = true
@@ -13,6 +16,8 @@ zerocopy.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 thiserror.workspace = true
 x86defs.workspace = true
+sev_guest_device_tio = { workspace = true, optional = true }
+tracing.workspace = true
 
 [lints]
 workspace = true

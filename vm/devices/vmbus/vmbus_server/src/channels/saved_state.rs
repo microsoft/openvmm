@@ -14,6 +14,7 @@ use mesh::payload::Protobuf;
 use std::fmt::Display;
 use thiserror::Error;
 use vmbus_channel::bus::OfferKey;
+use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
@@ -928,7 +929,9 @@ impl OpenRequest {
         Self {
             open_id: value.open_id,
             ring_buffer_gpadl_id: value.ring_buffer_gpadl_id,
-            target_vp: value.target_vp,
+            target_vp: value
+                .target_vp
+                .unwrap_or(protocol::VP_INDEX_DISABLE_INTERRUPT),
             downstream_ring_buffer_page_offset: value.downstream_ring_buffer_page_offset,
             user_data: value.user_data.into(),
             guest_specified_interrupt_info: value
@@ -943,7 +946,7 @@ impl OpenRequest {
         super::OpenRequest {
             open_id: self.open_id,
             ring_buffer_gpadl_id: self.ring_buffer_gpadl_id,
-            target_vp: self.target_vp,
+            target_vp: protocol::vp_index_if_enabled(self.target_vp),
             downstream_ring_buffer_page_offset: self.downstream_ring_buffer_page_offset,
             user_data: self.user_data.into(),
             guest_specified_interrupt_info: self

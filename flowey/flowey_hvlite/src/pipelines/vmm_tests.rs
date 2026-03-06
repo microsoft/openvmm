@@ -152,8 +152,8 @@ impl IntoPipeline for VmmTestsCli {
                 job.dep_on(
                     move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
                         arch: recipe_arch,
-                        kernel: kernel_path,
-                        modules: modules_path,
+                        kernel: ReadVar::from_static(kernel_path),
+                        modules: ReadVar::from_static(modules_path),
                     },
                 );
         }

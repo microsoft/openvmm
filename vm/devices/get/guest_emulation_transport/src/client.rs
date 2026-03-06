@@ -345,7 +345,6 @@ impl GuestEmulationTransportClient {
                 guest_state_encryption_policy: json.v2.r#static.guest_state_encryption_policy,
                 management_vtl_features: json.v2.r#static.management_vtl_features,
                 hv_sint_enabled: json.v2.r#static.hv_sint_enabled,
-                azi_hsm_enabled: json.v2.r#static.azi_hsm_enabled,
             },
             acpi_tables: json.v2.dynamic.acpi_tables,
         })
@@ -410,6 +409,12 @@ impl GuestEmulationTransportClient {
     pub fn set_debug_interrupt_callback(&mut self, callback: Box<dyn Fn(u8) + Send + Sync>) {
         self.control
             .notify(msg::Msg::SetDebugInterruptCallback(callback.into()));
+    }
+
+    /// Set the the callback to handle PostLiveMigrationNotification.
+    pub fn set_post_live_migration_callback(&mut self, callback: Box<dyn Fn() + Send + Sync>) {
+        self.control
+            .notify(msg::Msg::SetPostLiveMigrationCallback(callback.into()));
     }
 
     /// Send the attestation request to the IGVM agent on the host.

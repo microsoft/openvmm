@@ -76,6 +76,7 @@ impl ExecSnippet {
             flow_backend,
             var_db_backend_kind: _,
             job_reqs,
+            job_command_wrappers,
         } = {
             let current_exe = std::env::current_exe()
                 .context("failed to get path to current flowey executable")?;
@@ -83,6 +84,8 @@ impl ExecSnippet {
                 fs_err::File::open(current_exe.with_file_name("pipeline.json"))?;
             serde_json::from_reader(pipeline_static_db)?
         };
+
+        let command_wrapper = job_command_wrappers.get(&job_idx).cloned();
 
         for [node_modpath, snippet_idx] in node_modpath_and_snippet_idx
             .chunks_exact(2)
@@ -135,7 +138,11 @@ impl ExecSnippet {
                     flow_backend.into(),
                     flow_platform,
                     flow_arch,
-                );
+                )?;
+
+            if let Some(ref wrapper) = command_wrapper {
+                rust_runtime_services.sh.set_wrapper(Some(wrapper.clone()));
+            }
 
             let mut ctx_backend = ExecSnippetCtx::new(
                 flow_backend.into(),
@@ -343,6 +350,7 @@ pub(crate) struct FloweyPipelineStaticDb {
     pub flow_backend: FlowBackendCli,
     pub var_db_backend_kind: VarDbBackendKind,
     pub job_reqs: BTreeMap<usize, BTreeMap<String, Vec<SerializedRequest>>>,
+    pub job_command_wrappers: BTreeMap<usize, flowey_core::shell::CommandWrapperKind>,
 }
 
 // encode requests as JSON stored in a JSON string (to make human inspection

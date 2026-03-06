@@ -41,8 +41,6 @@ pub struct Config {
     pub framebuffer: Option<framebuffer::Framebuffer>,
     pub vga_firmware: Option<RomFileLocation>,
     pub vtl2_gfx: bool,
-    pub virtio_console_pci: bool,
-    pub virtio_serial: Option<SerialPipes>,
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
@@ -123,7 +121,6 @@ pub enum LoadMode {
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
         bios_guid: Guid,
-        azi_hsm_enabled: bool,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -179,8 +176,9 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub low_mmio_size: u32,
-    pub high_mmio_size: u64,
+    pub ecam_range: MemoryRange,
+    pub low_mmio: MemoryRange,
+    pub high_mmio: MemoryRange,
     pub ports: Vec<PcieRootPortConfig>,
 }
 
@@ -273,8 +271,9 @@ pub enum ArchTopologyConfig {
 pub struct MemoryConfig {
     pub mem_size: u64,
     pub mmio_gaps: Vec<MemoryRange>,
+    pub pci_ecam_gaps: Vec<MemoryRange>,
+    pub pci_mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
-    pub pcie_ecam_base: u64,
 }
 
 #[derive(Debug, MeshPayload, Default)]
@@ -311,34 +310,6 @@ impl fmt::Display for Hypervisor {
             Self::MsHv => "mshv",
             Self::Whp => "whp",
             Self::Hvf => "hvf",
-        })
-    }
-}
-
-/// Input and output for a connected serial port.
-#[derive(Debug, MeshPayload)]
-pub struct SerialPipes {
-    /// Input for a serial port.
-    ///
-    /// If the file reaches EOF, then the serial port will report carrier drop
-    /// to the guest. Use `None` when the port should remain connected
-    /// indefinitely.
-    pub input: Option<File>,
-    /// Output for a serial port.
-    ///
-    /// If the file write fails with [`std::io::ErrorKind::BrokenPipe`], then
-    /// the serial port will report carrier drop to the guest.
-    ///
-    /// `None` is equivalent to `/dev/null`--it will silently succeed all
-    /// writes.
-    pub output: Option<File>,
-}
-
-impl SerialPipes {
-    pub fn try_clone(&self) -> std::io::Result<Self> {
-        Ok(Self {
-            input: self.input.as_ref().map(File::try_clone).transpose()?,
-            output: self.output.as_ref().map(File::try_clone).transpose()?,
         })
     }
 }

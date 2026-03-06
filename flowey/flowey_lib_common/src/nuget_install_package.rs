@@ -170,8 +170,8 @@ impl FlowNode for Node {
                             && matches!(nuget_config_platform, NugetInstallPlatform::Windows)
                         {
                             (
-                                crate::_util::wslpath::linux_to_win(&packages_config_filepath),
-                                crate::_util::wslpath::linux_to_win(&nuget_config_file),
+                                crate::_util::wslpath::linux_to_win(rt, &packages_config_filepath),
+                                crate::_util::wslpath::linux_to_win(rt, &nuget_config_file),
                             )
                         } else {
                             (packages_config_filepath, nuget_config_file)
@@ -183,9 +183,8 @@ impl FlowNode for Node {
                     // FUTURE: add checks to avoid having to invoke
                     // nuget at all (a-la the "expected_hashes" in the
                     // old ci/restore.sh)
-                    let sh = xshell::Shell::new()?;
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "{nuget_bin}
                                     install
                                     {non_interactive...}

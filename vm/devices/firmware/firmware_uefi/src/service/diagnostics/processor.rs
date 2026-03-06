@@ -113,9 +113,7 @@ where
     gm.read_at(buffer_start_gpa.as_u64(), &mut buffer_data)?;
 
     // Process the buffer
-    LogProcessor::process_buffer(&buffer_data, log_level, log_handler)?;
-
-    Ok(())
+    LogProcessor::process_buffer(&buffer_data, log_level, log_handler)
 }
 
 /// Internal processor for log entries with suppression tracking
@@ -126,6 +124,8 @@ struct LogProcessor {
     suppressed_logs: BTreeMap<&'static str, u32>,
     /// Number of entries processed
     entries_processed: usize,
+    /// Number of entries emitted (passed level/suppression filters)
+    entries_emitted: usize,
     /// Number of bytes read from buffer
     bytes_read: usize,
 }
@@ -136,6 +136,7 @@ impl LogProcessor {
             accumulator: LogAccumulator::new(),
             suppressed_logs: BTreeMap::new(),
             entries_processed: 0,
+            entries_emitted: 0,
             bytes_read: 0,
         }
     }
@@ -158,6 +159,7 @@ impl LogProcessor {
         }
         tracelimit::info_ratelimited!(
             entries_processed = self.entries_processed,
+            entries_emitted = self.entries_emitted,
             bytes_read = self.bytes_read,
             "processed EFI log entries"
         );
@@ -194,6 +196,7 @@ impl LogProcessor {
             if let Some(complete_log) = processor.accumulator.take() {
                 processor.entries_processed += 1;
                 if processor.should_emit(&complete_log, log_level) {
+                    processor.entries_emitted += 1;
                     log_handler(&complete_log);
                 }
             }
@@ -202,6 +205,7 @@ impl LogProcessor {
         if let Some(final_log) = processor.accumulator.clear() {
             processor.entries_processed += 1;
             if processor.should_emit(&final_log, log_level) {
+                processor.entries_emitted += 1;
                 log_handler(&final_log);
             }
         }

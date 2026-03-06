@@ -1143,7 +1143,9 @@ impl ClientTask {
             channel_id,
             open_id: 0,
             ring_buffer_gpadl_id: open_data.ring_gpadl_id,
-            target_vp: open_data.target_vp,
+            target_vp: open_data
+                .target_vp
+                .unwrap_or(protocol::VP_INDEX_DISABLE_INTERRUPT),
             downstream_ring_buffer_page_offset: open_data.ring_offset,
             user_data: open_data.user_data,
         };
@@ -2421,7 +2423,7 @@ mod tests {
             ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
-                    target_vp: 0,
+                    target_vp: Some(0),
                     ring_offset: 0,
                     ring_gpadl_id: GpadlId(0),
                     event_flag: 0,
@@ -2471,7 +2473,7 @@ mod tests {
             ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
-                    target_vp: 0,
+                    target_vp: Some(0),
                     ring_offset: 0,
                     ring_gpadl_id: GpadlId(0),
                     event_flag: 0,
@@ -2980,7 +2982,7 @@ mod tests {
                     ChannelRequest::Open,
                     OpenRequest {
                         open_data: OpenData {
-                            target_vp: 0,
+                            target_vp: Some(0),
                             ring_offset: 0,
                             ring_gpadl_id: GpadlId(0),
                             event_flag: 0,
@@ -3063,7 +3065,7 @@ mod tests {
                 ChannelRequest::Open,
                 OpenRequest {
                     open_data: OpenData {
-                        target_vp: 0,
+                        target_vp: Some(0),
                         ring_offset: 0,
                         ring_gpadl_id: GpadlId(0),
                         event_flag: 0,
@@ -3170,7 +3172,7 @@ mod tests {
             ChannelRequest::Open,
             OpenRequest {
                 open_data: OpenData {
-                    target_vp: 0,
+                    target_vp: Some(0),
                     ring_offset: 0,
                     ring_gpadl_id: GpadlId(0),
                     event_flag: 0,

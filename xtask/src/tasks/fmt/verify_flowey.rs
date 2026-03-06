@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::Xtask;
+use crate::shell::XtaskShell;
 use anyhow::Context;
 use clap::Parser;
 
@@ -42,8 +43,12 @@ impl Xtask for VerifyFlowey {
 
         let check = (!self.fix).then_some("--check");
 
-        let sh = xshell::Shell::new()?;
-        xshell::cmd!(sh, "cargo --quiet {cmd...} regen --quiet {check...}")
+        let sh = XtaskShell::new()?;
+        sh.cmd("cargo")
+            .arg("--quiet")
+            .args(&cmd)
+            .args(["regen", "--quiet"])
+            .args(check)
             .quiet()
             .run()?;
 
