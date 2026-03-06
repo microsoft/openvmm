@@ -98,8 +98,6 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
-pub const DEFAULT_PCIE_ECAM_BASE: u64 = 0x8_0000_0000; // 32GB, size depends on configuration
-
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {

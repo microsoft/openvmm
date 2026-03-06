@@ -5,6 +5,7 @@
 
 // TODO: continue to remove these hardcoded deps
 use acpi::dsdt;
+use acpi::ssdt::Ssdt;
 use acpi_spec::fadt::AddressSpaceId;
 use acpi_spec::fadt::AddressWidth;
 use acpi_spec::fadt::GenericAddress;
@@ -573,7 +574,22 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         self.with_srat(|t| b.append(t));
         if !self.pcie_host_bridges.is_empty() {
             self.with_mcfg(|t| b.append(t));
+
+            let mut ssdt = Ssdt::new();
+            for bridge in self.pcie_host_bridges {
+                ssdt.add_pcie(
+                    bridge.index,
+                    bridge.segment,
+                    bridge.start_bus,
+                    bridge.end_bus,
+                    bridge.ecam_range,
+                    bridge.low_mmio,
+                    bridge.high_mmio,
+                );
+            }
+            b.append_raw(&ssdt.to_bytes());
         }
+
         if self.cache_topology.is_some() {
             self.with_pptt(|t| b.append(t));
         }

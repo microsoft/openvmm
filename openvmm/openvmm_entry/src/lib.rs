@@ -82,7 +82,6 @@ use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
@@ -837,7 +836,6 @@ async fn vm_config_from_command_line(
 
     let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
     let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
-    let mut ecam_end = DEFAULT_PCIE_ECAM_BASE;
 
     let mut pcie_root_complexes = Vec::new();
     for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
@@ -859,18 +857,19 @@ async fn vm_config_from_command_line(
             .context("high mmio rounding error")?;
         let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
 
-        low_mmio_start = low_mmio_start
+        let low_pci_mmio_start = low_mmio_start
             .checked_sub(low_mmio_size)
             .context("pci low mmio underflow")?;
+        let ecam_start = low_pci_mmio_start
+            .checked_sub(ecam_size)
+            .context("pci ecam underflow")?;
+        low_mmio_start = ecam_start;
         high_mmio_end = high_mmio_end
             .checked_add(high_mmio_size)
             .context("pci high mmio overflow")?;
-        ecam_end = ecam_end
-            .checked_add(ecam_size)
-            .context("pci ecam overflow")?;
 
-        let ecam_range = MemoryRange::new(ecam_end - ecam_size..ecam_end);
-        let low_mmio = MemoryRange::new(low_mmio_start..low_mmio_start + low_mmio_size);
+        let ecam_range = MemoryRange::new(ecam_start..ecam_start + ecam_size);
+        let low_mmio = MemoryRange::new(low_pci_mmio_start..low_pci_mmio_start + low_mmio_size);
         let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
 
         pci_ecam_gaps.push(ecam_range);
