@@ -45,6 +45,7 @@ pub struct VirtioMmioDevice {
     queues: Vec<QueueParams>,
     device_status: VirtioDeviceStatus,
     disabling: bool,
+    poll_waker: Option<std::task::Waker>,
     config_generation: u32,
     doorbells: VirtioDoorbells,
     interrupt_state: Arc<Mutex<InterruptState>>,
@@ -126,6 +127,7 @@ impl VirtioMmioDevice {
             queues,
             device_status: VirtioDeviceStatus::new(),
             disabling: false,
+            poll_waker: None,
             config_generation: 0,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             interrupt_state,
@@ -358,10 +360,17 @@ impl VirtioMmioDevice {
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
+                        // Try the fast path: poll with a noop waker to see if
+                        // the device can disable synchronously.
                         let waker = std::task::Waker::noop();
-                        let mut cx = std::task::Context::from_waker(&waker);
+                        let mut cx = std::task::Context::from_waker(waker);
                         if self.device.poll_disable(&mut cx).is_pending() {
                             self.disabling = true;
+                            // Wake the real poll waker so that poll_device will
+                            // re-poll with a real waker, replacing the noop one.
+                            if let Some(waker) = self.poll_waker.take() {
+                                waker.wake();
+                            }
                             return;
                         }
                     }
@@ -494,6 +503,7 @@ impl ChangeDeviceState for VirtioMmioDevice {
 
 impl PollDevice for VirtioMmioDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.poll_waker = Some(cx.waker().clone());
         if self.disabling {
             if self.device.poll_disable(cx).is_ready() {
                 self.device_status = VirtioDeviceStatus::new();

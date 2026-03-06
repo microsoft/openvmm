@@ -156,6 +156,7 @@ impl VirtioDevice for VirtioFsDevice {
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.exit_event.notify(usize::MAX);
         for worker in &mut self.workers {
             ready!(worker.poll_stop(cx));
         }

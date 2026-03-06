@@ -843,6 +843,7 @@ impl VirtioDevice for TestDevice {
     }
 
     fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        self.exit_event.notify(usize::MAX);
         for worker in &mut self.workers {
             std::task::ready!(worker.poll_stop(cx));
         }
