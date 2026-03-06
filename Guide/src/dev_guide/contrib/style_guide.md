@@ -76,8 +76,6 @@ Always specify the language. Never leave a code fence unlabeled.
 
 ### Placeholders
 
-### Placeholders
-
 Two conventions are used for placeholder values. Use whichever is clearest
 in context:
 

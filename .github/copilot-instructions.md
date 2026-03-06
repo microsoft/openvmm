@@ -16,7 +16,8 @@ When editing any page under `Guide/`, follow the style guide at
 `Guide/src/dev_guide/contrib/style_guide.md`:
 - Use mdbook-admonish syntax (`` ```admonish note ``, `` ```admonish warning ``, etc.)
   for callouts — **NOT** docfx `> [!NOTE]` syntax
-- Use `<SCREAMING_SNAKE_CASE>` placeholders in code blocks
+- Use `path/to/...` placeholders for file paths (predominant style) or
+  `<SCREAMING_SNAKE_CASE>` for non-obvious values like VM names or build numbers
 - Label all code fences with the language (`bash`, `powershell`, `rust`, etc.)
 - Keep code blocks under 30 lines; split with explanatory text
 - This is an OSS repo — do not reference internal Microsoft tools, wikis,
