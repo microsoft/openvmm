@@ -86,6 +86,8 @@ pub struct VirtioPciDevice {
     #[inspect(hex)]
     device_status: VirtioDeviceStatus,
     disabling: bool,
+    #[inspect(skip)]
+    poll_waker: Option<std::task::Waker>,
     config_generation: u32,
     config_space: ConfigSpaceType0Emulator,
 
@@ -236,6 +238,7 @@ impl VirtioPciDevice {
             interrupt_status: Arc::new(Mutex::new(0)),
             device_status: VirtioDeviceStatus::new(),
             disabling: false,
+            poll_waker: None,
             config_generation: 0,
             interrupt_kind,
             config_space,
@@ -410,10 +413,17 @@ impl VirtioPciDevice {
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
+                        // Try the fast path: poll with a noop waker to see if
+                        // the device can disable synchronously.
                         let waker = std::task::Waker::noop();
-                        let mut cx = std::task::Context::from_waker(&waker);
+                        let mut cx = std::task::Context::from_waker(waker);
                         if self.device.poll_disable(&mut cx).is_pending() {
                             self.disabling = true;
+                            // Wake the real poll waker so that poll_device will
+                            // re-poll with a real waker, replacing the noop one.
+                            if let Some(waker) = self.poll_waker.take() {
+                                waker.wake();
+                            }
                             return;
                         }
                     }
@@ -618,6 +628,7 @@ impl ChangeDeviceState for VirtioPciDevice {
 
 impl PollDevice for VirtioPciDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.poll_waker = Some(cx.waker().clone());
         if self.disabling {
             if self.device.poll_disable(cx).is_ready() {
                 self.device_status = VirtioDeviceStatus::new();

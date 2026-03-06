@@ -135,6 +135,7 @@ impl VirtioDevice for VirtioPlan9Device {
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.exit_event.notify(usize::MAX);
         if let Some(worker) = &mut self.worker {
             ready!(worker.poll_stop(cx));
         }
