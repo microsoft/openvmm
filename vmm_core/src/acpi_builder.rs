@@ -633,7 +633,7 @@ mod test {
     ];
 
     fn new_mem() -> MemoryLayout {
-        MemoryLayout::new(TB, &MMIO, None).unwrap()
+        MemoryLayout::new(TB, &MMIO, &[], &[], None).unwrap()
     }
 
     fn new_builder<'a>(

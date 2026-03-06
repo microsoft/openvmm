@@ -203,6 +203,8 @@ mod tests {
                 MemoryRange::new(0x10000..0x20000),
                 MemoryRange::new(1 << 40..2 << 40),
             ],
+            &[],
+            &[],
             None,
         )
         .unwrap();

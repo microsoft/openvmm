@@ -62,7 +62,7 @@ enum InterruptKind {
 /// Run a virtio device over PCI
 #[derive(InspectMut)]
 pub struct VirtioPciDevice {
-    #[inspect(skip)]
+    #[inspect(mut)]
     device: Box<dyn VirtioDevice>,
     #[inspect(skip)]
     device_feature: VirtioDeviceFeatures,

@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 plan9.workspace = true
 
+inspect.workspace = true
 virtio.workspace = true
 virtio_resources.workspace = true
 guestmem.workspace = true

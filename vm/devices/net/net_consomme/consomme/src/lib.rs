@@ -55,6 +55,7 @@ use thiserror::Error;
 #[derive(InspectMut)]
 pub struct Consomme {
     state: ConsommeState,
+    #[inspect(mut)]
     tcp: tcp::Tcp,
     #[inspect(mut)]
     udp: udp::Udp,
