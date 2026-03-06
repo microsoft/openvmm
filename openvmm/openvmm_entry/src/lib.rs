@@ -732,7 +732,7 @@ async fn vm_config_from_command_line(
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(
             port_name = %cli_cfg.port_name,
-            socket_path = ?cli_cfg.socket_path,
+            socket_addr = ?cli_cfg.socket_addr,
             "instantiating PCIe remote device"
         );
 
@@ -748,7 +748,7 @@ async fn vm_config_from_command_line(
             port_name: cli_cfg.port_name.clone(),
             resource: pcie_remote_resources::PcieRemoteHandle {
                 instance_id,
-                socket_path: cli_cfg.socket_path.clone(),
+                socket_addr: cli_cfg.socket_addr.clone(),
                 hu: cli_cfg.hu,
                 controller: cli_cfg.controller,
             }

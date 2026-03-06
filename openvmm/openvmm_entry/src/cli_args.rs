@@ -1675,7 +1675,7 @@ pub struct PcieRemoteCli {
     /// Name of the PCIe downstream port to attach to.
     pub port_name: String,
     /// Unix socket path for the remote simulator.
-    pub socket_path: Option<String>,
+    pub socket_addr: Option<String>,
     /// Hardware unit identifier for plug request.
     pub hu: u16,
     /// Controller identifier for plug request.
@@ -1692,7 +1692,7 @@ impl FromStr for PcieRemoteCli {
             anyhow::bail!("must provide a port name");
         }
 
-        let mut socket_path = None;
+        let mut socket_addr = None;
         let mut hu = 0u16;
         let mut controller = 0u16;
 
@@ -1710,7 +1710,7 @@ impl FromStr for PcieRemoteCli {
                     if path.is_empty() {
                         anyhow::bail!("socket path cannot be empty");
                     }
-                    socket_path = Some(path.to_string());
+                    socket_addr = Some(path.to_string());
                 }
                 "hu" => {
                     let val = value.context("hu requires a value")?;
@@ -1732,7 +1732,7 @@ impl FromStr for PcieRemoteCli {
 
         Ok(PcieRemoteCli {
             port_name: port_name.to_string(),
-            socket_path,
+            socket_addr,
             hu,
             controller,
         })

@@ -10,7 +10,11 @@ use vm_resource::ResourceId;
 use vm_resource::kind::PciDeviceHandleKind;
 
 /// Default TCP address for PCIe remote device communication.
-pub const DEFAULT_SOCKET_PATH: &str = "localhost:48914";
+pub const DEFAULT_SOCKET_ADDR: &str = "localhost:48914";
+
+/// Deprecated alias for [`DEFAULT_SOCKET_ADDR`].
+#[deprecated(since = "0.1.0", note = "renamed to DEFAULT_SOCKET_ADDR")]
+pub const DEFAULT_SOCKET_PATH: &str = DEFAULT_SOCKET_ADDR;
 
 /// Handle for a PCIe remote device.
 ///
@@ -22,8 +26,8 @@ pub struct PcieRemoteHandle {
     /// Unique instance identifier for this device.
     pub instance_id: guid::Guid,
     /// TCP address for communication with the simulator.
-    /// If `None`, defaults to [`DEFAULT_SOCKET_PATH`].
-    pub socket_path: Option<String>,
+    /// If `None`, defaults to [`DEFAULT_SOCKET_ADDR`].
+    pub socket_addr: Option<String>,
     /// Host Unit - Refers to the PCIe Express Endpoint logic in the
     /// simulator.  If the chip implement multiple PCIe Express IP blocks,
     /// this parameter distinguishes them.
@@ -35,9 +39,9 @@ pub struct PcieRemoteHandle {
 }
 
 impl PcieRemoteHandle {
-    /// Get the socket path, using the default if not specified.
-    pub fn socket_path(&self) -> &str {
-        self.socket_path.as_deref().unwrap_or(DEFAULT_SOCKET_PATH)
+    /// Get the socket address, using the default if not specified.
+    pub fn socket_addr(&self) -> &str {
+        self.socket_addr.as_deref().unwrap_or(DEFAULT_SOCKET_ADDR)
     }
 }
 
