@@ -447,22 +447,90 @@ impl PciConfigSpace for GenericPcieSwitch {
 
 mod save_restore {
     use super::*;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
+
+    mod state {
+        use mesh_protobuf::Protobuf;
+        use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+        use vmcore::save_restore::SaveRestore;
+        use vmcore::save_restore::SavedStateRoot;
+
+        /// Saved state for the GenericPcieSwitch.
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.switch")]
+        pub struct SavedState {
+            /// The upstream port configuration space state.
+            #[mesh(1)]
+            pub upstream_port_cfg_space: <ConfigSpaceType1Emulator as SaveRestore>::SavedState,
+            /// The downstream port states, ordered by port number (index = port number).
+            #[mesh(2)]
+            pub downstream_ports: Vec<<ConfigSpaceType1Emulator as SaveRestore>::SavedState>,
+        }
+    }
 
     impl SaveRestore for GenericPcieSwitch {
-        type SavedState = SavedStateNotSupported;
+        type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+            // Save the upstream port configuration space
+            let upstream_port_cfg_space = self.upstream_port.cfg_space.save()?;
+
+            // Save all downstream ports in order by port number
+            let port_count = self.downstream_ports.len();
+            let mut downstream_ports = Vec::with_capacity(port_count);
+            for port_number in 0..port_count as u8 {
+                if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&port_number) {
+                    downstream_ports.push(downstream_port.port.cfg_space.save()?);
+                } else {
+                    return Err(SaveError::NotFound(format!(
+                        "downstream port {}",
+                        port_number
+                    )));
+                }
+            }
+
+            Ok(state::SavedState {
+                upstream_port_cfg_space,
+                downstream_ports,
+            })
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            match state {}
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                upstream_port_cfg_space,
+                downstream_ports,
+            } = state;
+
+            // Validate that the number of downstream ports matches
+            if downstream_ports.len() != self.downstream_ports.len() {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "downstream port count mismatch: saved {}, current {}",
+                    downstream_ports.len(),
+                    self.downstream_ports.len()
+                )));
+            }
+
+            // Restore the upstream port configuration space
+            self.upstream_port
+                .cfg_space
+                .restore(upstream_port_cfg_space)?;
+
+            // Restore all downstream ports (index = port number)
+            for (port_number, cfg_space) in downstream_ports.into_iter().enumerate() {
+                let port_number = port_number as u8;
+                if let Some((_, downstream_port)) = self.downstream_ports.get_mut(&port_number) {
+                    downstream_port.port.cfg_space.restore(cfg_space)?;
+                } else {
+                    return Err(RestoreError::NotFound(format!(
+                        "downstream port {}",
+                        port_number
+                    )));
+                }
+            }
+
+            Ok(())
         }
     }
 }
@@ -937,5 +1005,181 @@ mod tests {
             switch_with_hotplug.name().as_ref(),
             "test-switch-with-hotplug"
         );
+    }
+
+    #[test]
+    fn test_save_restore_basic() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Save the initial state
+        let saved_state = switch.save().expect("save should succeed");
+
+        // Verify the saved state has the correct number of downstream ports
+        assert_eq!(saved_state.downstream_ports.len(), 2);
+
+        // Restore the state to a new switch
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+    }
+
+    #[test]
+    fn test_save_restore_with_bus_configuration() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 3,
+            hotplug: false,
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Configure bus numbers on the upstream port
+        let secondary_bus = 5u8;
+        let subordinate_bus = 15u8;
+        let primary_bus = 0u8;
+        let bus_config =
+            ((subordinate_bus as u32) << 16) | ((secondary_bus as u32) << 8) | (primary_bus as u32);
+        switch
+            .upstream_port
+            .cfg_space_mut()
+            .write_u32(0x18, bus_config)
+            .unwrap();
+
+        // Verify the bus range is set
+        let bus_range = switch.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(*bus_range.start(), secondary_bus);
+        assert_eq!(*bus_range.end(), subordinate_bus);
+
+        // Save the state
+        let saved_state = switch.save().expect("save should succeed");
+
+        // Create a new switch and restore the state
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 3,
+            hotplug: false,
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        // Verify the new switch has default bus range before restore
+        let default_bus_range = switch2.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(default_bus_range, 0..=0);
+
+        // Restore the state
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+
+        // Verify the bus range is restored
+        let restored_bus_range = switch2.upstream_port.cfg_space().assigned_bus_range();
+        assert_eq!(*restored_bus_range.start(), secondary_bus);
+        assert_eq!(*restored_bus_range.end(), subordinate_bus);
+    }
+
+    #[test]
+    fn test_save_restore_downstream_port_state() {
+        use vmcore::save_restore::SaveRestore;
+
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Configure bus numbers on one of the downstream ports
+        // First, we need to get access to the downstream port and configure it
+        if let Some((_, downstream_port)) = switch.downstream_ports.get_mut(&0) {
+            let secondary_bus = 10u8;
+            let subordinate_bus = 20u8;
+            let primary_bus = 5u8;
+            let bus_config = ((subordinate_bus as u32) << 16)
+                | ((secondary_bus as u32) << 8)
+                | (primary_bus as u32);
+            downstream_port
+                .port
+                .cfg_space
+                .write_u32(0x18, bus_config)
+                .unwrap();
+        }
+
+        // Verify the downstream port bus range is set
+        if let Some((_, downstream_port)) = switch.downstream_ports.get(&0) {
+            let bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(*bus_range.start(), 10);
+            assert_eq!(*bus_range.end(), 20);
+        }
+
+        // Save the state
+        let saved_state = switch.save().expect("save should succeed");
+
+        // Create a new switch and restore the state
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        // Verify the new switch has default bus range on downstream port before restore
+        if let Some((_, downstream_port)) = switch2.downstream_ports.get(&0) {
+            let default_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(default_bus_range, 0..=0);
+        }
+
+        // Restore the state
+        switch2
+            .restore(saved_state)
+            .expect("restore should succeed");
+
+        // Verify the downstream port bus range is restored
+        if let Some((_, downstream_port)) = switch2.downstream_ports.get(&0) {
+            let restored_bus_range = downstream_port.cfg_space().assigned_bus_range();
+            assert_eq!(*restored_bus_range.start(), 10);
+            assert_eq!(*restored_bus_range.end(), 20);
+        }
+    }
+
+    #[test]
+    fn test_save_restore_port_mismatch_error() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a switch with 3 downstream ports
+        let definition = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 3,
+            hotplug: false,
+        };
+        let mut switch = GenericPcieSwitch::new(definition);
+
+        // Save the state
+        let saved_state = switch.save().expect("save should succeed");
+        assert_eq!(saved_state.downstream_ports.len(), 3);
+
+        // Create a new switch with only 2 downstream ports
+        let definition2 = GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        };
+        let mut switch2 = GenericPcieSwitch::new(definition2);
+
+        // Restore should fail because port 2 doesn't exist in the new switch
+        let result = switch2.restore(saved_state);
+        assert!(result.is_err());
     }
 }
