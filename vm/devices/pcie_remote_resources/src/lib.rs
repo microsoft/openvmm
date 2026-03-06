@@ -9,19 +9,19 @@ use mesh::MeshPayload;
 use vm_resource::ResourceId;
 use vm_resource::kind::PciDeviceHandleKind;
 
-/// Default Unix socket path for PCIe remote device communication.
-pub const DEFAULT_SOCKET_PATH: &str = "/tmp/qemu-pci-remote-0-ep.sock";
+/// Default TCP address for PCIe remote device communication.
+pub const DEFAULT_SOCKET_PATH: &str = "localhost:48914";
 
 /// Handle for a PCIe remote device.
 ///
 /// This device acts as a generic PCIe proxy, forwarding all PCIe operations
 /// (config space, MMIO, DMA, interrupts) to an external device simulator over
-/// a Unix domain socket.
+/// a TCP socket connection.
 #[derive(MeshPayload)]
 pub struct PcieRemoteHandle {
     /// Unique instance identifier for this device.
     pub instance_id: guid::Guid,
-    /// Path to the Unix domain socket for communication with the simulator.
+    /// TCP address for communication with the simulator.
     /// If `None`, defaults to [`DEFAULT_SOCKET_PATH`].
     pub socket_path: Option<String>,
     /// Host Unit - Refers to the PCIe Express Endpoint logic in the
