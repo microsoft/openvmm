@@ -45,6 +45,7 @@ use thiserror::Error;
 pub struct VaMapper {
     inner: Arc<MapperInner>,
     process: Option<RemoteProcess>,
+    private_ram: bool,
     _thread: JoinHandle<()>,
 }
 
@@ -195,6 +196,7 @@ impl VaMapper {
         req_send: mesh::Sender<MappingRequest>,
         len: u64,
         remote_process: Option<RemoteProcess>,
+        private_ram: bool,
     ) -> Result<Self, VaMapperError> {
         let mapping = match &remote_process {
             None => SparseMapping::new(len as usize),
@@ -239,6 +241,7 @@ impl VaMapper {
         Ok(VaMapper {
             inner,
             process: remote_process,
+            private_ram,
             _thread: thread,
         })
     }
@@ -258,6 +261,25 @@ impl VaMapper {
 
     pub fn process(&self) -> Option<&RemoteProcess> {
         self.process.as_ref()
+    }
+
+    /// Allocates private anonymous memory for a range within the mapping.
+    ///
+    /// This replaces the placeholder at the given offset with committed
+    /// anonymous memory. Only valid when private_ram mode is enabled.
+    pub fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        assert!(self.private_ram, "alloc_range requires private RAM mode");
+        self.inner.mapping.alloc(offset, len)
+    }
+
+    /// Decommits a range of private RAM, releasing physical pages back to the
+    /// host.
+    ///
+    /// Only valid when private_ram mode is enabled.
+    #[allow(dead_code)] // Will be used by ballooning / memory hot-remove.
+    pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        assert!(self.private_ram, "decommit requires private RAM mode");
+        self.inner.mapping.decommit(offset, len)
     }
 }
 
@@ -286,6 +308,40 @@ unsafe impl GuestMemoryAccess for VaMapper {
         bitmap_failure: bool,
     ) -> PageFaultAction {
         assert!(!bitmap_failure, "bitmaps are not used");
+
+        if self.private_ram {
+            // Private RAM mode: commit the page(s) directly.
+            #[cfg(windows)]
+            {
+                // Commit in 64KB-aligned chunks to amortize overhead.
+                let commit_start = address & !0xFFFF; // round down to 64KB
+                let commit_end = ((address + len as u64) + 0xFFFF) & !0xFFFF; // round up
+                let commit_end = commit_end.min(self.inner.mapping.len() as u64);
+                let commit_len = (commit_end - commit_start) as usize;
+
+                if let Err(err) = self.inner.mapping.commit(commit_start as usize, commit_len) {
+                    return PageFaultAction::Fail(PageFaultError::new(
+                        guestmem::GuestMemoryErrorKind::OutOfRange,
+                        err,
+                    ));
+                }
+                return PageFaultAction::Retry;
+            }
+            #[cfg(unix)]
+            {
+                // On Linux, the kernel handles page faults transparently.
+                // If we get here, something is wrong.
+                return PageFaultAction::Fail(PageFaultError::new(
+                    guestmem::GuestMemoryErrorKind::OutOfRange,
+                    std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "unexpected page fault in private RAM mode on Linux",
+                    ),
+                ));
+            }
+        }
+
+        // File-backed path: request mapping from MappingManager.
         // `block_on` is OK to call here (will not deadlock) because this is
         // never called from the page fault handler thread or any threads it
         // depends on.
@@ -302,5 +358,118 @@ unsafe impl GuestMemoryAccess for VaMapper {
             ));
         }
         PageFaultAction::Retry
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use sparse_mmap::SparseMapping;
+
+    /// Tests that private RAM pages can be allocated, written to, and read from.
+    #[test]
+    fn test_private_ram_alloc_write_read() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Allocate (commit) the first two pages.
+        mapping.alloc(0, 2 * page_size).unwrap();
+
+        // Write and read through SparseMapping methods.
+        let data = [0xABu8; 128];
+        mapping.write_at(0, &data).unwrap();
+
+        let mut buf = [0u8; 128];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, data);
+
+        // Verify zeros at an untouched offset within committed range.
+        let mut zero_buf = [0xFFu8; 64];
+        mapping.read_at(page_size, &mut zero_buf).unwrap();
+        assert!(
+            zero_buf.iter().all(|&b| b == 0),
+            "untouched committed memory should be zeros"
+        );
+    }
+
+    /// Tests that decommitting pages releases their contents (zeros on re-read on Linux).
+    #[test]
+    fn test_private_ram_decommit_zeros() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Commit and write data.
+        mapping.alloc(0, 2 * page_size).unwrap();
+        let pattern = vec![0xABu8; 64];
+        mapping.write_at(0, &pattern).unwrap();
+        mapping.write_at(page_size, &pattern).unwrap();
+
+        // Decommit first page.
+        mapping.decommit(0, page_size).unwrap();
+
+        // On Linux, decommitted pages read as zeros.
+        #[cfg(unix)]
+        {
+            let mut buf = vec![0xFFu8; 64];
+            mapping.read_at(0, &mut buf).unwrap();
+            assert!(
+                buf.iter().all(|&b| b == 0),
+                "decommitted page should be zeros on Linux"
+            );
+        }
+
+        // Second page should still have its data.
+        let mut buf2 = vec![0u8; 64];
+        mapping.read_at(page_size, &mut buf2).unwrap();
+        assert_eq!(buf2, pattern);
+    }
+
+    /// Tests that recommitting pages after decommit provides zeroed memory.
+    #[test]
+    fn test_private_ram_recommit_after_decommit() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Commit, write, decommit, recommit.
+        mapping.alloc(0, page_size).unwrap();
+        let pattern = vec![0xCDu8; 64];
+        mapping.write_at(0, &pattern).unwrap();
+
+        mapping.decommit(0, page_size).unwrap();
+        mapping.commit(0, page_size).unwrap();
+
+        // After recommit, the page should be zeros (old data is gone).
+        let mut buf = vec![0xFFu8; 64];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert!(
+            buf.iter().all(|&b| b == 0),
+            "recommitted page should be zeros"
+        );
+
+        // Can write and read new data.
+        let new_data = vec![0xEFu8; 64];
+        mapping.write_at(0, &new_data).unwrap();
+        let mut buf2 = vec![0u8; 64];
+        mapping.read_at(0, &mut buf2).unwrap();
+        assert_eq!(buf2, new_data);
+    }
+
+    /// Tests that commit is idempotent (committing already-committed pages is
+    /// a no-op).
+    #[test]
+    fn test_private_ram_commit_idempotent() {
+        let page_size = SparseMapping::page_size();
+        let mapping = SparseMapping::new(4 * page_size).unwrap();
+
+        // Alloc then commit the same range again.
+        mapping.alloc(0, 2 * page_size).unwrap();
+        mapping.commit(0, 2 * page_size).unwrap();
+        mapping.commit(0, page_size).unwrap();
+
+        // Write and read should work.
+        let pattern = vec![0xEFu8; 64];
+        mapping.write_at(0, &pattern).unwrap();
+        let mut buf = vec![0u8; 64];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, pattern);
     }
 }
