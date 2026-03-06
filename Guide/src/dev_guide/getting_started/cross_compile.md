@@ -324,7 +324,7 @@ Here is a full working example that launches OpenVMM with a VHDX disk:
 ```bash
 cargo run --target x86_64-pc-windows-msvc -- \
   --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
-  --uefi --vnc -p 6 -m 8GB
+  --uefi --gfx -p 6 -m 8GB
 ```
 
 ```admonish warning

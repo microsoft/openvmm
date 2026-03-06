@@ -54,7 +54,7 @@ For cross-links to related pages, use a **See also** callout:
 
 ~~~markdown
 ```admonish note title="See also"
-[Debugging OpenHCL](../reference/openhcl/debugging.md) for serial logs,
+[Debugging OpenHCL](../../reference/openhcl/debugging.md) for serial logs,
 crash dumps, and diagnostic tools.
 ```
 ~~~

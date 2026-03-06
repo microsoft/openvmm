@@ -25,7 +25,7 @@ for the network transport:
 cargo run -- --uefi --hv --net consomme --disk memdiff:file:path/to/windows.vhdx
 
 # With OpenHCL
-cargo run -- --uefi --hv --net consomme --openhcl path/to/openhcl.igvm --disk memdiff:file:path/to/windows.vhdx
+cargo run -- --uefi --hv --vtl2 --net consomme --igvm path/to/openhcl.igvm --disk memdiff:file:path/to/windows.vhdx
 ```
 
 ### Known Issues

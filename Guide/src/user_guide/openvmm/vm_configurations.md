@@ -60,15 +60,15 @@ details on PCAT boot, including floppy and optical boot order.
 
 ## With OpenHCL (VTL2)
 
-To run with OpenHCL, add the `--openhcl` flag to a UEFI configuration. OpenHCL
+To run with OpenHCL, add `--vtl2` and `--igvm` to a UEFI configuration. OpenHCL
 requires UEFI — it does not work with PCAT.
 
 ```bash
 cargo run -- \
   --uefi \
-  --openhcl path/to/openhcl.igvm \
+  --hv --vtl2 \
+  --igvm path/to/openhcl.igvm \
   --disk memdiff:file:path/to/disk.vhdx \
-  --hv \
   -p 4 -m 4GB
 ```
 
@@ -82,6 +82,6 @@ for full setup instructions.
 | Modern Windows/Linux guest | `--uefi --hv --disk memdiff:file:disk.vhdx` | Most common |
 | With graphical console | add `--gfx` | VNC-based, see [Graphical Console](../../reference/openvmm/graphical_console.md) |
 | With networking | add `--nic` | Consomme user-mode NAT |
-| With OpenHCL | add `--openhcl path/to/openhcl.igvm` | Requires `--uefi` |
+| With OpenHCL | add `--vtl2 --igvm path/to/openhcl.igvm` | Requires `--uefi --hv` |
 | Legacy OS (DOS, old Windows) | `--pcat --gfx` | IDE storage, BIOS boot |
 | Linux direct boot (no firmware) | `--kernel vmlinux --initrd initrd` | Skips UEFI/PCAT entirely |
