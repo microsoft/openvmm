@@ -408,6 +408,9 @@ dependencies = [
 [[package]]
 name = "build_rs_git_info"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+]
 
 [[package]]
 name = "build_rs_guest_arch"

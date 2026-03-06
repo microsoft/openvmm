@@ -4,5 +4,5 @@
 #![expect(missing_docs)]
 
 fn main() {
-    build_rs_git_info::emit_git_info();
+    build_rs_git_info::emit_git_info().unwrap();
 }
