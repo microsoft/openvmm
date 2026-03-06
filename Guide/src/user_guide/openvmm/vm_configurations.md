@@ -27,15 +27,14 @@ Windows and Linux guests.
 cargo run -- \
   --uefi \
   --disk memdiff:file:path/to/disk.vhdx \
-  --hv \
   -p 4 -m 4GB \
   --gfx
 ```
 
 Key flags:
-- `--uefi` — boot using `mu_msvm` UEFI firmware
-- `--disk` — exposes a disk over VMBus (SCSI-equivalent). Requires `--hv`
-- `--hv` — enables Hyper-V enlightenments and VMBus support
+- `--uefi` — boot using `mu_msvm` UEFI firmware (implicitly enables Hyper-V
+  enlightenments and VMBus)
+- `--disk` — exposes a disk over VMBus (SCSI-equivalent)
 
 ## Gen1-equivalent (PCAT BIOS boot)
 
@@ -79,9 +78,9 @@ for full setup instructions.
 
 | Scenario | Flags | Notes |
 |----------|-------|-------|
-| Modern Windows/Linux guest | `--uefi --hv --disk memdiff:file:disk.vhdx` | Most common |
+| Modern Windows/Linux guest | `--uefi --disk memdiff:file:disk.vhdx` | Most common |
 | With graphical console | add `--gfx` | VNC-based, see [Graphical Console](../../reference/openvmm/graphical_console.md) |
 | With networking | add `--nic` | Consomme user-mode NAT |
-| With OpenHCL | add `--vtl2 --igvm path/to/openhcl.igvm` | Requires `--uefi --hv` |
+| With OpenHCL | add `--vtl2 --igvm path/to/openhcl.igvm` | Requires `--uefi` |
 | Legacy OS (DOS, old Windows) | `--pcat --ide memdiff:file:disk.vhd --gfx` | IDE storage, BIOS boot |
 | Linux direct boot (no firmware) | `--kernel vmlinux --initrd initrd` | Skips UEFI/PCAT entirely |

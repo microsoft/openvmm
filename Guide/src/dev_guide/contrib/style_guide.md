@@ -87,7 +87,7 @@ in context:
 
 - **`<SCREAMING_SNAKE_CASE>` style** — for values that need extra emphasis or
   where the expected format isn't obvious (build numbers, VM names, keys).
-  ```bash
+  ```powershell
   Set-VMComPort -VMName <VM_NAME> -Number 3 -Path \\.\pipe\<PIPE_NAME>
   ```
 
