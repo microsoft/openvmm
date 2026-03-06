@@ -13,7 +13,7 @@ use vm_resource::kind::PciDeviceHandleKind;
 pub const DEFAULT_SOCKET_ADDR: &str = "localhost:48914";
 
 /// Deprecated alias for [`DEFAULT_SOCKET_ADDR`].
-#[deprecated(since = "0.1.0", note = "renamed to DEFAULT_SOCKET_ADDR")]
+#[deprecated(note = "renamed to DEFAULT_SOCKET_ADDR")]
 pub const DEFAULT_SOCKET_PATH: &str = DEFAULT_SOCKET_ADDR;
 
 /// Handle for a PCIe remote device.

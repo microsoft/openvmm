@@ -641,8 +641,8 @@ Examples:
     # Attach to root port rc0rp0 with default socket
     --pcie-remote rc0rp0
 
-    # Attach with custom socket path
-    --pcie-remote rc0rp0,socket=/tmp/custom.sock
+    # Attach with custom socket address
+    --pcie-remote rc0rp0,socket=0.0.0.0:48914
 
     # Specify HU and controller identifiers
     --pcie-remote rc0rp0,hu=1,controller=0
@@ -654,7 +654,7 @@ Examples:
 Syntax: <port_name>[,opt=arg,...]
 
 Options:
-    `socket=<path>`                 Unix socket path (default: /tmp/qemu-pci-remote-0-ep.sock)
+    `socket=<address>`              TCP socket (default: localhost:48914)
     `hu=<value>`                    Hardware unit identifier (default: 0)
     `controller=<value>`            Controller identifier (default: 0)
 "#)]
@@ -1674,7 +1674,7 @@ impl FromStr for GenericPcieSwitchCli {
 pub struct PcieRemoteCli {
     /// Name of the PCIe downstream port to attach to.
     pub port_name: String,
-    /// Unix socket path for the remote simulator.
+    /// TCP socket address for the remote simulator.
     pub socket_addr: Option<String>,
     /// Hardware unit identifier for plug request.
     pub hu: u16,
@@ -1703,14 +1703,14 @@ impl FromStr for PcieRemoteCli {
 
             match key {
                 "socket" => {
-                    let path = value.context("socket requires a path")?;
+                    let addr = value.context("socket requires an address")?;
                     if let Some(extra) = kv.next() {
                         anyhow::bail!("unexpected token: '{extra}'")
                     }
-                    if path.is_empty() {
-                        anyhow::bail!("socket path cannot be empty");
+                    if addr.is_empty() {
+                        anyhow::bail!("socket address cannot be empty");
                     }
-                    socket_addr = Some(path.to_string());
+                    socket_addr = Some(addr.to_string());
                 }
                 "hu" => {
                     let val = value.context("hu requires a value")?;
