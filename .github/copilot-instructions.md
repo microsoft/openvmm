@@ -8,7 +8,19 @@ OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM) written in Ru
 - **Build Tool**: Cargo with custom xtask automation
 - **Package Management**: Cargo + custom flowey pipeline tools
 - **Testing Framework**: Rust unit tests + cargo-nextest (recommended)
-- **Documentation**: mdBook (in `Guide/` folder)
+- **Documentation**: mdBook (in `Guide/` folder, published at https://openvmm.dev)
+
+## Documentation Style
+
+When editing any page under `Guide/`, follow the style guide at
+`Guide/src/dev_guide/contrib/style_guide.md`:
+- Use mdbook-admonish syntax (`` ```admonish note ``, `` ```admonish warning ``, etc.)
+  for callouts — **NOT** docfx `> [!NOTE]` syntax
+- Use `<SCREAMING_SNAKE_CASE>` placeholders in code blocks
+- Label all code fences with the language (`bash`, `powershell`, `rust`, etc.)
+- Keep code blocks under 30 lines; split with explanatory text
+- This is an OSS repo — do not reference internal Microsoft tools, wikis,
+  build paths, or infrastructure
 
 ## Project Structure
 - `openvmm/` - Core OpenVMM VMM implementation
