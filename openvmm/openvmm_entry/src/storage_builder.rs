@@ -34,26 +34,32 @@ pub(super) struct StorageBuilder {
     vtl0_ide_disks: Vec<IdeDeviceConfig>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
-    vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
-    vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
+    vtl0_nvme_namespaces: Vec<(Option<String>, NamespaceDefinition)>, // (controller vsid, namespace)
+    vtl2_nvme_namespaces: Vec<(Option<String>, NamespaceDefinition)>, // (controller vsid, namespace)
     pcie_nvme_controllers: BTreeMap<String, Vec<NamespaceDefinition>>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum NvmeControllerType {
+    Vpci(Option<String>),
+    Pcie(String),
+}
+
+#[derive(Clone, Debug)]
 pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
-    Nvme(Option<u32>, Option<String>),
+    Nvme(Option<u32>, NvmeControllerType),
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
     fn from(value: UnderhillDiskSource) -> Self {
         match value {
-            UnderhillDiskSource::Scsi => Self::Scsi(None),
-            UnderhillDiskSource::Nvme => Self::Nvme(None, None),
+            UnderhillDiskSource::Scsi(lun, _controller) => Self::Scsi(lun),
+            UnderhillDiskSource::Nvme(nsid, controller) => Self::Nvme(nsid, controller),
         }
     }
 }
@@ -125,7 +131,7 @@ impl StorageBuilder {
             if vtl != DeviceVtl::Vtl0 {
                 anyhow::bail!("underhill can only offer devices to vtl0");
             }
-            self.add_underhill(source.into(), target, kind, is_dvd, read_only)?;
+            self.add_underhill(source.clone().into(), target, kind, is_dvd, read_only)?;
         } else {
             self.add_inner(vtl, target, kind, is_dvd, read_only)?;
         }
@@ -218,28 +224,45 @@ impl StorageBuilder {
                 });
                 Some(lun.into())
             }
-            DiskLocation::Nvme(nsid, pcie_port) => {
-                let namespaces = match (vtl, pcie_port) {
-                    // VPCI
-                    (DeviceVtl::Vtl0, None) => &mut self.vtl0_nvme_namespaces,
-                    (DeviceVtl::Vtl1, None) => anyhow::bail!("vtl1 vpci unsupported"),
-                    (DeviceVtl::Vtl2, None) => &mut self.vtl2_nvme_namespaces,
-                    // PCIe
-                    (DeviceVtl::Vtl0, Some(port)) => {
-                        self.pcie_nvme_controllers.entry(port).or_default()
-                    }
-                    (DeviceVtl::Vtl1, Some(_)) => anyhow::bail!("vtl1 pcie unsupported"),
-                    (DeviceVtl::Vtl2, Some(_)) => anyhow::bail!("vtl2 pcie unsupported"),
-                };
+            DiskLocation::Nvme(nsid, controller) => {
                 if is_dvd {
                     anyhow::bail!("dvd not supported with nvme");
                 }
-                let nsid = nsid.unwrap_or(namespaces.len() as u32 + 1);
-                namespaces.push(NamespaceDefinition {
+
+                let def = (NamespaceDefinition {
                     nsid,
                     disk,
                     read_only,
                 });
+
+                match (vtl, controller) {
+                    // VPCI
+                    (DeviceVtl::Vtl0, NvmeControllerType::Vpci(_)) => {
+                        &mut self.vtl0_nvme_namespaces
+                    }
+                    (DeviceVtl::Vtl1, NvmeControllerType::Vpci(_)) => {
+                        anyhow::bail!("vtl1 vpci unsupported")
+                    }
+                    (DeviceVtl::Vtl2, NvmeControllerType::Vpci(_)) => {
+                        &mut self.vtl2_nvme_namespaces
+                    }
+                    // PCIe
+                    (DeviceVtl::Vtl0, NvmeControllerType::Pcie(port)) => {
+                        self.pcie_nvme_controllers.entry(port).or_default()
+                    }
+                    (DeviceVtl::Vtl1, NvmeControllerType::Pcie(_)) => {
+                        anyhow::bail!("vtl1 pcie unsupported")
+                    }
+                    (DeviceVtl::Vtl2, NvmeControllerType::Pcie(_)) => {
+                        anyhow::bail!("vtl2 pcie unsupported")
+                    }
+
+                }
+
+                let namespaces = match (vtl, controller) {
+                };
+                let nsid = nsid.unwrap_or(namespaces.len() as u32 + 1);
+                namespaces.push);
                 Some(nsid)
             }
         };
