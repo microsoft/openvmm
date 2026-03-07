@@ -1165,6 +1165,8 @@ impl HclNetworkVFManagerWorker {
                     assert!(!self.is_shutdown_active);
                     if vf_reconfig_backoff.take().is_some() {
                         tracing::warn!("device arrived, abandoning vf reconfiguration");
+                        // In case startup fails, state should not be Reconfiguring.
+                        vtl2_device_state = Vtl2DeviceState::Missing;
                     }
                     tracing::info!(vtl2_vfid, "VTL2 VF arrived");
                     let mut ctx =
