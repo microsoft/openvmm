@@ -142,20 +142,7 @@ impl Fuse for VirtioFs {
 
     fn open(&self, request: &Request, flags: u32) -> lx::Result<fuse_open_out> {
         let inode = self.get_inode(request.node_id())?;
-        if self.readonly {
-            // O_CREAT implies intent to create a file, so reject immediately with EROFS
-            // without checking existence (ENOENT would be wrong here).
-            if flags & lx::O_CREAT as u32 != 0 {
-                return Err(lx::Error::EROFS);
-            }
-            // For all other flags, check existence first so ENOENT takes precedence over
-            // EROFS.
-            inode.get_attr()?;
-            let access_mode = (flags & lx::O_NOACCESS as u32) as i32;
-            if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
-                return Err(lx::Error::EROFS);
-            }
-        }
+        self.check_open_readonly(&inode, flags)?;
         let file = inode.open(flags)?;
         let fh = self.insert_file(file);
 
@@ -401,6 +388,38 @@ impl VirtioFs {
         } else {
             Ok(())
         }
+    }
+
+    /// Check whether the open flags are permitted on a read-only filesystem.
+    fn check_open_readonly(&self, inode: &VirtioFsInode, flags: u32) -> lx::Result<()> {
+        if !self.readonly {
+            return Ok(());
+        }
+
+        // This section exists to superceed error codes when various combination of flags 
+        // are passed to the open() call. This helps maintain POSIX compatibility
+        // If O_CREAT && file_exists => EROFS
+        // If O_CREAT | O_EXCL && file_exists => EEXIST
+        // If O_CREAT && file_exists => fallthrough to check other flags
+        // If O_CREAT && !file_exists => EROFS
+        // Other errors that occur while checking file_exists should bubble up
+        if flags & lx::O_CREAT as u32 != 0 {
+            match inode.get_attr() {
+                Ok(_) if flags & lx::O_EXCL as u32 != 0 => return Err(lx::Error::EEXIST),
+                Ok(_) => {}
+                Err(e) if e == lx::Error::ENOENT => return Err(lx::Error::EROFS),
+                Err(e) => return Err(e),
+            }
+        } else {
+            inode.get_attr()?;
+        }
+
+        let access_mode = (flags & lx::O_ACCESS_MASK as u32) as i32;
+        if matches!(access_mode, lx::O_WRONLY | lx::O_RDWR) || flags & lx::O_TRUNC as u32 != 0 {
+            return Err(lx::Error::EROFS);
+        }
+
+        Ok(())
     }
 
     /// Create a new virtio-fs for the specified root path.
