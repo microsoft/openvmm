@@ -253,8 +253,7 @@ impl VirtioQueue {
     pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
         Ok(self
             .core
-            .try_next_work()
-            .map_err(|e| Error::other(e))?
+            .try_next_work()?
             .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
     }
 
