@@ -14,13 +14,6 @@ pub struct LocalOnlyParams {
     pub interactive: bool,
     /// Automatically install any necessary system dependencies / tools.
     pub auto_install: bool,
-    /// (WSL2 only) Use `mono` to run `nuget.exe`, instead of using native
-    /// WSL2 interop.
-    pub force_nuget_mono: bool,
-    /// Claim that nuget is using an external auth mechanism, and Azure
-    /// Credential Provider doesn't need to be present to pull down required
-    /// packages.
-    pub external_nuget_auth: bool,
     /// Ignore the Rust version requirement, and use whatever toolchain the user
     /// currently has installed.
     pub ignore_rust_version: bool,
@@ -52,14 +45,13 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::cfg_cargo_common_flags::Node>();
         ctx.import::<flowey_lib_common::download_azcopy::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
-        ctx.import::<flowey_lib_common::download_nuget_exe::Node>();
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::git_checkout::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
+        ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
         ctx.import::<flowey_lib_common::install_git::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
-        ctx.import::<flowey_lib_common::install_nuget_azure_credential_provider::Node>();
         ctx.import::<flowey_lib_common::install_rust::Node>();
         ctx.import::<flowey_lib_common::nuget_install_package::Node>();
         ctx.import::<flowey_lib_common::run_cargo_nextest_run::Node>();
@@ -109,8 +101,6 @@ impl SimpleFlowNode for Node {
             let LocalOnlyParams {
                 interactive,
                 auto_install,
-                force_nuget_mono,
-                external_nuget_auth,
                 ignore_rust_version,
             } = local_only;
 
@@ -118,16 +108,6 @@ impl SimpleFlowNode for Node {
             {
                 ctx.req(
                     flowey_lib_common::install_dist_pkg::Request::LocalOnlyInteractive(interactive),
-                );
-                ctx.req(
-                    flowey_lib_common::nuget_install_package::Request::LocalOnlyInteractive(
-                        interactive,
-                    ),
-                );
-                ctx.req(
-                    flowey_lib_common::nuget_install_package::Request::LocalOnlyInteractive(
-                        interactive,
-                    ),
                 );
                 ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
                     flowey_lib_common::use_gh_cli::GhCliAuth::LocalOnlyInteractive,
@@ -143,11 +123,6 @@ impl SimpleFlowNode for Node {
                     auto_install,
                 ));
                 ctx.req(
-                    flowey_lib_common::install_nuget_azure_credential_provider::Request::LocalOnlyAutoInstall(
-                        auto_install,
-                    ),
-                );
-                ctx.req(
                     flowey_lib_common::install_dist_pkg::Request::LocalOnlySkipUpdate(
                         !auto_install,
                     ),
@@ -161,22 +136,10 @@ impl SimpleFlowNode for Node {
                 ctx.req(
                     flowey_lib_common::install_git::Request::LocalOnlyAutoInstall(auto_install),
                 );
+                ctx.req(flowey_lib_common::install_dotnet_cli::Request::AutoInstall(
+                    auto_install,
+                ));
             }
-
-            //
-            // wire up misc.
-            //
-            ctx.req(
-                flowey_lib_common::install_nuget_azure_credential_provider::Request::LocalOnlySkipAuthCheck(
-                    external_nuget_auth,
-                ),
-            );
-
-            ctx.req(
-                flowey_lib_common::download_nuget_exe::Request::LocalOnlyForceWsl2MonoNugetExe(
-                    force_nuget_mono,
-                ),
-            );
 
             // FUTURE: if we ever spin up a openvmm setup utility - it might be
             // interesting to distribute a flowey-based tool that also clones
