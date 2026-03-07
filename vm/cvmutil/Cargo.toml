@@ -15,7 +15,7 @@ getrandom.workspace = true
 tracing.workspace = true
 tracing_helpers.workspace = true
 tracing-subscriber.workspace = true
-tpm = { workspace = true, features = ["tpm"] }
+tpm_lib.workspace = true
 tpm_resources.workspace = true
 zerocopy.workspace = true
 clap = { workspace = true, features = ["derive"] }
