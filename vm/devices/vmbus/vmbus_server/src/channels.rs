@@ -6,7 +6,6 @@ pub mod saved_state;
 mod tests;
 
 use crate::Guid;
-use crate::SINT;
 use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
@@ -37,6 +36,7 @@ use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
+use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
@@ -92,6 +92,10 @@ pub enum ChannelError {
     UntrustedMessage,
     #[error("received a non-resuming message while paused")]
     Paused,
+    #[error("invalid target VP")]
+    InvalidTargetVp,
+    #[error("interrupts are disabled for this channel")]
+    InterruptsDisabled,
 }
 
 #[derive(Debug, Error)]
@@ -339,7 +343,7 @@ pub struct InitiateContactRequest {
 pub struct OpenRequest {
     pub open_id: u32,
     pub ring_buffer_gpadl_id: GpadlId,
-    pub target_vp: u32,
+    pub target_vp: Option<u32>,
     pub downstream_ring_buffer_page_offset: u32,
     pub user_data: UserDefinedData,
     pub guest_specified_interrupt_info: Option<SignalInfo>,
@@ -867,7 +871,7 @@ impl Channel {
 
         let channel_id = entry.id();
         entry.insert(offer_id);
-        let connection_id = ConnectionId::new(channel_id.0, assigned_channels.vtl, SINT);
+        let connection_id = ConnectionId::new(channel_id.0, assigned_channels.vtl, VMBUS_SINT);
 
         // Allocate a monitor ID if the channel uses MNF.
         // N.B. If the synic doesn't support MNF or MNF is disabled by the server, use_mnf should
@@ -1217,7 +1221,7 @@ impl Gpadl {
             buf.resize(buf.len() + data.len() / 8, 0);
             buf[start..].as_mut_bytes().copy_from_slice(data);
             Ok(if buf.len() == buf.capacity() {
-                gparange::MultiPagedRangeBuf::<Vec<u64>>::validate(self.count as usize, buf)
+                gparange::validate_gpa_ranges(self.count as usize, buf)
                     .map_err(ChannelError::InvalidGpaRange)?;
                 self.state = GpadlState::Offered;
                 true
@@ -2051,6 +2055,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         offer_id,
                         channel,
                         &mut self.inner.gpadls,
+                        &mut self.inner.incomplete_gpadls,
                         &mut self.inner.assigned_channels,
                         &mut self.inner.assigned_monitors,
                         None,
@@ -2111,7 +2116,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             target_info.sint()
         } else {
-            SINT
+            VMBUS_SINT
         };
 
         let target_vtl = if message.multiclient
@@ -2205,7 +2210,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return;
         }
 
-        if request.target_sint != SINT {
+        if request.target_sint != VMBUS_SINT {
             tracelimit::warn_ratelimited!(
                 target_vtl = request.target_vtl,
                 target_sint = request.target_sint,
@@ -2535,6 +2540,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     offer_id,
                     channel,
                     gpadls,
+                    &mut self.inner.incomplete_gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     None,
@@ -2755,14 +2761,26 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         };
 
         // If we're not done, track the offer ID for GPADL body requests
-        if !done
-            && self
-                .inner
-                .incomplete_gpadls
-                .insert(input.gpadl_id, offer_id)
-                .is_some()
-        {
-            unreachable!("gpadl ID validated above");
+        // N.B. The above only checks if the combination of (gpadl_id, offer_id) is unique, which
+        //      allows for a guest to reuse a gpadl ID in use by a reserved channel (which it may
+        //      not know about). But for in-progress GPADLs we need to ensure the gpadl ID itself
+        //      is unique, since the body message doesn't include a channel ID.
+        if !done {
+            match self.inner.incomplete_gpadls.entry(input.gpadl_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(offer_id);
+                }
+                Entry::Occupied(_) => {
+                    self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
+                    tracelimit::error_ratelimited!(
+                        channel_id = ?input.channel_id,
+                        key = %channel.offer.key(),
+                        gpadl_id = ?input.gpadl_id,
+                        "duplicate in-progress gpadl ID",
+                    );
+                    return Err(ChannelError::DuplicateGpadlId);
+                }
+            }
         }
 
         if done
@@ -2994,7 +3012,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let request = OpenRequest {
             open_id: input.open_channel.open_id,
             ring_buffer_gpadl_id: input.open_channel.ring_buffer_gpadl_id,
-            target_vp: input.open_channel.target_vp,
+            target_vp: protocol::vp_index_if_enabled(input.open_channel.target_vp),
             downstream_ring_buffer_page_offset: input
                 .open_channel
                 .downstream_ring_buffer_page_offset,
@@ -3094,7 +3112,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let request = OpenRequest {
             ring_buffer_gpadl_id: input.ring_buffer_gpadl,
             // Interrupts are disabled for reserved channels; this matches Hyper-V behavior.
-            target_vp: protocol::VP_INDEX_DISABLE_INTERRUPT,
+            target_vp: None,
             downstream_ring_buffer_page_offset: input.downstream_page_offset,
             open_id: 0,
             user_data: UserDefinedData::new_zeroed(),
@@ -3176,6 +3194,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         offer_id: OfferId,
         channel: &mut Channel,
         gpadls: &mut GpadlMap,
+        incomplete_gpadls: &mut IncompleteGpadlMap,
         assigned_channels: &mut AssignedChannels,
         assigned_monitors: &mut AssignedMonitors,
         info: Option<&ConnectionInfo>,
@@ -3187,7 +3206,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 return true;
             }
             match gpadl.state {
-                GpadlState::InProgress => false,
+                GpadlState::InProgress => {
+                    incomplete_gpadls.remove(&gpadl_id);
+                    false
+                }
                 GpadlState::Offered => {
                     gpadl.state = GpadlState::OfferedTearingDown;
                     true
@@ -3280,6 +3302,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     offer_id,
                     channel,
                     &mut self.inner.gpadls,
+                    &mut self.inner.incomplete_gpadls,
                     &mut self.inner.assigned_channels,
                     &mut self.inner.assigned_monitors,
                     self.inner.state.get_connected_info(),
@@ -3352,6 +3375,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Modifies a channel's target VP.
     fn modify_channel(&mut self, request: &protocol::ModifyChannel) -> Result<(), ChannelError> {
+        // The ModifyChannel message cannot be used to disable interrupts.
+        if request.target_vp == protocol::VP_INDEX_DISABLE_INTERRUPT {
+            return Err(ChannelError::InvalidTargetVp);
+        }
+
         let (offer_id, channel) = self
             .inner
             .channels
@@ -3365,6 +3393,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             } => (params, modify_state),
             _ => return Err(ChannelError::InvalidChannelState),
         };
+
+        if open_request.target_vp.is_none() {
+            return Err(ChannelError::InterruptsDisabled);
+        }
 
         if let ModifyState::Modifying { pending_target_vp } = modify_state {
             if self.inner.state.check_version(Version::Iron) {
@@ -3388,7 +3420,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             );
 
             // Update the stored open_request so that save/restore will use the new value.
-            open_request.target_vp = request.target_vp;
+            open_request.target_vp = Some(request.target_vp);
             *modify_state = ModifyState::Modifying {
                 pending_target_vp: None,
             };

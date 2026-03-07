@@ -1,13 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
-
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
+use inspect::InspectMut;
 use pal_async::task::Spawn;
 use std::io;
 use std::io::Write;
@@ -21,6 +20,7 @@ use virtio::VirtioQueueCallbackWork;
 use virtio::VirtioQueueState;
 use virtio::VirtioQueueWorker;
 use virtio::VirtioQueueWorkerContext;
+use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::Immutable;
@@ -38,16 +38,22 @@ struct VirtioFsDeviceConfig {
 }
 
 /// A virtio-fs PCI device.
+#[derive(InspectMut)]
 pub struct VirtioFsDevice {
     name: Box<str>,
 
     driver: VmTaskDriver,
+    #[inspect(skip)]
     config: VirtioFsDeviceConfig,
     memory: GuestMemory,
+    #[inspect(skip)]
     fs: Arc<fuse::Session>,
+    #[inspect(skip)]
     workers: Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
+    #[inspect(skip)]
     exit_event: event_listener::Event,
     shmem_size: u64,
+    #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
 }
 
@@ -97,7 +103,7 @@ impl VirtioDevice for VirtioFsDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_DEVICE_TYPE_FS,
-            device_features: 0,
+            device_features: VirtioDeviceFeatures::new(),
             max_queues: 2,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -144,7 +150,7 @@ impl VirtioDevice for VirtioFsDevice {
                 Some(worker.into_running_task(
                     "virtiofs-virtio-queue".to_string(),
                     self.memory.clone(),
-                    resources.features,
+                    resources.features.clone(),
                     queue_resources,
                     self.exit_event.listen(),
                 ))

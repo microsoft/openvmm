@@ -768,7 +768,7 @@ mod tests {
         get.client.disconnect_from_vpci_event_source(bus_id);
     }
 
-    // Temporarily ignored until error handling is done better/hvlite as host flow is plumbed in.
+    // Temporarily ignored until error handling is done better/OpenVMM as host flow is plumbed in.
     #[ignore]
     #[async_test]
     async fn test_save_guest_vtl2_state(driver: DefaultDriver) {

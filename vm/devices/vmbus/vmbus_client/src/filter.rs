@@ -240,7 +240,7 @@ impl Inspect for Filters {
 
 impl FilterWorker {
     async fn run(&mut self, req: mesh::Receiver<FilterRequest>, offers: mesh::Receiver<OfferInfo>) {
-        #[allow(clippy::large_enum_variant)]
+        #[expect(clippy::large_enum_variant)]
         enum Event {
             Request(FilterRequest),
             Done,

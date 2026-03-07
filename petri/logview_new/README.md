@@ -61,7 +61,7 @@ npx eslint .
 
 ## Project Structure
 
-```
+```text
 logview_new/
 ├── src/
 │   ├── main.tsx          # Application entry point
@@ -114,3 +114,14 @@ For VS Code users, add the following to your settings to automatically format fi
 ```json
 "editor.defaultFormatter": "esbenp.prettier-vscode"
 ```
+
+## Housekeeping Stuff
+
+### 1. Updating branch quick-filters
+
+The branches we want to track test and runs for are bound to frequently change
+as new releases come through. For convenience these filters are defined as a
+list in the `branch_quick_filters.tsx` file. `run_filters` will update the
+filters that show up on the Runs page. `test_filters` will update the filters
+that show up for the Test and TestDetails pages. `all` is a reserved branch
+filter name and will display all the branches.

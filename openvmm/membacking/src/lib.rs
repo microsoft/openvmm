@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This implements HvLite's memory manager.
+//! This implements OpenVMM's memory manager.
 //!
 //! Externally, this is managed by the [`GuestMemoryManager`] object.
 //!

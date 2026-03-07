@@ -14,8 +14,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
 use pci_core::bar_mapping::BarMappings;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use pci_core::spec::cfg_space;
 use std::os::windows::prelude::*;
 use std::sync::Arc;
@@ -29,7 +28,7 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use whp::VpciInterruptTarget;
-use winapi::um::winnt;
+use windows_sys::Win32::System::Power;
 
 pub struct Device {
     partition: Arc<WhpPartitionInner>,
@@ -106,9 +105,16 @@ impl Drop for Device {
     }
 }
 
-impl MsiInterruptTarget for Device {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        todo!("software interrupts not supported right now")
+impl SignalMsi for Device {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        if let Err(err) = self.device().interrupt(address, data) {
+            tracelimit::warn_ratelimited!(
+                address,
+                data,
+                err = &err as &dyn std::error::Error,
+                "failed to signal MSI",
+            );
+        }
     }
 }
 
@@ -392,10 +398,10 @@ impl AssignedPciDevice {
 
     fn set_power_state(&mut self, power_state: u32) {
         let win_power_state = match power_state & 3 {
-            0 => winnt::PowerDeviceD0,
-            1 => winnt::PowerDeviceD1,
-            2 => winnt::PowerDeviceD2,
-            3 => winnt::PowerDeviceD3,
+            0 => Power::PowerDeviceD0,
+            1 => Power::PowerDeviceD1,
+            2 => Power::PowerDeviceD2,
+            3 => Power::PowerDeviceD3,
             _ => unreachable!(),
         };
         match self.device.device().set_power_state(win_power_state) {

@@ -429,7 +429,7 @@ mod tests {
             .await
             .unwrap();
 
-        let read_buf = vmgs.read_file(file_id).await.unwrap();
+        let read_buf = vmgs.read_file_raw(file_id).await.unwrap();
 
         assert_ne!(buf, read_buf);
 

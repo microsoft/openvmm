@@ -197,10 +197,11 @@ impl From<Version> for protocol::Version {
     }
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, Clone, Protobuf, Default)]
 #[mesh(package = "ui.synthvid")]
 enum ChannelState {
     #[mesh(1)]
+    #[default]
     ReadVersion,
     #[mesh(2)]
     WriteVersion {
@@ -214,12 +215,6 @@ enum ChannelState {
         #[mesh(2)]
         substate: ActiveState,
     },
-}
-
-impl Default for ChannelState {
-    fn default() -> Self {
-        Self::ReadVersion
-    }
 }
 
 #[derive(Debug, Clone, Protobuf)]

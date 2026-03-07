@@ -26,13 +26,13 @@ use std::io;
 pub struct NvmeDisk {
     /// NVMe namespace mapped to the disk representation.
     #[inspect(flatten)]
-    namespace: nvme_driver::Namespace,
+    namespace: nvme_driver::NamespaceHandle,
     #[inspect(skip)]
     block_shift: u32,
 }
 
 impl NvmeDisk {
-    pub fn new(namespace: nvme_driver::Namespace) -> Self {
+    pub fn new(namespace: nvme_driver::NamespaceHandle) -> Self {
         Self {
             block_shift: namespace.block_size().trailing_zeros(),
             namespace,

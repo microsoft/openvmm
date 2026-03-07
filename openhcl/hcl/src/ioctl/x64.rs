@@ -202,7 +202,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         vtl: GuestVtl,
         name: HvRegisterName,
         value: HvRegisterValue,
-    ) -> Result<bool, Error> {
+    ) -> bool {
         // Try to set the register in the CPU context, the fastest path. Only
         // VTL-shared registers can be set this way: the CPU context only
         // exposes the last VTL, and if we entered VTL2 on an interrupt,
@@ -250,7 +250,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             _ => false,
         };
         if set {
-            return Ok(true);
+            return true;
         }
 
         if let Some(reg_page) = runner.reg_page_mut() {
@@ -294,12 +294,11 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     _ => false,
                 };
                 if set {
-                    return Ok(true);
+                    return true;
                 }
             }
         }
-
-        Ok(false)
+        false
     }
 
     fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool {
@@ -313,7 +312,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         runner: &ProcessorRunner<'a, Self>,
         vtl: GuestVtl,
         name: HvRegisterName,
-    ) -> Result<Option<HvRegisterValue>, Error> {
+    ) -> Option<HvRegisterValue> {
         let name = name.into();
 
         let value = match name {
@@ -358,8 +357,8 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             ),
             _ => None,
         };
-        if let Some(value) = value {
-            return Ok(Some(value));
+        if value.is_some() {
+            return value;
         }
 
         if let Some(reg_page) = runner.reg_page() {
@@ -395,13 +394,12 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     }
                     _ => None,
                 };
-                if let Some(value) = value {
-                    return Ok(Some(value));
+                if value.is_some() {
+                    return value;
                 }
             }
         }
-
-        Ok(None)
+        None
     }
 
     fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>) {

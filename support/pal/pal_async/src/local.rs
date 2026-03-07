@@ -86,9 +86,10 @@ pub(crate) struct LocalInner {
     wait_cancel: sys::WaitCancel,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 enum OpState {
     // The executor is running.
+    #[default]
     Running,
     // The executor should poll its task again without waiting.
     RunAgain,
@@ -96,12 +97,6 @@ enum OpState {
     Waiting,
     // The executor wait has been cancelled.
     Woken,
-}
-
-impl Default for OpState {
-    fn default() -> Self {
-        Self::Running
-    }
 }
 
 #[derive(Debug, Default)]

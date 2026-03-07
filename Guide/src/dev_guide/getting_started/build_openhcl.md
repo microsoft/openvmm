@@ -97,7 +97,7 @@ OpenHCL.
 If you are still running into issues, consider filing an issue on the OpenVMM
 GitHub Issue tracker.
 
-### Help! The build failed due to a missing dependency!
+### Help! The build failed due to a missing dependency
 
 If you don't mind having `xflowey` install some dependencies globally on your
 machine (i.e: via `apt install`, or `rustup toolchain add`), you can pass
@@ -109,7 +109,7 @@ to install it.
 
 If it doesn't - please file an Issue!
 
-### Help! Everything is rebuilding even though I only made a small change!
+### Help! Everything is rebuilding even though I only made a small change
 
 Cargo's target triple handling can be a bit buggy. Try running with:
 
@@ -131,11 +131,11 @@ wish to build specialized custom IGVM files for local testing.
 
 Some examples of potentially useful customization include:
 
-  * `--override-manifest`: Override the recipe's `igvmfilegen` manifest file
+- `--override-manifest`: Override the recipe's `igvmfilegen` manifest file
     via, in order to tweak different kernel command line options, different VTL0
     boot configuration, or different VTL2 memory sizes.
 
-  * `--custom-openvmm-hcl`: Specify a pre-built `openvmm_hcl` binary. This is
+- `--custom-openvmm-hcl`: Specify a pre-built `openvmm_hcl` binary. This is
     useful in case you have already built it with some custom settings, e.g.:
 
     ```bash
@@ -143,7 +143,7 @@ Some examples of potentially useful customization include:
     cargo xflowey build-igvm x64 --custom-openvmm-hcl target/x86_64-unknown-linux-musl/debug/openvmm_hcl
     ```
 
-  * Specify a custom VTL2 kernel `vmlinux` / `Image`, instead of using a
+- Specify a custom VTL2 kernel `vmlinux` / `Image`, instead of using a
     pre-packed stable/dev kernel.
 
     ```bash

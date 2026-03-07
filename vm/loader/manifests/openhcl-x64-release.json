@@ -7,7 +7,7 @@
             "isolation_type": "none",
             "image": {
                 "openhcl": {
-                    "command_line": "",
+                    "command_line": "OPENHCL_IGVM_VTL2_GPA_POOL_CONFIG=release",
                     "memory_page_count": 17920,
                     "uefi": true
                 }

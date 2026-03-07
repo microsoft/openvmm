@@ -8,7 +8,20 @@ OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM) written in Ru
 - **Build Tool**: Cargo with custom xtask automation
 - **Package Management**: Cargo + custom flowey pipeline tools
 - **Testing Framework**: Rust unit tests + cargo-nextest (recommended)
-- **Documentation**: mdBook (in `Guide/` folder)
+- **Documentation**: mdBook (in `Guide/` folder, published at https://openvmm.dev)
+
+## Documentation Style
+
+When editing any page under `Guide/`, follow the style guide at
+`Guide/src/dev_guide/contrib/style_guide.md`:
+- Use mdbook-admonish syntax (`` ```admonish note ``, `` ```admonish warning ``, etc.)
+  for callouts — **NOT** docfx `> [!NOTE]` syntax
+- Use `path/to/...` placeholders for file paths (predominant style) or
+  `<SCREAMING_SNAKE_CASE>` for non-obvious values like VM names or build numbers
+- Label all code fences with the language (`bash`, `powershell`, `rust`, etc.)
+- Keep code blocks under 30 lines; split with explanatory text
+- This is an OSS repo — do not reference internal Microsoft tools, wikis,
+  build paths, or infrastructure
 
 ## Project Structure
 - `openvmm/` - Core OpenVMM VMM implementation
@@ -63,6 +76,11 @@ Configure test runs using `.config/nextest.toml` for resource management and tim
 - **Unit tests**: Spread throughout crates, marked by `#[cfg(test)]` blocks
 - **VMM tests**: Integration tests in `vmm_tests/` using the petri framework for Hyper-V and OpenVMM VMs (requires additional setup)
 - **Fuzz tests**: Nondeterministic tests ensuring no panics across trust boundaries
+
+## Line Endings
+
+This repository enforces **LF line endings** on all platforms (see `.gitattributes`).
+When creating or editing files, always use LF (`\n`), never CRLF (`\r\n`).
 
 ## Linting and Formatting
 

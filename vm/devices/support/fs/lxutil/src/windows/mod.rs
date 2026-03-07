@@ -16,14 +16,8 @@ mod xattr;
 
 use super::PathExt;
 use super::SetAttributes;
-use ::windows::Wdk::Storage::FileSystem;
-use ::windows::Wdk::System::SystemServices;
-use ::windows::Win32::Foundation;
-use ::windows::Win32::System::SystemServices as W32Ss;
-use ntapi::ntioapi;
 use parking_lot::Mutex;
 use std::ffi;
-use std::mem;
 use std::os::windows::prelude::*;
 use std::path::Component;
 use std::path::Path;
@@ -32,9 +26,12 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use winapi::shared::basetsd;
-use winapi::shared::ntdef;
-use winapi::um::winnt;
+use windows::Wdk::Storage::FileSystem;
+use windows::Wdk::System::SystemServices;
+use windows::Win32::Foundation;
+use windows::Win32::Storage::FileSystem as W32Fs;
+use windows::Win32::System::SystemServices as W32Ss;
+use windows::Win32::System::WindowsProgramming;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -46,14 +43,14 @@ const DOT_ENTRY_COUNT: lx::off_t = 2;
 pub struct VolumeState {
     fs_context: fs::FsContext,
     options: super::LxVolumeOptions,
-    block_size: ntdef::ULONG,
+    block_size: u32,
 }
 
 impl VolumeState {
     pub fn new(
         fs_context: fs::FsContext,
         options: super::LxVolumeOptions,
-        block_size: ntdef::ULONG,
+        block_size: u32,
     ) -> Arc<Self> {
         Arc::new(VolumeState {
             fs_context,
@@ -78,7 +75,7 @@ impl VolumeState {
         util::get_attributes(&self.fs_context, self, root_handle, path, existing_handle)
     }
 
-    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<String>> {
+    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<lx::LxString>> {
         fs::read_reparse_link(handle, self)
     }
 }
@@ -98,9 +95,9 @@ impl LxVolume {
             None,
             root_path,
             util::MINIMUM_PERMISSIONS,
-            ntioapi::FILE_OPEN,
-            winnt::FILE_ATTRIBUTE_DIRECTORY,
-            ntioapi::FILE_DIRECTORY_FILE,
+            FileSystem::FILE_OPEN,
+            W32Fs::FILE_ATTRIBUTE_DIRECTORY,
+            FileSystem::FILE_DIRECTORY_FILE,
             None,
         )?;
 
@@ -181,10 +178,11 @@ impl LxVolume {
                 }
             };
             if information.FileAttributes
-                & (winnt::FILE_ATTRIBUTE_HIDDEN
-                    | winnt::FILE_ATTRIBUTE_SYSTEM
-                    | winnt::FILE_ATTRIBUTE_OFFLINE
-                    | winnt::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+                & (W32Fs::FILE_ATTRIBUTE_HIDDEN
+                    | W32Fs::FILE_ATTRIBUTE_SYSTEM
+                    | W32Fs::FILE_ATTRIBUTE_OFFLINE
+                    | W32Fs::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+                    .0
                 != 0
             {
                 return Err(lx::Error::EACCES);
@@ -194,7 +192,7 @@ impl LxVolume {
         Ok(())
     }
 
-    pub fn lstat(&self, path: &Path) -> lx::Result<lx::Stat> {
+    pub fn lstat(&self, path: &Path) -> lx::Result<lx::StatEx> {
         assert!(path.is_relative());
 
         // Special-case returning attributes of the root itself to just use the existing handle.
@@ -253,7 +251,7 @@ impl LxVolume {
 
         // O_TRUNC can't be handled with FILE_OVERWRITE because that clears metadata, so handle
         // it here.
-        if flags & lx::O_TRUNC != 0 && create_result != ntioapi::FILE_CREATED as usize {
+        if flags & lx::O_TRUNC != 0 && create_result != WindowsProgramming::FILE_CREATED as usize {
             fs::truncate(&file, 0)?;
         }
 
@@ -309,7 +307,7 @@ impl LxVolume {
         self.check_sandbox_enforcement(path)?;
 
         // Open the file to read its reparse data.
-        let mut handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES, 0)?;
+        let mut handle = self.open_file(path, W32Fs::FILE_READ_ATTRIBUTES, Default::default())?;
         let target_string = self.state.read_reparse_link(&handle)?;
 
         // If the function succeeded but returned None, this is a V1 LX symlink which must be
@@ -321,11 +319,11 @@ impl LxVolume {
             target_string
         } else {
             handle =
-                util::reopen_file(&handle, winnt::FILE_READ_ATTRIBUTES | winnt::FILE_READ_DATA)?;
+                util::reopen_file(&handle, W32Fs::FILE_READ_ATTRIBUTES | W32Fs::FILE_READ_DATA)?;
             symlink::read(&handle)?
         };
 
-        Ok(target.into())
+        Ok(target)
     }
 
     pub fn unlink(&self, path: &Path, flags: i32) -> lx::Result<()> {
@@ -335,14 +333,14 @@ impl LxVolume {
         // Directories can be pre-filtered with FILE_DIRECTORY_FILE. We cannot use
         // FILE_NON_DIRECTORY_FILE, because without AT_REMOVEDIR this function still needs to
         // remove NT symlinks which are directories.
-        let mut create_options = ntioapi::FILE_OPEN_REPARSE_POINT;
+        let mut create_options = FileSystem::FILE_OPEN_REPARSE_POINT;
         if flags & lx::AT_REMOVEDIR != 0 {
-            create_options |= ntioapi::FILE_DIRECTORY_FILE;
+            create_options |= FileSystem::FILE_DIRECTORY_FILE;
         }
 
         let handle = self.open_file(
             path,
-            winnt::DELETE | winnt::FILE_READ_ATTRIBUTES,
+            W32Fs::DELETE | W32Fs::FILE_READ_ATTRIBUTES,
             create_options,
         )?;
 
@@ -351,15 +349,15 @@ impl LxVolume {
         if flags & lx::AT_REMOVEDIR != 0 {
             // Must be a directory and not a reparse point (NT directory symlinks are treated
             // as files).
-            if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY == 0
-                || info.FileAttributes & winnt::FILE_ATTRIBUTE_REPARSE_POINT != 0
+            if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 == 0
+                || info.FileAttributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
             {
                 return Err(lx::Error::ENOTDIR);
             }
         } else {
             // Must be a regular file, or a reparse point directory.
-            if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0
-                && info.FileAttributes & winnt::FILE_ATTRIBUTE_REPARSE_POINT == 0
+            if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
+                && info.FileAttributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 == 0
             {
                 return Err(lx::Error::EISDIR);
             }
@@ -401,7 +399,11 @@ impl LxVolume {
             return Err(lx::Error::EINVAL);
         }
 
-        let handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES | winnt::DELETE, 0)?;
+        let handle = self.open_file(
+            path,
+            W32Fs::FILE_READ_ATTRIBUTES | W32Fs::DELETE,
+            Default::default(),
+        )?;
 
         let flags = fs::RenameFlags::default();
         let error = match fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags) {
@@ -423,7 +425,7 @@ impl LxVolume {
                 .compatibility_flags
                 .supports_posix_unlink_rename()
         {
-            match self.open_file(new_path, winnt::DELETE, 0) {
+            match self.open_file(new_path, W32Fs::DELETE, Default::default()) {
                 Ok(target_handle) => self.delete_file(&target_handle)?,
                 Err(err) => {
                     // ENOENT means the rename can proceed.
@@ -454,7 +456,7 @@ impl LxVolume {
 
     pub fn stat_fs(&self, path: &Path) -> lx::Result<lx::StatFs> {
         assert!(path.is_relative());
-        let handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES, 0)?;
+        let handle = self.open_file(path, W32Fs::FILE_READ_ATTRIBUTES, Default::default())?;
         fs::get_lx_file_system_attributes(&handle, 0)
     }
 
@@ -483,15 +485,15 @@ impl LxVolume {
         let system = name.as_bytes().starts_with(b"system.");
         let name = name.to_str().ok_or(lx::Error::EINVAL)?;
         let desired_access = if system {
-            winnt::FILE_WRITE_ATTRIBUTES
+            W32Fs::FILE_WRITE_ATTRIBUTES
         } else if flags != 0 {
             // If there are flags, read access is required to check if the attribute exists.
-            winnt::FILE_WRITE_EA | winnt::FILE_READ_EA
+            W32Fs::FILE_WRITE_EA | W32Fs::FILE_READ_EA
         } else {
-            winnt::FILE_WRITE_EA
+            W32Fs::FILE_WRITE_EA
         };
 
-        let file = self.open_file(path, desired_access, 0)?;
+        let file = self.open_file(path, desired_access, Default::default())?;
 
         if system {
             xattr::set_system(&file, name, value, flags)
@@ -540,12 +542,12 @@ impl LxVolume {
 
         let system = name.as_bytes().starts_with(b"system.");
         let desired_access = if system {
-            winnt::FILE_READ_ATTRIBUTES
+            W32Fs::FILE_READ_ATTRIBUTES
         } else {
-            winnt::FILE_READ_EA
+            W32Fs::FILE_READ_EA
         };
 
-        let file = self.open_file(path, desired_access, 0)?;
+        let file = self.open_file(path, desired_access, Default::default())?;
 
         let name = name.to_str().ok_or(lx::Error::EINVAL)?;
         if system {
@@ -584,12 +586,12 @@ impl LxVolume {
             return Err(lx::Error::ENOTSUP);
         }
 
-        let mut desired_access = winnt::FILE_READ_EA;
+        let mut desired_access = W32Fs::FILE_READ_EA;
         if self.supports_case_sensitive_dir() {
-            desired_access |= winnt::FILE_READ_ATTRIBUTES;
+            desired_access |= W32Fs::FILE_READ_ATTRIBUTES;
         }
 
-        let file = self.open_file(path, desired_access, 0)?;
+        let file = self.open_file(path, desired_access, Default::default())?;
         let mut flags = 0;
 
         // If the file system supports case sensitive directories, and this is a directory,
@@ -600,7 +602,7 @@ impl LxVolume {
             >(&file);
 
             if let Ok(info) = result {
-                if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0
+                if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0
                     && !util::is_symlink(info.FileAttributes, info.ReparseTag)
                 {
                     flags |= xattr::LX_UTIL_XATTR_LIST_CASE_SENSITIVE_DIR;
@@ -628,7 +630,11 @@ impl LxVolume {
             return Err(lx::Error::ENOTSUP);
         }
 
-        let file = self.open_file(path, winnt::FILE_READ_EA | winnt::FILE_WRITE_EA, 0)?;
+        let file = self.open_file(
+            path,
+            W32Fs::FILE_READ_EA | W32Fs::FILE_WRITE_EA,
+            Default::default(),
+        )?;
         xattr::remove(&file, name.to_str().ok_or(lx::Error::EINVAL)?)
     }
 
@@ -653,7 +659,7 @@ impl LxVolume {
 
         let mut desired_access = util::MINIMUM_PERMISSIONS;
         if self.state.options.create_case_sensitive_dirs {
-            desired_access |= winnt::DELETE | winnt::FILE_WRITE_ATTRIBUTES;
+            desired_access |= W32Fs::DELETE | W32Fs::FILE_WRITE_ATTRIBUTES;
         }
 
         // The file type in the mode is ignored; this function only creates directories.
@@ -661,9 +667,9 @@ impl LxVolume {
         let (handle, _) = self.create_file(
             path,
             desired_access,
-            ntioapi::FILE_CREATE,
-            winnt::FILE_ATTRIBUTE_DIRECTORY,
-            ntioapi::FILE_DIRECTORY_FILE | ntioapi::FILE_OPEN_REPARSE_POINT,
+            FileSystem::FILE_CREATE,
+            W32Fs::FILE_ATTRIBUTE_DIRECTORY,
+            FileSystem::FILE_DIRECTORY_FILE | FileSystem::FILE_OPEN_REPARSE_POINT,
             Some(options),
             0,
         )?;
@@ -706,12 +712,12 @@ impl LxVolume {
         };
 
         // Create the reparse point data for the symlink type.
-        let mut create_options = ntioapi::FILE_OPEN_REPARSE_POINT;
+        let mut create_options = FileSystem::FILE_OPEN_REPARSE_POINT;
         let reparse_data = match link_type {
             SymlinkType::Lx => fs::create_link_reparse_buffer(target)?,
             SymlinkType::Nt(dir) => {
                 if dir {
-                    create_options |= ntioapi::FILE_DIRECTORY_FILE;
+                    create_options |= FileSystem::FILE_DIRECTORY_FILE;
                 }
 
                 // In this path, win_target cannot be an error.
@@ -723,9 +729,9 @@ impl LxVolume {
         options.mode = lx::S_IFLNK | 0o777;
         let (handle, _) = self.create_file(
             path,
-            util::MINIMUM_PERMISSIONS | winnt::FILE_WRITE_ATTRIBUTES | winnt::DELETE,
-            ntioapi::FILE_CREATE,
-            0,
+            util::MINIMUM_PERMISSIONS | W32Fs::FILE_WRITE_ATTRIBUTES | W32Fs::DELETE,
+            FileSystem::FILE_CREATE,
+            Default::default(),
             create_options,
             Some(options),
             0,
@@ -771,8 +777,8 @@ impl LxVolume {
 
         let handle = self.open_file(
             path,
-            util::MINIMUM_PERMISSIONS | winnt::FILE_WRITE_ATTRIBUTES | winnt::SYNCHRONIZE,
-            0,
+            util::MINIMUM_PERMISSIONS | W32Fs::FILE_WRITE_ATTRIBUTES | W32Fs::SYNCHRONIZE,
+            Default::default(),
         )?;
 
         util::create_link(&handle, &self.root, new_path)?;
@@ -789,7 +795,7 @@ impl LxVolume {
         assert!(path.is_relative());
         self.check_sandbox_enforcement(path)?;
         let desired_access = util::permissions_for_set_attr(&attr, self.state.options.metadata);
-        let file = self.open_file(path, desired_access, 0)?;
+        let file = self.open_file(path, desired_access, Default::default())?;
         util::set_attr(&file, &self.state, attr)?;
         if get_attr {
             Ok(Some(self.get_stat_by_handle(&file)?))
@@ -827,10 +833,10 @@ impl LxVolume {
         let mode = options.mode;
         let (handle, _) = self.create_file(
             path,
-            util::MINIMUM_PERMISSIONS | winnt::FILE_WRITE_ATTRIBUTES | winnt::DELETE,
-            ntioapi::FILE_CREATE,
-            0,
-            ntioapi::FILE_OPEN_REPARSE_POINT,
+            util::MINIMUM_PERMISSIONS | W32Fs::FILE_WRITE_ATTRIBUTES | W32Fs::DELETE,
+            FileSystem::FILE_CREATE,
+            Default::default(),
+            FileSystem::FILE_OPEN_REPARSE_POINT,
             Some(options),
             device_id,
         )?;
@@ -872,28 +878,24 @@ impl LxVolume {
     fn create_file(
         &self,
         path: &Path,
-        desired_access: winnt::ACCESS_MASK,
-        disposition: ntdef::ULONG,
-        mut file_attributes: ntdef::ULONG,
-        create_options: ntdef::ULONG,
+        desired_access: W32Fs::FILE_ACCESS_RIGHTS,
+        disposition: FileSystem::NTCREATEFILE_CREATE_DISPOSITION,
+        mut file_attributes: W32Fs::FILE_FLAGS_AND_ATTRIBUTES,
+        create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
         options: Option<super::LxCreateOptions>,
         device_id: lx::dev_t,
-    ) -> lx::Result<(OwnedHandle, basetsd::ULONG_PTR)> {
+    ) -> lx::Result<(OwnedHandle, usize)> {
         self.check_sandbox_enforcement(path)?;
 
         assert!(
-            disposition == ntioapi::FILE_OPEN
-                || disposition == ntioapi::FILE_OPEN_IF
-                || disposition == ntioapi::FILE_CREATE
+            disposition == FileSystem::FILE_OPEN
+                || disposition == FileSystem::FILE_OPEN_IF
+                || disposition == FileSystem::FILE_CREATE
         );
-
-        // TODO: Async support.
-        let create_options = create_options | ntioapi::FILE_SYNCHRONOUS_IO_ALERT;
-        let desired_access = desired_access | winnt::SYNCHRONIZE;
 
         let mut ea_buffer = [0u8; fs::LX_UTIL_FS_METADATA_EA_BUFFER_SIZE];
         let mut ea = None;
-        if disposition != ntioapi::FILE_OPEN {
+        if disposition != FileSystem::FILE_OPEN {
             // If a new file is being created, create an EA buffer for Linux metadata.
             let mut options = options.ok_or(lx::Error::EINVAL)?;
             if self.state.options.metadata {
@@ -923,7 +925,7 @@ impl LxVolume {
 
             // Set the read-only attribute if no write bits are set.
             if lx::s_isreg(options.mode) && options.mode & 0o222 == 0 {
-                file_attributes |= winnt::FILE_ATTRIBUTE_READONLY;
+                file_attributes |= W32Fs::FILE_ATTRIBUTE_READONLY;
             }
         }
 
@@ -944,16 +946,16 @@ impl LxVolume {
     fn open_file(
         &self,
         path: &Path,
-        desired_access: winnt::ACCESS_MASK,
-        create_options: ntdef::ULONG,
+        desired_access: W32Fs::FILE_ACCESS_RIGHTS,
+        create_options: FileSystem::NTCREATEFILE_CREATE_OPTIONS,
     ) -> lx::Result<OwnedHandle> {
         self.check_sandbox_enforcement(path)?;
         let (handle, _) = self.create_file(
             path,
             desired_access,
-            ntioapi::FILE_OPEN,
-            0,
-            create_options | ntioapi::FILE_OPEN_REPARSE_POINT,
+            FileSystem::FILE_OPEN,
+            Default::default(),
+            create_options | FileSystem::FILE_OPEN_REPARSE_POINT,
             None,
             0,
         )?;
@@ -967,23 +969,19 @@ impl LxVolume {
 
         match result {
             Ok(_) => result,
-            Err(e) => {
-                // Read-only files can fail to be deleted with EIO if:
-                // - The file system didn't support FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE.
-                // - The file system's permission check for that flag failed.
-                if e.value() == lx::EIO {
-                    result
-                } else {
+            Err(e) => match fs::analyze_delete_error(e, handle) {
+                fs::DeleteErrorAction::ReturnError(err) => Err(err),
+                fs::DeleteErrorAction::TryReadOnlyWorkaround => {
                     // Reopen with the correct permissions to query and clear the read-only attribute,
                     // and try again.
                     let handle = util::reopen_file(
                         handle,
-                        winnt::DELETE | winnt::FILE_READ_ATTRIBUTES | winnt::FILE_WRITE_ATTRIBUTES,
+                        W32Fs::DELETE | W32Fs::FILE_READ_ATTRIBUTES | W32Fs::FILE_WRITE_ATTRIBUTES,
                     )?;
 
                     fs::delete_read_only_file(&self.state.fs_context, &handle)
                 }
-            }
+            },
         }
     }
 
@@ -1032,11 +1030,31 @@ impl LxVolume {
             }
         };
 
-        // If the target isn't inside the volume, create an LX symlink.
-        // TODO: Improve this; this doesn't protect against paths that walk out of the volume
-        //       and then back in.
+        // If the target isn't inside the volume, create an LX symlink. This catches cases where
+        // symlinks in the path point outside the mount.
         if !path.starts_with(&self.root_path) {
             return SymlinkType::Lx;
+        }
+
+        // Manually resolve the target path to check if it would cross the mount boundary. This
+        // catches cases where the target contains ".." components that would escape the volume
+        // (e.g., "../..") or that walk out and back in (e.g., "../../mount/dir").
+        let mut working_path = self.root_path.clone();
+        working_path.push(symlink_parent);
+        for component in target.components() {
+            match component {
+                Component::ParentDir => {
+                    if !working_path.pop() {
+                        return SymlinkType::Lx;
+                    }
+                    if !working_path.starts_with(&self.root_path) {
+                        return SymlinkType::Lx;
+                    }
+                }
+                Component::Normal(name) => working_path.push(name),
+                Component::CurDir => {}
+                _ => return SymlinkType::Lx,
+            }
         }
 
         // Determine the attributes of the found target. If an error occurs, create an LX symlink.
@@ -1047,11 +1065,11 @@ impl LxVolume {
 
         // If the target is an LX symlink, create an LX symlink. Otherwise the file type should
         // match the target.
-        if info.FileAttributes & winnt::FILE_ATTRIBUTE_REPARSE_POINT != 0
+        if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0
             && info.ReparseTag == FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32
         {
             SymlinkType::Lx
-        } else if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0 {
+        } else if info.FileAttributes & W32Fs::FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
             SymlinkType::Nt(true)
         } else {
             SymlinkType::Nt(false)
@@ -1066,6 +1084,7 @@ impl LxVolume {
             &self.state.options,
             self.state.block_size,
         )
+        .map(|x| x.into())
     }
 }
 
@@ -1075,13 +1094,13 @@ pub struct LxFile {
     handle: OwnedHandle,
     state: Arc<VolumeState>,
     enumerator: Option<readdir::DirectoryEnumerator>,
-    access: winnt::ACCESS_MASK,
+    access: W32Fs::FILE_ACCESS_RIGHTS,
     kill_priv: AtomicBool,
     is_app_exec_alias: Mutex<bool>,
 }
 
 impl LxFile {
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         let mut info = self.state.get_attributes_by_handle(&self.handle)?;
         *self.is_app_exec_alias.lock() = info.is_app_execution_alias;
         util::file_info_to_stat(
@@ -1142,19 +1161,17 @@ impl LxFile {
             Ok(fs::read_app_exec_link(offset, buffer))
         } else {
             unsafe {
-                let mut nt_offset: ntdef::LARGE_INTEGER = mem::zeroed();
-                *nt_offset.QuadPart_mut() = offset;
                 // TODO: Async I/O.
-                util::check_status_rw(ntioapi::NtReadFile(
-                    self.handle.as_raw_handle(),
-                    ptr::null_mut(),
+                let _ = util::check_status_rw(FileSystem::NtReadFile(
+                    Foundation::HANDLE(self.handle.as_raw_handle()),
                     None,
-                    ptr::null_mut(),
+                    None,
+                    None,
                     &mut iosb,
                     buffer_ptr,
                     buffer_len,
-                    &mut nt_offset,
-                    ptr::null_mut(),
+                    Some(&offset),
+                    None,
                 ))?;
 
                 Ok(iosb.Information)
@@ -1179,31 +1196,30 @@ impl LxFile {
                 && self.kill_priv.swap(false, Ordering::AcqRel)
             {
                 let stat = self.fstat()?;
-                if stat.mode & (lx::S_ISUID | lx::S_ISGID) != 0 {
+                if stat.mode as u32 & (lx::S_ISUID | lx::S_ISGID) != 0 {
                     let mut attr = SetAttributes::default();
-                    attr.mode = Some(stat.mode & !(lx::S_ISUID | lx::S_ISGID));
+                    attr.mode = Some(stat.mode as u32 & !(lx::S_ISUID | lx::S_ISGID));
                     self.set_attr(attr)?;
                 }
             }
 
-            let mut iosb = mem::zeroed();
+            let mut iosb = Default::default();
             let buffer_ptr = buffer.as_ptr() as *mut ffi::c_void;
             let buffer_len = buffer.len().try_into().map_err(|_| lx::Error::EINVAL)?;
 
-            let mut nt_offset: ntdef::LARGE_INTEGER = mem::zeroed();
-            *nt_offset.QuadPart_mut() = offset;
+            let nt_offset: i64 = offset;
 
             // TODO: Async I/O.
-            util::check_status_rw(ntioapi::NtWriteFile(
-                self.handle.as_raw_handle(),
-                ptr::null_mut(),
+            let _ = util::check_status_rw(FileSystem::NtWriteFile(
+                Foundation::HANDLE(self.handle.as_raw_handle()),
                 None,
-                ptr::null_mut(),
+                None,
+                None,
                 &mut iosb,
                 buffer_ptr,
                 buffer_len,
-                &mut nt_offset,
-                ptr::null_mut(),
+                Some(&nt_offset),
+                None,
             ))?;
 
             Ok(iosb.Information)
@@ -1221,7 +1237,7 @@ impl LxFile {
         let enumerator = self.enumerator.as_mut().unwrap();
         let mut local_offset = offset;
 
-        // Write the . and .. entries, since lxutil doesn't return them.
+        // Write the . and .. entries, since `read_dir` doesn't return them.
         if !Self::process_dot_entries(&mut local_offset, &mut callback)? {
             return Ok(());
         }
@@ -1243,13 +1259,13 @@ impl LxFile {
         // Linux allows using fsync on files that have been opened read-only, while
         // Windows does not, so reopen the file if necessary.
         let mut _reopened = None;
-        let handle = if self.access & (winnt::FILE_WRITE_DATA | winnt::FILE_APPEND_DATA) != 0 {
+        let handle = if (self.access & (W32Fs::FILE_WRITE_DATA | W32Fs::FILE_APPEND_DATA)).0 != 0 {
             &self.handle
         } else {
-            let file = match util::reopen_file(&self.handle, winnt::FILE_WRITE_DATA) {
+            let file = match util::reopen_file(&self.handle, W32Fs::FILE_WRITE_DATA) {
                 Ok(file) => file,
                 // If FILE_WRITE_DATA failed, try again with FILE_APPEND_DATA
-                Err(_) => match util::reopen_file(&self.handle, winnt::FILE_APPEND_DATA) {
+                Err(_) => match util::reopen_file(&self.handle, W32Fs::FILE_APPEND_DATA) {
                     Ok(file) => file,
                     Err(e) => {
                         // If this failed due to an access denied, just return success because on
@@ -1269,20 +1285,20 @@ impl LxFile {
         };
 
         let flags = if data_only {
-            winnt::FLUSH_FLAGS_FILE_DATA_ONLY
+            W32Ss::FLUSH_FLAGS_FILE_DATA_ONLY
         } else {
             0
         };
 
+        let mut iosb = Default::default();
         unsafe {
-            let mut iosb = mem::zeroed();
-            let _ = util::check_status(Foundation::NTSTATUS(ntioapi::NtFlushBuffersFileEx(
-                handle.as_raw_handle(),
+            let _ = util::check_status(FileSystem::NtFlushBuffersFileEx(
+                Foundation::HANDLE(handle.as_raw_handle()),
                 flags,
                 ptr::null_mut(),
                 0,
                 &mut iosb,
-            )))?;
+            ))?;
         }
 
         Ok(())
@@ -1312,7 +1328,7 @@ impl LxFile {
     fn process_dir_entry<F>(
         offset: &mut lx::off_t,
         callback: &mut F,
-        inode_nr: ntdef::ULONGLONG,
+        inode_nr: u64,
         name: lx::LxString,
         file_type: u8,
     ) -> lx::Result<bool>

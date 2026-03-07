@@ -4,7 +4,7 @@
 //! A wrapper around [`Disk`] that adapts the trait for use with
 //! synchronous [`std::io`] traits (such as `Read`, `Write`, `Seek`, etc...).
 //!
-//! NOTE: this is _not_ code that should see wide use across the HvLite
+//! NOTE: this is _not_ code that should see wide use across the OpenVMM
 //! codebase! It was written to support a very-specific use-case: leveraging
 //! existing, synchronous, Rust/C library code that reformats/repartitions
 //! drives.

@@ -6,8 +6,7 @@
 #![expect(missing_docs)]
 
 use parking_lot::Mutex;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -29,6 +28,10 @@ impl TestVpciInterruptController {
                 msi_requests: Mutex::new(VecDeque::new()),
             }),
         })
+    }
+
+    pub fn signal_msi(&self) -> Arc<dyn SignalMsi> {
+        self.inner.clone()
     }
 
     pub fn get_next_interrupt(&self) -> Option<RequestedInterrupt> {
@@ -72,10 +75,10 @@ impl TestVpciInterruptControllerInner {
     }
 }
 
-impl MsiInterruptTarget for TestVpciInterruptController {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let controller = self.inner.clone();
-        Box::new(move |address, data| controller.deliver_interrupt(address, data))
+impl SignalMsi for TestVpciInterruptControllerInner {
+    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
+        assert_eq!(rid, 0);
+        self.deliver_interrupt(address, data);
     }
 }
 

@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Core building blocks for managing vm and vm related state to build a vmm.
-//! Used by both hvlite and underhill today.
+//! Used by both OpenVMM and underhill today.
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]

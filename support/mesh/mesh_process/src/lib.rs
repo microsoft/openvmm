@@ -277,6 +277,7 @@ pub struct ProcessConfig {
     stderr: Option<File>,
     skip_worker_arg: bool,
     sandbox_profile: Option<Box<dyn SandboxProfile + Sync>>,
+    env_vars: Vec<(OsString, OsString)>,
 }
 
 impl ProcessConfig {
@@ -290,6 +291,7 @@ impl ProcessConfig {
             stderr: None,
             skip_worker_arg: false,
             sandbox_profile: None,
+            env_vars: Vec::new(),
         }
     }
 
@@ -306,6 +308,7 @@ impl ProcessConfig {
             stderr: None,
             skip_worker_arg: false,
             sandbox_profile: Some(sandbox_profile),
+            env_vars: Vec::new(),
         }
     }
 
@@ -333,6 +336,16 @@ impl ProcessConfig {
         I::Item: Into<OsString>,
     {
         self.process_args.extend(args.into_iter().map(|x| x.into()));
+        self
+    }
+
+    /// Adds environment variables when launching the process.
+    pub fn env<I>(mut self, env_vars: I) -> Self
+    where
+        I: IntoIterator,
+        I::Item: Into<(OsString, OsString)>,
+    {
+        self.env_vars.extend(env_vars.into_iter().map(|x| x.into()));
         self
     }
 
@@ -652,6 +665,7 @@ impl MeshInner {
                 .stdout(process::Stdio::Null)
                 .handle(&invitation.directory)
                 .env(INVITATION_ENV_NAME, invitation_env)
+                .extend_env(config.env_vars)
                 .job(self.job.as_handle());
 
             if let Some(log_file) = config.stderr.as_ref() {

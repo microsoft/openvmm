@@ -61,6 +61,16 @@ pub mod user_facing {
 }
 
 fn linux_distro() -> FlowPlatformLinuxDistro {
+    // Check for nix environment first - takes precedence over distro detection
+    if std::env::var("IN_NIX_SHELL").is_ok() {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
+    // A `nix develop` shell doesn't set `IN_NIX_SHELL`, but the PATH should include a nix store path
+    if std::env::var("PATH").is_ok_and(|path| path.contains("/nix/store")) {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
     if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
         if etc_os_release.contains("ID=ubuntu") {
             FlowPlatformLinuxDistro::Ubuntu
@@ -599,6 +609,7 @@ impl Pipeline {
             arch,
             cond_param_idx: None,
             timeout_minutes: None,
+            command_wrapper: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -1204,12 +1215,25 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Only run the job if the specified condition is true.
-    ///
-    /// When running locally, the `cond`'s default value will be used to
-    /// determine if the job will be run.
+    /// (ADO+Local Only) Only run the job if the specified condition is true.
     pub fn with_condition(self, cond: UseParameter<bool>) -> Self {
         self.pipeline.jobs[self.job_idx].cond_param_idx = Some(cond.idx);
+        self.pipeline.parameters[cond.idx]
+            .used_by_jobs
+            .insert(self.job_idx);
+        self
+    }
+
+    /// Set a [`CommandWrapperKind`] that will be applied to all shell
+    /// commands executed in this job's steps.
+    ///
+    /// The wrapper is applied both when running locally (via direct run)
+    /// and when running in CI (the kind is serialized into
+    /// `pipeline.json` and reconstructed at runtime).
+    ///
+    /// [`CommandWrapperKind`]: crate::shell::CommandWrapperKind
+    pub fn set_command_wrapper(self, wrapper: crate::shell::CommandWrapperKind) -> Self {
+        self.pipeline.jobs[self.job_idx].command_wrapper = Some(wrapper);
         self
     }
 
@@ -1272,6 +1296,90 @@ pub enum PipelineBackendHint {
     Github,
 }
 
+/// Trait for types that can be converted into a [`Pipeline`].
+///
+/// This is the primary entry point for defining flowey pipelines. Implement this trait
+/// to create a pipeline definition that can be executed locally or converted to CI YAML.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct MyPipeline;
+///
+/// impl IntoPipeline for MyPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///
+///         // Define a job that runs on Linux x86_64
+///         let _job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .finish();
+///
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
+///
+/// # Complex Example with Parameters and Artifacts
+///
+/// ```rust,ignore
+/// use flowey_core::pipeline::{IntoPipeline, Pipeline, PipelineBackendHint, ParameterKind};
+/// use flowey_core::node::{FlowPlatform, FlowPlatformLinuxDistro, FlowArch};
+///
+/// struct BuildPipeline;
+///
+/// impl IntoPipeline for BuildPipeline {
+///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
+///         let mut pipeline = Pipeline::new();
+///
+///         // Define a runtime parameter
+///         let enable_tests = pipeline.new_parameter_bool(
+///             "enable_tests",
+///             "Whether to run tests",
+///             ParameterKind::Stable,
+///             Some(true) // default value
+///         );
+///
+///         // Create an artifact for passing data between jobs
+///         let (publish_build, use_build) = pipeline.new_artifact("build-output");
+///
+///         // Job 1: Build
+///         let build_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "build"
+///             )
+///             .with_timeout_in_minutes(30)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node::Request {
+///                 output_dir: ctx.publish_artifact(publish_build),
+///             })
+///             .finish();
+///
+///         // Job 2: Test (conditionally run based on parameter)
+///         let _test_job = pipeline
+///             .new_job(
+///                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+///                 FlowArch::X86_64,
+///                 "test"
+///             )
+///             .with_condition(enable_tests)
+///             .dep_on(|ctx| flowey_lib_hvlite::_jobs::example_node2::Request {
+///                 input_dir: ctx.use_artifact(&use_build),
+///             })
+///             .finish();
+///
+///         Ok(pipeline)
+///     }
+/// }
+/// ```
 pub trait IntoPipeline {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline>;
 }
@@ -1319,6 +1427,7 @@ pub mod internal {
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
         pub timeout_minutes: Option<u32>,
+        pub command_wrapper: Option<crate::shell::CommandWrapperKind>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,

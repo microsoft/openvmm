@@ -83,6 +83,7 @@ use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
+use vmbus_core::VMBUS_SINT;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 pub use vmbus_core::protocol::GpadlId;
@@ -99,7 +100,6 @@ use vmcore::synic::MessagePort;
 use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicPortAccess;
 
-const SINT: u8 = 2;
 pub const REDIRECT_SINT: u8 = 7;
 pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
@@ -463,7 +463,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
         let (redirect_vtl, redirect_sint) = if self.use_message_redirect {
             (REDIRECT_VTL, REDIRECT_SINT)
         } else {
-            (self.vtl, SINT)
+            (self.vtl, VMBUS_SINT)
         };
 
         // If this server is not for VTL2, use a server-specific connection ID rather than the
@@ -601,6 +601,7 @@ impl<T: SpawnDriver + Clone> VmbusServerBuilder<T> {
             inner,
             external_requests: self.external_requests,
             next_seq: 0,
+            perform_post_restore_on_start: false,
             unstick_on_start: false,
             channel_unstickers: FuturesUnordered::new(),
             channel_unstick_delay: self.channel_unstick_delay,
@@ -722,6 +723,7 @@ struct ServerTask {
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     /// Next value for [`Channel::seq`].
     next_seq: u64,
+    perform_post_restore_on_start: bool,
     unstick_on_start: bool,
     channel_unstickers: FuturesUnordered<Pin<Box<dyn Send + Future<Output = OfferInstanceId>>>>,
     channel_unstick_delay: Option<Duration>,
@@ -794,8 +796,19 @@ struct ReservedState {
 struct ChannelOpenState {
     open_params: OpenParams,
     _event_port: Box<dyn Send>,
-    guest_event_port: Box<dyn GuestEventPort>,
+    guest_event_port: Option<Box<dyn GuestEventPort>>,
     host_to_guest_interrupt: Interrupt,
+}
+
+impl ChannelOpenState {
+    fn set_event_port_target_vp(&mut self, vp: u32) -> anyhow::Result<()> {
+        let Some(guest_event_port) = self.guest_event_port.as_mut() else {
+            anyhow::bail!("cannot set target VP if the channel interrupt is disabled");
+        };
+
+        guest_event_port.set_target_vp(vp)?;
+        Ok(())
+    }
 }
 
 enum ChannelState {
@@ -1019,9 +1032,10 @@ impl ServerTask {
 
         let channel = self.inner.channels.get_mut(&offer_id).unwrap();
         for gpadl in &gpadls {
-            if let Ok(buf) =
-                MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf.clone())
-            {
+            if let Ok(buf) = MultiPagedRangeBuf::from_range_buffer(
+                gpadl.request.count.into(),
+                gpadl.request.buf.clone(),
+            ) {
                 channel.gpadls.add(gpadl.request.id, buf);
             }
         }
@@ -1071,6 +1085,7 @@ impl ServerTask {
             VmbusRequest::Restore(rpc) => {
                 rpc.handle(async |state| {
                     self.unstick_on_start = !state.lost_synic_bug_fixed;
+                    self.perform_post_restore_on_start = true;
                     if let Some(sender) = &self.inner.saved_state_notify {
                         tracing::trace!("sending saved state to proxy");
                         if let Err(err) = sender
@@ -1099,19 +1114,24 @@ impl ServerTask {
             VmbusRequest::Start => {
                 if !self.inner.running {
                     self.inner.running = true;
-                    if let Some(sender) = self.inner.saved_state_notify.as_ref() {
-                        // Indicate to the proxy that the server is starting and that it should
-                        // clear its saved state cache.
-                        tracing::trace!("sending clear saved state message to proxy");
-                        sender
-                            .call(SavedStateRequest::Clear, ())
-                            .await
-                            .expect("failed to clear proxy saved state");
+                    if self.perform_post_restore_on_start {
+                        if let Some(sender) = self.inner.saved_state_notify.as_ref() {
+                            // Indicate to the proxy that the server is starting and that it should
+                            // clear its saved state cache.
+                            tracing::trace!("sending clear saved state message to proxy");
+                            sender
+                                .call(SavedStateRequest::Clear, ())
+                                .await
+                                .expect("failed to clear proxy saved state");
+                        }
+
+                        self.server
+                            .with_notifier(&mut self.inner)
+                            .revoke_unclaimed_channels();
+
+                        self.perform_post_restore_on_start = false;
                     }
 
-                    self.server
-                        .with_notifier(&mut self.inner)
-                        .revoke_unclaimed_channels();
                     if self.unstick_on_start {
                         tracing::info!(
                             "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
@@ -1556,7 +1576,7 @@ impl Notifier for ServerTaskInner {
             channels::Action::Gpadl(gpadl_id, count, buf) => {
                 channel.gpadls.add(
                     gpadl_id,
-                    MultiPagedRangeBuf::new(count.into(), buf.clone()).unwrap(),
+                    MultiPagedRangeBuf::from_range_buffer(count.into(), buf.clone()).unwrap(),
                 );
                 handle(
                     offer_id,
@@ -1587,32 +1607,34 @@ impl Notifier for ServerTaskInner {
                 )
             }
             channels::Action::Modify { target_vp } => {
-                if let ChannelState::Open(state) = &mut channel.state {
-                    if let Err(err) = state.guest_event_port.set_target_vp(target_vp) {
-                        tracelimit::error_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            channel = %channel.key,
-                            "could not modify channel",
-                        );
-                        let seq = channel.seq;
-                        Box::pin(async move {
-                            (
-                                offer_id,
-                                seq,
-                                Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
-                            )
-                        })
-                    } else {
-                        handle(
-                            offer_id,
-                            channel,
-                            ChannelRequest::Modify,
-                            ModifyRequest::TargetVp { target_vp },
-                            ChannelResponse::Modify,
-                        )
-                    }
-                } else {
+                let ChannelState::Open(state) = &mut channel.state else {
                     unreachable!();
+                };
+
+                if let Err(err) = state.set_event_port_target_vp(target_vp) {
+                    tracelimit::error_ratelimited!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        channel = %channel.key,
+                        "could not modify channel",
+                    );
+
+                    // Send an immediate error response.
+                    let seq = channel.seq;
+                    Box::pin(async move {
+                        (
+                            offer_id,
+                            seq,
+                            Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
+                        )
+                    })
+                } else {
+                    handle(
+                        offer_id,
+                        channel,
+                        ChannelRequest::Modify,
+                        ModifyRequest::TargetVp { target_vp },
+                        ChannelResponse::Modify,
+                    )
                 }
             }
         };
@@ -1784,30 +1806,39 @@ impl ServerTaskInner {
         // For pre-Win8 guests, the host-to-guest event always targets vp 0 and the channel
         // bitmap is used instead of the event flag.
         let (target_vp, event_flag) = if self.channel_bitmap.is_some() {
-            (0, 0)
+            (Some(0), 0)
         } else {
             (open_params.open_data.target_vp, open_params.event_flag)
         };
-        let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-            (self.redirect_vtl, self.redirect_sint)
+
+        let (guest_event_port, interrupt) = if let Some(target_vp) = target_vp {
+            let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
+                (self.redirect_vtl, self.redirect_sint)
+            } else {
+                (self.vtl, VMBUS_SINT)
+            };
+
+            let guest_event_port = self.synic.new_guest_event_port(
+                VmbusServer::get_child_event_port_id(open_params.channel_id, VMBUS_SINT, self.vtl),
+                target_vtl,
+                target_vp,
+                target_sint,
+                event_flag,
+                open_params.monitor_info,
+            )?;
+
+            let interrupt = ChannelBitmap::create_interrupt(
+                &self.channel_bitmap,
+                guest_event_port.interrupt(),
+                open_params.event_flag,
+            );
+
+            (Some(guest_event_port), interrupt)
         } else {
-            (self.vtl, SINT)
+            // Use a dummy interrupt which does nothing, but make sure it has an event to avoid
+            // proxy_integration from trying to wrap it.
+            (None, Interrupt::null_event())
         };
-
-        let guest_event_port = self.synic.new_guest_event_port(
-            VmbusServer::get_child_event_port_id(open_params.channel_id, SINT, self.vtl),
-            target_vtl,
-            target_vp,
-            target_sint,
-            event_flag,
-            open_params.monitor_info,
-        )?;
-
-        let interrupt = ChannelBitmap::create_interrupt(
-            &self.channel_bitmap,
-            guest_event_port.interrupt(),
-            open_params.event_flag,
-        );
 
         // Delete any previously reserved state.
         channel.reserved_state.message_port = None;

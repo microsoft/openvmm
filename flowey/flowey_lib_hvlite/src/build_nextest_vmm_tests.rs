@@ -120,7 +120,6 @@ impl FlowNode for Node {
                     }),
                     features: Default::default(),
                     no_default_features: false,
-                    unstable_panic_abort_tests: None, // don't run VMM tests on musl hvlite
                     target: target.clone(),
                     profile: match profile {
                         CommonProfile::Release => CargoBuildProfile::Release,

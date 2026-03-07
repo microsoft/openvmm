@@ -9,6 +9,8 @@ rust-version.workspace = true
 [features]
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
+# Enable profiler tracing (heap profiling) support
+mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-tracing"]
 
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
@@ -16,6 +18,9 @@ gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 # Enable locally compiling and statically linking a copy of OpenSSL.
 # The build process requires a C compiler, perl, and make.
 openssl-vendored = ["underhill_attestation/openssl-vendored"]
+
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 
 # Enable VPCI device support
 vpci = []
@@ -28,6 +33,7 @@ vmotherboard = { workspace = true, features = [
 ] }
 build_info.workspace = true
 cvm_tracing.workspace = true
+mem_profile_tracing = { workspace = true, optional = true }
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
@@ -40,6 +46,8 @@ vnc_worker_defs.workspace = true
 chipset.workspace = true
 chipset_device.workspace = true
 chipset_device_resources.workspace = true
+chipset_device_worker.workspace = true
+chipset_device_worker_defs.workspace = true
 closeable_mutex.workspace = true
 profiler_worker = { workspace = true, optional = true }
 chipset_legacy.workspace = true
@@ -83,6 +91,7 @@ serial_16550_resources.workspace = true
 storage_string.workspace = true
 storvsp.workspace = true
 storvsp_resources.workspace = true
+tpm_protocol.workspace = true
 tpm_resources.workspace = true
 tpm_device = { workspace = true, features = ["tpm"] }
 tracelimit.workspace = true
@@ -129,6 +138,7 @@ vmcore.workspace = true
 vm_resource.workspace = true
 vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
 vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+vmgs_format.workspace = true
 vmgs_resources.workspace = true
 x86defs.workspace = true
 
@@ -179,6 +189,7 @@ firmware_pcat.workspace = true
 [dev-dependencies]
 guest_emulation_transport = { workspace = true, features = ["test_utilities"] }
 test_with_tracing.workspace = true
+nvme_spec.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

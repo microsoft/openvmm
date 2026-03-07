@@ -7,7 +7,6 @@ use crate::build_nextest_unit_tests::BuildNextestUnitTestMode;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
-use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
 use std::collections::BTreeMap;
 
 flowey_request! {
@@ -18,8 +17,6 @@ flowey_request! {
         pub target: target_lexicon::Triple,
         /// Build and run unit tests with the specified cargo profile
         pub profile: CommonProfile,
-        /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
-        pub unstable_panic_abort_tests: Option<PanicAbortTests>,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
 
@@ -46,7 +43,6 @@ impl SimpleFlowNode for Node {
             junit_test_label,
             target,
             profile,
-            unstable_panic_abort_tests,
             nextest_profile,
             fail_job_on_test_fail,
             artifact_dir,
@@ -56,7 +52,6 @@ impl SimpleFlowNode for Node {
         let results = ctx.reqv(|v| crate::build_nextest_unit_tests::Request {
             profile,
             target,
-            unstable_panic_abort_tests,
             build_mode: BuildNextestUnitTestMode::ImmediatelyRun {
                 nextest_profile,
                 results: v,

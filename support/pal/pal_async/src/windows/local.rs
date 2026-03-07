@@ -36,7 +36,6 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
-use winapi::shared::winerror::ERROR_IO_PENDING;
 use winapi::shared::winerror::ERROR_OPERATION_ABORTED;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::ioapiset::CancelIoEx;
@@ -54,8 +53,20 @@ pub(crate) struct State {
     entries: SparseVec<HandleEntry>,
     sockets: SparseVec<SocketEntry>,
     files: SparseVec<SendSyncRawHandle>,
-    ios: Vec<usize>,
+    ios: Vec<InFlightIo>,
 }
+
+#[derive(Debug)]
+struct InFlightIo {
+    file_id: FileId,
+    overlapped: OverlappedPtr,
+}
+
+#[derive(Debug)]
+struct OverlappedPtr(*const Overlapped);
+
+// SAFETY: the overlapped structure can be accessed on any thread.
+unsafe impl Send for OverlappedPtr {}
 
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
@@ -86,7 +97,7 @@ struct HandleId(usize);
 #[derive(Debug, Copy, Clone)]
 struct SocketId(usize);
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct FileId(usize);
 
 // TODO: switch to std::sync::OnceLock once `get_or_try_init` is stable
@@ -252,10 +263,10 @@ impl State {
         // Poll for completed IOs. Do so regardless of which handle was
         // signaled, since in some cases the file handle signal can be lost
         // (e.g. if a new IO is issued while another one is pending).
-        self.ios.retain(|&overlapped| {
+        self.ios.retain(|io| {
             // SAFETY: overlapped is guaranteed to be a valid &Overlapped until
             // overlapped_io_done is called on it.
-            let overlapped = unsafe { &*(overlapped as *const Overlapped) };
+            let overlapped = unsafe { &*io.overlapped.0 };
             if overlapped.io_status().is_some() {
                 unsafe { overlapped_io_done(overlapped.as_ptr(), wakers) };
                 false
@@ -467,7 +478,7 @@ impl Drop for OverlappedIo {
 impl IoOverlapped for OverlappedIo {
     fn pre_io(&self) {}
 
-    unsafe fn post_io(&self, result: &io::Result<()>, overlapped: &Overlapped) -> bool {
+    unsafe fn post_io(&self, completed: bool, overlapped: &Overlapped) {
         // Always take the lock to force the thread out of its wait. This is
         // necessary because issuing the IO may have reset the file's internal
         // IO completion event before the waiting thread could consume it.
@@ -476,13 +487,23 @@ impl IoOverlapped for OverlappedIo {
         // For better performance when multiple threads are involved, switch to
         // a different driver.
         let mut inner = self.inner.lock_sys_state();
-        match result.as_ref() {
-            Ok(()) => true,
-            Err(e) if e.raw_os_error() != Some(ERROR_IO_PENDING as i32) => true,
-            Err(_) => {
-                inner.ios.push(overlapped.as_ptr() as usize);
-                false
-            }
+        if !completed {
+            inner.ios.push(InFlightIo {
+                file_id: self.id,
+                overlapped: OverlappedPtr(overlapped),
+            });
+        }
+    }
+
+    unsafe fn disassociate(&mut self) {
+        if self
+            .inner
+            .lock_sys_state()
+            .ios
+            .iter()
+            .any(|io| io.file_id == self.id)
+        {
+            panic!("caller bug: no pending IO should be in flight");
         }
     }
 }

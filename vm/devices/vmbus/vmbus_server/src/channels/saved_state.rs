@@ -14,12 +14,12 @@ use mesh::payload::Protobuf;
 use std::fmt::Display;
 use thiserror::Error;
 use vmbus_channel::bus::OfferKey;
+use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Version;
 use vmbus_ring::gparange;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::monitor::MonitorId;
 
 impl super::Server {
@@ -425,7 +425,7 @@ pub struct DisconnectedState {
     pub reserved_gpadls: Vec<Gpadl>,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct VersionInfo {
     #[mesh(1)]
@@ -834,7 +834,7 @@ impl MonitorPageRequest {
     }
 }
 
-#[derive(Debug, Copy, Clone, Protobuf)]
+#[derive(PartialEq, Eq, Debug, Copy, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct SignalInfo {
     #[mesh(1)]
@@ -859,7 +859,7 @@ impl SignalInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, Protobuf)]
+#[derive(Copy, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct OpenRequest {
     #[mesh(1)]
@@ -878,12 +878,60 @@ pub struct OpenRequest {
     pub flags: u16,
 }
 
+impl std::fmt::Debug for OpenRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            open_id,
+            ring_buffer_gpadl_id,
+            target_vp,
+            downstream_ring_buffer_page_offset,
+            user_data,
+            guest_specified_interrupt_info,
+            flags,
+        } = self;
+
+        let user_data_display: &dyn std::fmt::Debug = if self.user_data.iter().all(|&b| b == 0) {
+            &"[<all-zeroes>]"
+        } else {
+            struct HexDisplay<'a>(&'a [u8; 120]);
+            impl std::fmt::Debug for HexDisplay<'_> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(f, "[")?;
+                    for byte in self.0 {
+                        write!(f, "{:02X}", byte)?;
+                    }
+                    write!(f, "]")
+                }
+            }
+            &HexDisplay(user_data)
+        };
+
+        f.debug_struct("OpenRequest")
+            .field("open_id", open_id)
+            .field("ring_buffer_gpadl_id", ring_buffer_gpadl_id)
+            .field("target_vp", target_vp)
+            .field(
+                "downstream_ring_buffer_page_offset",
+                downstream_ring_buffer_page_offset,
+            )
+            .field("user_data", user_data_display)
+            .field(
+                "guest_specified_interrupt_info",
+                guest_specified_interrupt_info,
+            )
+            .field("flags", flags)
+            .finish()
+    }
+}
+
 impl OpenRequest {
     fn save(value: &super::OpenRequest) -> Self {
         Self {
             open_id: value.open_id,
             ring_buffer_gpadl_id: value.ring_buffer_gpadl_id,
-            target_vp: value.target_vp,
+            target_vp: value
+                .target_vp
+                .unwrap_or(protocol::VP_INDEX_DISABLE_INTERRUPT),
             downstream_ring_buffer_page_offset: value.downstream_ring_buffer_page_offset,
             user_data: value.user_data.into(),
             guest_specified_interrupt_info: value
@@ -898,7 +946,7 @@ impl OpenRequest {
         super::OpenRequest {
             open_id: self.open_id,
             ring_buffer_gpadl_id: self.ring_buffer_gpadl_id,
-            target_vp: self.target_vp,
+            target_vp: protocol::vp_index_if_enabled(self.target_vp),
             downstream_ring_buffer_page_offset: self.downstream_ring_buffer_page_offset,
             user_data: self.user_data.into(),
             guest_specified_interrupt_info: self
@@ -941,7 +989,7 @@ impl ModifyState {
     }
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Debug, PartialEq, Eq, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 pub struct ReservedState {
     #[mesh(1)]
@@ -1162,10 +1210,9 @@ impl Gpadl {
     }
 
     fn restore(self, channel: &super::Channel) -> Result<super::Gpadl, RestoreError> {
-        let mut buf = self.buf;
         if self.state != GpadlState::InProgress {
             // Validate the range.
-            buf = MultiPagedRangeBuf::new(self.count.into(), buf)?.into_buffer();
+            gparange::validate_gpa_ranges(self.count.into(), &self.buf)?;
         }
         let (state, allow_revoked) = match self.state {
             GpadlState::InProgress => (super::GpadlState::InProgress, true),
@@ -1186,7 +1233,7 @@ impl Gpadl {
 
         Ok(super::Gpadl {
             count: self.count,
-            buf,
+            buf: self.buf,
             state,
         })
     }

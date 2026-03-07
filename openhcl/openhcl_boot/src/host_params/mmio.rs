@@ -41,7 +41,7 @@ pub fn select_vtl2_mmio_range(
         // Compute the length of the VTL2 subrange. If there is not enough
         // mmio, give up.
         if range.len() < vtl2_size {
-            return Err(DtError::NotEnoughMmio);
+            return Err(DtError::NotEnoughVtl0Mmio);
         }
 
         let vtl2_range_start = range.end() - vtl2_size;
@@ -49,7 +49,7 @@ pub fn select_vtl2_mmio_range(
         return Ok(MemoryRange::new(vtl2_range_start..range.end()));
     }
 
-    Err(DtError::NotEnoughMmio)
+    Err(DtError::NotEnoughVtl0Mmio)
 }
 
 #[cfg(test)]
@@ -75,7 +75,7 @@ mod test {
             vtl2_range: MemoryRange,
         }
 
-        let testcases = vec![
+        let testcases = [
             TestCase {
                 // No MMIO range is provided, fails.
                 mmio: ArrayVec::new(),

@@ -1,0 +1,161 @@
+/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT License. */
+
+.inspect-filter-bar {
+    position: sticky;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: white;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid #ccc;
+    z-index: 10;
+    box-sizing: border-box;
+}
+
+.inspect-filter-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0; /* allow filename to truncate */
+}
+
+.inspect-close {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 1.2rem;
+    line-height: 1;
+    padding: 2px 6px;
+}
+
+.inspect-close:hover {
+    background: #eee;
+    border-radius: 4px;
+}
+
+.inspect-test-name {
+    font-weight: bold;
+    font-size: 1.3rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 60vw; /* relative to viewport, truncated inside left group */
+}
+
+.inspect-search-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.inspect-search-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.inspect-toggle-all {
+    background: white;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-family: monospace;
+    font-size: 1.2rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.inspect-toggle-all:hover {
+    background: #f5f5f5;
+}
+
+.inspect-search-input {
+    font-size: 1.2rem;
+    padding: 6px 28px 6px 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-family: monospace;
+    min-width: 200px;
+}
+
+.inspect-clear {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    font-size: 16px;
+    color: #888;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.inspect-clear:hover {
+    color: #000;
+}
+
+.tree-node {
+    position: relative;
+    padding-left: 2em;
+    line-height: 1.5;
+}
+
+.tree-expander {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 2em;
+    cursor: pointer;
+}
+
+.tree-key {
+    font-weight: bold;
+}
+
+.highlight {
+    background: yellow;
+    color: black;
+}
+
+.tree-node.selected {
+    background: #fffaaf;
+    outline: none;
+}
+
+.inspect-scroll {
+    overflow: auto;
+    padding: 8px 16px 16px;
+    flex: 1;
+    border-radius: 0 0 6px 6px;
+}
+
+.inspect-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    z-index: 10000;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    overflow: auto;
+    padding: 2vh 2vw;
+}
+
+.inspect-container {
+    background: white;
+    color: black;
+    font-family: monospace;
+    font-size: 1.2rem;
+    width: min(2500px, 96%);
+    max-height: 96vh;
+    display: flex;
+    flex-direction: column;
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+    position: relative;
+}

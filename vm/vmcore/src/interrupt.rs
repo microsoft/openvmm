@@ -32,8 +32,19 @@ impl Default for Interrupt {
 
 impl Interrupt {
     /// An interrupt that does nothing.
+    ///
+    /// N.B. If the caller requires the interrupt to have an underlying event, it is recommended to
+    ///      use [`Self::null_event`] instead.
     pub fn null() -> Self {
         // Create a dummy event.
+        Self::from_event(pal_event::Event::new())
+    }
+
+    /// An interrupt that does nothing but is guaranteed to have an underlying event.
+    ///
+    /// N.B. Currently this does the same thing as [`Self::null`], but it allows [`Self::null`] to
+    ///      be optimized in the future, while callers that require an event can use this function.
+    pub fn null_event() -> Self {
         Self::from_event(pal_event::Event::new())
     }
 

@@ -2,10 +2,6 @@
 // Licensed under the MIT License.
 
 use cvm_tracing::CVM_ALLOWED;
-#[cfg(guest_arch = "x86_64")]
-use firmware_pcat::PcatEvent;
-#[cfg(guest_arch = "x86_64")]
-use firmware_pcat::PcatLogger;
 use firmware_uefi::platform::logger::UefiEvent;
 use firmware_uefi::platform::logger::UefiLogger;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -43,11 +39,11 @@ impl UefiLogger for UnderhillLogger {
 }
 
 #[cfg(guest_arch = "x86_64")]
-impl PcatLogger for UnderhillLogger {
-    fn log_event(&self, event: PcatEvent) {
+impl firmware_pcat::PcatLogger for UnderhillLogger {
+    fn log_event(&self, event: firmware_pcat::PcatEvent) {
         let log_event_id = match event {
-            PcatEvent::BootFailure => EventLogId::BOOT_FAILURE,
-            PcatEvent::BootAttempt => EventLogId::BOOT_ATTEMPT,
+            firmware_pcat::PcatEvent::BootFailure => EventLogId::BOOT_FAILURE,
+            firmware_pcat::PcatEvent::BootAttempt => EventLogId::BOOT_ATTEMPT,
         };
         self.get.event_log(log_event_id);
     }

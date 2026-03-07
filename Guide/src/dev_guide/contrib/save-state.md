@@ -28,7 +28,7 @@ Here are the principles you must maintain when adding new save & restore code:
    default values needed for safely extending save state:
     * Arrays: if you need to add an array, consider a `vec` or `Option<[T; N]>`
       instead.
-    * Enum: if you need to add an enum, add it as `Option<MyEnum>' instead.
+    * Enum: if you need to add an enum, add it as `Option<MyEnum>` instead.
 4. **Be particularly careful when updating saved state**: See below.
 
 ### Updating (Extending) Saved State
@@ -68,7 +68,7 @@ Saved state is defined as a `struct` that has `#[derive(Protobuf)]` and
 `#[mesh(package = "package_name")]` attributes. Here is an example, taken from
 the `nvme_driver`:
 
-```rust
+```rust,ignore
 pub mod save_restore {
     use super::*;
 

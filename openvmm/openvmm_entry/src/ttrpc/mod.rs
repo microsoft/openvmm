@@ -3,31 +3,16 @@
 
 //! Worker for the prototype gRPC/ttrpc management endpoint.
 
+#![cfg(any(feature = "ttrpc", feature = "grpc"))]
+
 use self::vmservice::nic_config::Backend;
 use crate::serial_io::bind_serial;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use awaitgroup::WaitGroup;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
-use hvlite_defs::config::DEFAULT_PCIE_ECAM_BASE;
-use hvlite_defs::config::DeviceVtl;
-use hvlite_defs::config::HypervisorConfig;
-use hvlite_defs::config::LoadMode;
-use hvlite_defs::config::MemoryConfig;
-use hvlite_defs::config::ProcessorTopologyConfig;
-use hvlite_defs::config::VirtioBus;
-use hvlite_defs::config::VmbusConfig;
-use hvlite_defs::config::VpciDeviceConfig;
-use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VM_WORKER;
-use hvlite_defs::worker::VmWorkerParameters;
-use hvlite_helpers::disk::open_disk_type;
-use hvlite_ttrpc_vmservice as vmservice;
 use inspect::Inspect;
 use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
@@ -44,9 +29,25 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
+use openvmm_defs::config::Config;
+use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
+use openvmm_defs::config::DeviceVtl;
+use openvmm_defs::config::HypervisorConfig;
+use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::MemoryConfig;
+use openvmm_defs::config::ProcessorTopologyConfig;
+use openvmm_defs::config::VirtioBus;
+use openvmm_defs::config::VmbusConfig;
+use openvmm_defs::config::VpciDeviceConfig;
+use openvmm_defs::rpc::VmRpc;
+use openvmm_defs::worker::VM_WORKER;
+use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::open_disk_type;
+use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
+use pal_async::task::Task;
 use parking_lot::Mutex;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
@@ -129,7 +130,7 @@ impl Worker for TtrpcWorker {
                 driver,
                 vm: None,
                 worker_handle: None,
-                rpc_wait_group: WaitGroup::new(),
+                rpc_tasks: Vec::new(),
                 transport: self.transport,
             };
             service.run(self.listener, recv).await?;
@@ -223,7 +224,7 @@ impl VmService {
         }
 
         // Drain any remaining RPCs.
-        self.rpc_wait_group.wait().await;
+        futures::future::join_all(self.rpc_tasks.drain(..)).await;
         if let Some(vm) = self.vm.take() {
             let _ = Arc::try_unwrap(vm).ok().expect("no more VM references");
         }
@@ -235,7 +236,7 @@ impl VmService {
     }
 
     fn start_rpc<F, R>(
-        &self,
+        &mut self,
         response: mesh::OneshotSender<Result<R, Status>>,
         r: anyhow::Result<F>,
     ) where
@@ -244,13 +245,10 @@ impl VmService {
     {
         match r {
             Ok(fut) => {
-                let worker = self.rpc_wait_group.worker();
-                self.driver
-                    .spawn("ttrpc-rpc", async move {
-                        response.send(map_grpc(fut.await));
-                        worker.done();
-                    })
-                    .detach();
+                let task = self.driver.spawn("ttrpc-rpc", async move {
+                    response.send(map_grpc(fut.await));
+                });
+                self.rpc_tasks.push(task);
             }
             Err(err) => response.send(Err(grpc_error(err))),
         }
@@ -267,7 +265,7 @@ struct VmService {
     driver: DefaultDriver,
     vm: Option<Arc<Vm>>,
     worker_handle: Option<mesh_worker::WorkerHandle>,
-    rpc_wait_group: WaitGroup,
+    rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
 }
 
@@ -460,6 +458,7 @@ impl VmService {
             floppy_disks: vec![],
             pcie_root_complexes: vec![],
             pcie_devices: vec![],
+            pcie_switches: vec![],
             vpci_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
@@ -470,8 +469,9 @@ impl VmService {
                     .checked_mul(0x100000)
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
+                pci_ecam_gaps: vec![],
+                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
-                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -494,8 +494,6 @@ impl VmService {
             framebuffer: None,
             vga_firmware: None,
             vtl2_gfx: false,
-            virtio_console_pci: false,
-            virtio_serial: None,
             virtio_devices: vec![],
             vmbus: Some(VmbusConfig::default()),
             vtl2_vmbus: None,
@@ -511,6 +509,7 @@ impl VmService {
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
+            efi_diagnostics_log_level: Default::default(),
         };
 
         let mut scsi_rpc = None;
@@ -727,10 +726,8 @@ fn parse_nic_config(
         instance_id: nic.nic_id.parse().context("invalid instance ID")?,
         mac_address: nic
             .mac_address
-            .parse::<macaddr::MacAddr6>()
-            .context("invalid mac address")?
-            .into_array()
-            .into(),
+            .parse::<net_backend_resources::mac_address::MacAddress>()
+            .context("invalid mac address")?,
         endpoint,
         max_queues: None,
     };

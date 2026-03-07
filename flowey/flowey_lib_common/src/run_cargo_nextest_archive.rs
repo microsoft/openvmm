@@ -51,7 +51,6 @@ impl FlowNode for Node {
                     packages,
                     features,
                     no_default_features,
-                    unstable_panic_abort_tests,
                     target,
                     profile,
                     extra_env,
@@ -90,18 +89,16 @@ impl FlowNode for Node {
                                 target,
                                 packages,
                                 features,
-                                unstable_panic_abort_tests,
                                 no_default_features,
                                 extra_env,
                             );
 
-                        let sh = xshell::Shell::new()?;
+                        let out_archive_file =
+                            rt.sh.current_dir().absolute()?.join("archive.tar.zst");
 
-                        let out_archive_file = sh.current_dir().absolute()?.join("archive.tar.zst");
-
-                        sh.change_dir(working_dir);
-                        let mut cmd = xshell::cmd!(
-                            sh,
+                        rt.sh.change_dir(working_dir);
+                        let mut cmd = flowey::shell_cmd!(
+                            rt,
                             "cargo {rust_toolchain...} nextest archive
                                 {build_args...}
                                 --archive-file {out_archive_file}

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! HvLite repo-specific automation.
+//! OpenVMM repo-specific automation.
 //!
 //! If you're thinking of writing a bash script, write an xtask instead!
 //!
@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 mod completions;
 pub mod fs_helpers;
+pub mod shell;
 pub mod tasks;
 
 /// Default location to maintain a `xtask-path` file
@@ -50,7 +51,7 @@ pub trait Xtask: Parser {
 }
 
 #[derive(Parser)]
-#[clap(name = "xtask", about = "HvLite repo automation")]
+#[clap(name = "xtask", about = "OpenVMM repo automation")]
 struct Cli {
     #[clap(subcommand)]
     command: Commands,
@@ -84,6 +85,7 @@ enum Commands {
     Complete(clap_dyn_complete::Complete),
     Completions(completions::Completions),
 
+    Clean(tasks::Clean),
     Fmt(tasks::Fmt),
     Fuzz(tasks::Fuzz),
     GuestTest(tasks::GuestTest),
@@ -148,6 +150,7 @@ fn try_main() -> anyhow::Result<()> {
             Ok(())
         }
 
+        Commands::Clean(task) => task.run(ctx),
         Commands::Fmt(task) => task.run(ctx),
         Commands::Fuzz(task) => task.run(ctx),
         Commands::GuestTest(task) => task.run(ctx),

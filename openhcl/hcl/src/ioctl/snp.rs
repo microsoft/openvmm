@@ -59,8 +59,6 @@ impl MshvVtl {
     /// Execute the pvalidate instruction on the specified memory range.
     ///
     /// The range must not be mapped in the kernel as RAM.
-    //
-    // TODO SNP: figure out a safer model for this here and in the kernel.
     pub fn pvalidate_pages(
         &self,
         range: MemoryRange,
@@ -68,9 +66,9 @@ impl MshvVtl {
         terminate_on_failure: bool,
     ) -> Result<(), SnpPageError> {
         tracing::debug!(%range, validate, terminate_on_failure, "pvalidate");
-        // SAFETY: TODO SNP: we are passing parameters as the kernel requires.
-        // But this isn't really safe because it could be used to unaccept a
-        // VTL2 kernel page. Kernel changes are needed to make this safe.
+        // SAFETY: TODO SNP FUTURE: we are passing parameters as the kernel requires.
+        // For defense in depth it could be useful to prevent usermode from changing
+        // visibility of a VTL2 kernel page in the kernel.
         let ret = unsafe {
             hcl_pvalidate_pages(
                 self.file.as_raw_fd(),
@@ -97,20 +95,14 @@ impl MshvVtl {
     /// Execute the rmpadjust instruction on the specified memory range.
     ///
     /// The range must not be mapped in the kernel as RAM.
-    //
-    // TODO SNP: figure out a safer model for this here and in the kernel.
     pub fn rmpadjust_pages(
         &self,
         range: MemoryRange,
         value: SevRmpAdjust,
         terminate_on_failure: bool,
     ) -> Result<(), SnpPageError> {
-        if value.vmsa() {
-            // TODO SNP: VMSA conversion does not work.
-            return Ok(());
-        }
-
-        #[expect(clippy::undocumented_unsafe_blocks)] // TODO SNP
+        // SAFETY: TODO SNP FUTURE: For defense in depth it could be useful to prevent
+        // usermode from changing permissions of a VTL2 kernel page in the kernel.
         let ret = unsafe {
             hcl_rmpadjust_pages(
                 self.file.as_raw_fd(),
@@ -190,8 +182,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
-    ) -> Result<bool, super::Error> {
-        Ok(false)
+    ) -> bool {
+        false
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -202,8 +194,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
-    ) -> Result<Option<HvRegisterValue>, super::Error> {
-        Ok(None)
+    ) -> Option<HvRegisterValue> {
+        None
     }
 
     fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}

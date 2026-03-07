@@ -77,6 +77,7 @@ pub fn ado_yaml(
         flow_backend: crate::cli::FlowBackendCli::Ado,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
     };
 
     let mut ado_jobs = Vec::new();
@@ -91,6 +92,7 @@ pub fn ado_yaml(
             cond_param_idx,
             ref ado_pool,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             gh_override_if: _,
             gh_global_env: _,
             gh_pool: _,
@@ -121,6 +123,12 @@ pub fn ado_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
         }
 
         let mut ado_steps = Vec::new();
@@ -159,12 +167,6 @@ pub fn ado_yaml(
                 serde_yaml::from_str(&ado_bootstrap_template)
                     .context("malformed flowey bootstrap template")?;
 
-            ado_steps.push({
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("bash".into(), "echo \"injected!\"".into());
-                map.insert("displayName".into(), "🌼🥾 Bootstrap flowey".into());
-                map.into()
-            });
             ado_steps.extend(bootstrap_steps);
         }
 
@@ -967,7 +969,9 @@ EOF
                     bash_commands.push_minor(cmd);
                 }
             }
-            Step::GitHubYaml { .. } => anyhow::bail!("GitHub YAML not supported in ADO"),
+            Step::GitHubYaml { label, .. } => {
+                anyhow::bail!("GitHub YAML not supported in ADO: {label}")
+            }
         }
     }
 

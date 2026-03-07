@@ -76,6 +76,7 @@ pub fn github_yaml(
         flow_backend: crate::cli::FlowBackendCli::Github,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -90,16 +91,23 @@ pub fn github_yaml(
             ref external_read_vars,
             ado_pool: _,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
-            cond_param_idx: _,
+            cond_param_idx,
             ref parameters_used,
             ref artifacts_used,
             ref artifacts_published,
             ado_variables: _,
         } = graph[job_idx];
+
+        if cond_param_idx.is_some() {
+            anyhow::bail!(
+                "conditional params are not supported in GitHub backend, use `gh_dangerous_override_if` instead"
+            );
+        }
 
         let flowey_bin = platform.binary("flowey");
         let (steps, req_db) = resolve_flow_as_github_yaml_steps(
@@ -121,6 +129,12 @@ pub fn github_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
         }
 
         let mut gh_steps = Vec::new();
@@ -495,10 +509,10 @@ EOF
                 GhRunnerOsLabel::Windows11Arm => github_yaml_defs::RunnerOsLabel::Windows11Arm,
                 GhRunnerOsLabel::Custom(s) => github_yaml_defs::RunnerOsLabel::Custom(s.into()),
             }),
-            GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.to_vec()),
+            GhRunner::SelfHosted(v) => github_yaml_defs::Runner::SelfHosted(v.clone()),
             GhRunner::RunnerGroup { group, labels } => github_yaml_defs::Runner::Group {
                 group: group.into(),
-                labels: labels.to_vec(),
+                labels: labels.clone(),
             },
         };
 
@@ -528,17 +542,14 @@ EOF
         let mut job_permissions = BTreeMap::new();
         for permission_map in gh_permissions.values() {
             for (permission, value) in permission_map {
-                if let Some(old_value) = job_permissions.insert(permission.clone(), value.clone()) {
-                    if old_value != *value {
-                        anyhow::bail!(
-                            "permission {:?} was to conflicting values in job {:?}: {:?} and {:?}",
-                            permission,
-                            label,
-                            old_value,
-                            value
-                        )
-                    }
-                };
+                // Use the most permissible value set (this allows individual
+                // jobs to override the value set in inject_all_jobs_with)
+                if job_permissions
+                    .get(permission)
+                    .is_none_or(|old_value| *old_value < *value)
+                {
+                    job_permissions.insert(permission.clone(), value.clone());
+                }
             }
         }
 

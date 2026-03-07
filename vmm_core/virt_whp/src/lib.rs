@@ -543,10 +543,10 @@ impl virt::Partition for WhpPartition {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn msi_interrupt_target(
+    fn as_signal_msi(
         self: &Arc<Self>,
         minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::MsiInterruptTarget>> {
+    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
@@ -897,6 +897,10 @@ impl WhpPartitionInner {
         vtl0: VtlPartition,
         vtl2: Option<VtlPartition>,
     ) -> Result<Self, Error> {
+        // FUTURE: register cpuid results with the hypervisor, and register
+        // appropriate per-VP results where necessary (or tell the hypervisor
+        // the AMD topology information so that it can provide per-VP results
+        // accurately).
         #[cfg(guest_arch = "x86_64")]
         let cpuid = {
             use vm_topology::processor::x86::ApicMode;
@@ -1341,7 +1345,7 @@ impl VtlPartition {
                         features.bank0 |= F::AccessIntrCtrlRegs;
 
                         // BUG: this feature is required for running VTL2 w/ vmbus
-                        // under hvlite to avoid timer/vmbus sint contention
+                        // under OpenVMM to avoid timer/vmbus sint contention
                         features.bank0 |= F::DirectSyntheticTimers;
                     }
 

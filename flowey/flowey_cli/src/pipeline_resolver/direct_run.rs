@@ -94,6 +94,7 @@ fn direct_run_do_work(
             arch,
             cond_param_idx,
             timeout_minutes: _,
+            ref command_wrapper,
             ado_pool: _,
             ado_variables: _,
             gh_override_if: _,
@@ -125,6 +126,7 @@ fn direct_run_do_work(
             (FlowArch::X86_64, FlowArch::X86_64) | (FlowArch::Aarch64, FlowArch::Aarch64) => (),
             _ => {
                 log::error!("mismatch between job arch and local arch. skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
         }
@@ -154,14 +156,27 @@ fn direct_run_do_work(
             continue;
         }
 
+        // Use the job's declared platform for DAG resolution and runtime,
+        // except when --windows-as-wsl is active: in that case, the job
+        // declares Windows but we're actually running on Linux/WSL, so
+        // use the host platform instead.
+        let runtime_platform = if windows_as_wsl
+            && matches!(platform, FlowPlatform::Windows)
+            && matches!(flow_platform, FlowPlatform::Linux(_))
+        {
+            flow_platform
+        } else {
+            platform
+        };
+
         let nodes = {
             let mut resolved_local_steps = Vec::new();
 
             let (mut output_graph, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
-                    platform,
-                    flow_arch,
+                    runtime_platform,
+                    arch,
                     patches.clone(),
                     root_nodes
                         .clone()
@@ -229,6 +244,11 @@ fn direct_run_do_work(
             pipeline_param_idx,
         } in parameters_used
         {
+            log::trace!(
+                "resolving parameter idx {}, flowey_var {:?}",
+                pipeline_param_idx,
+                flowey_var
+            );
             let (desc, value) = match &parameters[*pipeline_param_idx] {
                 Parameter::Bool {
                     name: _,
@@ -309,34 +329,37 @@ fn direct_run_do_work(
         }
         fs_err::create_dir_all(out_dir.join(".work"))?;
 
-        let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
-            &mut in_mem_var_db,
-            FlowBackend::Local,
-            platform,
-            flow_arch,
-        );
-
         if let Some(cond_param_idx) = cond_param_idx {
             let Parameter::Bool {
-                name: _,
+                name,
                 description: _,
                 kind: _,
-                default,
+                default: _,
             } = &parameters[cond_param_idx]
             else {
                 panic!("cond param is guaranteed to be bool by type system")
             };
 
-            let Some(should_run) = default else {
-                anyhow::bail!(
-                    "when running locally, job condition parameter must include a default value"
-                )
-            };
+            // Vars should have had their default already applied, so this should never fail.
+            let (data, _secret) = in_mem_var_db.get_var(name);
+            let should_run: bool = serde_json::from_slice(&data).unwrap();
 
             if !should_run {
                 log::warn!("job condition was false - skipping job...");
+                skipped_jobs.insert(idx);
                 continue;
             }
+        }
+
+        let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
+            &mut in_mem_var_db,
+            FlowBackend::Local,
+            runtime_platform,
+            arch,
+        )?;
+
+        if let Some(wrapper) = command_wrapper {
+            runtime_services.sh.set_wrapper(Some(wrapper.clone()));
         }
 
         for ResolvedRunnableStep {
@@ -355,7 +378,9 @@ fn direct_run_do_work(
             if !node_working_dir.exists() {
                 fs_err::create_dir(&node_working_dir)?;
             }
-            std::env::set_current_dir(node_working_dir)?;
+
+            std::env::set_current_dir(node_working_dir.clone())?;
+            runtime_services.sh.change_dir(node_working_dir);
 
             if can_merge {
                 log::debug!("minor step: {} ({})", label, node_handle.modpath(),);
@@ -376,6 +401,9 @@ fn direct_run_do_work(
                 log::info!(""); // log a newline, for the pretty
             }
         }
+
+        // Leave the last node's working dir so it can be deleted by later steps
+        std::env::set_current_dir(&out_dir)?;
     }
 
     Ok(())

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Hvlite's memory manager.
+//! OpenVMM's memory manager.
 
 mod device_memory;
 
@@ -28,7 +28,7 @@ use std::thread::JoinHandle;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 
-/// The HvLite memory manager.
+/// The OpenVMM memory manager.
 #[derive(Debug, Inspect)]
 pub struct GuestMemoryManager {
     /// Guest RAM allocation.
@@ -184,7 +184,7 @@ impl GuestMemoryBuilder {
         let (thread, spawner) = DefaultPool::spawn_on_thread("memory_manager");
 
         let max_addr =
-            (mem_layout.end_of_ram_or_mmio()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
+            (mem_layout.end_of_layout()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));
 
         let vtl0_alias_map_offset = if let Some(offset) = self.vtl0_alias_map {
             if max_addr > offset {

@@ -42,7 +42,6 @@ use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::RingMem;
-use vmbus_ring::gparange::GpnList;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -109,16 +108,13 @@ impl Version {
 
 #[derive(Debug, Default, Clone)]
 struct Range {
-    buf: MultiPagedRangeBuf<GpnList>,
+    buf: MultiPagedRangeBuf,
     len: usize,
     is_write: bool,
 }
 
 impl Range {
-    fn new(
-        buf: MultiPagedRangeBuf<GpnList>,
-        request: &storvsp_protocol::ScsiRequest,
-    ) -> Option<Self> {
+    fn new(buf: MultiPagedRangeBuf, request: &storvsp_protocol::ScsiRequest) -> Option<Self> {
         let len = request.data_transfer_length as usize;
         let is_write = request.data_in != 0;
         // Ensure there is exactly one range and it's large enough, or there are
@@ -188,7 +184,10 @@ fn parse_storvsp_packet<T: RingMem>(
                 let request_buf = &mut full_request.request.as_mut_bytes()[..request_size];
                 reader.read(request_buf).map_err(PacketError::Access)?;
 
-                let buf = packet.read_external_ranges().map_err(PacketError::Range)?;
+                let mut buf = MultiPagedRangeBuf::new();
+                packet
+                    .read_external_ranges(&mut buf)
+                    .map_err(PacketError::Range)?;
 
                 full_request.external_data = Range::new(buf, &full_request.request)
                     .ok_or(PacketError::InvalidDataTransferLength)?;
@@ -315,8 +314,8 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
             .await
             .map_err(|err| StorvscError(StorvscErrorInner::CompletionError(err)))?;
 
-        if resp.completion.is_some() {
-            Ok(resp.completion.unwrap())
+        if let Some(completion) = resp.completion {
+            Ok(completion)
         } else {
             Err(StorvscError(StorvscErrorInner::Cancelled))
         }

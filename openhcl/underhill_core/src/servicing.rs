@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use vmcore::save_restore::SavedStateBlob;
 
 mod state {
+    use mana_driver::save_restore::ManaSavedState;
     use mesh::payload::Protobuf;
     use openhcl_dma_manager::save_restore::OpenhclDmaManagerState;
     use state_unit::SavedStateUnit;
@@ -84,6 +85,8 @@ mod state {
         pub dma_manager_state: Option<OpenhclDmaManagerState>,
         #[mesh(10002)]
         pub vmbus_client: Option<vmbus_client::SavedState>,
+        #[mesh(10003)]
+        pub mana_state: Option<Vec<ManaSavedState>>,
     }
 
     #[derive(Protobuf)]
@@ -183,6 +186,7 @@ impl From<Firmware> for FirmwareType {
 #[expect(clippy::option_option)]
 pub mod transposed {
     use super::*;
+    use mana_driver::save_restore::ManaSavedState;
     use openhcl_dma_manager::save_restore::OpenhclDmaManagerState;
     use vmcore::save_restore::SaveRestore;
 
@@ -193,6 +197,7 @@ pub mod transposed {
         pub firmware_type: Option<Firmware>,
         pub vm_stop_reference_time: Option<u64>,
         pub emuplat: OptionEmuplatSavedState,
+        pub mana_state: Option<Vec<ManaSavedState>>,
         pub flush_logs_result: Option<Option<FlushLogsResult>>,
         pub vmgs: Option<(
             vmgs::save_restore::state::SavedVmgsState,
@@ -230,6 +235,7 @@ pub mod transposed {
                     vmgs,
                     overlay_shutdown_device,
                     nvme_state,
+                    mana_state,
                     dma_manager_state,
                     vmbus_client,
                 } = state;
@@ -246,6 +252,7 @@ pub mod transposed {
                     vmgs,
                     overlay_shutdown_device: Some(overlay_shutdown_device),
                     nvme_state: Some(nvme_state),
+                    mana_state,
                     dma_manager_state: Some(dma_manager_state),
                     vmbus_client: Some(vmbus_client),
                 }

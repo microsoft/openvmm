@@ -9,9 +9,12 @@ use virt::CpuidLeaf;
 use vm_topology::processor::ProcessorTopology;
 use x86defs::cpuid::CacheParametersEax;
 use x86defs::cpuid::CpuidFunction;
+use x86defs::cpuid::ExtendedAddressSpaceSizesEcx;
 use x86defs::cpuid::ExtendedTopologyEax;
 use x86defs::cpuid::ExtendedTopologyEbx;
 use x86defs::cpuid::ExtendedTopologyEcx;
+use x86defs::cpuid::ProcessorTopologyDefinitionEbx;
+use x86defs::cpuid::ProcessorTopologyDefinitionEcx;
 use x86defs::cpuid::TopologyLevelType;
 use x86defs::cpuid::Vendor;
 use x86defs::cpuid::VendorAndMaxFunctionEax;
@@ -77,7 +80,11 @@ pub fn topology_cpuid<'a>(
         );
     }
 
-    // TODO: populate AMD leaves.
+    if vendor.is_amd_compatible() {
+        // Add AMD-specific topology leaves here.
+        amd_extended_address_space_sizes_cpuid(topology, leaves);
+        amd_processor_topology_definition_cpuid(topology, leaves);
+    }
 
     Ok(())
 }
@@ -165,4 +172,55 @@ fn extended_topology_cpuid(
             );
         }
     }
+}
+
+/// Adds leaf 80000008h (Extended Address Space Sizes) for AMD processors.
+///
+/// This leaf contains core count and APIC ID size information.
+fn amd_extended_address_space_sizes_cpuid(
+    topology: &ProcessorTopology,
+    leaves: &mut Vec<CpuidLeaf>,
+) {
+    let nc = (topology.reserved_vps_per_socket() - 1) as u8;
+    let apic_core_id_size = topology.reserved_vps_per_socket().trailing_zeros() as u8;
+    let ecx = ExtendedAddressSpaceSizesEcx::new()
+        .with_nc(nc)
+        .with_apic_core_id_size(apic_core_id_size);
+
+    let ecx_mask = ExtendedAddressSpaceSizesEcx::new()
+        .with_nc(0xff)
+        .with_apic_core_id_size(0xf);
+
+    leaves.push(
+        CpuidLeaf::new(
+            CpuidFunction::ExtendedAddressSpaceSizes.0,
+            [0, 0, ecx.into(), 0],
+        )
+        .masked([0, 0, ecx_mask.into(), 0]),
+    );
+}
+
+/// Adds leaf 8000001Eh (Processor Topology Definition) for AMD processors.
+fn amd_processor_topology_definition_cpuid(
+    topology: &ProcessorTopology,
+    leaves: &mut Vec<CpuidLeaf>,
+) {
+    // threads_per_compute_unit is (threads per core - 1).
+    let threads_per_compute_unit = if topology.smt_enabled() { 1 } else { 0 };
+    let ebx = ProcessorTopologyDefinitionEbx::new()
+        .with_threads_per_compute_unit(threads_per_compute_unit);
+
+    let ebx_mask = ProcessorTopologyDefinitionEbx::new().with_threads_per_compute_unit(!0);
+
+    // TODO: support AMD's nodes per socket concept.
+    let ecx = ProcessorTopologyDefinitionEcx::new().with_nodes_per_processor(0);
+    let ecx_mask = ProcessorTopologyDefinitionEcx::new().with_nodes_per_processor(0x7);
+
+    leaves.push(
+        CpuidLeaf::new(
+            CpuidFunction::ProcessorTopologyDefinition.0,
+            [0, ebx.into(), ecx.into(), 0],
+        )
+        .masked([0, ebx_mask.into(), ecx_mask.into(), 0]),
+    );
 }

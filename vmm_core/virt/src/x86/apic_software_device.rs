@@ -8,8 +8,7 @@ use hvdef::HvError;
 use hvdef::HvResult;
 use inspect::Inspect;
 use parking_lot::Mutex;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use slab::Slab;
 use std::collections::HashMap;
 use std::collections::hash_map;
@@ -69,7 +68,7 @@ impl ApicSoftwareDevices {
     /// Creates a new device with the given ID.
     pub fn new_device(
         &self,
-        target: Arc<dyn MsiInterruptTarget>,
+        target: Arc<dyn SignalMsi>,
         device_id: u64,
     ) -> Result<ApicSoftwareDevice, DeviceIdInUse> {
         let table = Arc::new(Mutex::new(InterruptTable::new()));
@@ -125,7 +124,7 @@ impl ApicSoftwareDevices {
 pub struct ApicSoftwareDevice {
     devices: Arc<DevicesInner>,
     table: Arc<Mutex<InterruptTable>>,
-    target: Arc<dyn MsiInterruptTarget>,
+    target: Arc<dyn SignalMsi>,
     id: u64,
 }
 
@@ -140,8 +139,6 @@ impl Drop for ApicSoftwareDevice {
 struct InterruptTable {
     #[inspect(iter_by_key)]
     entries: Slab<InterruptEntry>,
-    #[inspect(iter_by_key)]
-    msis: Slab<Msi>,
 }
 
 /// State for an individual VPCI interrupt for a device.
@@ -166,14 +163,6 @@ impl InterruptEntry {
     }
 }
 
-#[derive(Inspect)]
-struct Msi {
-    address: u64,
-    data: u32,
-    #[inspect(skip)]
-    control: Box<dyn MsiControl>,
-}
-
 #[derive(Debug, Error)]
 enum InvalidInterruptParams {
     #[error("invalid interrupt parameters")]
@@ -194,7 +183,6 @@ impl InterruptTable {
     fn new() -> Self {
         Self {
             entries: Slab::new(),
-            msis: Slab::new(),
         }
     }
 
@@ -238,12 +226,6 @@ impl InterruptTable {
         // Check the rest of the VPs.
         iter.map(|x| x.map(drop)).collect::<Result<Vec<()>, _>>()?;
 
-        let target = interrupt.msi_params();
-        for (_, msi) in &mut self.msis {
-            if msi.address == address {
-                msi.control.enable(target.address, target.data);
-            }
-        }
         Ok(())
     }
 
@@ -274,76 +256,18 @@ impl InterruptTable {
     fn unregister_interrupt(&mut self, address: u64, _data: u32) {
         let index = Self::interrupt_index_from_address(address);
         self.entries.remove(index);
-        for (_, msi) in &mut self.msis {
-            if msi.address == address {
-                msi.control.disable();
-            }
-        }
     }
 }
 
-struct DeviceInterrupt {
-    table: Arc<Mutex<InterruptTable>>,
-    idx: usize,
-}
-
-impl DeviceInterrupt {
-    fn new(table: Arc<Mutex<InterruptTable>>, control: Box<dyn MsiControl>) -> Self {
-        let idx = table.lock().msis.insert(Msi {
-            address: !0,
-            data: 0,
-            control,
-        });
-        Self { table, idx }
-    }
-}
-
-impl MsiControl for DeviceInterrupt {
-    fn enable(&mut self, address: u64, data: u32) {
-        let mut table = self.table.lock();
-        let table = &mut *table;
-        let msi = &mut table.msis[self.idx];
-        msi.address = address;
-        msi.data = data;
-        let index = InterruptTable::interrupt_index_from_address(address);
-        if let Some(interrupt) = table.entries.get(index) {
-            let target = interrupt.msi_params();
-            msi.control.enable(target.address, target.data);
-        } else {
-            msi.control.disable();
-        }
-    }
-
-    fn disable(&mut self) {
-        let mut table = self.table.lock();
-        table.msis[self.idx].control.disable();
-    }
-
-    fn signal(&mut self, address: u64, _data: u32) {
-        // TODO: don't lock the whole table
+impl SignalMsi for ApicSoftwareDevice {
+    fn signal_msi(&self, _rid: u32, address: u64, _data: u32) {
         let mut table = self.table.lock();
         let table = &mut *table;
         let index = InterruptTable::interrupt_index_from_address(address);
-        let msi = &mut table.msis[self.idx];
         if let Some(interrupt) = table.entries.get(index) {
             let target = interrupt.msi_params();
-            msi.control.signal(target.address, target.data)
+            self.target.signal_msi(0, target.address, target.data)
         }
-    }
-}
-
-impl Drop for DeviceInterrupt {
-    fn drop(&mut self) {
-        self.table.lock().msis.remove(self.idx);
-    }
-}
-
-impl MsiInterruptTarget for ApicSoftwareDevice {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        Box::new(DeviceInterrupt::new(
-            self.table.clone(),
-            self.target.new_interrupt(),
-        ))
     }
 }
 

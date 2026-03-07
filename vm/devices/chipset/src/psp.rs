@@ -4,7 +4,7 @@
 //! !! THIS MODULE IS A STUB !!
 //!
 //! At the moment, we use the PSP emulator running on the host, but construct
-//! the corresponding "ASPT" ACPI table within hvlite / underhill. Therefore,
+//! the corresponding "ASPT" ACPI table within OpenVMM / underhill. Therefore,
 //! the only thing you'll find here is just a handful of constants that are
 //! required to construct this table.
 

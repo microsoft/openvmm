@@ -155,8 +155,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             return Ok(());
         }
 
-        tracing::info!("loading uefi nvram from storage");
-
         let nvram_buf = self
             .storage
             .restore()
@@ -301,7 +299,6 @@ impl<S: StorageBackend> HclCompatNvram<S> {
 
     /// Dump in-memory nvram to the underlying storage device.
     async fn flush_storage(&mut self) -> Result<(), NvramStorageError> {
-        tracing::info!("flushing uefi nvram to storage");
         self.nvram_buf.clear();
 
         for in_memory::VariableEntry {

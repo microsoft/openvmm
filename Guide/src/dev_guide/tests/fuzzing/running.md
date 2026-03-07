@@ -40,7 +40,7 @@ cargo xtask fuzz list
 
 The output will be a list of available "fuzz targets":
 
-```
+```bash
 $ cargo xtask fuzz list
 fuzz_chipset_battery
 fuzz_ide
@@ -71,7 +71,6 @@ cargo xtask fuzz run fuzz_ide -- -- -help=1
 ```
 
 [cli-opts]: https://www.llvm.org/docs/LibFuzzer.html#options
-[toolchain-overrides-url]: https://rust-lang.github.io/rustup/overrides.html
 
 ## Other Fuzzing Commands
 

@@ -57,9 +57,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
             _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
 
-            _ if id == openhcl_igvm::RELEASE_25_05_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::RELEASE_25_05_LINUX_DIRECT_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect),
-            _ if id == openhcl_igvm::RELEASE_25_05_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_RELEASE_LINUX_DIRECT_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::LinuxDirect),
+            _ if id == openhcl_igvm::LATEST_RELEASE_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2511, OpenhclFlavor::Standard),
 
             _ if id == openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmBin),
             _ if id == openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmDbg),
@@ -71,6 +71,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64_PREPPED => get_prepped_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
+            _ if id == test_vhd::ALPINE_3_23_X64 => get_test_artifact_path(KnownTestArtifacts::Alpine323X64Vhd),
+            _ if id == test_vhd::ALPINE_3_23_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Alpine323Aarch64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2504_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2504ServerX64Vhd),
             _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
@@ -79,6 +81,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_iso::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Iso),
 
             _ if id == test_vmgs::VMGS_WITH_BOOT_ENTRY => get_test_artifact_path(KnownTestArtifacts::VmgsWithBootEntry),
+            _ if id == test_vmgs::VMGS_WITH_16K_TPM => get_test_artifact_path(KnownTestArtifacts::VmgsWith16kTpm),
 
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
             _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
@@ -95,6 +98,10 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
                 tpm_guest_tests_linux_path(MachineArch::X86_64)
             }
 
+            _ if id == host_tools::TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64 => {
+                test_igvm_agent_rpc_server_windows_path(MachineArch::X86_64)
+            }
+
             _ => anyhow::bail!("no support for given artifact type"),
         }
     }
@@ -109,7 +116,7 @@ enum PipetteFlavor {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum OpenhclVersion {
     Latest,
-    Release2505,
+    Release2511,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -272,6 +279,19 @@ fn tpm_guest_tests_linux_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         "tpm_guest_tests",
         MissingCommand::Build {
             package: "tpm_guest_tests",
+            target: Some(target),
+        },
+    )
+}
+
+/// Path to the output location of the test_igvm_agent_rpc_server executable.
+fn test_igvm_agent_rpc_server_windows_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = windows_msvc_target(arch);
+    get_path(
+        format!("target/{target}/debug"),
+        "test_igvm_agent_rpc_server.exe",
+        MissingCommand::Build {
+            package: "test_igvm_agent_rpc_server",
             target: Some(target),
         },
     )
@@ -448,25 +468,25 @@ fn openhcl_bin_path(
                 xflowey_args: &["build-igvm", "aarch64-devkern"],
             },
         ),
-        (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
-            "release-2505-x64-direct-openhcl.bin",
+        (MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::LinuxDirect) => (
+            "flowey-out/artifacts/last-release-igvm-files",
+            "release-2511-x64-direct-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
             },
         ),
-        (MachineArch::X86_64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
-            "release-2505-x64-openhcl.bin",
+        (MachineArch::X86_64, OpenhclVersion::Release2511, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/last-release-igvm-files",
+            "release-2511-x64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
             },
         ),
-        (MachineArch::Aarch64, OpenhclVersion::Release2505, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/latest-release-igvm-files",
-            "release-2505-aarch64-openhcl.bin",
+        (MachineArch::Aarch64, OpenhclVersion::Release2511, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/last-release-igvm-files",
+            "release-2511-aarch64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],

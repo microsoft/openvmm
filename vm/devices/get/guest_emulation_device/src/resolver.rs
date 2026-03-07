@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::dps_json::GuestStateLifetime;
+use get_resources::ged::EfiDiagnosticsLogLevelType;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -98,7 +99,8 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
         };
 
         let management_vtl_features = get_protocol::dps_json::ManagementVtlFeatures::new()
-            .with_strict_encryption_policy(guest_state_encryption_policy.is_strict());
+            .with_strict_encryption_policy(guest_state_encryption_policy.is_strict())
+            .with_tx_only_serial_port(resource.serial_tx_only);
 
         let guest_state_encryption_policy = match guest_state_encryption_policy {
             GuestStateEncryptionPolicy::Auto => {
@@ -173,6 +175,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 },
                 com1: resource.com1,
                 com2: resource.com2,
+                serial_tx_only: resource.serial_tx_only,
                 vmbus_redirection: resource.vmbus_redirection,
                 enable_tpm: resource.enable_tpm,
                 vtl2_settings: resource.vtl2_settings,
@@ -193,6 +196,18 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 guest_state_lifetime,
                 guest_state_encryption_policy,
                 management_vtl_features,
+                efi_diagnostics_log_level: match resource.efi_diagnostics_log_level {
+                    EfiDiagnosticsLogLevelType::Default => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::DEFAULT
+                    }
+                    EfiDiagnosticsLogLevelType::Info => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::INFO
+                    }
+                    EfiDiagnosticsLogLevelType::Full => {
+                        get_protocol::dps_json::EfiDiagnosticsLogLevelType::FULL
+                    }
+                },
+                hv_sint_enabled: resource.hv_sint_enabled,
             },
             halt,
             resource.firmware_event_send,

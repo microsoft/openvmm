@@ -18,7 +18,7 @@ mesh.workspace = true
 
 futures.workspace = true
 thiserror.workspace = true
-winapi = { workspace = true, features = [ "handleapi", "winbase", "winnt" ] }
+windows-sys = { workspace = true, features = ["Win32_System_IO"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 disk_vhd1.workspace = true

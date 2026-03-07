@@ -3,6 +3,7 @@
 
 //! Error-types associated with various GET client methods.
 
+use mesh::MeshPayload;
 use thiserror::Error;
 
 /// Error while issuing VMGS IO over the GET
@@ -66,7 +67,7 @@ pub struct SaveRestoreOperationFailure {}
 
 /// Error while invoking an IgvmAttestRequest
 #[expect(missing_docs)] // self-explanatory fields
-#[derive(Debug, Error)]
+#[derive(Debug, Error, MeshPayload)]
 pub enum IgvmAttestError {
     #[error("`agent_data` size {input_size} was larger than expected {expected_size}")]
     InvalidAgentDataSize {

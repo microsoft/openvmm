@@ -9,6 +9,7 @@ pub mod resolver;
 use anyhow::Context;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
+use inspect::InspectMut;
 use pal_async::task::Spawn;
 use std::fs;
 use std::sync::Arc;
@@ -21,17 +22,22 @@ use virtio::VirtioQueueCallbackWork;
 use virtio::VirtioQueueState;
 use virtio::VirtioQueueWorker;
 use virtio::VirtioQueueWorkerContext;
+use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
+#[derive(InspectMut)]
 pub struct Device {
     driver: VmTaskDriver,
     file: Arc<fs::File>,
+    #[inspect(skip)]
     mappable: sparse_mmap::Mappable,
     len: u64,
     writable: bool,
+    #[inspect(skip)]
     worker: Option<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
     memory: GuestMemory,
+    #[inspect(skip)]
     exit_event: event_listener::Event,
 }
 
@@ -69,7 +75,7 @@ impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: 27,
-            device_features: 0,
+            device_features: VirtioDeviceFeatures::new(),
             max_queues: 1,
             device_register_length: size_of::<PmemConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory {

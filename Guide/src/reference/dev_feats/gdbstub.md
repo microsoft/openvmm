@@ -14,12 +14,14 @@ Hardware debugging has several benefits over using an in-guest / in-kernel debug
 ## Enabling the Debugger
 
 ### OpenVMM
+
 1. Pass the `--gdb <port>` flag at startup to enable the
 debug worker. e.g., `--gdb 9001`
 
 To pause the VM until the debugger has been attached, pass `--paused` at startup.
 
 ### OpenHCL
+
 1. Pass the `OPENHCL_GDBSTUB=1` `OPENHCL_GDBSTUB_PORT=<gdbstub port>` parameters to enable gdbstub. e.g., `Set-VmFirmwareParameters -Name UhVM -CommandLine OPENHCL_GDBSTUB=1 OPENHCL_GDBSTUB_PORT=5900`.
 2. To expose a TCP port, run `ohcldiag-dev.exe <name> vsock-tcp-relay --allow-remote --reconnect <gdbstub port> <tcp port>`.
 
@@ -46,13 +48,13 @@ sudo apt install gdb
 Once `gdb` is installed, run it, and enter the following `gdb` command (swapping
 `9001` for whatever port you specified at the CLI)
 
-```
+```text
 target remote :9001
 ```
 
 If all goes well, you should get output similar to this:
 
-```
+```text
 (gdb) target remote :9001
 Remote debugging using :9001
 warning: No executable has been specified and target does not support
@@ -65,7 +67,7 @@ At this point, you can try some basic GDB commands to make sure things are worki
 
 e.g., start / interrupt the VM's execution using `cont` and `ctrl-c`
 
-```
+```text
 (gdb) cont
 Continuing.
 ^C                                          # <-- hit ctrl-c in the terminal
@@ -76,7 +78,7 @@ Thread 1 received signal SIGINT, Interrupt.
 
 e.g., inspecting register state
 
-```
+```text
 (gdb) info registers
 rax            0x0                 0
 rbx            0x0                 0
@@ -96,14 +98,14 @@ r12            0xffffffff          4294967295
 
 e.g., setting data breakpoints
 
-```
+```text
 (gdb) awatch *0xfffff804683190e0
 Hardware access (read/write) watchpoint 1: *0xfffff804683190e0
 ```
 
 e.g., single stepping
 
-```
+```text
 0xfffff8047a309686 in ?? ()
 (gdb) si
 0xfffff8047a309689 in ?? ()
@@ -127,6 +129,7 @@ except you'll need to [enable our debugger](#enabling-the-debugger) instead of
 running QEMU.
 
 It's easiest to connect through the GUI. The steps are relatively simple: Open Windbgx -> File -> Attach to kernel -> EXDI. On the form, fill out:
+
 - Target Type: `QEMU`
 - Target Architecture: `X64`
 - Target OS: `Windows`
@@ -134,10 +137,11 @@ It's easiest to connect through the GUI. The steps are relatively simple: Open W
 - Gdb server and port: `<server>:<port>` e.g., `127.0.0.1:1337` (use whatever port you set above)
 
 ### Known WinDbg Bugs
+
 - Hardware breakpoints are issued with [`ba`](https://learn.microsoft.com/en-us/windows-hardware/drivers/debuggercmds/ba--break-on-access-). The `Access Size` parameter is incorrectly multiplied by 8 when sent to the stub. Consequently, it _must_ be set to 1.
 - Unlike GDB, WinDbg doesn't implicitly set software breakpoints via our offered write_addrs implementation.
----
 
+---
 
 ## Supported Features
 
@@ -157,11 +161,11 @@ everyone, consider implementing one or more of the following features:
 
 - \* reading _all_ guest registers, including fpu, xmm, and various key msrs
 - software breakpoints:
-    - Intercept guest breakpoint exceptions into VTL2
+  - Intercept guest breakpoint exceptions into VTL2
 - writing guest registers
 - exposing the OpenVMM interactive console via the
   [`MonitorCmd`](https://docs.rs/gdbstub/latest/gdbstub/target/ext/monitor_cmd/trait.MonitorCmd.html)
   interface
-    - Custom commands sent using `monitor` (gdb) / `.exdicmd` (WinDbg)
-    - e.g., being able to invoke `x device/to/inspect` directly from the debugger
+  - Custom commands sent using `monitor` (gdb) / `.exdicmd` (WinDbg)
+  - e.g., being able to invoke `x device/to/inspect` directly from the debugger
 - [any other features supported by the `gdbstub` library](https://github.com/daniel5151/gdbstub#debugging-features)

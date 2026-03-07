@@ -35,6 +35,8 @@ pub struct TpmDeviceHandle {
     pub is_confidential_vm: bool,
     /// BIOS GUID (for logging purposes)
     pub bios_guid: Guid,
+    /// NVRAM size (default size if None)
+    pub nvram_size: Option<usize>,
 }
 
 impl ResourceId<ChipsetDeviceHandleKind> for TpmDeviceHandle {
@@ -53,12 +55,10 @@ impl ResourceKind for RequestAkCertKind {
 pub enum TpmAkCertTypeResource {
     /// No Ak cert.
     None,
-    /// Expects an AK cert that is not hardware-attested
-    /// to be pre-provisioned. Used by TVM
-    TrustedPreProvisionedOnly,
-    /// Authorized AK cert that is not hardware-attested.
+    /// Authorized AK cert that is not hardware-attested. Optional bool controls
+    /// whether OpenHCL handles renewal.
     /// Used by TVM
-    Trusted(Resource<RequestAkCertKind>),
+    Trusted(Resource<RequestAkCertKind>, Option<bool>),
     /// Authorized and hardware-attested AK cert (backed by
     /// a TEE attestation report).
     /// Used by CVM

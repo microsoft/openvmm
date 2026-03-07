@@ -752,6 +752,19 @@ impl<'a> Builder<'a> {
         self
     }
 
+    /// Adds all (key, val) pairs from `additional_env` to the environment.
+    pub fn extend_env<I>(&mut self, additional_env: I) -> &mut Self
+    where
+        I: IntoIterator,
+        I::Item: Into<(OsString, OsString)>,
+    {
+        self.env.extend(additional_env.into_iter().map(|i| {
+            let i = i.into();
+            (i.0, Some(i.1))
+        }));
+        self
+    }
+
     /// Sets the environment variable `key` to `val`.
     pub fn env<K, V>(&mut self, key: K, val: V) -> &mut Self
     where

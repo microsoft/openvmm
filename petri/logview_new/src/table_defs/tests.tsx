@@ -12,13 +12,13 @@ export const defaultSorting = [
 
 export const columnWidthMap = {
     architecture: 300,
-    failedCount: 80,
-    totalCount: 80,
+    failedCount: 50,
+    totalCount: 60,
     status: 60
 };
 
 // Define the columns for the tests table
-export const createColumns = (): ColumnDef<TestData>[] => {
+export const createColumns = (branchFilter: string): ColumnDef<TestData>[] => {
     return [
         {
             id: 'status',
@@ -37,7 +37,7 @@ export const createColumns = (): ColumnDef<TestData>[] => {
         },
         {
             accessorKey: 'failedCount',
-            header: 'Failed',
+            header: 'Fail',
             enableSorting: true,
             cell: (info) => (
                 <div className="common-failed-count">{info.getValue<number>()}</div>
@@ -76,9 +76,10 @@ export const createColumns = (): ColumnDef<TestData>[] => {
                 const architecture = info.row.original.architecture;
                 const encodedArchitecture = encodeURIComponent(architecture);
                 const encodedTestName = encodeURIComponent(name);
+                const encodedBranchName = encodeURIComponent(branchFilter);
                 return (
                     <Link
-                        to={`/tests/${encodedArchitecture}/${encodedTestName}`}
+                        to={`/tests/${encodedArchitecture}/${encodedTestName}?branchFilter=${encodedBranchName}`}
                         state={{ testData: info.row.original }}
                         className="common-table-link"
                         title={name}

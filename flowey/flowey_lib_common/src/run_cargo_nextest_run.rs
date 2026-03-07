@@ -21,16 +21,6 @@ pub mod build_params {
     use flowey::node::prelude::*;
     use std::collections::BTreeMap;
 
-    #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Debug)]
-    pub enum PanicAbortTests {
-        /// Assume the current rust toolchain is nightly
-        // FUTURE: current flowey infrastructure doesn't actually have a path for
-        // multi-toolchain drifting
-        UsingNightly,
-        /// Build with `RUSTC_BOOTSTRAP=1` set
-        UsingRustcBootstrap,
-    }
-
     /// Types of things that can be documented
     #[derive(Serialize, Deserialize)]
     pub enum TestPackages {
@@ -54,8 +44,6 @@ pub mod build_params {
         pub features: CargoFeatureSet,
         /// Whether to disable default features
         pub no_default_features: bool,
-        /// Whether to build tests with unstable `-Zpanic-abort-tests` flag
-        pub unstable_panic_abort_tests: Option<PanicAbortTests>,
         /// Build tests for the specified target
         pub target: target_lexicon::Triple,
         /// Build tests with the specified cargo profile
@@ -402,7 +390,6 @@ impl build_params::NextestBuildParams {
             packages,
             features,
             no_default_features,
-            unstable_panic_abort_tests,
             target,
             profile,
             extra_env,
@@ -412,7 +399,6 @@ impl build_params::NextestBuildParams {
             packages: packages.claim(ctx),
             features,
             no_default_features,
-            unstable_panic_abort_tests,
             target,
             profile,
             extra_env: extra_env.claim(ctx),

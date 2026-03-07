@@ -2,16 +2,16 @@
 // Licensed under the MIT License.
 
 //! Centralized build-script logic to support `cfg(guest_arch = ...)` directives
-//! throughout the HvLite codebase.
+//! throughout the OpenVMM codebase.
 //!
 //! By default, `cfg(guest_arch = ...)` will be the same as Rust built-in
 //! `cfg(target_arch = ...)`, but this can be overwritten by setting the
 //! `OPENVMM_GUEST_TARGET=...` env var at compile time.
 //!
-//! HvLite code should not be written to assume that `guest_arch` and
+//! OpenVMM code should not be written to assume that `guest_arch` and
 //! `target_arch` will always be equal!
 //!
-//! At some point in the future, HvLite may integrate a full-blown CPU emulator
+//! At some point in the future, OpenVMM may integrate a full-blown CPU emulator
 //! `virt_` backend (akin to what QEMU does), which would allow it to run guest
 //! VMs with a _different_ architecture from the host machine.
 //!

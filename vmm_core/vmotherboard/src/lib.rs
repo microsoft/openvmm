@@ -40,7 +40,7 @@ use vmcore::save_restore::ProtobufSaveRestore;
 /// InspectMut and SaveRestore.
 ///
 /// We don't want to put these bounds on `ChipsetDevice` directly, as that would
-/// tightly couple `ChipsetDevice` devices with HvLite-specific infrastructure,
+/// tightly couple `ChipsetDevice` devices with OpenVMM-specific infrastructure,
 /// making it difficult to share device implementations across VMMs.
 pub trait VmmChipsetDevice:
     ChipsetDevice + InspectMut + ProtobufSaveRestore + ChangeDeviceState

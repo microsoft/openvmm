@@ -1,0 +1,25 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openvmm_helpers"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+disk_backend_resources.workspace = true
+disk_vhd1.workspace = true
+get_resources.workspace = true
+openvmm_defs.workspace = true
+vm_resource.workspace = true
+
+mesh.workspace = true
+
+anyhow.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+disk_vhdmp.workspace = true
+
+[lints]
+workspace = true

@@ -18,6 +18,19 @@ suitable for both OpenVMM and OpenHCL development.
 You must be running a recent version of Windows 11. Windows 10 is no longer
 supported as a development platform, due to needed WHP APIs.
 
+```admonish note title="Recommended: Windows 11 26H1"
+For the best OpenHCL development experience, we recommend running a
+**Windows 11 26H1** Insider flight (build 28000+) if it is available for your
+device. This enables COM3 serial output for OpenHCL kernel logs and matches
+the OS used on the project's CI runners.
+
+See [What to know about Windows 11 version 26H1](https://techcommunity.microsoft.com/blog/windows-itpro-blog/what-to-know-about-windows-11-version-26h1/4491941)
+and the [Windows Insider Flight Hub](https://learn.microsoft.com/en-us/windows-insider/flight-hub/)
+for availability. If 26H1 is not available for your device, Windows 11
+24H2/25H2 works — see [Debugging OpenHCL](../../reference/openhcl/debugging.md#recommended-host-os-for-openhcl-development)
+for details on the tradeoffs.
+```
+
 **NOTE: OpenHCL does NOT build on Windows.**
 
 If you are interested in building OpenHCL, please follow the getting started
@@ -36,7 +49,7 @@ Please follow the [official instructions](https://www.rust-lang.org/tools/instal
 ### Visual Studio C++ Build Tools and Windows SDK
 
 If you don't already have it, you will need to install
-[Visual Studio C++ Build tools ](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+[Visual Studio C++ Build tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 or [Visual Studio](https://visualstudio.microsoft.com/vs/) with the components
 "Desktop Development for C++" and the Windows SDK. Windows 11 SDK version 26100 is the latest
 version as of this update, but you should install the newest version if there is a newer

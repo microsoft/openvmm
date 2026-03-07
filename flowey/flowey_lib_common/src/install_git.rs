@@ -73,8 +73,7 @@ impl FlowNode for Node {
                         },
                         FlowPlatform::Windows => {
                             if which::which("git.exe").is_err() {
-                                let sh = xshell::Shell::new()?;
-                                xshell::cmd!(sh, "powershell.exe winget install --id Microsoft.Git --accept-source-agreements").run()?;
+                                flowey::shell_cmd!(rt, "powershell.exe winget install --id Microsoft.Git --accept-source-agreements").run()?;
                             }
 
                             rt.write(write_bin, &Some(crate::check_needs_relaunch::BinOrEnv::Bin("git".to_string())));

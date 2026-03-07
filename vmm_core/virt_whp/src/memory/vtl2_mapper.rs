@@ -60,7 +60,7 @@ pub enum MappingState {
     ///
     /// The main purpose of this mode is to help test isolated guests for local
     /// dev and CI, since VBS and SNP are not yet supported for real in any
-    /// hvlite virt implementations yet.
+    /// OpenVMM virt implementations yet.
     EmulatedIsolation {
         /// Current visibility of addresses. A page in this map is accepted.
         #[inspect(with = "inspect_helpers::inspect_range_map")]
@@ -418,7 +418,7 @@ impl MemoryMapper for VtlMemoryMapper {
                 //
                 // However, these calls occur during VMM teardown, so allow it
                 // for now with a log message since it requires further
-                // rearchitecting hvlite to support this correctly.
+                // rearchitecting OpenVMM to support this correctly.
                 if let Some((start, end, vis)) =
                     current_vis.get_range_entry(addr..=(addr + size - 1))
                 {

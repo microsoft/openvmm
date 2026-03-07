@@ -7,6 +7,7 @@ use crate::device::NotPciDevice;
 use crate::device::VpciChannel;
 use crate::device::VpciConfigSpace;
 use crate::device::VpciConfigSpaceOffset;
+use crate::device::VpciConfigSpaceVtom;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -57,6 +58,9 @@ pub struct VpciBusDevice {
     config_space_offset: VpciConfigSpaceOffset,
     #[inspect(with = "|&x| u32::from(x)")]
     current_slot: SlotNumber,
+    /// Track vtom as when isolated with vtom enabled, guests may access mmio
+    /// with or without vtom set.
+    vtom: Option<u64>,
 }
 
 /// An error creating a VPCI bus.
@@ -78,9 +82,15 @@ impl VpciBusDevice {
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
         msi_controller: VpciInterruptMapper,
+        vtom: Option<u64>,
     ) -> Result<(Self, VpciChannel), NotPciDevice> {
         let config_space = VpciConfigSpace::new(
             register_mmio.new_io_region(&format!("vpci-{instance_id}-config"), 2 * HV_PAGE_SIZE),
+            vtom.map(|vtom| VpciConfigSpaceVtom {
+                vtom,
+                control_mmio: register_mmio
+                    .new_io_region(&format!("vpci-{instance_id}-config-vtom"), 2 * HV_PAGE_SIZE),
+            }),
         );
         let config_space_offset = config_space.offset().clone();
         let channel = VpciChannel::new(&device, instance_id, config_space, msi_controller)?;
@@ -89,6 +99,7 @@ impl VpciBusDevice {
             device,
             config_space_offset,
             current_slot: SlotNumber::from(0),
+            vtom,
         };
 
         Ok((this, channel))
@@ -104,12 +115,14 @@ impl VpciBus {
         register_mmio: &mut dyn RegisterMmioIntercept,
         vmbus: &dyn vmbus_channel::bus::ParentBus,
         msi_controller: VpciInterruptMapper,
+        vtom: Option<u64>,
     ) -> Result<Self, CreateBusError> {
         let (bus, channel) = VpciBusDevice::new(
             instance_id,
             device.clone(),
             register_mmio,
             msi_controller.clone(),
+            vtom,
         )
         .map_err(CreateBusError::NotPci)?;
         let channel = offer_simple_device(driver_source, vmbus, channel)
@@ -164,6 +177,11 @@ impl ChipsetDevice for VpciBusDevice {
 
 impl MmioIntercept for VpciBusDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        tracing::trace!(addr, "VPCI bus MMIO read");
+
+        // Remove vtom, as the guest may access it with or without set.
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),
@@ -192,6 +210,11 @@ impl MmioIntercept for VpciBusDevice {
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        tracing::trace!(addr, "VPCI bus MMIO write");
+
+        // Remove vtom, as the guest may access it with or without set.
+        let addr = addr & !self.vtom.unwrap_or(0);
+
         let reg = match self.register(addr, data.len()) {
             Ok(reg) => reg,
             Err(err) => return IoResult::Err(err),

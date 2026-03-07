@@ -86,7 +86,7 @@ fn char_needs_unescape(c: u16) -> bool {
 }
 
 // Unescape a path.
-pub fn unescape_path(path: &[u16]) -> lx::Result<String> {
+pub fn unescape_path(path: &[u16]) -> lx::Result<lx::LxString> {
     char::decode_utf16(path.iter().map(|c| {
         if char_needs_unescape(*c) {
             *c - PATH_ESCAPE_MIN

@@ -596,7 +596,7 @@ impl PagePool {
                 SlotState::AllocatedPendingRestore { device_id, tag } => {
                     tracing::warn!(
                         base_pfn = slot.base_pfn,
-                        pfn_bias = slot.size_pages,
+                        pfn_bias = self.inner.pfn_bias,
                         size_pages = slot.size_pages,
                         device_id = device_id,
                         tag = tag.as_str(),

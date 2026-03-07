@@ -11,14 +11,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
 * `--uefi`: Boot using `mu_msvm` UEFI
+* `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
 * `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also pass `--hv`. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
-* `--virtio-console`: Enables a virtio serial device (via the MMIO transport) for Linux console access instead of COM1.
-* `--virtio-console-pci`: Uses the PCI transport for the virtio serial console.
 * `--gfx`: Enable a graphical console over VNC (see below)
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
@@ -29,13 +28,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
 
 And serial devices can each be configured to be relayed to different endpoints:
 
-* `--com1/com2/virtio-serial <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
-    * `none`: Serial output is dropped.
-    * `console`: Serial input is read and output is written to the console.
-    * `stderr`: Serial output is written to stderr.
-    * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set
+* `--com1/com2 <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
+  * `none`: Serial output is dropped.
+  * `console`: Serial input is read and output is written to the console.
+  * `stderr`: Serial output is written to stderr.
+  * `listen=PATH`: A named pipe (on Windows) or Unix socket (on Linux) is set
       up to listen on the given path. Serial input and output is relayed to this
       pipe/socket.
-    * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
+  * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.

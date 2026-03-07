@@ -27,7 +27,7 @@ use vmcore::device_state::ChangeDeviceState;
 
 pub struct VgaProxyDevice {
     pci_cfg_proxy: Arc<dyn ProxyVgaPciCfgAccess>,
-    pending_action: Option<DeferredAction>,
+    pending_actions: Vec<DeferredAction>,
     waker: Option<Waker>,
     _host_port_handles: Vec<Box<dyn Send>>,
 }
@@ -58,7 +58,7 @@ impl VgaProxyDevice {
 
         Self {
             pci_cfg_proxy,
-            pending_action: None,
+            pending_actions: Vec::new(),
             waker: None,
             _host_port_handles: host_port_handles,
         }
@@ -109,14 +109,14 @@ impl PciConfigSpace for VgaProxyDevice {
     fn pci_cfg_read(&mut self, offset: u16, _value: &mut u32) -> IoResult {
         tracing::trace!(?offset, "VGA proxy read");
         let (read, token) = defer_read();
-        assert!(self.pending_action.is_none());
 
         let fut = {
             let proxy = self.pci_cfg_proxy.clone();
             async move { proxy.vga_proxy_pci_read(offset).await }
         };
 
-        self.pending_action = Some(DeferredAction::Read(read, Box::pin(fut)));
+        self.pending_actions
+            .push(DeferredAction::Read(read, Box::pin(fut)));
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }
@@ -126,14 +126,14 @@ impl PciConfigSpace for VgaProxyDevice {
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
         tracing::trace!(?offset, ?value, "VGA proxy write");
         let (write, token) = defer_write();
-        assert!(self.pending_action.is_none());
 
         let fut = {
             let proxy = self.pci_cfg_proxy.clone();
             async move { proxy.vga_proxy_pci_write(offset, value).await }
         };
 
-        self.pending_action = Some(DeferredAction::Write(write, Box::pin(fut)));
+        self.pending_actions
+            .push(DeferredAction::Write(write, Box::pin(fut)));
         if let Some(waker) = self.waker.take() {
             waker.wake();
         }
@@ -168,26 +168,29 @@ impl PortIoIntercept for VgaProxyDevice {
 impl PollDevice for VgaProxyDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
         self.waker = Some(cx.waker().clone());
-        if let Some(action) = self.pending_action.take() {
-            match action {
+        self.pending_actions = std::mem::take(&mut self.pending_actions)
+            .into_iter()
+            .filter_map(|action| match action {
                 DeferredAction::Read(dr, mut fut) => {
                     if let Poll::Ready(value) = fut.as_mut().poll(cx) {
                         tracing::trace!(value, "VGA proxy read complete");
                         dr.complete(&value.to_ne_bytes());
+                        None
                     } else {
-                        self.pending_action = Some(DeferredAction::Read(dr, fut));
+                        Some(DeferredAction::Read(dr, fut))
                     }
                 }
                 DeferredAction::Write(dw, mut fut) => {
                     if let Poll::Ready(()) = fut.as_mut().poll(cx) {
                         tracing::trace!("VGA proxy write complete");
                         dw.complete();
+                        None
                     } else {
-                        self.pending_action = Some(DeferredAction::Write(dw, fut));
+                        Some(DeferredAction::Write(dw, fut))
                     }
                 }
-            }
-        };
+            })
+            .collect();
     }
 }
 

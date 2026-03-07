@@ -10,6 +10,7 @@ rust-version.workspace = true
 virtio.workspace = true
 virtio_resources.workspace = true
 
+inspect = { workspace = true, features = ["filepath"] }
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true

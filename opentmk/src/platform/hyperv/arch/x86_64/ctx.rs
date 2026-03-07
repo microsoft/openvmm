@@ -47,6 +47,7 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         // SAFETY: the pointer is managed carefully and is not deallocated until the end of the test.
         let ptr = unsafe { alloc(layout) };
         let gpn = (ptr as u64) >> 12;
+        // toggle the enable bit of the SIMP register
         let reg = (gpn << 12) | 0x1;
 
         // SAFETY: we are writing to a valid MSR.
@@ -65,13 +66,42 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
         log::info!("Successfully set the SINT0 register.");
         Ok(())
     }
+
+    fn signal_intercept_handled(&mut self) -> TmkResult<()> {
+        // SAFETY: we are reading from a valid MSR.
+        let simp_page = unsafe { self.read_msr(hvdef::HV_X64_MSR_SIMP)? };
+
+        if (simp_page & 0b1) == 0 {
+            // return error if SIMP is not enabled
+            return Err(TmkError::InvalidRegisterValue);
+        }
+
+        let simp_page_address = (simp_page & 0xFFFFFFFFFFFFF000) as *mut hvdef::HvMessage;
+
+        // SAFETY: we are creating a mutable reference to a valid memory region
+        // which is populated with valid data by a paravisor/hypervisor.
+        let messages: &mut [hvdef::HvMessage] =
+            unsafe { core::slice::from_raw_parts_mut(simp_page_address, 16) };
+
+        // on hyper-v the hypervisor messages are received on SINT0
+        messages[0].header.typ = hvdef::HvMessageType::HvMessageTypeNone;
+        Ok(())
+    }
 }
 
 #[cfg(nightly)]
 impl InterruptPlatformTrait for HvTestCtx {
     /// Install an interrupt handler for the supplied vector on x86-64.
-    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()> {
-        crate::arch::interrupt::set_handler(interrupt_idx, handler);
+    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn(HvTestCtx)) -> TmkResult<()> {
+        let current_vtl = self.get_current_vtl()?;
+        crate::arch::interrupt::set_handler(
+            interrupt_idx,
+            Box::new(move || {
+                let mut ctx = HvTestCtx::new();
+                _ = ctx.init(current_vtl);
+                handler(ctx);
+            }),
+        );
         Ok(())
     }
 

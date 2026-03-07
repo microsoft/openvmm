@@ -276,12 +276,6 @@ impl AdminState {
 
         // Notify the guest driver of the change.
         self.add_changed_namespace(nsid);
-
-        self.poll_namespace_change
-            .remove(&nsid)
-            .unwrap()
-            .cancel()
-            .await;
     }
 }
 

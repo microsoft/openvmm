@@ -1,17 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Functions and types for running a mesh for hvlite and launching workers
+//! Functions and types for running a mesh for OpenVMM and launching workers
 //! within it.
 
 use anyhow::Context;
-use hvlite_defs::entrypoint::MeshHostParams;
 use inspect::Inspect;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_process::try_run_mesh_host;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::WorkerHost;
+use openvmm_defs::entrypoint::MeshHostParams;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::path::PathBuf;

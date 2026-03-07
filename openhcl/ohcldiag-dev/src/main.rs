@@ -282,6 +282,34 @@ enum Command {
         #[clap(short('s'), long, default_value = "65535", value_parser = clap::value_parser!(u16).range(1..))]
         snaplen: u16,
     },
+    /// Memory usage profile tracing.
+    MemoryProfileTrace {
+        /// PID of process to collect the trace for
+        #[clap(short, long)]
+        pid: Option<i32>,
+        /// Name of underhill process to dump
+        #[clap(short, long)]
+        name: Option<String>,
+        /// The output file. Defaults to stdout.
+        #[clap(short)]
+        output: Option<PathBuf>,
+    },
+    /// Processes EFI diagnostics from guest memory and outputs the logs.
+    ///
+    /// The log level filter controls which UEFI log entries are emitted.
+    /// The buffer already contains all log levels; this filter selects
+    /// which ones to display.
+    EfiDiagnostics {
+        /// The log level filter to apply.
+        ///
+        /// Accepted values: "default" (errors+warnings), "info" (errors+warnings+info),
+        /// "full" (all levels).
+        log_level: EfiDiagnosticsLogLevel,
+        /// The output destination.
+        ///
+        /// Accepted values: "stdout", "tracing".
+        output: EfiDiagnosticsOutput,
+    },
 }
 
 #[derive(Debug, Clone, Args)]
@@ -290,7 +318,7 @@ pub struct VmArg {
 
     This can be one of:
 
-    * vsock:PATH - A path to a hybrid vsock Unix socket for a VM, as used by HvLite
+    * vsock:PATH - A path to a hybrid vsock Unix socket for a VM, as used by OpenVMM
 
     * unix:PATH - A path to a Unix socket for connecting to the control plane
 
@@ -330,7 +358,7 @@ impl FromStr for VmId {
             } else if !pal::windows::fs::is_unix_socket(s.as_ref()).unwrap_or(false) {
                 return Ok(Self::HyperV(s.to_owned()));
             }
-            // Default to hybrid vsock since this is what HvLite supports for
+            // Default to hybrid vsock since this is what OpenVMM supports for
             // Underhill.
             Ok(Self::HybridVsock(Path::new(s).to_owned()))
         }
@@ -347,6 +375,43 @@ struct EnvString {
 enum CrashType {
     #[clap(name = "panic")]
     UhPanic,
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum EfiDiagnosticsLogLevel {
+    /// Errors and warnings only
+    Default,
+    /// Errors, warnings, and info
+    Info,
+    /// All log levels
+    Full,
+}
+
+impl EfiDiagnosticsLogLevel {
+    fn as_inspect_value(&self) -> &'static str {
+        match self {
+            EfiDiagnosticsLogLevel::Default => "default",
+            EfiDiagnosticsLogLevel::Info => "info",
+            EfiDiagnosticsLogLevel::Full => "full",
+        }
+    }
+}
+
+#[derive(Clone, clap::ValueEnum)]
+enum EfiDiagnosticsOutput {
+    /// Emit to stdout
+    Stdout,
+    /// Emit to tracing
+    Tracing,
+}
+
+impl EfiDiagnosticsOutput {
+    fn as_inspect_value(&self) -> &'static str {
+        match self {
+            EfiDiagnosticsOutput::Stdout => "stdout",
+            EfiDiagnosticsOutput::Tracing => "tracing",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -498,7 +563,10 @@ pub fn main() -> anyhow::Result<()> {
                     };
 
                     let value = client.update(path, update).await?;
-                    println!("{value}");
+                    match value.kind {
+                        inspect::ValueKind::String(s) => println!("{s}"),
+                        _ => println!("{value}"),
+                    }
                 } else {
                     let timeout = if timeout == 0 {
                         None
@@ -556,7 +624,10 @@ pub fn main() -> anyhow::Result<()> {
                 );
                 let client = new_client(driver.clone(), &vm)?;
                 let value = client.update(path, value).await?;
-                println!("{value}");
+                match value.kind {
+                    inspect::ValueKind::String(s) => println!("{s}"),
+                    _ => println!("{value}"),
+                }
             }
             Command::Start { env, unset, args } => {
                 let client = new_client(driver.clone(), &vm)?;
@@ -873,6 +944,37 @@ pub fn main() -> anyhow::Result<()> {
                 let client = new_client(driver.clone(), &vm)?;
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.dump_saved_state().await?)?;
+            }
+            Command::MemoryProfileTrace { pid, name, output } => {
+                let client = new_client(driver.clone(), &vm)?;
+                let pid = if let Some(name) = name {
+                    client.get_pid(&name).await?
+                } else if let Some(pid) = pid {
+                    pid
+                } else {
+                    anyhow::bail!("either --pid or --name must be specified");
+                };
+                // Do not write anything on the stdout in case the output
+                // is set to stdout, to avoid breaking the output format
+                // of the trace.
+                let mut file = create_or_stderr(&output)?;
+                file.write_all(&client.memory_profile_trace(pid).await?)?;
+            }
+            Command::EfiDiagnostics { log_level, output } => {
+                let client = new_client(driver.clone(), &vm)?;
+                let arg = format!(
+                    "{},{}",
+                    log_level.as_inspect_value(),
+                    output.as_inspect_value()
+                );
+                let value = client
+                    .update("vm/uefi/process_diagnostics", &arg)
+                    .await
+                    .context("failed to process EFI diagnostics")?;
+                match value.kind {
+                    inspect::ValueKind::String(s) => print!("{s}"),
+                    _ => print!("{value}"),
+                }
             }
         }
         Ok(())

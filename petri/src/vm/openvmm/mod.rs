@@ -17,18 +17,21 @@ pub use runtime::OpenVmmFramebufferAccess;
 pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
 
-use crate::BootDeviceType;
+use crate::Disk;
 use crate::Firmware;
-use crate::PetriDiskType;
+use crate::ModifyFn;
+use crate::OpenHclServicingFlags;
+use crate::OpenvmmLogConfig;
 use crate::PetriLogFile;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
+use crate::PetriVmRuntimeConfig;
 use crate::PetriVmgsDisk;
 use crate::PetriVmgsResource;
 use crate::PetriVmmBackend;
 use crate::VmmQuirks;
-use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend_resources::LayeredDiskHandle;
@@ -36,22 +39,22 @@ use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
-use hvlite_defs::config::Config;
-use hvlite_helpers::disk::open_disk_type;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
 use net_backend_resources::mac_address::MacAddress;
+use openvmm_defs::config::Config;
+use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::GuestQuirksInner;
 use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
@@ -60,32 +63,15 @@ use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vmgs_resources::VmgsDisk;
 use vmgs_resources::VmgsResource;
-use vtl2_settings_proto::Vtl2Settings;
-
-/// The instance guid used for all of our SCSI drives.
-pub(crate) const SCSI_INSTANCE: Guid = guid::guid!("27b553e8-8b39-411b-a55f-839971a7884f");
-
-/// The instance guid for the NVMe controller automatically added for boot media
-/// for paravisor storage translation.
-pub(crate) const PARAVISOR_BOOT_NVME_INSTANCE: Guid =
-    guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
-
-/// The instance guid for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_INSTANCE: Guid = guid::guid!("e23a04e2-90f5-4852-bc9d-e7ac691b756c");
 
 /// The instance guid for the MANA nic automatically added when specifying `PetriVmConfigOpenVmm::with_nic`
 const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
-
-/// The namespace ID for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_NSID: u32 = 37;
-
-/// The LUN ID for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_LUN: u32 = 1;
 
 /// The MAC address used by the NIC assigned with [`PetriVmConfigOpenVmm::with_nic`].
 pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
 /// OpenVMM Petri Backend
+#[derive(Debug)]
 pub struct OpenVmmPetriBackend {
     openvmm_path: ResolvedArtifact,
 }
@@ -111,6 +97,24 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
         )
     }
 
+    fn default_servicing_flags() -> OpenHclServicingFlags {
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: true,
+            enable_mana_keepalive: true,
+            override_version_checks: false,
+            stop_timeout_hint_secs: None,
+        }
+    }
+
+    fn create_guest_dump_disk() -> anyhow::Result<
+        Option<(
+            Arc<TempPath>,
+            Box<dyn FnOnce() -> anyhow::Result<Box<dyn fatfs::ReadWriteSeek>>>,
+        )>,
+    > {
+        Ok(None) // TODO #2403
+    }
+
     fn new(resolver: &ArtifactResolver<'_>) -> Self {
         OpenVmmPetriBackend {
             openvmm_path: resolver
@@ -122,13 +126,15 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
     async fn run(
         self,
         config: PetriVmConfig,
-        modify_vmm_config: Option<impl FnOnce(PetriVmConfigOpenVmm) -> PetriVmConfigOpenVmm + Send>,
+        modify_vmm_config: Option<ModifyFn<Self::VmmConfig>>,
         resources: &PetriVmResources,
-    ) -> anyhow::Result<Self::VmRuntime> {
-        let mut config = PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources)?;
+        properties: PetriVmProperties,
+    ) -> anyhow::Result<(Self::VmRuntime, PetriVmRuntimeConfig)> {
+        let mut config =
+            PetriVmConfigOpenVmm::new(&self.openvmm_path, config, resources, properties).await?;
 
         if let Some(f) = modify_vmm_config {
-            config = f(config);
+            config = f.0(config);
         }
 
         config.run().await
@@ -138,10 +144,13 @@ impl PetriVmmBackend for OpenVmmPetriBackend {
 /// Configuration state for a test VM.
 pub struct PetriVmConfigOpenVmm {
     // Direct configuration related information.
-    firmware: Firmware,
+    runtime_config: PetriVmRuntimeConfig,
     arch: MachineArch,
+    host_log_levels: Option<OpenvmmLogConfig>,
     config: Config,
-    boot_device_type: BootDeviceType,
+
+    // Mesh host
+    mesh: mesh_process::Mesh,
 
     // Runtime resources
     resources: PetriVmResourcesOpenVmm,
@@ -166,8 +175,6 @@ struct PetriVmResourcesOpenVmm {
 
     // Externally injected management stuff also needed at runtime.
     driver: DefaultDriver,
-    agent_image: Option<AgentImage>,
-    openhcl_agent_image: Option<AgentImage>,
     openvmm_path: ResolvedArtifact,
     output_dir: PathBuf,
 
@@ -175,14 +182,8 @@ struct PetriVmResourcesOpenVmm {
     vtl2_vsock_path: Option<TempPath>,
     _vmbus_vsock_path: TempPath,
 
-    vtl2_settings: Option<Vtl2Settings>,
-}
-
-impl PetriVmConfigOpenVmm {
-    /// Get the OS that the VM will boot into.
-    pub fn os_flavor(&self) -> OsFlavor {
-        self.firmware.os_flavor()
-    }
+    // properties needed at runtime
+    properties: PetriVmProperties,
 }
 
 fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
@@ -200,14 +201,7 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
 fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
     let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
         Ok(VmgsDisk {
-            disk: match &disk.disk {
-                PetriDiskType::Memory => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-                })
-                .into_resource(),
-                PetriDiskType::Differencing(path) => memdiff_disk(path)?,
-                PetriDiskType::Persistent(path) => open_disk_type(path, false)?,
-            },
+            disk: petri_disk_to_openvmm(&disk.disk)?,
             encryption_policy: disk.encryption_policy,
         })
     };
@@ -219,5 +213,16 @@ fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
         }
         PetriVmgsResource::Reprovision(disk) => VmgsResource::Reprovision(convert_disk(disk)?),
         PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
+    })
+}
+
+fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(match disk {
+        Disk::Memory(len) => {
+            LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(*len) }).into_resource()
+        }
+        Disk::Differencing(path) => memdiff_disk(path)?,
+        Disk::Persistent(path) => open_disk_type(path.as_ref(), false)?,
+        Disk::Temporary(path) => open_disk_type(path.as_ref(), false)?,
     })
 }

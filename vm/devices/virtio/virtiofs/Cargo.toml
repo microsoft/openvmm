@@ -15,6 +15,7 @@ guestmem.workspace = true
 vmcore.workspace = true
 
 fuse.workspace = true
+inspect.workspace = true
 lx.workspace = true
 lxutil.workspace = true
 pal.workspace = true

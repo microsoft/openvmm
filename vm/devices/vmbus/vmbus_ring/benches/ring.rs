@@ -120,7 +120,7 @@ fn paged_ring_mem(c: &mut Criterion) {
     group.finish();
 
     let mut group = c.benchmark_group("write");
-    for size in &[16usize, 256, 8192] {
+    for size in &[16usize, 40, 256, 8192] {
         group
             .throughput(Throughput::Bytes(*size as u64))
             .bench_with_input(

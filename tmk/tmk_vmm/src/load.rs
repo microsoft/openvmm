@@ -22,6 +22,7 @@ use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::x86::X86Topology;
 use zerocopy::FromBytes as _;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// Loads a TMK, returning the initial registers for the BSP.
@@ -38,19 +39,23 @@ pub fn load_x86(
     let load_info = load_common(&mut loader, tmk, test)?;
 
     let page_table_base = load_info.next_available_address;
-    let page_tables = page_table::x64::build_page_tables_64(
+    let mut page_table_work_buffer: Vec<page_table::x64::PageTable> =
+        vec![page_table::x64::PageTable::new_zeroed(); page_table::x64::PAGE_TABLE_MAX_COUNT];
+    let mut page_tables: Vec<u8> = vec![0; page_table::x64::PAGE_TABLE_MAX_BYTES];
+    let page_table_builder = page_table::x64::IdentityMapBuilder::new(
         page_table_base,
-        0,
         page_table::IdentityMapSize::Size4Gb,
-        None,
-    );
+        page_table_work_buffer.as_mut_slice(),
+        page_tables.as_mut_slice(),
+    )?;
+    let page_tables = page_table_builder.build();
     loader
         .import_pages(
             page_table_base >> 12,
             page_tables.len() as u64 >> 12,
             "page_tables",
             loader::importer::BootPageAcceptance::Exclusive,
-            &page_tables,
+            page_tables,
         )
         .context("failed to import page tables")?;
 

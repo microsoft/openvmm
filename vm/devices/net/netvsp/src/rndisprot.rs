@@ -954,6 +954,10 @@ pub struct Ipv6ChecksumOffload {
 }
 
 pub const NDIS_ENCAPSULATION_IEEE_802_3: u32 = 2;
+// Use the same minimum as vmswitch.
+pub const LSO_MIN_SEGMENT_COUNT: u32 = 2;
+// Use the same maximum as vmswitch.
+pub const LSO_MAX_OFFLOAD_SIZE: u32 = 0xF53C;
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]

@@ -6,14 +6,13 @@ mod ring;
 use super::Access;
 use super::Client;
 use super::DropReason;
-use super::FourTuple;
-use super::SocketAddress;
 use crate::ChecksumState;
 use crate::ConsommeState;
-use crate::Ipv4Addresses;
+use crate::IpAddresses;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
+use inspect::InspectMut;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
@@ -22,9 +21,12 @@ use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::IPV4_HEADER_LEN;
+use smoltcp::wire::IPV6_HEADER_LEN;
+use smoltcp::wire::IpAddress;
 use smoltcp::wire::IpProtocol;
+use smoltcp::wire::IpRepr;
 use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::Ipv4Repr;
+use smoltcp::wire::Ipv6Packet;
 use smoltcp::wire::TcpControl;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
@@ -41,17 +43,46 @@ use std::io;
 use std::io::ErrorKind;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 use std::net::Shutdown;
+use std::net::SocketAddr;
 use std::net::SocketAddrV4;
+use std::net::SocketAddrV6;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+struct FourTuple {
+    src: SocketAddr,
+    dst: SocketAddr,
+}
+
+impl core::fmt::Display for FourTuple {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}-{}", self.src, self.dst)
+    }
+}
+
+#[derive(InspectMut)]
 pub(crate) struct Tcp {
+    #[inspect(iter_by_key)]
     connections: HashMap<FourTuple, TcpConnection>,
+    #[inspect(iter_by_key)]
     listeners: HashMap<u16, TcpListener>,
+    #[inspect(mut)]
+    connection_params: ConnectionParams,
+}
+
+#[derive(InspectMut)]
+struct ConnectionParams {
+    #[inspect(mut)]
+    rx_buffer_size: usize,
+    #[inspect(mut)]
+    tx_buffer_size: usize,
 }
 
 #[derive(Debug, Error)]
@@ -70,29 +101,15 @@ pub enum TcpError {
     InvalidWindowScale,
 }
 
-impl Inspect for Tcp {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        for (addr, conn) in &self.connections {
-            resp.field(
-                &format!(
-                    "{}:{}-{}:{}",
-                    addr.src.ip, addr.src.port, addr.dst.ip, addr.dst.port
-                ),
-                conn,
-            );
-        }
-        for port in self.listeners.keys() {
-            resp.field("listening port", port);
-        }
-    }
-}
-
 impl Tcp {
     pub fn new() -> Self {
         Self {
             connections: HashMap::new(),
             listeners: HashMap::new(),
+            connection_params: ConnectionParams {
+                rx_buffer_size: 16384,
+                tx_buffer_size: 16384,
+            },
         }
     }
 }
@@ -208,12 +225,12 @@ impl<T: Client> Access<'_, T> {
                     if let Some((socket, mut other_addr)) = result {
                         // Check for loopback requests and replace the dest port.
                         // This supports a guest owning both the sending and receiving ports.
-                        if other_addr.ip.is_loopback() {
+                        if other_addr.ip().is_loopback() {
                             for (other_ft, connection) in self.inner.tcp.connections.iter() {
-                                if connection.state == TcpState::Connecting && other_ft.dst.port == *port {
+                                if connection.state == TcpState::Connecting && other_ft.dst.port() == *port {
                                     if let LoopbackPortInfo::ProxyForGuestPort{sending_port, guest_port} = connection.loopback_port {
-                                        if sending_port == other_addr.port {
-                                            other_addr.port = guest_port;
+                                        if sending_port == other_addr.port() {
+                                            other_addr.set_port(guest_port);
                                             break;
                                         }
                                     }
@@ -221,10 +238,25 @@ impl<T: Client> Access<'_, T> {
                             }
                         }
 
-                        let ft = FourTuple { dst: other_addr, src: SocketAddress {
-                            ip: self.inner.state.params.client_ip,
-                            port: *port,
-                        } };
+                        let ft = match other_addr {
+                            SocketAddr::V4(_) => FourTuple {
+                                dst: other_addr,
+                                src: SocketAddr::V4(SocketAddrV4::new(self.inner.state.params.client_ip, *port)),
+                            },
+                            SocketAddr::V6(_) => {
+                                let client_ipv6 = match self.inner.state.params.client_ip_ipv6 {
+                                    Some(ip) => ip,
+                                    None => {
+                                        tracing::warn!("Received IPv6 connection but client IPv6 address is not known");
+                                        return true;
+                                    }
+                                };
+                                FourTuple {
+                                    dst: other_addr,
+                                    src: SocketAddr::V6(SocketAddrV6::new(client_ipv6, *port, 0, 0)),
+                                }
+                            }
+                        };
 
                         match self.inner.tcp.connections.entry(ft) {
                             hash_map::Entry::Vacant(e) => {
@@ -237,6 +269,7 @@ impl<T: Client> Access<'_, T> {
                                 let conn = match TcpConnection::new_from_accept(
                                     &mut sender,
                                     socket,
+                                    &self.inner.tcp.connection_params,
                                 ) {
                                     Ok(conn) => conn,
                                     Err(err) => {
@@ -290,35 +323,34 @@ impl<T: Client> Access<'_, T> {
                     false
                 }
             }
-        })
+        });
     }
 
     pub(crate) fn handle_tcp(
         &mut self,
-        addresses: &Ipv4Addresses,
+        addresses: &IpAddresses,
         payload: &[u8],
         checksum: &ChecksumState,
     ) -> Result<(), DropReason> {
         let tcp_packet = TcpPacket::new_checked(payload)?;
         let tcp = TcpRepr::parse(
             &tcp_packet,
-            &addresses.src_addr.into(),
-            &addresses.dst_addr.into(),
+            &addresses.src_addr(),
+            &addresses.dst_addr(),
             &checksum.caps(),
         )?;
 
-        tracing::trace!(?tcp, "tcp packet");
-
-        let ft = FourTuple {
-            dst: SocketAddress {
-                ip: addresses.dst_addr,
-                port: tcp.dst_port,
+        let ft = match addresses {
+            IpAddresses::V4(addresses) => FourTuple {
+                dst: SocketAddr::V4(SocketAddrV4::new(addresses.dst_addr, tcp.dst_port)),
+                src: SocketAddr::V4(SocketAddrV4::new(addresses.src_addr, tcp.src_port)),
             },
-            src: SocketAddress {
-                ip: addresses.src_addr,
-                port: tcp.src_port,
+            IpAddresses::V6(addresses) => FourTuple {
+                dst: SocketAddr::V6(SocketAddrV6::new(addresses.dst_addr, tcp.dst_port, 0, 0)),
+                src: SocketAddr::V6(SocketAddrV6::new(addresses.src_addr, tcp.src_port, 0, 0)),
             },
         };
+        tracing::trace!(?tcp, "tcp packet");
 
         let mut sender = Sender {
             ft: &ft,
@@ -340,7 +372,8 @@ impl<T: Client> Access<'_, T> {
                     // This is for an old connection. Send reset.
                     sender.rst(ack, None);
                 } else if tcp.control == TcpControl::Syn {
-                    let conn = TcpConnection::new(&mut sender, &tcp)?;
+                    let conn =
+                        TcpConnection::new(&mut sender, &tcp, &self.inner.tcp.connection_params)?;
                     e.insert(conn);
                 } else {
                     // Ignore the packet.
@@ -352,24 +385,25 @@ impl<T: Client> Access<'_, T> {
 
     /// Binds to the specified host IP and port for listening for incoming
     /// connections.
-    pub fn bind_tcp_port(
-        &mut self,
-        ip_addr: Option<Ipv4Addr>,
-        port: u16,
-    ) -> Result<(), DropReason> {
+    pub fn bind_tcp_port(&mut self, ip_addr: Option<IpAddr>, port: u16) -> Result<(), DropReason> {
+        let ip_addr = match ip_addr {
+            Some(IpAddr::V4(ip)) => SocketAddr::V4(SocketAddrV4::new(ip, port)),
+            Some(IpAddr::V6(ip)) => SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)),
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)),
+        };
         match self.inner.tcp.listeners.entry(port) {
             hash_map::Entry::Occupied(_) => {
                 tracing::warn!(port, "Duplicate TCP bind for port");
             }
             hash_map::Entry::Vacant(e) => {
-                let ft = FourTuple {
-                    dst: SocketAddress {
-                        ip: Ipv4Addr::UNSPECIFIED.into(),
-                        port: 0,
+                let ft = match ip_addr {
+                    SocketAddr::V4(ip) => FourTuple {
+                        dst: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+                        src: SocketAddr::V4(ip),
                     },
-                    src: SocketAddress {
-                        ip: ip_addr.unwrap_or(Ipv4Addr::UNSPECIFIED).into(),
-                        port,
+                    SocketAddr::V6(ip) => FourTuple {
+                        dst: SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
+                        src: SocketAddr::V6(ip),
                     },
                 };
                 let mut sender = Sender {
@@ -407,39 +441,73 @@ impl<T: Client> Sender<'_, T> {
     fn send_packet(&mut self, tcp: &TcpRepr<'_>, payload: Option<ring::View<'_>>) {
         let buffer = &mut self.state.buffer;
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
-        eth_packet.set_ethertype(EthernetProtocol::Ipv4);
         eth_packet.set_dst_addr(self.state.params.client_mac);
         eth_packet.set_src_addr(self.state.params.gateway_mac);
-        let mut ipv4_packet = Ipv4Packet::new_unchecked(eth_packet.payload_mut());
-        let ipv4 = Ipv4Repr {
-            src_addr: self.ft.dst.ip,
-            dst_addr: self.ft.src.ip,
-            protocol: IpProtocol::Tcp,
-            payload_len: tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
-            hop_limit: 64,
+        let copy_payload_into_buffer = |buf: &mut [u8], payload: Option<ring::View<'_>>| {
+            if let Some(payload) = payload {
+                for (b, c) in buf.iter_mut().zip(payload.iter()) {
+                    *b = *c;
+                }
+            }
         };
-        ipv4.emit(&mut ipv4_packet, &ChecksumCapabilities::default());
-        let mut tcp_packet = TcpPacket::new_unchecked(ipv4_packet.payload_mut());
+        let ip = IpRepr::new(
+            self.ft.dst.ip().into(),
+            self.ft.src.ip().into(),
+            IpProtocol::Tcp,
+            tcp.header_len() + payload.as_ref().map_or(0, |p| p.len()),
+            64,
+        );
+        // Set the ethernet type based on IP version
+        match ip {
+            IpRepr::Ipv4(_) => eth_packet.set_ethertype(EthernetProtocol::Ipv4),
+            IpRepr::Ipv6(_) => eth_packet.set_ethertype(EthernetProtocol::Ipv6),
+        }
+
+        // Emit IP packet and get the TCP payload buffer (works for both IPv4 and IPv6)
+        let ip_packet_buf = eth_packet.payload_mut();
+        ip.emit(&mut *ip_packet_buf, &ChecksumCapabilities::default());
+
+        let (tcp_payload_buf, ip_total_len) = match self.ft.dst {
+            SocketAddr::V4(_) => {
+                let ipv4_packet = Ipv4Packet::new_unchecked(&*ip_packet_buf);
+                let total_len = ipv4_packet.total_len() as usize;
+                let payload_offset = ipv4_packet.header_len() as usize;
+                (&mut ip_packet_buf[payload_offset..total_len], total_len)
+            }
+            SocketAddr::V6(_) => {
+                let ipv6_packet = Ipv6Packet::new_unchecked(&*ip_packet_buf);
+                let total_len = ipv6_packet.total_len();
+                let payload_offset = IPV6_HEADER_LEN;
+                (&mut ip_packet_buf[payload_offset..total_len], total_len)
+            }
+        };
+
+        let dst_ip_addr: IpAddress = self.ft.dst.ip().into();
+        let src_ip_addr: IpAddress = self.ft.src.ip().into();
+        let mut tcp_packet = TcpPacket::new_unchecked(tcp_payload_buf);
         tcp.emit(
             &mut tcp_packet,
-            &self.ft.dst.ip.into(),
-            &self.ft.src.ip.into(),
+            &dst_ip_addr,
+            &src_ip_addr,
             &ChecksumCapabilities::default(),
         );
-        if let Some(payload) = payload {
-            for (b, c) in tcp_packet.payload_mut().iter_mut().zip(payload.iter()) {
-                *b = *c;
-            }
-        }
-        tcp_packet.fill_checksum(&self.ft.dst.ip.into(), &self.ft.src.ip.into());
-        let n = ETHERNET_HEADER_LEN + ipv4_packet.total_len() as usize;
-        self.client.recv(&buffer[..n], &ChecksumState::TCP4);
+
+        // Copy payload into TCP packet
+        copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
+        tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
+        let n = ETHERNET_HEADER_LEN + ip_total_len;
+        let checksum_state = match self.ft.dst {
+            SocketAddr::V4(_) => ChecksumState::TCP4,
+            SocketAddr::V6(_) => ChecksumState::TCP6,
+        };
+
+        self.client.recv(&buffer[..n], &checksum_state);
     }
 
     fn rst(&mut self, seq: TcpSeqNumber, ack: Option<TcpSeqNumber>) {
         let tcp = TcpRepr {
-            src_port: self.ft.dst.port,
-            dst_port: self.ft.src.port,
+            src_port: self.ft.dst.port(),
+            dst_port: self.ft.src.port(),
             control: TcpControl::Rst,
             seq_number: seq,
             ack_number: ack,
@@ -448,6 +516,7 @@ impl<T: Client> Sender<'_, T> {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -457,8 +526,8 @@ impl<T: Client> Sender<'_, T> {
     }
 }
 
-impl Default for TcpConnection {
-    fn default() -> Self {
+impl TcpConnection {
+    fn new_base(params: &ConnectionParams) -> Self {
         let mut rx_tx_seq = [0; 8];
         getrandom::fill(&mut rx_tx_seq[..]).expect("prng failure");
         let rx_seq = TcpSeqNumber(i32::from_ne_bytes(
@@ -468,18 +537,21 @@ impl Default for TcpConnection {
             rx_tx_seq[4..8].try_into().expect("invalid length"),
         ));
 
-        let rx_buffer_size: usize = 16384;
+        let rx_buffer_size: usize = params.rx_buffer_size.clamp(16384, 4 << 20);
         let rx_window_scale =
             (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
 
-        let tx_buffer_size = 16384;
+        let tx_buffer_size = params
+            .tx_buffer_size
+            .clamp(16384, 4 << 20)
+            .next_power_of_two();
 
         Self {
             socket: None,
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
-            rx_buffer: VecDeque::with_capacity(rx_buffer_size),
-            rx_window_cap: 0,
+            rx_buffer: VecDeque::new(),
+            rx_window_cap: rx_buffer_size,
             rx_window_scale,
             rx_seq,
             needs_ack: false,
@@ -498,31 +570,37 @@ impl Default for TcpConnection {
             tx_fin_buffered: false,
         }
     }
-}
 
-impl TcpConnection {
-    fn new(sender: &mut Sender<'_, impl Client>, tcp: &TcpRepr<'_>) -> Result<Self, DropReason> {
-        let mut this = Self::default();
+    fn new(
+        sender: &mut Sender<'_, impl Client>,
+        tcp: &TcpRepr<'_>,
+        params: &ConnectionParams,
+    ) -> Result<Self, DropReason> {
+        let mut this = Self::new_base(params);
         this.initialize_from_first_client_packet(tcp)?;
 
-        let socket =
-            Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
+        let socket = Socket::new(
+            match sender.ft.dst {
+                SocketAddr::V4(_) => Domain::IPV4,
+                SocketAddr::V6(_) => Domain::IPV6,
+            },
+            Type::STREAM,
+            Some(Protocol::TCP),
+        )
+        .map_err(DropReason::Io)?;
 
         // On Windows the default behavior for non-existent loopback sockets is
         // to wait and try again. This is different than the Linux behavior of
         // immediately failing. Default to the Linux behavior.
         #[cfg(windows)]
-        if sender.ft.dst.ip.is_loopback() {
+        if sender.ft.dst.ip().is_loopback() {
             if let Err(err) = crate::windows::disable_connection_retries(&socket) {
                 tracing::trace!(err, "Failed to disable loopback retries");
             }
         }
 
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
-        match socket
-            .get()
-            .connect(&SockAddr::from(SocketAddrV4::from(sender.ft.dst)))
-        {
+        match socket.get().connect(&SockAddr::from(sender.ft.dst)) {
             Ok(_) => unreachable!(),
             Err(err) if is_connect_incomplete_error(&err) => (),
             Err(err) => {
@@ -535,12 +613,17 @@ impl TcpConnection {
             }
         }
         if let Ok(addr) = socket.get().local_addr() {
-            if let Some(addr) = addr.as_socket_ipv4() {
-                if addr.ip().is_loopback() {
-                    this.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
-                        sending_port: addr.port(),
-                        guest_port: sender.ft.src.port,
-                    };
+            match addr.as_socket() {
+                None => {
+                    tracing::warn!("unable to get local socket address");
+                }
+                Some(addr) => {
+                    if addr.ip().is_loopback() {
+                        this.loopback_port = LoopbackPortInfo::ProxyForGuestPort {
+                            sending_port: addr.port(),
+                            guest_port: sender.ft.src.port(),
+                        };
+                    }
                 }
             }
         }
@@ -551,13 +634,14 @@ impl TcpConnection {
     fn new_from_accept(
         sender: &mut Sender<'_, impl Client>,
         socket: Socket,
+        params: &ConnectionParams,
     ) -> Result<Self, DropReason> {
         let mut this = Self {
             socket: Some(
                 PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?,
             ),
             state: TcpState::SynSent,
-            ..Default::default()
+            ..Self::new_base(params)
         };
         this.send_syn(sender, None);
         Ok(this)
@@ -572,27 +656,19 @@ impl TcpConnection {
             if tx_window_scale > 14 {
                 return Err(TcpError::InvalidWindowScale.into());
             }
-        }
-
-        let max_rx_buffer_size = if tcp.window_scale.is_some() {
-            u32::MAX as usize
+            self.enable_window_scaling = true;
+            self.tx_window_scale = tx_window_scale;
         } else {
-            u16::MAX as usize
-        };
-        let rx_buffer_size = 16384.min(max_rx_buffer_size);
-        let rx_window_scale =
-            (usize::BITS - rx_buffer_size.leading_zeros()).saturating_sub(16) as u8;
-
-        assert!(tcp.window_scale.is_some() || rx_window_scale == 0);
-        if self.rx_buffer.capacity() < rx_buffer_size {
-            self.rx_buffer.reserve_exact(rx_buffer_size);
+            // Disable rx window scale. Cap the buffer and window to u16::MAX
+            // since without window scaling, the window field is only 16 bits.
+            self.enable_window_scaling = false;
+            self.rx_buffer.truncate(u16::MAX as usize);
+            self.rx_window_cap = self.rx_window_cap.min(u16::MAX as usize);
+            self.rx_window_scale = 0;
         }
 
-        self.rx_window_scale = rx_window_scale;
         self.rx_seq = tcp.seq_number + 1;
         self.tx_window_rx_seq = tcp.seq_number + 1;
-        self.enable_window_scaling = tcp.window_scale.is_some();
-        self.tx_window_scale = tcp.window_scale.unwrap_or(0);
         self.tx_mss = tx_mss;
         Ok(())
     }
@@ -607,50 +683,12 @@ impl TcpConnection {
             {
                 Poll::Ready(r) => {
                     if r.has_err() {
-                        let err = take_socket_error(self.socket.as_mut().unwrap());
-                        let reset = match err.kind() {
-                            ErrorKind::TimedOut => {
-                                // Avoid resetting so that the guest doesn't
-                                // think there is a responding TCP stack at this
-                                // address. The guest will time out on its own.
-                                tracing::debug!(
-                                    error = &err as &dyn std::error::Error,
-                                    "connect timed out"
-                                );
-                                false
-                            }
-                            ErrorKind::ConnectionRefused => {
-                                // Presumably the remote TCP stack send a RST.
-                                // Send a reset but don't log anything.
-                                tracing::debug!(
-                                    error = &err as &dyn std::error::Error,
-                                    "connection refused"
-                                );
-                                true
-                            }
-                            _ => {
-                                // Something unexpected happened. Log and reset.
-                                //
-                                // FUTURE: Handle more cases, especially
-                                // ENETUNREACH and similar, once we figure out
-                                // the right behavior for these. They might
-                                // require sending ICMP packets.
-                                tracing::warn!(
-                                    error = &err as &dyn std::error::Error,
-                                    "unhandled connect failure"
-                                );
-                                true
-                            }
-                        };
-                        if reset {
-                            sender.rst(self.tx_send, Some(self.rx_seq));
-                        }
+                        self.handle_connect_error(sender);
                         return false;
                     }
 
                     tracing::debug!("connection established");
                     self.state = TcpState::SynReceived;
-                    self.rx_window_cap = self.rx_buffer.capacity();
                 }
                 Poll::Pending => return true,
             }
@@ -660,16 +698,11 @@ impl TcpConnection {
         }
 
         // Handle the tx path.
-        if self.socket.is_some() {
+        if let Some(socket) = &mut self.socket {
             if self.state.tx_fin() {
-                if let Poll::Ready(events) = self
-                    .socket
-                    .as_mut()
-                    .unwrap()
-                    .poll_ready(cx, PollEvents::EMPTY)
-                {
+                if let Poll::Ready(events) = socket.poll_ready(cx, PollEvents::EMPTY) {
                     if events.has_err() {
-                        let err = take_socket_error(self.socket.as_ref().unwrap());
+                        let err = take_socket_error(socket);
                         match err.kind() {
                             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
                             _ => tracing::warn!(
@@ -688,9 +721,7 @@ impl TcpConnection {
                 while !self.tx_buffer.is_full() {
                     let (a, b) = self.tx_buffer.unwritten_slices_mut();
                     let mut bufs = [IoSliceMut::new(a), IoSliceMut::new(b)];
-                    match Pin::new(&mut *self.socket.as_mut().unwrap())
-                        .poll_read_vectored(cx, &mut bufs)
-                    {
+                    match Pin::new(&mut *socket).poll_read_vectored(cx, &mut bufs) {
                         Poll::Ready(Ok(n)) => {
                             if n == 0 {
                                 self.close();
@@ -719,11 +750,11 @@ impl TcpConnection {
         }
 
         // Handle the rx path.
-        if self.socket.is_some() {
+        if let Some(socket) = &mut self.socket {
             while !self.rx_buffer.is_empty() {
                 let (a, b) = self.rx_buffer.as_slices();
                 let bufs = [IoSlice::new(a), IoSlice::new(b)];
-                match Pin::new(&mut *self.socket.as_mut().unwrap()).poll_write_vectored(cx, &bufs) {
+                match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
                     Poll::Ready(Ok(n)) => {
                         self.rx_buffer.drain(..n);
                     }
@@ -744,13 +775,7 @@ impl TcpConnection {
                 }
             }
             if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
-                if let Err(err) = self
-                    .socket
-                    .as_ref()
-                    .unwrap()
-                    .get()
-                    .shutdown(Shutdown::Write)
-                {
+                if let Err(err) = socket.get().shutdown(Shutdown::Write) {
                     tracing::warn!(error = &err as &dyn std::error::Error, "shutdown error");
                     sender.rst(self.tx_send, Some(self.rx_seq));
                     return false;
@@ -762,6 +787,41 @@ impl TcpConnection {
         // Send whatever needs to be sent.
         self.send_next(sender);
         true
+    }
+
+    fn handle_connect_error(&mut self, sender: &mut Sender<'_, impl Client>) {
+        let err = take_socket_error(self.socket.as_mut().unwrap());
+        let reset = match err.kind() {
+            ErrorKind::TimedOut => {
+                // Avoid resetting so that the guest doesn't
+                // think there is a responding TCP stack at this
+                // address. The guest will time out on its own.
+                tracing::debug!(error = &err as &dyn std::error::Error, "connect timed out");
+                false
+            }
+            ErrorKind::ConnectionRefused => {
+                // Presumably the remote TCP stack send a RST.
+                // Send a reset but don't log anything.
+                tracing::debug!(error = &err as &dyn std::error::Error, "connection refused");
+                true
+            }
+            _ => {
+                // Something unexpected happened. Log and reset.
+                //
+                // FUTURE: Handle more cases, especially
+                // ENETUNREACH and similar, once we figure out
+                // the right behavior for these. They might
+                // require sending ICMP packets.
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    "unhandled connect failure"
+                );
+                true
+            }
+        };
+        if reset {
+            sender.rst(self.tx_send, Some(self.rx_seq));
+        }
     }
 
     fn rx_window_len(&self) -> u16 {
@@ -789,16 +849,21 @@ impl TcpConnection {
         // to truncate this to its own MTU calculation.
         let max_seg_size = u16::MAX;
         let tcp = TcpRepr {
-            src_port: sender.ft.dst.port,
-            dst_port: sender.ft.src.port,
+            src_port: sender.ft.dst.port(),
+            dst_port: sender.ft.src.port(),
             control: TcpControl::Syn,
             seq_number: self.tx_send,
             ack_number,
-            window_len: self.rx_window_len(),
+            window_len: if ack_number.is_some() {
+                self.rx_window_len()
+            } else {
+                0
+            },
             window_scale,
             max_seg_size: Some(max_seg_size),
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -821,8 +886,8 @@ impl TcpConnection {
             }
 
             let mut tcp = TcpRepr {
-                src_port: sender.ft.dst.port,
-                dst_port: sender.ft.src.port,
+                src_port: sender.ft.dst.port(),
+                dst_port: sender.ft.src.port(),
                 control: TcpControl::None,
                 seq_number: self.tx_send,
                 ack_number: Some(self.rx_seq),
@@ -831,6 +896,7 @@ impl TcpConnection {
                 max_seg_size: None,
                 sack_permitted: false,
                 sack_ranges: [None, None, None],
+                timestamp: None,
                 payload: &[],
             };
 
@@ -843,7 +909,11 @@ impl TcpConnection {
             // 3. The configured maximum segment size.
             // 4. The client MTU.
             let tx_segment_end = {
-                let header_len = ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + tcp.header_len();
+                let ip_header_len = match sender.ft.dst {
+                    SocketAddr::V4(_) => IPV4_HEADER_LEN,
+                    SocketAddr::V6(_) => IPV6_HEADER_LEN,
+                };
+                let header_len = ETHERNET_HEADER_LEN + ip_header_len + tcp.header_len();
                 let mtu = rx_mtu.min(sender.state.buffer.len());
                 seq_min([
                     tx_payload_end,
@@ -915,8 +985,8 @@ impl TcpConnection {
     /// by the peer.
     fn ack(&self, sender: &mut Sender<'_, impl Client>) {
         let tcp = TcpRepr {
-            src_port: sender.ft.dst.port,
-            dst_port: sender.ft.src.port,
+            src_port: sender.ft.dst.port(),
+            dst_port: sender.ft.src.port(),
             control: TcpControl::None,
             seq_number: self.tx_send,
             ack_number: Some(self.rx_seq),
@@ -925,6 +995,7 @@ impl TcpConnection {
             max_seg_size: None,
             sack_permitted: false,
             sack_ranges: [None, None, None],
+            timestamp: None,
             payload: &[],
         };
 
@@ -952,7 +1023,6 @@ impl TcpConnection {
 
         self.initialize_from_first_client_packet(tcp)?;
         self.tx_window_tx_seq = ack_number;
-        self.rx_window_cap = self.rx_buffer.capacity();
         self.tx_window_len = tcp.window_len;
 
         // Send an ACK to complete the initial SYN handshake.
@@ -1143,8 +1213,11 @@ impl TcpConnection {
 
 impl TcpListener {
     pub fn new(sender: &mut Sender<'_, impl Client>) -> Result<Self, DropReason> {
-        let socket =
-            Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).map_err(DropReason::Io)?;
+        let socket = match sender.ft.src {
+            SocketAddr::V4(_) => Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)),
+            SocketAddr::V6(_) => Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)),
+        }
+        .map_err(DropReason::Io)?;
 
         let socket = PolledSocket::new(sender.client.driver(), socket).map_err(DropReason::Io)?;
         if let Err(err) = socket.get().bind(&sender.ft.src.into()) {
@@ -1168,23 +1241,11 @@ impl TcpListener {
     fn poll_listener(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Result<Option<(Socket, SocketAddress)>, DropReason> {
+    ) -> Result<Option<(Socket, SocketAddr)>, DropReason> {
         match self.socket.poll_accept(cx) {
             Poll::Ready(r) => match r {
                 Ok((socket, address)) => match address.as_socket() {
-                    Some(addr) => match address.as_socket_ipv4() {
-                        Some(src_address) => Ok(Some((
-                            socket,
-                            SocketAddress {
-                                ip: (*src_address.ip()).into(),
-                                port: addr.port(),
-                            },
-                        ))),
-                        None => {
-                            tracing::warn!(?address, "Not an IPv4 address from accept");
-                            Ok(None)
-                        }
-                    },
+                    Some(addr) => Ok(Some((socket, addr))),
                     None => {
                         tracing::warn!(?address, "Unknown address from accept");
                         Ok(None)

@@ -22,7 +22,6 @@ use zerocopy::IntoBytes;
 
 pub(super) const FLUSH_GVA_LIST_SIZE: usize = 32;
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Inspect)]
 pub(super) struct TdxPartitionFlushState {
     /// A fixed-size ring buffer of GVAs that need to be flushed.
@@ -33,7 +32,6 @@ pub(super) struct TdxPartitionFlushState {
     pub(super) flush_entire_non_global_counter: AtomicU32,
 }
 
-#[cfg(guest_arch = "x86_64")]
 impl TdxPartitionFlushState {
     pub(super) fn new() -> Self {
         Self {
@@ -44,7 +42,6 @@ impl TdxPartitionFlushState {
     }
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Debug, Inspect)]
 pub(super) struct TdxFlushState {
     /// The last observed value of the partition's counter.
@@ -60,7 +57,6 @@ pub(super) struct TdxFlushState {
     flush_entire_non_global_counter: Wrapping<u32>,
 }
 
-#[cfg(guest_arch = "x86_64")]
 impl TdxFlushState {
     pub(super) fn new() -> Self {
         Self {

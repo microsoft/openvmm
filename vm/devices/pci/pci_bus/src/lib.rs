@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -65,12 +66,63 @@ pub mod standard_x86_io_ports {
 ///
 /// This is also the reason why the read/write methods are fallible: the PCI bus
 /// should be resilient to backing devices unexpectedly going offline.
+///
+/// PCI devices can optionally implement routing functionality (like switches and bridges)
+/// by providing implementations for the forwarding methods.
 pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space read to the device with the given address.
     fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult>;
 
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
+
+    /// Forward a PCI configuration space read to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Pointer to receive the read value
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component doesn't support routing or the target is not reachable.
+    fn pci_cfg_read_forward(
+        &mut self,
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: &mut u32,
+    ) -> Option<IoResult> {
+        None
+    }
+
+    /// Forward a PCI configuration space write to a downstream device.
+    ///
+    /// Default implementation returns `None`, indicating this device doesn't support routing.
+    /// Routing components like switches and bridges should override this method.
+    ///
+    /// # Parameters
+    /// - `bus`: Target bus number for the downstream device
+    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `offset`: Configuration space offset within the target device
+    /// - `value`: Value to write to the target device
+    ///
+    /// # Returns
+    /// `Some(IoResult)` if the routing component handled the forward, `None` if
+    /// the component doesn't support routing or the target is not reachable.
+    fn pci_cfg_write_forward(
+        &mut self,
+        _bus: u8,
+        _device_function: u8,
+        _offset: u16,
+        _value: u32,
+    ) -> Option<IoResult> {
+        None
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]
@@ -156,10 +208,21 @@ pub struct GenericPciBus {
     // Async bookkeeping
     #[inspect(with = "|x| x.is_some()")]
     waker: Option<std::task::Waker>,
-    deferred_action: Option<DeferredAction>,
+    #[inspect(iter_by_index)]
+    deferred_actions: Vec<DeferredAction>,
 
     // Volatile state
     state: GenericPciBusState,
+}
+
+/// Error indicating that a PCI slot is already occupied.
+#[derive(Debug, Error)]
+#[error("PCI slot already occupied by device '{existing_device_name}'")]
+pub struct PciSlotOccupiedError<D> {
+    /// Name of the existing device occupying the slot.
+    pub existing_device_name: Arc<str>,
+    /// The device that was attempted to be added.
+    pub device: D,
 }
 
 impl GenericPciBus {
@@ -179,7 +242,7 @@ impl GenericPciBus {
             pci_devices: BTreeMap::new(),
 
             waker: None,
-            deferred_action: None,
+            deferred_actions: Vec::new(),
 
             state: GenericPciBusState {
                 pio_addr_reg: AddressRegister::new(),
@@ -187,8 +250,7 @@ impl GenericPciBus {
         }
     }
 
-    /// Try to add a PCI device, returning (device, existing_device_name) if the
-    /// slot is already occupied.
+    /// Try to add a PCI device.
     pub fn add_pci_device<D: GenericPciBusDevice>(
         &mut self,
         bus: u8,
@@ -196,7 +258,7 @@ impl GenericPciBus {
         function: u8,
         name: impl AsRef<str>,
         dev: D,
-    ) -> Result<(), (D, Arc<str>)> {
+    ) -> Result<(), PciSlotOccupiedError<D>> {
         let key = PciAddr {
             bus,
             device,
@@ -204,7 +266,10 @@ impl GenericPciBus {
         };
 
         if let Some((name, _)) = self.pci_devices.get(&key) {
-            return Err((dev, name.clone()));
+            return Err(PciSlotOccupiedError {
+                existing_device_name: name.clone(),
+                device: dev,
+            });
         }
 
         self.pci_devices
@@ -325,6 +390,7 @@ impl GenericPciBus {
             IoError::InvalidRegister => "offset not supported",
             IoError::InvalidAccessSize => "invalid access size",
             IoError::UnalignedAccess => "unaligned access",
+            IoError::NoResponse => "no response",
         };
         tracelimit::warn_ratelimited!(
             address = %self.state.pio_addr_reg.address(),
@@ -332,16 +398,6 @@ impl GenericPciBus {
             "pci config space {} operation error: {}",
             operation,
             error
-        );
-    }
-
-    fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
-        tracelimit::warn_ratelimited!(
-            address = %self.state.pio_addr_reg.address(),
-            offset = self.state.pio_addr_reg.register(),
-            "pci config space {} operation recv error: {:?}",
-            operation,
-            e,
         );
     }
 }
@@ -422,8 +478,7 @@ impl PortIoIntercept for GenericPciBus {
             }
             IoResult::Defer(deferred_device_read) => {
                 let (bus_read, bus_token) = defer_read();
-                assert!(self.deferred_action.is_none());
-                self.deferred_action = Some(DeferredAction::Read {
+                self.deferred_actions.push(DeferredAction::Read {
                     deferred_device_read,
                     bus_read,
                     read_len: data.len(),
@@ -497,8 +552,7 @@ impl PortIoIntercept for GenericPciBus {
                         }
                         IoResult::Defer(deferred_device_read) => {
                             let (bus_write, bus_token) = defer_write();
-                            assert!(self.deferred_action.is_none());
-                            self.deferred_action = Some(DeferredAction::ReadForWrite {
+                            self.deferred_actions.push(DeferredAction::ReadForWrite {
                                 deferred_device_read,
                                 bus_write,
                                 write_len: data.len(),
@@ -537,8 +591,9 @@ impl PortIoIntercept for GenericPciBus {
 impl PollDevice for GenericPciBus {
     fn poll_device(&mut self, cx: &mut Context<'_>) {
         self.waker = Some(cx.waker().clone());
-        if let Some(action) = self.deferred_action.take() {
-            match action {
+        self.deferred_actions = std::mem::take(&mut self.deferred_actions)
+            .into_iter()
+            .filter_map(|action| match action {
                 DeferredAction::Read {
                     mut deferred_device_read,
                     bus_read,
@@ -552,20 +607,21 @@ impl PollDevice for GenericPciBus {
                         let value = match res {
                             Ok(()) => buf,
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred read");
+                                self.trace_error(e, "deferred read");
                                 0
                             }
                         };
                         let value = shift_read_value(io_port, read_len, value);
                         bus_read.complete(&value.as_bytes()[..read_len]);
+                        None
                     } else {
-                        self.deferred_action = Some(DeferredAction::Read {
+                        Some(DeferredAction::Read {
                             deferred_device_read,
                             bus_read,
                             read_len,
                             io_port,
                             address,
-                        });
+                        })
                     }
                 }
                 DeferredAction::ReadForWrite {
@@ -582,7 +638,7 @@ impl PollDevice for GenericPciBus {
                         let old_value = match res {
                             Ok(()) => buf,
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred read for write");
+                                self.trace_error(e, "deferred read for write");
                                 0
                             }
                         };
@@ -591,30 +647,32 @@ impl PollDevice for GenericPciBus {
                         match self.handle_data_write(merged_value) {
                             IoResult::Ok => {
                                 bus_write.complete();
+                                None
                             }
                             IoResult::Err(e) => {
                                 self.trace_error(e, "write");
                                 bus_write.complete();
+                                None
                             }
                             IoResult::Defer(deferred_device_write) => {
-                                self.deferred_action = Some(DeferredAction::Write {
+                                cx.waker().wake_by_ref();
+                                Some(DeferredAction::Write {
                                     deferred_device_write,
                                     bus_write,
                                     value: merged_value,
                                     address,
-                                });
-                                cx.waker().wake_by_ref();
+                                })
                             }
                         }
                     } else {
-                        self.deferred_action = Some(DeferredAction::ReadForWrite {
+                        Some(DeferredAction::ReadForWrite {
                             deferred_device_read,
                             bus_write,
                             write_len,
                             io_port,
                             new_value,
                             address,
-                        });
+                        })
                     }
                 }
                 DeferredAction::Write {
@@ -627,21 +685,22 @@ impl PollDevice for GenericPciBus {
                         match res {
                             Ok(()) => {}
                             Err(e) => {
-                                self.trace_recv_error(e, "deferred write");
+                                self.trace_error(e, "deferred write");
                             }
                         }
                         bus_write.complete();
+                        None
                     } else {
-                        self.deferred_action = Some(DeferredAction::Write {
+                        Some(DeferredAction::Write {
                             deferred_device_write,
                             bus_write,
                             value,
                             address,
-                        });
+                        })
                     }
                 }
-            }
-        }
+            })
+            .collect();
     }
 }
 
@@ -683,7 +742,6 @@ impl core::fmt::Display for AddressRegister {
 
 mod save_restore {
     use super::*;
-    use thiserror::Error;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;

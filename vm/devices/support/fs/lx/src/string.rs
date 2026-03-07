@@ -144,6 +144,12 @@ impl fmt::Debug for LxString {
     }
 }
 
+impl FromIterator<char> for LxString {
+    fn from_iter<T: IntoIterator<Item = char>>(iter: T) -> Self {
+        String::from_iter(iter).into()
+    }
+}
+
 /// A borrowed reference to a string that may or may not be valid utf-8.
 ///
 /// This is analogous to `OsStr` on Linux, but behaves the same on all platforms.

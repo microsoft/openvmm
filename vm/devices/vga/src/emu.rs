@@ -901,8 +901,7 @@ impl Emulator {
 
             // Perform data rotate if necessary
             if self.state.data_rotate_value != 0 {
-                new_value = (new_value << self.state.data_rotate_value)
-                    | (new_value >> (32 - self.state.data_rotate_value));
+                new_value = new_value.rotate_left(self.state.data_rotate_value.into());
             }
 
             // Adjust the input data using the set/reset registers
@@ -991,8 +990,7 @@ impl Emulator {
 
             // Perform data rotate if necessary
             if self.state.data_rotate_value != 0 {
-                new_value = (new_value << self.state.data_rotate_value)
-                    | (new_value >> (32 - self.state.data_rotate_value));
+                new_value = new_value.rotate_left(self.state.data_rotate_value.into());
             }
 
             pixel_mask &= new_value;

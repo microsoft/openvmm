@@ -1,0 +1,142 @@
+name: "Unsafe Check"
+
+# SECURITY NOTE: This workflow uses pull_request_target to get write permissions
+# for managing labels and comments. To avoid executing untrusted code, we:
+# 1. Do NOT checkout the PR code at all
+# 2. Fetch file contents exclusively via GitHub API
+# 3. Never execute, eval, or interpret the fetched content
+# This eliminates filesystem-based attacks (symlinks, large files, race conditions)
+
+on:
+  pull_request_target
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check-unsafe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for unsafe code and manage labels
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB limit per file
+
+            // Get the list of changed files with pagination
+            let allFiles = [];
+            let page = 1;
+            while (page <= 30) {
+              const { data: files } = await github.rest.pulls.listFiles({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.payload.pull_request.number,
+                per_page: 100,
+                page: page,
+              });
+
+              if (files.length === 0) break;
+              allFiles = allFiles.concat(files);
+              if (files.length < 100) break;
+              page++;
+            }
+
+            // Filter to just Rust files that weren't deleted
+            const rustFiles = allFiles.filter(file =>
+              file.filename.endsWith('.rs') && file.status !== 'removed'
+            );
+
+            console.log(`Checking ${rustFiles.length} Rust files for unsafe code...`);
+
+            let unsafeFound = false;
+            const prHead = context.payload.pull_request.head;
+
+            // Check each Rust file for unsafety by fetching content via API
+            for (const file of rustFiles) {
+              // Skip files that are too large (size is in bytes)
+              if (file.size > MAX_FILE_SIZE) {
+                throw new Error(`${file.filename}: file too large (${file.size} bytes)`);
+              }
+
+              // Fetch file content from the PR head via API (not filesystem)
+              // This avoids all filesystem-based attacks
+              const { data: fileContent } = await github.rest.repos.getContent({
+                owner: prHead.repo.owner.login,
+                repo: prHead.repo.name,
+                path: file.filename,
+                ref: prHead.sha,
+              });
+
+              if (fileContent.type !== 'file') {
+                throw new Error(`${file.filename}: not a regular file (type: ${fileContent.type})`);
+              }
+
+              // Decode base64 content
+              const content = Buffer.from(fileContent.content, 'base64').toString('utf8');
+
+              // Look for "unsafe ", the space ensures we don't catch words like the "unsafe_code" lint
+              // Also look for "unsafe(" to catch unsafe attributes
+              // The separate rustfmt check will ensure all code matches these formatting standards
+              const unsafeRegex = /unsafe[( ]/;
+              if (unsafeRegex.test(content)) {
+                console.log(`Found unsafe code in: ${file.filename}`);
+                unsafeFound = true;
+              }
+            }
+
+            // Manage the label (use pull_request number from payload for pull_request_target)
+            const prNumber = context.payload.pull_request.number;
+
+            if (unsafeFound) {
+              console.log('Adding unsafe label...');
+              await github.rest.issues.addLabels({
+                issue_number: prNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                labels: ['unsafe']
+              });
+
+              // Post a warning comment
+              const comment = `⚠️ **Unsafe Code Detected**
+
+              This PR modifies files containing \`unsafe\` Rust code. Extra scrutiny is required during review.
+
+              For more on why we check whole files, instead of just diffs, check out [the Rustonomicon](https://doc.rust-lang.org/nomicon/working-with-unsafe.html)`;
+
+              // Check if we already posted this comment
+              const { data: comments } = await github.rest.issues.listComments({
+                issue_number: prNumber,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+              });
+
+              const botComment = comments.find(c =>
+                c.user.type === 'Bot' && c.body.includes('Unsafe Code Detected')
+              );
+
+              if (!botComment) {
+                console.log('Posting warning comment...');
+                await github.rest.issues.createComment({
+                  issue_number: prNumber,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              } else {
+                console.log('Warning comment already exists');
+              }
+            } else {
+              console.log('No unsafe code found, removing label if present...');
+              try {
+                await github.rest.issues.removeLabel({
+                  issue_number: prNumber,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'unsafe'
+                });
+              } catch (error) {
+                // Label might not exist, that's okay
+                console.log('Label does not exist or could not be removed:', error.message);
+              }
+            }

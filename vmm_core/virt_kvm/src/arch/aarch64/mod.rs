@@ -4,7 +4,7 @@
 //! This module implements support for KVM on aarch64.
 //! It is unsatisfactory (e.g. DeviceTree generation is disjoint from this code, and
 //! this code does not rely on the KVM_CAP to see what is actually supported), but it
-//! is a start providing assurance that HvLite virtualization model is appropriate for
+//! is a start providing assurance that OpenVMM virtualization model is appropriate for
 //! KVM/aarch64.
 
 #![expect(dead_code)]
@@ -497,7 +497,7 @@ pub struct KvmProtoPartition<'a> {
 impl KvmProtoPartition<'_> {
     fn add_gicv3(&mut self) -> Result<(), KvmError> {
         // KVM requires the distributor and redistributor bases be _64KiB aligned_,
-        // these ranges come from the Hvlite MMIO gaps.
+        // these ranges come from the OpenVMM MMIO gaps.
         const GIC_ALIGNMENT: u64 = 0x10000;
         let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
         let gic_redist_base: u64 = self.config.processor_topology.gic_redistributors_base();

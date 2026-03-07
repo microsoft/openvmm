@@ -6,6 +6,7 @@
 use anyhow::Context;
 use fatfs::FormatVolumeOptions;
 use fatfs::FsOptions;
+use guid::Guid;
 use petri_artifacts_common::artifacts as common_artifacts;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -18,10 +19,19 @@ use std::ops::Range;
 use std::path::Path;
 
 /// The description and artifacts needed to build a pipette disk image for a VM.
+#[derive(Debug)]
 pub struct AgentImage {
     os_flavor: OsFlavor,
     pipette: Option<ResolvedArtifact>,
     extras: Vec<(String, ResolvedArtifact)>,
+}
+
+/// Disk image type
+pub enum ImageType {
+    /// Raw image
+    Raw,
+    /// Fixed VHD1
+    Vhd,
 }
 
 impl AgentImage {
@@ -76,7 +86,7 @@ impl AgentImage {
 
     /// Builds a disk image containing pipette and any files needed for the guest VM
     /// to run pipette.
-    pub fn build(&self) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
+    pub fn build(&self, image_type: ImageType) -> anyhow::Result<Option<tempfile::NamedTempFile>> {
         let mut files = self
             .extras
             .iter()
@@ -128,70 +138,63 @@ impl AgentImage {
         if files.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(build_disk_image(volume_label, &files)?))
+            let mut image_file = match image_type {
+                ImageType::Raw => tempfile::NamedTempFile::new()?,
+                ImageType::Vhd => tempfile::Builder::new().suffix(".vhd").tempfile()?,
+            };
+
+            image_file
+                .as_file()
+                .set_len(64 * 1024 * 1024)
+                .context("failed to set file size")?;
+
+            build_fat32_disk_image(&mut image_file, "CIDATA", volume_label, &files)?;
+
+            if matches!(image_type, ImageType::Vhd) {
+                disk_vhd1::Vhd1Disk::make_fixed(image_file.as_file())
+                    .context("failed to make vhd for agent image")?;
+            }
+
+            Ok(Some(image_file))
         }
     }
 }
 
-enum PathOrBinary<'a> {
+pub(crate) const SECTOR_SIZE: u64 = 512;
+
+pub(crate) enum PathOrBinary<'a> {
     Path(&'a Path),
     Binary(&'a [u8]),
 }
 
-fn build_disk_image(
+pub(crate) fn build_fat32_disk_image(
+    file: &mut (impl Read + Write + Seek),
+    gpt_name: &str,
     volume_label: &[u8; 11],
     files: &[(&str, PathOrBinary<'_>)],
-) -> anyhow::Result<tempfile::NamedTempFile> {
-    let mut file = tempfile::NamedTempFile::new()?;
-    file.as_file()
-        .set_len(64 * 1024 * 1024)
-        .context("failed to set file size")?;
-
+) -> anyhow::Result<()> {
     let partition_range =
-        build_gpt(&mut file, "CIDATA").context("failed to construct partition table")?;
+        build_gpt(file, gpt_name).context("failed to construct partition table")?;
     build_fat32(
-        &mut fscommon::StreamSlice::new(&mut file, partition_range.start, partition_range.end)?,
+        &mut fscommon::StreamSlice::new(file, partition_range.start, partition_range.end)?,
         volume_label,
         files,
     )
     .context("failed to format volume")?;
-    Ok(file)
+    Ok(())
 }
 
 fn build_gpt(file: &mut (impl Read + Write + Seek), name: &str) -> anyhow::Result<Range<u64>> {
-    const SECTOR_SIZE: u64 = 512;
-    // EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
-    const BDP_GUID: [u8; 16] = [
-        0xA2, 0xA0, 0xD0, 0xEB, 0xE5, 0xB9, 0x33, 0x44, 0x87, 0xC0, 0x68, 0xB6, 0xB7, 0x26, 0x99,
-        0xC7,
-    ];
-    const PARTITION_GUID: [u8; 16] = [
-        0x55, 0x29, 0x65, 0x69, 0x3A, 0xA7, 0x98, 0x41, 0xBA, 0xBD, 0xB5, 0x50, 0x77, 0x14, 0xA1,
-        0xF3,
-    ];
-
-    let mut mbr = mbrman::MBR::new_from(file, SECTOR_SIZE as u32, [0xff; 4])?;
-    let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, [0xff; 16])?;
+    let mut gpt = gptman::GPT::new_from(file, SECTOR_SIZE, Guid::new_random().into())?;
 
     // Set up the "Protective" Master Boot Record
-    let first_chs = mbrman::CHS::new(0, 0, 2);
-    let last_chs = mbrman::CHS::empty(); // This is wrong but doesn't really matter.
-    mbr[1] = mbrman::MBRPartitionEntry {
-        boot: mbrman::BOOT_INACTIVE,
-        first_chs,
-        sys: 0xEE, // GPT protective
-        last_chs,
-        starting_lba: 1,
-        sectors: gpt.header.last_usable_lba.try_into().unwrap_or(0xFFFFFFFF),
-    };
-    mbr.write_into(file)?;
-
-    file.rewind()?;
+    gptman::GPT::write_protective_mbr_into(file, SECTOR_SIZE)?;
 
     // Set up the GPT Partition Table Header
     gpt[1] = gptman::GPTPartitionEntry {
-        partition_type_guid: BDP_GUID,
-        unique_partition_guid: PARTITION_GUID,
+        // Basic data partition guid
+        partition_type_guid: guid::guid!("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7").into(),
+        unique_partition_guid: Guid::new_random().into(),
         starting_lba: gpt.header.first_usable_lba,
         ending_lba: gpt.header.last_usable_lba,
         attribute_bits: 0,

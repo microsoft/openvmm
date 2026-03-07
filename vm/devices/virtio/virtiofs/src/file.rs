@@ -7,6 +7,7 @@ use fuse::DirEntryWriter;
 use fuse::protocol::fuse_attr;
 use fuse::protocol::fuse_entry_out;
 use fuse::protocol::fuse_setattr_in;
+use fuse::protocol::fuse_statx;
 use lxutil::LxFile;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -29,8 +30,14 @@ impl VirtioFsFile {
 
     /// Gets the attributes of the open file.
     pub fn get_attr(&self) -> lx::Result<fuse_attr> {
-        let stat = self.file.read().fstat()?;
+        let stat = self.file.read().fstat()?.into();
         Ok(util::stat_to_fuse_attr(&stat))
+    }
+
+    /// Gets the statx details for the open file.
+    pub fn get_statx(&self) -> lx::Result<fuse_statx> {
+        let statx = self.file.read().fstat()?;
+        Ok(util::statx_to_fuse_statx(&statx))
     }
 
     /// Sets the attributes of the open file.
@@ -71,13 +78,15 @@ impl VirtioFsFile {
         let mut file = self.file.write();
         file.read_dir(offset as lx::off_t, |entry| {
             entry_count += 1;
-
             let get_child_fuse_entry = || -> lx::Result<Option<fuse_entry_out>> {
                 match fs.lookup_helper(&self.inode, &entry.name) {
                     Ok(e) => Ok(Some(e)),
                     Err(err) => {
-                        // Ignore entries that are inaccessible to the user.
-                        if err.value() == lx::EACCES {
+                        // Ignore entries that are inaccessible to the user or deleted.
+                        // ENOENT can occur if a file was deleted between enumeration
+                        // and lookup (e.g., when deleting files in a loop while
+                        // enumerating the directory).
+                        if err.value() == lx::EACCES || err.value() == lx::ENOENT {
                             Ok(None)
                         } else {
                             Err(err)

@@ -62,8 +62,8 @@ cargo run -- --hv --vtl2 --igvm openhcl-x64.bin --com3 "term,name=VTL2 OpenHCL" 
 
 This will launch OpenVMM in VTL2 mode using [Windows Terminal](https://learn.microsoft.com/en-us/windows/terminal/install) to display the
 output of the serial ports. You can replace `term` with `term=<path to exe>` to use your
-favorite shell and by default OpenVMM will use `cmd.exe`. A vsock window can be opened 
-using the OpenVMM terminal on windows using `v 9980` or whichever hvsock port is 
+favorite shell and by default OpenVMM will use `cmd.exe`. A vsock window can be opened
+using the OpenVMM terminal on windows using `v 9980` or whichever hvsock port is
 configured to allow consoles for OpenHCL.
 
 ### Vtl2 VMBus Support

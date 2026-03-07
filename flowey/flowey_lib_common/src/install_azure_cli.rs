@@ -120,32 +120,31 @@ impl FlowNode for Node {
                 ctx.emit_rust_step("installing azure-cli", |ctx| {
                     let get_az_cli = get_az_cli.claim(ctx);
                     move |rt| {
-                        let sh = xshell::Shell::new()?;
                         if let Ok(path) = check_az_install(rt) {
                             rt.write_all(get_az_cli, &path);
                             return Ok(());
                         }
                         match rt.platform() {
                             FlowPlatform::Windows => {
-                                let az_dir = sh.current_dir().join("az");
-                                sh.create_dir(&az_dir)?;
-                                sh.change_dir(&az_dir);
-                                xshell::cmd!(
-                                    sh,
+                                let az_dir = rt.sh.current_dir().join("az");
+                                rt.sh.create_dir(&az_dir)?;
+                                rt.sh.change_dir(&az_dir);
+                                flowey::shell_cmd!(
+                                    rt,
                                     "curl --fail -L https://aka.ms/installazurecliwindowszipx64 -o az.zip"
                                 )
                                 .run()?;
-                                xshell::cmd!(sh, "tar -xf az.zip").run()?;
+                                flowey::shell_cmd!(rt, "tar -xf az.zip").run()?;
                                 rt.write_all(get_az_cli, &az_dir.join("bin\\az.cmd"));
                             }
                             FlowPlatform::Linux(_) => {
-                                xshell::cmd!(
-                                    sh,
+                                flowey::shell_cmd!(
+                                    rt,
                                     "curl --fail -sL https://aka.ms/InstallAzureCLIDeb -o InstallAzureCLIDeb.sh"
                                 )
                                 .run()?;
-                                xshell::cmd!(sh, "chmod +x ./InstallAzureCLIDeb.sh").run()?;
-                                xshell::cmd!(sh, "sudo ./InstallAzureCLIDeb.sh").run()?;
+                                flowey::shell_cmd!(rt, "chmod +x ./InstallAzureCLIDeb.sh").run()?;
+                                flowey::shell_cmd!(rt, "sudo ./InstallAzureCLIDeb.sh").run()?;
                                 let path = check_az_install(rt)?;
                                 rt.write_all(get_az_cli, &path);
                             }

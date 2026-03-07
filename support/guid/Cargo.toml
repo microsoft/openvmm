@@ -20,12 +20,7 @@ zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
 windows.workspace = true
-
-[target.'cfg(windows)'.dependencies.winapi]
-workspace = true
-features = [
-    "guiddef",
-]
+win_etw_provider.workspace = true
 
 [lints]
 workspace = true

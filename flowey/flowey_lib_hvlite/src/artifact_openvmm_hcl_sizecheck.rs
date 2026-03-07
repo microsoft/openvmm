@@ -10,7 +10,7 @@ pub mod publish {
 
     flowey_request! {
         pub struct Request {
-            pub openvmm_openhcl_x86: ReadVar<OpenvmmHclOutput>,
+            pub openvmm_openhcl: ReadVar<OpenvmmHclOutput>,
             pub artifact_dir: ReadVar<PathBuf>,
             pub done: WriteVar<SideEffect>,
         }
@@ -25,7 +25,7 @@ pub mod publish {
 
         fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
             let Request {
-                openvmm_openhcl_x86,
+                openvmm_openhcl,
                 artifact_dir,
                 done,
             } = request;
@@ -33,12 +33,12 @@ pub mod publish {
             ctx.emit_rust_step("copying openhcl build to publish dir", |ctx| {
                 done.claim(ctx);
                 let artifact_dir = artifact_dir.claim(ctx);
-                let openvmm_openhcl_x86 = openvmm_openhcl_x86.claim(ctx);
+                let openvmm_openhcl = openvmm_openhcl.claim(ctx);
 
                 move |rt| {
                     let artifact_dir = rt.read(artifact_dir);
-                    let openvmm_openhcl_x86 = rt.read(openvmm_openhcl_x86);
-                    fs_err::copy(openvmm_openhcl_x86.bin, artifact_dir.join("openhcl"))?;
+                    let openvmm_openhcl = rt.read(openvmm_openhcl);
+                    fs_err::copy(openvmm_openhcl.bin, artifact_dir.join("openhcl"))?;
 
                     Ok(())
                 }

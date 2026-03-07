@@ -54,6 +54,16 @@ pub mod artifacts {
         }
     }
 
+    /// Host-side tools used by the VMM tests.
+    pub mod host_tools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Windows x86_64 build of the `test_igvm_agent_rpc_server` executable.
+            TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64,
+        }
+    }
+
     /// Loadable artifacts
     pub mod loadable {
         use petri_artifacts_common::tags::IsLoadable;
@@ -150,8 +160,8 @@ pub mod artifacts {
         declare_artifacts! {
             /// OpenHCL IGVM (standard)
             LATEST_STANDARD_X64,
-            /// OpenHCL IGVM 2505 release (standard)
-            RELEASE_25_05_STANDARD_X64,
+            /// OpenHCL IGVM last release (standard)
+            LATEST_RELEASE_STANDARD_X64,
             /// OpenHCL IGVM (standard, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_X64,
             /// OpenHCL IGVM (for CVM)
@@ -159,11 +169,11 @@ pub mod artifacts {
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM last release (using a linux direct-boot test image instead of UEFI)
-            RELEASE_25_05_LINUX_DIRECT_X64,
+            LATEST_RELEASE_LINUX_DIRECT_X64,
             /// OpenHCL IGVM (standard AARCH64)
             LATEST_STANDARD_AARCH64,
             /// OpenHCL IGVM last release (standard AARCH64)
-            RELEASE_25_05_STANDARD_AARCH64,
+            LATEST_RELEASE_STANDARD_AARCH64,
             /// OpenHCL IGVM (standard AARCH64, with VTL2 dev kernel)
             LATEST_STANDARD_DEV_KERNEL_AARCH64,
         }
@@ -173,10 +183,10 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
 
-        impl IsLoadable for RELEASE_25_05_STANDARD_X64 {
+        impl IsLoadable for LATEST_RELEASE_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_X64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
@@ -193,20 +203,20 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_LINUX_DIRECT_TEST_X64 {}
 
-        impl IsLoadable for RELEASE_25_05_LINUX_DIRECT_X64 {
+        impl IsLoadable for LATEST_RELEASE_LINUX_DIRECT_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_LINUX_DIRECT_X64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_LINUX_DIRECT_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_AARCH64 {}
 
-        impl IsLoadable for RELEASE_25_05_STANDARD_AARCH64 {
+        impl IsLoadable for LATEST_RELEASE_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
-        impl IsOpenhclIgvm for RELEASE_25_05_STANDARD_AARCH64 {}
+        impl IsOpenhclIgvm for LATEST_RELEASE_STANDARD_AARCH64 {}
 
         impl IsLoadable for LATEST_STANDARD_DEV_KERNEL_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
@@ -352,12 +362,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -375,18 +383,60 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::X86_64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2504_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-25.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
+        }
+
+        declare_artifacts! {
+            /// Alpine Linux 3.23.2 x64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_X64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::X86_64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_X64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-x86_64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 224494080;
+        }
+
+        declare_artifacts! {
+            /// Alpine Linux 3.23.2 aarch64 UEFI nocloud cloud-init
+            /// NOTE: The image on the alpine website is qcow2 and must be converted to a fixed vhd.
+            ALPINE_3_23_AARCH64
+        }
+
+        impl IsTestVhd for ALPINE_3_23_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+            fn quirks() -> GuestQuirks {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
+                    hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
+                    ..Default::default()
+                })
+            }
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_AARCH64 {
+            const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-cloudinit-r0.vhd";
+            const SIZE: u64 = 258015744;
         }
 
         declare_artifacts! {
@@ -398,12 +448,10 @@ pub mod artifacts {
             const OS_FLAVOR: OsFlavor = OsFlavor::Linux;
             const ARCH: MachineArch = MachineArch::Aarch64;
             fn quirks() -> GuestQuirks {
-                let mut quirks = GuestQuirks::for_all_backends(GuestQuirksInner {
+                GuestQuirks::for_all_backends(GuestQuirksInner {
                     hyperv_shutdown_ic_sleep: Some(std::time::Duration::from_secs(20)),
-                    ..Default::default()
-                });
-                quirks.hyperv.initial_reboot = Some(InitialRebootCondition::WithOpenHclUefi);
-                quirks
+                    initial_reboot: Some(InitialRebootCondition::WithTpm),
+                })
             }
         }
 
@@ -499,6 +547,11 @@ pub mod artifacts {
             /// with a persistent VMGS file enabled. This is useful for testing
             /// whether default_boot_always_attempt works to boot other VHDs.
             VMGS_WITH_BOOT_ENTRY,
+            /// VMGS file containing a 16k vTPM blob
+            ///
+            /// This file was created by creating a 16k vTPM blob and loading
+            /// it into file index 3 of a blank VMGS file.
+            VMGS_WITH_16K_TPM,
         }
 
         impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_BOOT_ENTRY {
@@ -507,6 +560,13 @@ pub mod artifacts {
         }
 
         impl IsTestVmgs for VMGS_WITH_BOOT_ENTRY {}
+
+        impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_16K_TPM {
+            const FILENAME: &'static str = "tpm-16k-vmgs.vhd";
+            const SIZE: u64 = 4194816;
+        }
+
+        impl IsTestVmgs for VMGS_WITH_16K_TPM {}
     }
 
     /// TMK-related artifacts

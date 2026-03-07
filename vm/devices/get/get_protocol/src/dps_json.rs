@@ -6,6 +6,7 @@
 
 use bitfield_struct::bitfield;
 use guid::Guid;
+use open_enum::open_enum;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -106,9 +107,10 @@ pub enum GuestStateLifetime {
 pub enum GuestStateEncryptionPolicy {
     /// Use the best encryption available, allowing fallback.
     ///
-    /// VMs will be created as or migrated to the best encryption available,
+    /// VMs will be created using the best encryption available,
     /// attempting GspKey, then GspById, and finally leaving the data
-    /// unencrypted if neither are available.
+    /// unencrypted if neither are available. VMs will not be migrated
+    /// to a different encryption method.
     #[default]
     Auto,
     /// Prefer (or require, if strict) no encryption.
@@ -134,6 +136,19 @@ pub enum GuestStateEncryptionPolicy {
     HardwareSealing,
 }
 
+open_enum! {
+    /// EFI Diagnostics Log Level Filter
+    #[derive(Default, Deserialize, Serialize)]
+    pub enum EfiDiagnosticsLogLevelType: u32 {
+        /// Default log level
+        DEFAULT = 0,
+        /// Include INFO logs
+        INFO = 1,
+        /// All logs
+        FULL = 2,
+    }
+}
+
 /// Management VTL Feature Flags
 #[bitfield(u64)]
 #[derive(Deserialize, Serialize)]
@@ -141,8 +156,10 @@ pub enum GuestStateEncryptionPolicy {
 pub struct ManagementVtlFeatures {
     pub strict_encryption_policy: bool,
     pub _reserved1: bool,
+    pub control_ak_cert_provisioning: bool,
     pub attempt_ak_cert_callback: bool,
-    #[bits(61)]
+    pub tx_only_serial_port: bool,
+    #[bits(59)]
     pub _reserved2: u64,
 }
 
@@ -199,7 +216,11 @@ pub struct HclDevicePlatformSettingsV2Static {
     #[serde(default)]
     pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
     #[serde(default)]
+    pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
+    #[serde(default)]
     pub management_vtl_features: ManagementVtlFeatures,
+    #[serde(default)]
+    pub hv_sint_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

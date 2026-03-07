@@ -94,6 +94,8 @@ open_enum! {
         MODIFY_VTL2_SETTINGS_REV1 = 6,
         // --- GE ---
         BATTERY_STATUS = 7,
+        INJECT_DEBUG_INTERRUPT = 8,
+        NOTIFY_POST_LIVE_MIGRATION = 9,
     }
 }
 
@@ -1186,8 +1188,13 @@ pub struct SaveGuestVtl2StateFlags {
     /// Explicitly allow nvme_keepalive feature when servicing.
     #[bits(1)]
     pub enable_nvme_keepalive: bool,
+
+    /// Explicitly allow mana_keepalive feature when servicing.
+    #[bits(1)]
+    pub enable_mana_keepalive: bool,
+
     /// Reserved, must be zero.
-    #[bits(63)]
+    #[bits(62)]
     _rsvd1: u64,
 }
 
@@ -1758,6 +1765,22 @@ impl BatteryStatusNotification {
         }
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct InjectDebugInterruptNotification {
+    pub message_header: HeaderGuestNotification,
+    pub vtl: u8,
+    pub _pad: u8,
+}
+const_assert_eq!(6, size_of::<InjectDebugInterruptNotification>());
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct PostLiveMigrationNotification {
+    pub message_header: HeaderGuestNotification,
+}
+const_assert_eq!(4, size_of::<PostLiveMigrationNotification>());
 
 #[bitfield(u64)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]

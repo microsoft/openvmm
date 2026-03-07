@@ -6,6 +6,7 @@
 
 - [OpenVMM](./user_guide/openvmm.md)
   - [Running OpenVMM](./user_guide/openvmm/run.md)
+  - [VM Configurations](./user_guide/openvmm/vm_configurations.md)
   - [Troubleshooting](./user_guide/openvmm/troubleshooting.md)
   - [Next Steps](./user_guide/openvmm/next_steps.md)
 - [OpenHCL](./user_guide/openhcl.md)
@@ -27,6 +28,7 @@
     - [Building a Custom Kernel](./dev_guide/getting_started/build_ohcl_kernel.md)
   - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
   - [Cross Compiling for Windows](./dev_guide/getting_started/cross_compile.md)
+  - [Running from WSL2](./dev_guide/getting_started/running_from_wsl.md)
 - [Testing](./dev_guide/tests.md)
   - [Unit Tests](./dev_guide/tests/unit.md)
   - [VMM Tests](./dev_guide/tests/vmm.md)
@@ -35,6 +37,14 @@
     - [Running Fuzzers](./dev_guide/tests/fuzzing/running.md)
     - [Writing Fuzzers](./dev_guide/tests/fuzzing/writing.md)
 - [Developer Tools / Utilities](./dev_guide/dev_tools.md)
+  - [`flowey`](./dev_guide/dev_tools/flowey.md)
+    - [`Flowey Fundamentals`](./dev_guide/dev_tools/flowey/flowey_fundamentals.md)
+    - [`Steps`](./dev_guide/dev_tools/flowey/steps.md)
+    - [`Variables`](./dev_guide/dev_tools/flowey/variables.md)
+    - [`Nodes`](./dev_guide/dev_tools/flowey/nodes.md)
+    - [`Artifacts`](./dev_guide/dev_tools/flowey/artifacts.md)
+    - [`Pipelines`](./dev_guide/dev_tools/flowey/pipelines.md)
+    - [`Nix`](./dev_guide/dev_tools/flowey/nix.md)
   - [`cargo xtask`](./dev_guide/dev_tools/xtask.md)
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)
@@ -49,6 +59,7 @@
   - [Submitting Changes](./dev_guide/contrib/pr.md)
   - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
+  - [Style Guide](./dev_guide/contrib/style_guide.md)
 
 # Reference
 
@@ -67,6 +78,7 @@
     - [Network packet capture (PCAP)](./reference/openhcl/diag/ohcldiag_dev/pcap.md)
     - [Performance analysis](./reference/openhcl/diag/ohcldiag_dev/perf.md)
     - [Tracing](./reference/openhcl/diag/tracing.md)
+  - [Debugging](./reference/openhcl/debugging.md)
 - [Developer Features]()
   - [Hardware Debugging (gdbstub)](./reference/dev_feats/gdbstub.md)
   - [Kernel Debugging (KDNET)](./reference/dev_feats/kdnet.md)
@@ -78,7 +90,6 @@
   - [Virtio]()
       - [virtio-fs]()
       - [virtio-9p]()
-      - [virtio-serial]()
       - [virtio-net]()
       - [virtio-pmem]()
   - [VMBus]()
@@ -111,6 +122,10 @@
     - [mesh]()
     - [inspect]()
   - [OpenHCL Architecture](./reference/architecture/openhcl.md)
+    - [Processes and Components](./reference/architecture/openhcl/processes.md)
+    - [Boot Flow](./reference/architecture/openhcl/boot.md)
+    - [Sidecar](./reference/architecture/openhcl/sidecar.md)
+    - [IGVM](./reference/architecture/openhcl/igvm.md)
 
 ---
 

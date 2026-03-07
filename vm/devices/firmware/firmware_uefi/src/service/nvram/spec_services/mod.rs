@@ -1122,7 +1122,7 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
                 // All validation checks have passed, so perform the operation
                 match self
                     .storage
-                    .append_variable(name, in_vendor, data.to_vec(), timestamp)
+                    .append_variable(name, in_vendor, data.clone(), timestamp)
                     .await
                 {
                     Ok(true) => NvramResult((), EfiStatus::SUCCESS, None),
@@ -1262,7 +1262,7 @@ impl<S: VmmNvramStorage> NvramSpecServices<S> {
                 // All validation checks have passed, so perform the operation
                 match self
                     .storage
-                    .set_variable(name, in_vendor, attr.into(), data.to_vec(), timestamp)
+                    .set_variable(name, in_vendor, attr.into(), data.clone(), timestamp)
                     .await
                 {
                     Ok(_) => NvramResult((), EfiStatus::SUCCESS, None),
@@ -1570,7 +1570,7 @@ mod test {
                 .uefi_get_next_variable(&mut 256, name.as_deref(), vendor)
                 .await;
 
-            NvramResult(name_guid.map(|(n, _)| n.to_vec()), status, err)
+            NvramResult(name_guid.map(|(n, _)| n.clone()), status, err)
         }
     }
 

@@ -437,6 +437,7 @@ impl<'a> Arm64PageTableSpace<'a> {
         debug_assert!(aligned(phys_table_start, Arm64PageSize::Small));
         debug_assert!(index < PAGE_SIZE_4K as usize / size_of::<Arm64PageTableEntry>());
 
+        #[cfg(feature = "tracing")]
         tracing::debug!(
             "Writing page table entry {entry:#016x}, index {index:#x}, table {phys_table_start:#x}"
         );
@@ -682,8 +683,8 @@ pub fn build_identity_page_tables_aarch64(
     start_gpa: u64,
     size: u64,
     memory_attribute_indirection: MemoryAttributeIndirectionEl1,
-    page_table_region_size: usize,
-) -> Vec<u8> {
+    page_table_space: &mut [u8],
+) -> &[u8] {
     // start_gpa and size must be 2MB aligned.
     if !aligned(start_gpa, Arm64PageSize::Large) {
         panic!("start_gpa not 2mb aligned");
@@ -693,13 +694,13 @@ pub fn build_identity_page_tables_aarch64(
         panic!("size not 2mb aligned");
     }
 
+    #[cfg(feature = "tracing")]
     tracing::debug!(
         "Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes"
     );
 
-    let mut page_table_space = vec![0; page_table_region_size];
     let mut page_tables =
-        Arm64PageTableSpace::new(page_table_gpa as usize, &mut page_table_space).unwrap();
+        Arm64PageTableSpace::new(page_table_gpa as usize, page_table_space).unwrap();
     page_tables
         .map_range(
             start_gpa,
@@ -713,17 +714,22 @@ pub fn build_identity_page_tables_aarch64(
         .unwrap();
 
     let used_space = page_tables.used_space();
-    tracing::debug!("Page tables use {used_space} bytes");
-    tracing::debug!("Page tables stats by level: {:?}", page_tables.lvl_stats());
 
-    page_table_space.truncate(used_space);
+    #[cfg(feature = "tracing")]
+    {
+        tracing::debug!("Page tables use {used_space} bytes");
+        tracing::debug!("Page tables stats by level: {:?}", page_tables.lvl_stats());
+    }
 
-    page_table_space
+    &page_table_space[0..used_space]
 }
 
 #[cfg(test)]
 mod tests {
+    use std;
+
     use super::*;
+    use std::vec;
 
     const DUMP_PAGE_TABLES: bool = false;
 

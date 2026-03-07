@@ -639,8 +639,10 @@ impl Device {
     }
 
     fn handle_gpadl(&mut self, id: GpadlId, count: u16, buf: Vec<u64>, channel_idx: usize) {
-        self.gpadl_map
-            .add(id, MultiPagedRangeBuf::new(count.into(), buf).unwrap());
+        self.gpadl_map.add(
+            id,
+            MultiPagedRangeBuf::from_range_buffer(count.into(), buf).unwrap(),
+        );
         if channel_idx > 0 {
             self.subchannel_gpadls[channel_idx - 1].insert(id);
         }
@@ -806,19 +808,21 @@ impl Device {
             assert!(open == result.open_request.is_some());
 
             for gpadl in result.gpadls {
-                let buf =
-                    match MultiPagedRangeBuf::new(gpadl.request.count.into(), gpadl.request.buf) {
-                        Ok(buf) => buf,
-                        Err(err) => {
-                            if gpadl.accepted {
-                                return Err(ChannelRestoreError::GpadlError(err));
-                            } else {
-                                // The GPADL will be reoffered later and we can fail
-                                // it then.
-                                continue;
-                            }
+                let buf = match MultiPagedRangeBuf::from_range_buffer(
+                    gpadl.request.count.into(),
+                    gpadl.request.buf,
+                ) {
+                    Ok(buf) => buf,
+                    Err(err) => {
+                        if gpadl.accepted {
+                            return Err(ChannelRestoreError::GpadlError(err));
+                        } else {
+                            // The GPADL will be reoffered later and we can fail
+                            // it then.
+                            continue;
                         }
-                    };
+                    }
+                };
                 self.gpadl_map.add(gpadl.request.id, buf);
                 if channel_idx > 0 {
                     self.subchannel_gpadls[channel_idx - 1].insert(gpadl.request.id);

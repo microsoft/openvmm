@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Loader glue code shared between both HvLite and Underhill.
+//! Loader glue code shared between both OpenVMM and Underhill.
 //!
 //! DEVNOTE: this organization isn't great, and should be reconsidered...
 
@@ -128,7 +128,7 @@ impl<R> Loader<'_, R> {
 
 impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
     fn isolation_config(&self) -> loader::importer::IsolationConfig {
-        // For now, all HvLite VMs are non-isolated.
+        // For now, all OpenVMM VMs are non-isolated.
         loader::importer::IsolationConfig {
             paravisor_present: false,
             isolation_type: loader::importer::IsolationType::None,

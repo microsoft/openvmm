@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use mesh::MeshPayload;
 use std::convert::Infallible;
 use video_core::FramebufferControl;
 use video_core::FramebufferFormat;
@@ -9,7 +10,7 @@ use video_core::SharedFramebufferHandle;
 use vm_resource::ResolveResource;
 use vm_resource::kind::FramebufferHandleKind;
 
-#[derive(Clone)]
+#[derive(Clone, MeshPayload)]
 pub struct FramebufferRemoteControl {
     pub get: guest_emulation_transport::GuestEmulationTransportClient,
     pub format_send: mesh::Sender<FramebufferFormat>,

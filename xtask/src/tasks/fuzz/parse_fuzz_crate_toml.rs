@@ -41,9 +41,9 @@ fn parse_fuzz_crate_toml(cargo_toml_path: &Path) -> anyhow::Result<Option<FuzzCr
             cargo_toml_path,
         )?;
 
-    // Check if the crate is a HvLite-style cargo-fuzz crate
+    // Check if the crate is a OpenVMM-style cargo-fuzz crate
     let fuzz_meta = {
-        // ...and simultaneously make sure crates that _aren't_ HvLite-style
+        // ...and simultaneously make sure crates that _aren't_ OpenVMM-style
         // cargo-fuzz crates don't misconstrue themselves as such
         let validate_non_fuzz_crate_name = || {
             let name = manifest
@@ -65,7 +65,7 @@ fn parse_fuzz_crate_toml(cargo_toml_path: &Path) -> anyhow::Result<Option<FuzzCr
         };
 
         // Check to make sure fuzz crates include both the "standard" cargo-fuzz
-        // metadata, and HvLite-specific metadata.
+        // metadata, and OpenVMM-specific metadata.
         match (
             metadata.cargo_fuzz.unwrap_or(false),
             metadata.xtask.as_ref().and_then(|x| x.fuzz.as_ref()),
