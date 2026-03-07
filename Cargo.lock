@@ -1010,12 +1010,12 @@ dependencies = [
  "openssl",
  "sha2",
  "tempfile",
- "tpm",
+ "tpm_lib",
  "tpm_resources",
  "tracing",
  "tracing-subscriber",
  "tracing_helpers",
- "zerocopy 0.8.25",
+ "zerocopy",
 ]
 
 [[package]]
