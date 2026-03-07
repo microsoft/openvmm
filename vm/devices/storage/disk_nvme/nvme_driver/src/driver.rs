@@ -1310,7 +1310,7 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             }
         }
 
-        let pci_id = self.device.id().to_string();
+        let pci_id = self.device.id().to_owned();
         let issuer = match self
             .create_io_queue(state, cpu)
             .instrument(info_span!("create_nvme_io_queue", cpu, pci_id = ?pci_id))
