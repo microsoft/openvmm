@@ -1,0 +1,118 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fuzz_netvsp"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+netvsp = { workspace = true, features = ["test", "arbitrary"] }
+net_backend.workspace = true
+guid.workspace = true
+pal_async.workspace = true
+vmbus_async.workspace = true
+vmbus_channel.workspace = true
+vmbus_core.workspace = true
+vmbus_ring.workspace = true
+vmcore.workspace = true
+guestmem.workspace = true
+hvdef.workspace = true
+mesh.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+inspect = { workspace = true, features = ["initiate"] }
+zerocopy.workspace = true
+xtask_fuzz.workspace = true
+
+arbitrary = { workspace = true, features = ["derive"] }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libfuzzer-sys.workspace = true
+
+[package.metadata.xtask.unused-deps]
+# required for the xtask_fuzz macro, but unused_deps doesn't know that
+ignored = ["libfuzzer-sys"]
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.xtask.fuzz.onefuzz-allowlist]
+fuzz_netvsp_control = ["fuzz_netvsp_control.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_tx_path = ["fuzz_netvsp_tx_path.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_oid = ["fuzz_netvsp_oid.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_interop = ["fuzz_netvsp_interop.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_rx_path = ["fuzz_netvsp_rx_path.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_link_status = ["fuzz_netvsp_link_status.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_vf_state = ["fuzz_netvsp_vf_state.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_subchannel = ["fuzz_netvsp_subchannel.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "netvsp_rndis.dict", "../src/**/*.rs"]
+fuzz_netvsp_save_restore = ["fuzz_netvsp_save_restore.rs", "fuzz_helpers.rs", "fuzz_helpers/**/*.rs", "../src/**/*.rs"]
+
+[[bin]]
+name = "fuzz_netvsp_control"
+path = "fuzz_netvsp_control.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_tx_path"
+path = "fuzz_netvsp_tx_path.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_oid"
+path = "fuzz_netvsp_oid.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_interop"
+path = "fuzz_netvsp_interop.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_rx_path"
+path = "fuzz_netvsp_rx_path.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_link_status"
+path = "fuzz_netvsp_link_status.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_vf_state"
+path = "fuzz_netvsp_vf_state.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_subchannel"
+path = "fuzz_netvsp_subchannel.rs"
+test = false
+doc = false
+doctest = false
+
+[[bin]]
+name = "fuzz_netvsp_save_restore"
+path = "fuzz_netvsp_save_restore.rs"
+test = false
+doc = false
+doctest = false
+
+[lints]
+workspace = true
