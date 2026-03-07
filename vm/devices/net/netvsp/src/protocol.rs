@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(dead_code)]
+#![cfg_attr(not(feature = "test"), expect(dead_code))]
 
 use crate::rndisprot;
 use bitfield_struct::bitfield;
@@ -206,6 +206,7 @@ pub const MESSAGE6_MAX: u32 = MESSAGE6_TYPE_PD_POST_BATCH;
 
 open_enum::open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum Status: u32 {
         NONE = 0,
         SUCCESS = 1,
@@ -238,6 +239,7 @@ pub struct MessageHeader {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct MessageInit {
     pub protocol_version: u32,  // was MinProtocolVersion
     pub protocol_version2: u32, // was MaxProtocolVersion
@@ -269,6 +271,7 @@ pub const INVALID_PROTOCOL_VERSION: u32 = 0xffffffff;
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message1SendNdisVersion {
     pub ndis_major_version: u32,
     pub ndis_minor_version: u32,
@@ -316,6 +319,7 @@ pub struct Message1SendReceiveBufferComplete {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message1RevokeReceiveBuffer {
     pub id: u16,
 }
@@ -359,6 +363,7 @@ pub struct Message1SendSendBufferComplete {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message1RevokeSendBuffer {
     pub id: u16,
 }
@@ -368,6 +373,7 @@ pub struct Message1RevokeSendBuffer {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message1SendRndisPacket {
     //
     // This field is specified by RNIDS. They assume there's
@@ -397,6 +403,7 @@ pub struct Message1SendRndisPacket {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message1SendRndisPacketComplete {
     pub status: Status,
 }
@@ -408,6 +415,7 @@ pub struct Message1SendRndisPacketComplete {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message2SendNdisConfig {
     pub mtu: u32,
     pub reserved: u32,
@@ -417,6 +425,7 @@ pub struct Message2SendNdisConfig {
 #[derive(Inspect)]
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct NdisConfigCapabilities {
     #[inspect(safe)]
     pub vmq: bool,
@@ -470,6 +479,7 @@ open_enum::open_enum! {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message4SwitchDataPath {
     /// Specifies the current data path that is active in the VM
     pub active_data_path: u32,
@@ -480,6 +490,7 @@ pub struct Message4SwitchDataPath {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message5OidQueryEx {
     /// Header information for the Query OID
     header: rndisprot::NdisObjectHeader,
@@ -505,6 +516,7 @@ pub struct Message5OidQueryExComplete {
 //
 open_enum::open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum SubchannelOperation: u32 {
         NONE = 0,
         ALLOCATE = 1,
@@ -516,6 +528,7 @@ open_enum::open_enum! {
 //
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Message5SubchannelRequest {
     /// The subchannel operation
     pub operation: SubchannelOperation,

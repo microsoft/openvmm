@@ -43,13 +43,11 @@ use std::sync::atomic::AtomicBool;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
+use test_helpers::gpadl_test_guest_channel;
 use test_with_tracing::test;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
-use vmbus_channel::ChannelClosed;
-use vmbus_channel::RawAsyncChannel;
-use vmbus_channel::SignalVmbusChannel;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
@@ -63,12 +61,8 @@ use vmbus_channel::channel::VmbusDevice;
 use vmbus_channel::channel::offer_channel;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_channel::gpadl::GpadlMap;
-use vmbus_channel::gpadl::GpadlMapView;
-use vmbus_channel::gpadl_ring::AlignedGpadlView;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_core::protocol::UserDefinedData;
-use vmbus_ring::IncomingRing;
-use vmbus_ring::OutgoingRing;
 use vmbus_ring::PAGE_SIZE;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::interrupt::Interrupt;
@@ -1793,63 +1787,6 @@ impl VirtualFunction for TestVirtualFunction {
         match self.recv_update.select_next_some().await {
             TestVirtualFunctionStateChange::Update(rpc) => rpc,
         }
-    }
-}
-
-fn make_test_guest_rings(
-    mem: &GuestMemory,
-    gpadl_map: &GpadlMapView,
-    gpadl_id: GpadlId,
-    ring_offset: u32,
-) -> (IncomingRing<GpadlRingMem>, OutgoingRing<GpadlRingMem>) {
-    let gpadl = AlignedGpadlView::new(gpadl_map.map(gpadl_id).unwrap()).unwrap();
-    let (out_gpadl, in_gpadl) = match gpadl.split(ring_offset) {
-        Ok(gpadls) => gpadls,
-        Err(_) => panic!("Failed gpadl.split"),
-    };
-    (
-        IncomingRing::new(GpadlRingMem::new(in_gpadl, mem).unwrap()).unwrap(),
-        OutgoingRing::new(GpadlRingMem::new(out_gpadl, mem).unwrap()).unwrap(),
-    )
-}
-
-pub fn gpadl_test_guest_channel(
-    mem: &GuestMemory,
-    gpadl_map: &GpadlMapView,
-    gpadl_id: GpadlId,
-    ring_offset: u32,
-    host_to_guest_event: Arc<SlimEvent>,
-    guest_to_host_interrupt: Interrupt,
-    done: Arc<AtomicBool>,
-) -> RawAsyncChannel<GpadlRingMem> {
-    let (in_ring, out_ring) = make_test_guest_rings(mem, gpadl_map, gpadl_id, ring_offset);
-    RawAsyncChannel {
-        in_ring,
-        out_ring,
-        signal: Box::new(EventWithDone {
-            local_event: host_to_guest_event,
-            remote_interrupt: guest_to_host_interrupt,
-            done,
-        }),
-    }
-}
-
-struct EventWithDone {
-    remote_interrupt: Interrupt,
-    local_event: Arc<SlimEvent>,
-    done: Arc<AtomicBool>,
-}
-
-impl SignalVmbusChannel for EventWithDone {
-    fn signal_remote(&self) {
-        self.remote_interrupt.deliver();
-    }
-
-    fn poll_for_signal(&self, cx: &mut Context<'_>) -> Poll<Result<(), ChannelClosed>> {
-        if self.done.load(Ordering::Relaxed) {
-            return Err(ChannelClosed).into();
-        }
-        self.local_event.poll_wait(cx).map(Ok)
     }
 }
 

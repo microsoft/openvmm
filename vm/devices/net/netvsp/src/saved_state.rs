@@ -8,6 +8,7 @@ use vmbus_channel::gpadl::GpadlId;
 use vmcore::save_restore::SavedStateRoot;
 
 #[derive(Debug, Protobuf, SavedStateRoot)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct SavedState {
     #[mesh(1)]
@@ -15,6 +16,7 @@ pub struct SavedState {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct OpenState {
     #[mesh(1)]
@@ -22,6 +24,7 @@ pub struct OpenState {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub enum Primary {
     #[mesh(1)]
@@ -33,6 +36,7 @@ pub enum Primary {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct InitPrimary {
     #[mesh(1)]
@@ -48,6 +52,7 @@ pub struct InitPrimary {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct NdisVersion {
     #[mesh(1)]
@@ -57,6 +62,7 @@ pub struct NdisVersion {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct NdisConfig {
     #[mesh(1)]
@@ -66,6 +72,7 @@ pub struct NdisConfig {
 }
 
 #[derive(Copy, Clone, Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub enum GuestVfState {
     #[mesh(1)]
@@ -88,6 +95,7 @@ pub enum GuestVfState {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct ReadyPrimary {
     #[mesh(1)]
@@ -125,6 +133,7 @@ pub struct ReadyPrimary {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub enum RndisState {
     #[mesh(1)]
@@ -136,6 +145,7 @@ pub enum RndisState {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct OffloadConfig {
     #[mesh(1)]
@@ -149,6 +159,7 @@ pub struct OffloadConfig {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct ChecksumOffloadConfig {
     #[mesh(1)]
@@ -164,6 +175,7 @@ pub struct ChecksumOffloadConfig {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct RssState {
     #[mesh(1)]
@@ -173,12 +185,20 @@ pub struct RssState {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct IncomingControlMessage {
     #[mesh(1)]
     pub message_type: u32,
     #[mesh(2)]
     pub data: Vec<u8>,
+}
+
+/// `GpadlId` does not implement `Arbitrary` upstream; we supply a manual
+/// implementation here so the containing structs can derive it.
+#[cfg(feature = "arbitrary")]
+fn arbitrary_gpadl_id(u: &mut arbitrary::Unstructured<'_>) -> arbitrary::Result<GpadlId> {
+    Ok(GpadlId(u.arbitrary()?))
 }
 
 #[derive(Debug, Protobuf)]
@@ -192,6 +212,17 @@ pub struct ReceiveBuffer {
     pub sub_allocation_size: u32,
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for ReceiveBuffer {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            gpadl_id: arbitrary_gpadl_id(u)?,
+            id: u.arbitrary()?,
+            sub_allocation_size: u.arbitrary()?,
+        })
+    }
+}
+
 #[derive(Debug, Protobuf)]
 #[mesh(package = "net.netvsp")]
 pub struct SendBuffer {
@@ -199,7 +230,17 @@ pub struct SendBuffer {
     pub gpadl_id: GpadlId,
 }
 
+#[cfg(feature = "arbitrary")]
+impl<'a> arbitrary::Arbitrary<'a> for SendBuffer {
+    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
+        Ok(Self {
+            gpadl_id: arbitrary_gpadl_id(u)?,
+        })
+    }
+}
+
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct Channel {
     #[mesh(1)]
@@ -209,6 +250,7 @@ pub struct Channel {
 }
 
 #[derive(Debug, Protobuf)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[mesh(package = "net.netvsp")]
 pub struct Rx {
     #[mesh(1)]
