@@ -10,7 +10,6 @@ use crate::message::Message;
 use crate::message::OwnedMessage;
 use crate::resource::OsResource;
 use crate::resource::Resource;
-use futures_channel::oneshot;
 use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::buffer::Buf;
 use mesh_protobuf::buffer::Buffer;
@@ -1479,8 +1478,9 @@ impl PortInner {
             let shutdown = state.shutdown.take();
             drop(state);
             // Trace outside the lock to avoid deadlocks.
-            if shutdown.is_some() {
+            if let Some(shutdown) = shutdown {
                 tracing::trace!(node = ?local_node.id, "waking shutdown waiter");
+                shutdown.close();
             }
         }
     }
@@ -1627,7 +1627,7 @@ impl Clone for RemoteNodeHandle {
 struct LocalNodeState {
     ports: HashMap<PortId, Arc<PortInner>>,
     nodes: HashMap<NodeId, Arc<RemoteNode>>,
-    shutdown: Option<oneshot::Sender<()>>,
+    shutdown: Option<async_channel::Sender<()>>,
 }
 
 /// The deserialized event for processing by a local port.
@@ -1891,8 +1891,7 @@ impl LocalNode {
     /// process of being sent to another node.
     pub async fn wait_for_ports(&self, all_ports: bool) {
         loop {
-            #[allow(clippy::disallowed_methods)] // TODO
-            let (send, recv) = oneshot::channel::<()>();
+            let (send, recv) = async_channel::bounded::<()>(1);
             let ports: Vec<_> = {
                 let mut state = self.inner.state.lock();
                 state.shutdown = Some(send);
@@ -1921,7 +1920,7 @@ impl LocalNode {
                 return;
             }
             tracing::trace!(node = ?self.id(), count = left, "waiting for ports");
-            let _ = recv.await;
+            let _ = recv.recv().await;
         }
     }
 
@@ -2474,7 +2473,7 @@ pub mod tests {
     struct RemoteLocalNode {
         _task: Task<()>,
         node: Arc<LocalNode>,
-        send: futures_channel::mpsc::UnboundedSender<RemoteEvent>,
+        send: async_channel::Sender<RemoteEvent>,
     }
 
     struct RemoteEvent {
@@ -2492,11 +2491,7 @@ pub mod tests {
 
     impl RemoteLocalNode {
         fn new(driver: &impl Spawn) -> Self {
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "can't use mesh channels from mesh_node"
-            )]
-            let (send, recv) = futures_channel::mpsc::unbounded::<RemoteEvent>();
+            let (send, recv) = async_channel::unbounded::<RemoteEvent>();
             let node = Arc::new(LocalNode::with_id(NodeId::new(), Box::new(NullConnect)));
             let task = driver.spawn("test", {
                 let node = node.clone();
@@ -2526,7 +2521,7 @@ pub mod tests {
 
     struct EventsFrom {
         node_id: NodeId,
-        send: futures_channel::mpsc::UnboundedSender<RemoteEvent>,
+        send: async_channel::Sender<RemoteEvent>,
     }
 
     impl SendEvent for EventsFrom {
@@ -2535,7 +2530,7 @@ pub mod tests {
             let mut os_resources = Vec::new();
             event.write_to(&mut buffer, &mut os_resources);
             self.send
-                .unbounded_send(RemoteEvent {
+                .send_blocking(RemoteEvent {
                     node_id: self.node_id,
                     data: buffer,
                     resources: os_resources,
