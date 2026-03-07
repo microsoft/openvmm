@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use copilot_setup_generator::CopilotSetupGeneratorCli;
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
 use vmm_tests::VmmTestsCli;
@@ -9,6 +10,7 @@ pub mod build_docs;
 pub mod build_igvm;
 pub mod build_reproducible;
 pub mod checkin_gates;
+pub mod copilot_setup_generator;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
 pub mod vmm_tests;
@@ -30,6 +32,9 @@ pub enum OpenvmmPipelines {
     /// Flowey pipelines primarily designed to run in CI.
     #[clap(subcommand)]
     Ci(OpenvmmPipelinesCi),
+
+    /// Generate copilot-setup-steps.yml file directly  
+    CopilotSetupGenerator(CopilotSetupGeneratorCli),
 
     /// Install tools needed to build OpenVMM
     RestorePackages(RestorePackagesCli),
@@ -62,6 +67,11 @@ impl IntoPipeline for OpenvmmPipelines {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
             },
+            OpenvmmPipelines::CopilotSetupGenerator(cmd) => {
+                cmd.run(&crate::repo_root())?;
+                // Return empty pipeline since we've already done the work
+                Ok(Pipeline::new())
+            }
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTests(cmd) => cmd.into_pipeline(pipeline_hint),
         }
