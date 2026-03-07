@@ -252,5 +252,7 @@ pub mod ged {
         AkCertRequestFailureAndRetry,
         /// Config for testing AK cert persistency across boots.
         AkCertPersistentAcrossBoot,
+        /// Config for testing skip hardware unsealing signal from IGVMAgent.
+        KeyReleaseFailureSkipHwUnsealing,
     }
 }

@@ -28,6 +28,8 @@ enum TestConfig {
     AkCertRequestFailureAndRetry,
     /// Test AK cert persistency across boots
     AkCertPersistentAcrossBoot,
+    /// Test skip hardware unsealing signal from IGVM Agent
+    KeyReleaseFailureSkipHwUnsealing,
 }
 
 impl From<TestConfig> for IgvmAttestTestConfig {
@@ -38,6 +40,9 @@ impl From<TestConfig> for IgvmAttestTestConfig {
             }
             TestConfig::AkCertPersistentAcrossBoot => {
                 IgvmAttestTestConfig::AkCertPersistentAcrossBoot
+            }
+            TestConfig::KeyReleaseFailureSkipHwUnsealing => {
+                IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing
             }
         }
     }

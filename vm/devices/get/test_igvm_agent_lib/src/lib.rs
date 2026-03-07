@@ -115,6 +115,8 @@ pub enum IgvmAgentAction {
     RespondSuccess,
     /// Emit a response that indicates a protocol error.
     RespondFailure,
+    /// Emit a response that indicates a protocol error with skip_hw_unsealing signal.
+    RespondFailureSkipHwUnsealing,
     /// Skip responding to simulate a timeout.
     NoResponse,
 }
@@ -164,6 +166,15 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([IgvmAgentAction::RespondSuccess, IgvmAgentAction::NoResponse]),
+            );
+        }
+        IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondFailureSkipHwUnsealing,
+                ]),
             );
         }
     }
@@ -362,6 +373,66 @@ impl TestIgvmAgent {
                             let payload_len = payload.len() as u32;
 
                             (payload.clone(), payload_len)
+                        }
+                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+                    }
+                }
+                IgvmAgentAction::RespondFailureSkipHwUnsealing => {
+                    tracing::info!(?request.header.request_type, "Test plan: RespondFailureSkipHwUnsealing");
+                    match request.header.request_type {
+                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                            let header = IgvmAttestWrappedKeyResponseHeader {
+                                data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo {
+                                    error_code: 0x5678,
+                                    http_status_code: 400,
+                                    igvm_signal: IgvmSignal::default()
+                                        .with_retry(false)
+                                        .with_skip_hw_unsealing(true),
+                                    reserved: [0; 3],
+                                },
+                            };
+                            let payload = header.as_bytes().to_vec();
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
+                        }
+                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                            let header = IgvmAttestKeyReleaseResponseHeader {
+                                data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo {
+                                    error_code: 0x5678,
+                                    http_status_code: 400,
+                                    igvm_signal: IgvmSignal::default()
+                                        .with_retry(false)
+                                        .with_skip_hw_unsealing(true),
+                                    reserved: [0; 3],
+                                },
+                            };
+                            let payload = header.as_bytes().to_vec();
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
+                        }
+                        IgvmAttestRequestType::AK_CERT_REQUEST => {
+                            let header = IgvmAttestAkCertResponseHeader {
+                                data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
+                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                                error_info: IgvmErrorInfo {
+                                    error_code: 0x5678,
+                                    http_status_code: 400,
+                                    igvm_signal: IgvmSignal::default()
+                                        .with_retry(false)
+                                        .with_skip_hw_unsealing(true),
+                                    reserved: [0; 3],
+                                },
+                            };
+                            let payload = header.as_bytes().to_vec();
+                            let payload_len = payload.len() as u32;
+
+                            (payload, payload_len)
                         }
                         ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
                     }
