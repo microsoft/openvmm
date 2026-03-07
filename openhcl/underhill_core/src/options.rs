@@ -21,6 +21,9 @@ pub enum TestScenarioConfig {
     SaveFail,
     RestoreStuck,
     SaveStuck,
+
+    /// Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
+    VpciTdispFlow,
 }
 
 impl FromStr for TestScenarioConfig {
@@ -31,6 +34,7 @@ impl FromStr for TestScenarioConfig {
             "SERVICING_SAVE_FAIL" => Ok(TestScenarioConfig::SaveFail),
             "SERVICING_RESTORE_STUCK" => Ok(TestScenarioConfig::RestoreStuck),
             "SERVICING_SAVE_STUCK" => Ok(TestScenarioConfig::SaveStuck),
+            "TDISP_VPCI_FLOW_TEST" => Ok(TestScenarioConfig::VpciTdispFlow),
             _ => Err(anyhow::anyhow!("Invalid test config: {}", s)),
         }
     }

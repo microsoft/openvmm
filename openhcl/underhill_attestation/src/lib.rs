@@ -320,7 +320,7 @@ async fn try_unlock_vmgs(
         .map_err(|e| (AttestationErrorInner::ReadKeyProtector(e), false))?;
 
     let start_time = std::time::SystemTime::now();
-    let vmgs_encrypted = vmgs.is_encrypted();
+    let vmgs_encrypted = vmgs.encrypted();
     tracing::info!(
         ?tcb_version,
         vmgs_encrypted,
@@ -483,7 +483,7 @@ pub async fn initialize_platform_security(
     // Retry attestation call-out if necessary (if VMGS encrypted).
     // The IGVm Agent could be down for servicing, or the TDX service VM might not be ready, or a dynamic firmware
     // update could mean that the report was not verifiable.
-    let vmgs_encrypted: bool = vmgs.is_encrypted();
+    let vmgs_encrypted: bool = vmgs.encrypted();
     let max_retry = if vmgs_encrypted {
         MAXIMUM_RETRY_COUNT
     } else {
@@ -764,7 +764,7 @@ async fn get_derived_keys(
         };
 
     // Handle various sources of Guest State Protection
-    let existing_unencrypted = !vmgs.is_encrypted() && !vmgs.was_provisioned_this_boot();
+    let existing_unencrypted = !vmgs.encrypted() && !vmgs.was_provisioned_this_boot();
     let is_gsp_by_id = key_protector_by_id.found_id && key_protector_by_id.inner.ported != 1;
     let is_gsp = key_protector.gsp[ingress_idx].gsp_length != 0;
     tracing::info!(
@@ -2295,7 +2295,7 @@ mod tests {
         let att_cfg = new_attestation_vm_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
-        assert!(!vmgs.is_encrypted());
+        assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
@@ -2314,7 +2314,7 @@ mod tests {
         .unwrap();
 
         // VMGS remains unencrypted and KP/HWKP not written.
-        assert!(!vmgs.is_encrypted());
+        assert!(!vmgs.encrypted());
         assert!(key_protector_is_empty(&mut vmgs).await);
         assert!(hardware_key_protector_is_empty(&mut vmgs).await);
         // Agent data passed through
@@ -2335,7 +2335,7 @@ mod tests {
         let tee = MockTeeCall::new(0x1234);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
-        assert!(!vmgs.is_encrypted());
+        assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
@@ -2354,7 +2354,7 @@ mod tests {
         .unwrap();
 
         // VMGS is now encrypted and HWKP is updated.
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
         assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
 
         // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
@@ -2391,7 +2391,7 @@ mod tests {
         .unwrap();
 
         // VMGS should remain encrypted
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
     }
 
     #[async_test]
@@ -2421,7 +2421,7 @@ mod tests {
         let tee = MockTeeCall::new(0x1234);
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
-        assert!(!vmgs.is_encrypted());
+        assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
@@ -2440,7 +2440,7 @@ mod tests {
         .unwrap();
 
         // VMGS is now encrypted and HWKP is updated.
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
         assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
         // Agent data passed through
         assert_eq!(res.agent_data.clone().unwrap(), agent.agent_data.to_vec());
@@ -2463,7 +2463,7 @@ mod tests {
         .unwrap();
 
         // VMGS should remain encrypted
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
         // Agent data passed through
         assert_eq!(res.agent_data.clone().unwrap(), agent.agent_data.to_vec());
         // Secure key should be None without pre-provisioning
@@ -2500,7 +2500,7 @@ mod tests {
         let att_cfg = new_attestation_vm_config();
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
-        assert!(!vmgs.is_encrypted());
+        assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
         let tee = MockTeeCall::new(0x1234);
@@ -2520,7 +2520,7 @@ mod tests {
         .unwrap();
 
         // VMGS is now encrypted and HWKP is updated.
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
         assert!(!hardware_key_protector_is_empty(&mut vmgs).await);
         // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
         // See vm/devices/get/guest_emulation_device/src/test_igvm_agent.rs for the expected response.
@@ -2560,7 +2560,7 @@ mod tests {
         .unwrap();
 
         // VMGS should remain encrypted
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
     }
 
     #[async_test]
@@ -2595,7 +2595,7 @@ mod tests {
         let tee = MockTeeCallNoGetDerivedKey {};
 
         // Ensure VMGS is not encrypted and agent data is empty before the call
-        assert!(!vmgs.is_encrypted());
+        assert!(!vmgs.encrypted());
 
         // Obtain a LocalDriver briefly, then run the async flow under the pool executor
         let ldriver = pal_async::local::block_with_io(|ld| async move { ld });
@@ -2614,7 +2614,7 @@ mod tests {
         .unwrap();
 
         // VMGS is now encrypted but HWKP remains empty.
-        assert!(vmgs.is_encrypted());
+        assert!(vmgs.encrypted());
         assert!(hardware_key_protector_is_empty(&mut vmgs).await);
         // Agent data should be the same as `key_reference` in the WRAPPED_KEY response.
         // See vm/devices/get/guest_emulation_device/src/test_igvm_agent.rs for the expected response.

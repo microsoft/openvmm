@@ -10,7 +10,7 @@ import { Routes, Route } from "react-router-dom";
 import { Runs } from "./runs";
 import { Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { startDataPrefetching } from "./fetch/fetch_runs_data";
+import { startDataPrefetching } from "./utils/fetch_runs_data";
 import { RunDetails } from "./run_details";
 import { Tests } from "./tests";
 import { TestDetails } from "./test_details";

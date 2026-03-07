@@ -1399,7 +1399,7 @@ async fn write_provisioning_marker(vmgs: &mut Vmgs) -> anyhow::Result<()> {
             .provisioning_reason()
             .unwrap_or(VmgsProvisioningReason::Unknown),
         tpm_version: tpm_protocol::TPM_DEFAULT_VERSION.to_string(),
-        tpm_nvram_size: tpm_protocol::TPM_DEFAULT_SIZE,
+        tpm_nvram_size: tpm_device::DEFAULT_VTPM_SIZE,
         akcert_size: tpm_protocol::TPM_DEFAULT_AKCERT_SIZE,
         akcert_attrs: format!(
             "0x{:x}",
@@ -1793,6 +1793,15 @@ async fn new_underhill_vm(
             }
         }
     }
+
+    // Get TPM data size from VMGS. This is used by the TPM device later to
+    // initialize it with the correct size. VMGS file control blocks are saved
+    // and restored during servicing, so this is cached and doesn't directly
+    // access the VMGS file.
+    let tpm_size = vmgs
+        .as_ref()
+        .and_then(|(_, vmgs)| vmgs.get_file_info(vmgs::FileId::TPM_NVRAM).ok())
+        .map(|info| info.valid_bytes as usize);
 
     // Determine if the VTL0 alias map is in use.
     let vtl0_alias_map_bit =
@@ -2562,6 +2571,9 @@ async fn new_underhill_vm(
     let debug_interrupt_callback = move |vtl: u8| p.assert_debug_interrupt(vtl);
     get_client.set_debug_interrupt_callback(Box::new(debug_interrupt_callback));
 
+    // Set do-nothing callback.
+    get_client.set_post_live_migration_callback(Box::new(|| {}));
+
     let mut input_distributor = InputDistributor::new(remote_console_cfg.input);
     resolver.add_async_resolver::<KeyboardInputHandleKind, _, MultiplexedInputHandle, _>(
         input_distributor.client().clone(),
@@ -2938,6 +2950,7 @@ async fn new_underhill_vm(
                     logger: Some(GetTpmLoggerHandle.into_resource()),
                     is_confidential_vm: isolation.is_isolated(),
                     bios_guid: dps.general.bios_guid,
+                    nvram_size: tpm_size,
                 }
                 .into_resource(),
                 worker_host: control_send
@@ -3219,6 +3232,13 @@ async fn new_underhill_vm(
                         )
                     },
                     vtom,
+                    VpciRelayOptions {
+                        // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
+                        test_tdisp_flow: matches!(
+                            env_cfg.test_configuration,
+                            Some(TestScenarioConfig::VpciTdispFlow)
+                        ),
+                    },
                 );
 
                 // Allow NVMe devices.
@@ -3631,6 +3651,8 @@ async fn new_underhill_vm(
         dma_manager,
         config_timeout_in_seconds: env_cfg.config_timeout_in_seconds,
         servicing_timeout_dump_collection_in_ms: env_cfg.servicing_timeout_dump_collection_in_ms,
+        #[cfg(feature = "mem-profile-tracing")]
+        profiler: mem_profile_tracing::HeapProfiler::new(),
     };
 
     Ok(loaded_vm)
@@ -3650,7 +3672,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         vpci_boot_enabled: _,
 
         // Validated below
-        battery_enabled,
         processor_idle_enabled,
         firmware_debugging_enabled,
         hibernation_enabled,
@@ -3696,7 +3717,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         guest_state_lifetime: _,
         management_vtl_features: _,
         hv_sint_enabled: _,
-        azi_hsm_enabled: _,
+        battery_enabled: _, // TODO: Add this to attestation later
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3707,9 +3728,6 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
     }
     if *secure_boot_enabled && *firmware_debugging_enabled {
         anyhow::bail!("secure boot and firmware debugging are mutually exclusive");
-    }
-    if *battery_enabled {
-        anyhow::bail!("battery is not supported");
     }
     if *legacy_memory_map {
         anyhow::bail!("legacy memory map is not supported");

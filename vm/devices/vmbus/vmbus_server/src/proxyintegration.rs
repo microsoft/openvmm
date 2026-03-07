@@ -349,7 +349,7 @@ impl ProxyTask {
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
                     NodeNumber: self
                         .vp_to_physical_node_map
-                        .get_numa_node(open_request.open_data.target_vp),
+                        .get_numa_node(open_request.open_data.target_vp.unwrap_or_default()),
                     Padding: 0,
                 },
                 maybe_wrapped.event(),
@@ -413,7 +413,10 @@ impl ProxyTask {
 
     async fn handle_gpadl_teardown(&self, proxy_id: u64, gpadl_id: GpadlId) {
         if let Some(gpadls) = self.gpadls.lock().get_mut(&proxy_id) {
-            assert!(gpadls.remove(&gpadl_id), "gpadl is registered");
+            assert!(
+                gpadls.remove(&gpadl_id),
+                "gpadl {gpadl_id:?} for proxy ID {proxy_id} should be registered"
+            );
         } else {
             return;
         }

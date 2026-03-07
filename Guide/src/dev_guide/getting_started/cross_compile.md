@@ -303,3 +303,40 @@ else
 
 fi
 ```
+
+## Running Windows binaries from WSL2
+
+When you cross-compile to `x86_64-pc-windows-msvc` and run the resulting `.exe`
+from WSL, it runs as a **native Windows process**. This means it sees Windows
+paths (`C:\...`), not Linux paths (`/mnt/c/...`). You must translate paths at the
+command line.
+
+Use `wslpath -w` to convert a WSL path to a Windows path:
+
+```bash
+# Convert a WSL path to a Windows path
+wslpath -w /mnt/c/vhds/server25.vhdx
+# Output: C:\vhds\server25.vhdx
+```
+
+Here is a full working example that launches OpenVMM with a VHDX disk:
+
+```bash
+cargo run --target x86_64-pc-windows-msvc -- \
+  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
+  --uefi --gfx -p 6 -m 8GB
+```
+
+```admonish warning
+A common mistake is passing `/mnt/c/...` paths directly. The Windows binary
+does not understand Linux paths, so you'll get "Access is denied" or "file not
+found" errors.
+```
+
+```admonish tip
+Keep VHDX files on the Windows filesystem (e.g., `C:\vhds\`), not on the WSL
+ext4 volume. The WSL volume is slow for large I/O and has limited size. The
+same performance note from
+[Speeding up Windows OpenVMM launch](#speeding-up-windows-openvmm-launch)
+applies to disk images — large files should live on the Windows side.
+```

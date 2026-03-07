@@ -15,6 +15,7 @@ use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
 use guestmem::DoorbellRegistration;
+use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
 use std::fmt;
@@ -29,25 +30,36 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 
 /// Run a virtio device over MMIO
+#[derive(InspectMut)]
 pub struct VirtioMmioDevice {
+    #[inspect(skip)]
     fixed_mmio_region: (&'static str, RangeInclusive<u64>),
 
+    #[inspect(mut)]
     device: Box<dyn VirtioDevice>,
+    #[inspect(hex)]
     device_id: u32,
+    #[inspect(hex)]
     vendor_id: u32,
+    #[inspect(skip)]
     device_feature: VirtioDeviceFeatures,
     device_feature_select: u32,
+    #[inspect(skip)]
     driver_feature: VirtioDeviceFeatures,
     driver_feature_select: u32,
     queue_select: u32,
+    #[inspect(skip)]
     events: Vec<pal_event::Event>,
+    #[inspect(skip)]
     queues: Vec<QueueParams>,
     device_status: VirtioDeviceStatus,
     config_generation: u32,
+    #[inspect(skip)]
     doorbells: VirtioDoorbells,
     interrupt_state: Arc<Mutex<InterruptState>>,
 }
 
+#[derive(Inspect)]
 struct InterruptState {
     interrupt: LineInterrupt,
     status: u32,
@@ -68,12 +80,6 @@ impl fmt::Debug for VirtioMmioDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // TODO: implement debug print
         f.debug_struct("VirtioMmioDevice").finish()
-    }
-}
-
-impl InspectMut for VirtioMmioDevice {
-    fn inspect_mut(&mut self, _req: inspect::Request<'_>) {
-        // TODO
     }
 }
 

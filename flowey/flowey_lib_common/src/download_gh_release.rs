@@ -245,7 +245,16 @@ fn download_all_reqs(
         } else {
             // FUTURE: parallelize curl invocations across all download_reqs
             for file in files.keys() {
-                flowey::shell_cmd!(rt, "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}").run()?;
+                let mut cmd = flowey::shell_cmd!(
+                    rt,
+                    "curl --fail -L https://github.com/{repo_owner}/{repo_name}/releases/download/{tag}/{file} -o {file}"
+                );
+
+                if matches!(rt.platform(), FlowPlatform::Windows) {
+                    cmd = cmd.arg("--ssl-revoke-best-effort");
+                }
+
+                cmd.run()?;
             }
         }
     }

@@ -44,6 +44,7 @@ get_resources.workspace = true
 hyperv_ic_resources.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
+memory_range.workspace = true
 net_backend_resources.workspace = true
 netvsp_resources.workspace = true
 nvme_resources.workspace = true
@@ -86,7 +87,6 @@ tracelimit.workspace = true
 tracing_helpers.workspace = true
 
 anyhow.workspace = true
-awaitgroup.workspace = true
 clap = { workspace = true, features = ["derive", "string"] }
 dirs.workspace = true
 fs-err.workspace = true
@@ -94,7 +94,6 @@ futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
 openssl = { optional = true, workspace = true }
-macaddr.workspace = true
 parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
@@ -113,22 +112,11 @@ whp.workspace = true
 
 win_etw_tracing.workspace = true
 
-[target.'cfg(windows)'.dependencies.winapi]
-features = [
-  "consoleapi",
-  "handleapi",
-  "memoryapi",
-  "namedpipeapi",
-  "processenv",
-  "realtimeapiset",
-  "synchapi",
-  "winbase",
-  "wincon",
-  "winnls",
-  "winnt",
-  "winsock2",
-]
+[target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
+features = [
+  "Win32_Foundation",
+]
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

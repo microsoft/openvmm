@@ -1,11 +1,21 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Virtio network device implementation.
+//!
+//! This crate implements a virtio-net device that connects a guest's virtual
+//! NIC to a pluggable [`net_backend::Endpoint`]. It currently operates with a
+//! single queue pair (one RX, one TX) and supports synchronous and asynchronous
+//! TX completion modes depending on the backend.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod buffers;
 pub mod resolver;
+
+#[cfg(test)]
+mod tests;
 
 // use anyhow::Context;
 use crate::buffers::VirtioWorkPool;
@@ -202,7 +212,7 @@ struct VirtioNetHeader {
     pub padding_reserved: u16, // Only if VIRTIO_NET_F_HASH_REPORT negotiated
 }
 
-fn header_size() -> usize {
+const fn header_size() -> usize {
     // TODO: Verify hash flags are not set, since header size would be larger in that case.
     offset_of!(VirtioNetHeader, hash_value)
 }

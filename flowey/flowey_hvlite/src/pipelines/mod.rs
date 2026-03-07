@@ -7,6 +7,7 @@ use vmm_tests::VmmTestsCli;
 
 pub mod build_docs;
 pub mod build_igvm;
+pub mod build_reproducible;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
@@ -23,6 +24,7 @@ pub enum OpenvmmPipelines {
     },
 
     BuildIgvm(build_igvm::BuildIgvmCli),
+    BuildReproducible(build_reproducible::BuildReproducibleCli),
     CustomVmfirmwareigvmDll(custom_vmfirmwareigvm_dll::CustomVmfirmwareigvmDllCli),
 
     /// Flowey pipelines primarily designed to run in CI.
@@ -54,6 +56,7 @@ impl IntoPipeline for OpenvmmPipelines {
                 std::process::exit(status.code().unwrap_or(-1));
             }
             OpenvmmPipelines::BuildIgvm(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::BuildReproducible(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::CustomVmfirmwareigvmDll(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::Ci(cmd) => match cmd {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),

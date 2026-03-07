@@ -182,8 +182,8 @@ pub trait ParentBus: Send + Sync {
 /// Channel open-specific data.
 #[derive(Debug, Copy, Clone, mesh::MeshPayload)]
 pub struct OpenData {
-    /// The target VP for interrupts to the guest.
-    pub target_vp: u32,
+    /// The target VP for interrupts to the guest, or `None` if interrupts are disabled.
+    pub target_vp: Option<u32>,
     /// The page offset into the ring GPADL of the host-to-guest ring buffer.
     pub ring_offset: u32,
     /// The ring buffer's GPADL ID.

@@ -17,11 +17,13 @@ mod windows {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU8;
     use std::sync::atomic::Ordering;
-    use winapi::um::memoryapi::*;
-    use winapi::um::synchapi::*;
-    use winapi::um::winnt::MEM_COMMIT;
-    use winapi::um::winnt::MEM_RESERVE;
-    use winapi::um::winnt::PAGE_READWRITE;
+    use windows_sys::Win32::System::Memory::MEM_COMMIT;
+    use windows_sys::Win32::System::Memory::MEM_RESERVE;
+    use windows_sys::Win32::System::Memory::PAGE_READWRITE;
+    use windows_sys::Win32::System::Memory::VirtualAlloc;
+    use windows_sys::Win32::System::Threading::CreateEventW;
+    use windows_sys::Win32::System::Threading::SetEvent;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
     const MAP_RWX: whp::abi::WHV_MAP_GPA_RANGE_FLAGS = whp::abi::WHV_MAP_GPA_RANGE_FLAGS(
         whp::abi::WHvMapGpaRangeFlagRead.0

@@ -10,7 +10,6 @@ use socket2::Socket;
 use std::net::Ipv6Addr;
 use std::os::windows::io::AsRawSocket;
 use std::ptr::null_mut;
-use winapi as _;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::NetworkManagement::IpHelper::MIB_UNICASTIPADDRESS_TABLE;
 use windows_sys::Win32::Networking::WinSock;
