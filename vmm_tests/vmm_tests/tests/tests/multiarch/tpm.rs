@@ -4,6 +4,7 @@
 use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
+use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -231,7 +232,7 @@ async fn boot_with_tpm<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
 )]
-async fn tpm_ak_cert_persisted<T>(
+async fn ak_cert_cache<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
@@ -293,7 +294,7 @@ async fn tpm_ak_cert_persisted<T>(
     openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64],
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[TPM_GUEST_TESTS_WINDOWS_X64]
 )]
-async fn tpm_ak_cert_retry<T>(
+async fn ak_cert_retry<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
@@ -543,6 +544,85 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test that skip_hw_unsealing signal from IGVM agent causes VMGS
+/// unlock to fail on second boot.
+///
+/// First boot: KEY_RELEASE succeeds, VMGS is encrypted with hardware
+/// key protector, TPM state is sealed.
+/// Second boot: KEY_RELEASE fails with skip_hw_unsealing signal, hardware
+/// unsealing fallback is skipped, VMGS cannot be unlocked.
+/// `initialize_platform_security` returns an error, underhill reports the
+/// failure to the host via `complete_start_vtl0`, and the host terminates
+/// the VM.
+///
+/// The test function name contains `skip_hwunseal` so the per-VM agent
+/// registry in test_igvm_agent_rpc_server matches it to the
+/// `KeyReleaseFailureSkipHwUnsealing` configuration.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn skip_hwun_seal<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    // First boot: KEY_RELEASE succeeds. Verify AK cert is present.
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
+
+    // Reboot: triggers second KEY_RELEASE which fails with skip_hw_unsealing.
+    // VMGS unlock will fail because hardware unsealing fallback is skipped.
+    // initialize_platform_security returns an error, underhill reports the
+    // failure to the host via complete_start_vtl0, and the host terminates
+    // the VM.
+    agent.reboot().await?;
+
+    // Phase 1: Consume the Reset halt event. For isolated CVMs, this also
+    // confirms the VM reaches Running state after the reset.
+    let halt_reason = vm.wait_for_halt().await?;
+    assert_eq!(
+        halt_reason,
+        PetriHaltReason::Reset,
+        "Expected reset from reboot"
+    );
+
+    // Phase 2: Wait for the VM to be terminated by the host after underhill
+    // fails to start on the second boot.
+    let halt_reason = vm.wait_for_teardown().await?;
+    tracing::info!("Second boot halt reason: {halt_reason:?}");
 
     Ok(())
 }

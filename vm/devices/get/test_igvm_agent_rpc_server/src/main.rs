@@ -71,8 +71,8 @@ fn main() -> ExitCode {
             if let Some(test_config) = args.test_config {
                 let igvm_config: IgvmAttestTestConfig = test_config.into();
                 let setting = IgvmAgentTestSetting::TestConfig(igvm_config);
-                rpc::igvm_agent::install_plan(&setting);
-                tracing::info!(?test_config, "installed test configuration");
+                rpc::igvm_agent::install_default_plan(&setting);
+                tracing::info!(?test_config, "installed default test configuration");
             } else {
                 tracing::info!("no test configuration provided, using default behavior");
             }
