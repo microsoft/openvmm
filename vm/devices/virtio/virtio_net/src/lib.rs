@@ -553,6 +553,7 @@ impl Device {
         let worker = Worker {
             virtio_state,
             active_state,
+            need_tx_kick: false,
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
@@ -778,6 +779,7 @@ enum PacketError {
 struct Worker {
     virtio_state: VirtioState,
     active_state: ActiveState,
+    need_tx_kick: bool,
 }
 
 impl Worker {
@@ -808,6 +810,7 @@ impl Worker {
         loop {
             let did_some_work = self.process_endpoint_rx(epqueue_state.queue.as_mut())?
                 | self.process_virtio_rx(epqueue_state.queue.as_mut())?
+                | self.process_virtio_tx(epqueue_state)?
                 | self.process_endpoint_tx(epqueue_state.queue.as_mut())?;
 
             if !did_some_work {
@@ -817,55 +820,56 @@ impl Worker {
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
             // cancellation.
-            stop.until_stopped(async {
-                enum WakeReason {
-                    PacketFromClient(Result<VirtioQueueCallbackWork, std::io::Error>),
-                    PacketToClient(Result<VirtioQueueCallbackWork, std::io::Error>),
-                    NetworkBackend,
+            stop.until_stopped(std::future::poll_fn(|cx| {
+                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx) {
+                    return Poll::Ready(());
                 }
-                loop {
-                    let net_queue = std::future::poll_fn(|cx| -> Poll<()> {
-                        // Check the network endpoint for tx completion or rx.
-                        epqueue_state.queue.poll_ready(cx)
-                    })
-                    .map(|_| WakeReason::NetworkBackend);
-                    let to_client = self.virtio_state.rx_queue.next().map(|work| {
-                        WakeReason::PacketToClient(work.expect("queue never completes"))
-                    });
-                    let wake_reason = if self.active_state.data.tx_segments.is_empty() {
-                        let from_client = self.virtio_state.tx_queue.next().map(|work| {
-                            WakeReason::PacketFromClient(work.expect("queue never completes"))
-                        });
-                        (net_queue, from_client, to_client).race().await
-                    } else {
-                        (net_queue, to_client).race().await
-                    };
-                    match wake_reason {
-                        WakeReason::NetworkBackend => {
-                            tracing::trace!("endpoint ready");
-                            return Ok::<(), WorkerError>(());
-                        }
-                        WakeReason::PacketFromClient(work) => {
-                            tracing::trace!("tx packet");
-                            let work = work.map_err(WorkerError::VirtioQueue)?;
-                            self.queue_tx_packet(work)?;
-                            self.process_virtio_rx(epqueue_state.queue.as_mut())?;
-                            if !self.transmit_pending_segments(epqueue_state)? {
-                                self.active_state.stats.tx_stalled.increment();
-                            }
-                        }
-                        WakeReason::PacketToClient(work) => {
-                            tracing::trace!("rx packet");
-                            let work = work.map_err(WorkerError::VirtioQueue)?;
-                            epqueue_state
-                                .queue
-                                .rx_avail(&[self.active_state.pending_rx_packets.queue_work(work)]);
-                        }
-                    }
+
+                if self.need_tx_kick
+                    && let Poll::Ready(()) = self.virtio_state.tx_queue.poll_kick(cx)
+                {
+                    return Poll::Ready(());
                 }
-            })
-            .await??;
+
+                if let Poll::Ready(()) = self.virtio_state.rx_queue.poll_kick(cx) {
+                    return Poll::Ready(());
+                }
+
+                Poll::Pending
+            }))
+            .await?;
         }
+    }
+
+    fn process_virtio_tx(
+        &mut self,
+        queue_state: &mut EndpointQueueState,
+    ) -> Result<bool, WorkerError> {
+        let mut did_work = false;
+        loop {
+            if self.active_state.data.tx_segments.is_empty() {
+                self.need_tx_kick = false;
+                // Only batch up to 8 packets at a time.
+                for _ in 0..8 {
+                    let Some(work) = self
+                        .virtio_state
+                        .tx_queue
+                        .try_next()
+                        .map_err(WorkerError::VirtioQueue)?
+                    else {
+                        self.need_tx_kick = true;
+                        break;
+                    };
+                    self.queue_tx_packet(work)?;
+                    did_work = true;
+                }
+            }
+            if self.active_state.data.tx_segments.is_empty() {
+                break;
+            }
+            self.transmit_pending_segments(queue_state)?;
+        }
+        Ok(did_work)
     }
 
     fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
@@ -968,22 +972,9 @@ impl Worker {
             return Ok(false);
         }
 
-        let pending_segment_id = if !self.active_state.data.tx_segments.is_empty() {
-            let TxSegmentType::Head(metadata) = &self.active_state.data.tx_segments[0].ty else {
-                unreachable!()
-            };
-            Some(metadata.id)
-        } else {
-            None
-        };
         for i in 0..n {
             let id = self.active_state.data.tx_done[i];
             self.complete_tx_packet(id)?;
-            if let Some(pending_segment_id) = pending_segment_id {
-                if pending_segment_id.0 == id.0 {
-                    self.active_state.data.tx_segments.clear();
-                }
-            }
         }
         self.active_state
             .stats
@@ -1000,31 +991,30 @@ impl Worker {
         if self.active_state.data.tx_segments.is_empty() {
             return Ok(false);
         }
-        let TxSegmentType::Head(metadata) = &self.active_state.data.tx_segments[0].ty else {
-            unreachable!()
-        };
-        let id = metadata.id;
-        self.transmit_segments(queue_state, id)?;
-        Ok(true)
-    }
-
-    fn transmit_segments(
-        &mut self,
-        queue_state: &mut EndpointQueueState,
-        id: TxId,
-    ) -> Result<(), WorkerError> {
         let (sync, segments_sent) = queue_state
             .queue
             .tx_avail(&self.active_state.data.tx_segments)
             .map_err(WorkerError::Endpoint)?;
 
-        assert!(segments_sent <= self.active_state.data.tx_segments.len());
-
-        if sync && segments_sent == self.active_state.data.tx_segments.len() {
-            self.active_state.data.tx_segments.clear();
-            self.complete_tx_packet(id)?;
+        if sync {
+            // Complete the packets now.
+            let mut i = 0;
+            loop {
+                let segments = &self.active_state.data.tx_segments[..segments_sent][i..];
+                let Some(head) = segments.first() else {
+                    break;
+                };
+                let TxSegmentType::Head(metadata) = &head.ty else {
+                    unreachable!()
+                };
+                let id = metadata.id;
+                i += metadata.segment_count as usize;
+                self.complete_tx_packet(id)?;
+            }
         }
-        Ok(())
+
+        self.active_state.data.tx_segments.drain(..segments_sent);
+        Ok(segments_sent != 0)
     }
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
