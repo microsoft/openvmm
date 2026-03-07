@@ -266,6 +266,10 @@ impl DnsTcpHandler {
     pub fn set_guest_fin(&mut self) {
         self.guest_fin = true;
     }
+
+    pub fn is_in_flight(&self) -> bool {
+        matches!(self.phase, Phase::InFlight)
+    }
 }
 
 #[cfg(test)]

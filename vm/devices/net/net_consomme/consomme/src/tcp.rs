@@ -394,9 +394,18 @@ impl<T: Client> Access<'_, T> {
 
         match self.inner.tcp.connections.entry(ft) {
             hash_map::Entry::Occupied(mut e) => {
-                let conn = e.get_mut();
-                if !conn.inner.handle_packet(&mut sender, &tcp)? {
+                let keep = e.get_mut().inner.handle_packet(&mut sender, &tcp)?;
+                if !keep {
+                    let dns_in_flight = matches!(
+                        e.get().backend,
+                        TcpBackend::Dns(ref h) if h.is_in_flight()
+                    );
                     e.remove();
+                    if dns_in_flight {
+                        if let Some(dns) = &mut self.inner.dns {
+                            dns.complete_tcp_query();
+                        }
+                    }
                 }
             }
             hash_map::Entry::Vacant(e) => {
@@ -821,9 +830,9 @@ impl TcpConnectionInner {
     ) -> bool {
         // Wait for the outbound connection to complete.
         if self.state == TcpState::Connecting {
-            let socket = opt_socket
-                .as_mut()
-                .expect("Connecting state requires a socket");
+            let Some(socket) = opt_socket.as_mut() else {
+                return false;
+            };
             match socket.poll_ready(cx, PollEvents::OUT) {
                 Poll::Ready(r) => {
                     if r.has_err() {
