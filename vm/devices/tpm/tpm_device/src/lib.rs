@@ -16,6 +16,8 @@ pub mod ak_cert;
 pub mod logger;
 mod recover;
 pub mod resolver;
+pub mod tpm20proto;
+pub mod tpm_helper;
 use tpm_lib::AllocateNvIndicesParams;
 use tpm_lib::CommandDebugInfo;
 use tpm_lib::TpmCommandError;
@@ -85,6 +87,19 @@ pub const TPM_DEVICE_MMIO_PORT_REGION_SIZE: u64 = 0x8;
 
 const TPM_PAGE_SIZE: usize = 4096;
 
+const RSA_2K_MODULUS_BITS: u16 = 2048;
+const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
+const RSA_2K_EXPONENT_SIZE: usize = 3;
+
+pub const TPM_RSA_SRK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x01);
+const TPM_AZURE_AIK_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x03);
+const TPM_GUEST_SECRET_HANDLE: ReservedHandle = ReservedHandle::new(TPM20_HT_PERSISTENT, 0x04);
+
+// Reserved handles for Microsoft (Component OEM) ranges from 0x01c101c0 to 0x01c101ff
+const TPM_NV_INDEX_AIK_CERT: u32 = NV_INDEX_RANGE_BASE_TCG_ASSIGNED + 0x000101d0;
+const TPM_NV_INDEX_MITIGATED: u32 = NV_INDEX_RANGE_BASE_TCG_ASSIGNED + 0x000101d2;
+const TPM_NV_INDEX_ATTESTATION_REPORT: u32 = NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER + 0x1;
+const TPM_NV_INDEX_GUEST_ATTESTATION_INPUT: u32 = NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER + 0x2;
 const SHA_256_OUTPUT_SIZE_BYTES: usize = 32;
 
 /// Use the SNP and TDX-defined report data size for now.
