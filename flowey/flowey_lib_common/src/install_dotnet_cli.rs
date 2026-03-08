@@ -112,33 +112,7 @@ impl Node {
                 let persistent_dir = persistent_dir.clone().claim(ctx);
                 let broadcast_dotnet_bin = broadcast_dotnet_bin.claim(ctx);
                 move |rt| {
-                    // First, check if dotnet is already on PATH.
-                    // On WSL2, avoid accidentally picking up a Windows
-                    // `dotnet.exe` from the Windows PATH, as it cannot
-                    // handle Linux paths.
-                    let existing_dotnet = which::which("dotnet").ok().and_then(|path| {
-                        if crate::_util::running_in_wsl(rt) {
-                            let is_windows_exe = path
-                                .extension()
-                                .and_then(|ext| ext.to_str())
-                                .map(|ext| ext.eq_ignore_ascii_case("exe"))
-                                .unwrap_or(false);
-                            if is_windows_exe {
-                                log::warn!(
-                                    "ignoring Windows dotnet.exe at {} on WSL; \
-                                     falling back to Linux installation",
-                                    path.display()
-                                );
-                                None
-                            } else {
-                                Some(path)
-                            }
-                        } else {
-                            Some(path)
-                        }
-                    });
-
-                    if let Some(existing_dotnet) = existing_dotnet {
+                    if let Some(existing_dotnet) = find_dotnet_on_path(rt) {
                         log::info!("found existing dotnet at {}", existing_dotnet.display());
                         rt.write_all(broadcast_dotnet_bin, &existing_dotnet);
                         return Ok(());
@@ -237,7 +211,7 @@ impl Node {
             ctx.emit_rust_step("ensure dotnet is installed", |ctx| {
                 let broadcast_dotnet_bin = broadcast_dotnet_bin.claim(ctx);
                 move |rt| {
-                    let dotnet_bin = which::which("dotnet").map_err(|_| {
+                    let dotnet_bin = find_dotnet_on_path(rt).ok_or_else(|| {
                         anyhow::anyhow!(
                             "dotnet is not installed. Please install the .NET SDK: \
                              https://dotnet.microsoft.com/download"
@@ -274,4 +248,26 @@ impl Node {
 
         Ok(())
     }
+}
+
+/// Find `dotnet` on PATH, filtering out Windows `dotnet.exe` binaries
+/// when running under WSL2 (since they cannot handle Linux paths).
+fn find_dotnet_on_path(rt: &mut RustRuntimeServices<'_>) -> Option<PathBuf> {
+    let path = which::which("dotnet").ok()?;
+    if crate::_util::running_in_wsl(rt) {
+        let is_windows_exe = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("exe"))
+            .unwrap_or(false);
+        if is_windows_exe {
+            log::warn!(
+                "ignoring Windows dotnet.exe at {} on WSL; \
+                 a native Linux dotnet is required",
+                path.display()
+            );
+            return None;
+        }
+    }
+    Some(path)
 }
