@@ -283,11 +283,7 @@ impl Stream for VirtioQueue {
     type Item = Result<VirtioQueueCallbackWork, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let Some(r) = ready!(self.get_mut().poll_next_buffer(cx)).transpose() else {
-            return Poll::Ready(None);
-        };
-
-        Poll::Ready(Some(r.map_err(Error::other)))
+        ready!(self.get_mut().poll_next_buffer(cx)).transpose().into()
     }
 }
 
