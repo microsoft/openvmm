@@ -3,10 +3,11 @@
 
 //! Download NuGet packages using `dotnet restore` with a synthetic `.csproj`.
 //!
-//! On CI (ADO/GitHub), relies on ambient pipeline credentials.
+//! On CI (ADO/GitHub), relies on ambient pipeline credentials (set by
+//! `NuGetAuthenticate@1` or equivalent).
 //! Locally, uses `az account get-access-token` to obtain an Azure DevOps
 //! bearer token, exchanges it for a session token via the Azure DevOps
-//! REST API, and passes it to the credential provider via the
+//! REST API, and passes it to the NuGet credential provider via the
 //! `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` environment variable.
 
 use flowey::node::prelude::*;
@@ -128,8 +129,10 @@ impl Node {
                     };
 
                     // Generate a synthetic .csproj with PackageDownload items.
-                    // PackageDownload downloads the nupkg without resolving
-                    // transitive dependencies.
+                    // PackageDownload downloads the exact nupkg without resolving
+                    // transitive dependencies — this is intentional, as these
+                    // packages are standalone native binaries / firmware blobs
+                    // that do not have NuGet transitive dependencies.
                     let csproj_content = {
                         let items: String = packages
                             .keys()
@@ -341,6 +344,7 @@ fn get_feed_endpoints_json(
         .map(|url| {
             serde_json::json!({
                 "endpoint": url,
+                "username": "AzureDevOps",
                 "password": session_token,
             })
         })

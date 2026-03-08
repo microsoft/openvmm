@@ -19,7 +19,9 @@ flowey_request! {
     pub enum Request {
         /// Get the path to the `dotnet` binary.
         DotnetBin(WriteVar<PathBuf>),
-        /// Specify the .NET SDK version/channel to install (e.g. "8.0", "9.0").
+        /// Specify the .NET SDK *channel* to install (e.g. "8.0", "9.0").
+        /// This is passed to `dotnet-install` as `--channel`, not as an exact
+        /// SDK version.
         /// Defaults to "8.0" if not specified.
         Version(String),
         /// Automatically install the .NET SDK if not found on PATH.
@@ -110,8 +112,33 @@ impl Node {
                 let persistent_dir = persistent_dir.clone().claim(ctx);
                 let broadcast_dotnet_bin = broadcast_dotnet_bin.claim(ctx);
                 move |rt| {
-                    // First, check if dotnet is already on PATH
-                    if let Ok(existing_dotnet) = which::which("dotnet") {
+                    // First, check if dotnet is already on PATH.
+                    // On WSL2, avoid accidentally picking up a Windows
+                    // `dotnet.exe` from the Windows PATH, as it cannot
+                    // handle Linux paths.
+                    let existing_dotnet = which::which("dotnet").ok().and_then(|path| {
+                        if crate::_util::running_in_wsl(rt) {
+                            let is_windows_exe = path
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .map(|ext| ext.eq_ignore_ascii_case("exe"))
+                                .unwrap_or(false);
+                            if is_windows_exe {
+                                log::warn!(
+                                    "ignoring Windows dotnet.exe at {} on WSL; \
+                                     falling back to Linux installation",
+                                    path.display()
+                                );
+                                None
+                            } else {
+                                Some(path)
+                            }
+                        } else {
+                            Some(path)
+                        }
+                    });
+
+                    if let Some(existing_dotnet) = existing_dotnet {
                         log::info!("found existing dotnet at {}", existing_dotnet.display());
                         rt.write_all(broadcast_dotnet_bin, &existing_dotnet);
                         return Ok(());
