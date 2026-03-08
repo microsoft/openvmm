@@ -553,7 +553,6 @@ impl Device {
         let worker = Worker {
             virtio_state,
             active_state,
-            need_tx_kick: false,
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
@@ -779,7 +778,6 @@ enum PacketError {
 struct Worker {
     virtio_state: VirtioState,
     active_state: ActiveState,
-    need_tx_kick: bool,
 }
 
 impl Worker {
@@ -825,7 +823,7 @@ impl Worker {
                     return Poll::Ready(());
                 }
 
-                if self.need_tx_kick
+                if self.active_state.data.tx_segments.is_empty()
                     && let Poll::Ready(()) = self.virtio_state.tx_queue.poll_kick(cx)
                 {
                     return Poll::Ready(());
@@ -847,27 +845,26 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         let mut did_work = false;
         loop {
-            if self.active_state.data.tx_segments.is_empty() {
-                self.need_tx_kick = false;
-                // Only batch up to 8 packets at a time.
-                for _ in 0..8 {
-                    let Some(work) = self
-                        .virtio_state
-                        .tx_queue
-                        .try_next()
-                        .map_err(WorkerError::VirtioQueue)?
-                    else {
-                        self.need_tx_kick = true;
-                        break;
-                    };
-                    self.queue_tx_packet(work)?;
-                    did_work = true;
-                }
+            did_work |= self.transmit_pending_segments(queue_state)?;
+            if !self.active_state.data.tx_segments.is_empty() {
+                break;
+            }
+            // Only batch up to 8 packets at a time.
+            for _ in 0..8 {
+                let Some(work) = self
+                    .virtio_state
+                    .tx_queue
+                    .try_next()
+                    .map_err(WorkerError::VirtioQueue)?
+                else {
+                    break;
+                };
+                self.queue_tx_packet(work)?;
+                did_work = true;
             }
             if self.active_state.data.tx_segments.is_empty() {
                 break;
             }
-            self.transmit_pending_segments(queue_state)?;
         }
         Ok(did_work)
     }
