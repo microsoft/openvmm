@@ -923,9 +923,13 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         // Fill the receive queue with any available buffers.
         let mut rx_ids = Vec::new();
-        while let Some(Some(work)) = self.virtio_state.rx_queue.next().now_or_never() {
+        while let Some(work) = self
+            .virtio_state
+            .rx_queue
+            .try_next()
+            .map_err(WorkerError::VirtioQueue)?
+        {
             tracing::trace!("rx packet");
-            let work = work.map_err(WorkerError::VirtioQueue)?;
             rx_ids.push(self.active_state.pending_rx_packets.queue_work(work));
         }
         if !rx_ids.is_empty() {
