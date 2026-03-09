@@ -222,7 +222,7 @@ async fn execute_next_action(
     Ok(())
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     run_fuzz_loop(input, &LAYOUT, |fuzzer_input, setup| {
         Box::pin(async move {
             let mut queue = setup.queue;
@@ -260,4 +260,6 @@ fuzz_target!(|input: &[u8]| {
             Ok(())
         })
     });
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));

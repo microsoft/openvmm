@@ -219,7 +219,7 @@ enum FuzzMode {
     },
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     xtask_fuzz::init_tracing_if_repro();
     let mut u = Unstructured::new(input);
 
@@ -269,7 +269,9 @@ fuzz_target!(|input: &[u8]| {
             }
         }
     });
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));
 
 async fn run_mode(
     u: &mut Unstructured<'_>,

@@ -447,7 +447,7 @@ async fn execute_next_action(
     Ok(())
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     run_fuzz_loop_with_config(
         input,
         &LAYOUT,
@@ -505,4 +505,6 @@ fuzz_target!(|input: &[u8]| {
             })
         },
     );
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));

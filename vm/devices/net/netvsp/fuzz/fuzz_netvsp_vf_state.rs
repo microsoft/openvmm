@@ -254,7 +254,7 @@ async fn execute_next_action(
     Ok(())
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     // Create a FuzzVirtualFunction with no initial VF ID — VF presence is
     // signaled later via ChangeVfId actions, after protocol negotiation.
     // Starting with None avoids the NIC trying to send VF_ASSOCIATION
@@ -331,4 +331,6 @@ fuzz_target!(|input: &[u8]| {
             Ok(())
         })
     });
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));
