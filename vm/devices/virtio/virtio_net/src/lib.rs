@@ -355,51 +355,32 @@ impl VirtioDevice for Device {
     }
 }
 
+#[derive(InspectMut)]
 struct EndpointQueueState {
+    #[inspect(mut)]
     queue: Box<dyn net_backend::Queue>,
 }
 
+#[derive(InspectMut)]
 struct NetQueue {
+    #[inspect(flatten, mut)]
     state: Option<EndpointQueueState>,
 }
 
 impl InspectTaskMut<Worker> for NetQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>, worker: Option<&mut Worker>) {
-        if worker.is_none() && self.state.is_none() {
-            req.ignore();
-            return;
-        }
-        let mut resp = req.respond();
-        if let Some(worker) = worker {
-            resp.field(
-                "pending_tx_packets",
-                worker
-                    .active_state
-                    .pending_tx_packets
-                    .iter()
-                    .fold(0, |acc, next| acc + if next.is_some() { 1 } else { 0 }),
-            )
-            .field(
-                "pending_rx_packets",
-                worker.active_state.pending_rx_packets.ready().len(),
-            )
-            .field(
-                "pending_tx",
-                !worker.active_state.data.tx_segments.is_empty(),
-            )
-            .merge(&worker.active_state.stats);
-        }
-
-        if let Some(epqueue_state) = &mut self.state {
-            resp.field_mut("queue", &mut epqueue_state.queue);
-        }
+        req.respond().merge(self).merge(worker);
     }
 }
 
 /// Buffers used during packet processing.
+#[derive(Inspect)]
 struct ProcessingData {
+    #[inspect(with = "Vec::len")]
     tx_segments: Vec<TxSegment>,
+    #[inspect(skip)]
     tx_done: Box<[TxId]>,
+    #[inspect(skip)]
     rx_ready: Box<[RxId]>,
 }
 
@@ -423,8 +404,11 @@ struct QueueStats {
     rx_packets_per_wake: Histogram<10>,
 }
 
+#[derive(Inspect)]
 struct ActiveState {
+    #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
+    #[inspect(skip)]
     pending_rx_packets: VirtioWorkPool,
     data: ProcessingData,
     stats: QueueStats,
@@ -746,6 +730,7 @@ impl AsyncRun<Worker> for NetQueue {
     }
 }
 
+#[derive(Inspect)]
 struct VirtioState {
     rx_queue: VirtioQueue,
     rx_queue_size: u16,
@@ -777,6 +762,7 @@ enum PacketError {
     Empty,
 }
 
+#[derive(InspectMut)]
 struct Worker {
     virtio_state: VirtioState,
     active_state: ActiveState,

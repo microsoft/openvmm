@@ -17,6 +17,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MappedMemoryRegion;
+use inspect::Inspect;
 use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::wait::PolledWait;
@@ -39,10 +40,13 @@ pub trait VirtioQueueWorkerContext {
     async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct VirtioQueueUsedHandler {
+    #[inspect(skip)]
     core: QueueCoreCompleteWork,
+    #[inspect(with = "|x| x.lock().0")]
     outstanding_desc_count: Arc<Mutex<(u16, event_listener::Event)>>,
+    #[inspect(skip)]
     notify_guest: Interrupt,
 }
 
@@ -210,10 +214,12 @@ impl Drop for VirtioQueueCallbackWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct VirtioQueue {
+    #[inspect(flatten)]
     core: QueueCoreGetWork,
     used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
+    #[inspect(skip)]
     queue_event: PolledWait<Event>,
 }
 

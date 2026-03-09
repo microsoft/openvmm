@@ -4,6 +4,7 @@
 use crate::VirtioNetHeader;
 use crate::header_size;
 use guestmem::GuestMemory;
+use inspect::Inspect;
 use net_backend::BufferAccess;
 use net_backend::RxBufferSegment;
 use net_backend::RxId;
@@ -21,14 +22,27 @@ struct RxPacket {
 }
 
 /// Holds virtio buffers available for a network backend to send data to the client.
-#[derive(Clone)]
+#[derive(Clone, Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 pub struct VirtioWorkPool {
     mem: GuestMemory,
+    #[inspect(skip)]
     rx_packets: Arc<Vec<Mutex<RxPacket>>>,
+    #[inspect(skip)]
     buffer_segments: Vec<RxBufferSegment>,
 }
 
 impl VirtioWorkPool {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field(
+            "pending_rx_packets",
+            self.rx_packets
+                .iter()
+                .filter(|p| p.lock().work.is_some())
+                .count(),
+        );
+    }
+
     /// Create a new instance.
     pub fn new(mem: GuestMemory, queue_size: u16) -> Self {
         Self {

@@ -9,6 +9,7 @@ use crate::spec::queue as spec;
 use crate::spec::u16_le;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use inspect::Inspect;
 use spec::DescriptorFlags;
 use spec::SplitDescriptor;
 use std::sync::atomic;
@@ -67,9 +68,10 @@ impl QueueWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(tag = "type")]
 enum QueueGetWorkInner {
-    Split(SplitQueueGetWork),
+    Split(#[inspect(flatten)] SplitQueueGetWork),
 }
 
 #[derive(Debug)]
@@ -86,12 +88,14 @@ pub struct QueueParams {
     pub used_addr: u64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub(crate) struct QueueCoreGetWork {
     queue_desc: GuestMemory,
     queue_size: u16,
+    #[inspect(skip)]
     features: VirtioDeviceFeatures,
     mem: GuestMemory,
+    #[inspect(flatten)]
     inner: QueueGetWorkInner,
 }
 
@@ -225,7 +229,8 @@ pub struct SplitQueueCompletionContext {
     pub descriptor_index: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct SplitQueueGetWork {
     queue_avail: GuestMemory,
     queue_used: GuestMemory,
@@ -235,6 +240,10 @@ pub(crate) struct SplitQueueGetWork {
 }
 
 impl SplitQueueGetWork {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        resp.field("available_index", self.get_available_index().ok());
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
