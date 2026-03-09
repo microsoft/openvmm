@@ -104,7 +104,7 @@ impl Node {
             pre_install_side_effects,
         } in install
         {
-            ctx.emit_rust_step("restore nuget packages via dotnet restore", |ctx| {
+            ctx.emit_rust_step("restore nuget packages", |ctx| {
                 let dotnet_bin = dotnet_bin.clone().claim(ctx);
                 let install_dir = install_dir.claim(ctx);
                 pre_install_side_effects.claim(ctx);
@@ -161,8 +161,12 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
 
                     // Write the synthetic project to a unique temp directory
                     // so we don't pollute the repo and avoid collisions
-                    // with concurrent runs. The TempDir is cleaned up on
-                    // drop, even if we bail out early due to an error.
+                    // with concurrent runs.
+                    //
+                    // NOTE: After the restore, packages are *moved* out of
+                    // this directory into `install_dir`. When `restore_work_dir`
+                    // is dropped it will attempt to remove the (now partially
+                    // empty) tree — this is harmless and intentional.
                     let restore_work_dir = tempfile::tempdir()?;
                     let restore_work_dir_path = restore_work_dir.path();
 
@@ -174,16 +178,29 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
 
                     // Copy the nuget.config alongside the .csproj so dotnet
                     // picks it up automatically, filtering out the
-                    // packages.config-era `repositoryPath` setting.
+                    // packages.config-era `repositoryPath` setting
+                    // (only inside `<config>` sections — don't accidentally
+                    // strip identically-named keys from other sections).
                     let local_nuget_config = restore_work_dir_path.join("nuget.config");
                     let config_content = fs_err::read_to_string(&nuget_config_file)?;
-                    let filtered_config = config_content
-                        .lines()
-                        .filter(|line| {
-                            !line.to_lowercase().contains("key=\"repositorypath\"")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                    let filtered_config = {
+                        let mut in_config_section = false;
+                        config_content
+                            .lines()
+                            .filter(|line| {
+                                let trimmed = line.trim();
+                                if trimmed.starts_with("<config") {
+                                    in_config_section = true;
+                                } else if trimmed.starts_with("</config") {
+                                    in_config_section = false;
+                                }
+                                // Only strip repositoryPath from <config> sections
+                                !(in_config_section
+                                    && trimmed.to_lowercase().contains("key=\"repositorypath\""))
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
                     fs_err::write(&local_nuget_config, &filtered_config)?;
 
                     // On the Local backend, obtain an Azure DevOps session
@@ -292,10 +309,13 @@ fn get_feed_endpoints_json(
 
     // 1. Get a bearer token from az CLI.
     // The resource ID 499b84ac-1321-427f-aa17-267ca6975798 is Azure DevOps.
+    // The output contains a credential, so mark the command as secret to
+    // prevent it from appearing in process listings / logs.
     let bearer_token = flowey::shell_cmd!(
         rt,
         "az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv"
     )
+    .secret()
     .read()
     .map_err(|e| anyhow::anyhow!(
         "failed to get Azure DevOps access token from `az` CLI. \
@@ -372,26 +392,11 @@ fn move_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
                 e,
                 src.display()
             );
-            copy_dir_all(src, dest)?;
+            crate::_util::copy_dir_all(src, dest)?;
             fs_err::remove_dir_all(src)?;
             Ok(())
         }
     }
-}
-
-/// Recursively copy a directory tree.
-fn copy_dir_all(src: &Path, dest: &Path) -> anyhow::Result<()> {
-    fs_err::create_dir_all(dest)?;
-    for entry in fs_err::read_dir(src)? {
-        let entry = entry?;
-        let dest_path = dest.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(&entry.path(), &dest_path)?;
-        } else {
-            fs_err::copy(entry.path(), &dest_path)?;
-        }
-    }
-    Ok(())
 }
 
 /// Check whether a feed URL is an Azure DevOps Artifacts feed.
@@ -402,31 +407,21 @@ fn is_azure_devops_feed(url: &str) -> bool {
 
 /// Parse `<packageSources>` from nuget.config XML and return the feed URLs.
 fn parse_nuget_feed_urls(config_content: &str) -> Vec<String> {
-    let mut urls = Vec::new();
-    let mut in_package_sources = false;
-    for line in config_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<packageSources") {
-            in_package_sources = true;
-            continue;
+    let doc = match roxmltree::Document::parse(config_content) {
+        Ok(doc) => doc,
+        Err(e) => {
+            log::warn!("failed to parse nuget.config as XML: {e}");
+            return Vec::new();
         }
-        if trimmed.starts_with("</packageSources") {
-            in_package_sources = false;
-            continue;
-        }
-        if !in_package_sources {
-            continue;
-        }
-        // Match lines like: <add key="DepsFeed" value="https://..." />
-        if trimmed.starts_with("<add ") && trimmed.contains("value=\"") {
-            if let Some(val_start) = trimmed.find("value=\"") {
-                let after_val = &trimmed[val_start + 7..];
-                if let Some(val_end) = after_val.find('"') {
-                    let url = &after_val[..val_end];
-                    urls.push(url.to_string());
-                }
-            }
-        }
-    }
-    urls
+    };
+
+    doc.descendants()
+        .filter(|node| {
+            node.tag_name().name() == "add"
+                && node
+                    .parent()
+                    .is_some_and(|p| p.tag_name().name() == "packageSources")
+        })
+        .filter_map(|node| node.attribute("value").map(String::from))
+        .collect()
 }
