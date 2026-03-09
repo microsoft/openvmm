@@ -405,7 +405,7 @@ async fn execute_next_action(
     Ok(())
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     // Create a FuzzEndpoint with TX error injection enabled.
     let (endpoint, handles) = fuzz_helpers::endpoint::FuzzEndpoint::new(FuzzEndpointConfig {
         enable_tx_error_injection: true,
@@ -467,4 +467,6 @@ fuzz_target!(|input: &[u8]| {
             })
         },
     );
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));

@@ -958,7 +958,7 @@ async fn execute_next_action(
     Ok(ActionResult::Continue)
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     xtask_fuzz::init_tracing_if_repro();
 
     // Parse a loopback metadata template from the front of the input so that
@@ -1034,7 +1034,9 @@ fuzz_target!(|input: &[u8]| {
             }
         }
     });
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));
 
 async fn run_interop_loop(
     fuzz_input: &[u8],

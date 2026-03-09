@@ -168,7 +168,7 @@ async fn execute_next_action(
     Ok(())
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     let (endpoint, handles) = FuzzEndpoint::new(FuzzEndpointConfig {
         enable_rx_injection: false,
         enable_action_injection: true,
@@ -223,4 +223,6 @@ fuzz_target!(|input: &[u8]| {
             Ok(())
         })
     });
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));

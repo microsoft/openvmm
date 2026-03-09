@@ -260,7 +260,7 @@ async fn execute_next_action(
     Ok(())
 }
 
-fuzz_target!(|input: &[u8]| {
+fn do_fuzz(input: &[u8]) {
     // Parse a loopback metadata template from the front of the input so that
     // TX→RX loopback packets exercise varied checksum-flag branches in
     // `write_header()` (48 combinations of IP checksum × L4 protocol × L4
@@ -329,4 +329,6 @@ fuzz_target!(|input: &[u8]| {
             Ok(())
         })
     });
-});
+}
+
+fuzz_target!(|input: &[u8]| do_fuzz(input));
