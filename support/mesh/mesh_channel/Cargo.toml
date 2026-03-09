@@ -11,7 +11,7 @@ mesh_channel_core.workspace = true
 mesh_node.workspace = true
 mesh_protobuf = { workspace = true, features = ["std"] }
 
-futures-io.workspace = true
+futures.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

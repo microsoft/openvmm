@@ -159,7 +159,7 @@ dependencies = [
 name = "arc_cyclic_builder"
 version = "0.0.0"
 dependencies = [
- "futures-executor",
+ "futures",
 ]
 
 [[package]]
@@ -4066,7 +4066,6 @@ dependencies = [
  "criterion",
  "futures",
  "futures-concurrency",
- "futures-io",
  "mesh_channel_core",
  "mesh_node",
  "mesh_protobuf",
@@ -4083,7 +4082,6 @@ name = "mesh_channel_core"
 version = "0.0.0"
 dependencies = [
  "futures",
- "futures-core",
  "mesh_node",
  "mesh_protobuf",
  "parking_lot",
@@ -4109,7 +4107,6 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.11.0",
  "futures",
- "futures-channel",
  "getrandom 0.3.3",
  "mesh_derive",
  "mesh_protobuf",

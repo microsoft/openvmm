@@ -10,7 +10,7 @@ use crate::message::Message;
 use crate::message::OwnedMessage;
 use crate::resource::OsResource;
 use crate::resource::Resource;
-use futures_channel::oneshot;
+use futures::channel::oneshot;
 use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::buffer::Buf;
 use mesh_protobuf::buffer::Buffer;
@@ -2474,7 +2474,7 @@ pub mod tests {
     struct RemoteLocalNode {
         _task: Task<()>,
         node: Arc<LocalNode>,
-        send: futures_channel::mpsc::UnboundedSender<RemoteEvent>,
+        send: futures::channel::mpsc::UnboundedSender<RemoteEvent>,
     }
 
     struct RemoteEvent {
@@ -2496,7 +2496,7 @@ pub mod tests {
                 clippy::disallowed_methods,
                 reason = "can't use mesh channels from mesh_node"
             )]
-            let (send, recv) = futures_channel::mpsc::unbounded::<RemoteEvent>();
+            let (send, recv) = futures::channel::mpsc::unbounded::<RemoteEvent>();
             let node = Arc::new(LocalNode::with_id(NodeId::new(), Box::new(NullConnect)));
             let task = driver.spawn("test", {
                 let node = node.clone();
@@ -2526,7 +2526,7 @@ pub mod tests {
 
     struct EventsFrom {
         node_id: NodeId,
-        send: futures_channel::mpsc::UnboundedSender<RemoteEvent>,
+        send: futures::channel::mpsc::UnboundedSender<RemoteEvent>,
     }
 
     impl SendEvent for EventsFrom {
