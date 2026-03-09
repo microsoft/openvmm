@@ -396,7 +396,7 @@ impl VirtioFs {
             return Ok(());
         }
 
-        // This section exists to superceed error codes when various combination of flags 
+        // This section exists to superceed error codes when various combination of flags
         // are passed to the open() call. This helps maintain POSIX compatibility
         // If O_CREAT && file_exists => EROFS
         // If O_CREAT | O_EXCL && file_exists => EEXIST
