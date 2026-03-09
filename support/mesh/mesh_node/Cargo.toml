@@ -22,8 +22,6 @@ zerocopy.workspace = true
 pal.workspace = true
 
 [dev-dependencies]
-futures.workspace = true
-
 pal_async.workspace = true
 test_with_tracing.workspace = true
 

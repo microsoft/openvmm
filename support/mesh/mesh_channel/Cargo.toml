@@ -18,7 +18,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["rayon", "cargo_bench_support", "async", "async_futures"] }
-futures.workspace = true
 futures-concurrency.workspace = true
 
 pal_async.workspace = true
