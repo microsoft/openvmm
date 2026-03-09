@@ -411,7 +411,7 @@ impl Xtask for Fuzz {
             }
             FuzzCommand::NetvspCoverage { toolchain } => {
                 let nightly = netvsp::resolve_nightly_toolchain(toolchain.as_deref())?;
-                netvsp::run_netvsp_coverage(&ctx, fuzz_targets, toolchain, &nightly)?;
+                netvsp::run_netvsp_coverage(&ctx, fuzz_targets, &nightly)?;
             }
             FuzzCommand::Onefuzz {
                 target,

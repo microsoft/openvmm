@@ -29,12 +29,12 @@ pub enum RxBufAllocateError {
     #[error("empty allocation")]
     EmptyAllocation,
     /// A buffer ID is out of range for the configured receive buffer count.
-    #[error("rx buffer id {id} is out of range (max {max})")]
+    #[error("rx buffer id {id} is out of range (count {count})")]
     IdOutOfRange {
         /// The offending buffer ID.
         id: u32,
         /// The number of receive buffers configured.
-        max: u32,
+        count: u32,
     },
 }
 
@@ -61,7 +61,7 @@ impl RxBuffers {
         // Validate all IDs are in range before modifying state.
         for id in ids.clone() {
             if id as usize >= self.state.len() {
-                return Err(RxBufAllocateError::IdOutOfRange { id, max: count });
+                return Err(RxBufAllocateError::IdOutOfRange { id, count });
             }
         }
         let next_ids = ids.clone().skip(1).chain(std::iter::once(END));
