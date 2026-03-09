@@ -82,20 +82,38 @@ impl From<OwnedHandle> for ProxyHandle {
 
 pub struct VmbusProxy {
     file: ManuallyDrop<OverlappedFile>,
-    // NOTE: This must come after `file` so that it is not released until `file`
-    // is closed.
     guest_memory: Option<GuestMemory>,
     cancel: CancelContext,
+    drop_send: Option<mesh::OneshotSender<()>>,
 }
 
 impl Drop for VmbusProxy {
     fn drop(&mut self) {
+        // If a GuestMemory was used, clear it from the kernel before it gets destructed.
+        // N.B. Not all versions of the proxy driver support this operation, in which case this
+        //      will fail with ERROR_INVALID_FUNCTION or ERROR_NOT_SUPPORTED.
+        if self.guest_memory.is_some() {
+            // Since we are not in an async method, issue this ioctl synchronously.
+            if let Err(err) = self.ioctl_sync(
+                proxyioctl::IOCTL_VMBUS_PROXY_DETACH,
+                &proxyioctl::VMBUS_PROXY_DETACH_INPUT {
+                    DetachChannels: false,
+                },
+            ) {
+                tracing::warn!(
+                    err = &err as &dyn std::error::Error,
+                    "failed to clear proxy driver guest memory"
+                );
+            }
+        }
+
         // SAFETY: VmbusProxy is being dropped so can no longer be used.
         let file = unsafe { ManuallyDrop::take(&mut self.file) };
 
         // Extract the inner file to dissociate the I/O completion port. This is required so the
         // file object can be reused in case of handle brokering.
         file.into_inner();
+        self.drop_send.take().unwrap().send(());
     }
 }
 
@@ -141,7 +159,15 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 }
 
 impl VmbusProxy {
-    pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
+    /// Creates a new `VmbusProxy` from a [`ProxyHandle`]. When the `VmbusProxy` instance is
+    /// dropped, `drop_send` is signaled. This allows users to wait until all IO is guaranteed to
+    /// be finished and the IO completion port is disassociated.
+    pub fn new(
+        driver: &dyn Driver,
+        handle: ProxyHandle,
+        ctx: CancelContext,
+        drop_send: mesh::OneshotSender<()>,
+    ) -> Result<Self> {
         // SAFETY: This handle is duplicated and can be shared with other devices, so safety depends
         // on this being the only user of the handle for overlapped IO.
         let file = unsafe { OverlappedFile::new(driver, handle.0)? };
@@ -149,6 +175,7 @@ impl VmbusProxy {
             file: ManuallyDrop::new(file),
             guest_memory: None,
             cancel: ctx,
+            drop_send: Some(drop_send),
         })
     }
 
@@ -449,22 +476,24 @@ impl VmbusProxy {
     }
 
     pub fn run_channel(&self, id: u64) -> Result<()> {
+        let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ProxyId: id };
+        self.ioctl_sync(proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL, &input)
+    }
+
+    fn ioctl_sync<T>(&self, code: u32, input: &T) -> Result<()> {
         unsafe {
-            // This is a synchronous operation, so don't use the async IO infrastructure.
-            let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ProxyId: id };
             let mut bytes = 0;
             DeviceIoControl(
                 HANDLE(self.file.get().as_raw_handle()),
-                proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL,
-                Some(std::ptr::from_ref(&input).cast()),
-                size_of_val(&input) as u32,
+                code,
+                Some(std::ptr::from_ref(input).cast()),
+                size_of_val(input) as u32,
                 None,
                 0,
                 Some(&mut bytes),
                 None,
-            )?;
-        };
-        Ok(())
+            )
+        }
     }
 
     /// Adds GPADL ioctl data to a buffer.
