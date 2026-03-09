@@ -221,7 +221,6 @@ pub(super) fn run_netvsp_campaign(
 pub(super) fn run_netvsp_coverage(
     ctx: &crate::XtaskCtx,
     fuzz_targets: BTreeMap<String, RepoFuzzTarget>,
-    toolchain: Option<String>,
     nightly: &str,
 ) -> anyhow::Result<()> {
     let targets = select_netvsp_targets(fuzz_targets)?;
@@ -255,7 +254,7 @@ pub(super) fn run_netvsp_coverage(
             target_name,
             &target.fuzz_dir,
             &target.target_options,
-            toolchain.as_deref(),
+            Some(nightly),
             &[],
         ) {
             log::warn!("coverage collection failed for {}: {:#}", target_name, err);
@@ -409,7 +408,7 @@ pub(super) fn resolve_nightly_toolchain(user_toolchain: Option<&str>) -> anyhow:
 
     anyhow::bail!(
         "no nightly toolchain found. \
-         Install one with `rustup toolchain install nightly` or `msrustup update`."
+         Install one with `rustup toolchain install nightly`."
     );
 }
 
