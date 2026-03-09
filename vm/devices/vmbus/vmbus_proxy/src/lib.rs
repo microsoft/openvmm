@@ -113,7 +113,9 @@ impl Drop for VmbusProxy {
         // Extract the inner file to dissociate the I/O completion port. This is required so the
         // file object can be reused in case of handle brokering.
         file.into_inner();
-        self.drop_send.take().unwrap().send(());
+        if let Some(drop_send) = self.drop_send.take() {
+            drop_send.send(());
+        }
     }
 }
 
@@ -233,6 +235,26 @@ impl VmbusProxy {
         let size = r?;
         assert_eq!(size, output.len(), "ioctl returned unexpected size");
         Ok(output)
+    }
+
+    fn ioctl_sync<T>(&self, code: u32, input: &T) -> Result<()>
+    where
+        T: IntoBytes + zerocopy::Immutable,
+    {
+        // SAFETY: Calling API as documented
+        unsafe {
+            let mut bytes = 0;
+            DeviceIoControl(
+                HANDLE(self.file.get().as_raw_handle()),
+                code,
+                Some(input.as_bytes().as_ptr().cast()),
+                size_of_val(input) as u32,
+                None,
+                0,
+                Some(&mut bytes),
+                None,
+            )
+        }
     }
 
     pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<()> {
@@ -478,22 +500,6 @@ impl VmbusProxy {
     pub fn run_channel(&self, id: u64) -> Result<()> {
         let input = proxyioctl::VMBUS_PROXY_RUN_CHANNEL_INPUT { ProxyId: id };
         self.ioctl_sync(proxyioctl::IOCTL_VMBUS_PROXY_RUN_CHANNEL, &input)
-    }
-
-    fn ioctl_sync<T>(&self, code: u32, input: &T) -> Result<()> {
-        unsafe {
-            let mut bytes = 0;
-            DeviceIoControl(
-                HANDLE(self.file.get().as_raw_handle()),
-                code,
-                Some(std::ptr::from_ref(input).cast()),
-                size_of_val(input) as u32,
-                None,
-                0,
-                Some(&mut bytes),
-                None,
-            )
-        }
     }
 
     /// Adds GPADL ioctl data to a buffer.

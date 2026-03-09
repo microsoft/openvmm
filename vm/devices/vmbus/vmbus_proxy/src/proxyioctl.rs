@@ -185,7 +185,7 @@ pub struct VMBUS_PROXY_RELEASE_CHANNEL_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct VMBUS_PROXY_RUN_CHANNEL_INPUT {
     pub ProxyId: u64,
 }
@@ -209,7 +209,7 @@ pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct VMBUS_PROXY_DETACH_INPUT {
     pub DetachChannels: bool,
 }
