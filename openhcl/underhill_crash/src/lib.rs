@@ -283,7 +283,7 @@ pub fn main() -> ! {
 
     let os_version = OsVersionInfo::new();
 
-    let crate_revision = option_env!("VERGEN_GIT_SHA").unwrap_or("UNKNOWN_REVISION");
+    let crate_revision = option_env!("BUILD_GIT_SHA").unwrap_or("UNKNOWN_REVISION");
     let openhcl_version = option_env!("OPENHCL_VERSION").unwrap_or("UNKNOWN_VERSION");
 
     let os_version_major = os_version.major();

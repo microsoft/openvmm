@@ -324,8 +324,24 @@ Here is a full working example that launches OpenVMM with a VHDX disk:
 ```bash
 cargo run --target x86_64-pc-windows-msvc -- \
   --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
+  --uefi \
+  --uefi-firmware "$(wslpath -w .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
+  --gfx -p 6 -m 8GB
+```
+
+~~~admonish tip
+If you have the [WSLENV export](#running-windows-openvmm-from-within-wsl)
+active, you can omit `--uefi-firmware` — the `X86_64_OPENVMM_UEFI_FIRMWARE`
+env var (set in `.cargo/config.toml`) is automatically translated to a
+Windows path:
+
+```bash
+export WSLENV=$WSLENV:X86_64_OPENVMM_UEFI_FIRMWARE/p
+cargo run --target x86_64-pc-windows-msvc -- \
+  --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
   --uefi --gfx -p 6 -m 8GB
 ```
+~~~
 
 ```admonish warning
 A common mistake is passing `/mnt/c/...` paths directly. The Windows binary

@@ -46,7 +46,7 @@ impl<'a> Iterator for SegmentIter<'a> {
                 }
             }
             [b'0'..=b'9', ..] => {
-                let (n, len) = parse_prefix(self.0, 16);
+                let (n, len) = parse_prefix(self.0, 10);
                 if let Some(n) = n {
                     self.0 = &self.0[len..];
                     return Some(Segment::Dec(n));
@@ -111,5 +111,15 @@ mod tests {
                 "foo3", "foo299"
             ]
         );
+    }
+
+    #[test]
+    fn test_hex_suffix_consistency() {
+        // Numbers with hex-letter suffixes should behave the same as numbers
+        // with non-hex-letter suffixes. "3foo" > "100foo" (string), so
+        // "3cab" > "100cab" should also hold.
+        use core::cmp::Ordering;
+        assert_eq!(compare("3foo", "100foo"), Ordering::Greater);
+        assert_eq!(compare("3cab", "100cab"), Ordering::Greater);
     }
 }

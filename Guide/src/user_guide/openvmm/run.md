@@ -148,6 +148,52 @@ useful when iterating on OpenVMM code, since booting the VM becomes repeatable
 and you don't have to worry about shutting down properly. Use `file` instead for
 normal persistent storage.
 
+### OpenHCL, via Linux Direct Boot
+
+This example will boot OpenHCL in Linux direct mode, running a minimal shell
+inside VTL2. This is the same configuration used by the `openhcl_linux_direct_x64`
+integration tests.
+
+First, build the test artifacts from Linux or WSL using `vmm-tests --build-only`.
+The IGVM must be built on Linux:
+
+```shell
+cargo xflowey vmm-tests --build-only --dir <out> --target windows-x64
+```
+
+```admonish tip
+If you only need the IGVM binary (and already have `openvmm.exe`), you can
+use `cargo xflowey build-igvm` instead — it's faster than building the full
+test suite.
+```
+
+This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
+`<out>` directory. Then, on Windows, from the `<out>` directory:
+
+```powershell
+.\openvmm.exe `
+    --hv `
+    --vtl2 `
+    --igvm openhcl-x64-test-linux-direct.bin `
+    -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
+    -m 2GB `
+    --vmbus-com1-serial "term,name=VTL0 Linux" `
+    --com3 "term,name=VTL2 OpenHCL" `
+    --vtl2-vsock-path $env:temp\ohcldiag-dev
+```
+
+```admonish warning
+The `--vmbus-com1-serial` flag is **required** when using `rdinit=/bin/sh`.
+The shell running as PID 1 needs a controlling terminal (tty) — without one
+it exits immediately, causing a kernel panic and infinite reboot loop.
+
+The `--com3` flag is optional but recommended — it gives you VTL2 (OpenHCL)
+kernel console output for debugging.
+```
+
+For more details on running OpenHCL on OpenVMM, including VMBus relay and device
+assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
+
 ### DOS, via PCAT BIOS
 
 While DOS in particular is not a scenario that the OpenVMM has heavily invested
