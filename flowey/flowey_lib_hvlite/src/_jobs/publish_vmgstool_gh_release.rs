@@ -73,10 +73,22 @@ impl SimpleFlowNode for Node {
         let tag = version.map(ctx, |v| format!("vmgstool-v{v}"));
         let title = version.map(ctx, |v| format!("VmgsTool v{v}"));
 
+        let target = ctx.emit_rust_stepv("get current commit", |ctx| {
+            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+            move |rt| {
+                let path = rt.read(openvmm_repo_path);
+                rt.sh.change_dir(path);
+                let target = flowey::shell_cmd!(rt, "git rev-parse HEAD").read()?;
+                log::info!("current commit is {target}");
+                Ok(target)
+            }
+        });
+
         ctx.req(flowey_lib_common::publish_gh_release::Request(
             flowey_lib_common::publish_gh_release::GhReleaseParams {
                 repo_owner: "microsoft".into(),
                 repo_name: "openvmm".into(),
+                target,
                 tag,
                 title,
                 files,
