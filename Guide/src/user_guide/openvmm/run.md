@@ -124,6 +124,12 @@ The IGVM must be built on Linux:
 cargo xflowey vmm-tests --build-only --dir <out> --target windows-x64
 ```
 
+```admonish tip
+If you only need the IGVM binary (and already have `openvmm.exe`), you can
+use `cargo xflowey build-igvm` instead — it's faster than building the full
+test suite.
+```
+
 This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
 `<out>` directory. Then, on Windows, from the `<out>` directory:
 
@@ -133,19 +139,19 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
     --vtl2 `
     --igvm openhcl-x64-test-linux-direct.bin `
     -c "panic=-1 reboot=triple UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=rdinit=/bin/sh" `
-    --com3 "term,name=VTL2 OpenHCL" `
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `
-    --vmbus-com2-serial "term,name=COM2" `
+    --com3 "term,name=VTL2 OpenHCL" `
     --vtl2-vsock-path $env:temp\ohcldiag-dev
 ```
 
 ```admonish warning
-Serial terminals **must** be configured when using Linux direct boot with
-`rdinit=/bin/sh`. The shell running as PID 1 requires a controlling terminal
-(tty) to function. Without serial ports configured, the shell exits immediately,
-causing a kernel panic — and because the cmdline includes `panic=-1
-reboot=triple`, the VM enters an infinite reboot loop with no visible output.
+The `--vmbus-com1-serial` flag is **required** when using `rdinit=/bin/sh`.
+The shell running as PID 1 needs a controlling terminal (tty) — without one
+it exits immediately, causing a kernel panic and infinite reboot loop.
+
+The `--com3` flag is optional but recommended — it gives you VTL2 (OpenHCL)
+kernel console output for debugging.
 ```
 
 For more details on running OpenHCL on OpenVMM, including VMBus relay and device
