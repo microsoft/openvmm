@@ -77,7 +77,7 @@ Note: To run with sanitizers, supply a toolchain that supports unstable compiler
 
 `cargo xtask fuzz netvsp 1 --toolchain nightly`
 
-```
+```text
 ==============================================
  Campaign Complete
 ==============================================
@@ -100,7 +100,7 @@ Note: To run with sanitizers, supply a toolchain that supports unstable compiler
 
 `cargo xtask fuzz netvsp-coverage --toolchain nightly`
 
-```
+```text
 ----------------------------------------------
  Per-File Coverage
 ----------------------------------------------
