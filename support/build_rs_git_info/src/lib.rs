@@ -4,7 +4,6 @@
 //! Build-script helper that emits `BUILD_GIT_SHA` and `BUILD_GIT_BRANCH`
 //! cargo environment variables by invoking the `git` CLI.
 
-use anyhow::Ok;
 use std::process::Command;
 
 fn git_output(args: &[&str]) -> anyhow::Result<String> {
