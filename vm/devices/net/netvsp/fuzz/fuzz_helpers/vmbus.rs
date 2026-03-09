@@ -131,7 +131,7 @@ impl ParentBus for FuzzMockVmbus {
                             let open_request = if open {
                                 Some(OpenRequest {
                                     open_data: OpenData {
-                                        target_vp: 0,
+                                        target_vp: Some(0),
                                         ring_offset: 2,
                                         ring_gpadl_id,
                                         event_flag: 1,

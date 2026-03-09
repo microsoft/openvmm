@@ -261,7 +261,7 @@ async fn build_nic_internals(
 
     let open_request = OpenRequest {
         open_data: OpenData {
-            target_vp: 0,
+            target_vp: Some(0),
             ring_offset: 2,
             ring_gpadl_id,
             event_flag: 1,
@@ -540,7 +540,7 @@ impl SubchannelOpener {
             };
             let open_request = OpenRequest {
                 open_data: OpenData {
-                    target_vp: 0,
+                    target_vp: Some(0),
                     ring_offset: 2,
                     ring_gpadl_id: gpadl_id,
                     event_flag: 1,
