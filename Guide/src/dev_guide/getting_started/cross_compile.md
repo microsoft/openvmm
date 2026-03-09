@@ -325,7 +325,7 @@ Here is a full working example that launches OpenVMM with a VHDX disk:
 cargo run --target x86_64-pc-windows-msvc -- \
   --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
   --uefi \
-  --uefi-firmware "$(wslpath -w oss/.packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
+  --uefi-firmware "$(wslpath -w .packages/hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd)" \
   --gfx -p 6 -m 8GB
 ```
 
@@ -336,7 +336,7 @@ env var (set in `.cargo/config.toml`) is automatically translated to a
 Windows path:
 
 ```bash
-export WSLENV=$WSLENV:X86_64_OPENVMM_UEFI_FIRMWARE
+export WSLENV=$WSLENV:X86_64_OPENVMM_UEFI_FIRMWARE/p
 cargo run --target x86_64-pc-windows-msvc -- \
   --disk "memdiff:file:$(wslpath -w /mnt/c/vhds/server25.vhdx)" \
   --uefi --gfx -p 6 -m 8GB
