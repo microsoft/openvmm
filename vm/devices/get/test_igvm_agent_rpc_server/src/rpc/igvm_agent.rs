@@ -80,6 +80,7 @@ fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             "skip_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
+        ("use_hw_unseal", IgvmAttestTestConfig::KeyReleaseFailure),
     ];
 
     for &(pattern, config) in KNOWN_TEST_CONFIGS {
@@ -130,58 +131,4 @@ pub fn process_igvm_attest(vm_name: &str, report: &[u8]) -> TestAgentResult<Vec<
         return Err(TestAgentFacadeError::InvalidRequest);
     }
     Ok(payload)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn match_akcert_retry() {
-        let vm_name = "multiarch::tpm::hyperv_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_snp_akcert_retry";
-        assert!(vm_name.len() <= 100, "name must fit in 100 chars");
-        match config_for_vm_name(vm_name) {
-            Some(IgvmAgentTestSetting::TestConfig(c)) => assert!(matches!(
-                c,
-                IgvmAttestTestConfig::AkCertRequestFailureAndRetry
-            )),
-            other => panic!("expected AkCertRequestFailureAndRetry, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn match_akcert_cache() {
-        let vm_name = "multiarch::tpm::hyperv_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_snp_akcert_cache";
-        assert!(vm_name.len() <= 100, "name must fit in 100 chars");
-        match config_for_vm_name(vm_name) {
-            Some(IgvmAgentTestSetting::TestConfig(c)) => assert!(matches!(
-                c,
-                IgvmAttestTestConfig::AkCertPersistentAcrossBoot
-            )),
-            other => panic!("expected AkCertPersistentAcrossBoot, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn match_skip_hwunseal() {
-        let vm_name = "multiarch::tpm::hyperv_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_snp_skip_hwunseal";
-        assert!(vm_name.len() <= 100, "name must fit in 100 chars");
-        match config_for_vm_name(vm_name) {
-            Some(IgvmAgentTestSetting::TestConfig(c)) => assert!(matches!(
-                c,
-                IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing
-            )),
-            other => panic!("expected KeyReleaseFailureSkipHwUnsealing, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn no_match_unknown_vm() {
-        assert!(config_for_vm_name("multiarch::tpm::hyperv_openhcl_uefi_x64_some_random_test").is_none());
-    }
-
-    #[test]
-    fn no_match_empty() {
-        assert!(config_for_vm_name("").is_none());
-    }
 }

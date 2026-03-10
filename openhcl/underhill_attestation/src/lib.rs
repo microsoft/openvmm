@@ -892,7 +892,7 @@ async fn get_derived_keys(
             );
             get.event_log_fatal(
                 guest_emulation_transport::api::EventLogId::DEK_HARDWARE_UNSEALING_SKIPPED,
-            );
+            ).await;
 
             return Err(GetDerivedKeysError::HardwareUnsealingSkipped);
         } else if let Some(tee_call) = tee_call {
