@@ -191,7 +191,8 @@ The `--com3` flag is optional but recommended — it gives you VTL2 (OpenHCL)
 kernel console output for debugging.
 ```
 
-For more details on running OpenHCL on OpenVMM, including VMBus relay and device
+For more details on running OpenHCL on OpenVMM, including
+[VMBus relay](../../reference/architecture/openhcl/vmbus.md) and device
 assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
 
 ### DOS, via PCAT BIOS
