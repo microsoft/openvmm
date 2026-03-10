@@ -70,10 +70,15 @@ runs:
         echo "Changed files:"
         echo "$CHANGED_FILES"
 
+        # -----------------------------------------------------------------------
+        # Non-product bucket patterns (extend this list to add new buckets):
+        #   - Guide/**          docs tree, validated by the separate docs pipeline
+        #   - repo_support/**/*.py  repo automation scripts, no product impact
+        # A PR is "non-product" only when every changed file matches at least
+        # one pattern.  Any file outside these buckets marks the PR as product.
+        # -----------------------------------------------------------------------
+
         # Check every changed file against the known non-product buckets.
-        # A file is non-product if it matches any of:
-        #   - Guide/**
-        #   - repo_support/**/*.py
         IS_NON_PRODUCT=true
         while IFS= read -r FILE; do
           if [[ "$FILE" == Guide/* ]] || \

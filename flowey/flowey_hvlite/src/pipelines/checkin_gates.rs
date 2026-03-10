@@ -1311,6 +1311,10 @@ impl IntoPipeline for CheckinGatesCli {
 
             // When the classify job determined that this PR only touches
             // non-product files, skip the vmm-tests job entirely.
+            //
+            // Note: `gh_dangerous_override_if` replaces the default job `if:`
+            // condition entirely, so the draft-PR check must be included here
+            // explicitly alongside the classification guard.
             if let Some(ref classify_job) = classify_pr_job_handle {
                 vmm_tests_run_job = vmm_tests_run_job.gh_dangerous_override_if(
                     "needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false",
