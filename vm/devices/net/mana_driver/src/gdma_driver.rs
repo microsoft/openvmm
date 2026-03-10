@@ -17,7 +17,9 @@ use futures::FutureExt;
 use gdma_defs::Cqe;
 use gdma_defs::DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE;
 use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
+use gdma_defs::DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION;
 use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
+use gdma_defs::DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE;
 use gdma_defs::EqeDataReconfig;
 use gdma_defs::EstablishHwc;
 use gdma_defs::GDMA_EQE_COMPLETION;
@@ -29,6 +31,8 @@ use gdma_defs::GDMA_EQE_HWC_RECONFIG_VF;
 use gdma_defs::GDMA_EQE_TEST_EVENT;
 use gdma_defs::GDMA_MESSAGE_V1;
 use gdma_defs::GDMA_PAGE_TYPE_4K;
+use gdma_defs::GDMA_PF_CAP_FLAG_1_EQE_REQUEST_VF_SELF_RESET;
+use gdma_defs::GDMA_PF_CAP_FLAG_1_QUERY_HWC_TIMEOUT;
 use gdma_defs::GDMA_STANDARD_HEADER_TYPE;
 use gdma_defs::GdmaChangeMsixVectorIndexForEq;
 use gdma_defs::GdmaCreateDmaRegionReq;
@@ -1232,7 +1236,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     protocol_ver_max: 1,
                     gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
                         | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
-                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG,
+                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
+                        | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
+                        | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
                     ..FromZeros::new_zeroed()
                 },
             )
@@ -1241,6 +1247,18 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         if resp.gdma_protocol_ver != 1 {
             anyhow::bail!("invalid protocol version");
         }
+
+        // Logging the SoC / PF capabilities
+        let query_hwc_timeout = resp.pf_cap_flags1 & GDMA_PF_CAP_FLAG_1_QUERY_HWC_TIMEOUT != 0;
+        let eqe_request_vf_self_reset =
+            resp.pf_cap_flags1 & GDMA_PF_CAP_FLAG_1_EQE_REQUEST_VF_SELF_RESET != 0;
+        tracing::info!(
+            pf_cap_flags1 = resp.pf_cap_flags1,
+            query_hwc_timeout,
+            eqe_request_vf_self_reset,
+            "physical function capability flags",
+        );
+
         Ok(())
     }
 
