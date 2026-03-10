@@ -856,6 +856,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(disk_size),
+                                sector_size: None,
                             })
                             .into_resource(),
                         }],
