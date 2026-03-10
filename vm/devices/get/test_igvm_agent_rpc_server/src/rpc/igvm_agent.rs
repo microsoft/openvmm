@@ -180,7 +180,7 @@ pub fn process_igvm_attest(vm_name: &str, report: &[u8]) -> TestAgentResult<Vec<
     let default_setting = reg.default_setting.clone();
 
     let agent = reg.agents.entry(vm_name.to_owned()).or_insert_with(|| {
-        let mut agent = TestIgvmAgent::new();
+        let mut agent = TestIgvmAgent::new(vm_name);
         if let Some(setting) = config_for_vm_name(vm_name) {
             agent.install_plan_from_setting(&setting);
         } else if let Some(ref default) = default_setting {

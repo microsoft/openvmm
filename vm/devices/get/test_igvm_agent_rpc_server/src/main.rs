@@ -61,7 +61,7 @@ fn main() -> ExitCode {
             let args = Args::parse();
 
             let filter = EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("test_igvm_agent_rpc_server=info"));
+                .unwrap_or_else(|_| EnvFilter::new("test_igvm_agent_rpc_server=info,test_igvm_agent_lib=info"));
 
             let _ = fmt()
                 .with_env_filter(filter)

@@ -98,6 +98,8 @@ pub enum KeyReleaseError {
 /// Test IGVM agent includes states that need to be persisted.
 #[derive(Debug, Clone, Default)]
 pub struct TestIgvmAgent {
+    /// VM name for log correlation.
+    vm_name: String,
     /// Optional RSA private key used for attestation.
     secret_key: Option<RsaPrivateKey>,
     /// Optional DES key
@@ -192,9 +194,13 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
 }
 
 impl TestIgvmAgent {
-    /// Create an instance.
-    pub fn new() -> Self {
+    /// Create an instance associated with the given VM name.
+    ///
+    /// The `vm_name` is included in all tracing output so that log
+    /// messages from the library can be correlated with a specific VM.
+    pub fn new(vm_name: impl Into<String>) -> Self {
         Self {
+            vm_name: vm_name.into(),
             secret_key: None,
             des_key: None,
             plan: None,
@@ -210,7 +216,7 @@ impl TestIgvmAgent {
             return;
         }
 
-        tracing::info!("install the scripted plan for test IGVM Agent");
+        tracing::info!(vm_name = %self.vm_name, "install the scripted plan for test IGVM Agent");
 
         match setting {
             IgvmAgentTestSetting::TestPlan(plan) => {
@@ -236,6 +242,8 @@ impl TestIgvmAgent {
 
     /// Request handler.
     pub fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
+        let _span = tracing::info_span!("igvm_agent", vm_name = %self.vm_name).entered();
+
         let request = IgvmAttestRequestBase::read_from_prefix(request_bytes)
             .map_err(|_| Error::InvalidIgvmAttestRequest)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
