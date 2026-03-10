@@ -39,6 +39,7 @@ use virtio::spec::VirtioDeviceFeaturesBank0;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 const MAX_IO_DEPTH: usize = 64;
@@ -223,11 +224,10 @@ impl VirtioBlkDevice {
             // Capacity in 512-byte sectors (spec §5.2.4). The protocol always
             // uses 512-byte units regardless of the disk's native sector size.
             capacity: sector_count * (sector_size as u64 / 512),
-            // Maximum bytes in a single segment (VIRTIO_BLK_F_SIZE_MAX).
-            // 4 MiB keeps individual DMA mappings manageable.
-            size_max: DEFAULT_SIZE_MAX,
+            // Maximum bytes in a single segment (VIRTIO_BLK_F_SIZE_MAX). Not
+            // specified.
+            size_max: 0,
             // Maximum segments per request (VIRTIO_BLK_F_SEG_MAX).
-            // 128 segments × 4 MiB = 512 MiB max per request.
             seg_max: DEFAULT_SEG_MAX,
             // CHS geometry (VIRTIO_BLK_F_GEOMETRY) — not advertised, zeroed.
             geometry: VirtioBlkGeometry {
@@ -289,8 +289,7 @@ impl VirtioBlkDevice {
 
 impl VirtioDevice for VirtioBlkDevice {
     fn traits(&self) -> DeviceTraits {
-        let mut features = VIRTIO_BLK_F_SIZE_MAX
-            | VIRTIO_BLK_F_SEG_MAX
+        let mut features = VIRTIO_BLK_F_SEG_MAX
             | VIRTIO_BLK_F_BLK_SIZE
             | VIRTIO_BLK_F_FLUSH
             | VIRTIO_BLK_F_TOPOLOGY;
@@ -453,16 +452,15 @@ async fn process_request_inner(
     work: &VirtioQueueCallbackWork,
 ) -> Result<(u32, IoStat), u8> {
     // Read the request header from the first (readable) descriptor.
-    let mut header_bytes = [0u8; size_of::<VirtioBlkReqHeader>()];
+    let mut header = VirtioBlkReqHeader::new_zeroed();
     let header_len = work
-        .read(mem, &mut header_bytes)
+        .read(mem, header.as_mut_bytes())
         .map_err(|_| VIRTIO_BLK_S_IOERR)?;
 
-    if header_len < size_of::<VirtioBlkReqHeader>() {
+    if header_len < size_of_val(&header) {
         return Err(VIRTIO_BLK_S_IOERR);
     }
 
-    let header = VirtioBlkReqHeader::read_from_bytes(&header_bytes).unwrap();
     let request_type = header.request_type;
     let sector_shift = disk.sector_shift() - 9; // convert from disk sector size to 512-byte units
     let disk_sector = header.sector << sector_shift;

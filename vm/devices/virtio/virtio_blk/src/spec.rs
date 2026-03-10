@@ -51,15 +51,6 @@ pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 /// Maximum length of the device ID string (spec §5.2.6).
 pub const VIRTIO_BLK_ID_BYTES: usize = 20;
 
-/// Maximum segment size we advertise via `size_max` (spec §5.2.4).
-///
-/// This is the maximum byte size of a single descriptor in a request.
-/// The guest driver uses this to decide how to split I/O. 4MB is a
-/// reasonable upper bound that doesn't constrain typical guest I/O
-/// patterns while keeping individual DMA mappings manageable.
-/// Cloud-hypervisor uses a similar value.
-pub const DEFAULT_SIZE_MAX: u32 = 1 << 22; // 4 MiB
-
 /// Maximum number of segments per request advertised via `seg_max` (spec §5.2.4).
 ///
 /// This is the maximum number of data descriptors (excluding header and
