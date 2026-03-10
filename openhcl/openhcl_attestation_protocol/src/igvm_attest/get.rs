@@ -422,17 +422,6 @@ pub mod runtime_claims {
         }
     }
 
-    /// Supported hardware sealing policy
-    #[derive(Clone, Copy, Debug, Deserialize, Serialize, MeshPayload)]
-    pub enum HardwareSealingPolicy {
-        #[serde(rename = "none")]
-        None,
-        #[serde(rename = "hash")]
-        Hash,
-        #[serde(rename = "signer")]
-        Signer,
-    }
-
     /// VM configuration to be included in the `RuntimeClaims`.
     #[derive(Clone, Debug, Deserialize, Serialize, MeshPayload)]
     #[serde(rename_all = "kebab-case")]
@@ -452,8 +441,6 @@ pub mod runtime_claims {
         pub tpm_enabled: bool,
         /// Whether the TPM states is persisted
         pub tpm_persisted: bool,
-        /// Hardware sealing policy
-        pub hardware_sealing_policy: HardwareSealingPolicy,
         /// Whether certain vPCI devices are allowed through the device filter
         pub filtered_vpci_devices_allowed: bool,
         /// VM id

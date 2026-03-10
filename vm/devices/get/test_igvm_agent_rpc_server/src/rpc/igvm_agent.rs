@@ -80,7 +80,6 @@ fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             "skip_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
-        ("hw_unseal", IgvmAttestTestConfig::KeyReleaseFailure),
     ];
 
     for &(pattern, config) in KNOWN_TEST_CONFIGS {
@@ -178,22 +177,7 @@ mod tests {
 
     #[test]
     fn no_match_unknown_vm() {
-        assert!(
-            config_for_vm_name("multiarch::tpm::hyperv_openhcl_uefi_x64_some_random_test")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn match_hw_unseal() {
-        let vm_name = "multiarch::tpm::hyperv_openhcl_uefi_x64_windows_datacenter_core_2025_x64_prepped_snp_hw_unseal";
-        assert!(vm_name.len() <= 100, "name must fit in 100 chars");
-        match config_for_vm_name(vm_name) {
-            Some(IgvmAgentTestSetting::TestConfig(c)) => {
-                assert!(matches!(c, IgvmAttestTestConfig::KeyReleaseFailure))
-            }
-            other => panic!("expected KeyReleaseFailure, got {:?}", other),
-        }
+        assert!(config_for_vm_name("multiarch::tpm::hyperv_openhcl_uefi_x64_some_random_test").is_none());
     }
 
     #[test]

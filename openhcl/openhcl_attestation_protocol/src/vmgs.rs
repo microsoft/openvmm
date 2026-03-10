@@ -74,14 +74,11 @@ pub struct SecurityProfile {
     pub agent_data: [u8; AGENT_DATA_MAX_SIZE],
 }
 
-/// VMGS hardware key protector entry that includes the metadata of
-/// local hardware sealing with AES-CBC-HMAC-SHA256.
-///
-/// Version 1 is incompatible with newer versions.
-/// Version 2 or newer is forward-compatible if header.mix_measurement is not set.
-pub const HW_KEY_PROTECTOR_VERSION_1: u32 = 1;
-pub const HW_KEY_PROTECTOR_VERSION_2: u32 = 2;
-pub const HW_KEY_PROTECTOR_CURRENT_VERSION: u32 = HW_KEY_PROTECTOR_VERSION_2;
+/// The header, IV, and last 256 bits of HMAC are fixed for this version.
+/// The ciphertext is allowed to grow, though secrets should stay
+/// in the same position to allow downlevel versions to continue to understand
+/// that portion of the data.
+pub const HW_KEY_VERSION: u32 = 1; // using AES-CBC-HMAC-SHA256
 
 /// The size of the `FileId::HW_KEY_PROTECTOR` entry in the VMGS file.
 pub const HW_KEY_PROTECTOR_SIZE: usize = size_of::<HardwareKeyProtector>();
@@ -108,22 +105,18 @@ pub struct HardwareKeyProtectorHeader {
     pub length: u32,
     /// TCB version obtained from the hardware
     pub tcb_version: u64,
-    /// Whether to mix the measurement in hardware key derivation
-    /// Only supported in version 2 and above
-    pub mix_measurement: u8,
-    /// Reserved bytes for future use
-    pub _reserved: [u8; 7],
+    /// Reserved
+    pub _reserved: [u8; 8],
 }
 
 impl HardwareKeyProtectorHeader {
     /// Create a `HardwareKeyProtectorHeader` instance.
-    pub fn new(version: u32, length: u32, tcb_version: u64, mix_measurement: u8) -> Self {
+    pub fn new(version: u32, length: u32, tcb_version: u64) -> Self {
         Self {
             version,
             length,
             tcb_version,
-            mix_measurement,
-            _reserved: [0; 7],
+            _reserved: [0u8; 8],
         }
     }
 }
@@ -138,7 +131,7 @@ pub struct HardwareKeyProtector {
     pub iv: [u8; AES_CBC_IV_LENGTH],
     /// Encrypted key
     pub ciphertext: [u8; AES_GCM_KEY_LENGTH],
-    /// HMAC-SHA-256 of [header, iv, ciphertext]
+    /// HMAC-SHA-256 of [`header`, `iv`, `ciphertext`]
     pub hmac: [u8; HMAC_SHA_256_KEY_LENGTH],
 }
 
@@ -151,19 +144,4 @@ pub const GUEST_SECRET_KEY_MAX_SIZE: usize = 2048;
 pub struct GuestSecretKey {
     /// the guest secret key to be provisioned to vTPM
     pub guest_secret_key: [u8; GUEST_SECRET_KEY_MAX_SIZE],
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hardware_key_protector_header_new() {
-        let h = HardwareKeyProtectorHeader::new(2, 104, 0x1234, 1);
-        assert_eq!(h.version, 2);
-        assert_eq!(h.length, 104);
-        assert_eq!(h.tcb_version, 0x1234);
-        assert_eq!(h.mix_measurement, 1);
-        assert_eq!(h._reserved, [0; 7]);
-    }
 }

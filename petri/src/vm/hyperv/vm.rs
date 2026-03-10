@@ -648,14 +648,6 @@ impl HyperVVM {
     pub async fn disable_tpm(&self) -> anyhow::Result<()> {
         powershell::run_disable_vmtpm(&self.vmid).await
     }
-
-    /// Set the management VTL encryption policy
-    pub async fn set_management_vtl_encryption_policy(
-        &self,
-        policy: powershell::HyperVManagementVtlEncryptionPolicy,
-    ) -> anyhow::Result<()> {
-        powershell::run_set_management_vtl_encryption_policy(&self.vmid, &self.ps_mod, policy).await
-    }
 }
 
 impl Drop for HyperVVM {

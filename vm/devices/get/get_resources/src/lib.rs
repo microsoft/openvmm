@@ -254,8 +254,5 @@ pub mod ged {
         AkCertPersistentAcrossBoot,
         /// Config for testing skip hardware unsealing signal from IGVMAgent.
         KeyReleaseFailureSkipHwUnsealing,
-        /// Config for testing key release failure without skip_hw_unsealing
-        /// signal — hardware unsealing fallback should be attempted.
-        KeyReleaseFailure,
     }
 }

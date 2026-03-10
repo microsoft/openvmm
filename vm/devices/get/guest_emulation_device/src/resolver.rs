@@ -196,7 +196,6 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 guest_state_lifetime,
                 guest_state_encryption_policy,
                 management_vtl_features,
-                hardware_sealing_policy: get_protocol::dps_json::HardwareSealingPolicy::default(),
                 efi_diagnostics_log_level: match resource.efi_diagnostics_log_level {
                     EfiDiagnosticsLogLevelType::Default => {
                         get_protocol::dps_json::EfiDiagnosticsLogLevelType::DEFAULT

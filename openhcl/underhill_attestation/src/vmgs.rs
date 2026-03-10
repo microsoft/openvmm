@@ -287,7 +287,6 @@ mod tests {
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
     use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
-    use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_CURRENT_VERSION;
     use openhcl_attestation_protocol::vmgs::HW_KEY_PROTECTOR_SIZE;
     use openhcl_attestation_protocol::vmgs::HardwareKeyProtectorHeader;
     use openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE;
@@ -309,12 +308,7 @@ mod tests {
     }
 
     fn new_hardware_key_protector() -> HardwareKeyProtector {
-        let header = HardwareKeyProtectorHeader::new(
-            HW_KEY_PROTECTOR_CURRENT_VERSION,
-            HW_KEY_PROTECTOR_SIZE as u32,
-            2,
-            1,
-        );
+        let header = HardwareKeyProtectorHeader::new(1, HW_KEY_PROTECTOR_SIZE as u32, 2);
         let iv = [3; AES_CBC_IV_LENGTH];
         let ciphertext = [4; AES_GCM_KEY_LENGTH];
         let hmac = [5; HMAC_SHA_256_KEY_LENGTH];

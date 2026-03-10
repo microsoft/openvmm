@@ -42,7 +42,6 @@ use get_protocol::VmgsIoStatus;
 use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
 use get_protocol::dps_json::GuestStateEncryptionPolicy;
 use get_protocol::dps_json::GuestStateLifetime;
-use get_protocol::dps_json::HardwareSealingPolicy;
 use get_protocol::dps_json::HclSecureBootTemplateId;
 use get_protocol::dps_json::ManagementVtlFeatures;
 use get_protocol::dps_json::PcatBootDevice;
@@ -159,9 +158,6 @@ pub struct GuestConfig {
     /// Management VTL feature flags
     #[inspect(debug)]
     pub management_vtl_features: ManagementVtlFeatures,
-    /// Hardware sealing policy
-    #[inspect(debug)]
-    pub hardware_sealing_policy: HardwareSealingPolicy,
     /// EFI diagnostics log level
     #[inspect(debug)]
     pub efi_diagnostics_log_level: EfiDiagnosticsLogLevelType,
@@ -1358,7 +1354,6 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     guest_state_lifetime: state.config.guest_state_lifetime,
                     guest_state_encryption_policy: state.config.guest_state_encryption_policy,
                     management_vtl_features: state.config.management_vtl_features,
-                    hardware_sealing_policy: state.config.hardware_sealing_policy,
                     efi_diagnostics_log_level: state.config.efi_diagnostics_log_level,
                     hv_sint_enabled: state.config.hv_sint_enabled,
                 },

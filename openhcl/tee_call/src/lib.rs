@@ -65,23 +65,10 @@ pub struct GetAttestationReportResult {
     pub tcb_version: Option<u64>,
 }
 
-/// Key derivation policy
-#[derive(Debug, Clone, Copy)]
-pub struct KeyDerivationPolicy {
-    /// The TCB version to use for key derivation.
-    pub tcb_version: u64,
-    /// Whether to mix measurement into the key derivation.
-    pub mix_measurement: bool,
-}
-
 /// Trait that defines the get attestation report interface for TEE.
+// TODO VBS: Implement the trait for VBS
 pub trait TeeCall: Send + Sync {
     /// Get the hardware-backed attestation report.
-    ///
-    /// # Arguments
-    /// * `report_data` - The report data to include in the attestation report.
-    ///
-    /// Returns the attestation report result.
     fn get_attestation_report(
         &self,
         report_data: &[u8; REPORT_DATA_SIZE],
@@ -93,18 +80,10 @@ pub trait TeeCall: Send + Sync {
 }
 
 /// Optional sub-trait that defines get derived key interface for TEE.
-///
-/// # Arguments
-/// * `policy` - The key derivation policy to use.
-///
-/// Returns the derived key.
 pub trait TeeCallGetDerivedKey: TeeCall {
     /// Get the derived key that should be deterministic based on the hardware and software
     /// configurations.
-    fn get_derived_key(
-        &self,
-        policy: KeyDerivationPolicy,
-    ) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error>;
+    fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error>;
 }
 
 /// Implementation of [`TeeCall`] for SNP
@@ -140,10 +119,7 @@ impl TeeCall for SnpCall {
 
 impl TeeCallGetDerivedKey for SnpCall {
     /// Get the derived key from /dev/sev-guest.
-    fn get_derived_key(
-        &self,
-        policy: KeyDerivationPolicy,
-    ) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error> {
+    fn get_derived_key(&self, tcb_version: u64) -> Result<[u8; HW_DERIVED_KEY_LENGTH], Error> {
         let dev = sev_guest_device::SevGuestDevice::open().map_err(Error::OpenDevSevGuest)?;
 
         // Derive a key mixing in following data:
@@ -152,7 +128,7 @@ impl TeeCallGetDerivedKey for SnpCall {
         // - TcbVersion (do not derive same key on older TCB that might have a bug)
         let guest_field_select = x86defs::snp::GuestFieldSelect::default()
             .with_guest_policy(true)
-            .with_measurement(policy.mix_measurement)
+            .with_measurement(true)
             .with_tcb_version(true);
 
         let derived_key = dev
@@ -161,7 +137,7 @@ impl TeeCallGetDerivedKey for SnpCall {
                 guest_field_select.into(),
                 0, // VMPL 0
                 0, // default guest svn to 0
-                policy.tcb_version,
+                tcb_version,
             )
             .map_err(Error::GetSnpDerivedKey)?;
 

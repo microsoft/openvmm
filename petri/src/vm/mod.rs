@@ -1081,16 +1081,6 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Set the hardware sealing policy for the VM's TPM.
-    pub fn with_hardware_sealing_policy(mut self, policy: PetriHardwareSealingPolicy) -> Self {
-        self.config
-            .tpm
-            .as_mut()
-            .expect("hardware sealing policy requires a TPM")
-            .hardware_sealing_policy = policy;
-        self
-    }
-
     /// Add custom VTL 2 settings.
     // TODO: At some point we want to replace uses of this with nicer with_disk,
     // with_nic, etc. methods.
@@ -1892,32 +1882,14 @@ impl Default for OpenHclConfig {
 pub struct TpmConfig {
     /// Use ephemeral TPM state (do not persist to VMGS)
     pub no_persistent_secrets: bool,
-    /// Hardware sealing policy for sealed secrets
-    pub hardware_sealing_policy: PetriHardwareSealingPolicy,
 }
 
 impl Default for TpmConfig {
     fn default() -> Self {
         Self {
             no_persistent_secrets: true,
-            hardware_sealing_policy: PetriHardwareSealingPolicy::Default,
         }
     }
-}
-
-/// Hardware sealing policy used by the test infrastructure.
-///
-/// Maps to Hyper-V `Set-ManagementVtlEncryptionPolicy` values and
-/// underhill's `HardwareSealingPolicy`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PetriHardwareSealingPolicy {
-    /// No explicit policy — the backend picks its default.
-    #[default]
-    Default,
-    /// Derive the hardware sealing key from measurement hash.
-    HashPolicy,
-    /// Derive the hardware sealing key from signer information.
-    SignerPolicy,
 }
 
 /// Firmware to load into the test VM.
