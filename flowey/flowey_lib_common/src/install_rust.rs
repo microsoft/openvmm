@@ -315,6 +315,11 @@ impl FlowNode for Node {
                                 )),
                             );
 
+                            if skip_install {
+                                log::info!("skipping rust install check (skip_install is set)");
+                                return Ok(());
+                            }
+
                             check_rust_install(rt)?;
                             Ok(())
                         }
