@@ -321,7 +321,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
 
                 if let Err(err) = self.inner.mapping.commit(commit_start as usize, commit_len) {
                     return PageFaultAction::Fail(PageFaultError::new(
-                        guestmem::GuestMemoryErrorKind::OutOfRange,
+                        guestmem::GuestMemoryErrorKind::Other,
                         err,
                     ));
                 }
@@ -332,7 +332,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
                 // On Linux, the kernel handles page faults transparently.
                 // If we get here, something is wrong.
                 return PageFaultAction::Fail(PageFaultError::new(
-                    guestmem::GuestMemoryErrorKind::OutOfRange,
+                    guestmem::GuestMemoryErrorKind::Other,
                     std::io::Error::new(
                         std::io::ErrorKind::Other,
                         "unexpected page fault in private RAM mode on Linux",

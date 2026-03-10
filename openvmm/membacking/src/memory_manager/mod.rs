@@ -419,12 +419,12 @@ impl GuestMemoryManager {
     /// new memory manager with the same memory state. Only one instance of this
     /// type should be managing a given memory backing at a time, though, or the
     /// guest may see unpredictable results.
-    pub fn shared_memory_backing(&self) -> SharedMemoryBacking {
-        let guest_ram = self
-            .guest_ram
-            .clone()
-            .expect("shared memory backing is not available in private memory mode");
-        SharedMemoryBacking { guest_ram }
+    ///
+    /// Returns `None` in private memory mode, where there is no shared
+    /// file-backed allocation.
+    pub fn shared_memory_backing(&self) -> Option<SharedMemoryBacking> {
+        let guest_ram = self.guest_ram.clone()?;
+        Some(SharedMemoryBacking { guest_ram })
     }
 
     /// Attaches the guest memory to a partition, mapping it to the guest
