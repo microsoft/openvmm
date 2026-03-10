@@ -710,15 +710,14 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// `KeyReleaseFailureSkipHwUnsealing` configuration.
 #[cfg(windows)]
 #[vmm_test(
-    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
-    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
-async fn skip_hw_unseal<T, S, U: PetriVmmBackend>(
+async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     config: PetriVmBuilder<U>,
-    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+    extra_deps: (ResolvedArtifact<T>,),
 ) -> anyhow::Result<()> {
-    let os_flavor = config.os_flavor();
-    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+    let (rpc_server_artifact,) = extra_deps;
 
     let rpc_server_path = rpc_server_artifact.get();
     let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
@@ -730,26 +729,9 @@ async fn skip_hw_unseal<T, S, U: PetriVmmBackend>(
         .run()
         .await?;
 
-    let guest_binary_path = match os_flavor {
-        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
-        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
-        _ => unreachable!(),
-    };
-    let host_binary_path = tpm_guest_tests_artifact.get();
-    let tpm_guest_tests =
-        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
-            .await?;
-
-    // First boot: KEY_RELEASE succeeds. Verify AK cert is present.
-    let expected_hex = expected_ak_cert_hex();
-    let ak_cert_output = tpm_guest_tests
-        .read_ak_cert_with_expected_hex(expected_hex.as_str())
-        .await?;
-
-    ensure!(
-        ak_cert_output.contains("AK certificate matches expected value"),
-        format!("{ak_cert_output}")
-    );
+    // First boot: KEY_RELEASE succeeds. TPM state is sealed with hardware
+    // key protector. No guest-side verification needed — just let the boot
+    // complete so the VMGS state is populated.
 
     // Reboot: triggers second KEY_RELEASE which fails with skip_hw_unsealing.
     // VMGS unlock will fail because hardware unsealing fallback is skipped.

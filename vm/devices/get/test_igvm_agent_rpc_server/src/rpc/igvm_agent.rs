@@ -69,18 +69,85 @@ fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
     /// pattern is unique.
     const KNOWN_TEST_CONFIGS: &[(&str, IgvmAttestTestConfig)] = &[
         (
-            "ak_cert_retry",
+            "ubuntu_2504_server_x64_ak_cert_retry",
             IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
         ),
         (
-            "ak_cert_cache",
+            "windows_datacenter_core_2022_x64_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_cert_retry",
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        ),
+        (
+            "ubuntu_2504_server_x64_ak_cert_cache",
             IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
         ),
         (
-            "skip_hw_unseal",
+            "windows_datacenter_core_2022_x64_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "ubuntu_2504_server_x64_vbs_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_vbs_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "ubuntu_2504_server_x64_tdx_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_tdx_ak_cert_cache",
+            IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_skip_hw_unseal",
             IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
         ),
-        ("use_hw_unseal", IgvmAttestTestConfig::KeyReleaseFailure),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_skip_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing,
+        ),
+        (
+            "ubuntu_2504_server_x64_snp_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
+        (
+            "windows_datacenter_core_2025_x64_prepped_snp_use_hw_unseal",
+            IgvmAttestTestConfig::KeyReleaseFailure,
+        ),
     ];
 
     for &(pattern, config) in KNOWN_TEST_CONFIGS {
