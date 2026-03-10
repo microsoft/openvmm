@@ -41,6 +41,7 @@ pub(super) struct StorageBuilder {
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
     pcie_nvme_controllers: BTreeMap<String, Vec<NamespaceDefinition>>,
+    pcie_virtio_blk_disks: Vec<(String, VirtioBlkDisk)>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     vtl0_virtio_blk_disks: Vec<VirtioBlkDisk>,
@@ -57,7 +58,7 @@ pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
     Nvme(Option<u32>, Option<String>),
-    VirtioBlk,
+    VirtioBlk(Option<String>),
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
@@ -104,16 +105,10 @@ const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 16] = [
     guid::guid!("5864e1e4-bb70-40d2-900c-2128034960d2"),
 ];
 
-const VIRTIO_BLK_INSTANCE_IDS: [Guid; 8] = [
-    guid::guid!("a5c3f2d1-e746-4b8a-9c01-7f3d2a1b0e54"),
-    guid::guid!("b6d4e3f2-f857-5c9b-ad12-8e4f3b2c1f65"),
-    guid::guid!("c7e5f4a3-a968-6dac-be23-9f5a4c3d2a76"),
-    guid::guid!("d8f6a5b4-ba79-7ebd-cf34-a06b5d4e3b87"),
-    guid::guid!("e9a7b6c5-cb8a-8fce-d045-b17c6e5f4c98"),
-    guid::guid!("fab8c7d6-dc9b-9adf-e156-c28d7f6a5da9"),
-    guid::guid!("abc9d8e7-edac-abea-f267-d39e8a7b6eba"),
-    guid::guid!("bcdae9f8-febd-bcfb-a378-e4af9b8c7fcb"),
-];
+/// Template GUID for virtio-blk VPCI instance IDs. `data1` is set to the
+/// disk index to produce a unique ID per device. The remaining fields are
+/// an arbitrarily generated fixed value.
+const VIRTIO_BLK_INSTANCE_ID_TEMPLATE: Guid = guid::guid!("00000000-a4e7-4b53-b702-1f42d938647e");
 
 impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
@@ -124,6 +119,7 @@ impl StorageBuilder {
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
             pcie_nvme_controllers: BTreeMap::new(),
+            pcie_virtio_blk_disks: Vec::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             vtl0_virtio_blk_disks: Vec::new(),
@@ -265,15 +261,19 @@ impl StorageBuilder {
                 });
                 Some(nsid)
             }
-            DiskLocation::VirtioBlk => {
+            DiskLocation::VirtioBlk(pcie_port) => {
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("virtio-blk only supported for VTL0");
                 }
                 if is_dvd {
                     anyhow::bail!("dvd not supported with virtio-blk");
                 }
-                self.vtl0_virtio_blk_disks
-                    .push(VirtioBlkDisk { disk, read_only });
+                let vblk = VirtioBlkDisk { disk, read_only };
+                if let Some(port) = pcie_port {
+                    self.pcie_virtio_blk_disks.push((port, vblk));
+                } else {
+                    self.vtl0_virtio_blk_disks.push(vblk);
+                }
                 None
             }
         };
@@ -314,7 +314,7 @@ impl StorageBuilder {
                     NVME_VTL0_INSTANCE_ID
                 },
             ),
-            DiskLocation::VirtioBlk => {
+            DiskLocation::VirtioBlk(_) => {
                 anyhow::bail!("underhill not supported with virtio-blk")
             }
         };
@@ -335,7 +335,7 @@ impl StorageBuilder {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
             }
-            DiskLocation::VirtioBlk => {
+            DiskLocation::VirtioBlk(_) => {
                 anyhow::bail!("underhill not supported with virtio-blk")
             }
         };
@@ -494,9 +494,25 @@ impl StorageBuilder {
             .into_iter()
             .enumerate()
         {
+            let mut instance_id = VIRTIO_BLK_INSTANCE_ID_TEMPLATE;
+            instance_id.data1 = i as u32;
             config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl0,
-                instance_id: VIRTIO_BLK_INSTANCE_IDS[i],
+                instance_id,
+                resource: VirtioPciDeviceHandle(
+                    VirtioBlkHandle {
+                        disk: vblk.disk,
+                        read_only: vblk.read_only,
+                    }
+                    .into_resource(),
+                )
+                .into_resource(),
+            });
+        }
+
+        for (port_name, vblk) in std::mem::take(&mut self.pcie_virtio_blk_disks) {
+            config.pcie_devices.push(PcieDeviceConfig {
+                port_name,
                 resource: VirtioPciDeviceHandle(
                     VirtioBlkHandle {
                         disk: vblk.disk,

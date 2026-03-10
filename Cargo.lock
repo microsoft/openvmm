@@ -8983,6 +8983,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "pal_event",
+ "parking_lot",
  "scsi_buffers",
  "task_control",
  "test_with_tracing",

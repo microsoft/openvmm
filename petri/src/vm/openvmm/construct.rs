@@ -1131,16 +1131,26 @@ fn vmbus_storage_controllers_to_openvmm(
                 });
             }
             VmbusStorageType::VirtioBlk => {
-                for (_lun, Drive { disk, is_dvd }) in &controller.drives {
+                // Each virtio-blk drive needs a unique VPCI instance ID.
+                // Use a fixed template GUID with data1 set to the LUN.
+                const VIRTIO_BLK_INSTANCE_ID_TEMPLATE: Guid = Guid {
+                    data1: 0,
+                    data2: 0x1234,
+                    data3: 0x5678,
+                    data4: [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89],
+                };
+                for (lun, Drive { disk, is_dvd }) in &controller.drives {
                     if *is_dvd {
                         anyhow::bail!("dvd not supported with virtio-blk");
                     }
                     let Some(disk) = disk else {
                         anyhow::bail!("empty drive not supported with virtio-blk");
                     };
+                    let mut drive_id = VIRTIO_BLK_INSTANCE_ID_TEMPLATE;
+                    drive_id.data1 = *lun;
                     vpci_devices.push(VpciDeviceConfig {
                         vtl,
-                        instance_id: *instance_id,
+                        instance_id: drive_id,
                         resource: VirtioPciDeviceHandle(
                             VirtioBlkHandle {
                                 disk: petri_disk_to_openvmm(disk)?,

@@ -658,7 +658,7 @@ async fn vm_config_from_command_line(
         read_only,
         is_dvd,
         ref underhill,
-        ..
+        ref pcie_port,
     } in &opt.virtio_blk
     {
         if underhill.is_some() {
@@ -667,7 +667,7 @@ async fn vm_config_from_command_line(
         storage.add(
             vtl,
             None,
-            storage_builder::DiskLocation::VirtioBlk,
+            storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
             kind,
             is_dvd,
             read_only,

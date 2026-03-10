@@ -20,8 +20,8 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
+use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
-use std::sync::Mutex;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
@@ -747,7 +747,7 @@ impl DiskIo for TestDisk4K {
     }
 
     fn sector_count(&self) -> u64 {
-        self.storage.lock().unwrap().len() as u64 / self.sector_size as u64
+        self.storage.lock().len() as u64 / self.sector_size as u64
     }
 
     fn sector_size(&self) -> u32 {
@@ -777,7 +777,7 @@ impl DiskIo for TestDisk4K {
     ) -> Result<(), DiskError> {
         let offset = sector as usize * self.sector_size as usize;
         let end = offset + buffers.len();
-        let storage = self.storage.lock().unwrap();
+        let storage = self.storage.lock();
         if end > storage.len() {
             return Err(DiskError::IllegalBlock);
         }
@@ -793,7 +793,7 @@ impl DiskIo for TestDisk4K {
     ) -> Result<(), DiskError> {
         let offset = sector as usize * self.sector_size as usize;
         let end = offset + buffers.len();
-        let mut storage = self.storage.lock().unwrap();
+        let mut storage = self.storage.lock();
         if end > storage.len() {
             return Err(DiskError::IllegalBlock);
         }

@@ -36,7 +36,6 @@ pub const VIRTIO_BLK_F_TOPOLOGY: u32 = 1 << 10;
 /// Device can support discard command.
 pub const VIRTIO_BLK_F_DISCARD: u32 = 1 << 13;
 /// Device can support write zeroes command (not currently advertised).
-#[allow(dead_code)]
 pub const VIRTIO_BLK_F_WRITE_ZEROES: u32 = 1 << 14;
 
 // Request types (spec §5.2.6).
@@ -45,7 +44,6 @@ pub const VIRTIO_BLK_T_OUT: u32 = 1;
 pub const VIRTIO_BLK_T_FLUSH: u32 = 4;
 pub const VIRTIO_BLK_T_GET_ID: u32 = 8;
 pub const VIRTIO_BLK_T_DISCARD: u32 = 11;
-#[allow(dead_code)]
 pub const VIRTIO_BLK_T_WRITE_ZEROES: u32 = 13;
 
 // Status codes (spec §5.2.6).
