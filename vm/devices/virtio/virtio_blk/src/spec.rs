@@ -6,6 +6,11 @@
 //! Based on OASIS VIRTIO v1.2, Section 5.2.
 //! <https://docs.oasis-open.org/virtio/virtio/v1.2/cs01/virtio-v1.2-cs01.html>
 
+#![expect(
+    dead_code,
+    reason = "This module defines constants and types for the virtio-blk spec, but not all of them are used in our implementation."
+)]
+
 use inspect::Inspect;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

@@ -8984,6 +8984,7 @@ dependencies = [
  "task_control",
  "tracelimit",
  "tracing",
+ "unicycle",
  "virtio",
  "virtio_resources",
  "vm_resource",

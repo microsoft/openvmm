@@ -25,6 +25,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 tracing.workspace = true
+unicycle.workspace = true
 zerocopy.workspace = true
 
 [lints]
