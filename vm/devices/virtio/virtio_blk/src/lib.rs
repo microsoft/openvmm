@@ -86,6 +86,7 @@ struct WorkerStats {
     write_ops: Counter,
     flush_ops: Counter,
     discard_ops: Counter,
+    bounce_ops: Counter,
     errors: Counter,
 }
 
@@ -101,6 +102,7 @@ struct IoCompletion {
     work: VirtioQueueCallbackWork,
     bytes_written: u32,
     stat: IoStat,
+    bounced: bool,
 }
 
 /// Which stat counter to increment for a completed IO.
@@ -124,6 +126,9 @@ impl BlkWorker {
             IoStat::Discard => self.stats.discard_ops.increment(),
             IoStat::Error => self.stats.errors.increment(),
             IoStat::None => {}
+        }
+        if completion.bounced {
+            self.stats.bounce_ops.increment();
         }
     }
 
@@ -414,7 +419,7 @@ async fn process_request(
     work: VirtioQueueCallbackWork,
 ) -> IoCompletion {
     match process_request_inner(disk, mem, read_only, &work).await {
-        Ok((bytes_written, stat)) => {
+        Ok((bytes_written, stat, bounced)) => {
             if let Err(err) = write_status_byte(mem, &work, VIRTIO_BLK_S_OK) {
                 tracelimit::error_ratelimited!(
                     error = &err as &dyn std::error::Error,
@@ -425,6 +430,7 @@ async fn process_request(
                 work,
                 bytes_written: bytes_written + 1, // +1 for status byte
                 stat,
+                bounced,
             }
         }
         Err(status) => {
@@ -438,19 +444,20 @@ async fn process_request(
                 work,
                 bytes_written: 1, // just the status byte
                 stat: IoStat::Error,
+                bounced: false,
             }
         }
     }
 }
 
-/// Inner request processing. Returns Ok((data_bytes_written, stat)) on success,
-/// or Err(status_code) on failure.
+/// Inner request processing. Returns Ok((data_bytes_written, stat, bounced)) on
+/// success, or Err(status_code) on failure.
 async fn process_request_inner(
     disk: &Disk,
     mem: &GuestMemory,
     read_only: bool,
     work: &VirtioQueueCallbackWork,
-) -> Result<(u32, IoStat), u8> {
+) -> Result<(u32, IoStat, bool), u8> {
     // Read the request header from the first (readable) descriptor.
     let mut header = VirtioBlkReqHeader::new_zeroed();
     let header_len = work
@@ -467,19 +474,19 @@ async fn process_request_inner(
 
     match request_type {
         VIRTIO_BLK_T_IN => {
-            let bytes = do_io_per_descriptor(disk, mem, work, disk_sector, true).await?;
-            Ok((bytes, IoStat::Read))
+            let (bytes, bounced) = do_io(disk, mem, work, disk_sector, true).await?;
+            Ok((bytes, IoStat::Read, bounced))
         }
         VIRTIO_BLK_T_OUT => {
             if read_only {
                 return Err(VIRTIO_BLK_S_IOERR);
             }
-            let bytes = do_io_per_descriptor(disk, mem, work, disk_sector, false).await?;
-            Ok((bytes, IoStat::Write))
+            let (bytes, bounced) = do_io(disk, mem, work, disk_sector, false).await?;
+            Ok((bytes, IoStat::Write, bounced))
         }
         VIRTIO_BLK_T_FLUSH => {
             disk.sync_cache().await.map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok((0, IoStat::Flush))
+            Ok((0, IoStat::Flush, false))
         }
         VIRTIO_BLK_T_GET_ID => {
             let id = if let Some(disk_id) = disk.disk_id() {
@@ -492,7 +499,7 @@ async fn process_request_inner(
                 *b"openvmm-virtio-blk\0\0"
             };
             work.write(mem, &id).map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok((VIRTIO_BLK_ID_BYTES as u32, IoStat::None))
+            Ok((VIRTIO_BLK_ID_BYTES as u32, IoStat::None, false))
         }
         VIRTIO_BLK_T_DISCARD => {
             if read_only {
@@ -522,100 +529,241 @@ async fn process_request_inner(
             disk.unmap(disk_sector, disk_count, false)
                 .await
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            Ok((0, IoStat::Discard))
+            Ok((0, IoStat::Discard, false))
         }
         _ => Err(VIRTIO_BLK_S_UNSUPP),
     }
 }
 
-/// Perform read or write I/O by processing each descriptor individually.
+/// A data-carrying region extracted from a descriptor chain.
 ///
-/// For reads (`is_read = true`), data descriptors are writable (device writes
-/// to guest). For writes, data descriptors are readable (device reads from
-/// guest). Each descriptor is a contiguous GPA range that maps cleanly to a
-/// [`PagedRange`].
-async fn do_io_per_descriptor(
+/// Each entry represents one contiguous GPA range that carries IO data,
+/// after header bytes have been skipped and the status byte excluded.
+struct DataRegion {
+    addr: u64,
+    len: u64,
+}
+
+/// Extract the data-carrying regions from a descriptor chain.
+///
+/// Filters descriptors by direction (`writable`), skips `skip_bytes`
+/// (the request header for writes), and limits the total to `data_len`
+/// (which excludes the status byte for reads).
+fn data_regions(
+    payloads: &[virtio::queue::VirtioQueuePayload],
+    writable: bool,
+    skip_bytes: u64,
+    data_len: u64,
+) -> Vec<DataRegion> {
+    let mut result = Vec::new();
+    let mut skip = skip_bytes;
+    let mut remaining = data_len;
+    for payload in payloads {
+        if payload.writeable != writable || remaining == 0 {
+            continue;
+        }
+        let mut addr = payload.address;
+        let mut plen = payload.length as u64;
+        if skip > 0 {
+            let s = skip.min(plen);
+            addr += s;
+            plen -= s;
+            skip -= s;
+        }
+        if plen == 0 {
+            continue;
+        }
+        let chunk = plen.min(remaining);
+        remaining -= chunk;
+        result.push(DataRegion { addr, len: chunk });
+    }
+    result
+}
+
+/// Try to build a single `PagedRange` GPN list from the data regions.
+///
+/// Returns `Some((gpns, offset, len))` if every region boundary falls on
+/// a page boundary (or regions are GPA-contiguous), so the whole chain
+/// can be expressed as one [`PagedRange`]. Returns `None` if any
+/// interior boundary violates the constraint.
+fn try_build_gpn_list(regions: &[DataRegion]) -> Option<(Vec<u64>, usize, usize)> {
+    const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
+
+    let mut gpns = Vec::new();
+    let mut total_len: u64 = 0;
+    let mut first_offset: Option<usize> = None;
+    let mut prev_end: Option<u64> = None;
+
+    for region in regions {
+        let addr = region.addr;
+        let len = region.len;
+        if len == 0 {
+            continue;
+        }
+
+        let first_gpn = addr / PAGE_SIZE;
+        let last_gpn = (addr + len - 1) / PAGE_SIZE;
+
+        if let Some(pe) = prev_end {
+            if addr == pe {
+                // GPA-contiguous with the previous region.
+                // The shared page (if any) is already in gpns.
+                let last_gpn_in_list = *gpns.last().unwrap();
+                if first_gpn == last_gpn_in_list {
+                    // Same page — just add any new pages beyond it.
+                    for gpn in (first_gpn + 1)..=last_gpn {
+                        gpns.push(gpn);
+                    }
+                } else {
+                    // Previous region ended exactly at a page boundary,
+                    // so first_gpn is the next page.
+                    for gpn in first_gpn..=last_gpn {
+                        gpns.push(gpn);
+                    }
+                }
+            } else {
+                // Not GPA-contiguous. Both the previous end and this
+                // start must be page-aligned to avoid a gap or overlap
+                // within a page slot.
+                if pe % PAGE_SIZE != 0 || addr % PAGE_SIZE != 0 {
+                    return None;
+                }
+                for gpn in first_gpn..=last_gpn {
+                    gpns.push(gpn);
+                }
+            }
+        } else {
+            // First region.
+            first_offset = Some((addr % PAGE_SIZE) as usize);
+            for gpn in first_gpn..=last_gpn {
+                gpns.push(gpn);
+            }
+        }
+
+        prev_end = Some(addr + len);
+        total_len += len;
+    }
+
+    let offset = first_offset.unwrap_or(0);
+    Some((gpns, offset, total_len as usize))
+}
+
+/// Owned data needed to construct a `PagedRange`.
+///
+/// `PagedRange` borrows its GPN slice, so we need to keep the `Vec` alive.
+/// This struct holds the owned data alongside the offset and length.
+struct OwnedPagedRange {
+    gpns: Vec<u64>,
+    offset: usize,
+    len: usize,
+}
+
+/// Copy data between regions in `src` and a contiguous range in `dst`.
+///
+/// Reads sequentially from each region in `src` (at `region.addr`) and
+/// writes contiguously into `dst` starting at GPA 0. Used in both
+/// directions: guest→bounce (before write IO) and bounce→guest (after
+/// read IO) — just swap `src` and `dst`.
+fn copy_regions(src: &GuestMemory, dst: &GuestMemory, regions: &[DataRegion]) -> Result<(), u8> {
+    let mut dst_offset: u64 = 0;
+    for region in regions {
+        let mut copied: u64 = 0;
+        while copied < region.len {
+            let mut tmp = [0u8; 4096];
+            let n = ((region.len - copied) as usize).min(tmp.len());
+            src.read_at(region.addr + copied, &mut tmp[..n])
+                .map_err(|_| VIRTIO_BLK_S_IOERR)?;
+            dst.write_at(dst_offset + copied, &tmp[..n])
+                .map_err(|_| VIRTIO_BLK_S_IOERR)?;
+            copied += n as u64;
+        }
+        dst_offset += region.len;
+    }
+    Ok(())
+}
+
+/// Perform read or write I/O for a single request.
+///
+/// Issues a single `disk.read_vectored` / `disk.write_vectored` call
+/// for the entire data payload. If the descriptor chain's memory
+/// layout is compatible with [`PagedRange`] (all interior boundaries
+/// page-aligned or GPA-contiguous), the IO targets guest memory
+/// directly. Otherwise, a bounce buffer is allocated and data is
+/// copied through it.
+///
+/// Returns `Ok((data_bytes_written_to_guest, bounced))` on success.
+async fn do_io(
     disk: &Disk,
     mem: &GuestMemory,
     work: &VirtioQueueCallbackWork,
     start_disk_sector: u64,
     is_read: bool,
-) -> Result<u32, u8> {
-    let sector_shift = disk.sector_shift();
-    let mut current_sector = start_disk_sector;
-    let mut total_data: u64 = 0;
-
-    // For reads: iterate writable descriptors, skip last byte (status).
-    // For writes: iterate readable descriptors, skip header bytes.
+) -> Result<(u32, bool), u8> {
     let writable = is_read;
     let total_payload = work.get_payload_length(writable);
-
-    let mut skip_bytes: u64 = if !is_read {
+    let skip_bytes: u64 = if !is_read {
         size_of::<VirtioBlkReqHeader>() as u64
     } else {
         0
     };
-
-    // For reads, the status byte is the last byte of the writable area.
-    // For writes, exclude the header bytes we need to skip.
-    // Use saturating_sub in both cases to guard against a malicious guest
-    // providing a descriptor chain shorter than expected.
     let data_len = if is_read {
         total_payload.saturating_sub(1)
     } else {
         total_payload.saturating_sub(skip_bytes)
     };
 
-    let mut remaining_data = data_len;
-
-    for payload in &work.payload {
-        if payload.writeable != writable || remaining_data == 0 {
-            continue;
-        }
-
-        let mut addr = payload.address;
-        let mut plen = payload.length as u64;
-
-        // Skip header bytes for write operations.
-        if skip_bytes > 0 {
-            let s = skip_bytes.min(plen);
-            addr += s;
-            plen -= s;
-            skip_bytes -= s;
-        }
-
-        if plen == 0 {
-            continue;
-        }
-
-        // Don't exceed the data area (exclude status byte for reads).
-        let chunk = plen.min(remaining_data);
-        remaining_data -= chunk;
-
-        const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
-
-        let first_gpn = addr / PAGE_SIZE;
-        let last_gpn = (addr + chunk - 1) / PAGE_SIZE;
-        let gpns: Vec<u64> = (first_gpn..=last_gpn).collect();
-        let offset = (addr % PAGE_SIZE) as usize;
-        let range = PagedRange::new(offset, chunk as usize, &gpns).ok_or(VIRTIO_BLK_S_IOERR)?;
-        let buffers = RequestBuffers::new(mem, range, is_read);
-
-        if is_read {
-            disk.read_vectored(&buffers, current_sector)
-                .await
-                .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-        } else {
-            disk.write_vectored(&buffers, current_sector, false)
-                .await
-                .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-        }
-
-        current_sector += chunk >> sector_shift;
-        total_data += chunk;
+    if data_len == 0 {
+        return Ok((0, false));
     }
 
-    Ok(if is_read { total_data as u32 } else { 0 })
+    let regions = data_regions(&work.payload, writable, skip_bytes, data_len);
+
+    let (io_mem, io_range, bounced) =
+        if let Some((gpns, offset, len)) = try_build_gpn_list(&regions) {
+            // Fast path: descriptor chain is PagedRange-compatible.
+            (None, OwnedPagedRange { gpns, offset, len }, false)
+        } else {
+            // Slow path: allocate a bounce buffer.
+            let data_len_usize = data_len as usize;
+            let bounce_mem = GuestMemory::allocate(data_len_usize);
+            let num_pages = data_len_usize.div_ceil(guestmem::PAGE_SIZE);
+            let gpns: Vec<u64> = (0..num_pages as u64).collect();
+
+            if !is_read {
+                copy_regions(mem, &bounce_mem, &regions)?;
+            }
+
+            (
+                Some(bounce_mem),
+                OwnedPagedRange {
+                    gpns,
+                    offset: 0,
+                    len: data_len_usize,
+                },
+                true,
+            )
+        };
+
+    let effective_mem = io_mem.as_ref().unwrap_or(mem);
+    let range =
+        PagedRange::new(io_range.offset, io_range.len, &io_range.gpns).ok_or(VIRTIO_BLK_S_IOERR)?;
+    let buffers = RequestBuffers::new(effective_mem, range, is_read);
+
+    if is_read {
+        disk.read_vectored(&buffers, start_disk_sector)
+            .await
+            .map_err(|_| VIRTIO_BLK_S_IOERR)?;
+    } else {
+        disk.write_vectored(&buffers, start_disk_sector, false)
+            .await
+            .map_err(|_| VIRTIO_BLK_S_IOERR)?;
+    }
+
+    if bounced && is_read {
+        copy_regions(io_mem.as_ref().unwrap(), mem, &regions)?;
+    }
+
+    Ok((if is_read { io_range.len as u32 } else { 0 }, bounced))
 }
 
 /// Write the status byte to the last writable byte in the descriptor chain.
@@ -629,4 +777,292 @@ fn write_status_byte(
         return Err(virtio::VirtioWriteError::NotAllWritten(1));
     }
     work.write_at_offset(writable_len - 1, mem, &[status])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use virtio::queue::VirtioQueuePayload;
+
+    fn payload(writeable: bool, address: u64, length: u32) -> VirtioQueuePayload {
+        VirtioQueuePayload {
+            writeable,
+            address,
+            length,
+        }
+    }
+
+    // ---- data_regions tests ----
+
+    #[test]
+    fn data_regions_read_single_descriptor() {
+        // Read: writable descriptors carry data, skip=0, exclude 1 byte for status.
+        let payloads = vec![payload(true, 0x1000, 4097)];
+        let regions = data_regions(&payloads, true, 0, 4096);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].addr, 0x1000);
+        assert_eq!(regions[0].len, 4096);
+    }
+
+    #[test]
+    fn data_regions_write_skips_header() {
+        // Write: readable descriptors carry data, skip header (16 bytes).
+        let payloads = vec![
+            payload(false, 0x1000, 16),  // header
+            payload(false, 0x2000, 512), // data
+        ];
+        let regions = data_regions(&payloads, false, 16, 512);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].addr, 0x2000);
+        assert_eq!(regions[0].len, 512);
+    }
+
+    #[test]
+    fn data_regions_write_header_spans_descriptors() {
+        // Header split across two descriptors.
+        let payloads = vec![
+            payload(false, 0x1000, 8),   // first 8 bytes of header
+            payload(false, 0x2000, 520), // remaining 8 header + 512 data
+        ];
+        let regions = data_regions(&payloads, false, 16, 512);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].addr, 0x2008); // 0x2000 + 8 skipped
+        assert_eq!(regions[0].len, 512);
+    }
+
+    #[test]
+    fn data_regions_filters_by_direction() {
+        // Readable and writable descriptors interleaved.
+        let payloads = vec![
+            payload(false, 0x1000, 16),  // readable: header
+            payload(true, 0x3000, 4097), // writable: data + status
+        ];
+        // Extract writable regions (read path).
+        let regions = data_regions(&payloads, true, 0, 4096);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].addr, 0x3000);
+        assert_eq!(regions[0].len, 4096);
+    }
+
+    #[test]
+    fn data_regions_empty_payload() {
+        let payloads: Vec<VirtioQueuePayload> = vec![];
+        let regions = data_regions(&payloads, true, 0, 4096);
+        assert!(regions.is_empty());
+    }
+
+    // ---- try_build_gpn_list tests ----
+
+    #[test]
+    fn gpn_list_single_page_aligned_region() {
+        let regions = vec![DataRegion {
+            addr: 0x1000,
+            len: 4096,
+        }];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1]); // GPN 1 = addr 0x1000
+        assert_eq!(offset, 0);
+        assert_eq!(len, 4096);
+    }
+
+    #[test]
+    fn gpn_list_single_region_with_offset() {
+        let regions = vec![DataRegion {
+            addr: 0x1200,
+            len: 512,
+        }];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1]);
+        assert_eq!(offset, 0x200);
+        assert_eq!(len, 512);
+    }
+
+    #[test]
+    fn gpn_list_single_region_spanning_pages() {
+        // 8192 bytes starting at page boundary → 2 pages.
+        let regions = vec![DataRegion {
+            addr: 0x2000,
+            len: 8192,
+        }];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![2, 3]);
+        assert_eq!(offset, 0);
+        assert_eq!(len, 8192);
+    }
+
+    #[test]
+    fn gpn_list_two_page_aligned_non_contiguous_regions() {
+        // Two regions on different pages, both page-aligned boundaries.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4096,
+            },
+            DataRegion {
+                addr: 0x5000,
+                len: 4096,
+            },
+        ];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1, 5]);
+        assert_eq!(offset, 0);
+        assert_eq!(len, 8192);
+    }
+
+    #[test]
+    fn gpn_list_two_gpa_contiguous_regions() {
+        // Two regions that are GPA-contiguous (end of first == start of second).
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4096,
+            },
+            DataRegion {
+                addr: 0x2000,
+                len: 4096,
+            },
+        ];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1, 2]);
+        assert_eq!(offset, 0);
+        assert_eq!(len, 8192);
+    }
+
+    #[test]
+    fn gpn_list_contiguous_mid_page_boundary() {
+        // Two GPA-contiguous regions sharing a page in the middle.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4608,
+            }, // ends at 0x2200
+            DataRegion {
+                addr: 0x2200,
+                len: 3584,
+            }, // starts at 0x2200, ends at 0x3000
+        ];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1, 2]);
+        assert_eq!(offset, 0);
+        assert_eq!(len, 8192);
+    }
+
+    #[test]
+    fn gpn_list_non_contiguous_non_aligned_fails() {
+        // Two non-contiguous regions where the boundary isn't page-aligned.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4608,
+            }, // ends at 0x2200, not page-aligned
+            DataRegion {
+                addr: 0x5200,
+                len: 512,
+            }, // different location, not page-aligned start
+        ];
+        assert!(try_build_gpn_list(&regions).is_none());
+    }
+
+    #[test]
+    fn gpn_list_non_contiguous_first_aligned_second_not() {
+        // First ends page-aligned, but second starts mid-page.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4096,
+            }, // ends at 0x2000 (aligned)
+            DataRegion {
+                addr: 0x5200,
+                len: 512,
+            }, // starts at 0x5200 (not aligned)
+        ];
+        assert!(try_build_gpn_list(&regions).is_none());
+    }
+
+    #[test]
+    fn gpn_list_non_contiguous_first_not_aligned_second_aligned() {
+        // First ends mid-page, second starts page-aligned.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4608,
+            }, // ends at 0x2200 (not aligned)
+            DataRegion {
+                addr: 0x5000,
+                len: 4096,
+            }, // starts page-aligned
+        ];
+        assert!(try_build_gpn_list(&regions).is_none());
+    }
+
+    #[test]
+    fn gpn_list_empty_regions() {
+        let regions: Vec<DataRegion> = vec![];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert!(gpns.is_empty());
+        assert_eq!(offset, 0);
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn gpn_list_three_page_aligned_regions() {
+        // Three separate page-aligned regions.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4096,
+            },
+            DataRegion {
+                addr: 0x3000,
+                len: 4096,
+            },
+            DataRegion {
+                addr: 0x7000,
+                len: 4096,
+            },
+        ];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1, 3, 7]);
+        assert_eq!(offset, 0);
+        assert_eq!(len, 12288);
+    }
+
+    #[test]
+    fn gpn_list_first_region_with_offset_second_page_aligned() {
+        // First region starts mid-page but ends at page boundary,
+        // second region starts at a different page boundary.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1800,
+                len: 2048,
+            }, // 0x1800..0x2000
+            DataRegion {
+                addr: 0x5000,
+                len: 4096,
+            }, // 0x5000..0x6000
+        ];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        assert_eq!(gpns, vec![1, 5]);
+        assert_eq!(offset, 0x800);
+        assert_eq!(len, 6144);
+    }
+
+    #[test]
+    fn gpn_list_validates_paged_range_construction() {
+        // Verify that the returned values actually produce a valid PagedRange.
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 4096,
+            },
+            DataRegion {
+                addr: 0x5000,
+                len: 8192,
+            },
+        ];
+        let (gpns, offset, len) = try_build_gpn_list(&regions).unwrap();
+        let range = PagedRange::new(offset, len, &gpns);
+        assert!(range.is_some());
+        assert_eq!(range.unwrap().len(), 12288);
+    }
 }
