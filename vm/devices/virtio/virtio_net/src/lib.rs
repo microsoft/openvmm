@@ -408,7 +408,6 @@ struct QueueStats {
 struct ActiveState {
     #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
-    #[inspect(skip)]
     pending_rx_packets: VirtioWorkPool,
     data: ProcessingData,
     stats: QueueStats,
