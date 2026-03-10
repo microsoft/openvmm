@@ -275,6 +275,7 @@ impl DiagState {
 
 #[derive(Inspect)]
 struct Workers {
+    #[inspect(safe)]
     vm: WorkerHandle,
     #[inspect(skip)]
     vm_rpc: mesh::Sender<UhVmRpc>,

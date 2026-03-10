@@ -717,7 +717,7 @@ struct Inner {
 pub struct VpSet {
     #[inspect(flatten)]
     inner: Arc<Inner>,
-    #[inspect(rename = "vp", iter_by_index)]
+    #[inspect(rename = "vp", iter_by_index, safe)]
     vps: Vec<Vp>,
     #[inspect(skip)]
     started: bool,
