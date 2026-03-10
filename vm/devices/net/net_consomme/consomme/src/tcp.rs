@@ -727,7 +727,6 @@ impl TcpConnection {
 
         // Immediately transition to SynReceived so the handshake SYN-ACK is sent.
         inner.state = TcpState::SynReceived;
-        inner.rx_window_cap = inner.rx_buffer.capacity();
         inner.send_syn(sender, Some(inner.rx_seq));
 
         Ok(Self {
