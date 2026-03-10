@@ -8,6 +8,9 @@
 pub mod resolver;
 mod spec;
 
+#[cfg(test)]
+mod integration_tests;
+
 use crate::spec::*;
 use disk_backend::Disk;
 use futures::StreamExt;
@@ -469,8 +472,8 @@ async fn process_request_inner(
     }
 
     let request_type = header.request_type;
-    let sector_shift = disk.sector_shift() - 9; // convert from disk sector size to 512-byte units
-    let disk_sector = header.sector << sector_shift;
+    let sector_shift = disk.sector_shift() - 9; // convert from 512-byte virtio sectors to disk sectors
+    let disk_sector = header.sector >> sector_shift;
 
     match request_type {
         VIRTIO_BLK_T_IN => {
@@ -525,7 +528,7 @@ async fn process_request_inner(
             if seg.flags != 0 {
                 return Err(VIRTIO_BLK_S_UNSUPP);
             }
-            let disk_count = (seg.num_sectors as u64) << sector_shift;
+            let disk_count = (seg.num_sectors as u64) >> sector_shift;
             disk.unmap(disk_sector, disk_count, false)
                 .await
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
