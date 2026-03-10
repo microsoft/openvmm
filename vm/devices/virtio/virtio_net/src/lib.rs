@@ -17,12 +17,8 @@ pub mod resolver;
 #[cfg(test)]
 mod tests;
 
-// use anyhow::Context;
 use crate::buffers::VirtioWorkPool;
 use bitfield_struct::bitfield;
-use futures::FutureExt;
-use futures::StreamExt;
-use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
