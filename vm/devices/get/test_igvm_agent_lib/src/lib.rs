@@ -177,6 +177,15 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 ]),
             );
         }
+        IgvmAttestTestConfig::KeyReleaseFailure => {
+            plan.insert(
+                IgvmAttestRequestType::KEY_RELEASE_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondFailure,
+                ]),
+            );
+        }
     }
 
     plan

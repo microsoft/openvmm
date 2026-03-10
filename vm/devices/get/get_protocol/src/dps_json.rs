@@ -121,7 +121,7 @@ pub enum GuestStateEncryptionPolicy {
     /// Prefer (or require, if strict) GspById.
     ///
     /// This prevents a VM from being created as or migrated to GspKey even
-    /// if it is available. Exisiting GspKey encryption will be used unless
+    /// if it is available. Existing GspKey encryption will be used unless
     /// strict encryption policy is enabled. Fails if the data cannot be
     /// encrypted.
     GspById,
@@ -131,8 +131,9 @@ pub enum GuestStateEncryptionPolicy {
     /// be used if GspKey is unavailable unless strict encryption policy is
     /// enabled. Fails if the data cannot be encrypted.
     GspKey,
-    /// Use hardware sealing
-    // TODO: update this doc comment once hardware sealing is implemented
+    /// Use hardware sealing exclusively.
+    ///
+    /// Expect to be set only when `no_persistent_secrets` is true on CVMs.
     HardwareSealing,
 }
 
@@ -147,6 +148,23 @@ open_enum! {
         /// All logs
         FULL = 2,
     }
+}
+
+/// Hardware sealing policy
+///
+/// Used when `no_persistent_secrets` is true
+/// By default, the policy will be applied to hardware-sealing-based
+/// VMGS DEK backup on CVMs. If [`GuestStateEncryptionPolicy::HardwareSealing`]
+/// is selected, this policy will be applied to the exclusive hardware sealing.
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
+pub enum HardwareSealingPolicy {
+    /// No hardware sealing
+    #[default]
+    NoSealing,
+    /// Hash-based hardware sealing
+    HashPolicy,
+    /// Signer-based hardware sealing
+    SignerPolicy,
 }
 
 /// Management VTL Feature Flags
@@ -166,7 +184,7 @@ pub struct ManagementVtlFeatures {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct HclDevicePlatformSettingsV2Static {
-    //UEFI flags
+    // UEFI flags
     pub legacy_memory_map: bool,
     pub pause_after_boot_failure: bool,
     pub pxe_ip_v6: bool,
@@ -221,6 +239,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub management_vtl_features: ManagementVtlFeatures,
     #[serde(default)]
     pub hv_sint_enabled: bool,
+    #[serde(default)]
+    pub hardware_sealing_policy: HardwareSealingPolicy,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

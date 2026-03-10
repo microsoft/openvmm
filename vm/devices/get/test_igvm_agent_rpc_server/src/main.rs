@@ -30,6 +30,8 @@ enum TestConfig {
     AkCertPersistentAcrossBoot,
     /// Test skip hardware unsealing signal from IGVM Agent
     KeyReleaseFailureSkipHwUnsealing,
+    /// Test key release failure without skip_hw_unsealing signal
+    KeyReleaseFailure,
 }
 
 impl From<TestConfig> for IgvmAttestTestConfig {
@@ -44,6 +46,7 @@ impl From<TestConfig> for IgvmAttestTestConfig {
             TestConfig::KeyReleaseFailureSkipHwUnsealing => {
                 IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing
             }
+            TestConfig::KeyReleaseFailure => IgvmAttestTestConfig::KeyReleaseFailure,
         }
     }
 }

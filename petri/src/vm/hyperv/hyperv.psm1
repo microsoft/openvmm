@@ -791,6 +791,21 @@ function Set-GuestStateIsolationMode
     Set-VmSystemSettings $vssd
 }
 
+function Set-ManagementVtlEncryptionPolicy
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object] $Vm,
+
+        [int] $Policy
+    )
+
+    $vssd = Get-VmSystemSettings $Vm
+    $vssd.ManagementVtlEncryptionPolicy = $Policy
+    Set-VmSystemSettings $vssd
+}
+
 #
 # CIM Helpers
 #

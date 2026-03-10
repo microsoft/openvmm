@@ -5,6 +5,7 @@ use anyhow::Context;
 use anyhow::ensure;
 use petri::PetriGuestStateLifetime;
 use petri::PetriHaltReason;
+use petri::PetriHardwareSealingPolicy;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ResolvedArtifact;
@@ -182,6 +183,88 @@ impl<'a> TpmGuestTests<'a> {
                 let sh = self.agent.windows_shell();
                 cmd!(sh, "{guest_binary_path}")
                     .args(["report", "--show-runtime-claims"])
+                    .read()
+                    .await
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Define an NV index with the given size.
+    async fn nv_define(&self, index: &str, size: &str) -> anyhow::Result<String> {
+        let guest_binary_path = &self.guest_binary_path;
+        match self.os_flavor {
+            OsFlavor::Linux => {
+                let sh = self.agent.unix_shell();
+                cmd!(sh, "{guest_binary_path}")
+                    .args(["nv_define", "--index", index, "--size", size])
+                    .read()
+                    .await
+            }
+            OsFlavor::Windows => {
+                let sh = self.agent.windows_shell();
+                cmd!(sh, "{guest_binary_path}")
+                    .args(["nv_define", "--index", index, "--size", size])
+                    .read()
+                    .await
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Write hex data to an NV index.
+    async fn nv_write(&self, index: &str, data_hex: &str) -> anyhow::Result<String> {
+        let guest_binary_path = &self.guest_binary_path;
+        match self.os_flavor {
+            OsFlavor::Linux => {
+                let sh = self.agent.unix_shell();
+                cmd!(sh, "{guest_binary_path}")
+                    .args(["nv_write", "--index", index, "--data-hex", data_hex])
+                    .read()
+                    .await
+            }
+            OsFlavor::Windows => {
+                let sh = self.agent.windows_shell();
+                cmd!(sh, "{guest_binary_path}")
+                    .args(["nv_write", "--index", index, "--data-hex", data_hex])
+                    .read()
+                    .await
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Read an NV index and verify against expected hex data.
+    async fn nv_read_with_expected_hex(
+        &self,
+        index: &str,
+        expected_hex: &str,
+    ) -> anyhow::Result<String> {
+        let guest_binary_path = &self.guest_binary_path;
+        match self.os_flavor {
+            OsFlavor::Linux => {
+                let sh = self.agent.unix_shell();
+                cmd!(sh, "{guest_binary_path}")
+                    .args([
+                        "nv_read",
+                        "--index",
+                        index,
+                        "--expected-data-hex",
+                        expected_hex,
+                    ])
+                    .read()
+                    .await
+            }
+            OsFlavor::Windows => {
+                let sh = self.agent.windows_shell();
+                cmd!(sh, "{guest_binary_path}")
+                    .args([
+                        "nv_read",
+                        "--index",
+                        index,
+                        "--expected-data-hex",
+                        expected_hex,
+                    ])
                     .read()
                     .await
             }
@@ -564,6 +647,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// `KeyReleaseFailureSkipHwUnsealing` configuration.
 #[cfg(windows)]
 #[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
     hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
 )]
 async fn skip_hwun_seal<T, S, U: PetriVmmBackend>(
@@ -584,6 +668,7 @@ async fn skip_hwun_seal<T, S, U: PetriVmmBackend>(
         .await?;
 
     let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
         OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
         _ => unreachable!(),
     };
@@ -667,5 +752,277 @@ async fn tpm_servicing<T: PetriVmmBackend>(
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test that KEY_RELEASE failure without skip_hw_unsealing signal allows
+/// hardware unsealing fallback to succeed.
+///
+/// First boot: KEY_RELEASE succeeds, VMGS is encrypted with hardware
+/// key protector, TPM state is sealed.  AK cert is verified.
+/// Second boot: KEY_RELEASE fails (plain failure, no skip_hw_unsealing
+/// signal), hardware unsealing fallback is attempted and succeeds because
+/// the hardware key protector was saved on first boot.  The VM boots
+/// normally and the AK cert remains accessible.
+///
+/// The test function name contains `hw_unseal` so the per-VM agent
+/// registry in test_igvm_agent_rpc_server matches it to the
+/// `KeyReleaseFailure` configuration.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn hw_unseal<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(true)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    // First boot: KEY_RELEASE succeeds. Verify AK cert is present.
+    let expected_hex = expected_ak_cert_hex();
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        format!("{ak_cert_output}")
+    );
+
+    // Reboot: triggers second KEY_RELEASE which fails (plain failure,
+    // no skip_hw_unsealing signal).  Hardware unsealing fallback kicks
+    // in and succeeds — the VM boots normally.
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    // Verify AK cert is still accessible after the hw unsealing fallback.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    let ak_cert_output = tpm_guest_tests
+        .read_ak_cert_with_expected_hex(expected_hex.as_str())
+        .await?;
+
+    ensure!(
+        ak_cert_output.contains("AK certificate matches expected value"),
+        "AK cert should still be accessible after hw unsealing fallback: {ak_cert_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// NV index used by the hardware sealing persistence tests.
+#[cfg(windows)]
+const TEST_NV_INDEX: &str = "0x1500016";
+/// Size of the test NV index in bytes.
+#[cfg(windows)]
+const TEST_NV_SIZE: &str = "64";
+/// Test data written to the NV index (hex).
+#[cfg(windows)]
+const TEST_NV_DATA_HEX: &str = "0xdeadbeefcafebabe0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738";
+
+/// Test that hardware sealing with hash-based key derivation persists
+/// TPM NV index data across reboots.
+///
+/// Configuration: `no_persistent_secrets=true` (NoPersistentSecrets
+/// isolation) with `HardwareSealedSecretsHashPolicy`.  The VMGS is
+/// encrypted using a hardware-sealed key derived from the measurement
+/// hash.
+///
+/// First boot: define NV index, write test data, read and verify.
+/// Second boot: read the same NV index and verify data persisted.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn hw_seal_hash<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(false)
+        .with_hardware_sealing_policy(PetriHardwareSealingPolicy::HashPolicy)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    // First boot: define NV index, write test data, read and verify.
+    let define_output = tpm_guest_tests
+        .nv_define(TEST_NV_INDEX, TEST_NV_SIZE)
+        .await?;
+    ensure!(
+        define_output.contains("defined successfully"),
+        "NV define should succeed: {define_output}"
+    );
+
+    let write_output = tpm_guest_tests
+        .nv_write(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+        .await?;
+    ensure!(
+        write_output.contains("succeeded"),
+        "NV write should succeed: {write_output}"
+    );
+
+    let read_output = tpm_guest_tests
+        .nv_read_with_expected_hex(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+        .await?;
+    ensure!(
+        read_output.contains("matches expected value"),
+        "NV read should match on first boot: {read_output}"
+    );
+
+    // Reboot to test persistence.
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    // Second boot: re-send the binary and verify NV data persisted.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    let read_output = tpm_guest_tests
+        .nv_read_with_expected_hex(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+        .await?;
+    ensure!(
+        read_output.contains("matches expected value"),
+        "NV data should persist across reboot with HashPolicy: {read_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Test that hardware sealing with signer-based key derivation persists
+/// TPM NV index data across reboots.
+///
+/// Same as `hw_seal_hash` but uses `HardwareSealedSecretsSignerPolicy`
+/// instead.
+#[cfg(windows)]
+#[vmm_test(
+    hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+    hyperv_openhcl_uefi_x64[snp](vhd(windows_datacenter_core_2025_x64_prepped))[TPM_GUEST_TESTS_WINDOWS_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
+)]
+async fn hw_seal_signer<T, S, U: PetriVmmBackend>(
+    config: PetriVmBuilder<U>,
+    extra_deps: (ResolvedArtifact<T>, ResolvedArtifact<S>),
+) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (tpm_guest_tests_artifact, rpc_server_artifact) = extra_deps;
+
+    let rpc_server_path = rpc_server_artifact.get();
+    let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
+
+    let (mut vm, agent) = config
+        .with_tpm(true)
+        .with_tpm_state_persistence(false)
+        .with_hardware_sealing_policy(PetriHardwareSealingPolicy::SignerPolicy)
+        .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
+        .run()
+        .await?;
+
+    let guest_binary_path = match os_flavor {
+        OsFlavor::Linux => TPM_GUEST_TESTS_LINUX_GUEST_PATH,
+        OsFlavor::Windows => TPM_GUEST_TESTS_WINDOWS_GUEST_PATH,
+        _ => unreachable!(),
+    };
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    // First boot: define NV index, write test data, read and verify.
+    let define_output = tpm_guest_tests
+        .nv_define(TEST_NV_INDEX, TEST_NV_SIZE)
+        .await?;
+    ensure!(
+        define_output.contains("defined successfully"),
+        "NV define should succeed: {define_output}"
+    );
+
+    let write_output = tpm_guest_tests
+        .nv_write(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+        .await?;
+    ensure!(
+        write_output.contains("succeeded"),
+        "NV write should succeed: {write_output}"
+    );
+
+    let read_output = tpm_guest_tests
+        .nv_read_with_expected_hex(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+        .await?;
+    ensure!(
+        read_output.contains("matches expected value"),
+        "NV read should match on first boot: {read_output}"
+    );
+
+    // Reboot to test persistence.
+    agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
+
+    // Second boot: re-send the binary and verify NV data persisted.
+    let host_binary_path = tpm_guest_tests_artifact.get();
+    let tpm_guest_tests =
+        TpmGuestTests::send_tpm_guest_tests(&agent, host_binary_path, guest_binary_path, os_flavor)
+            .await?;
+
+    let read_output = tpm_guest_tests
+        .nv_read_with_expected_hex(TEST_NV_INDEX, TEST_NV_DATA_HEX)
+        .await?;
+    ensure!(
+        read_output.contains("matches expected value"),
+        "NV data should persist across reboot with SignerPolicy: {read_output}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
     Ok(())
 }

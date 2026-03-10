@@ -104,6 +104,7 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::HardwareSealingPolicy;
 use openhcl_dma_manager::AllocationVisibility;
 use openhcl_dma_manager::DmaClientParameters;
 use openhcl_dma_manager::DmaClientSpawner;
@@ -1953,6 +1954,23 @@ async fn new_underhill_vm(
         tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
     }
 
+    let tpm_persisted = !dps.general.suppress_attestation.unwrap_or(false);
+    let hardware_sealing_policy = if tpm_persisted {
+        // If TPM is persisted, use the hash policy to match the existing implementation.
+        // TODO: Support sealing policy for persisted TPM mode.
+        HardwareSealingPolicy::Hash
+    } else {
+        match dps.general.hardware_sealing_policy {
+            get_protocol::dps_json::HardwareSealingPolicy::NoSealing => HardwareSealingPolicy::None,
+            get_protocol::dps_json::HardwareSealingPolicy::HashPolicy => {
+                HardwareSealingPolicy::Hash
+            }
+            get_protocol::dps_json::HardwareSealingPolicy::SignerPolicy => {
+                HardwareSealingPolicy::Signer
+            }
+        }
+    };
+
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
     // - stateless mode (isolated VM with attestation suppressed)
@@ -1970,7 +1988,8 @@ async fn new_underhill_vm(
         interactive_console_enabled: interactive_console,
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
-        tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
+        tpm_persisted,
+        hardware_sealing_policy,
         filtered_vpci_devices_allowed: with_vmbus_relay
             && dps.general.vpci_boot_enabled
             && isolation.is_isolated(),
@@ -2880,14 +2899,32 @@ async fn new_underhill_vm(
         });
 
     if dps.general.tpm_enabled {
-        let no_persistent_secrets =
-            vmgs_client.is_none() || dps.general.suppress_attestation.unwrap_or(false);
+        let no_persistent_secrets = vmgs_client.is_none()
+            || (dps.general.suppress_attestation.unwrap_or(false)
+                && matches!(
+                    attestation_vm_config.hardware_sealing_policy,
+                    HardwareSealingPolicy::None
+                ));
         let (ppi_store, nvram_store) = if no_persistent_secrets {
+            tracing::info!(
+                CVM_ALLOWED,
+                suppress_attestation=?dps.general.suppress_attestation,
+                hardware_sealing_policy=?attestation_vm_config.hardware_sealing_policy,
+                "TPM configured without persistent secrets, using ephemeral stores"
+            );
+
             (
                 EphemeralNonVolatileStoreHandle.into_resource(),
                 EphemeralNonVolatileStoreHandle.into_resource(),
             )
         } else {
+            tracing::info!(
+                CVM_ALLOWED,
+                suppress_attestation=?dps.general.suppress_attestation,
+                hardware_sealing_policy=?attestation_vm_config.hardware_sealing_policy,
+                "TPM configured with persistent secrets, using VMGS stores"
+            );
+
             (
                 VmgsFileHandle::new(vmgs::FileId::TPM_PPI, true).into_resource(),
                 VmgsFileHandle::new(vmgs::FileId::TPM_NVRAM, true).into_resource(),
@@ -3670,6 +3707,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         suppress_attestation: _,
         bios_guid: _,
         vpci_boot_enabled: _,
+        hardware_sealing_policy: _,
 
         // Validated below
         processor_idle_enabled,

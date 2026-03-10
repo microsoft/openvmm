@@ -31,6 +31,7 @@ pub mod platform_settings {
     use get_protocol::dps_json::EfiDiagnosticsLogLevelType;
     use get_protocol::dps_json::GuestStateEncryptionPolicy;
     use get_protocol::dps_json::GuestStateLifetime;
+    use get_protocol::dps_json::HardwareSealingPolicy;
     use get_protocol::dps_json::ManagementVtlFeatures;
     use guid::Guid;
     use inspect::Inspect;
@@ -135,6 +136,8 @@ pub mod platform_settings {
         pub guest_state_encryption_policy: GuestStateEncryptionPolicy,
         #[inspect(debug)]
         pub management_vtl_features: ManagementVtlFeatures,
+        #[inspect(debug)]
+        pub hardware_sealing_policy: HardwareSealingPolicy,
         pub hv_sint_enabled: bool,
     }
 

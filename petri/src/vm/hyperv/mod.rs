@@ -18,6 +18,7 @@ use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
 use crate::PetriHaltReason;
+use crate::PetriHardwareSealingPolicy;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
 use crate::PetriVmRuntime;
@@ -550,6 +551,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
         // Configure the TPM
         if let Some(TpmConfig {
             no_persistent_secrets,
+            hardware_sealing_policy,
         }) = tpm
         {
             if generation == powershell::HyperVGeneration::One {
@@ -564,6 +566,19 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     powershell::HyperVGuestStateIsolationMode::Default
                 })
                 .await?;
+
+                if hardware_sealing_policy != PetriHardwareSealingPolicy::Default {
+                    vm.set_management_vtl_encryption_policy(match hardware_sealing_policy {
+                        PetriHardwareSealingPolicy::HashPolicy => {
+                            powershell::HyperVManagementVtlEncryptionPolicy::HardwareSealedSecretsHashPolicy
+                        }
+                        PetriHardwareSealingPolicy::SignerPolicy => {
+                            powershell::HyperVManagementVtlEncryptionPolicy::HardwareSealedSecretsSignerPolicy
+                        }
+                        PetriHardwareSealingPolicy::Default => unreachable!(),
+                    })
+                    .await?;
+                }
             } else if no_persistent_secrets {
                 anyhow::bail!("no persistent secrets requires an hcl");
             }
