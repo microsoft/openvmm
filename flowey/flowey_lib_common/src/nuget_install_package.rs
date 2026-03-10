@@ -179,36 +179,19 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
                     // Copy the nuget.config alongside the .csproj so dotnet
                     // picks it up automatically, filtering out the
                     // packages.config-era `repositoryPath` setting
-                    // (only inside `<config>` sections — don't accidentally
-                    // strip identically-named keys from other sections).
+                    // that lives under `<config>` and conflicts with
+                    // the `--packages` flag we pass to `dotnet restore`.
                     let local_nuget_config = restore_work_dir_path.join("nuget.config");
                     let config_content = fs_err::read_to_string(&nuget_config_file)?;
-                    let filtered_config = {
-                        let mut in_config_section = false;
-                        config_content
-                            .lines()
-                            .filter(|line| {
-                                let trimmed = line.trim();
-                                if trimmed.starts_with("<config") {
-                                    in_config_section = true;
-                                } else if trimmed.starts_with("</config") {
-                                    in_config_section = false;
-                                }
-                                // Only strip repositoryPath from <config> sections
-                                !(in_config_section
-                                    && trimmed.to_lowercase().contains("key=\"repositorypath\""))
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    };
-                    fs_err::write(&local_nuget_config, &filtered_config)?;
+                    let parsed = parse_nuget_config(&config_content)?;
+                    fs_err::write(&local_nuget_config, &parsed.filtered_config)?;
 
                     // On the Local backend, obtain an Azure DevOps session
                     // token from `az` CLI and pass it to the credential
                     // provider via the VSS_NUGET_EXTERNAL_FEED_ENDPOINTS
                     // env var (the same mechanism ADO CI uses).
                     let feed_endpoints_json = if matches!(rt.backend(), FlowBackend::Local) {
-                        get_feed_endpoints_json(rt, &filtered_config)?
+                        get_feed_endpoints_json(rt, parsed.feed_urls)?
                     } else {
                         None
                     };
@@ -270,6 +253,74 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
     }
 }
 
+/// Parsed nuget.config with `repositoryPath` entries removed and
+/// feed URLs extracted.
+struct ParsedNugetConfig {
+    /// The nuget.config content with `<add key="repositoryPath" …/>`
+    /// entries under `<config>` removed.
+    filtered_config: String,
+    /// Feed URLs from `<packageSources>`.
+    feed_urls: Vec<String>,
+}
+
+/// Parse a nuget.config file, stripping `repositoryPath` settings from
+/// `<config>` sections (they conflict with `dotnet restore --packages`)
+/// and extracting feed URLs from `<packageSources>`.
+fn parse_nuget_config(config_content: &str) -> anyhow::Result<ParsedNugetConfig> {
+    let doc = roxmltree::Document::parse(config_content)
+        .map_err(|e| anyhow::anyhow!("failed to parse nuget.config: {e}"))?;
+
+    // Find lines containing `<add key="repositoryPath" …/>`
+    // that are direct children of a `<config>` element.
+    let lines_to_remove: std::collections::HashSet<usize> = doc
+        .descendants()
+        .filter(|node| {
+            node.tag_name().name() == "add"
+                && node
+                    .parent()
+                    .is_some_and(|p| p.tag_name().name() == "config")
+                && node
+                    .attribute("key")
+                    .is_some_and(|k| k.eq_ignore_ascii_case("repositorypath"))
+        })
+        .map(|node| {
+            // Convert byte offset to 0-based line index.
+            config_content[..node.range().start]
+                .bytes()
+                .filter(|&b| b == b'\n')
+                .count()
+        })
+        .collect();
+
+    let feed_urls: Vec<String> = doc
+        .descendants()
+        .filter(|node| {
+            node.tag_name().name() == "add"
+                && node
+                    .parent()
+                    .is_some_and(|p| p.tag_name().name() == "packageSources")
+        })
+        .filter_map(|node| node.attribute("value").map(String::from))
+        .collect();
+
+    let filtered_config = if lines_to_remove.is_empty() {
+        config_content.to_owned()
+    } else {
+        config_content
+            .lines()
+            .enumerate()
+            .filter(|(i, _)| !lines_to_remove.contains(i))
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    Ok(ParsedNugetConfig {
+        filtered_config,
+        feed_urls,
+    })
+}
+
 /// Obtain an Azure DevOps session token via `az` CLI and build the
 /// `VSS_NUGET_EXTERNAL_FEED_ENDPOINTS` JSON for the credential provider.
 ///
@@ -291,10 +342,8 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
 /// Returns `None` if no Azure DevOps feeds are found in the nuget.config.
 fn get_feed_endpoints_json(
     rt: &mut RustRuntimeServices<'_>,
-    config_content: &str,
+    feed_urls: Vec<String>,
 ) -> anyhow::Result<Option<String>> {
-    let feed_urls = parse_nuget_feed_urls(config_content);
-
     // Filter to Azure DevOps feeds first — avoid requiring az/curl when the
     // config only contains public or third-party feeds (e.g. nuget.org).
     let ado_feeds: Vec<String> = feed_urls
@@ -404,25 +453,4 @@ fn move_dir(src: &Path, dest: &Path) -> anyhow::Result<()> {
 fn is_azure_devops_feed(url: &str) -> bool {
     let lower = url.to_lowercase();
     lower.contains("pkgs.dev.azure.com") || lower.contains(".pkgs.visualstudio.com")
-}
-
-/// Parse `<packageSources>` from nuget.config XML and return the feed URLs.
-fn parse_nuget_feed_urls(config_content: &str) -> Vec<String> {
-    let doc = match roxmltree::Document::parse(config_content) {
-        Ok(doc) => doc,
-        Err(e) => {
-            log::warn!("failed to parse nuget.config as XML: {e}");
-            return Vec::new();
-        }
-    };
-
-    doc.descendants()
-        .filter(|node| {
-            node.tag_name().name() == "add"
-                && node
-                    .parent()
-                    .is_some_and(|p| p.tag_name().name() == "packageSources")
-        })
-        .filter_map(|node| node.attribute("value").map(String::from))
-        .collect()
 }
