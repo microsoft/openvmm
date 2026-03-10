@@ -41,7 +41,6 @@ use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-const PAGE_SIZE: u64 = 4096;
 const MAX_IO_DEPTH: usize = 64;
 
 /// The virtio-blk device.
@@ -594,6 +593,8 @@ async fn do_io_per_descriptor(
         // Don't exceed the data area (exclude status byte for reads).
         let chunk = plen.min(remaining_data);
         remaining_data -= chunk;
+
+        const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
 
         let first_gpn = addr / PAGE_SIZE;
         let last_gpn = (addr + chunk - 1) / PAGE_SIZE;
