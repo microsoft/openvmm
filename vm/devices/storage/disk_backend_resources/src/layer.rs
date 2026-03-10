@@ -18,6 +18,8 @@ pub struct RamDiskLayerHandle {
     /// The size of the layer. If `None`, the layer will be the same size as the
     /// lower disk.
     pub len: Option<u64>,
+    /// The sector size in bytes. If `None`, defaults to 512.
+    pub sector_size: Option<u32>,
 }
 
 impl ResourceId<DiskLayerHandleKind> for RamDiskLayerHandle {

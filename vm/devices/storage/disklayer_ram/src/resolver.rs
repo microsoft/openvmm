@@ -40,7 +40,11 @@ impl ResolveResource<DiskLayerHandleKind, RamDiskLayerHandle> for RamDiskLayerRe
     ) -> Result<Self::Output, Self::Error> {
         Ok(match rsrc.len {
             Some(len) => {
-                ResolvedDiskLayer::new(RamDiskLayer::new(len).map_err(ResolveRamDiskError::Ram)?)
+                let sector_size = rsrc.sector_size.unwrap_or(512);
+                ResolvedDiskLayer::new(
+                    RamDiskLayer::new_with_sector_size(len, sector_size)
+                        .map_err(ResolveRamDiskError::Ram)?,
+                )
             }
             None => ResolvedDiskLayer::new(LazyRamDiskLayer::new()),
         })
