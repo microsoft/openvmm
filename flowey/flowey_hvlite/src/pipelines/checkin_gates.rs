@@ -1027,39 +1027,65 @@ impl IntoPipeline for CheckinGatesCli {
 
         // Emit VMM tests runner jobs
         //
-        // For GitHub PR pipelines, first create a lightweight "classify PR
-        // changes" job that determines whether the PR only touches non-product
-        // files (e.g. Guide/**, repo_support/**/*.py).  When the result is
-        // `is_non_product == 'true'`, each vmm-tests runner job is skipped via
-        // its `if:` condition.
-        let classify_pr_job_handle =
-            if matches!((config, backend_hint), (PipelineConfig::Pr, PipelineBackendHint::Github)) {
-                let classify_job = pipeline
-                    .new_job(
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                        FlowArch::X86_64,
-                        "classify PR changes",
-                    )
-                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-                    .gh_override_job_id("classify_pr_changes")
-                    .gh_set_job_output(
-                        "is_non_product",
-                        flowey_lib_hvlite::check_pr_changes::IS_NON_PRODUCT_JOB_OUTPUT_EXPR,
-                    )
-                    .gh_grant_permissions::<flowey_lib_hvlite::check_pr_changes::Node>([(
-                        GhPermission::PullRequests,
-                        GhPermissionValue::Read,
-                    )])
-                    .dep_on(|ctx| flowey_lib_hvlite::check_pr_changes::Request {
-                        done: ctx.new_done_handle(),
-                    })
-                    .finish();
+        // For PR pipelines (GitHub and ADO), first create a lightweight
+        // "classify PR changes" job that determines whether the PR only touches
+        // non-product files (e.g. Guide/**, repo_support/**/*.py).
+        //
+        // When the result is `is_non_product == 'true'`, each vmm-tests runner
+        // job is skipped at the CI scheduler level (before any expensive
+        // artifact downloads occur) via a backend-appropriate job condition.
+        //
+        // For GitHub: `if: needs.<classify-job>.outputs.is_non_product != 'true'`
+        // For ADO:    `condition: and(succeeded(), ne(dependencies.<job>.outputs[...], 'true'))`
+        // For local:  no classify job; vmm-tests always run.
+        let classify_pr_job_handle = if matches!(config, PipelineConfig::Pr)
+            && matches!(
+                backend_hint,
+                PipelineBackendHint::Github | PipelineBackendHint::Ado
+            ) {
+            let mut classify_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "classify PR changes",
+                )
+                .dep_on(|ctx| flowey_lib_hvlite::check_pr_changes::Request {
+                    done: ctx.new_done_handle(),
+                });
 
-                all_jobs.push(classify_job.clone());
-                Some(classify_job)
-            } else {
-                None
+            classify_job = match backend_hint {
+                PipelineBackendHint::Github => classify_job
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                    .gh_set_job_output_from_env_var(
+                        "is_non_product",
+                        flowey_lib_hvlite::check_pr_changes::GH_ENV_IS_NON_PRODUCT,
+                    ),
+                PipelineBackendHint::Ado => classify_job.ado_set_pool(
+                    crate::pipelines_shared::ado_pools::default_x86_pool(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    ),
+                ),
+                _ => unreachable!(),
             };
+
+            let handle = classify_job.finish();
+            all_jobs.push(handle.clone());
+            Some(handle)
+        } else {
+            None
+        };
+
+        // Pre-compute backend-specific condition strings for vmm-tests jobs.
+        // These must be computed before the vmm_tests_run_job builders start
+        // mutably borrowing `pipeline`.
+        let gh_vmm_tests_condition = classify_pr_job_handle.as_ref().map(|h| {
+            let id = pipeline.gh_job_id_of(h);
+            format!("needs.{id}.outputs.is_non_product != 'true' && github.event.pull_request.draft == false")
+        });
+        let ado_vmm_tests_condition = classify_pr_job_handle.as_ref().map(|h| {
+            let id = pipeline.ado_job_id_of(h);
+            flowey_lib_hvlite::check_pr_changes::ado_condition(&id)
+        });
 
         struct VmmTestJobParams<'a> {
             platform: FlowPlatform,
@@ -1310,15 +1336,25 @@ impl IntoPipeline for CheckinGatesCli {
             }
 
             // When the classify job determined that this PR only touches
-            // non-product files, skip the vmm-tests job entirely.
+            // non-product files, skip the vmm-tests job entirely at the CI
+            // scheduler level (before any expensive artifact downloads begin).
             //
-            // Note: `gh_dangerous_override_if` replaces the default job `if:`
-            // condition entirely, so the draft-PR check must be included here
-            // explicitly alongside the classification guard.
+            // Note: `gh_dangerous_override_if` / `ado_dangerous_override_if`
+            // replace the default job condition entirely, so the draft-PR guard
+            // (GitHub) and the succeeded/not-canceled guards (ADO) must be
+            // included here alongside the non-product guard.
             if let Some(ref classify_job) = classify_pr_job_handle {
-                vmm_tests_run_job = vmm_tests_run_job.gh_dangerous_override_if(
-                    "needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false",
-                );
+                vmm_tests_run_job = match backend_hint {
+                    PipelineBackendHint::Github => {
+                        let cond = gh_vmm_tests_condition.as_deref().unwrap();
+                        vmm_tests_run_job.gh_dangerous_override_if(cond)
+                    }
+                    PipelineBackendHint::Ado => {
+                        let cond = ado_vmm_tests_condition.as_deref().unwrap();
+                        vmm_tests_run_job.ado_dangerous_override_if(cond)
+                    }
+                    _ => vmm_tests_run_job, // local: no job-level skip
+                };
                 let vmm_tests_handle = vmm_tests_run_job.finish();
                 pipeline.non_artifact_dep(&vmm_tests_handle, classify_job);
                 all_jobs.push(vmm_tests_handle);

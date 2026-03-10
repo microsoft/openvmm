@@ -64,7 +64,6 @@ fn viz_pipeline_generic(
         gh_ci_triggers: _,
         gh_pr_triggers: _,
         gh_bootstrap_template: _,
-        gh_job_id_overrides: _,
     } = pipeline;
 
     for idx in order {
@@ -79,6 +78,7 @@ fn viz_pipeline_generic(
             command_wrapper: _,
             ref ado_pool,
             ado_variables: _,
+            ado_override_condition: _,
             gh_override_if: _,
             gh_global_env: _,
             ref gh_pool,
@@ -240,7 +240,6 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
         gh_ci_triggers: _,
         gh_pr_triggers: _,
         gh_bootstrap_template: _,
-        gh_job_id_overrides: _,
     } = pipeline;
 
     #[derive(Clone)]
@@ -265,6 +264,7 @@ pub fn viz_pipeline_dot(pipeline: ResolvedPipeline, _backend: FlowBackend) -> an
                 command_wrapper: _,
                 ado_pool,
                 ado_variables: _,
+                ado_override_condition: _,
                 gh_override_if: _,
                 gh_global_env: _,
                 gh_pool,

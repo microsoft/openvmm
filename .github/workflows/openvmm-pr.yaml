@@ -24,99 +24,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  classify_pr_changes:
-    name: classify PR changes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: read
-    if: github.event.pull_request.draft == false
-    outputs:
-      is_non_product: ${{ env.FLOWEY_CHECKIN_IS_NON_PRODUCT }}
-    steps:
-    - run: |
-        set -x
-        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-        . "$HOME/.cargo/env"
-        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-        rustup show
-      if: runner.os == 'Linux'
-      name: rustup (Linux)
-      shell: bash
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'X64'
-      name: rustup (Windows X64)
-      shell: bash
-    - run: |
-        set -x
-        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
-        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      name: rustup (Windows ARM64)
-      shell: bash
-    - uses: actions/checkout@v4
-      with:
-        path: flowey_bootstrap
-    - name: Build flowey
-      run: |
-        set -x
-        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p "$OutDirNormal"
-        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
-      working-directory: flowey_bootstrap
-      shell: bash
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
-      shell: bash
-      name: 🌼📦 Add flowey to PATH
-    - name: 🌼🔎 Self-check YAML
-      run: |-
-        ESCAPED_AGENT_TEMPDIR=$(
-        cat <<'EOF' | sed 's/\\/\\\\/g'
-        ${{ runner.temp }}
-        EOF
-        )
-        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
-      shell: bash
-    - name: 🌼🛫 Initialize job
-      run: |
-        AgentTempDirNormal="${{ runner.temp }}"
-        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
-
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
-
-        echo '"debug"' | flowey v 18 'FLOWEY_LOG' update
-        echo "${{ runner.temp }}/work" | flowey v 18 '_internal_WORKING_DIR' --is-raw-string update
-
-        cat <<'EOF' | flowey v 18 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
-        EOF
-      shell: bash
-    - id: flowey_lib_hvlite__check_pr_changes__0
-      uses: ./.github/actions/classify-pr-changes
-      with:
-        github-token: ${{ github.token }}
-        pr-number: ${{ github.event.pull_request.number || 0 }}
-        repository: ${{ github.repository }}
-      name: classify PR changes
-    - name: 🌼🧼 Redact bootstrap var db
-      run: rm $AgentTempDirNormal/bootstrapped-flowey/job18.json
-      shell: bash
-    - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
-      with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-2
-        path: ${{ runner.temp }}/bootstrapped-flowey
   job0:
     name: xtask fmt (windows)
     runs-on: windows-latest
@@ -2630,6 +2537,94 @@ jobs:
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 17 flowey_lib_common::cache 7
       shell: bash
+  job18:
+    name: classify PR changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    if: github.event.pull_request.draft == false
+    outputs:
+      is_non_product: ${{ env.FLOWEY_IS_NON_PRODUCT }}
+    steps:
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        . "$HOME/.cargo/env"
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show
+      if: runner.os == 'Linux'
+      name: rustup (Linux)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.93.1
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      name: rustup (Windows X64)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.93.1
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      name: rustup (Windows ARM64)
+      shell: bash
+    - uses: actions/checkout@v4
+      with:
+        path: flowey_bootstrap
+    - name: Build flowey
+      run: |
+        set -x
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
+      working-directory: flowey_bootstrap
+      shell: bash
+    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+      shell: bash
+      name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
+    - name: 🌼🛫 Initialize job
+      run: |
+        AgentTempDirNormal="${{ runner.temp }}"
+        AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
+
+        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+
+        echo '"debug"' | flowey v 18 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey v 18 '_internal_WORKING_DIR' --is-raw-string update
+
+        cat <<'EOF' | flowey v 18 'verbose' update
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        EOF
+      shell: bash
+    - name: classify PR changes
+      run: flowey e 18 flowey_lib_hvlite::check_pr_changes 0
+      shell: bash
+    - name: 🌼🧼 Redact bootstrap var db
+      run: rm $AgentTempDirNormal/bootstrapped-flowey/job18.json
+      shell: bash
+    - name: 🌼🥾 Publish bootstrapped flowey
+      uses: actions/upload-artifact@v4
+      with:
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-2
+        path: ${{ runner.temp }}/bootstrapped-flowey
   job19:
     name: run vmm-tests [x64-windows-intel]
     runs-on:
@@ -2640,11 +2635,11 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
     - job10
+    - job18
     - job5
     - job7
-    if: needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
+    if: needs.job18.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -3120,11 +3115,11 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
     - job10
+    - job18
     - job5
     - job7
-    if: needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
+    if: needs.job18.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -3389,11 +3384,11 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
     - job10
+    - job18
     - job5
     - job7
-    if: needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
+    if: needs.job18.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -3655,11 +3650,11 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
     - job10
+    - job18
     - job5
     - job7
-    if: needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
+    if: needs.job18.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -3924,11 +3919,11 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
     - job10
+    - job18
     - job5
     - job7
-    if: needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
+    if: needs.job18.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
@@ -4175,11 +4170,11 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
+    - job18
     - job3
     - job6
     - job8
-    if: needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
+    if: needs.job18.outputs.is_non_product != 'true' && github.event.pull_request.draft == false
     steps:
     - run: |
         set -x
@@ -4588,7 +4583,6 @@ jobs:
       contents: read
       id-token: write
     needs:
-    - classify_pr_changes
     - job0
     - job1
     - job10
@@ -4599,6 +4593,7 @@ jobs:
     - job15
     - job16
     - job17
+    - job18
     - job19
     - job2
     - job20

@@ -81,7 +81,6 @@ fn direct_run_do_work(
         gh_ci_triggers: _,
         gh_pr_triggers: _,
         gh_bootstrap_template: _,
-        gh_job_id_overrides: _,
     } = pipeline;
 
     let mut skipped_jobs = BTreeSet::new();
@@ -98,6 +97,7 @@ fn direct_run_do_work(
             ref command_wrapper,
             ado_pool: _,
             ado_variables: _,
+            ado_override_condition: _,
             gh_override_if: _,
             gh_global_env: _,
             gh_pool: _,

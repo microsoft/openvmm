@@ -67,9 +67,7 @@ pub fn github_yaml(
         ado_post_process_yaml_cb: _,
         ado_variables: _,
         ado_job_id_overrides: _,
-        ref gh_job_id_overrides,
     } = pipeline;
-
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
         job_flowey_bootstrap_source(&graph, &order);
 
@@ -103,6 +101,7 @@ pub fn github_yaml(
             ref artifacts_used,
             ref artifacts_published,
             ado_variables: _,
+            ado_override_condition: _,
         } = graph[job_idx];
 
         if cond_param_idx.is_some() {
@@ -555,13 +554,8 @@ EOF
             }
         }
 
-        let job_id = gh_job_id_overrides
-            .get(&job_idx.index())
-            .cloned()
-            .unwrap_or_else(|| format!("job{}", job_idx.index()));
-
         github_jobs.insert(
-            job_id,
+            format!("job{}", job_idx.index()),
             github_yaml_defs::Job {
                 name: label.clone(),
                 timeout_minutes,
@@ -575,10 +569,7 @@ EOF
                         .edges_directed(job_idx, petgraph::Direction::Incoming)
                         .map(|e| {
                             use petgraph::prelude::*;
-                            gh_job_id_overrides
-                                .get(&e.source().index())
-                                .cloned()
-                                .unwrap_or_else(|| format!("job{}", e.source().index()))
+                            format!("job{}", e.source().index())
                         })
                         .collect()
                 },

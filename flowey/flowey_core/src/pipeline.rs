@@ -401,7 +401,6 @@ pub struct Pipeline {
     gh_ci_triggers: Option<GhCiTriggers>,
     gh_pr_triggers: Option<GhPrTriggers>,
     gh_bootstrap_template: String,
-    gh_job_id_overrides: BTreeMap<usize, String>,
 }
 
 impl Pipeline {
@@ -616,6 +615,7 @@ impl Pipeline {
             command_wrapper: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
+            ado_override_condition: None,
             gh_override_if: None,
             gh_global_env: BTreeMap::new(),
             gh_pool: None,
@@ -639,6 +639,27 @@ impl Pipeline {
         self.extra_deps
             .insert((depends_on_job.job_idx, job.job_idx));
         self
+    }
+
+    /// Returns the GitHub Actions job ID for the given job handle.
+    ///
+    /// Use this method to dynamically reference a job's ID in condition
+    /// expressions instead of hardcoding an ID string. The returned ID is
+    /// `job{N}` based on the job's position in the pipeline.
+    pub fn gh_job_id_of(&self, handle: &PipelineJobHandle) -> String {
+        format!("job{}", handle.job_idx)
+    }
+
+    /// Returns the ADO job ID for the given job handle.
+    ///
+    /// Use this method to dynamically reference a job's ID in condition
+    /// expressions. The returned ID is either the override set via
+    /// [`PipelineJob::ado_override_job_id`], or `job{N}` by default.
+    pub fn ado_job_id_of(&self, handle: &PipelineJobHandle) -> String {
+        self.ado_job_id_overrides
+            .get(&handle.job_idx)
+            .cloned()
+            .unwrap_or_else(|| format!("job{}", handle.job_idx))
     }
 
     #[track_caller]
@@ -887,6 +908,23 @@ impl PipelineJobCtx<'_> {
         crate::node::thin_air_write_runtime_var(format!("start{}", self.pipeline.dummy_done_idx))
     }
 
+    /// Create a new `(ReadVar<T>, WriteVar<T>)` pair for use in a node request.
+    ///
+    /// This is useful when a node writes a result value (e.g. a `bool`) to a
+    /// `WriteVar<T>` and the result needs to be passed on to another node in
+    /// the same pipeline job.
+    pub fn new_var<T: Serialize + DeserializeOwned>(
+        &mut self,
+    ) -> (ReadVar<T>, WriteVar<T>) {
+        let idx = self.pipeline.artifact_map_idx;
+        self.pipeline.artifact_map_idx += 1;
+        let backing = format!("pipejobvar{}", idx);
+        (
+            crate::node::thin_air_read_runtime_var(backing.clone()),
+            crate::node::thin_air_write_runtime_var(backing),
+        )
+    }
+
     /// Claim that this job will use this artifact, obtaining a path to a folder
     /// with the artifact's contents.
     pub fn use_artifact(&mut self, artifact: &UseArtifact) -> ReadVar<PathBuf> {
@@ -1110,7 +1148,7 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// Overrides the id of the job.
+    /// (ADO only) Overrides the id of the job.
     ///
     /// Flowey typically generates a reasonable job ID but some use cases that depend
     /// on the ID may find it useful to override it to something custom.
@@ -1121,36 +1159,44 @@ impl PipelineJob<'_> {
         self
     }
 
-    /// (GitHub Actions only) Overrides the auto-generated job ID used in the
-    /// GitHub Actions YAML.
+    /// (ADO only) Manually override the `condition:` for this particular job.
     ///
-    /// By default, Flowey assigns job IDs like `job0`, `job1`, etc. Use this
-    /// method to assign a stable, human-readable ID instead. This is useful
-    /// when other jobs need to reference this job's outputs via
-    /// `needs.<job-id>.outputs.<output-name>`.
+    /// **This is dangerous**, as an improperly set condition may break
+    /// downstream flowey jobs which assume flowey is in control of the job's
+    /// scheduling logic.
     ///
-    /// Job IDs must be unique across the pipeline.
-    pub fn gh_override_job_id(self, id: impl AsRef<str>) -> Self {
-        self.pipeline
-            .gh_job_id_overrides
-            .insert(self.job_idx, id.as_ref().into());
+    /// When set, the provided expression replaces the default
+    /// `"and(succeeded(), not(canceled()))"` condition entirely.
+    ///
+    /// See <https://learn.microsoft.com/en-us/azure/devops/pipelines/process/conditions>
+    /// for condition expression syntax.
+    pub fn ado_dangerous_override_if(self, condition: impl AsRef<str>) -> Self {
+        self.pipeline.jobs[self.job_idx].ado_override_condition =
+            Some(condition.as_ref().into());
         self
     }
 
-    /// (GitHub Actions only) Declare a job-level output.
+    /// (GitHub Actions only) Declare a job-level output backed by a GitHub
+    /// environment variable written by a Rust step in this job.
     ///
-    /// `name` is the output name; `expression` is a GitHub Actions expression
-    /// whose value becomes the output value, e.g.
-    /// `"${{ steps.my-step.outputs.my-key }}"` or `"${{ env.MY_VAR }}"`.
-    ///
-    /// The declared output is accessible to dependent jobs via
+    /// `name` is the output name exposed to dependent jobs via
     /// `needs.<this-job-id>.outputs.<name>`.
     ///
-    /// See <https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idoutputs>
-    pub fn gh_set_job_output(self, name: impl AsRef<str>, expression: impl AsRef<str>) -> Self {
+    /// `env_var` is the name of the GitHub environment variable (i.e. the
+    /// name passed to `GITHUB_ENV`).  The generated expression is
+    /// `${{ env.<env_var> }}`.
+    ///
+    /// Use a constant exported by the node that sets this variable so the name
+    /// stays consistent, e.g. `check_pr_changes::GH_ENV_IS_NON_PRODUCT`.
+    pub fn gh_set_job_output_from_env_var(
+        self,
+        name: impl AsRef<str>,
+        env_var: impl AsRef<str>,
+    ) -> Self {
+        let expression = format!("${{{{ env.{} }}}}", env_var.as_ref());
         self.pipeline.jobs[self.job_idx]
             .gh_job_outputs
-            .push((name.as_ref().into(), expression.as_ref().into()));
+            .push((name.as_ref().into(), expression));
         self
     }
 
@@ -1469,6 +1515,10 @@ pub mod internal {
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,
+        /// (ADO only) Overrides the auto-generated `condition:` for this job.
+        ///
+        /// When set, replaces the default `and(succeeded(), not(canceled()))`.
+        pub ado_override_condition: Option<String>,
         pub gh_override_if: Option<String>,
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
@@ -1524,7 +1574,6 @@ pub mod internal {
         pub gh_ci_triggers: Option<GhCiTriggers>,
         pub gh_pr_triggers: Option<GhPrTriggers>,
         pub gh_bootstrap_template: String,
-        pub gh_job_id_overrides: BTreeMap<usize, String>,
     }
 
     impl PipelineFinalized {
@@ -1557,7 +1606,6 @@ pub mod internal {
                 gh_ci_triggers,
                 gh_pr_triggers,
                 gh_bootstrap_template,
-                gh_job_id_overrides,
                 // not relevant to consumer code
                 dummy_done_idx: _,
                 artifact_map_idx: _,
@@ -1591,7 +1639,6 @@ pub mod internal {
                 gh_ci_triggers,
                 gh_pr_triggers,
                 gh_bootstrap_template,
-                gh_job_id_overrides,
             }
         }
     }

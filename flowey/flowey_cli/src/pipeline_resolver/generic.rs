@@ -44,7 +44,6 @@ pub struct ResolvedPipeline {
     pub gh_ci_triggers: Option<GhCiTriggers>,
     pub gh_pr_triggers: Option<GhPrTriggers>,
     pub gh_bootstrap_template: String,
-    pub gh_job_id_overrides: BTreeMap<usize, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +69,7 @@ pub struct ResolvedPipelineJob {
     pub timeout_minutes: Option<u32>,
     pub command_wrapper: Option<flowey_core::shell::CommandWrapperKind>,
     pub ado_variables: BTreeMap<String, String>,
+    pub ado_override_condition: Option<String>,
     pub gh_override_if: Option<String>,
     pub gh_global_env: BTreeMap<String, String>,
     pub gh_pool: Option<GhRunner>,
@@ -105,7 +105,6 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         gh_ci_triggers,
         gh_pr_triggers,
         gh_bootstrap_template,
-        gh_job_id_overrides,
     } = PipelineFinalized::from_pipeline(pipeline);
 
     let mut graph = petgraph::Graph::new();
@@ -177,6 +176,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             command_wrapper,
             ado_pool,
             ado_variables,
+            ado_override_condition,
             gh_override_if,
             gh_global_env,
             gh_pool,
@@ -231,6 +231,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             command_wrapper,
             ado_pool,
             ado_variables,
+            ado_override_condition,
             gh_override_if,
             gh_global_env,
             gh_pool,
@@ -292,7 +293,6 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         gh_ci_triggers,
         gh_pr_triggers,
         gh_bootstrap_template,
-        gh_job_id_overrides,
     })
 }
 
