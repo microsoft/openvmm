@@ -19,6 +19,7 @@ fs-err.workspace = true
 log.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
+toml_edit = { workspace = true, features = ["serde"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
 which.workspace = true
 

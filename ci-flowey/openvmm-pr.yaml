@@ -96,33 +96,6 @@ jobs:
       EOF
     displayName: 🌼🛫 Initialize job
   - bash: |
-      set -euo pipefail
-      TARGET_BRANCH="${SYSTEM_PULLREQUEST_TARGETBRANCH:-}"
-      if [[ -z "$TARGET_BRANCH" ]]; then
-        echo "Not a PR run; treating as product change."
-        IS_NON_PRODUCT=false
-      else
-        TARGET_BRANCH="${TARGET_BRANCH#refs/heads/}"
-        echo "Comparing against: origin/$TARGET_BRANCH"
-        CHANGED=$(git diff --name-only "origin/$TARGET_BRANCH...HEAD" 2>/dev/null || true)
-        if [[ -z "$CHANGED" ]]; then
-          echo "No changed files found; treating as product change."
-          IS_NON_PRODUCT=false
-        else
-          IS_NON_PRODUCT=true
-          while IFS= read -r F; do
-            if [[ "$F" == Guide/* ]] || [[ "$F" =~ ^repo_support/.*\.py$ ]]; then
-              : # file is in a non-product bucket
-            else
-              echo "Product file detected: $F"
-              IS_NON_PRODUCT=false
-              break
-            fi
-          done <<< "$CHANGED"
-        fi
-      fi
-      echo "is_non_product=$IS_NON_PRODUCT"
-      echo "##vso[task.setvariable variable=is_non_product;isOutput=true]$IS_NON_PRODUCT"
       $(FLOWEY_BIN) e 13 flowey_lib_hvlite::check_pr_changes 0
     name: classify_pr_changes
     displayName: classify PR changes

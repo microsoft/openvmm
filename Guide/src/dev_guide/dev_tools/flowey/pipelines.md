@@ -140,28 +140,33 @@ backend-native mechanisms — no GitHub API call, no external scripts.
 
 ### How it works
 
-| Backend | Classification | Cross-job output |
+The same Rust classification code runs on all three backends.  The only
+backend-specific part is *where* the result is written so that downstream
+jobs can read it:
+
+| Backend | Classification | Cross-job result |
 |---------|---------------|-----------------|
 | GitHub  | `git diff origin/$GITHUB_BASE_REF...HEAD` | Written to `$GITHUB_ENV` as `FLOWEY_IS_NON_PRODUCT`; declared as a job output |
-| ADO     | `git diff origin/$SYSTEM_PULLREQUEST_TARGETBRANCH...HEAD` | Published as an ADO step output variable named `is_non_product` |
+| ADO     | `git diff origin/$SYSTEM_PULLREQUEST_TARGETBRANCH...HEAD` | Published via `##vso[task.setvariable;isOutput=true]` |
 | Local   | Always "product" (conservative) | N/A |
 
 ### Non-product buckets
 
-A PR is classified as non-product only when **every** changed file matches at
-least one of the following patterns:
+Bucket patterns are defined in
+`flowey/flowey_lib_hvlite/src/non_product_config.toml`.  A PR is
+classified as non-product only when **every** changed file matches at
+least one bucket pattern.  Any unmatched file — or any classification
+error — conservatively marks the PR as a product change.
+
+The current buckets are:
 
 | Pattern | Rationale |
 |---------|-----------|
 | `Guide/**` | Docs tree; validated by the separate docs pipeline |
 | `repo_support/**/*.py` | Repo automation scripts; no effect on product behavior |
 
-Any file outside these patterns — or any classification error — conservatively
-marks the PR as a product change.
-
-To add a new non-product bucket, update **both** `is_non_product_path` (Rust,
-used by the GitHub and local backends) and the equivalent `if` clause in the
-ADO bash script inside `check_pr_changes::Node`.
+To add a new non-product bucket, **edit `non_product_config.toml`**.
+All backends read from the same parsed config.
 
 ### Pipeline usage
 
@@ -187,8 +192,7 @@ let ado_skip_cond = check_pr_changes::ado_condition(&pipeline.ado_job_id_of(&cla
 let vmm_tests = pipeline
     .new_job(...)
     .gh_dangerous_override_if(&gh_skip_cond)
-    // or for ADO:
-    // .ado_dangerous_override_if(&ado_skip_cond)
+    .ado_dangerous_override_if(&ado_skip_cond)
     .dep_on(...)
     .finish();
 
