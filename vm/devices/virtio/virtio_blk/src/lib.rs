@@ -658,26 +658,35 @@ struct OwnedPagedRange {
     len: usize,
 }
 
-/// Copy data between regions in `src` and a contiguous range in `dst`.
+/// Copy data between scattered guest regions and a contiguous bounce buffer.
 ///
-/// Reads sequentially from each region in `src` (at `region.addr`) and
-/// writes contiguously into `dst` starting at GPA 0. Used in both
-/// directions: guest→bounce (before write IO) and bounce→guest (after
-/// read IO) — just swap `src` and `dst`.
-fn copy_regions(src: &GuestMemory, dst: &GuestMemory, regions: &[DataRegion]) -> Result<(), u8> {
-    let mut dst_offset: u64 = 0;
+/// When `to_bounce` is true (guest→bounce, before write IO), reads from
+/// `guest_mem` at scattered `region.addr` addresses and writes
+/// contiguously into `bounce_buf`.
+///
+/// When `to_bounce` is false (bounce→guest, after read IO), reads
+/// contiguously from `bounce_buf` and writes to `guest_mem` at
+/// scattered `region.addr` addresses.
+fn copy_regions(
+    bounce_buf: &mut [u8],
+    guest_mem: &GuestMemory,
+    regions: &[DataRegion],
+    to_bounce: bool,
+) -> Result<(), u8> {
+    let mut linear_offset: usize = 0;
     for region in regions {
-        let mut copied: u64 = 0;
-        while copied < region.len {
-            let mut tmp = [0u8; 4096];
-            let n = ((region.len - copied) as usize).min(tmp.len());
-            src.read_at(region.addr + copied, &mut tmp[..n])
+        let len = region.len as usize;
+        let buf = &mut bounce_buf[linear_offset..linear_offset + len];
+        if to_bounce {
+            guest_mem
+                .read_at(region.addr, buf)
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            dst.write_at(dst_offset + copied, &tmp[..n])
+        } else {
+            guest_mem
+                .write_at(region.addr, buf)
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            copied += n as u64;
         }
-        dst_offset += region.len;
+        linear_offset += len;
     }
     Ok(())
 }
@@ -718,19 +727,20 @@ async fn do_io(
 
     let regions = data_regions(&work.payload, writable, skip_bytes, data_len);
 
-    let (io_mem, io_range, bounced) =
+    let (mut io_mem, io_range, bounced) =
         if let Some((gpns, offset, len)) = try_build_gpn_list(&regions) {
             // Fast path: descriptor chain is PagedRange-compatible.
             (None, OwnedPagedRange { gpns, offset, len }, false)
         } else {
             // Slow path: allocate a bounce buffer.
             let data_len_usize = data_len as usize;
-            let bounce_mem = GuestMemory::allocate(data_len_usize);
+            let mut bounce_mem = GuestMemory::allocate(data_len_usize);
             let num_pages = data_len_usize.div_ceil(guestmem::PAGE_SIZE);
             let gpns: Vec<u64> = (0..num_pages as u64).collect();
 
             if !is_read {
-                copy_regions(mem, &bounce_mem, &regions)?;
+                let buf = bounce_mem.inner_buf_mut().unwrap();
+                copy_regions(buf, mem, &regions, true)?;
             }
 
             (
@@ -760,7 +770,8 @@ async fn do_io(
     }
 
     if bounced && is_read {
-        copy_regions(io_mem.as_ref().unwrap(), mem, &regions)?;
+        let buf = io_mem.as_mut().unwrap().inner_buf_mut().unwrap();
+        copy_regions(buf, mem, &regions, false)?;
     }
 
     Ok((if is_read { io_range.len as u32 } else { 0 }, bounced))
@@ -1064,5 +1075,58 @@ mod tests {
         let range = PagedRange::new(offset, len, &gpns);
         assert!(range.is_some());
         assert_eq!(range.unwrap().len(), 12288);
+    }
+
+    // ---- copy_regions tests ----
+
+    #[test]
+    fn copy_regions_roundtrip() {
+        // End-to-end: scatter → linear → scatter should preserve data.
+        let guest = GuestMemory::allocate(0x10000);
+        let mut bounce = [0u8; 2048];
+
+        let regions = vec![
+            DataRegion {
+                addr: 0x1000,
+                len: 1000,
+            },
+            DataRegion {
+                addr: 0x5000,
+                len: 500,
+            },
+            DataRegion {
+                addr: 0x9000,
+                len: 548,
+            },
+        ];
+
+        // Write distinct patterns at each guest region.
+        guest.write_at(0x1000, &[0x11; 1000]).unwrap();
+        guest.write_at(0x5000, &[0x22; 500]).unwrap();
+        guest.write_at(0x9000, &[0x33; 548]).unwrap();
+
+        // Scatter → linear.
+        copy_regions(&mut bounce, &guest, &regions, true).unwrap();
+
+        // Clear guest memory to prove the round-trip actually copies back.
+        guest.write_at(0x1000, &[0x00; 1000]).unwrap();
+        guest.write_at(0x5000, &[0x00; 500]).unwrap();
+        guest.write_at(0x9000, &[0x00; 548]).unwrap();
+
+        // Linear → scatter.
+        copy_regions(&mut bounce, &guest, &regions, false).unwrap();
+
+        // Verify data restored.
+        let mut buf = [0u8; 1000];
+        guest.read_at(0x1000, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0x11));
+
+        let mut buf = [0u8; 500];
+        guest.read_at(0x5000, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0x22));
+
+        let mut buf = [0u8; 548];
+        guest.read_at(0x9000, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 0x33));
     }
 }
