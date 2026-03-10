@@ -336,12 +336,13 @@ fn get_feed_endpoints_json(
         "displayName": "flowey-nuget-restore",
     });
 
+    // Pass the Authorization header via stdin (`-K -`) so the bearer
+    // token never appears in process argument lists (visible via `ps`).
     let session_response = flowey::shell_cmd!(
         rt,
-        "curl -s --fail -X POST https://app.vssps.visualstudio.com/_apis/token/sessiontokens?api-version=5.0-preview.1 -H Content-Type:application/json"
+        "curl -s --fail -X POST https://app.vssps.visualstudio.com/_apis/token/sessiontokens?api-version=5.0-preview.1 -H Content-Type:application/json -K -"
     )
-    .arg("-H")
-    .arg(format!("Authorization: Bearer {bearer_token}"))
+    .stdin(format!("header = \"Authorization: Bearer {bearer_token}\""))
     .arg("-d")
     .arg(session_token_body.to_string())
     .secret()
