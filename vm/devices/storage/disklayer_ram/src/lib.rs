@@ -208,10 +208,10 @@ impl RamDiskLayer {
             return Err(DiskError::IllegalBlock);
         }
         for i in 0..count {
-            let cur = i + sector as usize;
+            let cur = sector + i as u64;
             let buf = buffers.subrange(i << self.sector_shift, sector_bytes);
             let mut reader = buf.reader();
-            match state.data.entry(cur as u64) {
+            match state.data.entry(cur) {
                 Entry::Vacant(entry) => {
                     let mut data = vec![0u8; sector_bytes].into_boxed_slice();
                     reader.read(&mut data)?;
