@@ -1026,6 +1026,41 @@ impl IntoPipeline for CheckinGatesCli {
             })?;
 
         // Emit VMM tests runner jobs
+        //
+        // For GitHub PR pipelines, first create a lightweight "classify PR
+        // changes" job that determines whether the PR only touches non-product
+        // files (e.g. Guide/**, repo_support/**/*.py).  When the result is
+        // `is_non_product == 'true'`, each vmm-tests runner job is skipped via
+        // its `if:` condition.
+        let classify_pr_job_handle =
+            if matches!((config, backend_hint), (PipelineConfig::Pr, PipelineBackendHint::Github)) {
+                let classify_job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowArch::X86_64,
+                        "classify PR changes",
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                    .gh_override_job_id("classify_pr_changes")
+                    .gh_set_job_output(
+                        "is_non_product",
+                        flowey_lib_hvlite::check_pr_changes::IS_NON_PRODUCT_JOB_OUTPUT_EXPR,
+                    )
+                    .gh_grant_permissions::<flowey_lib_hvlite::check_pr_changes::Node>([(
+                        GhPermission::PullRequests,
+                        GhPermissionValue::Read,
+                    )])
+                    .dep_on(|ctx| flowey_lib_hvlite::check_pr_changes::Request {
+                        done: ctx.new_done_handle(),
+                    })
+                    .finish();
+
+                all_jobs.push(classify_job.clone());
+                Some(classify_job)
+            } else {
+                None
+            };
+
         struct VmmTestJobParams<'a> {
             platform: FlowPlatform,
             arch: FlowArch,
@@ -1274,7 +1309,18 @@ impl IntoPipeline for CheckinGatesCli {
                 })
             }
 
-            all_jobs.push(vmm_tests_run_job.finish());
+            // When the classify job determined that this PR only touches
+            // non-product files, skip the vmm-tests job entirely.
+            if let Some(ref classify_job) = classify_pr_job_handle {
+                vmm_tests_run_job = vmm_tests_run_job.gh_dangerous_override_if(
+                    "needs.classify_pr_changes.outputs.is_non_product != 'true' && github.event.pull_request.draft == false",
+                );
+                let vmm_tests_handle = vmm_tests_run_job.finish();
+                pipeline.non_artifact_dep(&vmm_tests_handle, classify_job);
+                all_jobs.push(vmm_tests_handle);
+            } else {
+                all_jobs.push(vmm_tests_run_job.finish());
+            }
         }
 
         // test the flowey local backend by running cargo xflowey build-igvm on x64

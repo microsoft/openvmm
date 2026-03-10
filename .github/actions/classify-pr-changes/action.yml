@@ -1,0 +1,91 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+name: Classify PR Changes
+description: |
+  Classifies PR changed files to determine whether all changes fall within
+  approved non-product buckets (e.g. Guide/**, repo_support/**/*.py).
+
+  Outputs `is_non_product` = 'true' when every changed file is in a known
+  non-product bucket, and 'false' otherwise (including when the run is not
+  triggered by a pull_request event).
+
+  Non-product buckets (files that do not require VMM-tests validation):
+    - Guide/**
+    - repo_support/**/*.py
+
+inputs:
+  github-token:
+    description: GitHub token used to query the PR file list via the API.
+    required: true
+  pr-number:
+    description: Pull request number (0 or empty for non-PR runs).
+    required: true
+  repository:
+    description: Repository in "owner/repo" format.
+    required: true
+
+outputs:
+  is_non_product:
+    description: >
+      'true' if ALL changed files fall within approved non-product buckets;
+      'false' if ANY changed file is outside those buckets, or if the run is
+      not triggered by a pull_request event.
+    value: ${{ steps.classify.outputs.is_non_product }}
+
+runs:
+  using: composite
+  steps:
+    - name: Classify changed files
+      id: classify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        REPOSITORY: ${{ inputs.repository }}
+      run: |
+        set -euo pipefail
+
+        # If there is no PR number this is not a PR run; treat as product change.
+        if [[ -z "$PR_NUMBER" || "$PR_NUMBER" == "0" ]]; then
+          echo "Not a PR run; treating as product change."
+          echo "is_non_product=false" >> "$GITHUB_OUTPUT"
+          echo "FLOWEY_CHECKIN_IS_NON_PRODUCT=false" >> "$GITHUB_ENV"
+          exit 0
+        fi
+
+        # Fetch the list of changed files for this PR.
+        CHANGED_FILES=$(gh api \
+          "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files" \
+          --paginate \
+          --jq '.[].filename')
+
+        if [[ -z "$CHANGED_FILES" ]]; then
+          echo "No changed files found; treating as product change."
+          echo "is_non_product=false" >> "$GITHUB_OUTPUT"
+          echo "FLOWEY_CHECKIN_IS_NON_PRODUCT=false" >> "$GITHUB_ENV"
+          exit 0
+        fi
+
+        echo "Changed files:"
+        echo "$CHANGED_FILES"
+
+        # Check every changed file against the known non-product buckets.
+        # A file is non-product if it matches any of:
+        #   - Guide/**
+        #   - repo_support/**/*.py
+        IS_NON_PRODUCT=true
+        while IFS= read -r FILE; do
+          if [[ "$FILE" == Guide/* ]] || \
+             [[ "$FILE" =~ ^repo_support/.*\.py$ ]]; then
+            : # file is in a non-product bucket
+          else
+            echo "Product file detected: $FILE"
+            IS_NON_PRODUCT=false
+            break
+          fi
+        done <<< "$CHANGED_FILES"
+
+        echo "is_non_product=${IS_NON_PRODUCT}"
+        echo "is_non_product=${IS_NON_PRODUCT}" >> "$GITHUB_OUTPUT"
+        echo "FLOWEY_CHECKIN_IS_NON_PRODUCT=${IS_NON_PRODUCT}" >> "$GITHUB_ENV"

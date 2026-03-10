@@ -68,6 +68,7 @@ pub fn ado_yaml(
         gh_ci_triggers: _,
         gh_pr_triggers: _,
         gh_bootstrap_template: _,
+        gh_job_id_overrides: _,
     } = pipeline;
 
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
@@ -97,6 +98,7 @@ pub fn ado_yaml(
             gh_global_env: _,
             gh_pool: _,
             gh_permissions: _,
+            gh_job_outputs: _,
             ref external_read_vars,
             ref parameters_used,
             ref artifacts_used,

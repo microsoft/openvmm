@@ -401,6 +401,7 @@ pub struct Pipeline {
     gh_ci_triggers: Option<GhCiTriggers>,
     gh_pr_triggers: Option<GhPrTriggers>,
     gh_bootstrap_template: String,
+    gh_job_id_overrides: BTreeMap<usize, String>,
 }
 
 impl Pipeline {
@@ -619,6 +620,7 @@ impl Pipeline {
             gh_global_env: BTreeMap::new(),
             gh_pool: None,
             gh_permissions: BTreeMap::new(),
+            gh_job_outputs: Vec::new(),
         });
 
         PipelineJob {
@@ -1119,6 +1121,39 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// (GitHub Actions only) Overrides the auto-generated job ID used in the
+    /// GitHub Actions YAML.
+    ///
+    /// By default, Flowey assigns job IDs like `job0`, `job1`, etc. Use this
+    /// method to assign a stable, human-readable ID instead. This is useful
+    /// when other jobs need to reference this job's outputs via
+    /// `needs.<job-id>.outputs.<output-name>`.
+    ///
+    /// Job IDs must be unique across the pipeline.
+    pub fn gh_override_job_id(self, id: impl AsRef<str>) -> Self {
+        self.pipeline
+            .gh_job_id_overrides
+            .insert(self.job_idx, id.as_ref().into());
+        self
+    }
+
+    /// (GitHub Actions only) Declare a job-level output.
+    ///
+    /// `name` is the output name; `expression` is a GitHub Actions expression
+    /// whose value becomes the output value, e.g.
+    /// `"${{ steps.my-step.outputs.my-key }}"` or `"${{ env.MY_VAR }}"`.
+    ///
+    /// The declared output is accessible to dependent jobs via
+    /// `needs.<this-job-id>.outputs.<name>`.
+    ///
+    /// See <https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions#jobsjob_idoutputs>
+    pub fn gh_set_job_output(self, name: impl AsRef<str>, expression: impl AsRef<str>) -> Self {
+        self.pipeline.jobs[self.job_idx]
+            .gh_job_outputs
+            .push((name.as_ref().into(), expression.as_ref().into()));
+        self
+    }
+
     /// (GitHub Actions only) specify which Github runner this job will be run on.
     pub fn gh_set_pool(self, pool: GhRunner) -> Self {
         self.pipeline.jobs[self.job_idx].gh_pool = Some(pool);
@@ -1438,6 +1473,12 @@ pub mod internal {
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
+        /// (GitHub Actions only) Job-level outputs declared by this job.
+        ///
+        /// Each entry is `(output_name, expression)` where `expression` is a
+        /// GitHub Actions expression string, e.g.
+        /// `"${{ steps.my-step.outputs.my-output }}"`.
+        pub gh_job_outputs: Vec<(String, String)>,
     }
 
     // TODO: support a more structured format for demands
@@ -1483,6 +1524,7 @@ pub mod internal {
         pub gh_ci_triggers: Option<GhCiTriggers>,
         pub gh_pr_triggers: Option<GhPrTriggers>,
         pub gh_bootstrap_template: String,
+        pub gh_job_id_overrides: BTreeMap<usize, String>,
     }
 
     impl PipelineFinalized {
@@ -1515,6 +1557,7 @@ pub mod internal {
                 gh_ci_triggers,
                 gh_pr_triggers,
                 gh_bootstrap_template,
+                gh_job_id_overrides,
                 // not relevant to consumer code
                 dummy_done_idx: _,
                 artifact_map_idx: _,
@@ -1548,6 +1591,7 @@ pub mod internal {
                 gh_ci_triggers,
                 gh_pr_triggers,
                 gh_bootstrap_template,
+                gh_job_id_overrides,
             }
         }
     }

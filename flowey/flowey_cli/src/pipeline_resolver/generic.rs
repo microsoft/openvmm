@@ -44,6 +44,7 @@ pub struct ResolvedPipeline {
     pub gh_ci_triggers: Option<GhCiTriggers>,
     pub gh_pr_triggers: Option<GhPrTriggers>,
     pub gh_bootstrap_template: String,
+    pub gh_job_id_overrides: BTreeMap<usize, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +74,7 @@ pub struct ResolvedPipelineJob {
     pub gh_global_env: BTreeMap<String, String>,
     pub gh_pool: Option<GhRunner>,
     pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
+    pub gh_job_outputs: Vec<(String, String)>,
     pub external_read_vars: BTreeSet<String>,
     pub cond_param_idx: Option<usize>,
 
@@ -103,6 +105,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         gh_ci_triggers,
         gh_pr_triggers,
         gh_bootstrap_template,
+        gh_job_id_overrides,
     } = PipelineFinalized::from_pipeline(pipeline);
 
     let mut graph = petgraph::Graph::new();
@@ -178,6 +181,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             gh_global_env,
             gh_pool,
             gh_permissions,
+            gh_job_outputs,
         },
     ) in jobs.into_iter().enumerate()
     {
@@ -231,6 +235,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
             gh_global_env,
             gh_pool,
             gh_permissions,
+            gh_job_outputs,
             platform,
             arch,
             cond_param_idx,
@@ -287,6 +292,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         gh_ci_triggers,
         gh_pr_triggers,
         gh_bootstrap_template,
+        gh_job_id_overrides,
     })
 }
 

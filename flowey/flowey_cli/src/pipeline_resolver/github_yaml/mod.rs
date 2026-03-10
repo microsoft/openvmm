@@ -67,6 +67,7 @@ pub fn github_yaml(
         ado_post_process_yaml_cb: _,
         ado_variables: _,
         ado_job_id_overrides: _,
+        ref gh_job_id_overrides,
     } = pipeline;
 
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
@@ -96,6 +97,7 @@ pub fn github_yaml(
             ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
+            ref gh_job_outputs,
             cond_param_idx,
             ref parameters_used,
             ref artifacts_used,
@@ -553,8 +555,13 @@ EOF
             }
         }
 
+        let job_id = gh_job_id_overrides
+            .get(&job_idx.index())
+            .cloned()
+            .unwrap_or_else(|| format!("job{}", job_idx.index()));
+
         github_jobs.insert(
-            format!("job{}", job_idx.index()),
+            job_id,
             github_yaml_defs::Job {
                 name: label.clone(),
                 timeout_minutes,
@@ -568,7 +575,10 @@ EOF
                         .edges_directed(job_idx, petgraph::Direction::Incoming)
                         .map(|e| {
                             use petgraph::prelude::*;
-                            format!("job{}", e.source().index())
+                            gh_job_id_overrides
+                                .get(&e.source().index())
+                                .cloned()
+                                .unwrap_or_else(|| format!("job{}", e.source().index()))
                         })
                         .collect()
                 },
@@ -576,6 +586,7 @@ EOF
                     .clone()
                     .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
                 env: gh_global_env.clone(),
+                outputs: gh_job_outputs.iter().cloned().collect(),
                 steps: gh_steps,
             },
         );

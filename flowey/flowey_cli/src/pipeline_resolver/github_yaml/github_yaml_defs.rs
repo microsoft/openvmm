@@ -269,6 +269,8 @@ pub struct Job {
     pub r#if: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, String>,
     pub steps: Vec<serde_yaml::Value>,
 }
 
