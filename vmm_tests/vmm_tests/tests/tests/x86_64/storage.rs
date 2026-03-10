@@ -55,7 +55,10 @@ pub(crate) fn new_test_vtl2_nvme_device(
     let layer = if let Some(file) = backing_file {
         LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(file).into_resource()))
     } else {
-        LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(size), sector_size: None })
+        LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+            len: Some(size),
+            sector_size: None,
+        })
     };
 
     VpciDeviceConfig {
@@ -545,8 +548,11 @@ async fn openhcl_linux_storvsp_dvd(
         .call_failable(
             SimpleScsiDvdRequest::ChangeMedia,
             Some(
-                LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(len), sector_size: None })
-                    .into_resource(),
+                LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(len),
+                    sector_size: None,
+                })
+                .into_resource(),
             ),
         )
         .await

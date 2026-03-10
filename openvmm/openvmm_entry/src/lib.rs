@@ -1833,7 +1833,10 @@ fn disk_open_inner(
     }
     match disk_cli {
         &DiskCliKind::Memory(len) => {
-            layers.push(layer(RamDiskLayerHandle { len: Some(len), sector_size: None }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: Some(len),
+                sector_size: None,
+            }));
         }
         DiskCliKind::File {
             path,
@@ -1855,7 +1858,10 @@ fn disk_open_inner(
             }))
         }
         DiskCliKind::MemoryDiff(inner) => {
-            layers.push(layer(RamDiskLayerHandle { len: None, sector_size: None }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }));
             disk_open_inner(inner, true, layers)?;
         }
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
@@ -2966,7 +2972,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         }
                         Some(size) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size), sector_size: None },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                     };
@@ -3133,7 +3142,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size), sector_size: None },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                         (None, None) => {

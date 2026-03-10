@@ -18,7 +18,8 @@ pub struct RamDiskLayerHandle {
     /// The size of the layer. If `None`, the layer will be the same size as the
     /// lower disk.
     pub len: Option<u64>,
-    /// The sector size in bytes. If `None`, defaults to 512.
+    /// The sector size in bytes. If `None`, uses the lower layer's sector
+    /// size, or 512 if there is no lower layer.
     pub sector_size: Option<u32>,
 }
 

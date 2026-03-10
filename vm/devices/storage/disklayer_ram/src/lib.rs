@@ -31,15 +31,41 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
 
-/// A disk layer backed by RAM, which lazily infers its topology from the layer
-/// it is being stacked on-top of
-#[non_exhaustive]
-pub struct LazyRamDiskLayer {}
+/// A RAM-backed disk layer that infers unspecified topology parameters from
+/// the lower layer at attach time.
+pub struct LazyRamDiskLayer {
+    len: Option<u64>,
+    sector_size: Option<u32>,
+}
 
 impl LazyRamDiskLayer {
-    /// Create a new lazy RAM-backed disk layer
+    /// Create a new lazy RAM-backed disk layer.
+    ///
+    /// By default, both size and sector size are inferred from the lower layer.
+    /// Use [`with_len`](Self::with_len) and
+    /// [`with_sector_size`](Self::with_sector_size) to override.
     pub fn new() -> Self {
-        Self {}
+        Self {
+            len: None,
+            sector_size: None,
+        }
+    }
+
+    /// Set the layer size in bytes.
+    ///
+    /// If not set, the size is inferred from the lower layer at attach time.
+    pub fn with_len(mut self, len: u64) -> Self {
+        self.len = Some(len);
+        self
+    }
+
+    /// Set the sector size in bytes.
+    ///
+    /// If not set, the sector size is inferred from the lower layer at attach
+    /// time, defaulting to 512 if there is no lower layer.
+    pub fn with_sector_size(mut self, sector_size: u32) -> Self {
+        self.sector_size = Some(sector_size);
+        self
     }
 }
 
@@ -210,9 +236,17 @@ impl LayerAttach for LazyRamDiskLayer {
         self,
         lower_layer_metadata: Option<disk_layered::DiskLayerMetadata>,
     ) -> Result<Self::Layer, Self::Error> {
-        let meta = lower_layer_metadata.ok_or(Error::EmptyDisk)?;
-        let sector_size = meta.sector_size;
-        let total_size = meta.sector_count * sector_size as u64;
+        let sector_size = self
+            .sector_size
+            .or(lower_layer_metadata.as_ref().map(|meta| meta.sector_size))
+            .unwrap_or(512);
+        let total_size = match self.len {
+            Some(len) => len,
+            None => {
+                let meta = lower_layer_metadata.ok_or(Error::EmptyDisk)?;
+                meta.sector_count * meta.sector_size as u64
+            }
+        };
         RamDiskLayer::new_with_sector_size(total_size, sector_size)
     }
 }
