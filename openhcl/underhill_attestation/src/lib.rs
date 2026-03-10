@@ -1312,13 +1312,14 @@ fn verify_init_data_inner(
     let attestation_type = match tee_call.tee_type() {
         TeeType::Snp => AttestationType::Snp,
         TeeType::Tdx => AttestationType::Tdx,
+        TeeType::Vbs => AttestationType::Vbs,
+        _ => AttestationType::Host,
     };
     match attestation_type {
         AttestationType::Snp => {
             // compare hash of the encoded settings with the host data
-            let snpreport =
-                sev_guest_device::protocol::SnpReport::mut_from_bytes(&mut report.report[..])
-                    .map_err(|_e| InitDataError::InvalidAttestationReport)?;
+            let snpreport = x86defs::snp::SnpReport::mut_from_bytes(&mut report.report[..])
+                .map_err(|_e| InitDataError::InvalidAttestationReport)?;
             let host_data = snpreport.host_data;
             tracing::info!(CVM_ALLOWED, "Host data: {:?}", host_data);
             tracing::info!(CVM_ALLOWED, "Asserted init data: {:?}", asserted_init_data);
@@ -1330,9 +1331,8 @@ fn verify_init_data_inner(
         }
         AttestationType::Tdx => {
             // compare hash of the encoded settings with the mr_config
-            let tdreport =
-                tdx_guest_device::protocol::TdReport::mut_from_bytes(&mut report.report[..])
-                    .map_err(|_e| InitDataError::InvalidAttestationReport)?;
+            let tdreport = x86defs::tdx::TdReport::mut_from_bytes(&mut report.report[..])
+                .map_err(|_e| InitDataError::InvalidAttestationReport)?;
             let mr_config = tdreport.td_info.td_info_base.mr_owner_config;
             if mr_config[0..32] == asserted_init_data {
                 return Ok(());
@@ -2765,7 +2765,7 @@ mod tests {
             _report_data: &[u8; 64],
         ) -> Result<tee_call::GetAttestationReportResult, tee_call::Error> {
             Ok(tee_call::GetAttestationReportResult {
-                report: [0u8; sev_guest_device::protocol::SNP_REPORT_SIZE].to_vec(),
+                report: [0u8; x86defs::snp::SNP_REPORT_SIZE].to_vec(),
                 tcb_version: None,
             })
         }

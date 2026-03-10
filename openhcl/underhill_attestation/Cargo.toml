@@ -47,3 +47,6 @@ user_driver_emulated_mock.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+x86defs.workspace = true
