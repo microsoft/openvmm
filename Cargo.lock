@@ -8974,7 +8974,6 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.11.0",
  "futures",
- "futures-concurrency",
  "guestmem",
  "inspect",
  "inspect_counters",
