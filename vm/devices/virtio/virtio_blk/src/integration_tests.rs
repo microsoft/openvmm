@@ -912,3 +912,185 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
         "virtio sector 8 should be zeroes"
     );
 }
+
+// --- Bounce buffer integration tests ---
+
+/// Write and read using a descriptor chain that forces the bounce buffer
+/// fallback, then verify the data survives the roundtrip.
+///
+/// The bounce buffer path is exercised when `try_build_gpn_list` fails,
+/// which happens when the data payload is split across multiple descriptors
+/// whose GPAs are non-contiguous and have non-page-aligned boundaries.
+///
+/// This test places two 256-byte data fragments at GPAs that are separated
+/// by a gap and sit at non-page-aligned offsets, making PagedRange
+/// construction impossible. The device must fall back to copying through
+/// the bounce buffer for both write and read.
+#[async_test]
+async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
+    let disk = ram_disk(64 * 1024, false);
+    let mut harness = TestHarness::new(&driver, disk, false);
+    harness.enable();
+
+    let frag_size: u32 = 256;
+
+    // --- Write: header + 2 non-contiguous data fragments + status ---
+
+    // Place fragments at non-page-aligned GPAs separated by a gap.
+    // alloc_data places them contiguously, so we manually allocate with a gap.
+    let header_gpa = harness.alloc_data(REQ_HEADER_SIZE);
+    let frag1_gpa = harness.alloc_data(frag_size);
+    // Skip 100 bytes to create a non-page-aligned gap.
+    let _gap = harness.alloc_data(100);
+    let frag2_gpa = harness.alloc_data(frag_size);
+    let status_gpa = harness.alloc_data(1);
+
+    // Verify the fragments are at non-page-aligned, non-contiguous GPAs.
+    assert_ne!(
+        frag1_gpa + frag_size as u64,
+        frag2_gpa,
+        "fragments must not be contiguous"
+    );
+    assert_ne!(frag1_gpa % 4096, 0, "frag1 should not be page-aligned");
+
+    // Write request header.
+    let header = VirtioBlkReqHeader {
+        request_type: VIRTIO_BLK_T_OUT,
+        reserved: 0,
+        sector: 0,
+    };
+    harness.mem.write_at(header_gpa, header.as_bytes()).unwrap();
+
+    // Write recognizable patterns into the two fragments.
+    let pattern1: Vec<u8> = (0..frag_size).map(|i| (i % 251) as u8).collect();
+    let pattern2: Vec<u8> = (0..frag_size).map(|i| ((i + 100) % 251) as u8).collect();
+    harness.mem.write_at(frag1_gpa, &pattern1).unwrap();
+    harness.mem.write_at(frag2_gpa, &pattern2).unwrap();
+    harness.mem.write_at(status_gpa, &[0xFFu8]).unwrap();
+
+    // Build descriptor chain: header → frag1 → frag2 → status
+    let d = 0u16;
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d,
+        header_gpa,
+        REQ_HEADER_SIZE,
+        DescriptorFlags::new().with_next(true),
+        d + 1,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d + 1,
+        frag1_gpa,
+        frag_size,
+        DescriptorFlags::new().with_next(true),
+        d + 2,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d + 2,
+        frag2_gpa,
+        frag_size,
+        DescriptorFlags::new().with_next(true),
+        d + 3,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d + 3,
+        status_gpa,
+        1,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    make_available(&harness.mem, AVAIL_ADDR, d, &mut harness.avail_idx);
+    harness.queue_event.signal();
+
+    let (_id, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, 1); // status byte only
+
+    let mut status = [0u8; 1];
+    harness.mem.read_at(status_gpa, &mut status).unwrap();
+    assert_eq!(status[0], VIRTIO_BLK_S_OK, "write should succeed");
+
+    // --- Read back using similarly fragmented descriptors ---
+
+    let header_gpa2 = harness.alloc_data(REQ_HEADER_SIZE);
+    let read_frag1_gpa = harness.alloc_data(frag_size);
+    let _gap2 = harness.alloc_data(100);
+    let read_frag2_gpa = harness.alloc_data(frag_size);
+    let read_status_gpa = harness.alloc_data(1);
+
+    let header2 = VirtioBlkReqHeader {
+        request_type: VIRTIO_BLK_T_IN,
+        reserved: 0,
+        sector: 0,
+    };
+    harness
+        .mem
+        .write_at(header_gpa2, header2.as_bytes())
+        .unwrap();
+
+    // Descriptor chain: header (readable) → frag1 + frag2 + status (writable)
+    let d = 4u16;
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d,
+        header_gpa2,
+        REQ_HEADER_SIZE,
+        DescriptorFlags::new().with_next(true),
+        d + 1,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d + 1,
+        read_frag1_gpa,
+        frag_size,
+        DescriptorFlags::new().with_write(true).with_next(true),
+        d + 2,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d + 2,
+        read_frag2_gpa,
+        frag_size,
+        DescriptorFlags::new().with_write(true).with_next(true),
+        d + 3,
+    );
+    write_descriptor(
+        &harness.mem,
+        DESC_ADDR,
+        d + 3,
+        read_status_gpa,
+        1,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+    make_available(&harness.mem, AVAIL_ADDR, d, &mut harness.avail_idx);
+    harness.queue_event.signal();
+
+    let (_id, used_len) = harness.wait_for_used().await;
+    // 512 bytes data + 1 status byte
+    assert_eq!(used_len, frag_size * 2 + 1);
+
+    // Verify the read-back data matches what we wrote.
+    let mut readback1 = vec![0u8; frag_size as usize];
+    let mut readback2 = vec![0u8; frag_size as usize];
+    harness.mem.read_at(read_frag1_gpa, &mut readback1).unwrap();
+    harness.mem.read_at(read_frag2_gpa, &mut readback2).unwrap();
+    assert_eq!(readback1, pattern1, "bounce buffer read frag1 mismatch");
+    assert_eq!(readback2, pattern2, "bounce buffer read frag2 mismatch");
+
+    let mut read_status = [0u8; 1];
+    harness
+        .mem
+        .read_at(read_status_gpa, &mut read_status)
+        .unwrap();
+    assert_eq!(read_status[0], VIRTIO_BLK_S_OK, "read should succeed");
+}
