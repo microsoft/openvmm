@@ -41,7 +41,6 @@ use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::VirtioDeviceFeaturesBank0;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -472,11 +471,14 @@ async fn process_request_inner(
     }
 
     let request_type = header.request_type;
-    let sector_shift = disk.sector_shift() - 9; // convert from 512-byte virtio sectors to disk sectors
-    let disk_sector = header.sector >> sector_shift;
+    // Shift to convert 512-byte virtio sectors to backend disk sectors.
+    // Only meaningful for commands that use sector addressing (IN, OUT, DISCARD).
+    let sector_shift = disk.sector_shift() - 9;
+    let sector_mask = (1u64 << sector_shift) - 1; // alignment mask for validation
 
     match request_type {
         VIRTIO_BLK_T_IN => {
+            let disk_sector = virtio_to_disk_sector(header.sector, sector_shift, sector_mask)?;
             let (bytes, bounced) = do_io(disk, mem, work, disk_sector, true).await?;
             Ok((bytes, IoStat::Read, bounced))
         }
@@ -484,6 +486,7 @@ async fn process_request_inner(
             if read_only {
                 return Err(VIRTIO_BLK_S_IOERR);
             }
+            let disk_sector = virtio_to_disk_sector(header.sector, sector_shift, sector_mask)?;
             let (bytes, bounced) = do_io(disk, mem, work, disk_sector, false).await?;
             Ok((bytes, IoStat::Write, bounced))
         }
@@ -511,23 +514,33 @@ async fn process_request_inner(
             // Per spec §5.2.6.1: "The unmap bit MUST be zero for discard commands."
             // Per spec §5.2.6.2: "the device MAY deallocate the specified range."
             // Discard is a hint — no data-content guarantee.
-            let mut all_bytes =
-                [0u8; size_of::<VirtioBlkReqHeader>() + size_of::<VirtioBlkDiscardWriteZeroes>()];
+
+            /// Combined header + discard/write-zeroes segment, used to read
+            /// the full request in one `work.read()` call.
+            #[repr(C)]
+            #[derive(
+                zerocopy::FromBytes, zerocopy::IntoBytes, zerocopy::Immutable, zerocopy::KnownLayout,
+            )]
+            struct VirtioBlkDiscardReq {
+                header: VirtioBlkReqHeader,
+                seg: VirtioBlkDiscardWriteZeroes,
+            }
+
+            let mut discard_req = VirtioBlkDiscardReq::new_zeroed();
             let read_len = work
-                .read(mem, &mut all_bytes)
+                .read(mem, discard_req.as_mut_bytes())
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
-            if read_len < all_bytes.len() {
+            if read_len < size_of_val(&discard_req) {
                 return Err(VIRTIO_BLK_S_IOERR);
             }
-            let seg = VirtioBlkDiscardWriteZeroes::read_from_bytes(
-                &all_bytes[size_of::<VirtioBlkReqHeader>()..],
-            )
-            .unwrap();
+            let seg = discard_req.seg;
             // Spec §5.2.6.2: "the device MUST set the status byte to
             // VIRTIO_BLK_S_UNSUPP for discard commands if the unmap flag is set."
             if seg.flags != 0 {
                 return Err(VIRTIO_BLK_S_UNSUPP);
             }
+            // Discard segment has its own sector/count fields (in 512-byte units).
+            let disk_sector = virtio_to_disk_sector(seg.sector, sector_shift, sector_mask)?;
             let disk_count = (seg.num_sectors as u64) >> sector_shift;
             disk.unmap(disk_sector, disk_count, false)
                 .await
@@ -545,6 +558,19 @@ async fn process_request_inner(
 struct DataRegion {
     addr: u64,
     len: u64,
+}
+
+/// Convert a 512-byte virtio sector number to a backend disk sector,
+/// validating alignment for disks with larger native sectors.
+fn virtio_to_disk_sector(
+    virtio_sector: u64,
+    sector_shift: u32,
+    sector_mask: u64,
+) -> Result<u64, u8> {
+    if virtio_sector & sector_mask != 0 {
+        return Err(VIRTIO_BLK_S_IOERR);
+    }
+    Ok(virtio_sector >> sector_shift)
 }
 
 /// Extract the data-carrying regions from a descriptor chain.
@@ -728,6 +754,13 @@ async fn do_io(
         return Ok((0, false));
     }
 
+    // Validate that the data length is a whole number of backend sectors.
+    // The disk backend may panic if given a non-sector-aligned buffer.
+    let sector_size = disk.sector_size() as u64;
+    if data_len & (sector_size - 1) != 0 {
+        return Err(VIRTIO_BLK_S_IOERR);
+    }
+
     let regions = data_regions(&work.payload, writable, skip_bytes, data_len);
 
     let (mut io_mem, io_range, bounced) =
@@ -736,6 +769,8 @@ async fn do_io(
             (None, OwnedPagedRange { gpns, offset, len }, false)
         } else {
             // Slow path: allocate a bounce buffer.
+            // TODO: cap data_len to a reasonable maximum (e.g. seg_max * PAGE_SIZE)
+            // to prevent a malicious guest from causing unbounded allocation.
             let data_len_usize = data_len as usize;
             let mut bounce_mem = GuestMemory::allocate(data_len_usize);
             let num_pages = data_len_usize.div_ceil(guestmem::PAGE_SIZE);
