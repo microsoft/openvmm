@@ -473,7 +473,6 @@ impl VmService {
                 pci_mmio_gaps: vec![],
                 prefetch_memory: false,
                 private_memory: false,
-                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {

@@ -1529,7 +1529,6 @@ async fn vm_config_from_command_line(
             private_memory: opt.private_memory,
             pci_ecam_gaps,
             pci_mmio_gaps,
-            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,

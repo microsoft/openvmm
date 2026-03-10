@@ -273,7 +273,6 @@ pub struct MemoryConfig {
     pub mmio_gaps: Vec<MemoryRange>,
     pub pci_ecam_gaps: Vec<MemoryRange>,
     pub pci_mmio_gaps: Vec<MemoryRange>,
-    pub pcie_ecam_base: u64,
 }
 
 #[derive(Debug, MeshPayload, Default)]
