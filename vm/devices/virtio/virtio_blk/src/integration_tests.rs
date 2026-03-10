@@ -8,6 +8,7 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
+use crate::spec::VirtioBlkDiscardWriteZeroes;
 use crate::spec::*;
 use disk_backend::Disk;
 use disk_backend::DiskError;
@@ -401,6 +402,74 @@ impl TestHarness {
         id_gpa
     }
 
+    /// Build a discard request descriptor chain.
+    ///
+    /// Layout (per virtio-blk spec §5.2.6):
+    ///   desc 0 (readable): VirtioBlkReqHeader { type=DISCARD, sector=0 }
+    ///                       + VirtioBlkDiscardWriteZeroes { sector, num_sectors, flags }
+    ///   desc 1 (writable): 1-byte status
+    ///
+    /// Returns the status byte GPA.
+    fn post_discard_request(
+        &mut self,
+        head_desc: u16,
+        discard_sector: u64,
+        num_sectors: u32,
+        flags: u32,
+    ) -> u64 {
+        // Combined header + discard segment = 16 + 16 = 32 bytes
+        let req_gpa = self.alloc_data(32);
+        let status_gpa = self.alloc_data(1);
+
+        // Write the header (type=DISCARD, sector field unused for discard)
+        let header = VirtioBlkReqHeader {
+            request_type: VIRTIO_BLK_T_DISCARD,
+            reserved: 0,
+            sector: 0,
+        };
+        self.mem.write_at(req_gpa, header.as_bytes()).unwrap();
+
+        // Write the discard segment immediately after the header
+        let seg = VirtioBlkDiscardWriteZeroes {
+            sector: discard_sector,
+            num_sectors,
+            flags,
+        };
+        self.mem
+            .write_at(req_gpa + REQ_HEADER_SIZE as u64, seg.as_bytes())
+            .unwrap();
+        self.mem.write_at(status_gpa, &[0xFFu8]).unwrap();
+
+        // desc 0: header + segment (readable)
+        let flags0 = DescriptorFlags::new().with_next(true);
+        write_descriptor(
+            &self.mem,
+            DESC_ADDR,
+            head_desc,
+            req_gpa,
+            32,
+            flags0,
+            head_desc + 1,
+        );
+
+        // desc 1: status (writable)
+        let flags1 = DescriptorFlags::new().with_write(true);
+        write_descriptor(
+            &self.mem,
+            DESC_ADDR,
+            head_desc + 1,
+            status_gpa,
+            1,
+            flags1,
+            0,
+        );
+
+        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        self.queue_event.signal();
+
+        status_gpa
+    }
+
     /// Build a request with an arbitrary type code (for testing unsupported types).
     fn post_raw_request(&mut self, head_desc: u16, request_type: u32, sector: u64) -> u64 {
         let header_gpa = self.alloc_data(REQ_HEADER_SIZE);
@@ -728,6 +797,8 @@ struct TestDisk4K {
     sector_size: u32,
     #[inspect(skip)]
     storage: Mutex<Vec<u8>>,
+    #[inspect(skip)]
+    supports_discard: bool,
 }
 
 impl TestDisk4K {
@@ -737,7 +808,13 @@ impl TestDisk4K {
         Self {
             sector_size,
             storage: Mutex::new(vec![0u8; total_bytes]),
+            supports_discard: false,
         }
+    }
+
+    fn with_discard(mut self) -> Self {
+        self.supports_discard = true;
+        self
     }
 }
 
@@ -815,7 +892,11 @@ impl DiskIo for TestDisk4K {
     }
 
     fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-        disk_backend::UnmapBehavior::Ignored
+        if self.supports_discard {
+            disk_backend::UnmapBehavior::Unspecified
+        } else {
+            disk_backend::UnmapBehavior::Ignored
+        }
     }
 }
 
@@ -911,6 +992,131 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
         buf.iter().all(|&b| b == 0),
         "virtio sector 8 should be zeroes"
     );
+}
+
+// --- Discard integration tests ---
+
+/// Submit a discard request on a fresh harness and assert the expected status.
+async fn check_discard(
+    driver: &DefaultDriver,
+    disk: Disk,
+    read_only: bool,
+    sector: u64,
+    num_sectors: u32,
+    flags: u32,
+    expected_status: u8,
+) {
+    let mut harness = TestHarness::new(driver, disk, read_only);
+    harness.enable();
+    let status_gpa = harness.post_discard_request(0, sector, num_sectors, flags);
+    let (_id, used_len) = harness.wait_for_used().await;
+    assert_eq!(used_len, 1);
+    assert_eq!(harness.read_status(status_gpa), expected_status);
+}
+
+fn test_disk_4k_discard() -> Disk {
+    Disk::new(TestDisk4K::new(64 * 1024, 4096).with_discard()).unwrap()
+}
+
+/// Discard with properly aligned sector and num_sectors on a 4K disk
+/// should succeed.
+#[async_test]
+async fn discard_aligned_succeeds(driver: DefaultDriver) {
+    // Discard virtio sector 8 (disk sector 1), num_sectors=8 (8×512 = 4096).
+    check_discard(
+        &driver,
+        test_disk_4k_discard(),
+        false,
+        8,
+        8,
+        0,
+        VIRTIO_BLK_S_OK,
+    )
+    .await;
+}
+
+/// Discard with num_sectors not aligned to the backend sector size (4K)
+/// should fail with IOERR. This is the bug the alignment validation
+/// fix was added to catch.
+#[async_test]
+async fn discard_misaligned_num_sectors_fails(driver: DefaultDriver) {
+    // num_sectors=5 is not a multiple of 8 (4096/512).
+    check_discard(
+        &driver,
+        test_disk_4k_discard(),
+        false,
+        0,
+        5,
+        0,
+        VIRTIO_BLK_S_IOERR,
+    )
+    .await;
+}
+
+/// Discard with sector not aligned to the backend sector size (4K)
+/// should fail with IOERR.
+#[async_test]
+async fn discard_misaligned_sector_fails(driver: DefaultDriver) {
+    // sector=3 is not aligned to 8 (4096/512).
+    check_discard(
+        &driver,
+        test_disk_4k_discard(),
+        false,
+        3,
+        8,
+        0,
+        VIRTIO_BLK_S_IOERR,
+    )
+    .await;
+}
+
+/// Discard with the unmap flag set should be rejected with UNSUPP
+/// per spec §5.2.6.2.
+#[async_test]
+async fn discard_with_unmap_flag_returns_unsupp(driver: DefaultDriver) {
+    check_discard(
+        &driver,
+        test_disk_4k_discard(),
+        false,
+        0,
+        8,
+        1,
+        VIRTIO_BLK_S_UNSUPP,
+    )
+    .await;
+}
+
+/// Discard on a read-only disk should fail with IOERR.
+#[async_test]
+async fn discard_on_read_only_disk_fails(driver: DefaultDriver) {
+    check_discard(
+        &driver,
+        test_disk_4k_discard(),
+        true,
+        0,
+        8,
+        0,
+        VIRTIO_BLK_S_IOERR,
+    )
+    .await;
+}
+
+/// Discard on a 512-byte-sector disk (no shift) should succeed even with
+/// num_sectors values that would fail on a 4K disk — the alignment check
+/// is sector-size-dependent.
+#[async_test]
+async fn discard_512b_sector_any_count_succeeds(driver: DefaultDriver) {
+    // sector_shift=0, sector_mask=0 → any num_sectors is "aligned".
+    check_discard(
+        &driver,
+        ram_disk(64 * 1024, false),
+        false,
+        0,
+        5,
+        0,
+        VIRTIO_BLK_S_OK,
+    )
+    .await;
 }
 
 // --- Bounce buffer integration tests ---

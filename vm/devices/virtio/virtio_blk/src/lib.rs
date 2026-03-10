@@ -541,7 +541,11 @@ async fn process_request_inner(
             }
             // Discard segment has its own sector/count fields (in 512-byte units).
             let disk_sector = virtio_to_disk_sector(seg.sector, sector_shift, sector_mask)?;
-            let disk_count = (seg.num_sectors as u64) >> sector_shift;
+            let num_sectors = seg.num_sectors as u64;
+            if num_sectors & sector_mask != 0 {
+                return Err(VIRTIO_BLK_S_IOERR);
+            }
+            let disk_count = num_sectors >> sector_shift;
             disk.unmap(disk_sector, disk_count, false)
                 .await
                 .map_err(|_| VIRTIO_BLK_S_IOERR)?;
