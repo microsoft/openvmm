@@ -44,7 +44,7 @@ engineers' local machines and in CI. Put these special words in your test to opt
 If a test is not yet reliable enough to gate PRs, add the `_unstable` suffix to
 the test function name. For example:
 
-```rust
+```rust,ignore
 async fn my_new_boot_test_unstable(config: PetriVmConfig) -> Result<(), anyhow::Error> {
     // ...
 }
