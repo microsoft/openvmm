@@ -419,10 +419,14 @@ impl VmService {
         {
             vmservice::vm_config::BootConfig::DirectBoot(boot) => {
                 let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
-                let initrd_file = File::open(boot.initrd_path).context("failed to open initrd")?;
+                let initrd = if boot.initrd_path.is_empty() {
+                    None
+                } else {
+                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
+                };
                 LoadMode::Linux {
                     kernel,
-                    initrd: Some(initrd_file),
+                    initrd,
                     cmdline: boot.kernel_cmdline,
                     custom_dsdt: None,
                     enable_serial: true,
