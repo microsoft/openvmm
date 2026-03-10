@@ -254,7 +254,7 @@ impl VirtioQueue {
         Ok(self
             .core
             .try_next_work()
-            .map_err(|e| Error::other(e))?
+            .map_err(Error::other)?
             .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
     }
 
@@ -283,7 +283,9 @@ impl Stream for VirtioQueue {
     type Item = Result<VirtioQueueCallbackWork, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        ready!(self.get_mut().poll_next_buffer(cx)).transpose().into()
+        ready!(self.get_mut().poll_next_buffer(cx))
+            .transpose()
+            .into()
     }
 }
 
