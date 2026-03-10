@@ -705,7 +705,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// failure to the host via `complete_start_vtl0`, and the host terminates
 /// the VM.
 ///
-/// The test function name contains `skip_hwunseal` so the per-VM agent
+/// The test function name contains `skip_hw_unseal` so the per-VM agent
 /// registry in test_igvm_agent_rpc_server matches it to the
 /// `KeyReleaseFailureSkipHwUnsealing` configuration.
 #[cfg(windows)]

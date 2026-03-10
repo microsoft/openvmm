@@ -73,7 +73,7 @@ fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
             IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
         ),
         (
-            "akcert_cache",
+            "ak_cert_cache",
             IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
         ),
         (
