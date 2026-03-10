@@ -97,6 +97,8 @@ pub fn ado_yaml(
             gh_global_env: _,
             gh_pool: _,
             gh_permissions: _,
+            gh_job_outputs: _,
+            ref ado_override_condition,
             ref external_read_vars,
             ref parameters_used,
             ref artifacts_used,
@@ -552,7 +554,9 @@ EOF
                 Some(ado_variables)
             },
             steps: ado_steps,
-            condition: Some(if let Some(cond_param_idx) = cond_param_idx {
+            condition: Some(if let Some(ref cond) = *ado_override_condition {
+                cond.clone()
+            } else if let Some(cond_param_idx) = cond_param_idx {
                 format!(
                     "and(eq('${{{{ parameters.{} }}}}', 'true'), succeeded(), not(canceled()))",
                     parameters[cond_param_idx].name()

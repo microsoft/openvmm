@@ -68,7 +68,6 @@ pub fn github_yaml(
         ado_variables: _,
         ado_job_id_overrides: _,
     } = pipeline;
-
     let mut job_flowey_source: BTreeMap<petgraph::prelude::NodeIndex, FloweySource> =
         job_flowey_bootstrap_source(&graph, &order);
 
@@ -96,11 +95,13 @@ pub fn github_yaml(
             ref gh_global_env,
             ref gh_pool,
             ref gh_permissions,
+            ref gh_job_outputs,
             cond_param_idx,
             ref parameters_used,
             ref artifacts_used,
             ref artifacts_published,
             ado_variables: _,
+            ado_override_condition: _,
         } = graph[job_idx];
 
         if cond_param_idx.is_some() {
@@ -576,6 +577,7 @@ EOF
                     .clone()
                     .or_else(|| Some("github.event.pull_request.draft == false".to_string())),
                 env: gh_global_env.clone(),
+                outputs: gh_job_outputs.iter().cloned().collect(),
                 steps: gh_steps,
             },
         );

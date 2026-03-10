@@ -1,0 +1,21 @@
+# Non-product file path patterns for PR classification.
+#
+# A PR is classified as "non-product" only when EVERY changed file matches at
+# least one bucket.  Any file that matches no bucket is treated as a product
+# change (conservative default).
+#
+# Each [[bucket]] entry must supply:
+#   prefix      – path must start with this string
+#   description – human-readable rationale (shown in classification output)
+#
+# Each [[bucket]] entry may optionally supply:
+#   suffix      – path must also end with this string (e.g. ".py")
+
+[[bucket]]
+prefix = "Guide/"
+description = "Docs tree; validated by the separate docs pipeline"
+
+[[bucket]]
+prefix = "repo_support/"
+suffix = ".py"
+description = "Repo automation scripts; no effect on product behavior"
