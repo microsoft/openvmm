@@ -59,7 +59,7 @@ const VIRTIO_F_RING_INDIRECT_DESC: u32 = 0x10000000;
 const VIRTIO_F_RING_EVENT_IDX: u32 = 0x20000000;
 // Device features - second bank
 const VIRTIO_F_VERSION_1: u32 = 1;
-const _VIRTIO_F_RING_PACKED: u32 = 4;
+const VIRTIO_F_RING_PACKED: u32 = 4;
 
 // Device status
 const VIRTIO_ACKNOWLEDGE: u32 = 1;
@@ -189,7 +189,10 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
                     std::ptr::copy(value.as_ptr(), dest, len);
                 }
             }
-            None => panic!("Unexpected read request at address {:x}", address),
+            None => panic!(
+                "Unexpected read request for {} bytes at address {:x}",
+                len, address
+            ),
         }
         Ok(())
     }
@@ -207,7 +210,10 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
                     std::ptr::copy(src, value.as_mut_ptr(), len);
                 }
             }
-            _ => panic!("Unexpected write request at address {:x}", address),
+            _ => panic!(
+                "Unexpected write request for {} bytes at address {:x}",
+                len, address
+            ),
         }
         Ok(())
     }
@@ -250,20 +256,37 @@ struct CreateDirectQueueParams {
     event: Event,
 }
 
+struct SplitQueue {
+    last_avail_index: Vec<u16>,
+    last_used_index: Vec<u16>,
+}
+
+struct PackedQueue {
+    next_ready_index: Vec<u16>,
+    ready_wrapped_bit: Vec<bool>,
+    next_completed_index: Vec<u16>,
+    completed_wrapped_bit: Vec<bool>,
+    buffer_and_count: Vec<BTreeMap<u16, u16>>,
+}
+
+enum VirtioQueueInfo {
+    Split(SplitQueue),
+    Packed(PackedQueue),
+}
+
 struct VirtioTestGuest {
     test_mem: Arc<VirtioTestMemoryAccess>,
     driver: DefaultDriver,
     num_queues: u16,
     queue_size: u16,
     allow_indirect_descriptors: bool,
+    info: VirtioQueueInfo,
     use_ring_event_index: bool,
-    last_avail_index: Vec<u16>,
-    last_used_index: Vec<u16>,
     avail_descriptors: Vec<Vec<bool>>,
 }
 
 impl VirtioTestGuest {
-    fn new(
+    fn new_split(
         driver: &DefaultDriver,
         test_mem: &Arc<VirtioTestMemoryAccess>,
         num_queues: u16,
@@ -280,15 +303,53 @@ impl VirtioTestGuest {
             num_queues,
             queue_size,
             allow_indirect_descriptors: true,
+            info: VirtioQueueInfo::Split(SplitQueue {
+                last_avail_index,
+                last_used_index,
+            }),
             use_ring_event_index,
-            last_avail_index,
-            last_used_index,
             avail_descriptors,
         };
         for i in 0..num_queues {
             test_guest.add_queue_memory(i);
         }
         test_guest
+    }
+
+    fn new_packed(
+        driver: &DefaultDriver,
+        test_mem: &Arc<VirtioTestMemoryAccess>,
+        num_queues: u16,
+        queue_size: u16,
+        use_ring_event_index: bool,
+    ) -> Self {
+        let avail_descriptors: Vec<Vec<bool>> =
+            vec![vec![true; queue_size as usize]; num_queues as usize];
+        let test_guest = Self {
+            test_mem: test_mem.clone(),
+            driver: driver.clone(),
+            num_queues,
+            queue_size,
+            allow_indirect_descriptors: true,
+            info: VirtioQueueInfo::Packed(PackedQueue {
+                next_ready_index: vec![0; num_queues as usize],
+                ready_wrapped_bit: vec![true; num_queues as usize],
+                next_completed_index: vec![0; num_queues as usize],
+                completed_wrapped_bit: vec![true; num_queues as usize],
+                buffer_and_count: vec![BTreeMap::new(); num_queues as usize],
+            }),
+            use_ring_event_index,
+            avail_descriptors,
+            exit_event: event_listener::Event::new(),
+        };
+        for i in 0..num_queues {
+            test_guest.add_queue_memory(i);
+        }
+        test_guest
+    }
+
+    fn driver(&self) -> DefaultDriver {
+        self.driver.clone()
     }
 
     fn mem(&self) -> GuestMemory {
@@ -338,6 +399,11 @@ impl VirtioTestGuest {
         };
 
         let flags1 = VIRTIO_F_VERSION_1;
+        let flags1 = if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+            flags1 | VIRTIO_F_RING_PACKED
+        } else {
+            flags1
+        };
 
         VirtioDeviceFeatures::new()
             .with_bank(0, flags0)
@@ -522,6 +588,7 @@ impl VirtioTestGuest {
     }
 
     fn add_queue_memory(&self, queue_index: u16) {
+        let is_packed_descriptors = matches!(self.info, VirtioQueueInfo::Packed(_));
         // descriptors
         for i in 0..self.queue_size {
             let base = self.get_queue_descriptor(queue_index, i);
@@ -531,17 +598,30 @@ impl VirtioTestGuest {
                 &(self.get_queue_descriptor_backing_memory_address(queue_index)
                     + 0x1000 * i as u64)
                     .to_le_bytes(),
-                false,
+                is_packed_descriptors,
             );
             // length
+            self.test_mem.modify_memory_map(
+                base + 8,
+                &0x1000u32.to_le_bytes(),
+                is_packed_descriptors,
+            );
+            // split: flags, packed: buffer_id
             self.test_mem
-                .modify_memory_map(base + 8, &0x1000u32.to_le_bytes(), false);
-            // flags
+                .modify_memory_map(base + 12, &0u16.to_le_bytes(), is_packed_descriptors);
+            // split: next index, packed: flags
             self.test_mem
-                .modify_memory_map(base + 12, &0u16.to_le_bytes(), false);
-            // next index
+                .modify_memory_map(base + 14, &0u16.to_le_bytes(), is_packed_descriptors);
+        }
+
+        if is_packed_descriptors {
+            let base = self.get_queue_descriptor(queue_index, self.queue_size);
+            // Device and driver event fields
             self.test_mem
-                .modify_memory_map(base + 14, &0u16.to_le_bytes(), false);
+                .modify_memory_map(base, &0_u32.to_le_bytes(), true);
+            self.test_mem
+                .modify_memory_map(base + 4, &0_u32.to_le_bytes(), false);
+            return;
         }
 
         // available queue (flags, index)
@@ -590,25 +670,69 @@ impl VirtioTestGuest {
         }
     }
 
-    fn reserve_descriptor(&mut self, queue_index: u16) -> u16 {
-        let avail_descriptors = &mut self.avail_descriptors[queue_index as usize];
-        for (i, desc) in avail_descriptors.iter_mut().enumerate() {
-            if *desc {
-                *desc = false;
-                return i as u16;
-            }
+    fn reserve_split_descriptor(&mut self, queue_index: u16) -> u16 {
+        if let Some((desc_index, desc)) = self.avail_descriptors[queue_index as usize]
+            .iter_mut()
+            .enumerate()
+            .find(|(_, desc)| **desc)
+        {
+            *desc = false;
+            return desc_index as u16;
         }
-
         panic!("No descriptors are available!");
+    }
+
+    fn reserve_packed_descriptors(&mut self, queue_index: u16, count: u16) -> u16 {
+        let queue_size = self.queue_size;
+        let starting_descriptor = if let VirtioQueueInfo::Packed(packed) = &self.info {
+            packed.next_ready_index[queue_index as usize]
+        } else {
+            panic!("Not a packed queue");
+        };
+        let avail_descriptors = &mut self.avail_descriptors[queue_index as usize];
+        for i in 0..count {
+            let desc_index = (starting_descriptor + i) % queue_size;
+            if !avail_descriptors[desc_index as usize] {
+                panic!("Not enough available descriptors!");
+            }
+            avail_descriptors[desc_index as usize] = false;
+        }
+        // Reset default descriptor values.
+        for i in 0..count {
+            let desc_index = (starting_descriptor + i) % queue_size;
+            let base = self.get_queue_descriptor(queue_index, desc_index);
+            // physical address
+            self.test_mem.modify_memory_map(
+                base,
+                &(self.get_queue_descriptor_backing_memory_address(queue_index)
+                    + 0x1000 * desc_index as u64)
+                    .to_le_bytes(),
+                true,
+            );
+            // length
+            self.test_mem
+                .modify_memory_map(base + 8, &0x1000u32.to_le_bytes(), true);
+            // buffer_id
+            self.test_mem
+                .modify_memory_map(base + 12, &0u16.to_le_bytes(), true);
+            // flags
+            self.test_mem
+                .modify_memory_map(base + 14, &0u16.to_le_bytes(), true);
+        }
+        starting_descriptor
     }
 
     fn free_descriptor(&mut self, queue_index: u16, desc_index: u16) {
         assert!(desc_index < self.queue_size);
         let desc_addr = self.get_queue_descriptor(queue_index, desc_index);
-        let flags: DescriptorFlags = self.test_mem.memory_map_get_u16(desc_addr + 12).into();
-        if flags.next() {
-            let next = self.test_mem.memory_map_get_u16(desc_addr + 14);
-            self.free_descriptor(queue_index, next);
+        if matches!(self.info, VirtioQueueInfo::Split(_)) {
+            let flags: DescriptorFlags = self.test_mem.memory_map_get_u16(desc_addr + 12).into();
+            if flags.next() {
+                let next = self.test_mem.memory_map_get_u16(desc_addr + 14);
+                self.free_descriptor(queue_index, next);
+            }
+        } else {
+            // Linked packed descriptors are handled in get_next_packed_completed()
         }
         let avail_descriptors = &mut self.avail_descriptors[queue_index as usize];
         assert_eq!(avail_descriptors[desc_index as usize], false);
@@ -617,9 +741,15 @@ impl VirtioTestGuest {
 
     fn queue_available_desc(&mut self, queue_index: u16, desc_index: u16) {
         let avail_base_addr = self.get_queue_available_base_address(queue_index);
-        let last_avail_index = &mut self.last_avail_index[queue_index as usize];
-        let next_index = *last_avail_index % self.queue_size;
-        *last_avail_index = last_avail_index.wrapping_add(1);
+        let (last_avail_index, next_index) = if let VirtioQueueInfo::Split(split) = &mut self.info {
+            let last_avail_index = split.last_avail_index[queue_index as usize];
+            let next_index = last_avail_index % self.queue_size;
+            let last_avail_index = last_avail_index.wrapping_add(1);
+            split.last_avail_index[queue_index as usize] = last_avail_index;
+            (last_avail_index, next_index)
+        } else {
+            panic!("Not a split queue");
+        };
         self.test_mem.modify_memory_map(
             avail_base_addr + 4 + 2 * next_index as u64,
             &desc_index.to_le_bytes(),
@@ -633,24 +763,77 @@ impl VirtioTestGuest {
     }
 
     fn add_to_avail_queue(&mut self, queue_index: u16) {
-        let next_descriptor = self.reserve_descriptor(queue_index);
-        // flags
-        self.test_mem.modify_memory_map(
-            self.get_queue_descriptor(queue_index, next_descriptor) + 12,
-            &0u16.to_le_bytes(),
-            false,
-        );
-        self.queue_available_desc(queue_index, next_descriptor);
+        if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+            self.make_packed_descriptors_available(queue_index, vec![DescriptorFlags::new()], None);
+        } else {
+            let next_descriptor = self.reserve_split_descriptor(queue_index);
+            // flags
+            self.test_mem.modify_memory_map(
+                self.get_queue_descriptor(queue_index, next_descriptor) + 12,
+                &0u16.to_le_bytes(),
+                false,
+            );
+            self.queue_available_desc(queue_index, next_descriptor);
+        }
+    }
+
+    fn make_packed_descriptors_available(
+        &mut self,
+        queue_index: u16,
+        flags: Vec<DescriptorFlags>,
+        indirect_count: Option<u32>,
+    ) {
+        let count = flags.len() as u16;
+        let first_descriptor = self.reserve_packed_descriptors(queue_index, count);
+        let wrapped_bit = if let VirtioQueueInfo::Packed(packed) = &self.info {
+            packed.ready_wrapped_bit[queue_index as usize]
+        } else {
+            unreachable!("Not a packed queue");
+        };
+        let buffer_id = queue_index << 8 | first_descriptor;
+        // The first descriptor needs to be the last marked available, as once
+        // it is valid, all the descriptors can be examined at any time.
+        for desc_index in (0..count).rev() {
+            let descriptor_index = (first_descriptor + desc_index) % self.queue_size;
+            let wrapped_bit = if descriptor_index >= first_descriptor {
+                wrapped_bit
+            } else {
+                !wrapped_bit
+            };
+            let desc_addr = self.get_queue_descriptor(queue_index, descriptor_index);
+            let flags = flags[desc_index as usize]
+                .with_available(wrapped_bit)
+                .with_used(!wrapped_bit)
+                .with_next(desc_index < count - 1);
+            self.test_mem
+                .modify_memory_map(desc_addr + 14, &flags.into_bits().to_le_bytes(), true);
+            if desc_index == count - 1 {
+                // The buffer ID is assigned to the last descriptor.
+                self.test_mem
+                    .modify_memory_map(desc_addr + 12, &buffer_id.to_le_bytes(), true);
+                // Indirect packed descriptors consume all of the indirect
+                // buffer, so set the size accordingly.
+                if let Some(indirect_count) = indirect_count {
+                    let length = indirect_count * 0x10;
+                    self.test_mem
+                        .modify_memory_map(desc_addr + 8, &length.to_le_bytes(), true);
+                }
+            }
+        }
+        if let VirtioQueueInfo::Packed(packed) = &mut self.info {
+            packed.buffer_and_count[queue_index as usize].insert(buffer_id, count);
+            let next_ready_index = (first_descriptor + count) % self.queue_size;
+            if next_ready_index < packed.next_ready_index[queue_index as usize] {
+                packed.ready_wrapped_bit[queue_index as usize] =
+                    !packed.ready_wrapped_bit[queue_index as usize];
+            }
+            packed.next_ready_index[queue_index as usize] = next_ready_index;
+        } else {
+            unreachable!("Not a packed queue");
+        };
     }
 
     fn add_indirect_to_avail_queue(&mut self, queue_index: u16) {
-        let next_descriptor = self.reserve_descriptor(queue_index);
-        // flags
-        self.test_mem.modify_memory_map(
-            self.get_queue_descriptor(queue_index, next_descriptor) + 12,
-            &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
-            false,
-        );
         // create another (indirect) descriptor in the buffer
         let buffer_addr = self.get_queue_descriptor_backing_memory_address(queue_index);
         // physical address
@@ -659,19 +842,39 @@ impl VirtioTestGuest {
         // length
         self.test_mem
             .modify_memory_map(buffer_addr + 8, &0x1000u32.to_le_bytes(), false);
-        // flags
+        // split: flags, packed: buffer_id (ignored for indirect descriptors)
         self.test_mem
             .modify_memory_map(buffer_addr + 12, &0u16.to_le_bytes(), false);
-        // next index
+        // split: next, packed: flags (wait bit ignored)
         self.test_mem
             .modify_memory_map(buffer_addr + 14, &0u16.to_le_bytes(), false);
-        self.queue_available_desc(queue_index, next_descriptor);
+        if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+            self.make_packed_descriptors_available(
+                queue_index,
+                vec![DescriptorFlags::new().with_indirect(true)],
+                Some(1),
+            );
+        } else {
+            let next_descriptor = self.reserve_split_descriptor(queue_index);
+            // flags on primary descriptor
+            self.test_mem.modify_memory_map(
+                self.get_queue_descriptor(queue_index, next_descriptor) + 12,
+                &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+                false,
+            );
+            self.queue_available_desc(queue_index, next_descriptor);
+        }
     }
 
     fn add_linked_to_avail_queue(&mut self, queue_index: u16, desc_count: u16) {
+        if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+            let flags = vec![DescriptorFlags::new(); desc_count as usize];
+            return self.make_packed_descriptors_available(queue_index, flags, None);
+        }
+
         let mut descriptors = Vec::with_capacity(desc_count as usize);
         for _ in 0..desc_count {
-            descriptors.push(self.reserve_descriptor(queue_index));
+            descriptors.push(self.reserve_split_descriptor(queue_index));
         }
 
         for i in 0..descriptors.len() {
@@ -695,13 +898,6 @@ impl VirtioTestGuest {
     }
 
     fn add_indirect_linked_to_avail_queue(&mut self, queue_index: u16, desc_count: u16) {
-        let next_descriptor = self.reserve_descriptor(queue_index);
-        // flags
-        self.test_mem.modify_memory_map(
-            self.get_queue_descriptor(queue_index, next_descriptor) + 12,
-            &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
-            false,
-        );
         // create indirect descriptors in the buffer
         let buffer_addr = self.get_queue_descriptor_backing_memory_address(queue_index);
         for i in 0..desc_count {
@@ -713,30 +909,75 @@ impl VirtioTestGuest {
             // length
             self.test_mem
                 .modify_memory_map(base + 8, &0x1000u32.to_le_bytes(), false);
-            // flags
-            let flags = if i < desc_count - 1 {
-                u16::from(DescriptorFlags::new().with_next(true))
+            // The next field is ignored for packed indirect descriptors. It
+            // will consume all descriptors in the buffer, so is dependent on
+            // the size of the buffer.
+            let flags = if matches!(self.info, VirtioQueueInfo::Split(_)) && i < desc_count - 1 {
+                DescriptorFlags::new().with_next(true).into_bits()
             } else {
                 0
             };
-            self.test_mem
-                .modify_memory_map(base + 12, &flags.to_le_bytes(), false);
-            // next index
-            let next = if i < desc_count - 1 { i + 1 } else { 0 };
-            self.test_mem
-                .modify_memory_map(base + 14, &next.to_le_bytes(), false);
+            if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+                // buffer id (ignored for indirect descriptors)
+                self.test_mem
+                    .modify_memory_map(base + 12, &0_u16.to_le_bytes(), false);
+                // flags
+                self.test_mem
+                    .modify_memory_map(base + 14, &flags.to_le_bytes(), false);
+            } else {
+                // flags
+                self.test_mem
+                    .modify_memory_map(base + 12, &flags.to_le_bytes(), false);
+                // next index
+                let next = if i < desc_count - 1 { i + 1 } else { 0 };
+                self.test_mem
+                    .modify_memory_map(base + 14, &next.to_le_bytes(), false);
+            }
         }
-        self.queue_available_desc(queue_index, next_descriptor);
+
+        if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+            self.make_packed_descriptors_available(
+                queue_index,
+                vec![DescriptorFlags::new().with_indirect(true)],
+                Some(desc_count as u32),
+            );
+        } else {
+            let next_descriptor = self.reserve_split_descriptor(queue_index);
+            // flags on primary descriptor
+            self.test_mem.modify_memory_map(
+                self.get_queue_descriptor(queue_index, next_descriptor) + 12,
+                &DescriptorFlags::new()
+                    .with_indirect(true)
+                    .into_bits()
+                    .to_le_bytes(),
+                false,
+            );
+            self.queue_available_desc(queue_index, next_descriptor);
+        }
     }
 
     fn get_next_completed(&mut self, queue_index: u16) -> Option<(u16, u32)> {
+        if matches!(self.info, VirtioQueueInfo::Split(_)) {
+            self.get_next_split_completed(queue_index)
+        } else {
+            self.get_next_packed_completed(queue_index)
+        }
+    }
+
+    fn get_next_split_completed(&mut self, queue_index: u16) -> Option<(u16, u32)> {
         let avail_base_addr = self.get_queue_available_base_address(queue_index);
         let used_base_addr = self.get_queue_used_base_address(queue_index);
         let cur_used_index = self.test_mem.memory_map_get_u16(used_base_addr + 2);
-        let last_used_index = &mut self.last_used_index[queue_index as usize];
-        if *last_used_index == cur_used_index {
-            return None;
-        }
+        let next_index = if let VirtioQueueInfo::Split(split) = &mut self.info {
+            let last_used_index = split.last_used_index[queue_index as usize];
+            if last_used_index == cur_used_index {
+                return None;
+            }
+            split.last_used_index[queue_index as usize] = last_used_index.wrapping_add(1);
+            last_used_index % self.queue_size
+        } else {
+            panic!("Not a split queue");
+        };
 
         if self.use_ring_event_index {
             self.test_mem.modify_memory_map(
@@ -746,8 +987,6 @@ impl VirtioTestGuest {
             );
         }
 
-        let next_index = *last_used_index % self.queue_size;
-        *last_used_index = last_used_index.wrapping_add(1);
         let desc_index = self
             .test_mem
             .memory_map_get_u32(used_base_addr + 4 + 8 * next_index as u64);
@@ -757,6 +996,51 @@ impl VirtioTestGuest {
             .memory_map_get_u32(used_base_addr + 8 + 8 * next_index as u64);
         self.free_descriptor(queue_index, desc_index);
         Some((desc_index, bytes_written))
+    }
+
+    fn get_next_packed_completed(&mut self, queue_index: u16) -> Option<(u16, u32)> {
+        let queue_size = self.queue_size;
+        let (descriptor_index, wrapped_bit) =
+            if let VirtioQueueInfo::Packed(packed) = &mut self.info {
+                (
+                    packed.next_completed_index[queue_index as usize],
+                    packed.completed_wrapped_bit[queue_index as usize],
+                )
+            } else {
+                panic!("Not a packed queue");
+            };
+        let desc_addr = self.get_queue_descriptor(queue_index, descriptor_index);
+        let flags: DescriptorFlags = self.test_mem.memory_map_get_u16(desc_addr + 14).into();
+        if flags.available() != wrapped_bit || flags.used() != wrapped_bit {
+            return None;
+        }
+
+        let bytes_written = self.test_mem.memory_map_get_u32(desc_addr + 8);
+        let buffer_id = self.test_mem.memory_map_get_u16(desc_addr + 12);
+        let count = if let VirtioQueueInfo::Packed(packed) = &mut self.info {
+            let err_msg = format!("Buffer ID {} not found in queue {}", buffer_id, queue_index);
+            let count = packed
+                .buffer_and_count
+                .get_mut(queue_index as usize)
+                .expect("Invalid queue index")
+                .remove(&buffer_id)
+                .expect(err_msg.as_str());
+            let next_completed_index = (descriptor_index + count) % queue_size;
+            if next_completed_index < packed.next_completed_index[queue_index as usize] {
+                packed.completed_wrapped_bit[queue_index as usize] =
+                    !packed.completed_wrapped_bit[queue_index as usize];
+            }
+            packed.next_completed_index[queue_index as usize] = next_completed_index;
+            count
+        } else {
+            unreachable!("Not a packed queue");
+        };
+
+        for desc_index in 0..count {
+            let descriptor_index = (descriptor_index + desc_index) % queue_size;
+            self.free_descriptor(queue_index, descriptor_index);
+        }
+        Some((descriptor_index, bytes_written))
     }
 }
 
@@ -1038,7 +1322,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // device feature (bank 1)
     dev.write_u32(20, 1);
     assert_eq!(dev.read_u32(20), 1);
-    assert_eq!(dev.read_u32(16), VIRTIO_F_VERSION_1);
+    assert_eq!(dev.read_u32(16), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     // device feature (bank 2)
     dev.write_u32(20, 2);
     assert_eq!(dev.read_u32(16), 0);
@@ -1058,7 +1342,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // driver feature (bank 1)
     assert_eq!(dev.read_u32(32), 0);
     dev.write_u32(32, 0xffffffff);
-    assert_eq!(dev.read_u32(32), VIRTIO_F_VERSION_1);
+    assert_eq!(dev.read_u32(32), VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     // driver feature (bank 2)
     dev.write_u32(36, 2);
     assert_eq!(dev.read_u32(32), 0);
@@ -1345,7 +1629,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     assert_eq!(pci_test_device.read_u32(bar_address1), 1);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 4),
-        VIRTIO_F_VERSION_1
+        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
     );
     // device feature (bank 2)
     pci_test_device.write_u32(bar_address1, 2);
@@ -1369,7 +1653,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     pci_test_device.write_u32(bar_address1 + 12, 0xffffffff);
     assert_eq!(
         pci_test_device.read_u32(bar_address1 + 12),
-        VIRTIO_F_VERSION_1
+        VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED
     );
     // driver feature (bank 2)
     pci_test_device.write_u32(bar_address1 + 8, 2);
@@ -1463,10 +1747,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     assert_eq!(pci_test_device.read_u32(bar_address1 + 52), 0);
 }
 
-#[async_test]
-async fn verify_queue_simple(driver: DefaultDriver) {
-    let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 2, true);
+async fn verify_queue_simple_inner(mut guest: VirtioTestGuest) {
     let base_addr = guest.get_queue_descriptor_backing_memory_address(0);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
@@ -1510,9 +1791,17 @@ async fn verify_queue_simple(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_queue_indirect(driver: DefaultDriver) {
+async fn verify_split_queue_simple(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 2, true);
+    verify_queue_simple_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
+}
+#[async_test]
+async fn verify_packed_queue_simple(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_simple_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)).await;
+}
+
+async fn verify_queue_indirect_inner(mut guest: VirtioTestGuest) {
     let base_addr = guest.get_queue_descriptor_backing_memory_address(0);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
@@ -1556,9 +1845,17 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_queue_linked(driver: DefaultDriver) {
+async fn verify_split_queue_indirect(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 8, true);
+    verify_queue_indirect_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
+}
+#[async_test]
+async fn verify_packed_queue_indirect(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_indirect_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)).await;
+}
+
+async fn verify_queue_linked_inner(mut guest: VirtioTestGuest) {
     let (tx, mut rx) = mesh::mpsc_channel();
     let base_address = guest.get_queue_descriptor_backing_memory_address(0);
     let event = Event::new();
@@ -1605,9 +1902,17 @@ async fn verify_queue_linked(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_queue_indirect_linked(driver: DefaultDriver) {
+async fn verify_split_queue_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 8, true);
+    verify_queue_linked_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 8, true)).await;
+}
+#[async_test]
+async fn verify_packed_queue_linked(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_linked_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true)).await;
+}
+
+async fn verify_queue_indirect_linked_inner(mut guest: VirtioTestGuest) {
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
     let mut queues = guest.create_direct_queues(|i| {
@@ -1656,9 +1961,19 @@ async fn verify_queue_indirect_linked(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_queue_avail_rollover(driver: DefaultDriver) {
+async fn verify_split_queue_indirect_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 2, true);
+    verify_queue_indirect_linked_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 8, true))
+        .await;
+}
+#[async_test]
+async fn verify_packed_queue_indirect_linked(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_indirect_linked_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true))
+        .await;
+}
+
+async fn verify_queue_avail_rollover_inner(mut guest: VirtioTestGuest) {
     let base_addr = guest.get_queue_descriptor_backing_memory_address(0);
     let (tx, mut rx) = mesh::mpsc_channel();
     let event = Event::new();
@@ -1667,9 +1982,17 @@ async fn verify_queue_avail_rollover(driver: DefaultDriver) {
         CreateDirectQueueParams {
             process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].address, base_addr);
                 assert_eq!(work.payload[0].length, 0x1000);
-                work.complete(123);
+                if work.payload[0].address == base_addr {
+                    work.complete(123);
+                } else if work.payload[0].address == base_addr + 0x1000 {
+                    work.complete(456);
+                } else {
+                    panic!(
+                        "Unexpected descriptor address {:x}",
+                        work.payload[0].address
+                    );
+                }
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
@@ -1683,8 +2006,13 @@ async fn verify_queue_avail_rollover(driver: DefaultDriver) {
         event.signal();
         must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
         let (desc, len) = guest.get_next_completed(0).unwrap();
-        assert_eq!(desc, 0u16);
-        assert_eq!(len, 123);
+        if desc == 0 {
+            assert_eq!(len, 123);
+        } else if desc == 1 {
+            assert_eq!(len, 456);
+        } else {
+            panic!("Unexpected descriptor index");
+        }
         assert_eq!(guest.get_next_completed(0).is_none(), true);
     }
 
@@ -1692,9 +2020,19 @@ async fn verify_queue_avail_rollover(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_multi_queue(driver: DefaultDriver) {
+async fn verify_split_queue_avail_rollover(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 5, 2, true);
+    verify_queue_avail_rollover_inner(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true))
+        .await;
+}
+#[async_test]
+async fn verify_packed_queue_avail_rollover(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_avail_rollover_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true))
+        .await;
+}
+
+async fn verify_multi_queue_inner(mut guest: VirtioTestGuest) {
     let (tx, mut rx) = mesh::mpsc_channel();
     let events = (0..guest.num_queues)
         .map(|_| Event::new())
@@ -1739,6 +2077,19 @@ async fn verify_multi_queue(driver: DefaultDriver) {
     }
 }
 
+#[async_test]
+async fn verify_split_multi_queue(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 5, 2, true);
+    verify_multi_queue_inner(guest).await;
+}
+#[async_test]
+async fn verify_packed_multi_queue(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_packed(&driver, &test_mem, 5, 2, true);
+    verify_multi_queue_inner(guest).await;
+}
+
 fn take_mmio_interrupt_status(dev: &mut VirtioMmioDevice, mask: u32) -> u32 {
     let mut v = [0; 4];
     dev.mmio_read(96, &mut v).unwrap();
@@ -1758,15 +2109,13 @@ async fn expect_mmio_interrupt(
     assert!(multiple_expected || !target.is_high(0));
 }
 
-#[async_test]
-async fn verify_device_queue_simple(driver: DefaultDriver) {
-    let test_mem = VirtioTestMemoryAccess::new();
+async fn verify_device_queue_simple_inner(
+    test_mem: Arc<VirtioTestMemoryAccess>,
+    mut guest: VirtioTestGuest,
+    features: VirtioDeviceFeatures,
+) {
     let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, 1, 2, true);
     let mem = guest.mem();
-    let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
-        .with_bank(1, VIRTIO_F_VERSION_1);
     let target = TestLineInterruptTarget::new_arc();
     let interrupt = LineInterrupt::new_with_target("test", target.clone(), 0);
     let base_addr = guest.get_queue_descriptor_backing_memory_address(0);
@@ -1776,7 +2125,7 @@ async fn verify_device_queue_simple(driver: DefaultDriver) {
         assert_eq!(work.payload[0].length, 0x1000);
         work.complete(123);
     });
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(guest.driver()));
     let mut dev = VirtioMmioDevice::new(
         Box::new(TestDevice::new(
             &driver_source,
@@ -1824,15 +2173,32 @@ async fn verify_device_queue_simple(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_device_multi_queue(driver: DefaultDriver) {
-    let num_queues = 5;
+async fn verify_device_split_queue_simple(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
-    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, num_queues, 2, true);
-    let mem = guest.mem();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true);
     let features = VirtioDeviceFeatures::new()
         .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
         .with_bank(1, VIRTIO_F_VERSION_1);
+    verify_device_queue_simple_inner(test_mem, guest, features).await;
+}
+#[async_test]
+async fn verify_device_packed_queue_simple(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true);
+    let features = VirtioDeviceFeatures::new()
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    verify_device_queue_simple_inner(test_mem, guest, features).await;
+}
+
+async fn verify_device_multi_queue_inner(
+    test_mem: Arc<VirtioTestMemoryAccess>,
+    mut guest: VirtioTestGuest,
+    num_queues: u16,
+    features: VirtioDeviceFeatures,
+) {
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = guest.mem();
     let target = TestLineInterruptTarget::new_arc();
     let interrupt = LineInterrupt::new_with_target("test", target.clone(), 0);
     let base_addr: Vec<_> = (0..num_queues)
@@ -1844,7 +2210,7 @@ async fn verify_device_multi_queue(driver: DefaultDriver) {
         assert_eq!(work.payload[0].length, 0x1000);
         work.complete(123 * i as u32);
     });
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(guest.driver()));
     let mut dev = VirtioMmioDevice::new(
         Box::new(TestDevice::new(
             &driver_source,
@@ -1903,13 +2269,33 @@ async fn verify_device_multi_queue(driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn verify_device_multi_queue_pci(driver: DefaultDriver) {
+async fn verify_device_split_multi_queue(driver: DefaultDriver) {
     let num_queues = 5;
     let test_mem = VirtioTestMemoryAccess::new();
-    let mut guest = VirtioTestGuest::new(&driver, &test_mem, num_queues, 2, true);
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
         .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
         .with_bank(1, VIRTIO_F_VERSION_1);
+    verify_device_multi_queue_inner(test_mem, guest, num_queues, features).await;
+}
+#[async_test]
+async fn verify_device_packed_multi_queue(driver: DefaultDriver) {
+    let num_queues = 5;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_packed(&driver, &test_mem, num_queues, 2, true);
+    let features = VirtioDeviceFeatures::new()
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    verify_device_multi_queue_inner(test_mem, guest, num_queues, features).await;
+}
+
+async fn verify_device_multi_queue_pci_inner(
+    test_mem: Arc<VirtioTestMemoryAccess>,
+    mut guest: VirtioTestGuest,
+    num_queues: u16,
+    features: VirtioDeviceFeatures,
+) {
+    let driver = guest.driver();
     let base_addr: Vec<_> = (0..num_queues)
         .map(|i| guest.get_queue_descriptor_backing_memory_address(i))
         .collect();
@@ -1962,6 +2348,27 @@ async fn verify_device_multi_queue_pci(driver: DefaultDriver) {
         .mmio_write(0x10000000000 + 20, &device_status.to_le_bytes())
         .unwrap();
     drop(dev);
+}
+
+#[async_test]
+async fn verify_device_split_multi_queue_pci(driver: DefaultDriver) {
+    let num_queues = 5;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, num_queues, 2, true);
+    let features = VirtioDeviceFeatures::new()
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(1, VIRTIO_F_VERSION_1);
+    verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
+}
+#[async_test]
+async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
+    let num_queues = 5;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_packed(&driver, &test_mem, num_queues, 2, true);
+    let features = VirtioDeviceFeatures::new()
+        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
+    verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
 
 #[async_test]
