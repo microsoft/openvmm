@@ -55,6 +55,7 @@ pub struct VirtioMmioDevice {
     queues: Vec<QueueParams>,
     device_status: VirtioDeviceStatus,
     disabling: bool,
+    #[inspect(skip)]
     poll_waker: Option<std::task::Waker>,
     config_generation: u32,
     #[inspect(skip)]
