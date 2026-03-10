@@ -306,7 +306,7 @@ fn new_mock_queue(pool: Box<dyn net_backend::BufferAccess>) -> (MockQueue, MockQ
 // --- MockEndpoint ---
 
 struct MockEndpoint {
-    queue_tx: Mutex<Option<mesh::Sender<MockQueueHandle>>>,
+    queue_tx: mesh::Sender<MockQueueHandle>,
 }
 
 impl InspectMut for MockEndpoint {
@@ -329,9 +329,7 @@ impl Endpoint for MockEndpoint {
     ) -> anyhow::Result<()> {
         let pool = config.into_iter().next().unwrap().pool;
         let (queue, handle) = new_mock_queue(pool);
-        if let Some(tx) = self.queue_tx.lock().take() {
-            tx.send(handle);
-        }
+        self.queue_tx.send(handle);
         queues.push(Box::new(queue));
         Ok(())
     }
@@ -511,9 +509,7 @@ impl TestHarness {
 
         // Create mock endpoint with channel
         let (queue_tx, queue_handle_rx) = mesh::channel();
-        let endpoint = MockEndpoint {
-            queue_tx: Mutex::new(Some(queue_tx)),
-        };
+        let endpoint = MockEndpoint { queue_tx };
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
@@ -683,6 +679,24 @@ impl TestHarness {
             })
             .await
             .expect("timed out waiting for RX used ring entry")
+    }
+
+    /// Disable the device (calls poll_disable to completion).
+    async fn disable(&mut self) {
+        futures::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+    }
+
+    /// Reset memory layout tracking for a fresh enable cycle.
+    fn reset_rings(&mut self) {
+        init_avail_ring(&self.mem, RX_AVAIL_ADDR);
+        init_used_ring(&self.mem, RX_USED_ADDR);
+        init_avail_ring(&self.mem, TX_AVAIL_ADDR);
+        init_used_ring(&self.mem, TX_USED_ADDR);
+        self.rx_avail_idx = 0;
+        self.rx_used_idx = 0;
+        self.tx_avail_idx = 0;
+        self.tx_used_idx = 0;
+        self.next_data_offset = DATA_BASE;
     }
 }
 
@@ -979,4 +993,33 @@ async fn rx_large_payload(driver: DefaultDriver) {
         .read_at(gpa + NET_HEADER_SIZE as u64, &mut readback)
         .unwrap();
     assert_eq!(readback, payload, "large payload data mismatch");
+}
+
+/// Disable and re-enable the device, then send a packet.
+/// This tests that poll_disable properly cleans up coordinator state so that
+/// a subsequent enable() can re-insert it without panicking.
+#[async_test]
+async fn disable_and_reenable(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+
+    // First enable cycle: enable, send a packet, verify it works.
+    let handle = harness.enable_and_get_handle().await;
+    harness.post_tx_and_signal(0, 64);
+    let (used_id, _) = harness.wait_for_used().await;
+    assert_eq!(used_id, 0);
+    drop(handle);
+
+    // Disable the device.
+    harness.disable().await;
+
+    // Re-enable: this would panic ("attempt to insert already-present state")
+    // if poll_disable didn't remove the coordinator state.
+    harness.reset_rings();
+    let handle = harness.enable_and_get_handle().await;
+
+    // Verify the device works after re-enable by sending another packet.
+    harness.post_tx_and_signal(0, 64);
+    let (used_id, _) = harness.wait_for_used().await;
+    assert_eq!(used_id, 0);
+    drop(handle);
 }

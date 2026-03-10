@@ -350,6 +350,9 @@ impl VirtioDevice for Device {
                 let _ = std::task::ready!(worker.poll_stop(cx));
             }
         }
+        // Remove the coordinator state so that a subsequent enable() can
+        // re-insert it.
+        let _ = self.coordinator.remove();
         Poll::Ready(())
     }
 }
