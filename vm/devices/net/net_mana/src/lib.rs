@@ -1492,8 +1492,14 @@ struct OutOfMemory;
 
 impl ContiguousBufferManager {
     pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
-        anyhow::ensure!(page_limit.count_ones() == 1, anyhow::anyhow!("page_limit must be a power of two, {page_limit} is not."));
-        anyhow::ensure!(PAGE_SIZE64 * Into::<u64>::into(page_limit) <= Into::<u64>::into(u32::MAX), anyhow::anyhow!("{page_limit} will overflow the len field"));
+        anyhow::ensure!(
+            page_limit.count_ones() == 1,
+            anyhow::anyhow!("page_limit must be a power of two, {page_limit} is not.")
+        );
+        anyhow::ensure!(
+            PAGE_SIZE64 * Into::<u64>::into(page_limit) <= Into::<u64>::into(u32::MAX),
+            anyhow::anyhow!("{page_limit} will overflow the len field")
+        );
 
         let len = PAGE_SIZE32 * page_limit;
         let mem = dma_client.allocate_dma_buffer(len as usize)?;
@@ -1533,8 +1539,8 @@ impl Inspect for ContiguousBufferManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{Result, anyhow, ensure};
     use user_driver_emulated_mock::DeviceTestMemory;
-    use anyhow::{anyhow, ensure, Result};
 
     #[test]
     fn page_counts_powers_of_two_only() -> Result<()> {
@@ -1542,14 +1548,20 @@ mod tests {
             let dtm = DeviceTestMemory::new(Into::<u64>::into(i) * 2, false, "test");
             match ContiguousBufferManager::new(dtm.dma_client(), i) {
                 Ok(_) => {
-                    ensure!(i.count_ones() == 1, anyhow!("The CBM should only work for powers of 2"));
-                },
+                    ensure!(
+                        i.count_ones() == 1,
+                        anyhow!("The CBM should only work for powers of 2")
+                    );
+                }
                 Err(_) => {
-                    ensure!(i.count_ones() != 1, anyhow!("Powers of 2 should get CBMs, failed for {i} pages.")); 
+                    ensure!(
+                        i.count_ones() != 1,
+                        anyhow!("Powers of 2 should get CBMs, failed for {i} pages.")
+                    );
                 }
             }
         }
 
-        return Ok(())
+        Ok(())
     }
 }
