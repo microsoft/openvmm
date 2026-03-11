@@ -333,10 +333,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
                 // If we get here, something is wrong.
                 return PageFaultAction::Fail(PageFaultError::new(
                     guestmem::GuestMemoryErrorKind::Other,
-                    std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "unexpected page fault in private RAM mode on Linux",
-                    ),
+                    std::io::Error::other("unexpected page fault in private RAM mode on Linux"),
                 ));
             }
         }
