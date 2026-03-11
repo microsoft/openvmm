@@ -10,12 +10,18 @@ use ISA DMA channel 2; interrupts use IRQ 6.
 
 Two variants exist:
 
-- [`FloppyDiskController`](https://openvmm.dev/rustdoc/linux/floppy/struct.FloppyDiskController.html) — full emulator with disk I/O.
-- [`StubFloppyDiskController`](https://openvmm.dev/rustdoc/linux/floppy_pcat_stub/struct.StubFloppyDiskController.html) — reports "no drives" for PCAT BIOS compatibility when no floppy is configured.
+- [`FloppyDiskController`](https://openvmm.dev/rustdoc/linux/floppy/struct.FloppyDiskController.html)
+  — full emulator with disk I/O.
+- [`StubFloppyDiskController`](https://openvmm.dev/rustdoc/linux/floppy_pcat_stub/struct.StubFloppyDiskController.html)
+  — reports "no drives" for PCAT BIOS compatibility when no floppy is
+  configured.
 
 ## Supported media
 
-The controller auto-detects the floppy format from the disk image byte size. See [Wikipedia's list of floppy disk formats](https://en.wikipedia.org/wiki/List_of_floppy_disk_formats) for background on these formats.
+The controller auto-detects the floppy format from the disk image byte
+size. See
+[Wikipedia's list of floppy disk formats](https://en.wikipedia.org/wiki/List_of_floppy_disk_formats)
+for background on these formats.
 
 | Format | Capacity | Sectors/track | Notes |
 |--------|----------|---------------|-------|
@@ -26,7 +32,8 @@ The controller auto-detects the floppy format from the disk image byte size. See
 | [DMF](https://en.wikipedia.org/wiki/Distribution_Media_Format) | 1.68 MB | 21 | Microsoft Distribution Media Format |
 | XDF | 1.72 MB | 23 | Extended density (fixed 23 SPT variant) |
 
-All formats use 512-byte sectors, 80 cylinders, CHS addressing. The controller rejects images that don't match a known format size.
+All formats use 512-byte sectors, 80 cylinders, CHS addressing. The
+controller rejects images that don't match a known format size.
 
 ## I/O port layout
 
@@ -41,17 +48,26 @@ Register offsets from base (typically 0x3F0):
 | +5 | DATA | DATA | Command/parameter/result FIFO (16-byte) |
 | +7 | DIR | CCR | Disk change signal / config control |
 
-The controller claims port 0x3F7 for DIR/CCR separately from the 6-byte base region, because 0x3F6 is shared with the IDE controller's alternate status register.
+The controller claims port 0x3F7 for DIR/CCR separately from the
+6-byte base region, because 0x3F6 is shared with the IDE controller's
+alternate status register.
 
 ## Limitations and deviations
 
-The real 82077AA supports four drives; OpenVMM supports one. The emulator implements a pragmatic subset of the command set — enough for MS-DOS, Windows, and Linux floppy drivers to detect the controller, identify media, and perform read/write/format operations. Commands that interact with physical media timing (perpendicular recording mode, power management) are accepted but largely no-op'd.
+The real 82077AA supports four drives; OpenVMM supports one. The
+emulator implements a pragmatic subset of the command set — enough for
+MS-DOS, Windows, and Linux floppy drivers to detect the controller,
+identify media, and perform read/write/format operations. Commands that
+interact with physical media timing (perpendicular recording mode,
+power management) are accepted but largely no-op'd.
 
 Key differences from real hardware:
 
 - No multi-drive support (real hardware supports drives 0–3).
-- Physical media timing (step rate, head load/unload from SPECIFY) is accepted but doesn't affect I/O timing.
-- CHS-to-LBA translation is straightforward — the controller doesn't emulate track-level interleave or skew.
+- Physical media timing (step rate, head load/unload from SPECIFY) is
+  accepted but doesn't affect I/O timing.
+- CHS-to-LBA translation is straightforward — the controller doesn't
+  emulate track-level interleave or skew.
 - STATUS_A and STATUS_B registers return fixed values rather than reflecting physical drive state.
 
 ## Crates

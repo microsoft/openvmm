@@ -21,8 +21,7 @@
 //!
 //! All I/O is **async** and uses **scatter-gather** buffers via
 //! [`RequestBuffers`](scsi_buffers::RequestBuffers). Callers must pass
-//! buffers that are an integral number of sectors — this is a contract,
-//! not enforced at runtime.
+//! buffers that are an integral number of sectors.
 //!
 //! The key operations are:
 //!
@@ -64,7 +63,7 @@
 //! | `VhdmpDisk` | `disk_vhdmp` | Windows vhdmp driver |
 //! | `BlobDisk` | `disk_blob` | Read-only HTTP / Azure Blob |
 //! | `BlockDeviceDisk` | `disk_blockdevice` | Linux block device (io_uring) |
-//! | `NvmeDisk` | `disk_nvme` | Physical NVMe via VFIO |
+//! | `NvmeDisk` | `disk_nvme` | Physical NVMe (user-mode driver) |
 //! | `StripedDisk` | `disk_striped` | Striped across multiple disks |
 //! | `CryptDisk` | `disk_crypt` | XTS-AES-256 encryption wrapper |
 //! | `DelayDisk` | `disk_delay` | Injected I/O latency wrapper |

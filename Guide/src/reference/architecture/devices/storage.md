@@ -53,15 +53,25 @@ Every storage I/O flows through the same layered pipeline:
 
 Key vocabulary:
 
-- **Frontend.** Speaks a guest-visible storage protocol and translates requests into `DiskIo` calls.
-- **SCSI adapter.** For the SCSI and IDE paths, an intermediate layer ([`SimpleScsiDisk`](https://openvmm.dev/rustdoc/linux/scsidisk/struct.SimpleScsiDisk.html) or [`SimpleScsiDvd`](https://openvmm.dev/rustdoc/linux/scsidisk/scsidvd/struct.SimpleScsiDvd.html)) that parses SCSI CDB opcodes before calling `DiskIo`.
-- **Backend.** A `DiskIo` implementation that reads and writes to a specific backing store.
-- **Decorator.** A `DiskIo` implementation that wraps another `Disk` and transforms I/O in transit (encryption, delay, persistent reservations).
-- **Layered disk.** A `DiskIo` implementation composed of ordered layers with per-sector presence tracking.
+- **Frontend.** Speaks a guest-visible storage protocol and translates
+  requests into `DiskIo` calls.
+- **SCSI adapter.** For the SCSI and IDE paths, an intermediate layer
+  ([`SimpleScsiDisk`](https://openvmm.dev/rustdoc/linux/scsidisk/struct.SimpleScsiDisk.html)
+  or
+  [`SimpleScsiDvd`](https://openvmm.dev/rustdoc/linux/scsidisk/scsidvd/struct.SimpleScsiDvd.html))
+  that parses SCSI CDB opcodes before calling `DiskIo`.
+- **Backend.** A `DiskIo` implementation that reads and writes to a
+  specific backing store.
+- **Decorator.** A `DiskIo` implementation that wraps another `Disk`
+  and transforms I/O in transit (encryption, delay, persistent
+  reservations).
+- **Layered disk.** A `DiskIo` implementation composed of ordered
+  layers with per-sector presence tracking.
 
 ## Frontends
 
-Three frontends exist. Each speaks a different guest-visible protocol but they all produce `DiskIo` calls on the backend side.
+Three frontends exist. Each speaks a different guest-visible protocol
+but they all produce `DiskIo` calls on the backend side.
 
 | Frontend | Protocol | Transport | Crate |
 |----------|----------|-----------|-------|
