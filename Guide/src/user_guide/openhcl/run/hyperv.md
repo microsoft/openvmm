@@ -196,7 +196,7 @@ Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $controller.C
 #     and sub_device_path (host LUN) $hostLun
 #
 # For field definitions, see the Storage Configuration Model:
-#   ../../reference/architecture/openhcl/storage_configuration.md
+#   ../../../reference/architecture/openhcl/storage_configuration.md
 $settings = @{
     version = "V1"
     dynamic = @{
