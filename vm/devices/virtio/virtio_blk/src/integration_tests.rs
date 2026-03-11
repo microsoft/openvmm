@@ -10,6 +10,7 @@
 use crate::VirtioBlkDevice;
 use crate::spec::VirtioBlkDiscardWriteZeroes;
 use crate::spec::*;
+use core::mem::offset_of;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -30,7 +31,17 @@ use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
+use virtio::spec::queue::AVAIL_ELEMENT_SIZE;
+use virtio::spec::queue::AVAIL_OFFSET_FLAGS;
+use virtio::spec::queue::AVAIL_OFFSET_IDX;
+use virtio::spec::queue::AVAIL_OFFSET_RING;
 use virtio::spec::queue::DescriptorFlags;
+use virtio::spec::queue::SplitDescriptor;
+use virtio::spec::queue::USED_ELEMENT_SIZE;
+use virtio::spec::queue::USED_OFFSET_FLAGS;
+use virtio::spec::queue::USED_OFFSET_IDX;
+use virtio::spec::queue::USED_OFFSET_RING;
+use virtio::spec::queue::UsedElement;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -64,50 +75,79 @@ fn write_descriptor(
     flags: DescriptorFlags,
     next: u16,
 ) {
-    let base = desc_table_base + 16 * index as u64;
-    mem.write_at(base, &addr.to_le_bytes()).unwrap();
-    mem.write_at(base + 8, &len.to_le_bytes()).unwrap();
-    mem.write_at(base + 12, &u16::from(flags).to_le_bytes())
-        .unwrap();
-    mem.write_at(base + 14, &next.to_le_bytes()).unwrap();
+    let base = desc_table_base + size_of::<SplitDescriptor>() as u64 * index as u64;
+    mem.write_at(
+        base + offset_of!(SplitDescriptor, address) as u64,
+        &addr.to_le_bytes(),
+    )
+    .unwrap();
+    mem.write_at(
+        base + offset_of!(SplitDescriptor, length) as u64,
+        &len.to_le_bytes(),
+    )
+    .unwrap();
+    mem.write_at(
+        base + offset_of!(SplitDescriptor, flags_raw) as u64,
+        &u16::from(flags).to_le_bytes(),
+    )
+    .unwrap();
+    mem.write_at(
+        base + offset_of!(SplitDescriptor, next) as u64,
+        &next.to_le_bytes(),
+    )
+    .unwrap();
 }
 
 /// Initialize avail ring (flags=0, idx=0).
 fn init_avail_ring(mem: &GuestMemory, avail_addr: u64) {
-    mem.write_at(avail_addr, &0u16.to_le_bytes()).unwrap(); // flags
-    mem.write_at(avail_addr + 2, &0u16.to_le_bytes()).unwrap(); // idx
+    mem.write_at(avail_addr + AVAIL_OFFSET_FLAGS, &0u16.to_le_bytes())
+        .unwrap();
+    mem.write_at(avail_addr + AVAIL_OFFSET_IDX, &0u16.to_le_bytes())
+        .unwrap();
 }
 
 /// Initialize used ring (flags=0, idx=0).
 fn init_used_ring(mem: &GuestMemory, used_addr: u64) {
-    mem.write_at(used_addr, &0u16.to_le_bytes()).unwrap(); // flags
-    mem.write_at(used_addr + 2, &0u16.to_le_bytes()).unwrap(); // idx
+    mem.write_at(used_addr + USED_OFFSET_FLAGS, &0u16.to_le_bytes())
+        .unwrap();
+    mem.write_at(used_addr + USED_OFFSET_IDX, &0u16.to_le_bytes())
+        .unwrap();
 }
 
 /// Make a descriptor index available in the avail ring and bump the index.
 fn make_available(mem: &GuestMemory, avail_addr: u64, desc_index: u16, avail_idx: &mut u16) {
-    let ring_offset = avail_addr + 4 + 2 * (*avail_idx % QUEUE_SIZE) as u64;
+    let ring_offset =
+        avail_addr + AVAIL_OFFSET_RING + AVAIL_ELEMENT_SIZE * (*avail_idx % QUEUE_SIZE) as u64;
     mem.write_at(ring_offset, &desc_index.to_le_bytes())
         .unwrap();
     *avail_idx = avail_idx.wrapping_add(1);
-    mem.write_at(avail_addr + 2, &avail_idx.to_le_bytes())
+    mem.write_at(avail_addr + AVAIL_OFFSET_IDX, &avail_idx.to_le_bytes())
         .unwrap();
 }
 
 /// Read the used ring index.
 fn read_used_idx(mem: &GuestMemory, used_addr: u64) -> u16 {
     let mut buf = [0u8; 2];
-    mem.read_at(used_addr + 2, &mut buf).unwrap();
+    mem.read_at(used_addr + USED_OFFSET_IDX, &mut buf).unwrap();
     u16::from_le_bytes(buf)
 }
 
 /// Read a used ring entry (id, len).
 fn read_used_entry(mem: &GuestMemory, used_addr: u64, index: u16) -> (u32, u32) {
-    let entry_offset = used_addr + 4 + 8 * (index % QUEUE_SIZE) as u64;
+    let entry_offset =
+        used_addr + USED_OFFSET_RING + USED_ELEMENT_SIZE * (index % QUEUE_SIZE) as u64;
     let mut id_buf = [0u8; 4];
     let mut len_buf = [0u8; 4];
-    mem.read_at(entry_offset, &mut id_buf).unwrap();
-    mem.read_at(entry_offset + 4, &mut len_buf).unwrap();
+    mem.read_at(
+        entry_offset + offset_of!(UsedElement, id) as u64,
+        &mut id_buf,
+    )
+    .unwrap();
+    mem.read_at(
+        entry_offset + offset_of!(UsedElement, len) as u64,
+        &mut len_buf,
+    )
+    .unwrap();
     (u32::from_le_bytes(id_buf), u32::from_le_bytes(len_buf))
 }
 

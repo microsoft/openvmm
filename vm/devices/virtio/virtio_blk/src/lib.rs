@@ -758,6 +758,13 @@ async fn do_io(
         return Ok((0, false));
     }
 
+    // Cap request size to prevent u32 overflow when reporting bytes_written
+    // (the caller adds +1 for the status byte). No legitimate IO should be
+    // anywhere near this limit.
+    if data_len > u32::MAX as u64 - 1 {
+        return Err(VIRTIO_BLK_S_IOERR);
+    }
+
     // Validate that the data length is a whole number of backend sectors.
     // The disk backend may panic if given a non-sector-aligned buffer.
     let sector_size = disk.sector_size() as u64;
