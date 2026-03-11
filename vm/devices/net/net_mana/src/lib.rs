@@ -1530,6 +1530,7 @@ impl Inspect for ContiguousBufferManager {
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use user_driver_emulated_mock::DeviceTestMemory;
