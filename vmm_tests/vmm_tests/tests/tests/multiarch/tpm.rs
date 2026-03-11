@@ -398,7 +398,9 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
         _ => unreachable!(),
     };
 
+    tracing::info!("first boot");
     agent.reboot().await?;
+    tracing::info!("second boot");
 
     let host_binary_path = tpm_guest_tests_artifact.get();
     let tpm_guest_tests =
@@ -724,6 +726,7 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     // First boot: KEY_RELEASE succeeds. TPM state is sealed with hardware
     // key protector. No guest-side verification needed — just let the boot
     // complete so the VMGS state is populated.
+    tracing::info!("first boot");
 
     // Reboot: triggers second KEY_RELEASE which fails with skip_hw_unsealing.
     // VMGS unlock will fail because hardware unsealing fallback is skipped.
@@ -731,6 +734,8 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
     // failure to the host via complete_start_vtl0, and the host terminates
     // the VM.
     agent.reboot().await?;
+
+    tracing::info!("second boot");
 
     // Wait for the VM to reset and then fail on the second boot.
     //

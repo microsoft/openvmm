@@ -155,12 +155,9 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
 
     match test_config {
         IgvmAttestTestConfig::AkCertRequestFailureAndRetry => {
-            // Inject enough failures to trigger the retry logic in the agent for different platforms.
-            // For example, HyperV Linux tests might reboot the VM twice in the first boot.
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
-                    IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::RespondSuccess,
@@ -168,13 +165,10 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
-            // Inject enough NoResponse actions to simulate the AK cert request failing due to a missing AK cert for different platforms.
-            // For example, HyperV Linux tests might reboot the VM twice in the first boot.
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
                     IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::NoResponse,
                     IgvmAgentAction::NoResponse,
                 ]),
             );
