@@ -51,7 +51,7 @@
 
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 `OutputDebugStringA` and `IsDebuggerPresent`.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use tracing::Subscriber;
 use tracing::metadata::LevelFilter;
@@ -90,7 +90,7 @@ impl std::io::Write for DebugOutputWriter {
             unsafe { OutputDebugStringA(stack_buf.as_ptr().cast::<i8>()) };
         } else {
             let mut null_terminated = Vec::with_capacity(buf.len() + 1);
-            null_terminated.extend(buf);
+            null_terminated.extend_from_slice(buf);
             null_terminated.push(b'\0');
             // SAFETY: The buffer is null-terminated and valid.
             unsafe { OutputDebugStringA(null_terminated.as_ptr().cast::<i8>()) };
