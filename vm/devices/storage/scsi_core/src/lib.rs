@@ -4,9 +4,8 @@
 //! Core SCSI traits and types for the OpenVMM storage stack.
 //!
 //! Defines the [`AsyncScsiDisk`] trait — the interface between SCSI transport
-//! layers ([`storvsp`], IDE/ATAPI) and SCSI device implementations
-//! ([`SimpleScsiDisk`](scsidisk::SimpleScsiDisk),
-//! [`SimpleScsiDvd`](scsidisk::scsidvd::SimpleScsiDvd)). Also defines
+//! layers (`storvsp`, IDE/ATAPI) and SCSI device implementations
+//! (`SimpleScsiDisk`, `SimpleScsiDvd`). Also defines
 //! [`Request`], [`ScsiResult`], and save/restore types for SCSI devices.
 //!
 //! Implementations must fit within [`ASYNC_SCSI_DISK_STACK_SIZE`] or the

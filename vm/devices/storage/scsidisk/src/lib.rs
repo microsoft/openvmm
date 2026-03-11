@@ -4,7 +4,7 @@
 //! SCSI CDB parser and disk/DVD emulation.
 //!
 //! This crate translates SCSI commands (CDBs) into [`DiskIo`](disk_backend::DiskIo)
-//! calls. It's used by [`storvsp`] for hard drives and by [`ide`] (via ATAPI)
+//! calls. It's used by `storvsp` for hard drives and by `ide` (via ATAPI)
 //! for optical drives. It doesn't implement the SCSI transport — that's the
 //! frontend's job.
 //!

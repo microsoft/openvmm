@@ -5,7 +5,7 @@
 //!
 //! Resource-based instantiation of floppy controllers is not yet implemented;
 //! these types exist in anticipation of that work. The controller is currently
-//! instantiated directly in `base_chipset.rs`.
+//! instantiated directly as part of the chipset configuration.
 
 #![forbid(unsafe_code)]
 

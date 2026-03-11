@@ -120,7 +120,15 @@ cargo run -- --disk memdiff:file:C:\vhds\disk.vhdx
 ### Length
 
 Keep code blocks under 30 lines. If longer, split with explanatory text
-between blocks. Comments inside code blocks should explain *why*, not *what*.
+between blocks. Diagrams (ASCII art in `text` fences) are exempt from
+this limit — keep them as a single block so the visual structure isn't
+broken. Comments inside code blocks should explain *why*, not *what*.
+
+## Line wrapping
+
+Wrap prose lines at approximately 80 characters. This keeps diffs
+readable and makes review easier. Lines inside tables and code blocks
+are exempt.
 
 ## Links
 

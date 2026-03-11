@@ -9,7 +9,7 @@
 //! multi-byte integers use big-endian byte order per the SCSI spec.
 //!
 //! This crate defines wire-format types only — no I/O logic. Consumers
-//! include [`scsidisk`] (CDB parsing) and [`storvsp`] (SRB status handling).
+//! include `scsidisk` (CDB parsing) and `storvsp` (SRB status handling).
 //!
 //! # Modules
 //!

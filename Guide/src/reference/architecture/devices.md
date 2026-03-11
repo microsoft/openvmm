@@ -1,6 +1,9 @@
 # Device architecture
 
-This section covers the internal architecture of device emulators and their backends — the shared machinery that both OpenVMM and OpenHCL use to connect guest-visible storage, networking, and other devices to their backing implementations.
+This section covers the internal architecture of device emulators and
+their backends — the shared machinery that both OpenVMM and OpenHCL
+use to connect guest-visible storage, networking, and other devices to
+their backing implementations.
 
 ## Pages
 

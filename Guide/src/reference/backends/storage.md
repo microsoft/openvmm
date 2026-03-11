@@ -1,6 +1,13 @@
 # Storage backends
 
-Storage backends implement the [`DiskIo`](https://openvmm.dev/rustdoc/linux/disk_backend/trait.DiskIo.html) trait, the shared abstraction that all storage frontends use to read and write data. A frontend holds a [`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html) handle and doesn't know what kind of backend is behind it — the same frontend code works with a local file, a Linux block device, a remote blob, or a layered composition of multiple backends.
+Storage backends implement the
+[`DiskIo`](https://openvmm.dev/rustdoc/linux/disk_backend/trait.DiskIo.html)
+trait, the shared abstraction that all storage frontends use to read
+and write data. A frontend holds a
+[`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html)
+handle and doesn't know what kind of backend is behind it — the same
+frontend code works with a local file, a Linux block device, a remote
+blob, or a layered composition of multiple backends.
 
 ## Backend catalog
 
@@ -16,7 +23,10 @@ Storage backends implement the [`DiskIo`](https://openvmm.dev/rustdoc/linux/disk
 
 ## Decorators
 
-Decorators wrap another [`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html) and transform I/O in transit. Features compose by stacking decorators without modifying the backends underneath.
+Decorators wrap another
+[`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html)
+and transform I/O in transit. Features compose by stacking decorators
+without modifying the backends underneath.
 
 | Decorator | Crate | Transform |
 |-----------|-------|-----------|
@@ -26,11 +36,18 @@ Decorators wrap another [`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/
 
 ## Layered disks
 
-A [`LayeredDisk`](https://openvmm.dev/rustdoc/linux/disk_layered/index.html) composes multiple layers into a single `DiskIo` implementation. Each layer tracks which sectors it has; reads fall through from top to bottom until a layer has the requested data. This powers the `memdiff:` and `mem:` CLI options.
+A [`LayeredDisk`](https://openvmm.dev/rustdoc/linux/disk_layered/index.html)
+composes multiple layers into a single `DiskIo` implementation. Each
+layer tracks which sectors it has; reads fall through from top to
+bottom until a layer has the requested data. This powers the
+`memdiff:` and `mem:` CLI options.
 
 Two layer implementations exist today:
 
 - **RamDiskLayer** ([`disklayer_ram`](https://openvmm.dev/rustdoc/linux/disklayer_ram/index.html)) — ephemeral, in-memory.
 - **SqliteDiskLayer** ([`disklayer_sqlite`](https://openvmm.dev/rustdoc/linux/disklayer_sqlite/index.html)) — persistent, file-backed (dev/test only).
 
-The [storage pipeline](../architecture/devices/storage.md) page covers the full architecture: how frontends, backends, decorators, and the layered disk model connect, plus cross-cutting concerns like online disk resize and virtual optical media.
+The [storage pipeline](../architecture/devices/storage.md) page covers
+the full architecture: how frontends, backends, decorators, and the
+layered disk model connect, plus cross-cutting concerns like online
+disk resize and virtual optical media.

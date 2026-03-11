@@ -1,6 +1,12 @@
 # Floppy
 
-The floppy controller emulates an [Intel 82077AA](https://en.wikipedia.org/wiki/Intel_82077AA) CHMOS single-chip floppy disk controller. It connects to the storage stack through [`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html) — the same backend abstraction used by NVMe and SCSI. Data transfers use ISA DMA channel 2; interrupts use IRQ 6.
+The floppy controller emulates an
+[Intel 82077AA](https://en.wikipedia.org/wiki/Intel_82077AA) CHMOS
+single-chip floppy disk controller. It connects to the storage stack
+through
+[`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html)
+— the same backend abstraction used by NVMe and SCSI. Data transfers
+use ISA DMA channel 2; interrupts use IRQ 6.
 
 Two variants exist:
 

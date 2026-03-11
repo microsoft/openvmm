@@ -140,7 +140,7 @@ valid disk kinds:
         <path>: path to file
     `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
     `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
-    `autocache:[key]:<disk>`       auto-cached SQLite layer (needs OPENVMM_AUTO_CACHE_PATH)
+    `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
     `blob:<type>:<url>`            HTTP blob (read-only)
         <type>: `flat` or `vhd1`
     `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
@@ -172,7 +172,7 @@ valid disk kinds:
         <path>: path to file
     `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
     `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
-    `autocache:[key]:<disk>`       auto-cached SQLite layer (needs OPENVMM_AUTO_CACHE_PATH)
+    `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
     `blob:<type>:<url>`            HTTP blob (read-only)
         <type>: `flat` or `vhd1`
     `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
