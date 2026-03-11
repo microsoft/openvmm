@@ -175,7 +175,12 @@ impl QueueCoreGetWork {
                 )
             };
             let last = self.descriptor(&self.queue_desc, last_primary_desc_index, None)?;
-            let count = last_primary_desc_index - index + 1;
+            let count = if last_primary_desc_index >= index {
+                last_primary_desc_index - index + 1
+            } else {
+                // Wrapped around the end of the queue.
+                self.queue_size - index + last_primary_desc_index + 1
+            };
             // Packed descriptors can use additional ring-contiguous
             // descriptors to describe a buffer. Find the last descriptor in
             // the current chain and update the available index accordingly.
