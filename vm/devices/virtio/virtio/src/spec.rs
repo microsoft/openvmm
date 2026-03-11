@@ -356,7 +356,7 @@ pub mod queue {
 
     #[bitfield(u32, repr = u32_le, from = u32_le::new, into = u32_le::get)]
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub struct PackedEventSupression {
+    pub struct PackedEventSuppression {
         #[bits(15)]
         pub offset: u16,
         pub wrap: bool,

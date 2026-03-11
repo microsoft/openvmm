@@ -15,7 +15,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use spec::EventSuppressionFlags;
 use spec::PackedDescriptor;
-use spec::PackedEventSupression;
+use spec::PackedEventSuppression;
 use std::sync::atomic;
 
 pub struct PackedQueueCompletionContext {
@@ -46,7 +46,7 @@ impl PackedQueueGetWork {
             .map_err(QueueError::Memory)?;
         let offset = params.desc_addr + descriptor_offset(params.size);
         let device_event = mem
-            .subrange(offset, size_of::<PackedEventSupression>() as u64, true)
+            .subrange(offset, size_of::<PackedEventSuppression>() as u64, true)
             .map_err(QueueError::Memory)?;
         Ok(Self {
             queue_desc,
@@ -60,7 +60,7 @@ impl PackedQueueGetWork {
     pub fn is_available(&self) -> Result<Option<u16>, QueueError> {
         loop {
             let disable_event =
-                PackedEventSupression::new().with_flags(EventSuppressionFlags::Disabled);
+                PackedEventSuppression::new().with_flags(EventSuppressionFlags::Disabled);
             self.device_event
                 .write_plain(0, &disable_event.into_bits())
                 .map_err(QueueError::Memory)?;
@@ -72,7 +72,7 @@ impl PackedQueueGetWork {
                 return Ok(Some(self.next_avail_index));
             }
             let enable_event =
-                PackedEventSupression::new().with_flags(EventSuppressionFlags::Enabled);
+                PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled);
             self.device_event
                 .write_plain(0, &enable_event.into_bits())
                 .map_err(QueueError::Memory)?;
@@ -130,9 +130,9 @@ impl PackedQueueCompleteWork {
             .map_err(QueueError::Memory)?;
         let offset = params.desc_addr
             + descriptor_offset(params.size)
-            + size_of::<PackedEventSupression>() as u64;
+            + size_of::<PackedEventSuppression>() as u64;
         let driver_event = mem
-            .subrange(offset, size_of::<PackedEventSupression>() as u64, true)
+            .subrange(offset, size_of::<PackedEventSuppression>() as u64, true)
             .map_err(QueueError::Memory)?;
         Ok(Self {
             queue_desc,
@@ -162,7 +162,7 @@ impl PackedQueueCompleteWork {
             .map_err(QueueError::Memory)?;
         // Ensure the descriptor update is visible before checking if the guest requires notification.
         atomic::fence(atomic::Ordering::SeqCst);
-        let driver_event: PackedEventSupression = self
+        let driver_event: PackedEventSuppression = self
             .driver_event
             .read_plain(0)
             .map_err(QueueError::Memory)?;
