@@ -167,21 +167,23 @@ impl QueueCoreGetWork {
                 payload,
             }))
         } else {
-            let payload = self.reader(index).collect::<Result<Vec<_>, _>>()?;
+            let (payload, last_primary_desc_index) = {
+                let mut reader = self.reader(index);
+                (
+                    (&mut reader).collect::<Result<Vec<_>, _>>()?,
+                    reader.last_primary_desc_index(),
+                )
+            };
+            let last = self.descriptor(&self.queue_desc, last_primary_desc_index, None)?;
+            let count = last_primary_desc_index - index + 1;
             // Packed descriptors can use additional ring-contiguous
             // descriptors to describe a buffer. Find the last descriptor in
             // the current chain and update the available index accordingly.
             // Indirect descriptors are ignored.
-            let desc_walker = DescriptorChain::new(self, false, index);
-            let (last_index, last) = desc_walker
-                .enumerate()
-                .last()
-                .expect("should be at least one descriptor in chain");
             let QueueGetWorkInner::Packed(packed) = &mut self.inner else {
                 unreachable!();
             };
-            let count = last_index as u16 + 1;
-            let completion_context = packed.consume_next_available_descriptors(index, count, last?);
+            let completion_context = packed.consume_next_available_descriptors(index, count, last);
             Ok(Some(QueueWork {
                 context: QueueCompletionContext::Packed(completion_context),
                 payload,
@@ -315,6 +317,12 @@ pub struct DescriptorReader<'a> {
     chain: DescriptorChain<'a>,
 }
 
+impl DescriptorReader<'_> {
+    pub fn last_primary_desc_index(&self) -> u16 {
+        self.chain.last_primary_desc_index()
+    }
+}
+
 pub struct VirtioQueuePayload {
     pub writeable: bool,
     pub address: u64,
@@ -341,6 +349,7 @@ pub struct DescriptorChain<'a> {
     indirect_support: bool,
     indirect_queue: Option<GuestMemory>,
     descriptor_index: Option<u16>,
+    last_primary_desc_index: u16,
     num_read: u16,
     max_desc_chain: u16,
 }
@@ -355,6 +364,7 @@ impl<'a> DescriptorChain<'a> {
             indirect_support,
             indirect_queue: None,
             descriptor_index: Some(descriptor_index),
+            last_primary_desc_index: descriptor_index,
             num_read: 0,
             max_desc_chain: std::cmp::min(queue.size(), Self::MAX_DESC_CHAIN),
         }
@@ -372,6 +382,9 @@ impl<'a> DescriptorChain<'a> {
             self.indirect_queue.as_ref().map(|_| self.queue_size),
         )?;
         let descriptor = if !self.indirect_support || !descriptor.flags.indirect() {
+            if self.indirect_queue.is_none() {
+                self.last_primary_desc_index = descriptor_index;
+            }
             descriptor
         } else {
             if self.indirect_queue.is_some() {
@@ -401,6 +414,10 @@ impl<'a> DescriptorChain<'a> {
             return Err(QueueError::TooLong);
         }
         Ok(Some(descriptor))
+    }
+
+    pub fn last_primary_desc_index(&self) -> u16 {
+        self.last_primary_desc_index
     }
 }
 
