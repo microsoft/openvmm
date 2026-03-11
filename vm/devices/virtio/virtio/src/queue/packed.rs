@@ -15,7 +15,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use spec::EventSuppressionFlags;
 use spec::PackedDescriptor;
-use spec::PackedEventSuppresion;
+use spec::PackedEventSupression;
 use std::sync::atomic;
 
 pub struct PackedQueueCompletionContext {
@@ -32,13 +32,12 @@ pub(crate) struct PackedQueueGetWork {
     device_event: GuestMemory,
     queue_size: u16,
     next_avail_index: u16,
-    _use_event_index: bool,
     wrapped_bit: bool,
 }
 
 impl PackedQueueGetWork {
     pub fn new(
-        features: VirtioDeviceFeatures,
+        _features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
     ) -> Result<Self, QueueError> {
@@ -47,14 +46,13 @@ impl PackedQueueGetWork {
             .map_err(QueueError::Memory)?;
         let offset = params.desc_addr + descriptor_offset(params.size);
         let device_event = mem
-            .subrange(offset, size_of::<PackedEventSuppresion>() as u64, true)
+            .subrange(offset, size_of::<PackedEventSupression>() as u64, true)
             .map_err(QueueError::Memory)?;
         Ok(Self {
             queue_desc,
             device_event,
             queue_size: params.size,
             next_avail_index: 0,
-            _use_event_index: features.bank0().ring_event_idx(),
             wrapped_bit: true,
         })
     }
@@ -62,7 +60,7 @@ impl PackedQueueGetWork {
     pub fn is_available(&self) -> Result<Option<u16>, QueueError> {
         loop {
             let disable_event =
-                PackedEventSuppresion::new().with_flags(EventSuppressionFlags::Disabled);
+                PackedEventSupression::new().with_flags(EventSuppressionFlags::Disabled);
             self.device_event
                 .write_plain(0, &disable_event.into_bits())
                 .map_err(QueueError::Memory)?;
@@ -74,7 +72,7 @@ impl PackedQueueGetWork {
                 return Ok(Some(self.next_avail_index));
             }
             let enable_event =
-                PackedEventSuppresion::new().with_flags(EventSuppressionFlags::Enabled);
+                PackedEventSupression::new().with_flags(EventSuppressionFlags::Enabled);
             self.device_event
                 .write_plain(0, &enable_event.into_bits())
                 .map_err(QueueError::Memory)?;
@@ -132,9 +130,9 @@ impl PackedQueueCompleteWork {
             .map_err(QueueError::Memory)?;
         let offset = params.desc_addr
             + descriptor_offset(params.size)
-            + size_of::<PackedEventSuppresion>() as u64;
+            + size_of::<PackedEventSupression>() as u64;
         let driver_event = mem
-            .subrange(offset, size_of::<PackedEventSuppresion>() as u64, true)
+            .subrange(offset, size_of::<PackedEventSupression>() as u64, true)
             .map_err(QueueError::Memory)?;
         Ok(Self {
             queue_desc,
@@ -164,7 +162,7 @@ impl PackedQueueCompleteWork {
             .map_err(QueueError::Memory)?;
         // Ensure the descriptor update is visible before checking if the guest requires notification.
         atomic::fence(atomic::Ordering::SeqCst);
-        let driver_event: PackedEventSuppresion = self
+        let driver_event: PackedEventSupression = self
             .driver_event
             .read_plain(0)
             .map_err(QueueError::Memory)?;

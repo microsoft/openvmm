@@ -8,7 +8,6 @@ mod packed;
 mod split;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
-use core::panic;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -48,8 +47,6 @@ pub enum QueueError {
     DoubleIndirect,
     #[error("a descriptor chain is too long or has a cycle")]
     TooLong,
-    #[error("completed descriptor index {0} not found")]
-    CompletedDescriptorIndexNotFound(u16),
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
 }
