@@ -18,7 +18,7 @@
 //! StorVSP handles the transport (ring buffer management, GPADL setup, packet
 //! framing, sub-channel lifecycle) and a few SCSI control commands directly
 //! (`REPORT_LUNS`, `INQUIRY` for absent targets). All actual I/O is delegated
-//! to [`AsyncScsiDisk`](scsi_core::AsyncScsiDisk) implementations — StorVSP
+//! to [`AsyncScsiDisk`] implementations — StorVSP
 //! never interprets SCSI data CDBs itself.
 //!
 //! # Key types
