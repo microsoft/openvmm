@@ -10,19 +10,6 @@ OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM) written in Ru
 - **Testing Framework**: Rust unit tests + cargo-nextest (recommended)
 - **Documentation**: mdBook (in `Guide/` folder, published at https://openvmm.dev)
 
-## Documentation Style
-
-When editing any page under `Guide/`, follow the style guide at
-`Guide/src/dev_guide/contrib/style_guide.md`:
-- Use mdbook-admonish syntax (`` ```admonish note ``, `` ```admonish warning ``, etc.)
-  for callouts — **NOT** docfx `> [!NOTE]` syntax
-- Use `path/to/...` placeholders for file paths (predominant style) or
-  `<SCREAMING_SNAKE_CASE>` for non-obvious values like VM names or build numbers
-- Label all code fences with the language (`bash`, `powershell`, `rust`, etc.)
-- Keep code blocks under 30 lines; split with explanatory text
-- This is an OSS repo — do not reference internal Microsoft tools, wikis,
-  build paths, or infrastructure
-
 ## Project Structure
 - `openvmm/` - Core OpenVMM VMM implementation
 - `openhcl/` - OpenHCL paravisor implementation
@@ -33,102 +20,48 @@ When editing any page under `Guide/`, follow the style guide at
 - `xtask/` - Custom build and automation tasks
 - `flowey/` - Pipeline and build automation framework
 
-## Build Commands
+## Build and Test
 
-### Initial Setup
-Before building for the first time, restore required dependencies:
 ```bash
-cargo xflowey restore-packages
+cargo xflowey restore-packages   # First-time dependency setup
+cargo build                       # Debug build
+cargo build --release             # Release build
+cargo nextest run -p <package>    # Test a specific crate (recommended)
+cargo test -p <package>           # Alternative: standard cargo test
+cargo xtask fmt --fix             # Format and apply house rules
+cargo doc                         # Check rustdoc
 ```
 
-### Building
-Build the project using standard Cargo:
-```bash
-cargo build
-```
-
-For release builds:
-```bash
-cargo build --release
-```
-
-### Cross-compilation
-The project supports cross-compilation for `x86_64` and `aarch64` architectures. Note:
-- Some components (like OpenHCL) can only be built from Linux (WSL2 counts as Linux)
-- For cross-compilation from WSL2 to Windows, see `Guide/src/dev_guide/getting_started/cross_compile.md` and source `. ./build_support/setup_windows_cross.sh`
-
-## Testing
-
-### Unit Tests
-Use cargo-nextest (recommended) or cargo test:
-```bash
-# Recommended - install with: cargo install cargo-nextest --locked
-# Run tests in specific packages you are modifying (default won't run anything)
-cargo nextest run -p <package-name>
-
-# Or use standard cargo test
-cargo test -p <package-name>
-```
-
-Configure test runs using `.config/nextest.toml` for resource management and timeouts.
+- Cross-compilation for `x86_64` and `aarch64` is supported
+- OpenHCL can only be built from Linux (WSL2 counts)
+- See `Guide/src/dev_guide/getting_started/cross_compile.md` for cross-compilation setup
+- Test config: `.config/nextest.toml`
 
 ### Test Types
-- **Unit tests**: Spread throughout crates, marked by `#[cfg(test)]` blocks
-- **VMM tests**: Integration tests in `vmm_tests/` using the petri framework for Hyper-V and OpenVMM VMs (requires additional setup)
-- **Fuzz tests**: Nondeterministic tests ensuring no panics across trust boundaries
+- **Unit tests**: `#[cfg(test)]` blocks throughout crates
+- **VMM tests**: Integration tests in `vmm_tests/` using the petri framework (requires setup)
+- **Fuzz tests**: Ensuring no panics across trust boundaries
 
 ## Line Endings
 
-This repository enforces **LF line endings** on all platforms (see `.gitattributes`).
-When creating or editing files, always use LF (`\n`), never CRLF (`\r\n`).
-
-## Linting and Formatting
-
-### Required Before Each Commit
-Always run formatting and documentation checks before committing:
-```bash
-cargo xtask fmt --fix
-cargo doc
-```
-
-This ensures:
-- All source code follows rustfmt standards
-- Generated pipeline files maintain consistent style
-- Code follows project-specific "house rules" (copyright headers, naming conventions, etc.)
-- No errors in rustdoc comments
-
-### Available Checks
-Run specific formatting passes:
-```bash
-cargo xtask fmt --help  # See all available passes
-cargo xtask fmt --pass rustfmt
-cargo xtask fmt --pass house-rules
-```
+LF only on all platforms (see `.gitattributes`). Never use CRLF.
 
 ## Code Standards
 
-### Key Guidelines
 1. Follow Rust best practices and idiomatic patterns
-2. Maintain existing code structure and organization
-3. Write unit tests for new functionality
-4. Document public APIs and complex logic
-5. Update documentation in `Guide/` folder when adding features or changing behavior
+2. Write unit tests for new functionality
+3. Document public APIs and complex logic
+4. Update `Guide/` docs when adding features or changing behavior
+   (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
 
-### Domain-specific Guidelines
-Both OpenVMM and OpenHCL process data from untrusted sources. OpenHCL runs in a constrained environment.
+### Trust Boundaries (critical for security)
+- **OpenVMM does not trust the VTL0 guest** — code must not panic on any guest input
+- **OpenHCL does not trust the root** — code must not panic on any root input
+- **OpenHCL does not trust the VTL0 guest** — attack surface is subtle, needs human review
 
-**Trust Boundaries** (critical for security):
-- **OpenVMM does not trust the VTL0 guest** - code must not panic on any guest input
-- **OpenHCL does not trust the root** - code must not panic on any root input
-- **OpenHCL does not trust the VTL0 guest** - less critical than OpenVMM, but the attack surface is subtle and needs human review
-
-When possible:
-1. Avoid `unsafe` code
-2. Avoid taking new external dependencies, especially those that significantly increase binary size
-3. Ensure code doesn't panic across trust boundaries
-
-## Testing Best Practices
-- Thoroughly test code with unit tests whenever possible
-- Add VMM test cases for interesting integration points
-- Unit tests should be fast, isolated, and not require root/administrator access
-- Mark tests requiring special setup with `#[ignore]` for manual testing
+### General Rules
+- Avoid `unsafe` code when possible
+- Avoid new external dependencies, especially those increasing binary size
+- Never panic across trust boundaries
+- Unit tests: fast, isolated, no root/admin access required
+- Mark tests needing special setup with `#[ignore]`
