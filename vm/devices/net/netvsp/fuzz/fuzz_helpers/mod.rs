@@ -1320,16 +1320,18 @@ pub fn drain_queue(queue: &mut Queue<GpadlRingMem>) {
     }
 }
 
-/// Drain all pending packets from the queue, yielding to the executor once
-/// per packet so the NIC worker and coordinator tasks can make progress
-/// in the single-threaded fuzz executor.
+/// Drain all pending packets from the queue, yielding to the executor
+/// so the NIC worker and coordinator tasks can make progress in the
+/// single-threaded fuzz executor.
 ///
-/// Use this between fuzz actions to prevent ring-full deadlocks: each
-/// yield gives background tasks CPU time to process ring data and
-/// produce new completions.
+/// Use this between fuzz actions to prevent ring-full deadlocks.
 ///
 /// For a synchronous (non-yielding) drain, use [`drain_queue`] instead.
 pub async fn drain_queue_async(queue: &mut Queue<GpadlRingMem>) {
+    // Yield first so the NIC worker gets CPU time to process packets
+    // already in the guest→host ring and write responses to the
+    // host→guest ring.
+    yield_to_executor(1).await;
     loop {
         let (mut reader, _) = queue.split();
         if reader.try_read().is_err() {
