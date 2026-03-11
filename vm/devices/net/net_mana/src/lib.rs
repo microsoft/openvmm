@@ -1492,7 +1492,8 @@ struct OutOfMemory;
 
 impl ContiguousBufferManager {
     pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
-        anyhow::ensure!(2_u64.pow(32) % Into::<u64>::into(page_limit) == 0, anyhow::anyhow!("the page limit must be an even divisor of 2^32"));
+        anyhow::ensure!(page_limit.count_ones() == 1, anyhow::anyhow!("page_limit must be a power of two, {page_limit} is not."));
+        anyhow::ensure!(PAGE_SIZE64 * Into::<u64>::into(page_limit) <= Into::<u64>::into(u32::MAX), anyhow::anyhow!("{page_limit} will overflow the len field"));
 
         let len = PAGE_SIZE32 * page_limit;
         let mem = dma_client.allocate_dma_buffer(len as usize)?;
