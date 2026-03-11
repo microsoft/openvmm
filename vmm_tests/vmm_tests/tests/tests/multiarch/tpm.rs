@@ -399,7 +399,9 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
     };
 
     tracing::info!("first boot");
+
     agent.reboot().await?;
+
     tracing::info!("second boot");
 
     let host_binary_path = tpm_guest_tests_artifact.get();

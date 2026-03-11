@@ -167,10 +167,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
         IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([
-                    IgvmAgentAction::RespondSuccess,
-                    IgvmAgentAction::NoResponse,
-                ]),
+                VecDeque::from([IgvmAgentAction::RespondSuccess, IgvmAgentAction::NoResponse]),
             );
         }
         IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
@@ -278,7 +275,7 @@ impl TestIgvmAgent {
         let (response, length) = if let Some(action) =
             self.take_next_action(request.header.request_type)
         {
-            // If a plan is provided and has a queued action for this request type,
+            // If a plan is installed and has a queued action for this request type,
             // execute it. This allows tests to force success/no-response, etc.
             match action {
                 IgvmAgentAction::NoResponse => {
@@ -458,9 +455,14 @@ impl TestIgvmAgent {
                     }
                 }
             }
+        } else if self.plan.is_some() {
+            // A plan is installed but has no more actions for this request type.
+            // Return NoResponse to avoid silently falling back to normal mode.
+            tracing::info!(?request.header.request_type, "Plan exhausted: NoResponse");
+            (vec![], 0)
         } else {
-            // If no plan is provided, fall back to the default behavior that
-            // always return valid responses.
+            // No plan is installed — fall back to default behavior that
+            // always returns valid responses.
             match request.header.request_type {
                 IgvmAttestRequestType::AK_CERT_REQUEST => {
                     tracing::info!("Send a response for AK_CERT_REQUEST");
