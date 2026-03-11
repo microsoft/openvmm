@@ -385,7 +385,7 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
     let rpc_server_path = rpc_server_artifact.get();
     let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
 
-    let (mut vm, mut agent) = config
+    let (vm, agent) = config
         .with_tpm(true)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
