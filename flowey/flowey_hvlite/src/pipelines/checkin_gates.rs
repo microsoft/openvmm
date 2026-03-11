@@ -847,11 +847,10 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
                 pipeline.new_artifact("x64-cvm-reproducible-openhcl-igvm-extras");
 
-            let openvmm_hcl_profile = if release {
-                OpenvmmHclBuildProfile::OpenvmmHclShip
-            } else {
-                OpenvmmHclBuildProfile::Debug
-            };
+            // Always use the ship profile for reproducible builds so that
+            // codegen-units=1 is set, which is required for deterministic
+            // DWARF debug info generation.
+            let openvmm_hcl_profile = OpenvmmHclBuildProfile::OpenvmmHclShip;
 
             let job = pipeline
                 .new_job(
@@ -891,6 +890,8 @@ impl IntoPipeline for CheckinGatesCli {
             // published before the comparison runs.
             let (pub_local_igvm, use_local_igvm) =
                 pipeline.new_artifact("x64-cvm-local-reproducible-openhcl-igvm");
+            let (pub_local_igvm_extras, _use_local_igvm_extras) =
+                pipeline.new_artifact("x64-cvm-local-reproducible-openhcl-igvm-extras");
 
             let local_build_job = pipeline
                 .new_job(
@@ -903,6 +904,7 @@ impl IntoPipeline for CheckinGatesCli {
                     |ctx| flowey_lib_hvlite::_jobs::test_reproducible_build::Request {
                         recipe: "x64-cvm".into(),
                         artifact_dir_local_igvm: ctx.publish_artifact(pub_local_igvm),
+                        artifact_dir_local_igvm_extras: ctx.publish_artifact(pub_local_igvm_extras),
                         done: ctx.new_done_handle(),
                     },
                 )

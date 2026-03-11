@@ -10,8 +10,10 @@ flowey_request! {
     pub struct Request {
         /// Recipe name to pass to `cargo xflowey build-reproducible` (e.g. "x64-cvm").
         pub recipe: String,
-        /// Directory to publish the local build-reproducible output to.
+        /// Directory to publish the local build-reproducible igvm output to.
         pub artifact_dir_local_igvm: ReadVar<PathBuf>,
+        /// Directory to publish the local build-reproducible igvm extras output to.
+        pub artifact_dir_local_igvm_extras: ReadVar<PathBuf>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -31,6 +33,7 @@ impl SimpleFlowNode for Node {
         let Request {
             recipe,
             artifact_dir_local_igvm,
+            artifact_dir_local_igvm_extras,
             done,
         } = request;
 
@@ -43,10 +46,12 @@ impl SimpleFlowNode for Node {
             nix_install.claim(ctx);
             let hvlite_repo = hvlite_repo.claim(ctx);
             let artifact_dir_local_igvm = artifact_dir_local_igvm.claim(ctx);
+            let artifact_dir_local_igvm_extras = artifact_dir_local_igvm_extras.claim(ctx);
             let recipe = recipe.clone();
             move |rt| {
                 let hvlite_repo = rt.read(hvlite_repo);
                 let publish_dir = rt.read(artifact_dir_local_igvm);
+                let publish_dir_extras = rt.read(artifact_dir_local_igvm_extras);
 
                 rt.sh.change_dir(&hvlite_repo);
 
@@ -58,20 +63,23 @@ impl SimpleFlowNode for Node {
 
                 let flowey_bin = hvlite_repo.join("target/debug/flowey_hvlite");
                 log::info!("running {flowey_bin:?} pipeline run build-reproducible {recipe}");
-                flowey::shell_cmd!(rt, "{flowey_bin} pipeline run build-reproducible {recipe}")
-                    .env(
-                        "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_REPRODUCIBLE_IN_CI",
-                        "true",
-                    )
-                    .run()?;
+                flowey::shell_cmd!(
+                    rt,
+                    "{flowey_bin} pipeline run build-reproducible {recipe} --release"
+                )
+                .env(
+                    "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_REPRODUCIBLE_IN_CI",
+                    "true",
+                )
+                .run()?;
 
                 let local_igvm_dir = hvlite_repo.join("flowey-out/artifacts/x64-cvm-openhcl-igvm");
+                let local_igvm_extras_dir =
+                    hvlite_repo.join("flowey-out/artifacts/x64-cvm-openhcl-igvm-extras");
 
                 log::info!("publishing local build output");
-                for entry in fs_err::read_dir(&local_igvm_dir)? {
-                    let entry = entry?;
-                    fs_err::copy(entry.path(), publish_dir.join(entry.file_name()))?;
-                }
+                flowey::util::copy_dir_all(&local_igvm_dir, &publish_dir)?;
+                flowey::util::copy_dir_all(&local_igvm_extras_dir, &publish_dir_extras)?;
 
                 Ok(())
             }

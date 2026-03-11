@@ -675,6 +675,8 @@ jobs:
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm" | flowey v 11 'artifact_publish_from_x64-cvm-local-reproducible-openhcl-igvm' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm-extras"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm-extras" | flowey v 11 'artifact_publish_from_x64-cvm-local-reproducible-openhcl-igvm-extras' --is-raw-string update
       shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
@@ -718,6 +720,12 @@ jobs:
       with:
         name: x64-cvm-local-reproducible-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm/
+        include-hidden-files: true
+    - name: 🌼📦 Publish x64-cvm-local-reproducible-openhcl-igvm-extras
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-cvm-local-reproducible-openhcl-igvm-extras
+        path: ${{ runner.temp }}/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm-extras/
         include-hidden-files: true
   job12:
     name: verify reproducible openhcl [x64-cvm-linux-nix]
