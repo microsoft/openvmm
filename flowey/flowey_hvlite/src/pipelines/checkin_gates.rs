@@ -209,7 +209,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "quick check [fmt, clippy x64-linux]",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
                 .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))

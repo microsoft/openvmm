@@ -27,10 +27,7 @@ concurrency:
 jobs:
   job0:
     name: quick check [fmt, clippy x64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
