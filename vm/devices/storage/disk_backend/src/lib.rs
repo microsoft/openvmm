@@ -10,11 +10,12 @@
 //! # Architecture
 //!
 //! Every disk backend implements [`DiskIo`]. Frontends don't interact with
-//! backends directly — they hold a [`Disk`], which wraps `Arc<dyn DiskIo>`
-//! for cheap, concurrent cloning. The `Disk` wrapper caches immutable
-//! metadata (sector size, physical sector size, disk ID, FUA support) at
-//! construction time and validates that sector sizes are powers of two and
-//! at least 512 bytes.
+//! backends directly — they hold a [`Disk`], which wraps a type-erased
+//! backend (`DynDisk`, an adapter around [`DiskIo`] that normalizes return
+//! futures) behind an `Arc` for cheap, concurrent cloning. The `Disk`
+//! wrapper caches immutable metadata (sector size, physical sector size,
+//! disk ID, FUA support) at construction time and validates that sector
+//! sizes are powers of two and at least 512 bytes.
 //!
 //! # I/O model
 //!

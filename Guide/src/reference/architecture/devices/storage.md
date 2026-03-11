@@ -1,6 +1,14 @@
 # Storage pipeline
 
-The storage stack carries guest I/O requests from a guest-visible controller to a backing store and back. It's shared between OpenVMM and OpenHCL. Every disk backend implements the [`DiskIo`](https://openvmm.dev/rustdoc/linux/disk_backend/trait.DiskIo.html) trait, and frontends hold a [`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html) wrapper — a cheap, cloneable handle to any backend. For the `DiskIo` trait surface, method contracts, and error model, see the [`disk_backend` rustdoc](https://openvmm.dev/rustdoc/linux/disk_backend/index.html).
+The storage stack carries guest I/O requests from a guest-visible
+controller to a backing store and back. It's shared between OpenVMM
+and OpenHCL. Every disk backend implements the
+[`DiskIo`](https://openvmm.dev/rustdoc/linux/disk_backend/trait.DiskIo.html)
+trait, and frontends hold a
+[`Disk`](https://openvmm.dev/rustdoc/linux/disk_backend/struct.Disk.html)
+wrapper — a cheap, cloneable handle to any backend. For the `DiskIo`
+trait surface, method contracts, and error model, see the
+[`disk_backend` rustdoc](https://openvmm.dev/rustdoc/linux/disk_backend/index.html).
 
 ## The pipeline
 

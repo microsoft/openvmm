@@ -529,6 +529,9 @@ valid disk kinds:
     `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
         <cipher>: `xts-aes-256`
 
+additional wrapper kinds (e.g., `autocache`, `prwrap`) are also supported;
+this list is not exhaustive.
+
 flags:
     `ro`                           open disk as read-only
     `s`                            attach drive to secondary ide channel
@@ -551,6 +554,12 @@ valid disk kinds:
         <disk>: lower disk, e.g.: `file:base.img`
     `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
 
 flags:
     `ro`                           open disk as read-only
