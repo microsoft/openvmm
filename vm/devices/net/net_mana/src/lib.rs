@@ -1493,7 +1493,7 @@ struct OutOfMemory;
 impl ContiguousBufferManager {
     pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            page_limit.count_ones() == 1,
+            page_limit.is_power_of_two(),
             anyhow::anyhow!("page_limit must be a power of two, {page_limit} is not.")
         );
         anyhow::ensure!(
@@ -1549,13 +1549,13 @@ mod tests {
             match ContiguousBufferManager::new(dtm.dma_client(), i) {
                 Ok(_) => {
                     ensure!(
-                        i.count_ones() == 1,
+                        i.is_power_of_two(),
                         anyhow!("The CBM should only work for powers of 2")
                     );
                 }
                 Err(_) => {
                     ensure!(
-                        i.count_ones() != 1,
+                        !i.is_power_of_two(),
                         anyhow!("Powers of 2 should get CBMs, failed for {i} pages.")
                     );
                 }
