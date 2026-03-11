@@ -78,14 +78,13 @@ pub(super) fn run_netvsp_campaign(
 
     for (target_name, target) in &targets {
         println!("    Building {}...", target_name);
-        let extra = vec!["--".to_owned(), "-runs=0".to_owned()];
 
-        let result = CargoFuzzCommand::Run { artifact: None }.invoke(
+        let result = CargoFuzzCommand::Build.invoke(
             target_name,
             &target.fuzz_dir,
             &target.target_options,
             toolchain.as_deref(),
-            &extra,
+            &[],
         );
 
         match result {
@@ -438,14 +437,24 @@ fn find_llvm_cov_tools(nightly: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
         }
     }
 
-    let profdata = profdata.context("llvm-profdata was not found in nightly sysroot")?;
+    let profdata = profdata.with_context(|| {
+        format!(
+            "llvm-profdata was not found in the nightly sysroot. \
+             Install it with: rustup +{} component add llvm-tools-preview",
+            nightly
+        )
+    })?;
     let llvm_cov = profdata
         .parent()
         .context("llvm-profdata had no parent")?
         .join("llvm-cov");
 
     if !llvm_cov.is_file() {
-        anyhow::bail!("llvm-cov was not found next to llvm-profdata");
+        anyhow::bail!(
+            "llvm-cov was not found next to llvm-profdata. \
+             Install it with: rustup +{} component add llvm-tools-preview",
+            nightly
+        );
     }
 
     Ok((llvm_cov, profdata))
@@ -458,9 +467,9 @@ fn find_coverage_binary(repo_root: &Path, target_name: &str) -> anyhow::Result<O
     }
 
     // Coverage binaries live under target/<triple>/coverage/<deps|build|...>/
-    // so depth 6 is more than sufficient and avoids walking the entire target tree.
+    // Use Path::components() to match "coverage" in any path component,
+    // which is platform-agnostic (no hardcoded path separators).
     for entry in walkdir::WalkDir::new(&target_root)
-        .max_depth(6)
         .into_iter()
         .filter_map(Result::ok)
     {
@@ -477,8 +486,7 @@ fn find_coverage_binary(repo_root: &Path, target_name: &str) -> anyhow::Result<O
             continue;
         }
 
-        let full_path = path.to_string_lossy();
-        if full_path.contains("/coverage/") {
+        if path.components().any(|c| c.as_os_str() == "coverage") {
             return Ok(Some(path.to_path_buf()));
         }
     }

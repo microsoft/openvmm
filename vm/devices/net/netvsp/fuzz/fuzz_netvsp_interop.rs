@@ -255,12 +255,6 @@ enum InteropAction {
         ppi_bytes: Vec<u8>,
         frame_data: Vec<u8>,
     },
-    /// Inject a `TxError::Fatal` on the next `tx_poll`, then send a packet
-    /// to trigger `process_endpoint_tx`. Exercises the fatal error path.
-    InjectTxFatal {
-        ppi_bytes: Vec<u8>,
-        frame_data: Vec<u8>,
-    },
 
     // ==== Common actions ====
     /// Drain completions from the host.
@@ -729,26 +723,6 @@ async fn execute_next_action(
                 fuzz_helpers::drain_queue_async(queue).await;
             }
         }
-        InteropAction::InjectTxFatal {
-            ppi_bytes,
-            frame_data,
-        } => {
-            if let Some(mode) = tx_error_mode {
-                mode.store(2, Ordering::Relaxed);
-                let rndis_buf = build_structured_rndis_packet(&ppi_bytes, &frame_data);
-                let _ = send_rndis_via_direct_path(
-                    queue,
-                    mem,
-                    &rndis_buf,
-                    protocol::DATA_CHANNEL_TYPE,
-                    &LAYOUT,
-                    tid,
-                )
-                .await;
-                fuzz_helpers::yield_to_executor(10).await;
-            }
-        }
-
         // ==== Common ====
         InteropAction::ReadCompletion => {
             let _ = try_read_one_completion(queue);
