@@ -20,7 +20,7 @@
 //! # I/O model
 //!
 //! All I/O is **async** and uses **scatter-gather** buffers via
-//! [`RequestBuffers`](scsi_buffers::RequestBuffers). Callers must pass
+//! [`RequestBuffers`]. Callers must pass
 //! buffers that are an integral number of sectors.
 //!
 //! The key operations are:

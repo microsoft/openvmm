@@ -9,7 +9,7 @@
 //!
 //! # Drive types
 //!
-//! - **ATA hard drives** — use [`Disk`](disk_backend::Disk) for I/O. Support
+//! - **ATA hard drives** — use [`Disk`] for I/O. Support
 //!   PIO and DMA modes, 28-bit and 48-bit LBA, `IDENTIFY DEVICE`, `FLUSH CACHE`.
 //! - **ATAPI optical drives** — use `PACKET COMMAND` (0xA0) to transport SCSI
 //!   CDBs over the ATA interface, delegating to

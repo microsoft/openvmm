@@ -11,8 +11,8 @@
 //! # Key types
 //!
 //! - [`SimpleScsiDisk`] — hard drive emulation. Implements
-//!   [`AsyncScsiDisk`](scsi_core::AsyncScsiDisk), holds a
-//!   [`Disk`](disk_backend::Disk), and parses SCSI CDB opcodes. Handles
+//!   [`AsyncScsiDisk`], holds a
+//!   [`Disk`], and parses SCSI CDB opcodes. Handles
 //!   READ/WRITE (6/10/12/16), READ_CAPACITY, INQUIRY, MODE_SENSE, UNMAP,
 //!   WRITE_SAME, SYNCHRONIZE_CACHE, and PERSISTENT_RESERVE.
 //! - [`SimpleScsiDvd`](scsidvd::SimpleScsiDvd) — optical drive emulation.

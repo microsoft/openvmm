@@ -23,7 +23,7 @@
 //!
 //! # Layer types
 //!
-//! Each layer implements [`LayerIo`], which is similar to [`DiskIo`](disk_backend::DiskIo)
+//! Each layer implements [`LayerIo`], which is similar to [`DiskIo`]
 //! but adds per-sector presence tracking via [`SectorMarker`]. Two concrete
 //! layer implementations exist:
 //!
@@ -31,7 +31,7 @@
 //! - **`SqliteDiskLayer`** (`disklayer_sqlite`) — persistent, file-backed
 //!   (dev/test only).
 //!
-//! A full [`Disk`](disk_backend::Disk) can appear at the bottom of the stack
+//! A full [`Disk`] can appear at the bottom of the stack
 //! as a fully-present layer via `DiskLayer::from_disk`, which wraps it in
 //! `DiskAsLayer` — a layer that marks all sectors as present on every read.
 //!
