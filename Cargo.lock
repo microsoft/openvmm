@@ -1005,6 +1005,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug_output_tracing"
+version = "0.0.0"
+dependencies = [
+ "tracing",
+ "tracing-subscriber",
+ "winapi",
+]
+
+[[package]]
 name = "debug_ptr"
 version = "0.0.0"
 

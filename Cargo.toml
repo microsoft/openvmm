@@ -51,11 +51,16 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  # support crates consumed by closed-source only
+  "support/debug_output_tracing",
 ]
 exclude = [
   "xsync",
   "Guide/mdbook-openvmm-shim"
 ]
+
+[workspace.metadata.xtask.unused-deps]
+ignored = ["debug_output_tracing"]
 
 [workspace.package]
 rust-version = "1.93"
@@ -104,6 +109,7 @@ ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
 console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
+debug_output_tracing = { path = "support/debug_output_tracing" }
 debug_ptr = { path = "support/debug_ptr" }
 user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
 fast_memcpy = { path = "support/fast_memcpy" }

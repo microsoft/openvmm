@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "debug_output_tracing"
+edition.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+winapi = { workspace = true, features = ["debugapi"] }
+
+[lints]
+workspace = true
