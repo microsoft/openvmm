@@ -1,10 +1,6 @@
-# OpenHCL Storage Configuration Model
+# OpenHCL storage configuration model
 
-The VTL2 settings model describes guest-visible storage controllers, child devices, and their backing devices.
-
-```admonish note title="See also"
-[Storage Pipeline](../devices/storage.md) for the internal architecture of the disk backend abstraction, the layered disk model, and how frontends translate guest I/O into `DiskIo` calls.
-```
+The VTL2 settings model describes guest-visible storage controllers, child devices, and their backing devices. For the internal architecture of the disk backend abstraction, the layered disk model, and how frontends translate guest I/O into [`DiskIo`](https://openvmm.dev/rustdoc/linux/disk_backend/trait.DiskIo.html) calls, see the [storage pipeline](../devices/storage.md) page.
 
 ## Overview
 

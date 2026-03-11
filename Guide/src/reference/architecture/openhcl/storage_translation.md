@@ -1,10 +1,6 @@
-# OpenHCL Storage Translation
+# OpenHCL storage translation
 
-OpenHCL maps storage offered into VTL2 onto the controller and disk model that VTL0 sees.
-
-```admonish note title="See also"
-[Storage Pipeline](../devices/storage.md) for the internal pipeline — how guest I/O flows from a storage frontend through the SCSI adapter and disk backend abstraction to a concrete backing store. This page covers the *outside* of the shell (what OpenHCL maps); the storage pipeline page covers the *inside* (how I/O actually flows).
-```
+OpenHCL maps storage offered into VTL2 onto the controller and disk model that VTL0 sees. This page covers that mapping — the *outside* of the shell. For the *inside* (how guest I/O flows from a storage frontend through the SCSI adapter and disk backend abstraction to a concrete backing store), see the [storage pipeline](../devices/storage.md) page.
 
 ## Overview
 
