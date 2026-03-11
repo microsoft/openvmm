@@ -133,7 +133,7 @@ impl VirtioDevice for VirtioFsDevice {
         tracing::warn!(offset, val, "[virtiofs] Unknown write",);
     }
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         self.workers = resources
             .queues
             .into_iter()
@@ -158,6 +158,7 @@ impl VirtioDevice for VirtioFsDevice {
                 ))
             })
             .collect();
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {

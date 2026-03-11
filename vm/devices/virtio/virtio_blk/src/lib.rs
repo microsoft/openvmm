@@ -12,6 +12,7 @@ mod spec;
 mod integration_tests;
 
 use crate::spec::*;
+use anyhow::Context as _;
 use disk_backend::Disk;
 use futures::StreamExt;
 use guestmem::GuestMemory;
@@ -348,43 +349,27 @@ impl VirtioDevice for VirtioBlkDevice {
         // Config space is read-only for virtio-blk.
     }
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         let queue_resources = resources.queues.into_iter().next();
         let Some(queue_resources) = queue_resources else {
-            return;
+            return Ok(());
         };
 
         if !queue_resources.params.enable {
-            return;
+            return Ok(());
         }
 
-        let queue_event = match PolledWait::new(&self.driver, queue_resources.event) {
-            Ok(e) => e,
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to create queue event"
-                );
-                return;
-            }
-        };
+        let queue_event = PolledWait::new(&self.driver, queue_resources.event)
+            .context("failed to create queue event")?;
 
-        let queue = match VirtioQueue::new(
+        let queue = VirtioQueue::new(
             resources.features,
             queue_resources.params,
             self.worker.task().memory.clone(),
             queue_resources.notify,
             queue_event,
-        ) {
-            Ok(q) => q,
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to create virtio queue"
-                );
-                return;
-            }
-        };
+        )
+        .context("failed to create virtio queue")?;
 
         self.worker.insert(
             self.driver.clone(),
@@ -392,6 +377,7 @@ impl VirtioDevice for VirtioBlkDevice {
             BlkQueueState { queue },
         );
         self.worker.start();
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {

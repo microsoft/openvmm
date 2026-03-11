@@ -18,6 +18,7 @@ pub mod resolver;
 mod tests;
 
 use crate::buffers::VirtioWorkPool;
+use anyhow::Context as _;
 use bitfield_struct::bitfield;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -263,7 +264,7 @@ impl VirtioDevice for Device {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         let mut queue_resources: Vec<_> = resources.queues.into_iter().collect();
         let mut workers = Vec::with_capacity(queue_resources.len() / 2);
         while queue_resources.len() > 1 {
@@ -275,56 +276,35 @@ impl VirtioDevice for Device {
             }
 
             let rx_queue_size = rx_resources.params.size;
-            let rx_queue_event = PolledWait::new(&self.adapter.driver, rx_resources.event);
-            if let Err(err) = rx_queue_event {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating queue event"
-                );
-                continue;
-            }
+            let rx_queue_event =
+                PolledWait::new(&self.adapter.driver, rx_resources.event)
+                    .context("failed creating rx queue event")?;
             let rx_queue = VirtioQueue::new(
                 resources.features.clone(),
                 rx_resources.params,
                 self.memory.clone(),
                 rx_resources.notify,
-                rx_queue_event.unwrap(),
-            );
-            if let Err(err) = rx_queue {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating virtio net receive queue"
-                );
-                continue;
-            }
+                rx_queue_event,
+            )
+            .context("failed creating virtio net receive queue")?;
 
             let tx_queue_size = tx_resources.params.size;
-            let tx_queue_event = PolledWait::new(&self.adapter.driver, tx_resources.event);
-            if let Err(err) = tx_queue_event {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating queue event"
-                );
-                continue;
-            }
+            let tx_queue_event =
+                PolledWait::new(&self.adapter.driver, tx_resources.event)
+                    .context("failed creating tx queue event")?;
             let tx_queue = VirtioQueue::new(
                 resources.features.clone(),
                 tx_resources.params,
                 self.memory.clone(),
                 tx_resources.notify,
-                tx_queue_event.unwrap(),
-            );
-            if let Err(err) = tx_queue {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating virtio net transmit queue"
-                );
-                continue;
-            }
+                tx_queue_event,
+            )
+            .context("failed creating virtio net transmit queue")?;
+
             workers.push(VirtioState {
-                rx_queue: rx_queue.unwrap(),
+                rx_queue,
                 rx_queue_size,
-                tx_queue: tx_queue.unwrap(),
+                tx_queue,
                 tx_queue_size,
             });
         }
@@ -334,6 +314,7 @@ impl VirtioDevice for Device {
             self.insert_worker(virtio_state, i);
         }
         self.coordinator.start();
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {

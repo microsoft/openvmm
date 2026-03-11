@@ -94,20 +94,20 @@ impl VirtioDevice for Device {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, mut resources: Resources) {
+    fn enable(&mut self, mut resources: Resources) -> anyhow::Result<()> {
         assert!(self.worker.is_none());
         if !resources.queues[0].params.enable {
-            return;
+            return Ok(());
         }
 
-        let shared_memory_region = resources.shared_memory_region.clone();
-        let _ = shared_memory_region.unwrap().map(
-            0,
-            &self.mappable,
-            0,
-            self.len as usize,
-            self.writable,
-        );
+        let shared_memory_region = resources
+            .shared_memory_region
+            .clone()
+            .context("shared memory region not available")?;
+
+        shared_memory_region
+            .map(0, &self.mappable, 0, self.len as usize, self.writable)
+            .context("failed to map shared memory region")?;
 
         self.worker = {
             let worker = PmemWorker {
@@ -125,6 +125,7 @@ impl VirtioDevice for Device {
                 self.exit_event.listen(),
             ))
         };
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {

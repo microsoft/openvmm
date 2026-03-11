@@ -432,14 +432,26 @@ impl VirtioMmioDevice {
                         })
                         .collect();
 
-                    self.device.enable(Resources {
+                    match self.device.enable(Resources {
                         features: self.driver_feature.clone(),
                         queues,
                         shared_memory_region: None,
                         shared_memory_size: 0,
-                    });
-
-                    self.device_status.set_driver_ok(true);
+                    }) {
+                        Ok(()) => {
+                            self.device_status.set_driver_ok(true);
+                        }
+                        Err(err) => {
+                            // FUTURE: consider setting DEVICE_NEEDS_RESET and
+                            // delivering a config change interrupt so the guest
+                            // can detect the failure proactively instead of
+                            // waiting for IO timeouts.
+                            tracelimit::error_ratelimited!(
+                                error = &*err as &dyn std::error::Error,
+                                "virtio device enable failed"
+                            );
+                        }
+                    }
                     self.update_config_generation();
                 }
             }

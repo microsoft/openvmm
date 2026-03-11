@@ -7,6 +7,7 @@
 
 pub mod resolver;
 
+use anyhow::Context as _;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -109,15 +110,15 @@ impl VirtioDevice for VirtioPlan9Device {
         tracing::warn!(offset, val, "[VIRTIO 9P] Unknown write",);
     }
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         let queue_resources = resources
             .queues
             .into_iter()
             .next()
-            .expect("expected single queue");
+            .context("expected single queue")?;
 
         if !queue_resources.params.enable {
-            return;
+            return Ok(());
         }
 
         let worker = VirtioPlan9Worker {
@@ -132,6 +133,7 @@ impl VirtioDevice for VirtioPlan9Device {
             queue_resources,
             self.exit_event.listen(),
         ));
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {

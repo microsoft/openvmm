@@ -818,7 +818,7 @@ impl VirtioDevice for TestDevice {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         self.workers = resources
             .queues
             .into_iter()
@@ -843,6 +843,7 @@ impl VirtioDevice for TestDevice {
                 ))
             })
             .collect();
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
