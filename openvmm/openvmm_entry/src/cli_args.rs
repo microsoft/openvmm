@@ -136,8 +136,16 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `autocache:[key]:<disk>`       auto-cached SQLite layer (needs OPENVMM_AUTO_CACHE_PATH)
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+    `prwrap:<disk>`                persistent reservations wrapper
 
 flags:
     `ro`                           open disk as read-only
@@ -160,8 +168,16 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `autocache:[key]:<disk>`       auto-cached SQLite layer (needs OPENVMM_AUTO_CACHE_PATH)
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+    `prwrap:<disk>`                persistent reservations wrapper
 
 flags:
     `ro`                           open disk as read-only
@@ -504,8 +520,14 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
 
 flags:
     `ro`                           open disk as read-only
@@ -518,7 +540,7 @@ flags:
     /// attach a floppy drive (should be able to be passed multiple times). VM must be generation 1 (no UEFI)
     ///
     #[clap(long_help = r#"
-e.g: --floppy memdiff:/path/to/disk.vfd,ro
+e.g: --floppy memdiff:file:/path/to/disk.vfd,ro
 
 syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
@@ -527,7 +549,7 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
 
 flags:
