@@ -119,8 +119,12 @@ pub enum IgvmAgentAction {
     RespondFailure,
     /// Emit a response that indicates a protocol error with skip_hw_unsealing signal.
     RespondFailureSkipHwUnsealing,
-    /// Skip responding to simulate a timeout.
+    /// Skip responding to simulate a timeout (consumed once).
     NoResponse,
+    /// Skip responding for this and all subsequent requests of the same type.
+    /// Unlike [`NoResponse`](Self::NoResponse), this action is never consumed
+    /// from the queue.
+    AlwaysNoResponse,
 }
 
 /// IGVM Agent test plan specifying scripted actions for a request type.
@@ -167,7 +171,10 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
         IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
-                VecDeque::from([IgvmAgentAction::RespondSuccess, IgvmAgentAction::NoResponse]),
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
             );
         }
         IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
@@ -176,6 +183,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 VecDeque::from([
                     IgvmAgentAction::RespondSuccess,
                     IgvmAgentAction::RespondFailureSkipHwUnsealing,
+                    IgvmAgentAction::AlwaysNoResponse,
                 ]),
             );
         }
@@ -185,6 +193,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 VecDeque::from([
                     IgvmAgentAction::RespondSuccess,
                     IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::AlwaysNoResponse,
                 ]),
             );
         }
@@ -231,13 +240,21 @@ impl TestIgvmAgent {
     }
 
     /// Take the next scripted action for the given request type, if any.
+    ///
+    /// [`IgvmAgentAction::AlwaysNoResponse`] is sticky: it is returned but
+    /// never removed from the queue, so every subsequent call for the same
+    /// request type will keep returning it.
     pub fn take_next_action(
         &mut self,
         request_type: IgvmAttestRequestType,
     ) -> Option<IgvmAgentAction> {
         // Fast path: no plan installed.
         let plan = self.plan.as_mut()?;
-        plan.get_mut(&request_type)?.pop_front()
+        let queue = plan.get_mut(&request_type)?;
+        match queue.front()? {
+            IgvmAgentAction::AlwaysNoResponse => Some(IgvmAgentAction::AlwaysNoResponse),
+            _ => queue.pop_front(),
+        }
     }
 
     /// Request handler.
@@ -278,7 +295,7 @@ impl TestIgvmAgent {
             // If a plan is installed and has a queued action for this request type,
             // execute it. This allows tests to force success/no-response, etc.
             match action {
-                IgvmAgentAction::NoResponse => {
+                IgvmAgentAction::NoResponse | IgvmAgentAction::AlwaysNoResponse => {
                     tracing::info!(?request.header.request_type, "Test plan: NoResponse");
                     (vec![], 0)
                 }
@@ -455,14 +472,11 @@ impl TestIgvmAgent {
                     }
                 }
             }
-        } else if self.plan.is_some() {
-            // A plan is installed but has no more actions for this request type.
-            // Return NoResponse to avoid silently falling back to normal mode.
-            tracing::info!(?request.header.request_type, "Plan exhausted: NoResponse");
-            (vec![], 0)
         } else {
-            // No plan is installed — fall back to default behavior that
-            // always returns valid responses.
+            // No scripted action for this request type (either no plan is
+            // installed, or the plan does not cover this request type / is
+            // exhausted).  Fall back to the default behavior that always
+            // returns valid responses.
             match request.header.request_type {
                 IgvmAttestRequestType::AK_CERT_REQUEST => {
                     tracing::info!("Send a response for AK_CERT_REQUEST");
