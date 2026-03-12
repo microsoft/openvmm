@@ -106,7 +106,6 @@ pub fn write_snapshot(
 ///
 /// Returns the decoded manifest and the raw saved-state bytes.
 /// The caller is responsible for opening `memory.bin` separately.
-#[allow(dead_code)]
 pub fn read_snapshot(dir: &Path) -> anyhow::Result<(SnapshotManifest, Vec<u8>)> {
     let manifest_bytes =
         fs_err::read(dir.join("manifest.bin")).context("failed to read manifest.bin")?;
