@@ -98,10 +98,17 @@ impl MappingManagerClient {
     /// address space of `process`.
     ///
     /// Each call will allocate a new unique mapper.
+    ///
+    /// Returns an error if private memory mode is enabled, since private
+    /// anonymous pages would be committed in the remote process and not
+    /// accessible locally.
     pub async fn new_remote_mapper(
         &self,
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
+        if self.private_ram {
+            return Err(VaMapperError::RemoteWithPrivateMemory);
+        }
         Ok(Arc::new(
             VaMapper::new(self.req_send.clone(), self.max_addr, Some(process), false).await?,
         ))

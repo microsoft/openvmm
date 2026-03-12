@@ -162,6 +162,8 @@ pub enum VaMapperError {
     MemoryManagerGone(#[source] RpcError),
     #[error("failed to reserve address space")]
     Reserve(#[source] std::io::Error),
+    #[error("remote mappers are not supported in private memory mode")]
+    RemoteWithPrivateMemory,
 }
 
 #[derive(Debug, Error)]
