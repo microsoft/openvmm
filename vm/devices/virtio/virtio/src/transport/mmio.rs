@@ -160,37 +160,22 @@ impl VirtioMmioDevice {
         let offset = (address & 0xfff) as u16;
         assert!(offset & 3 == 0);
         match VirtioMmioRegister(offset) {
-            // Magic value
             VirtioMmioRegister::MAGIC_VALUE => u32::from_le_bytes(*b"virt"),
-            // Version
             VirtioMmioRegister::VERSION => 2,
-            // Device ID
             VirtioMmioRegister::DEVICE_ID => self.device_id,
-            // Vendor ID
             VirtioMmioRegister::VENDOR_ID => self.vendor_id,
-            // Device feature bank
             VirtioMmioRegister::DEVICE_FEATURES => {
                 let feature_select = self.device_feature_select as usize;
                 self.device_feature.bank(feature_select)
             }
-            // Device feature bank index
             VirtioMmioRegister::DEVICE_FEATURES_SEL => self.device_feature_select,
-            //
-            // 8-byte padding
-            //
-            // Driver feature bank
             VirtioMmioRegister::DRIVER_FEATURES => {
                 let feature_select = self.driver_feature_select as usize;
                 self.driver_feature.bank(feature_select)
             }
-            // Driver feature bank index
             VirtioMmioRegister::DRIVER_FEATURES_SEL => self.driver_feature_select,
-            //
-            // 8-byte padding
-            //
-            // Queue select index
             VirtioMmioRegister::QUEUE_SEL => self.queue_select,
-            // Current queue max supported size. A value of zero indicates the queue is not available.
+            // A value of zero indicates the queue is not available.
             VirtioMmioRegister::QUEUE_NUM_MAX => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -199,7 +184,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            // Current queue size
             VirtioMmioRegister::QUEUE_NUM => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -208,10 +192,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            //
-            // 8-byte padding
-            //
-            // Current queue enabled
             VirtioMmioRegister::QUEUE_READY => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -224,26 +204,10 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            //
-            // 8-byte padding
-            //
-            // Queue notification register
             VirtioMmioRegister::QUEUE_NOTIFY => 0,
-            //
-            // 12-byte padding
-            //
-            // Interrupt status
             VirtioMmioRegister::INTERRUPT_STATUS => self.interrupt_state.lock().status,
-            // Interrupt ACK
             VirtioMmioRegister::INTERRUPT_ACK => 0,
-            //
-            // 8-byte padding
-            //
-            // Device status
             VirtioMmioRegister::STATUS => self.device_status.as_u32(),
-            // 12-byte padding
-            //
-            // Queue descriptor table address (low part)
             VirtioMmioRegister::QUEUE_DESC_LOW => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -252,7 +216,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            // Queue descriptor table address (high part)
             VirtioMmioRegister::QUEUE_DESC_HIGH => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -261,10 +224,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            //
-            // 8-byte padding
-            //
-            // Queue descriptor available ring address (low part)
             VirtioMmioRegister::QUEUE_AVAIL_LOW => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -273,7 +232,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            // Queue descriptor available ring address (high part)
             VirtioMmioRegister::QUEUE_AVAIL_HIGH => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -282,10 +240,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            //
-            // 8-byte padding
-            //
-            // Queue descriptor used ring address (low part)
             VirtioMmioRegister::QUEUE_USED_LOW => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -294,7 +248,6 @@ impl VirtioMmioDevice {
                     0
                 }
             }
-            // Queue descriptor used ring address (high part)
             VirtioMmioRegister::QUEUE_USED_HIGH => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
@@ -318,9 +271,7 @@ impl VirtioMmioDevice {
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
         match VirtioMmioRegister(offset) {
-            // Device feature bank index
             VirtioMmioRegister::DEVICE_FEATURES_SEL => self.device_feature_select = val,
-            // Driver feature bank
             VirtioMmioRegister::DRIVER_FEATURES => {
                 let bank = self.driver_feature_select as usize;
                 if features_locked || bank >= self.device_feature.len() {
@@ -330,11 +281,8 @@ impl VirtioMmioDevice {
                         .set_bank(bank, val & self.device_feature.bank(bank));
                 }
             }
-            // Driver feature bank index
             VirtioMmioRegister::DRIVER_FEATURES_SEL => self.driver_feature_select = val,
-            // Queue select index
             VirtioMmioRegister::QUEUE_SEL => self.queue_select = val,
-            // Queue current size
             VirtioMmioRegister::QUEUE_NUM => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let val = val as u16;
@@ -346,24 +294,20 @@ impl VirtioMmioDevice {
                     }
                 }
             }
-            // Current queue enabled
             VirtioMmioRegister::QUEUE_READY => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.enable = val != 0;
                 }
             }
-            // Queue notification register
             VirtioMmioRegister::QUEUE_NOTIFY => {
                 if (val as usize) < self.events.len() {
                     self.events[val as usize].signal();
                 }
             }
-            // Interrupt ACK
             VirtioMmioRegister::INTERRUPT_ACK => {
                 self.interrupt_state.lock().update(false, val);
             }
-            // Device status
             VirtioMmioRegister::STATUS => {
                 if val == 0 {
                     if self.disabling {
@@ -450,42 +394,36 @@ impl VirtioMmioDevice {
                     self.update_config_generation();
                 }
             }
-            // Queue descriptor table address (low part)
             VirtioMmioRegister::QUEUE_DESC_LOW => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.desc_addr = queue.desc_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor table address (high part)
             VirtioMmioRegister::QUEUE_DESC_HIGH => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.desc_addr = (val as u64) << 32 | queue.desc_addr & 0xffffffff;
                 }
             }
-            // Queue descriptor available ring address (low part)
             VirtioMmioRegister::QUEUE_AVAIL_LOW => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.avail_addr = queue.avail_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor available ring address (high part)
             VirtioMmioRegister::QUEUE_AVAIL_HIGH => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.avail_addr = (val as u64) << 32 | queue.avail_addr & 0xffffffff;
                 }
             }
-            // Queue descriptor used ring address (low part)
             VirtioMmioRegister::QUEUE_USED_LOW => {
                 if !queues_locked && (queue_select) < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.used_addr = queue.used_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor used ring address (high part)
             VirtioMmioRegister::QUEUE_USED_HIGH => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];

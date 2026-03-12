@@ -296,16 +296,12 @@ impl VirtioPciDevice {
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
         match VirtioPciCommonCfg(offset) {
-            // Device feature bank index
             VirtioPciCommonCfg::DEVICE_FEATURE_SELECT => self.device_feature_select,
-            // Device feature bank
             VirtioPciCommonCfg::DEVICE_FEATURE => {
                 let feature_select = self.device_feature_select as usize;
                 self.device_feature.bank(feature_select)
             }
-            // Driver feature bank index
             VirtioPciCommonCfg::DRIVER_FEATURE_SELECT => self.driver_feature_select,
-            // Driver feature bank
             VirtioPciCommonCfg::DRIVER_FEATURE => {
                 let feature_select = self.driver_feature_select as usize;
                 self.driver_feature.bank(feature_select)
@@ -325,7 +321,6 @@ impl VirtioPciDevice {
                 let msix_vector = self.msix_vectors.get(queue_select).copied().unwrap_or(0);
                 (msix_vector as u32) << 16 | size as u32
             }
-            // Current queue enabled
             VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let enable = if queue_select < self.queues.len() {
                     if self.queues[queue_select].enable {
@@ -344,7 +339,6 @@ impl VirtioPciDevice {
                 };
                 (notify_offset as u32) << 16 | enable as u32
             }
-            // Queue descriptor table address (low part)
             VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if queue_select < self.queues.len() {
                     self.queues[queue_select].desc_addr as u32
@@ -352,7 +346,6 @@ impl VirtioPciDevice {
                     0
                 }
             }
-            // Queue descriptor table address (high part)
             VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if queue_select < self.queues.len() {
                     (self.queues[queue_select].desc_addr >> 32) as u32
@@ -360,7 +353,6 @@ impl VirtioPciDevice {
                     0
                 }
             }
-            // Queue descriptor available ring address (low part)
             VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if queue_select < self.queues.len() {
                     self.queues[queue_select].avail_addr as u32
@@ -368,7 +360,6 @@ impl VirtioPciDevice {
                     0
                 }
             }
-            // Queue descriptor available ring address (high part)
             VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if queue_select < self.queues.len() {
                     (self.queues[queue_select].avail_addr >> 32) as u32
@@ -376,7 +367,6 @@ impl VirtioPciDevice {
                     0
                 }
             }
-            // Queue descriptor used ring address (low part)
             VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if queue_select < self.queues.len() {
                     self.queues[queue_select].used_addr as u32
@@ -384,7 +374,6 @@ impl VirtioPciDevice {
                     0
                 }
             }
-            // Queue descriptor used ring address (high part)
             VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if queue_select < self.queues.len() {
                     (self.queues[queue_select].used_addr >> 32) as u32
@@ -392,8 +381,7 @@ impl VirtioPciDevice {
                     0
                 }
             }
-            VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => 0, // queue notification register
-            // ISR
+            VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => 0,
             VirtioPciCommonCfg(BAR0_ISR_OFFSET) => {
                 let mut interrupt_status = self.interrupt_status.lock();
                 let status = *interrupt_status;
@@ -419,11 +407,8 @@ impl VirtioPciDevice {
         let features_locked = queues_locked || self.device_status.features_ok();
         let queue_select = self.queue_select as usize;
         match VirtioPciCommonCfg(offset) {
-            // Device feature bank index
             VirtioPciCommonCfg::DEVICE_FEATURE_SELECT => self.device_feature_select = val,
-            // Driver feature bank index
             VirtioPciCommonCfg::DRIVER_FEATURE_SELECT => self.driver_feature_select = val,
-            // Driver feature bank
             VirtioPciCommonCfg::DRIVER_FEATURE => {
                 let bank = self.driver_feature_select as usize;
                 if features_locked || bank >= self.device_feature.len() {
@@ -434,7 +419,6 @@ impl VirtioPciDevice {
                 }
             }
             VirtioPciCommonCfg::MSIX_CONFIG => self.msix_config_vector = val as u16,
-            // Device status
             VirtioPciCommonCfg::DEVICE_STATUS => {
                 self.queue_select = val >> 16;
                 let val = val & 0xff;
@@ -536,7 +520,6 @@ impl VirtioPciDevice {
                     self.update_config_generation();
                 }
             }
-            // Queue current size
             VirtioPciCommonCfg::QUEUE_SIZE => {
                 let msix_vector = (val >> 16) as u16;
                 if !queues_locked && queue_select < self.queues.len() {
@@ -550,7 +533,6 @@ impl VirtioPciDevice {
                     self.msix_vectors[queue_select] = msix_vector;
                 }
             }
-            // Current queue enabled
             VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let val = val & 0xffff;
                 if !queues_locked && queue_select < self.queues.len() {
@@ -558,49 +540,42 @@ impl VirtioPciDevice {
                     queue.enable = val != 0;
                 }
             }
-            // Queue descriptor table address (low part)
             VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.desc_addr = queue.desc_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor table address (high part)
             VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.desc_addr = (val as u64) << 32 | queue.desc_addr & 0xffffffff;
                 }
             }
-            // Queue descriptor available ring address (low part)
             VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.avail_addr = queue.avail_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor available ring address (high part)
             VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.avail_addr = (val as u64) << 32 | queue.avail_addr & 0xffffffff;
                 }
             }
-            // Queue descriptor used ring address (low part)
             VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if !queues_locked && (queue_select) < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.used_addr = queue.used_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor used ring address (high part)
             VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.used_addr = (val as u64) << 32 | queue.used_addr & 0xffffffff;
                 }
             }
-            // Queue notification register
             VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => {
                 if (val as usize) < self.events.len() {
                     self.events[val as usize].signal();
