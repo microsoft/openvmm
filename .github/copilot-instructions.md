@@ -26,10 +26,10 @@ cargo clippy --all-targets -p <package-name>
 cargo doc -p <package-name>
 ```
 
-`cargo xtask fmt --fix` auto-fixes all formatting issues (rustfmt, copyright
-headers, naming conventions) in a single pass. If it exits successfully, all
-checks passed — do not re-run without `--fix` or run individual `--pass`
-commands afterward.
+`cargo xtask fmt --fix` runs all formatting checks (rustfmt, copyright
+headers, naming conventions) and applies auto-fixes where supported. If it
+still fails, fix the remaining reported issues manually and re-run until it
+succeeds. Do not run individual `--pass` commands afterward.
 
 The project also enforces clippy rules via `clippy.toml`. Key disallowed types:
 - Use `parking_lot::Mutex`, `Condvar`, `RwLock` — **not** `std::sync` equivalents
@@ -63,13 +63,18 @@ Both OpenVMM and OpenHCL process data from untrusted sources. Code must
 1. Avoid `unsafe` code
 2. Avoid taking new external dependencies, especially those that significantly increase binary size
 3. Several OpenHCL crates (e.g., `minimal_rt`, `openhcl_boot`, `sidecar`,
-   `host_fdt_parser`) are `no_std` — do not introduce `std` dependencies
-   into these crates
-4. Prefer `assert!` over `debug_assert!` — the performance cost is negligible
-   in nearly all code, and catching invariant violations in release builds
-   is more valuable. The project follows a "fail fast" philosophy: crash
-   immediately on broken invariants rather than letting the process continue
-   in an undefined state where bugs are harder to diagnose
+   `host_fdt_parser`) must support `no_std` builds. In particular,
+   `minimal_rt` and `host_fdt_parser` are unconditionally `no_std`, and
+   `openhcl_boot` and `sidecar` use `cfg_attr(minimal_rt, no_std, no_main)`.
+   Do not introduce `std`-only dependencies or APIs into code that is
+   compiled for the `minimal_rt` configuration in these crates
+4. Prefer `assert!` over `debug_assert!` for internal invariants — the
+   performance cost is negligible in nearly all code, and catching invariant
+   violations in release builds is more valuable. The project follows a
+   "fail fast" philosophy: crash immediately on broken invariants rather
+   than letting the process continue in an undefined state where bugs are
+   harder to diagnose. (This does not apply to untrusted input — use error
+   handling at trust boundaries, not assertions.)
 
 ## Testing
 
