@@ -222,7 +222,7 @@ impl TestHarness {
             shared_memory_size: 0,
         };
 
-        self.device.enable(resources);
+        self.device.enable(resources).unwrap();
     }
 
     /// Allocate a data region in guest memory and return its GPA.

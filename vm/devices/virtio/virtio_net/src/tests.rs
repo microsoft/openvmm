@@ -574,7 +574,7 @@ impl TestHarness {
             shared_memory_size: 0,
         };
 
-        self.device.enable(resources);
+        self.device.enable(resources).unwrap();
 
         // Wait for the mock endpoint to provide a queue handle
         mesh::CancelContext::new()
