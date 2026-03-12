@@ -4527,9 +4527,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "fs-err",
  "futures",
+ "guestmem",
  "inspect",
  "libc",
+ "libtest-mimic",
  "linux_net_bindings",
  "net_backend",
  "net_backend_resources",
