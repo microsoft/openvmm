@@ -309,11 +309,15 @@ impl Worker for VmWorker {
             choose_hypervisor()?
         };
 
+        let shared_memory = parameters
+            .shared_memory
+            .map(|fd| SharedMemoryBacking::from_mappable(fd.into()));
+
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor,
             manifest,
-            None,
+            shared_memory,
         ))?;
         let saved_state = parameters
             .saved_state

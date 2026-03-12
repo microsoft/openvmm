@@ -1957,6 +1957,66 @@ fn disk_open_inner(
     Ok(())
 }
 
+/// Open (or create) a file to back guest RAM, and return the appropriate
+/// fd/handle for use as shared memory.
+fn open_memory_backing_file(
+    path: &Path,
+    size: u64,
+) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("failed to open memory backing file: {}", path.display()))?;
+
+    file.set_len(size)
+        .context("failed to set memory backing file size")?;
+
+    file_to_shared_memory_fd(file)
+}
+
+#[cfg(unix)]
+fn file_to_shared_memory_fd(
+    file: std::fs::File,
+) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
+    use std::os::unix::io::OwnedFd;
+    // On Unix, a file fd is directly mmappable.
+    Ok(OwnedFd::from(file))
+}
+
+#[cfg(windows)]
+fn file_to_shared_memory_fd(
+    file: std::fs::File,
+) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
+    use std::os::windows::io::AsRawHandle;
+    use std::os::windows::io::FromRawHandle;
+    use std::os::windows::io::OwnedHandle;
+
+    let size = file.metadata()?.len();
+
+    // On Windows, MapViewOfFile needs a section handle, not a raw file handle.
+    // CreateFileMappingW over the file handle creates the section object.
+    // SAFETY: calling Windows API correctly with valid file handle.
+    let section = unsafe {
+        windows_sys::Win32::System::Memory::CreateFileMappingW(
+            file.as_raw_handle() as isize,
+            std::ptr::null_mut(),
+            windows_sys::Win32::System::Memory::PAGE_READWRITE,
+            (size >> 32) as u32,
+            size as u32,
+            std::ptr::null(),
+        )
+    };
+    if section == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("CreateFileMappingW failed for memory backing file");
+    }
+    // SAFETY: section is a valid, newly-created handle.
+    Ok(unsafe { OwnedHandle::from_raw_handle(section as *mut std::ffi::c_void) })
+}
+
 fn do_main() -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
@@ -2412,10 +2472,17 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
+        let shared_memory = opt
+            .memory_backing_file
+            .as_ref()
+            .map(|path| open_memory_backing_file(path, opt.memory))
+            .transpose()?;
+
         let params = VmWorkerParameters {
             hypervisor: opt.hypervisor,
             cfg: vm_config,
             saved_state: None,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
