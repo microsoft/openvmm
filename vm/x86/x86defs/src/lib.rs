@@ -275,6 +275,7 @@ pub const X86X_AMD_MSR_NB_CFG: u32 = 0xC001001F;
 pub const X86X_AMD_MSR_VM_CR: u32 = 0xC0010114;
 pub const X86X_AMD_MSR_GHCB: u32 = 0xC0010130;
 pub const X86X_AMD_MSR_SEV: u32 = 0xC0010131;
+pub const X86X_AMD_MSR_SECURE_AVIC_CONTROL: u32 = 0xc0010138;
 pub const X86X_AMD_MSR_OSVW_ID_LENGTH: u32 = 0xc0010140;
 pub const X86X_AMD_MSR_OSVW_ID_STATUS: u32 = 0xc0010141;
 pub const X86X_AMD_MSR_DE_CFG: u32 = 0xc0011029;
@@ -517,4 +518,11 @@ pub struct X86xMcgStatusRegister {
     pub mcip: bool, // Machine check is in progress
     #[bits(61)]
     pub reserved0: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ApicRegister {
+    pub value: u32,
+    _reserved: [u32; 3],
 }
