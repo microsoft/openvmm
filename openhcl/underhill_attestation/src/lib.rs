@@ -117,8 +117,6 @@ enum GetDerivedKeysError {
     DeriveIngressKey(#[source] crypto::KbkdfError),
     #[error("failed to derive an egress key")]
     DeriveEgressKey(#[source] crypto::KbkdfError),
-    #[error("skipped hardware unsealing for VMGS DEK as signaled by IGVM agent")]
-    HardwareUnsealingSkipped,
 }
 
 #[derive(Debug, Error)]
@@ -885,18 +883,7 @@ async fn get_derived_keys(
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
     if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
         // If possible, get ingressKey from hardware sealed data
-        let (hardware_key_protector, hardware_derived_keys) = if skip_hw_unsealing {
-            tracing::warn!(
-                CVM_ALLOWED,
-                "Skipping hardware unsealing of VMGS DEK as signaled by IGVM agent"
-            );
-            get.event_log_fatal(
-                guest_emulation_transport::api::EventLogId::DEK_HARDWARE_UNSEALING_SKIPPED,
-            )
-            .await;
-
-            return Err(GetDerivedKeysError::HardwareUnsealingSkipped);
-        } else if let Some(tee_call) = tee_call {
+        let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {
             let hardware_key_protector = match vmgs::read_hardware_key_protector(vmgs).await {
                 Ok(hardware_key_protector) => Some(hardware_key_protector),
                 Err(e) => {
@@ -933,7 +920,35 @@ async fn get_derived_keys(
                 }
             });
 
-            (hardware_key_protector, hardware_derived_keys)
+            // When the IGVM agent signals skip_hw_unsealing, only skip
+            // if both the hardware key protector and hardware derived keys
+            // are actually available.  Otherwise fall through to the
+            // scheme-specific error below (kp / Gsp / GspById).
+            if skip_hw_unsealing {
+                if hardware_key_protector.is_some() && hardware_derived_keys.is_some() {
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "Skipping hardware unsealing of VMGS DEK as signaled by IGVM agent"
+                    );
+                    get.event_log_fatal(
+                        guest_emulation_transport::api::EventLogId::DEK_HARDWARE_UNSEALING_SKIPPED,
+                    )
+                    .await;
+
+                    (None, None)
+                } else {
+                    tracing::info!(
+                        CVM_ALLOWED,
+                        hardware_key_protector = hardware_key_protector.is_some(),
+                        hardware_derived_keys = hardware_derived_keys.is_some(),
+                        "skip_hw_unsealing signaled but hardware key data not available, \
+                         falling through to scheme-specific error"
+                    );
+                    (None, None)
+                }
+            } else {
+                (hardware_key_protector, hardware_derived_keys)
+            }
         } else {
             (None, None)
         };

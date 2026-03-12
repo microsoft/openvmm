@@ -5,7 +5,7 @@
 //!
 //! Each VM gets its own [`TestIgvmAgent`] keyed by VM name.  The test plan
 //! for a given VM is resolved by matching its name against a hardcoded
-//! mapping (see [`config_for_vm_name`]).  A default plan can also be
+//! mapping (see [`resolve_test_config`]).  A default plan can also be
 //! installed via the CLI `--test_config` flag; it applies to VMs whose
 //! names do not match any known pattern.
 //!
@@ -55,17 +55,30 @@ fn registry() -> &'static Mutex<AgentRegistry> {
     })
 }
 
-/// Hardcoded mapping from VM name substrings to test configurations.
-///
-/// The substring must be short enough to survive Hyper-V's 100-char name
-/// limit even on the longest image prefixes (~85 chars).  Keep patterns
-/// ≤ 15 characters.
+/// Resolve the test configuration for a VM by matching its name against
+/// known `{image}_{isolation}_{test_fn}` substrings.
 ///
 /// Hyper-V VM names are built as:
 ///   `{module}::{vmm}_{firmware}_{arch}_{image}_{isolation}_{test_fn}`
-/// We match by `contains` on the test function name portion.
-fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
-    /// (substring, config) pairs – order does not matter since each
+///
+/// We intentionally list each image×isolation combination separately
+/// rather than matching on just the short test-function suffix.  The RPC
+/// server is shared across *all* concurrent VMs, and each VM gets its
+/// own agent keyed by its full name.  If two tests share the same
+/// function name but run with different images or isolation types, a
+/// short suffix match would silently hand them the same config even
+/// though they may require different plans.  Enumerating every
+/// combination ensures each VM is mapped unambiguously.
+///
+/// Hyper-V truncates VM names to 100 characters, and the test macro
+/// prefix can consume ~85 characters on worst-case image names.  Keep
+/// `{test_fn}` names short (≤ 15 characters) so the distinctive part
+/// is never truncated.
+///
+/// When adding a new image or isolation variant for an existing test
+/// function, add a corresponding entry here.
+fn resolve_test_config(vm_name: &str) -> Option<IgvmAgentTestSetting> {
+    /// (substring, config) pairs — order does not matter since each
     /// pattern is unique.
     const KNOWN_TEST_CONFIGS: &[(&str, IgvmAttestTestConfig)] = &[
         (
@@ -181,7 +194,7 @@ pub fn process_igvm_attest(vm_name: &str, report: &[u8]) -> TestAgentResult<Vec<
 
     let agent = reg.agents.entry(vm_name.to_owned()).or_insert_with(|| {
         let mut agent = TestIgvmAgent::new(vm_name);
-        if let Some(setting) = config_for_vm_name(vm_name) {
+        if let Some(setting) = resolve_test_config(vm_name) {
             agent.install_plan_from_setting(&setting);
         } else if let Some(ref default) = default_setting {
             agent.install_plan_from_setting(default);

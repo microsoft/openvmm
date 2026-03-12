@@ -361,9 +361,13 @@ async fn tpm_ak_cert_retry<T>(
 /// First boot: AK cert request is served by the RPC agent.
 /// Second boot: AK cert is served from the persistent cache.
 ///
-/// The test function name contains `ak_cert_cache` so the per-VM agent
-/// registry in test_igvm_agent_rpc_server matches it to the
-/// `AkCertPersistentAcrossBoot` configuration.
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`ak_cert_cache`), they all map to
+/// `AkCertPersistentAcrossBootExtended`.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -429,9 +433,13 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
 /// that the first read fails and the second (retry) read succeeds with
 /// the expected certificate data.
 ///
-/// The test function name contains `ak_cert_retry` so the per-VM agent
-/// registry in test_igvm_agent_rpc_server matches it to the
-/// `AkCertRequestFailureAndRetry` configuration.
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`ak_cert_retry`), they all map to
+/// `AkCertRequestFailureAndRetryExtended`.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -698,9 +706,13 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// failure to the host via `complete_start_vtl0`, and the host terminates
 /// the VM.
 ///
-/// The test function name contains `skip_hw_unseal` so the per-VM agent
-/// registry in test_igvm_agent_rpc_server matches it to the
-/// `KeyReleaseFailureSkipHwUnsealing` configuration.
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`skip_hw_unseal`), they all map to
+/// `KeyReleaseFailureSkipHwUnsealing`.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],
@@ -765,7 +777,11 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
             }
         }
         Ok(other) => {
-            anyhow::bail!("Expected Reset or VM start failure, got {other:?}");
+            let error = anyhow::anyhow!(
+                "Expected Reset or VM start failure, got {other:?}"
+            );
+            vm.teardown().await?;
+            return Err(error);
         }
         Err(e) => {
             // The VM failed to restart within the allowed time, which is
@@ -788,9 +804,13 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// the hardware key protector was saved on first boot.  The VM boots
 /// normally and the AK cert remains accessible.
 ///
-/// The test function name contains `use_hw_unseal` so the per-VM agent
-/// registry in test_igvm_agent_rpc_server matches it to the
-/// `KeyReleaseFailure` configuration.
+/// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
+/// test config by matching `{image}_{isolation}_{test_fn}` substrings
+/// in the Hyper-V VM name (see `resolve_test_config`).  Each
+/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
+/// test function (`use_hw_unseal`), they all map to
+/// `KeyReleaseFailure`.
 #[cfg(windows)]
 #[vmm_test(
     hyperv_openhcl_uefi_x64[snp](vhd(ubuntu_2504_server_x64))[TPM_GUEST_TESTS_LINUX_X64, TEST_IGVM_AGENT_RPC_SERVER_WINDOWS_X64],

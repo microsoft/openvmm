@@ -300,6 +300,52 @@ impl TestIgvmAgent {
         }
     }
 
+    /// Build a failure response for any request type with the given
+    /// `error_code` and `igvm_signal`.
+    fn build_failure_response(
+        request_type: IgvmAttestRequestType,
+        error_code: u32,
+        igvm_signal: IgvmSignal,
+    ) -> Result<(Vec<u8>, u32), Error> {
+        let error_info = IgvmErrorInfo {
+            error_code,
+            http_status_code: 400,
+            igvm_signal,
+            reserved: [0; 3],
+        };
+
+        let payload = match request_type {
+            IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
+                let header = IgvmAttestWrappedKeyResponseHeader {
+                    data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info,
+                };
+                header.as_bytes().to_vec()
+            }
+            IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
+                let header = IgvmAttestKeyReleaseResponseHeader {
+                    data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info,
+                };
+                header.as_bytes().to_vec()
+            }
+            IgvmAttestRequestType::AK_CERT_REQUEST => {
+                let header = IgvmAttestAkCertResponseHeader {
+                    data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
+                    version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
+                    error_info,
+                };
+                header.as_bytes().to_vec()
+            }
+            ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
+        };
+
+        let payload_len = payload.len() as u32;
+        Ok((payload, payload_len))
+    }
+
     /// Request handler.
     pub fn handle_request(&mut self, request_bytes: &[u8]) -> Result<(Vec<u8>, u32), Error> {
         let _span = tracing::info_span!("igvm_agent", vm_name = %self.vm_name).entered();
@@ -402,117 +448,21 @@ impl TestIgvmAgent {
                 }
                 IgvmAgentAction::RespondFailure => {
                     tracing::info!(?request.header.request_type, "Test plan: RespondFailure");
-                    match request.header.request_type {
-                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                            let header = IgvmAttestWrappedKeyResponseHeader {
-                                data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x1234,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default().with_retry(false),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                            let header = IgvmAttestKeyReleaseResponseHeader {
-                                data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x1234,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default().with_retry(false),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::AK_CERT_REQUEST => {
-                            let header = IgvmAttestAkCertResponseHeader {
-                                data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x1234,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default().with_retry(false),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload.clone(), payload_len)
-                        }
-                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
-                    }
+                    Self::build_failure_response(
+                        request.header.request_type,
+                        0x1234,
+                        IgvmSignal::default().with_retry(false),
+                    )?
                 }
                 IgvmAgentAction::RespondFailureSkipHwUnsealing => {
                     tracing::info!(?request.header.request_type, "Test plan: RespondFailureSkipHwUnsealing");
-                    match request.header.request_type {
-                        IgvmAttestRequestType::WRAPPED_KEY_REQUEST => {
-                            let header = IgvmAttestWrappedKeyResponseHeader {
-                                data_size: size_of::<IgvmAttestWrappedKeyResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x5678,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default()
-                                        .with_retry(false)
-                                        .with_skip_hw_unsealing(true),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::KEY_RELEASE_REQUEST => {
-                            let header = IgvmAttestKeyReleaseResponseHeader {
-                                data_size: size_of::<IgvmAttestKeyReleaseResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x5678,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default()
-                                        .with_retry(false)
-                                        .with_skip_hw_unsealing(true),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        IgvmAttestRequestType::AK_CERT_REQUEST => {
-                            let header = IgvmAttestAkCertResponseHeader {
-                                data_size: size_of::<IgvmAttestAkCertResponseHeader>() as u32,
-                                version: IGVM_ATTEST_RESPONSE_CURRENT_VERSION,
-                                error_info: IgvmErrorInfo {
-                                    error_code: 0x5678,
-                                    http_status_code: 400,
-                                    igvm_signal: IgvmSignal::default()
-                                        .with_retry(false)
-                                        .with_skip_hw_unsealing(true),
-                                    reserved: [0; 3],
-                                },
-                            };
-                            let payload = header.as_bytes().to_vec();
-                            let payload_len = payload.len() as u32;
-
-                            (payload, payload_len)
-                        }
-                        ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
-                    }
+                    Self::build_failure_response(
+                        request.header.request_type,
+                        0x5678,
+                        IgvmSignal::default()
+                            .with_retry(false)
+                            .with_skip_hw_unsealing(true),
+                    )?
                 }
             }
         } else {
