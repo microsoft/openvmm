@@ -230,7 +230,7 @@ impl IgvmAttestRequestDataExt {
 }
 
 /// Bitmap indicates a signal to requestor
-/// 0 - IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
+/// 0 - IGVM_SIGNAL_RETRY_RECOMMENDED_BIT: Retry recommendation
 /// 1 - IGVM_SIGNAL_SKIP_HW_UNSEALING_RECOMMENDED_BIT: Skip hardware unsealing
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]

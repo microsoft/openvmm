@@ -196,6 +196,22 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 ]),
             );
         }
+        IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
+            // VBS guests generate a background AK cert request during the
+            // initial boot. The response is often lost when the VM resets
+            // for the `initial_reboot`, consuming the first action.  The
+            // extra RespondSuccess ensures the second boot can still
+            // provision the cert via RPC, and the third boot validates that
+            // the cert is cached.
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::RespondSuccess,
+                    IgvmAgentAction::AlwaysNoResponse,
+                ]),
+            );
+        }
         IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
             // Two RespondSuccess entries to cover the initial boot and
             // the initial_reboot (guest quirk) — both consume a

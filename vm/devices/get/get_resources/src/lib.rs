@@ -260,6 +260,14 @@ pub mod ged {
         AkCertRequestFailureAndRetryExtended,
         /// Config for testing AK cert persistency across boots.
         AkCertPersistentAcrossBoot,
+        /// Config for testing AK cert persistency across boots — extended
+        /// plan.
+        ///
+        /// VBS guests send a background AK cert request during the initial
+        /// boot whose response may be lost when the VM resets for the
+        /// `initial_reboot`.  The extra `RespondSuccess` absorbs that
+        /// request so the second boot still gets a cert provisioned.
+        AkCertPersistentAcrossBootExtended,
         /// Config for testing skip hardware unsealing signal from IGVMAgent.
         KeyReleaseFailureSkipHwUnsealing,
         /// Config for testing key release failure without skip_hw_unsealing
