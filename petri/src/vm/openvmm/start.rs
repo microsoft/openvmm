@@ -39,6 +39,8 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_log_file,
 
+            memory_backing_file,
+
             ged,
             framebuffer_view,
         } = self;
@@ -83,7 +85,38 @@ impl PetriVmConfigOpenVmm {
         let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
             .await
             .context("failed to create host process")?;
-        let (worker, halt_notif) = Worker::launch(&host, config)
+        // If a memory backing file was requested, open/create it and size
+        // it to match the configured guest RAM.
+        let shared_memory = if let Some(ref mem_path) = memory_backing_file {
+            let mem_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(mem_path)
+                .with_context(|| {
+                    format!("failed to open memory backing file {}", mem_path.display())
+                })?;
+            mem_file
+                .set_len(config.memory.mem_size)
+                .context("failed to set memory backing file size")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::io::OwnedFd;
+                Some(OwnedFd::from(mem_file))
+            }
+            #[cfg(windows)]
+            {
+                Some(
+                    sparse_mmap::new_mappable_from_file(&mem_file, true, false)
+                        .context("failed to create mappable from memory backing file")?,
+                )
+            }
+        } else {
+            None
+        };
+
+        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
             .await
             .context("failed to launch vm worker")?;
 

@@ -116,3 +116,160 @@ pub fn read_snapshot(dir: &Path) -> anyhow::Result<(SnapshotManifest, Vec<u8>)> 
 
     Ok((manifest, state_bytes))
 }
+
+/// Validate that a snapshot manifest is compatible with the running VM config.
+///
+/// Checks architecture, memory size, and VP count. Returns `Ok(())` if the
+/// manifest matches, or an error describing the first mismatch found.
+pub fn validate_manifest(
+    manifest: &SnapshotManifest,
+    expected_arch: &str,
+    expected_memory_size: u64,
+    expected_vp_count: u32,
+) -> anyhow::Result<()> {
+    if manifest.architecture != expected_arch {
+        anyhow::bail!(
+            "snapshot architecture '{}' doesn't match expected '{}'",
+            manifest.architecture,
+            expected_arch,
+        );
+    }
+
+    if manifest.memory_size_bytes != expected_memory_size {
+        anyhow::bail!(
+            "snapshot memory size ({} bytes) doesn't match expected ({} bytes)",
+            manifest.memory_size_bytes,
+            expected_memory_size,
+        );
+    }
+
+    if manifest.vp_count != expected_vp_count {
+        anyhow::bail!(
+            "snapshot VP count ({}) doesn't match expected ({})",
+            manifest.vp_count,
+            expected_vp_count,
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: build a test manifest with sensible defaults.
+    fn test_manifest() -> SnapshotManifest {
+        SnapshotManifest {
+            version: 1,
+            created_at: "1234567890".to_string(),
+            openvmm_version: "test-0.1.0".to_string(),
+            memory_size_bytes: 1024,
+            vp_count: 2,
+            page_size: 4096,
+            architecture: "x86_64".to_string(),
+        }
+    }
+
+    #[test]
+    fn write_read_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+
+        // Create a fake memory backing file in the same directory (same fs).
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, b"FAKEMEM").unwrap();
+
+        let manifest = test_manifest();
+        let state = b"saved-state-data";
+
+        write_snapshot(&snap_dir, &manifest, state, &mem_path).unwrap();
+
+        let (read_manifest, read_state) = read_snapshot(&snap_dir).unwrap();
+        assert_eq!(read_manifest.version, manifest.version);
+        assert_eq!(read_manifest.memory_size_bytes, manifest.memory_size_bytes);
+        assert_eq!(read_manifest.vp_count, manifest.vp_count);
+        assert_eq!(read_manifest.architecture, manifest.architecture);
+        assert_eq!(read_state, state);
+
+        // memory.bin should exist in the snapshot directory.
+        assert!(snap_dir.join("memory.bin").exists());
+    }
+
+    #[test]
+    fn write_snapshot_creates_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("a").join("b").join("c");
+
+        let mem_path = dir.path().join("memory.bin");
+        std::fs::write(&mem_path, b"MEM").unwrap();
+
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+
+        assert!(snap_dir.join("manifest.bin").exists());
+        assert!(snap_dir.join("state.bin").exists());
+        assert!(snap_dir.join("memory.bin").exists());
+    }
+
+    #[test]
+    fn write_snapshot_same_memory_path() {
+        // When the memory backing file IS <snap_dir>/memory.bin, the function
+        // should detect the collision and skip the hard-link.
+        let dir = tempfile::tempdir().unwrap();
+        let snap_dir = dir.path().join("snap");
+        std::fs::create_dir_all(&snap_dir).unwrap();
+
+        let mem_path = snap_dir.join("memory.bin");
+        std::fs::write(&mem_path, b"SAMEFILE").unwrap();
+
+        // Should succeed without error.
+        write_snapshot(&snap_dir, &test_manifest(), b"state", &mem_path).unwrap();
+
+        // The file content should be unchanged.
+        assert_eq!(std::fs::read(&mem_path).unwrap(), b"SAMEFILE");
+    }
+
+    #[test]
+    fn read_snapshot_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // No files written — read should fail.
+        let result = read_snapshot(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_manifest_ok() {
+        let manifest = test_manifest();
+        validate_manifest(&manifest, "x86_64", 1024, 2).unwrap();
+    }
+
+    #[test]
+    fn validate_manifest_wrong_arch() {
+        let manifest = test_manifest();
+        let err = validate_manifest(&manifest, "aarch64", 1024, 2).unwrap_err();
+        assert!(
+            err.to_string().contains("architecture"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_manifest_wrong_memory_size() {
+        let manifest = test_manifest();
+        let err = validate_manifest(&manifest, "x86_64", 9999, 2).unwrap_err();
+        assert!(
+            err.to_string().contains("memory size"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_manifest_wrong_vp_count() {
+        let manifest = test_manifest();
+        let err = validate_manifest(&manifest, "x86_64", 1024, 99).unwrap_err();
+        assert!(
+            err.to_string().contains("VP count"),
+            "unexpected error: {err}"
+        );
+    }
+}
