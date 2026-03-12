@@ -138,7 +138,7 @@ impl LocalClockDelta {
 ///
 /// This type doesn't expose a particularly "rich" API for working the the
 /// contained time. Rather, consumers of this type are expected to us it
-/// alongside an external time/date library (such as `time` or `chrono`) in
+/// alongside an external time/date library (such as `jiff`) in
 /// order to more easily manipulate time/date values.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
@@ -181,7 +181,7 @@ impl Debug for LocalClockTime {
 
         #[cfg(feature = "time_exts")]
         {
-            let date_time: Result<time::OffsetDateTime, _> = (*self).try_into();
+            let date_time: Result<jiff::Timestamp, _> = (*self).try_into();
             match date_time {
                 Ok(date_time) => write!(f, "{}", date_time),
                 Err(e) => write!(f, "{:?}", e),
@@ -303,35 +303,36 @@ mod time_ext {
     use super::LocalClockDelta;
     use super::LocalClockTime;
 
-    impl From<time::OffsetDateTime> for LocalClockTime {
-        fn from(date_time: time::OffsetDateTime) -> LocalClockTime {
-            let since_epoch = date_time - time::OffsetDateTime::UNIX_EPOCH;
-            LocalClockTime::from_millis_since_unix_epoch(
-                since_epoch.whole_milliseconds().try_into().unwrap(),
-            )
+    impl From<jiff::Timestamp> for LocalClockTime {
+        fn from(ts: jiff::Timestamp) -> LocalClockTime {
+            LocalClockTime::from_millis_since_unix_epoch(ts.as_millisecond())
         }
     }
 
-    impl From<time::Duration> for LocalClockDelta {
-        fn from(time_duration: time::Duration) -> LocalClockDelta {
-            LocalClockDelta::from_millis(time_duration.whole_milliseconds().try_into().unwrap())
+    impl From<jiff::Zoned> for LocalClockTime {
+        fn from(zoned: jiff::Zoned) -> LocalClockTime {
+            LocalClockTime::from_millis_since_unix_epoch(zoned.timestamp().as_millisecond())
         }
     }
 
-    impl From<LocalClockDelta> for time::Duration {
-        fn from(clock_duration: LocalClockDelta) -> time::Duration {
-            time::Duration::milliseconds(clock_duration.as_millis())
+    impl From<jiff::SignedDuration> for LocalClockDelta {
+        fn from(d: jiff::SignedDuration) -> LocalClockDelta {
+            LocalClockDelta::from_millis(d.as_millis().try_into().unwrap())
         }
     }
 
-    impl TryFrom<LocalClockTime> for time::OffsetDateTime {
+    impl From<LocalClockDelta> for jiff::SignedDuration {
+        fn from(clock_duration: LocalClockDelta) -> jiff::SignedDuration {
+            jiff::SignedDuration::from_millis(clock_duration.as_millis())
+        }
+    }
+
+    impl TryFrom<LocalClockTime> for jiff::Timestamp {
         type Error = super::OverflowError;
 
-        fn try_from(clock_time: LocalClockTime) -> Result<time::OffsetDateTime, Self::Error> {
-            let duration = time::Duration::milliseconds(clock_time.as_millis_since_unix_epoch());
-            time::OffsetDateTime::UNIX_EPOCH
-                .checked_add(duration)
-                .ok_or(super::OverflowError)
+        fn try_from(clock_time: LocalClockTime) -> Result<jiff::Timestamp, Self::Error> {
+            jiff::Timestamp::from_millisecond(clock_time.as_millis_since_unix_epoch())
+                .map_err(|_| super::OverflowError)
         }
     }
 }

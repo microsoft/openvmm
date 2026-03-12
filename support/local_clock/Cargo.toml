@@ -9,14 +9,14 @@ rust-version.workspace = true
 [features]
 default = ["time_exts", "inspect"]
 
-time_exts = ["dep:time"]
+time_exts = ["dep:jiff"]
 inspect = ["dep:inspect"]
 
 [dependencies]
 inspect = { workspace = true, optional = true }
 
 parking_lot.workspace = true
-time = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
 
 [lints]
 workspace = true

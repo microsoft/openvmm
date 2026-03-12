@@ -32,24 +32,25 @@ chipset_device.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 
-guid.workspace = true
-inspect.workspace = true
-local_clock.workspace = true
-mesh.workspace = true
-open_enum.workspace = true
-pal_async.workspace = true
-ucs2.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 der = { workspace = true, features = ["derive", "alloc", "oid"], optional = true }
 getrandom.workspace = true
+guid.workspace = true
+inspect.workspace = true
+jiff.workspace = true
+local_clock.workspace = true
+mesh.workspace = true
+open_enum.workspace = true
 openssl = { optional = true, workspace = true }
+pal_async.workspace = true
 thiserror.workspace = true
-time = { workspace = true, features = ["local-offset"] }
 tracelimit.workspace = true
 tracing.workspace = true
+ucs2.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
+
 [dev-dependencies]
 test_with_tracing.workspace = true
 
