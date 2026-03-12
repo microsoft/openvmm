@@ -96,8 +96,8 @@ pub enum MemoryBuildError {
     #[error("private memory is incompatible with existing memory backing")]
     PrivateMemoryWithExistingBacking,
     /// Failed to allocate private RAM range.
-    #[error("failed to allocate private RAM range")]
-    PrivateRamAlloc(#[source] std::io::Error),
+    #[error("failed to allocate private RAM range {1}")]
+    PrivateRamAlloc(#[source] std::io::Error, MemoryRange),
 }
 
 /// A builder for [`GuestMemoryManager`].
@@ -236,20 +236,12 @@ impl GuestMemoryBuilder {
             None
         };
 
-        let mapping_manager = MappingManager::new(&spawner, max_addr);
-        let va_mapper = if self.private_memory {
-            mapping_manager
-                .client()
-                .new_private_mapper()
-                .await
-                .map_err(MemoryBuildError::VaMapper)?
-        } else {
-            mapping_manager
-                .client()
-                .new_mapper()
-                .await
-                .map_err(MemoryBuildError::VaMapper)?
-        };
+        let mapping_manager = MappingManager::new(&spawner, max_addr, self.private_memory);
+        let va_mapper = mapping_manager
+            .client()
+            .new_mapper()
+            .await
+            .map_err(MemoryBuildError::VaMapper)?;
 
         let region_manager = RegionManager::new(&spawner, mapping_manager.client().clone());
 
@@ -302,7 +294,7 @@ impl GuestMemoryBuilder {
             for range in &ram_ranges {
                 va_mapper
                     .alloc_range(range.start() as usize, range.len() as usize)
-                    .map_err(MemoryBuildError::PrivateRamAlloc)?;
+                    .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *range))?;
             }
         }
 

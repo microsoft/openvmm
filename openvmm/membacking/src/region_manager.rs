@@ -681,7 +681,7 @@ mod tests {
             }
         }
 
-        let mm = MappingManager::new(spawn, 0x200000);
+        let mm = MappingManager::new(spawn, 0x200000, false);
         let mut task = TestTask(RegionManagerTask::new(mm.client().clone()));
 
         let high = task.add(1, 0x1000..0x3000).await.unwrap();
