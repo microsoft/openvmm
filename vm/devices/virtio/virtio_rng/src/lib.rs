@@ -106,6 +106,10 @@ struct RngWorker {
     mem: GuestMemory,
 }
 
+/// Maximum bytes to serve per request, to prevent a malicious guest from
+/// causing unbounded host memory allocation.
+const MAX_REQUEST_BYTES: usize = 64 * 1024;
+
 #[async_trait]
 impl VirtioQueueWorkerContext for RngWorker {
     async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool {
@@ -117,7 +121,7 @@ impl VirtioQueueWorkerContext for RngWorker {
             }
         };
 
-        let writable_len = work.get_payload_length(true) as usize;
+        let writable_len = std::cmp::min(work.get_payload_length(true) as usize, MAX_REQUEST_BYTES);
         if writable_len == 0 {
             work.complete(0);
             return true;

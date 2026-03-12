@@ -376,7 +376,7 @@ flags:
     #[clap(long)]
     pub virtio_rng: bool,
 
-    /// add a virtio_rng device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
+    /// add a virtio-rng device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | vpci | auto)
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_rng_bus: VirtioBusCli,
 

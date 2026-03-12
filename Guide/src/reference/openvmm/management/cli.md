@@ -25,6 +25,10 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--virtio-fs`: Expose a virtio-fs file system. The format is the same as `--virtio-9p`. The
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
+* `--virtio-rng`: Add a virtio entropy (RNG) device, exposing `/dev/hwrng` in the Linux guest.
+  The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
+* `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
+  Defaults to `auto`.
 
 And serial devices can each be configured to be relayed to different endpoints:
 
