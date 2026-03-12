@@ -212,9 +212,9 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
-            // Two RespondSuccess entries to cover the initial boot and
-            // the initial_reboot (guest quirk) — both consume a
-            // KEY_RELEASE during run() before the test code starts.
+            // Hyper-V VMs go through an `initial_reboot`, consuming two
+            // KEY_RELEASE requests (one during initial boot, one during
+            // reboot) before the test code starts.
             plan.insert(
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
                 VecDeque::from([
@@ -226,9 +226,9 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::KeyReleaseFailure => {
-            // Two RespondSuccess entries to cover the initial boot and
-            // the initial_reboot (guest quirk) — both consume a
-            // KEY_RELEASE during run() before the test code starts.
+            // Hyper-V VMs go through an `initial_reboot`, consuming two
+            // KEY_RELEASE requests (one during initial boot, one during
+            // reboot) before the test code starts.
             plan.insert(
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
                 VecDeque::from([

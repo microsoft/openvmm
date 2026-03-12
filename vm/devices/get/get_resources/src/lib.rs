@@ -249,10 +249,11 @@ pub mod ged {
     ///
     /// Non-extended variants (`AkCertRequestFailureAndRetry`,
     /// `AkCertPersistentAcrossBoot`) are used by OpenVMM-hosted tests
-    /// that invoke the GED directly.  Extended variants are used by
-    /// Hyper-V tests via the `test_igvm_agent_rpc_server`, where the
-    /// Hyper-V boot sequence (including `initial_reboot`) generates
-    /// extra IGVM attest requests before the test code runs.
+    /// that invoke the GED directly.  Extended variants and the
+    /// `KeyReleaseFailure*` variants are used by Hyper-V tests via
+    /// the `test_igvm_agent_rpc_server`, where the Hyper-V boot
+    /// sequence (including `initial_reboot`) generates extra IGVM
+    /// attest requests before the test code runs.
     #[derive(Debug, MeshPayload, Copy, Clone, Inspect)]
     pub enum IgvmAttestTestConfig {
         /// Config for testing AK cert retry after failure.

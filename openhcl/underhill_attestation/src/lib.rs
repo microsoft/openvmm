@@ -920,10 +920,12 @@ async fn get_derived_keys(
                 }
             });
 
-            // When the IGVM agent signals skip_hw_unsealing, only skip
-            // if both the hardware key protector and hardware derived keys
-            // are actually available.  Otherwise fall through to the
-            // scheme-specific error below (kp / Gsp / GspById).
+            // When the IGVM agent signals skip_hw_unsealing, set both
+            // keys to None so the code falls through to the
+            // scheme-specific error below (KP / GSP / GspById).  When
+            // both keys were actually available, additionally emit a
+            // warning and a fatal event-log entry to make the
+            // deliberate skip visible.
             if skip_hw_unsealing {
                 if hardware_key_protector.is_some() && hardware_derived_keys.is_some() {
                     tracing::warn!(
