@@ -244,34 +244,62 @@ pub mod ged {
         BootAttempt,
     }
 
-    /// Configuration to the GED's IGVM Attest request handler
-    /// for test scenarios.
+    /// Configuration for the GED's IGVM Attest request handler in test
+    /// scenarios.
+    ///
+    /// Non-extended variants (`AkCertRequestFailureAndRetry`,
+    /// `AkCertPersistentAcrossBoot`) are used by OpenVMM-hosted tests
+    /// that invoke the GED directly.  Extended variants are used by
+    /// Hyper-V tests via the `test_igvm_agent_rpc_server`, where the
+    /// Hyper-V boot sequence (including `initial_reboot`) generates
+    /// extra IGVM attest requests before the test code runs.
     #[derive(Debug, MeshPayload, Copy, Clone, Inspect)]
     pub enum IgvmAttestTestConfig {
         /// Config for testing AK cert retry after failure.
-        AkCertRequestFailureAndRetry,
-        /// Config for testing AK cert retry after failure — extended plan.
         ///
-        /// Windows guests with CVM isolation (SNP, TDX) or VBS generate
-        /// additional boot-time AK cert requests (background retries
-        /// during the initial boot and the initial_reboot) that consume
-        /// plan actions before the test code runs.  This plan has extra
-        /// failure actions to absorb those requests.
+        /// Plan: two failures then one success.  Used by OpenVMM-hosted
+        /// tests where no extra boot-time requests occur.
+        AkCertRequestFailureAndRetry,
+        /// Config for testing AK cert retry after failure — extended
+        /// plan for Hyper-V tests.
+        ///
+        /// Hyper-V VMs go through an `initial_reboot` and may generate
+        /// multiple background AK cert requests during the initial boot
+        /// and the reboot.  The extra failure actions absorb those
+        /// requests so the final success action is available when the
+        /// guest test code runs.
         AkCertRequestFailureAndRetryExtended,
         /// Config for testing AK cert persistency across boots.
-        AkCertPersistentAcrossBoot,
-        /// Config for testing AK cert persistency across boots — extended
-        /// plan.
         ///
-        /// VBS guests send a background AK cert request during the initial
-        /// boot whose response may be lost when the VM resets for the
-        /// `initial_reboot`.  The extra `RespondSuccess` absorbs that
-        /// request so the second boot still gets a cert provisioned.
+        /// Plan: one success then always-no-response.  Used by
+        /// OpenVMM-hosted tests where no extra boot-time requests occur.
+        AkCertPersistentAcrossBoot,
+        /// Config for testing AK cert persistency across boots —
+        /// extended plan for Hyper-V tests.
+        ///
+        /// Hyper-V VMs go through an `initial_reboot` that can consume
+        /// the first success action before the test code runs.  The
+        /// extra `RespondSuccess` ensures the cert is still provisioned
+        /// after the reboot, so the subsequent boot can validate that
+        /// the cert is served from the persistent cache.
         AkCertPersistentAcrossBootExtended,
-        /// Config for testing skip hardware unsealing signal from IGVMAgent.
+        /// Config for testing the `skip_hw_unsealing` signal from the
+        /// IGVM agent.
+        ///
+        /// When the agent responds with `skip_hw_unsealing`, the
+        /// attestation code skips the hardware unsealing step even if
+        /// the hardware key protector and derived keys are available.
+        /// This causes `initialize_platform_security` to fall through
+        /// to a scheme-specific error (KP / GSP / GspById), making
+        /// VMGS unlock fail.
         KeyReleaseFailureSkipHwUnsealing,
-        /// Config for testing key release failure without skip_hw_unsealing
-        /// signal — hardware unsealing fallback should be attempted.
+        /// Config for testing key release failure without the
+        /// `skip_hw_unsealing` signal.
+        ///
+        /// When the agent responds with a plain failure (no skip
+        /// signal), the attestation code falls back to hardware
+        /// unsealing using the hardware key protector saved on the
+        /// previous successful boot.  The VM should boot normally.
         KeyReleaseFailure,
     }
 }

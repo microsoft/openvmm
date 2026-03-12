@@ -695,16 +695,17 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test that skip_hw_unsealing signal from IGVM agent causes VMGS
+/// Test that `skip_hw_unsealing` signal from IGVM agent causes VMGS
 /// unlock to fail on second boot.
 ///
 /// First boot: KEY_RELEASE succeeds, VMGS is encrypted with hardware
 /// key protector, TPM state is sealed.
-/// Second boot: KEY_RELEASE fails with skip_hw_unsealing signal, hardware
-/// unsealing fallback is skipped, VMGS cannot be unlocked.
-/// `initialize_platform_security` returns an error, underhill reports the
-/// failure to the host via `complete_start_vtl0`, and the host terminates
-/// the VM.
+/// Second boot: KEY_RELEASE fails with `skip_hw_unsealing` signal.
+/// The attestation code skips hardware unsealing even though the
+/// hardware key protector and derived keys are available, causing
+/// `initialize_platform_security` to fall through to a scheme-specific
+/// error (KP / GSP / GspById).  Underhill reports the failure to the
+/// host via `complete_start_vtl0`, and the host terminates the VM.
 ///
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings

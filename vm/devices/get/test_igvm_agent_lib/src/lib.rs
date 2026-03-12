@@ -169,11 +169,11 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended => {
-            // CVM guests (SNP, TDX, VBS) with Hyper-V can generate multiple
-            // boot-time AK_CERT_REQUEST calls (background retries during
-            // the initial boot and the initial_reboot).  Six failures
-            // ensure the SUCCESS action is never consumed during boot,
-            // so it remains available for the guest test.
+            // Hyper-V VMs go through an `initial_reboot` and may generate
+            // multiple background AK_CERT_REQUEST calls during the initial
+            // boot and the reboot.  Six failures ensure the SUCCESS action
+            // is never consumed during boot, so it remains available for
+            // the guest test.
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
@@ -197,12 +197,11 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::AkCertPersistentAcrossBootExtended => {
-            // VBS guests generate a background AK cert request during the
-            // initial boot. The response is often lost when the VM resets
-            // for the `initial_reboot`, consuming the first action.  The
-            // extra RespondSuccess ensures the second boot can still
-            // provision the cert via RPC, and the third boot validates that
-            // the cert is cached.
+            // Hyper-V VMs go through an `initial_reboot` that can consume
+            // the first success action.  The extra RespondSuccess ensures
+            // the cert is still provisioned after the reboot, so the
+            // subsequent boot can validate that the cert is served from
+            // the persistent cache.
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
                 VecDeque::from([
