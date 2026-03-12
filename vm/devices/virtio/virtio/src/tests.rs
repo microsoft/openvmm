@@ -2066,8 +2066,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     dev.mmio_write(msix_addr, &(msix_vector as u64).to_le_bytes())
         .unwrap();
     dev.mmio_write(msix_addr + 8, &0u32.to_le_bytes()).unwrap();
-    dev.mmio_write(msix_addr + 12, &0u32.to_le_bytes())
-        .unwrap();
+    dev.mmio_write(msix_addr + 12, &0u32.to_le_bytes()).unwrap();
     dev.mmio_write(bar_address1 + 26, &msix_vector.to_le_bytes())
         .unwrap();
     // Enable queue
