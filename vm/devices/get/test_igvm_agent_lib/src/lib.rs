@@ -169,7 +169,7 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended => {
-            // Windows CVM guests (SNP, TDX, VBS) can generate multiple
+            // CVM guests (SNP, TDX, VBS) with Hyper-V can generate multiple
             // boot-time AK_CERT_REQUEST calls (background retries during
             // the initial boot and the initial_reboot).  Six failures
             // ensure the SUCCESS action is never consumed during boot,

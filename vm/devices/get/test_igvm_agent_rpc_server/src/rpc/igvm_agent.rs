@@ -70,15 +70,15 @@ fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
     const KNOWN_TEST_CONFIGS: &[(&str, IgvmAttestTestConfig)] = &[
         (
             "ubuntu_2504_server_x64_ak_cert_retry",
-            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
             "windows_datacenter_core_2022_x64_ak_cert_retry",
-            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
             "ubuntu_2504_server_x64_vbs_ak_cert_retry",
-            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_vbs_ak_cert_retry",
@@ -86,7 +86,7 @@ fn config_for_vm_name(vm_name: &str) -> Option<IgvmAgentTestSetting> {
         ),
         (
             "ubuntu_2504_server_x64_snp_ak_cert_retry",
-            IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+            IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended,
         ),
         (
             "windows_datacenter_core_2025_x64_prepped_snp_ak_cert_retry",
