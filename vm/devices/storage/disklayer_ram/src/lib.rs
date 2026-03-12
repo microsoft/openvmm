@@ -31,6 +31,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
 
+/// The default sector size in bytes.
+pub const DEFAULT_SECTOR_SIZE: u32 = 512;
+
 /// A RAM-backed disk layer that infers unspecified topology parameters from
 /// the lower layer at attach time.
 pub struct LazyRamDiskLayer {
@@ -137,14 +140,14 @@ pub enum Error {
 impl RamDiskLayer {
     /// Makes a new RAM disk layer of `size` bytes with 512-byte sectors.
     pub fn new(size: u64) -> Result<Self, Error> {
-        Self::new_with_sector_size(size, 512)
+        Self::new_with_sector_size(size, DEFAULT_SECTOR_SIZE)
     }
 
     /// Makes a new RAM disk layer of `size` bytes with the given sector size.
     ///
     /// `sector_size` must be a power-of-two >= 512.
     pub fn new_with_sector_size(size: u64, sector_size: u32) -> Result<Self, Error> {
-        if !sector_size.is_power_of_two() || sector_size < 512 {
+        if !sector_size.is_power_of_two() || sector_size < DEFAULT_SECTOR_SIZE {
             return Err(Error::InvalidSectorSize(sector_size));
         }
         let sector_shift = sector_size.trailing_zeros();
@@ -239,7 +242,7 @@ impl LayerAttach for LazyRamDiskLayer {
         let sector_size = self
             .sector_size
             .or(lower_layer_metadata.as_ref().map(|meta| meta.sector_size))
-            .unwrap_or(512);
+            .unwrap_or(DEFAULT_SECTOR_SIZE);
         let total_size = match self.len {
             Some(len) => len,
             None => {
@@ -415,7 +418,7 @@ impl WriteNoOverwrite for RamDiskLayer {
 /// layer. It is useful since non-layered RAM disks are used all over the place,
 /// especially in tests.
 pub fn ram_disk(size: u64, read_only: bool) -> anyhow::Result<Disk> {
-    ram_disk_with_sector_size(size, read_only, 512)
+    ram_disk_with_sector_size(size, read_only, DEFAULT_SECTOR_SIZE)
 }
 
 /// Create a RAM disk of `size` bytes with the given sector size.
@@ -715,5 +718,52 @@ mod tests {
 
         assert_eq!(upper.sector_size(), 4096);
         assert_eq!(upper.sector_count(), 256);
+    }
+
+    #[async_test]
+    async fn test_mismatched_sector_sizes_rejected() {
+        const DISK_SIZE: u64 = 1024 * 1024;
+
+        // 4K upper on 512B lower should be rejected.
+        let result = LayeredDisk::new(
+            false,
+            vec![
+                LayerConfiguration {
+                    layer: DiskLayer::new(
+                        RamDiskLayer::new_with_sector_size(DISK_SIZE, 4096).unwrap(),
+                    ),
+                    write_through: false,
+                    read_cache: false,
+                },
+                LayerConfiguration {
+                    layer: DiskLayer::new(RamDiskLayer::new(DISK_SIZE).unwrap()),
+                    write_through: false,
+                    read_cache: false,
+                },
+            ],
+        )
+        .await;
+        assert!(result.is_err());
+
+        // 512B upper on 4K lower should be rejected.
+        let result = LayeredDisk::new(
+            false,
+            vec![
+                LayerConfiguration {
+                    layer: DiskLayer::new(RamDiskLayer::new(DISK_SIZE).unwrap()),
+                    write_through: false,
+                    read_cache: false,
+                },
+                LayerConfiguration {
+                    layer: DiskLayer::new(
+                        RamDiskLayer::new_with_sector_size(DISK_SIZE, 4096).unwrap(),
+                    ),
+                    write_through: false,
+                    read_cache: false,
+                },
+            ],
+        )
+        .await;
+        assert!(result.is_err());
     }
 }
