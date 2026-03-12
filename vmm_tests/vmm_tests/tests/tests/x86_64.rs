@@ -282,6 +282,7 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     let disk_size: u64 = 8 * 1024 * 1024; // 8 MiB
     let disk_resource = LayeredDiskHandle::single_layer(RamDiskLayerHandle {
         len: Some(disk_size),
+        sector_size: None,
     })
     .into_resource();
 
