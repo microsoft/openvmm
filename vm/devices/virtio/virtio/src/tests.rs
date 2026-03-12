@@ -1132,7 +1132,7 @@ async fn verify_pci_config(driver: DefaultDriver) {
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
-    assert_eq!(header[3], VIRTIO_PCI_CAP_COMMON_CFG);
+    assert_eq!(header[3], VirtioPciCapType::COMMON_CFG.0);
     assert_eq!(header[2], 16);
     let mut buf = 0;
 
@@ -1161,7 +1161,7 @@ async fn verify_pci_config(driver: DefaultDriver) {
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
-    assert_eq!(header[3], VIRTIO_PCI_CAP_NOTIFY_CFG);
+    assert_eq!(header[3], VirtioPciCapType::NOTIFY_CFG.0);
     assert_eq!(header[2], 20);
     pci_test_device
         .pci_device
@@ -1188,7 +1188,7 @@ async fn verify_pci_config(driver: DefaultDriver) {
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
-    assert_eq!(header[3], VIRTIO_PCI_CAP_ISR_CFG);
+    assert_eq!(header[3], VirtioPciCapType::ISR_CFG.0);
     assert_eq!(header[2], 16);
     pci_test_device
         .pci_device
@@ -1215,7 +1215,7 @@ async fn verify_pci_config(driver: DefaultDriver) {
         .unwrap();
     let header = header.to_le_bytes();
     assert_eq!(header[0], CapabilityId::VENDOR_SPECIFIC.0);
-    assert_eq!(header[3], VIRTIO_PCI_CAP_DEVICE_CFG);
+    assert_eq!(header[3], VirtioPciCapType::DEVICE_CFG.0);
     assert_eq!(header[2], 16);
     pci_test_device
         .pci_device
