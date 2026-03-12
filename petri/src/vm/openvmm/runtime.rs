@@ -281,7 +281,19 @@ impl PetriVmOpenVmm {
         pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
     );
 
-    petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Pause the VM. Call [`resume`](Self::resume) to continue execution.
+        pub async fn pause(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Save the VM's device and processor state, returning the serialized
+        /// bytes. The VM should be paused before calling this.
+        pub async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>
+    );
+    petri_vm_fn!(
+        /// Resume a paused VM.
+        pub async fn resume(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(
         /// Perform a pulse save/restore cycle: pause the VM, save all state,
         /// reset, restore, and resume. Useful for verifying that device state
@@ -545,6 +557,16 @@ impl PetriVmInner {
         }
 
         Ok(client)
+    }
+
+    async fn pause(&self) -> anyhow::Result<()> {
+        self.worker.pause().await?;
+        Ok(())
+    }
+
+    async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
+        let state_msg = self.worker.save().await?;
+        Ok(mesh::payload::encode(state_msg))
     }
 
     async fn resume(&self) -> anyhow::Result<()> {
