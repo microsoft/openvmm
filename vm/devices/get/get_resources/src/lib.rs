@@ -250,6 +250,14 @@ pub mod ged {
     pub enum IgvmAttestTestConfig {
         /// Config for testing AK cert retry after failure.
         AkCertRequestFailureAndRetry,
+        /// Config for testing AK cert retry after failure — extended plan.
+        ///
+        /// Windows guests with CVM isolation (SNP, TDX) or VBS generate
+        /// additional boot-time AK cert requests (background retries
+        /// during the initial boot and the initial_reboot) that consume
+        /// plan actions before the test code runs.  This plan has extra
+        /// failure actions to absorb those requests.
+        AkCertRequestFailureAndRetryExtended,
         /// Config for testing AK cert persistency across boots.
         AkCertPersistentAcrossBoot,
         /// Config for testing skip hardware unsealing signal from IGVMAgent.

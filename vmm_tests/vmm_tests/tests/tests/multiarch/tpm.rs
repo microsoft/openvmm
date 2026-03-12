@@ -146,7 +146,7 @@ impl<'a> TpmGuestTests<'a> {
                         "--expected-data-hex",
                         expected_hex,
                         "--retry",
-                        "5",
+                        "10",
                     ])
                     .read()
                     .await
@@ -159,7 +159,7 @@ impl<'a> TpmGuestTests<'a> {
                         "--expected-data-hex",
                         expected_hex,
                         "--retry",
-                        "5",
+                        "10",
                     ])
                     .read()
                     .await
@@ -385,7 +385,7 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
     let rpc_server_path = rpc_server_artifact.get();
     let _rpc_guard = ensure_rpc_server_running(rpc_server_path)?;
 
-    let (vm, agent) = config
+    let (mut vm, agent) = config
         .with_tpm(true)
         .with_tpm_state_persistence(true)
         .with_guest_state_lifetime(PetriGuestStateLifetime::Disk)
@@ -401,6 +401,7 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
     tracing::info!("first boot");
 
     agent.reboot().await?;
+    let agent = vm.wait_for_reset().await?;
 
     tracing::info!("second boot");
 

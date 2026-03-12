@@ -168,6 +168,25 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
                 ]),
             );
         }
+        IgvmAttestTestConfig::AkCertRequestFailureAndRetryExtended => {
+            // Windows CVM guests (SNP, TDX, VBS) can generate multiple
+            // boot-time AK_CERT_REQUEST calls (background retries during
+            // the initial boot and the initial_reboot).  Six failures
+            // ensure the SUCCESS action is never consumed during boot,
+            // so it remains available for the guest test.
+            plan.insert(
+                IgvmAttestRequestType::AK_CERT_REQUEST,
+                VecDeque::from([
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondFailure,
+                    IgvmAgentAction::RespondSuccess,
+                ]),
+            );
+        }
         IgvmAttestTestConfig::AkCertPersistentAcrossBoot => {
             plan.insert(
                 IgvmAttestRequestType::AK_CERT_REQUEST,
@@ -178,9 +197,13 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing => {
+            // Two RespondSuccess entries to cover the initial boot and
+            // the initial_reboot (guest quirk) — both consume a
+            // KEY_RELEASE during run() before the test code starts.
             plan.insert(
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
                 VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
                     IgvmAgentAction::RespondSuccess,
                     IgvmAgentAction::RespondFailureSkipHwUnsealing,
                     IgvmAgentAction::AlwaysNoResponse,
@@ -188,9 +211,13 @@ fn test_config_to_plan(test_config: &IgvmAttestTestConfig) -> IgvmAgentTestPlan 
             );
         }
         IgvmAttestTestConfig::KeyReleaseFailure => {
+            // Two RespondSuccess entries to cover the initial boot and
+            // the initial_reboot (guest quirk) — both consume a
+            // KEY_RELEASE during run() before the test code starts.
             plan.insert(
                 IgvmAttestRequestType::KEY_RELEASE_REQUEST,
                 VecDeque::from([
+                    IgvmAgentAction::RespondSuccess,
                     IgvmAgentAction::RespondSuccess,
                     IgvmAgentAction::RespondFailure,
                     IgvmAgentAction::AlwaysNoResponse,
