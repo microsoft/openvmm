@@ -14,7 +14,6 @@ codebase. The doc-code-sync mapping table is maintained in this skill file;
 `.github/instructions/doc-code-sync.instructions.md` contains the instructions
 and heuristics that are automatically loaded during Copilot code review on
 `*.rs` and `Cargo.toml` files.
-`*.rs` and `Cargo.toml` files.
 
 ---
 
