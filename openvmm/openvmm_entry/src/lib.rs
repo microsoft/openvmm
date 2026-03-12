@@ -1990,31 +1990,9 @@ fn file_to_shared_memory_fd(
 fn file_to_shared_memory_fd(
     file: std::fs::File,
 ) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
-    use std::os::windows::io::AsRawHandle;
-    use std::os::windows::io::FromRawHandle;
-    use std::os::windows::io::OwnedHandle;
-
-    let size = file.metadata()?.len();
-
     // On Windows, MapViewOfFile needs a section handle, not a raw file handle.
-    // CreateFileMappingW over the file handle creates the section object.
-    // SAFETY: calling Windows API correctly with valid file handle.
-    let section = unsafe {
-        windows_sys::Win32::System::Memory::CreateFileMappingW(
-            file.as_raw_handle() as isize,
-            std::ptr::null_mut(),
-            windows_sys::Win32::System::Memory::PAGE_READWRITE,
-            (size >> 32) as u32,
-            size as u32,
-            std::ptr::null(),
-        )
-    };
-    if section == 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("CreateFileMappingW failed for memory backing file");
-    }
-    // SAFETY: section is a valid, newly-created handle.
-    Ok(unsafe { OwnedHandle::from_raw_handle(section as *mut std::ffi::c_void) })
+    // sparse_mmap already has a helper that calls CreateFileMappingW.
+    Ok(sparse_mmap::new_mappable_from_file(&file, true, false)?)
 }
 
 fn do_main() -> anyhow::Result<()> {
