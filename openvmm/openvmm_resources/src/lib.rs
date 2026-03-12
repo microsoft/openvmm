@@ -78,6 +78,7 @@ vm_resource::register_static_resolvers! {
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
     virtio_rng::resolver::VirtioRngResolver,
+    virtio_vsock::resolver::VirtioVsockResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,

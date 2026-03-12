@@ -5519,6 +5519,7 @@ dependencies = [
  "virtio_p9",
  "virtio_pmem",
  "virtio_rng",
+ "virtio_vsock",
  "virtiofs",
  "vm_resource",
  "vmbfs",
@@ -9172,6 +9173,30 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "inspect",
  "open_enum",
+ "zerocopy",
+]
+
+[[package]]
+name = "virtio_vsock"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "event-listener",
+ "futures",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "task_control",
+ "tracelimit",
+ "tracing",
+ "unix_socket",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
  "zerocopy",
 ]
 

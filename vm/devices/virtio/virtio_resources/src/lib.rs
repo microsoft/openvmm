@@ -149,3 +149,25 @@ pub mod console {
         const ID: &'static str = "virtio-console";
     }
 }
+
+pub mod vsock {
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioVsockHandle {
+        /// The guest context ID (CID).
+        pub guest_cid: u64,
+        /// Base path for Unix domain socket relay. For a vsock port P, the
+        /// relay will try `<uds_path>_P` then `<uds_path>`.
+        pub uds_path: String,
+        /// Optional path for a listener socket that accepts host-initiated
+        /// connections using the hybrid vsock connect protocol.
+        pub listener_path: Option<String>,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
+        const ID: &'static str = "virtio-vsock";
+    }
+}
