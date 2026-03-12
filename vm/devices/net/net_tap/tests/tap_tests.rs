@@ -32,6 +32,8 @@ mod tap_tests {
     use net_tap::TapEndpoint;
     use pal_async::DefaultDriver;
     use std::future::poll_fn;
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
 
     /// Enter an isolated user + network namespace. This gives us CAP_NET_ADMIN
     /// without requiring root privileges on the host. Must be called while the
@@ -102,6 +104,10 @@ mod tap_tests {
             "socket() failed: {}",
             std::io::Error::last_os_error()
         );
+        // Wrap in OwnedFd so the socket is closed even on panic.
+        // SAFETY: `sock` is a valid, newly created file descriptor.
+        let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(sock) };
+        let fd = sock.as_raw_fd();
 
         let mut ifr = new_ifreq(name);
 
@@ -109,14 +115,14 @@ mod tap_tests {
         // read/write the `ifru_flags` field of an `ifreq`.
         unsafe {
             assert_eq!(
-                libc::ioctl(sock, libc::SIOCGIFFLAGS, &mut ifr),
+                libc::ioctl(fd, libc::SIOCGIFFLAGS, &mut ifr),
                 0,
                 "SIOCGIFFLAGS: {}",
                 std::io::Error::last_os_error()
             );
             ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
             assert_eq!(
-                libc::ioctl(sock, libc::SIOCSIFFLAGS, &ifr),
+                libc::ioctl(fd, libc::SIOCSIFFLAGS, &ifr),
                 0,
                 "SIOCSIFFLAGS: {}",
                 std::io::Error::last_os_error()
@@ -127,7 +133,7 @@ mod tap_tests {
         unsafe {
             ifr.ifr_ifru.ifru_addr = sockaddr_in4(addr);
             assert_eq!(
-                libc::ioctl(sock, libc::SIOCSIFADDR, &ifr),
+                libc::ioctl(fd, libc::SIOCSIFADDR, &ifr),
                 0,
                 "SIOCSIFADDR: {}",
                 std::io::Error::last_os_error()
@@ -138,17 +144,14 @@ mod tap_tests {
         unsafe {
             ifr.ifr_ifru.ifru_netmask = sockaddr_in4(std::net::Ipv4Addr::from(netmask));
             assert_eq!(
-                libc::ioctl(sock, libc::SIOCSIFNETMASK, &ifr),
+                libc::ioctl(fd, libc::SIOCSIFNETMASK, &ifr),
                 0,
                 "SIOCSIFNETMASK: {}",
                 std::io::Error::last_os_error()
             );
         }
 
-        // SAFETY: Closing a valid file descriptor.
-        unsafe {
-            libc::close(sock);
-        }
+        // `sock` is dropped here, closing the file descriptor.
     }
 
     /// Create a buffer pool and guest memory following the pattern from net_backend tests.
@@ -272,24 +275,31 @@ mod tap_tests {
         let sock = std::net::UdpSocket::bind("10.0.0.1:0").unwrap();
         sock.send_to(b"hello", "10.0.0.2:12345").unwrap();
 
-        // Poll until a packet arrives.
+        // Poll until a packet arrives, then scan for an ARP frame. The kernel
+        // may emit other L2 traffic (e.g., IPv6 Neighbor Discovery) before the
+        // ARP request we triggered, so we cannot assume it is the first packet.
         poll_fn(|cx| queue.poll_ready(cx)).await;
 
         let mut packets = [RxId(0); 128];
         let n = queue.rx_poll(&mut packets).unwrap();
         assert!(n >= 1, "should have received at least one packet");
 
-        // Read the received packet from guest memory and verify it's ARP (ethertype 0x0806).
-        let rx_id = packets[0];
-        let gpa = rx_id.0 as u64 * 2048;
-        let mut buf = [0u8; 2048];
-        mem.read_at(gpa, &mut buf).unwrap();
+        let mut found_arp = false;
+        for &rx_id in &packets[..n] {
+            let gpa = rx_id.0 as u64 * 2048;
+            let mut buf = [0u8; 2048];
+            mem.read_at(gpa, &mut buf).unwrap();
 
-        // Ethertype is at bytes 12-13 in the Ethernet frame.
-        let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
-        assert_eq!(
-            ethertype, 0x0806,
-            "expected ARP packet (ethertype 0x0806), got {ethertype:#06x}"
+            // Ethertype is at bytes 12-13 in the Ethernet frame.
+            let ethertype = u16::from_be_bytes([buf[12], buf[13]]);
+            if ethertype == 0x0806 {
+                found_arp = true;
+                break;
+            }
+        }
+        assert!(
+            found_arp,
+            "expected at least one ARP packet (ethertype 0x0806)"
         );
     }
 
