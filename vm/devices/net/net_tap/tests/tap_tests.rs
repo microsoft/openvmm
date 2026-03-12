@@ -115,14 +115,14 @@ mod tap_tests {
         // read/write the `ifru_flags` field of an `ifreq`.
         unsafe {
             assert_eq!(
-                libc::ioctl(fd, libc::SIOCGIFFLAGS, &mut ifr),
+                libc::ioctl(fd, libc::SIOCGIFFLAGS as _, &mut ifr),
                 0,
                 "SIOCGIFFLAGS: {}",
                 std::io::Error::last_os_error()
             );
             ifr.ifr_ifru.ifru_flags |= libc::IFF_UP as libc::c_short;
             assert_eq!(
-                libc::ioctl(fd, libc::SIOCSIFFLAGS, &ifr),
+                libc::ioctl(fd, libc::SIOCSIFFLAGS as _, &ifr),
                 0,
                 "SIOCSIFFLAGS: {}",
                 std::io::Error::last_os_error()
@@ -133,7 +133,7 @@ mod tap_tests {
         unsafe {
             ifr.ifr_ifru.ifru_addr = sockaddr_in4(addr);
             assert_eq!(
-                libc::ioctl(fd, libc::SIOCSIFADDR, &ifr),
+                libc::ioctl(fd, libc::SIOCSIFADDR as _, &ifr),
                 0,
                 "SIOCSIFADDR: {}",
                 std::io::Error::last_os_error()
@@ -144,7 +144,7 @@ mod tap_tests {
         unsafe {
             ifr.ifr_ifru.ifru_netmask = sockaddr_in4(std::net::Ipv4Addr::from(netmask));
             assert_eq!(
-                libc::ioctl(fd, libc::SIOCSIFNETMASK, &ifr),
+                libc::ioctl(fd, libc::SIOCSIFNETMASK as _, &ifr),
                 0,
                 "SIOCSIFNETMASK: {}",
                 std::io::Error::last_os_error()
