@@ -1046,7 +1046,12 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
-    if let Some(path) = &opt.igvm {
+    if opt.restore_snapshot.is_some() {
+        // Snapshot restore: skip firmware loading entirely. Device state and
+        // memory come from the snapshot directory.
+        load_mode = LoadMode::None;
+        with_hv = true;
+    } else if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -2060,6 +2065,71 @@ fn file_to_shared_memory_fd(
     Ok(sparse_mmap::new_mappable_from_file(&file, true, false)?)
 }
 
+/// Open a snapshot directory and validate it against the current VM config.
+/// Returns the shared memory fd (from memory.bin) and the saved device state.
+fn prepare_snapshot_restore(
+    snapshot_dir: &Path,
+    opt: &Options,
+) -> anyhow::Result<(
+    openvmm_defs::worker::SharedMemoryFd,
+    mesh::payload::message::ProtobufMessage,
+)> {
+    let (manifest, state_bytes) = snapshot::read_snapshot(snapshot_dir)?;
+
+    // Validate architecture.
+    if manifest.architecture != std::env::consts::ARCH {
+        anyhow::bail!(
+            "snapshot architecture '{}' doesn't match host '{}'",
+            manifest.architecture,
+            std::env::consts::ARCH,
+        );
+    }
+
+    // Validate memory size matches --memory.
+    if manifest.memory_size_bytes != opt.memory {
+        anyhow::bail!(
+            "snapshot memory size ({} bytes) doesn't match --memory ({} bytes)",
+            manifest.memory_size_bytes,
+            opt.memory,
+        );
+    }
+
+    // Validate VP count matches --processors.
+    if manifest.vp_count != opt.processors {
+        anyhow::bail!(
+            "snapshot VP count ({}) doesn't match --processors ({})",
+            manifest.vp_count,
+            opt.processors,
+        );
+    }
+
+    // Open memory.bin (existing file, no create, no resize).
+    let memory_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(snapshot_dir.join("memory.bin"))
+        .with_context(|| format!("failed to open {}/memory.bin", snapshot_dir.display()))?;
+
+    // Validate file size matches expected memory size.
+    let file_size = memory_file.metadata()?.len();
+    if file_size != manifest.memory_size_bytes {
+        anyhow::bail!(
+            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
+            manifest.memory_size_bytes,
+        );
+    }
+
+    let shared_memory_fd = file_to_shared_memory_fd(memory_file)?;
+
+    // Reconstruct ProtobufMessage from the saved state bytes.
+    // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
+    // back to ProtobufMessage.
+    let state_msg: mesh::payload::message::ProtobufMessage = mesh::payload::decode(&state_bytes)
+        .context("failed to decode saved state from snapshot")?;
+
+    Ok((shared_memory_fd, state_msg))
+}
+
 fn do_main() -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
@@ -2522,16 +2592,22 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
-        let shared_memory = opt
-            .memory_backing_file
-            .as_ref()
-            .map(|path| open_memory_backing_file(path, opt.memory))
-            .transpose()?;
+        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
+            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+            (Some(fd), Some(state_msg))
+        } else {
+            let shared_memory = opt
+                .memory_backing_file
+                .as_ref()
+                .map(|path| open_memory_backing_file(path, opt.memory))
+                .transpose()?;
+            (shared_memory, None)
+        };
 
         let params = VmWorkerParameters {
             hypervisor: opt.hypervisor,
             cfg: vm_config,
-            saved_state: None,
+            saved_state,
             shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
@@ -2541,6 +2617,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .await
             .context("failed to launch vm worker")?
     };
+
+    if opt.restore_snapshot.is_some() {
+        tracing::info!("restoring VM from snapshot");
+    }
 
     if !opt.paused {
         vm_rpc.call(VmRpc::Resume, ()).await?;
