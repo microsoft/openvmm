@@ -276,9 +276,8 @@ impl VirtioDevice for Device {
             }
 
             let rx_queue_size = rx_resources.params.size;
-            let rx_queue_event =
-                PolledWait::new(&self.adapter.driver, rx_resources.event)
-                    .context("failed creating rx queue event")?;
+            let rx_queue_event = PolledWait::new(&self.adapter.driver, rx_resources.event)
+                .context("failed creating rx queue event")?;
             let rx_queue = VirtioQueue::new(
                 resources.features.clone(),
                 rx_resources.params,
@@ -289,9 +288,8 @@ impl VirtioDevice for Device {
             .context("failed creating virtio net receive queue")?;
 
             let tx_queue_size = tx_resources.params.size;
-            let tx_queue_event =
-                PolledWait::new(&self.adapter.driver, tx_resources.event)
-                    .context("failed creating tx queue event")?;
+            let tx_queue_event = PolledWait::new(&self.adapter.driver, tx_resources.event)
+                .context("failed creating tx queue event")?;
             let tx_queue = VirtioQueue::new(
                 resources.features.clone(),
                 tx_resources.params,

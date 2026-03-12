@@ -442,6 +442,7 @@ impl VirtioMmioDevice {
                             self.device_status.set_driver_ok(true);
                         }
                         Err(err) => {
+                            self.doorbells.clear();
                             // FUTURE: consider setting DEVICE_NEEDS_RESET and
                             // delivering a config change interrupt so the guest
                             // can detect the failure proactively instead of

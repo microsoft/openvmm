@@ -778,6 +778,34 @@ struct VirtioPciTestDevice {
 
 type TestDeviceQueueWorkFn = Arc<dyn Fn(u16, VirtioQueueCallbackWork) + Send + Sync>;
 
+/// A minimal VirtioDevice whose enable() always returns an error.
+/// Used to test that transports correctly handle enable failures.
+#[derive(InspectMut)]
+#[inspect(skip)]
+struct FailingTestDevice {
+    traits: DeviceTraits,
+}
+
+impl VirtioDevice for FailingTestDevice {
+    fn traits(&self) -> DeviceTraits {
+        self.traits.clone()
+    }
+
+    fn read_registers_u32(&self, _offset: u16) -> u32 {
+        0
+    }
+
+    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+
+    fn enable(&mut self, _resources: Resources) -> anyhow::Result<()> {
+        anyhow::bail!("intentional enable failure for testing")
+    }
+
+    fn poll_disable(&mut self, _cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        std::task::Poll::Ready(())
+    }
+}
+
 #[derive(InspectMut)]
 #[inspect(skip)]
 struct TestDevice {
@@ -1912,4 +1940,153 @@ async fn verify_device_multi_queue_pci(driver: DefaultDriver) {
         .mmio_write(0x10000000000 + 20, &device_status.to_le_bytes())
         .unwrap();
     drop(dev);
+}
+
+#[async_test]
+async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let interrupt = LineInterrupt::detached();
+
+    let mut dev = VirtioMmioDevice::new(
+        Box::new(FailingTestDevice {
+            traits: DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+        }),
+        interrupt,
+        Some(doorbell_registration),
+        0,
+        1,
+    );
+
+    // Drive through ACKNOWLEDGE -> DRIVER -> FEATURES_OK -> DRIVER_OK
+    dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
+    dev.write_u32(112, VIRTIO_DRIVER);
+    dev.write_u32(36, 0);
+    dev.write_u32(32, 2); // select matching features
+    dev.write_u32(36, 1);
+    dev.write_u32(32, VIRTIO_F_VERSION_1);
+    dev.write_u32(112, VIRTIO_FEATURES_OK);
+
+    // Set up one queue
+    dev.write_u32(48, 0); // queue select
+    dev.write_u32(56, 16); // queue size
+    dev.write_u32(68, 1); // queue enable
+
+    // Attempt DRIVER_OK — enable() will fail
+    dev.write_u32(112, VIRTIO_DRIVER_OK);
+
+    // Device status should NOT have DRIVER_OK set
+    let status = dev.read_u32(112);
+    assert_eq!(
+        status & VIRTIO_DRIVER_OK,
+        0,
+        "DRIVER_OK must not be set when enable() fails"
+    );
+}
+
+#[async_test]
+async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let msi_conn = MsiConnection::new();
+
+    let mut dev = VirtioPciDevice::new(
+        Box::new(FailingTestDevice {
+            traits: DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                max_queues: 1,
+                device_register_length: 12,
+                ..Default::default()
+            },
+        }),
+        PciInterruptModel::Msix(msi_conn.target()),
+        Some(doorbell_registration),
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    let bar_address1: u64 = 0x10000000000;
+    dev.pci_cfg_write(0x14, (bar_address1 >> 32) as u32)
+        .unwrap();
+    dev.pci_cfg_write(0x10, bar_address1 as u32).unwrap();
+
+    let bar_address2: u64 = 0x20000000000;
+    dev.pci_cfg_write(0x1c, (bar_address2 >> 32) as u32)
+        .unwrap();
+    dev.pci_cfg_write(0x18, bar_address2 as u32).unwrap();
+
+    dev.pci_cfg_write(
+        0x4,
+        cfg_space::Command::new()
+            .with_mmio_enabled(true)
+            .into_bits() as u32,
+    )
+    .unwrap();
+
+    // Drive through ACKNOWLEDGE -> DRIVER -> FEATURES_OK
+    let mut buf = [0u8; 1];
+    buf[0] = VIRTIO_ACKNOWLEDGE as u8;
+    dev.mmio_write(bar_address1 + 20, &buf).unwrap();
+    buf[0] = VIRTIO_DRIVER as u8;
+    dev.mmio_write(bar_address1 + 20, &buf).unwrap();
+    // Select features
+    let mut val;
+    val = 0u32.to_le_bytes();
+    dev.mmio_write(bar_address1 + 8, &val).unwrap();
+    val = 2u32.to_le_bytes();
+    dev.mmio_write(bar_address1 + 12, &val).unwrap();
+    val = 1u32.to_le_bytes();
+    dev.mmio_write(bar_address1 + 8, &val).unwrap();
+    val = VIRTIO_F_VERSION_1.to_le_bytes();
+    dev.mmio_write(bar_address1 + 12, &val).unwrap();
+    buf[0] = VIRTIO_FEATURES_OK as u8;
+    dev.mmio_write(bar_address1 + 20, &buf).unwrap();
+
+    // Set up queue 0
+    dev.mmio_write(bar_address1 + 22, &0u16.to_le_bytes())
+        .unwrap(); // queue select
+    dev.mmio_write(bar_address1 + 24, &16u16.to_le_bytes())
+        .unwrap(); // queue size
+    // Set up MSI for the queue
+    dev.mmio_write(bar_address2, &0u64.to_le_bytes()).unwrap();
+    dev.mmio_write(bar_address2 + 8, &0u32.to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address2 + 12, &0u32.to_le_bytes())
+        .unwrap();
+    let msix_vector: u16 = 1;
+    let msix_addr = bar_address2 + 0x10 * msix_vector as u64;
+    dev.mmio_write(msix_addr, &(msix_vector as u64).to_le_bytes())
+        .unwrap();
+    dev.mmio_write(msix_addr + 8, &0u32.to_le_bytes()).unwrap();
+    dev.mmio_write(msix_addr + 12, &0u32.to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address1 + 26, &msix_vector.to_le_bytes())
+        .unwrap();
+    // Enable queue
+    dev.mmio_write(bar_address1 + 28, &1u16.to_le_bytes())
+        .unwrap();
+    // Enable all MSI interrupts
+    dev.pci_cfg_write(0x40, 0x80000000).unwrap();
+
+    // Attempt DRIVER_OK — enable() will fail
+    buf[0] = VIRTIO_DRIVER_OK as u8;
+    dev.mmio_write(bar_address1 + 20, &buf).unwrap();
+
+    // Read back device status
+    let mut status_buf = [0u8; 1];
+    dev.mmio_read(bar_address1 + 20, &mut status_buf).unwrap();
+    let status = status_buf[0] as u32;
+    assert_eq!(
+        status & VIRTIO_DRIVER_OK,
+        0,
+        "DRIVER_OK must not be set when enable() fails"
+    );
 }

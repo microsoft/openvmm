@@ -8988,7 +8988,6 @@ dependencies = [
  "task_control",
  "test_with_tracing",
  "tracelimit",
- "tracing",
  "unicycle",
  "virtio",
  "virtio_resources",
