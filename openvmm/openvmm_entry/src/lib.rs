@@ -2012,32 +2012,13 @@ fn prepare_snapshot_restore(
 )> {
     let (manifest, state_bytes) = snapshot::read_snapshot(snapshot_dir)?;
 
-    // Validate architecture.
-    if manifest.architecture != std::env::consts::ARCH {
-        anyhow::bail!(
-            "snapshot architecture '{}' doesn't match host '{}'",
-            manifest.architecture,
-            std::env::consts::ARCH,
-        );
-    }
-
-    // Validate memory size matches --memory.
-    if manifest.memory_size_bytes != opt.memory {
-        anyhow::bail!(
-            "snapshot memory size ({} bytes) doesn't match --memory ({} bytes)",
-            manifest.memory_size_bytes,
-            opt.memory,
-        );
-    }
-
-    // Validate VP count matches --processors.
-    if manifest.vp_count != opt.processors {
-        anyhow::bail!(
-            "snapshot VP count ({}) doesn't match --processors ({})",
-            manifest.vp_count,
-            opt.processors,
-        );
-    }
+    // Validate manifest against current VM config.
+    snapshot::validate_manifest(
+        &manifest,
+        std::env::consts::ARCH,
+        opt.memory,
+        opt.processors,
+    )?;
 
     // Open memory.bin (existing file, no create, no resize).
     let memory_file = std::fs::OpenOptions::new()

@@ -158,6 +158,9 @@ pub struct PetriVmConfigOpenVmm {
     // Logging
     openvmm_log_file: PetriLogFile,
 
+    // File-backed guest memory.
+    memory_backing_file: Option<PathBuf>,
+
     // Resources that are only used during startup.
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     framebuffer_view: Option<framebuffer::View>,

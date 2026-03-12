@@ -23,6 +23,7 @@ impl Worker {
     pub(crate) async fn launch(
         host: &WorkerHost,
         cfg: Config,
+        shared_memory: Option<openvmm_defs::worker::SharedMemoryFd>,
     ) -> anyhow::Result<(Self, mesh::Receiver<HaltReason>)> {
         let (vm_rpc, rpc_recv) = mesh::channel();
         let (notify_send, notify_recv) = mesh::channel();
@@ -31,6 +32,7 @@ impl Worker {
             hypervisor: None,
             cfg,
             saved_state: None,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };

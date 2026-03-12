@@ -10,6 +10,7 @@ use openvmm_defs::config::X86TopologyConfig;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::cmd;
+use std::path::PathBuf;
 use vmm_test_macros::openvmm_test;
 
 /// Validate we can run with VP index != APIC ID.
@@ -108,6 +109,37 @@ async fn mtrrs(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow
         mtrr_output
             .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back")
     );
+
+    Ok(())
+}
+
+/// Boot Linux with guest memory backed by a file instead of anonymous RAM.
+///
+/// This validates that the file-backed memory plumbing through petri works
+/// end-to-end: the VM should boot normally, and the backing file should
+/// exist and be non-empty after boot.
+#[openvmm_test(linux_direct_x64)]
+async fn file_backed_memory_boot(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let mem_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let mem_path: PathBuf = mem_dir.path().join("memory.bin");
+
+    let (vm, agent) = config
+        .modify_backend(|b| b.with_memory_backing_file(mem_path.clone()))
+        .run()
+        .await?;
+
+    // Verify the backing file was created and is non-empty.
+    let metadata = std::fs::metadata(&mem_path).expect("memory backing file should exist");
+    assert!(
+        metadata.len() > 0,
+        "memory backing file should be non-empty"
+    );
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
 
     Ok(())
 }
