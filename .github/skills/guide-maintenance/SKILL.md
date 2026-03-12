@@ -10,9 +10,11 @@ description: >
 # Guide Maintenance Skill
 
 Procedures for keeping the OpenVMM Guide (`Guide/src/`) in sync with the
-codebase. The doc-code-sync mapping lives at
-`.github/instructions/doc-code-sync.instructions.md` and is automatically
-loaded during Copilot code review on `*.rs` and `Cargo.toml` files.
+codebase. The doc-code-sync mapping table is maintained in this skill file;
+`.github/instructions/doc-code-sync.instructions.md` contains the instructions
+and heuristics that are automatically loaded during Copilot code review on
+`*.rs` and `Cargo.toml` files.
+`*.rs` and `Cargo.toml` files.
 
 ---
 
@@ -49,8 +51,7 @@ content get a path; placeholder topics for future work get an empty link `()`.
 
 ### 4. Update the doc-code-sync mapping
 
-**This is the critical step.** Add a row to the mapping table in
-`.github/instructions/doc-code-sync.instructions.md`:
+**This is the critical step.** Add a row to the mapping table in this file:
 
 ```markdown
 | `path/to/code/crate/` | `reference/path/to/page.md` |
@@ -104,7 +105,7 @@ When `openvmm/openvmm_entry/src/cli_args.rs` changes:
 
 To check whether the Guide is in sync with the code:
 
-1. **Scan the mapping table** in `doc-code-sync.instructions.md`
+1. **Scan the mapping table** in this file
 2. For each row, check whether the Guide page content still matches the code:
    - Crate names still correct?
    - Struct/enum names still exist?
@@ -131,7 +132,7 @@ grep '()\s*$' Guide/src/SUMMARY.md
 
 ## Mapping Table Format
 
-Each row in `.github/instructions/doc-code-sync.instructions.md` follows:
+Each row in the mapping table follows:
 
 ```
 | `code/path/` | `guide/path.md` |

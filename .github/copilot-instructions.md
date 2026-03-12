@@ -26,8 +26,7 @@ OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM) written in Ru
 cargo xflowey restore-packages   # First-time dependency setup
 cargo build                       # Debug build
 cargo build --release             # Release build
-cargo nextest run -p <package>    # Test a specific crate (recommended)
-cargo test -p <package>           # Alternative: standard cargo test
+cargo nextest run -p <package>    # Test a specific crate (recommended; do NOT use `cargo test` directly)
 cargo xtask fmt --fix             # Format and apply house rules
 cargo doc                         # Check rustdoc
 ```
@@ -40,7 +39,7 @@ cargo doc                         # Check rustdoc
 ### Test Types
 - **Unit tests**: `#[cfg(test)]` blocks throughout crates
 - **VMM tests**: Integration tests in `vmm_tests/` using the petri framework (requires setup)
-- **Fuzz tests**: Ensuring no panics across trust boundaries
+- **Fuzzers**: Help identify edge cases and security issues, not tests per se
 
 ## Line Endings
 
