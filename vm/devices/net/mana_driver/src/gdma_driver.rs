@@ -31,8 +31,6 @@ use gdma_defs::GDMA_EQE_HWC_RECONFIG_VF;
 use gdma_defs::GDMA_EQE_TEST_EVENT;
 use gdma_defs::GDMA_MESSAGE_V1;
 use gdma_defs::GDMA_PAGE_TYPE_4K;
-use gdma_defs::GDMA_PF_CAP_FLAG_1_EQE_REQUEST_VF_SELF_RESET;
-use gdma_defs::GDMA_PF_CAP_FLAG_1_QUERY_HWC_TIMEOUT;
 use gdma_defs::GDMA_STANDARD_HEADER_TYPE;
 use gdma_defs::GdmaChangeMsixVectorIndexForEq;
 use gdma_defs::GdmaCreateDmaRegionReq;
@@ -1251,15 +1249,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             anyhow::bail!("invalid protocol version");
         }
 
-        // Logging the SoC / PF capabilities
-        let query_hwc_timeout = resp.pf_cap_flags1 & GDMA_PF_CAP_FLAG_1_QUERY_HWC_TIMEOUT != 0;
-        let eqe_request_vf_self_reset =
-            resp.pf_cap_flags1 & GDMA_PF_CAP_FLAG_1_EQE_REQUEST_VF_SELF_RESET != 0;
         tracing::info!(
-            pf_cap_flags1 = resp.pf_cap_flags1,
-            query_hwc_timeout,
-            eqe_request_vf_self_reset,
-            "physical function capability flags",
+            gdma_protocol_ver = resp.gdma_protocol_ver,
+            pf_cap_flags1 = format_args!("{:#x}", resp.pf_cap_flags1),
+            pf_cap_flags2 = format_args!("{:#x}", resp.pf_cap_flags2),
+            pf_cap_flags3 = format_args!("{:#x}", resp.pf_cap_flags3),
+            pf_cap_flags4 = format_args!("{:#x}", resp.pf_cap_flags4),
+            "GDMA PF capability flags",
         );
 
         Ok(())
