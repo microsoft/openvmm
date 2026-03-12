@@ -126,7 +126,10 @@ async fn file_backed_memory_boot(
     let mem_path: PathBuf = mem_dir.path().join("memory.bin");
 
     let (vm, agent) = config
-        .modify_backend(|b| b.with_memory_backing_file(mem_path.clone()))
+        .modify_backend({
+            let mem_path = mem_path.clone();
+            move |b| b.with_memory_backing_file(mem_path)
+        })
         .run()
         .await?;
 
@@ -159,7 +162,10 @@ async fn snapshot_save_to_disk(
     let snap_dir = work_dir.path().join("snapshot");
 
     let (mut vm, agent) = config
-        .modify_backend(|b| b.with_memory_backing_file(mem_path.clone()))
+        .modify_backend({
+            let mem_path = mem_path.clone();
+            move |b| b.with_memory_backing_file(mem_path)
+        })
         .run()
         .await?;
 
