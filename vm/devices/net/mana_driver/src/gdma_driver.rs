@@ -1240,6 +1240,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                         | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
                         | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
                         | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
+                    os_type: gdma_defs::OS_TYPE_OHCL,
                     ..FromZeros::new_zeroed()
                 },
             )
