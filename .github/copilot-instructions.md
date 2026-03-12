@@ -89,17 +89,13 @@ cargo nextest run -p <package-name>
   is initialized and traces appear in test output.
 - **VMM tests** — integration tests in `vmm_tests/` using the petri
   framework (requires additional setup).
-- **Fuzz tests** — nondeterministic tests ensuring no panics across trust
-  boundaries.
+- **Fuzz tests** — nondeterministic tests that identify edge cases and security issues.
 - Mark tests requiring special setup with `#[ignore]`.
-- Configure resource management and timeouts in `.config/nextest.toml`.
 - Update `Guide/` docs when adding features or changing behavior
   (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
 
 ## Common Pitfalls
 
-- **Line endings**: This repo enforces LF on all platforms (see
-  `.gitattributes`). Never use CRLF. Exception: `.bat`/`.cmd` files use CRLF.
 - **`guest_arch` not `target_arch`**: For guest-architecture-specific code,
   use `cfg(guest_arch = "x86_64")` — **not** `cfg(target_arch = "x86_64")`.
   The VMM can run guests of a different architecture than the host. Using
