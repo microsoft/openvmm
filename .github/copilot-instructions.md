@@ -31,13 +31,6 @@ headers, naming conventions) and applies auto-fixes where supported. If it
 still fails, fix the remaining reported issues manually and re-run until it
 succeeds. Do not run individual `--pass` commands afterward.
 
-The project also enforces clippy rules via `clippy.toml`. Key disallowed types:
-- Use `parking_lot::Mutex`, `Condvar`, `RwLock` — **not** `std::sync` equivalents
-- Use `unicycle::FuturesUnordered` — **not** `futures::FuturesUnordered`
-- Use `mesh` or `async-channel` for channels — **not** `futures::channel`
-- Use `std::future::ready`, `std::future::pending`, `std::task::ready`,
-  `std::pin::pin` — **not** the `futures` crate equivalents
-
 ## Trust Boundaries & Safety
 
 Both OpenVMM and OpenHCL process data from untrusted sources. Code must
@@ -89,7 +82,6 @@ cargo nextest run -p <package-name>
   is initialized and traces appear in test output.
 - **VMM tests** — integration tests in `vmm_tests/` using the petri
   framework (requires additional setup).
-- **Fuzz tests** — nondeterministic tests that identify edge cases and security issues.
 - Mark tests requiring special setup with `#[ignore]`.
 - Update `Guide/` docs when adding features or changing behavior
   (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
