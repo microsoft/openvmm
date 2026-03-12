@@ -372,6 +372,14 @@ flags:
     #[clap(long, value_name = "PATH")]
     pub virtio_pmem: Option<String>,
 
+    /// add a virtio entropy (RNG) device
+    #[clap(long)]
+    pub virtio_rng: bool,
+
+    /// add a virtio_rng device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
+    #[clap(long, value_name = "BUS", default_value = "auto")]
+    pub virtio_rng_bus: VirtioBusCli,
+
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///

@@ -77,6 +77,7 @@ virtiofs.workspace = true
 virtio_net.workspace = true
 virtio_p9.workspace = true
 virtio_pmem.workspace = true
+virtio_rng.workspace = true
 
 # Vmbus devices
 guest_crash_device.workspace = true

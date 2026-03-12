@@ -1571,6 +1571,13 @@ async fn vm_config_from_command_line(
         );
     }
 
+    if opt.virtio_rng {
+        add_virtio_device(
+            opt.virtio_rng_bus,
+            virtio_resources::rng::VirtioRngHandle.into_resource(),
+        );
+    }
+
     let mut cfg = Config {
         chipset,
         load_mode,
