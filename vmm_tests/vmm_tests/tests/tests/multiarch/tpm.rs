@@ -777,9 +777,7 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
             }
         }
         Ok(other) => {
-            let error = anyhow::anyhow!(
-                "Expected Reset or VM start failure, got {other:?}"
-            );
+            let error = anyhow::anyhow!("Expected Reset or VM start failure, got {other:?}");
             vm.teardown().await?;
             return Err(error);
         }
