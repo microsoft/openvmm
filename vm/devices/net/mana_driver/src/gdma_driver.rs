@@ -1083,7 +1083,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
                 * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
             .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
-            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
+            .min(
+                self.hwc_timeout_in_ms
+                    .saturating_sub(eqe_wait_result.elapsed as u32),
+            );
             let before_wait = std::time::Instant::now();
             eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
