@@ -47,8 +47,17 @@ impl Worker {
         ))
     }
 
+    pub(crate) async fn pause(&self) -> Result<bool, RpcError> {
+        self.rpc.call(VmRpc::Pause, ()).await
+    }
+
     pub(crate) async fn resume(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Resume, ()).await
+    }
+
+    pub(crate) async fn save(&self) -> anyhow::Result<mesh::payload::message::ProtobufMessage> {
+        let msg = self.rpc.call_failable(VmRpc::Save, ()).await?;
+        Ok(msg)
     }
 
     pub(crate) async fn reset(&self) -> anyhow::Result<()> {
