@@ -1,66 +1,110 @@
 # OpenVMM Repository
 
-## Project Overview
-OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM) written in Rust. This repository is home to both OpenVMM and OpenHCL (a paravisor). The project focuses on creating secure, high-performance virtualization infrastructure.
+OpenVMM is a modular, cross-platform Virtual Machine Monitor (VMM) written in Rust.
+This repository is home to both OpenVMM and OpenHCL (a paravisor).
+Documentation lives in `Guide/` and is published at https://openvmm.dev.
 
-## Technology Stack
-- **Language**: Rust (using Cargo build system)
-- **Build Tool**: Cargo with custom xtask automation
-- **Package Management**: Cargo + custom flowey pipeline tools
-- **Testing Framework**: Rust unit tests + cargo-nextest (recommended)
-- **Documentation**: mdBook (in `Guide/` folder, published at https://openvmm.dev)
+## Build & Setup
 
-## Project Structure
-- `openvmm/` - Core OpenVMM VMM implementation
-- `openhcl/` - OpenHCL paravisor implementation
-- `vmm_tests/` - Integration tests using the petri framework
-- `support/` - Shared support libraries and utilities
-- `vm/` - VM components (devices, chipset, etc.)
-- `Guide/` - Documentation source (published at https://openvmm.dev)
-- `xtask/` - Custom build and automation tasks
-- `flowey/` - Pipeline and build automation framework
-
-## Build and Test
-
+Restore required dependencies before building for the first time:
 ```bash
-cargo xflowey restore-packages   # First-time dependency setup
-cargo build                       # Debug build
-cargo build --release             # Release build
-cargo nextest run -p <package>    # Test a specific crate (recommended; do NOT use `cargo test` directly)
-cargo xtask fmt --fix             # Format and apply house rules
-cargo doc                         # Check rustdoc
+cargo xflowey restore-packages
 ```
 
-- Cross-compilation for `x86_64` and `aarch64` is supported
-- OpenHCL can only be built from Linux (WSL2 counts)
-- See `Guide/src/dev_guide/getting_started/cross_compile.md` for cross-compilation setup
-- Test config: `.config/nextest.toml`
+The project supports cross-compilation for `x86_64` and `aarch64`.
+OpenHCL can only be built from Linux (WSL2 counts).
+For cross-compilation from WSL2 to Windows, see
+`Guide/src/dev_guide/getting_started/cross_compile.md` and source
+`. ./build_support/setup_windows_cross.sh`.
 
-### Test Types
-- **Unit tests**: `#[cfg(test)]` blocks throughout crates
-- **VMM tests**: Integration tests in `vmm_tests/` using the petri framework (requires setup)
-- **Fuzzers**: Help identify edge cases and security issues, not tests per se
+## Formatting & Linting
 
-## Line Endings
+Always run before committing:
+```bash
+cargo xtask fmt --fix
+cargo clippy --all-targets -p <package-name>
+cargo doc -p <package-name>
+```
 
-LF only on all platforms (see `.gitattributes`). Never use CRLF.
+`cargo xtask fmt --fix` auto-fixes all formatting issues (rustfmt, copyright
+headers, naming conventions) in a single pass. If it exits successfully, all
+checks passed — do not re-run without `--fix` or run individual `--pass`
+commands afterward.
 
-## Code Standards
+The project also enforces clippy rules via `clippy.toml`. Key disallowed types:
+- Use `parking_lot::Mutex`, `Condvar`, `RwLock` — **not** `std::sync` equivalents
+- Use `unicycle::FuturesUnordered` — **not** `futures::FuturesUnordered`
+- Use `mesh` or `async-channel` for channels — **not** `futures::channel`
+- Use `std::future::ready`, `std::future::pending`, `std::task::ready`,
+  `std::pin::pin` — **not** the `futures` crate equivalents
 
-1. Follow Rust best practices and idiomatic patterns
-2. Write unit tests for new functionality
-3. Document public APIs and complex logic
-4. Update `Guide/` docs when adding features or changing behavior
-   (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
+## Trust Boundaries & Safety
 
-### Trust Boundaries (critical for security)
-- **OpenVMM does not trust the VTL0 guest** — code must not panic on any guest input
+Both OpenVMM and OpenHCL process data from untrusted sources. Code must
+**never panic** on untrusted input.
+
+- **OpenVMM does not trust the guest** — code must not panic on any guest input
 - **OpenHCL does not trust the root** — code must not panic on any root input
-- **OpenHCL does not trust the VTL0 guest** — attack surface is subtle, needs human review
+- **OpenHCL does not trust the VTL0 guest** — the attack surface is subtle and needs human review
 
-### General Rules
-- Avoid `unsafe` code when possible
-- Avoid new external dependencies, especially those increasing binary size
-- Never panic across trust boundaries
-- Unit tests: fast, isolated, no root/admin access required
-- Mark tests needing special setup with `#[ignore]`
+**Error handling across trust boundaries:**
+- Use `thiserror` for typed error enums at library/API boundaries and
+  protocol-facing code
+- Use `anyhow` with `.context("...")` for application-level plumbing and
+  context propagation
+- Never `.unwrap()` or `.expect()` on data that crosses a trust boundary
+- For protocol/hardware enums where unknown values must round-trip without
+  panicking, use the `open_enum!` macro instead of a normal Rust `enum`
+- Rate-limit trace events that can be triggered repeatedly by guest
+  interactions — use `tracelimit::warn_ratelimited!` (or `error_ratelimited!`,
+  `info_ratelimited!`) instead of bare `tracing::warn!` etc.
+
+**Other safety rules:**
+1. Avoid `unsafe` code
+2. Avoid taking new external dependencies, especially those that significantly increase binary size
+3. Several OpenHCL crates (e.g., `minimal_rt`, `openhcl_boot`, `sidecar`,
+   `host_fdt_parser`) are `no_std` — do not introduce `std` dependencies
+   into these crates
+4. Prefer `assert!` over `debug_assert!` — the performance cost is negligible
+   in nearly all code, and catching invariant violations in release builds
+   is more valuable. The project follows a "fail fast" philosophy: crash
+   immediately on broken invariants rather than letting the process continue
+   in an undefined state where bugs are harder to diagnose
+
+## Testing
+
+Run tests with cargo-nextest in the specific packages you are modifying:
+```bash
+cargo nextest run -p <package-name>
+```
+
+- **Unit tests** — spread throughout crates in `#[cfg(test)]` blocks.
+  Should be fast, isolated, and not require root/administrator access.
+  Add `use test_with_tracing::test;` in test modules so that `tracing`
+  is initialized and traces appear in test output.
+- **VMM tests** — integration tests in `vmm_tests/` using the petri
+  framework (requires additional setup).
+- **Fuzz tests** — nondeterministic tests ensuring no panics across trust
+  boundaries.
+- Mark tests requiring special setup with `#[ignore]`.
+- Configure resource management and timeouts in `.config/nextest.toml`.
+- Update `Guide/` docs when adding features or changing behavior
+  (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
+
+## Common Pitfalls
+
+- **Line endings**: This repo enforces LF on all platforms (see
+  `.gitattributes`). Never use CRLF. Exception: `.bat`/`.cmd` files use CRLF.
+- **`guest_arch` not `target_arch`**: For guest-architecture-specific code,
+  use `cfg(guest_arch = "x86_64")` — **not** `cfg(target_arch = "x86_64")`.
+  The VMM can run guests of a different architecture than the host. Using
+  `target_arch` will fail CI.
+- **Workspace dependencies**: All dependency versions are centralized in
+  the root `Cargo.toml`. In crate `Cargo.toml` files, use
+  `dep_name.workspace = true` — not inline version specifiers. Add new
+  dependencies to `[workspace.dependencies]` in the root first.
+- **Pipeline YAMLs are auto-generated**: Files under `ci-flowey/` (e.g.,
+  `openvmm-pr.yaml`) are generated by the flowey framework — do not
+  hand-edit them. Run `cargo xflowey regen` to regenerate.
+- **flowey nodes**: Use `flowey::shell_cmd!` and `rt.sh` inside flowey
+  nodes — not `xshell::cmd!` or `xshell::Shell::new`.
