@@ -62,6 +62,7 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
         None
     }
 
+    #[cfg(feature = "tdisp")]
     /// Optionally returns a trait object which implements TDISP host
     /// communication.
     #[inline(always)]

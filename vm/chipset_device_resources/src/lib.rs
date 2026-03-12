@@ -174,6 +174,7 @@ impl ChipsetDevice for ErasedChipsetDevice {
         self.0.supports_acknowledge_pic_interrupt()
     }
 
+    #[cfg(feature = "tdisp")]
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         self.0.supports_tdisp()
     }

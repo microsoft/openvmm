@@ -97,6 +97,10 @@ pub trait TdispHostDeviceInterface: Send + Sync {
 /// Trait added to host virtual devices to dispatch TDISP commands from guests.
 pub trait TdispHostDeviceTarget: Send + Sync {
     /// Dispatch a TDISP command from a guest.
+    // TODO: We shouldn't take raw protobuf-generated types here.
+    // We should probably have a method per-command with strongly typed arguments,
+    // and do the protobuf translation only when needed. Then this trait can move
+    // into chipset_device, and that crate can continue to avoid depending on prost.
     fn tdisp_handle_guest_command(
         &mut self,
         _command: GuestToHostCommand,

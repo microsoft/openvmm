@@ -18,7 +18,7 @@ vmbus_async.workspace = true
 vmbus_ring.workspace = true
 
 chipset_arc_mutex_device.workspace = true
-chipset_device.workspace = true
+chipset_device = { workspace = true, features = ["tdisp"] }
 guestmem.workspace = true
 vmcore.workspace = true
 hvdef.workspace = true

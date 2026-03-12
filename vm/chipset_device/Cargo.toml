@@ -6,10 +6,13 @@ name = "chipset_device"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+tdisp = ["dep:tdisp"]
+
 [dependencies]
 mesh.workspace = true
 inspect.workspace = true
-tdisp.workspace = true
+tdisp = { workspace = true, optional = true }
 
 [lints]
 workspace = true

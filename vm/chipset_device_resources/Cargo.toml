@@ -6,10 +6,13 @@ name = "chipset_device_resources"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+tdisp = ["dep:tdisp", "chipset_device/tdisp"]
+
 [dependencies]
 chipset_device.workspace = true
 guestmem.workspace = true
-tdisp.workspace = true
+tdisp = { workspace = true, optional = true }
 vmcore.workspace = true
 vm_resource.workspace = true
 
