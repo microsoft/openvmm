@@ -61,6 +61,12 @@ pub struct Options {
     #[clap(long)]
     pub prefetch: bool,
 
+    /// back guest RAM with a file instead of anonymous memory.
+    /// The file is created/opened and sized to the guest RAM size.
+    /// Enables snapshot save (fsync) and restore (open + mmap).
+    #[clap(long, value_name = "FILE")]
+    pub memory_backing_file: Option<PathBuf>,
+
     /// use private anonymous memory for guest RAM
     #[clap(long)]
     pub private_memory: bool,
