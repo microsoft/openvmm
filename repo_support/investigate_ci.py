@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 
@@ -22,7 +23,6 @@ Requires: gh (GitHub CLI), authenticated to microsoft/openvmm
 """
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -47,37 +47,92 @@ def gh(*args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
+# Workflow names for the main CI pipelines, in priority order.
+_CI_WORKFLOW_NAMES = ["OpenVMM PR", "[Optional] OpenVMM Release PR"]
+
+
+def _pick_best_run(runs: list[dict]) -> dict | None:
+    """Pick the most relevant run from a list, preferring failed CI runs."""
+    if not runs:
+        return None
+
+    # First pass: prefer a failed run from a known CI workflow.
+    for name in _CI_WORKFLOW_NAMES:
+        for r in runs:
+            if r.get("name") == name and r.get("conclusion") == "failure":
+                return r
+
+    # Second pass: any run from a known CI workflow.
+    for name in _CI_WORKFLOW_NAMES:
+        for r in runs:
+            if r.get("name") == name:
+                return r
+
+    # Fallback: first run.
+    return runs[0]
+
+
 def resolve_run_id(input_val: str) -> str:
     """Resolve a PR number or run ID string to a run ID."""
     try:
         num = int(input_val)
     except ValueError:
-        print(f"ERROR: '{input_val}' is not a valid PR number or run ID", file=sys.stderr)
+        print(
+            f"ERROR: '{input_val}' is not a valid PR number or run ID",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
-    if num < 100000:
-        # Treat as PR number
-        print(f"==> Looking up latest CI run for PR #{num}...")
-        pr_json = gh("pr", "view", str(num), "-R", REPO, "--json", "headRefOid")
-        head_sha = json.loads(pr_json)["headRefOid"]
-        print(f"    PR head SHA: {head_sha}")
+    # Try to interpret as a PR number first.
+    print(f"==> Trying to resolve '{input_val}' as PR #{num}...")
+    pr_proc = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(num),
+            "-R",
+            REPO,
+            "--json",
+            "headRefOid",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-        runs_json = gh(
-            "run", "list", "-R", REPO,
-            "--commit", head_sha,
-            "--json", "databaseId,status,conclusion,name",
-        )
-        runs = json.loads(runs_json)
-        if not runs:
-            print(f"ERROR: No CI runs found for PR #{num}", file=sys.stderr)
-            sys.exit(1)
+    if pr_proc.returncode == 0 and pr_proc.stdout.strip():
+        try:
+            head_sha = json.loads(pr_proc.stdout)["headRefOid"]
+        except (json.JSONDecodeError, KeyError):
+            head_sha = None
 
-        run_id = str(runs[0]["databaseId"])
-        print(f"    Found run ID: {run_id}")
-        return run_id
-    else:
-        print(f"==> Using run ID: {num}")
-        return str(num)
+        if head_sha:
+            print(f"    PR head SHA: {head_sha}")
+            runs_json = gh(
+                "run",
+                "list",
+                "-R",
+                REPO,
+                "--commit",
+                head_sha,
+                "--json",
+                "databaseId,status,conclusion,name",
+            )
+            runs = json.loads(runs_json)
+            if not runs:
+                print(f"ERROR: No CI runs found for PR #{num}", file=sys.stderr)
+                sys.exit(1)
+
+            chosen = _pick_best_run(runs)
+            assert chosen is not None
+            run_id = str(chosen["databaseId"])
+            print(f"    Found run: {chosen.get('name', '?')} (ID: {run_id})")
+            return run_id
+
+    # PR lookup failed or returned invalid data; treat as run ID.
+    print(f"==> Treating '{input_val}' as run ID...")
+    return input_val
 
 
 def get_run_status(run_id: str) -> None:
@@ -188,7 +243,7 @@ def show_build_failure_log(run_id: str, failed_jobs: list[dict]) -> None:
     job = failed_jobs[0]
     job_id = str(job["databaseId"])
     print(f"    Last 50 lines of '{job['name']}':")
-    log = gh("run", "view", "-R", REPO, "--job", job_id, "--log", check=False)
+    log = gh("run", "view", run_id, "-R", REPO, "--job", job_id, "--log", check=False)
     if log:
         for line in log.splitlines()[-50:]:
             print(f"    {line}")
@@ -200,9 +255,13 @@ def find_failed_tests(workdir: Path) -> list[Path]:
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
+    if len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help"):
         print(__doc__)
-        sys.exit(0 if sys.argv[1:] == ["--help"] else 1)
+        sys.exit(0)
+
+    if len(sys.argv) != 2:
+        print(__doc__)
+        sys.exit(1)
 
     run_id = resolve_run_id(sys.argv[1])
     get_run_status(run_id)
