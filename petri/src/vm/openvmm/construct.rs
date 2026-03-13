@@ -712,7 +712,7 @@ impl PetriVmConfigSetupCore<'_> {
                         // data on the floor during boot.
                         append_cmdline(
                             &mut cmdline,
-                            &format!(
+                            format!(
                                 "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}\""
                             ),
                         );
