@@ -899,10 +899,10 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
     let target_cpu = (0u32..vp_count)
         .find(|cpu| !cpus_with_issuers.contains(&cpu.to_string()))
-        .expect(
-            "all 4 CPUs already have IO issuers after boot — \
-             test cannot exercise create_io_queue. Consider increasing vp_count.",
-        );
+        .expect(&format!(
+            "all {vp_count} CPUs already have IO issuers after boot — \
+             test cannot exercise create_io_queue. Consider increasing vp_count."
+        ));
     tracing::info!(
         target_cpu,
         existing_issuers = ?cpus_with_issuers,
