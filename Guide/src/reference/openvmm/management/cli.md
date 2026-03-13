@@ -26,9 +26,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
   file system can be mounted in a Linux guest using `mount -t virtiofs tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.
 
-And serial devices can each be configured to be relayed to different endpoints:
+Serial devices can each be configured to be relayed to different endpoints:
 
-* `--com1/com2 <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
+* `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
+  `/dev/hvc0` inside the guest).
+
+The `BACKEND` argument is the same for all serial devices:
+
   * `none`: Serial output is dropped.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.

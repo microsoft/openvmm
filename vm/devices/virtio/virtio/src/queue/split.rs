@@ -78,7 +78,9 @@ impl SplitQueueGetWork {
             .get())
     }
 
-    pub fn is_available(&mut self) -> Result<Option<u16>, QueueError> {
+    /// Checks whether a descriptor is available, returning its wrapped index.
+    /// Does not advance `last_avail_index`.
+    fn check_available(&mut self) -> Result<Option<u16>, QueueError> {
         let mut avail_index = Self::get_available_index(self)?;
         if avail_index == self.last_avail_index {
             if self.use_ring_event_index {
@@ -100,12 +102,32 @@ impl SplitQueueGetWork {
         } else {
             self.set_used_flags(spec::UsedFlags::new().with_no_notify(true))?;
         }
-        let next_avail_index = self.last_avail_index;
-        self.last_avail_index = self.last_avail_index.wrapping_add(1);
         // Ensure available index read is ordered before subsequent descriptor
         // reads.
         atomic::fence(atomic::Ordering::Acquire);
-        Ok(Some(next_avail_index % self.queue_size))
+        Ok(Some(self.last_avail_index % self.queue_size))
+    }
+
+    pub fn is_available(&mut self) -> Result<Option<u16>, QueueError> {
+        let result = self.check_available()?;
+        if result.is_some() {
+            self.last_avail_index = self.last_avail_index.wrapping_add(1);
+        }
+        Ok(result)
+    }
+
+    /// Like [`is_available`](Self::is_available), but does not advance
+    /// `last_avail_index`. Returns the wrapped index of the next available
+    /// descriptor if one is present.
+    pub fn peek_available(&mut self) -> Result<Option<u16>, QueueError> {
+        self.check_available()
+    }
+
+    /// Advances `last_avail_index` by one. Call this after
+    /// [`peek_available`](Self::peek_available) to consume the peeked
+    /// descriptor.
+    pub fn advance(&mut self) {
+        self.last_avail_index = self.last_avail_index.wrapping_add(1);
     }
 
     pub fn get_available_descriptor_index(&self, wrapped_index: u16) -> Result<u16, QueueError> {

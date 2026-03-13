@@ -35,6 +35,72 @@ use task_control::TaskControl;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 
+/// Read all readable payload buffers into `target`. Returns the number of bytes read.
+fn read_from_payload(
+    payload: &[VirtioQueuePayload],
+    mem: &GuestMemory,
+    target: &mut [u8],
+) -> Result<usize, GuestMemoryError> {
+    let mut remaining = target;
+    let mut read_bytes: usize = 0;
+    for payload in payload {
+        if payload.writeable {
+            continue;
+        }
+        let size = std::cmp::min(payload.length as usize, remaining.len());
+        let (current, next) = remaining.split_at_mut(size);
+        mem.read_at(payload.address, current)?;
+        read_bytes += size;
+        if next.is_empty() {
+            break;
+        }
+        remaining = next;
+    }
+    Ok(read_bytes)
+}
+
+/// Total length of all readable (non-writeable) payload buffers.
+fn readable_payload_length(payload: &[VirtioQueuePayload]) -> u64 {
+    payload
+        .iter()
+        .filter(|p| !p.writeable)
+        .fold(0, |acc, p| acc + p.length as u64)
+}
+
+/// Read readable payload buffers into `target`, skipping the first `offset`
+/// bytes of readable data. Returns the number of bytes read.
+fn read_from_payload_at_offset(
+    payload: &[VirtioQueuePayload],
+    offset: u64,
+    mem: &GuestMemory,
+    target: &mut [u8],
+) -> Result<usize, GuestMemoryError> {
+    let mut skip = offset;
+    let mut remaining = target;
+    let mut read_bytes: usize = 0;
+    for payload in payload {
+        if payload.writeable {
+            continue;
+        }
+        let payload_len = payload.length as u64;
+        if skip >= payload_len {
+            skip -= payload_len;
+            continue;
+        }
+        let usable = (payload_len - skip) as usize;
+        let size = std::cmp::min(usable, remaining.len());
+        let (current, next) = remaining.split_at_mut(size);
+        mem.read_at(payload.address + skip, current)?;
+        read_bytes += size;
+        skip = 0;
+        if next.is_empty() {
+            break;
+        }
+        remaining = next;
+    }
+    Ok(read_bytes)
+}
+
 #[async_trait]
 pub trait VirtioQueueWorkerContext {
     async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool;
@@ -132,25 +198,7 @@ impl VirtioQueueCallbackWork {
 
     // Read all payload into a buffer.
     pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
-        let mut remaining = target;
-        let mut read_bytes: usize = 0;
-        for payload in &self.payload {
-            if payload.writeable {
-                continue;
-            }
-
-            let size = std::cmp::min(payload.length as usize, remaining.len());
-            let (current, next) = remaining.split_at_mut(size);
-            mem.read_at(payload.address, current)?;
-            read_bytes += size;
-            if next.is_empty() {
-                break;
-            }
-
-            remaining = next;
-        }
-
-        Ok(read_bytes)
+        read_from_payload(&self.payload, mem, target)
     }
 
     // Write the specified buffer to the payload buffers.
@@ -214,6 +262,61 @@ impl Drop for VirtioQueueCallbackWork {
     }
 }
 
+/// A descriptor that has been peeked from a [`VirtioQueue`] without advancing
+/// the available index.
+///
+/// The descriptor remains in the available ring until [`consume`](Self::consume)
+/// is called, which advances the index and returns a normal
+/// [`VirtioQueueCallbackWork`] for completion.
+///
+/// Dropping a `PeekedWork` without consuming is a no-op — the descriptor stays
+/// available for the next peek/next call.
+pub struct PeekedWork<'a> {
+    queue: &'a mut VirtioQueue,
+    work: QueueWork,
+}
+
+impl<'a> PeekedWork<'a> {
+    fn new(queue: &'a mut VirtioQueue, work: QueueWork) -> Self {
+        Self { queue, work }
+    }
+
+    /// Returns the payload descriptors.
+    pub fn payload(&self) -> &[VirtioQueuePayload] {
+        &self.work.payload
+    }
+
+    /// Total length of all readable (guest-written) payload buffers.
+    pub fn readable_length(&self) -> u64 {
+        readable_payload_length(&self.work.payload)
+    }
+
+    /// Read all readable payload into `target`.
+    pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
+        read_from_payload(&self.work.payload, mem, target)
+    }
+
+    /// Read readable payload into `target`, skipping the first `offset`
+    /// bytes of readable data.
+    pub fn read_at_offset(
+        &self,
+        offset: u64,
+        mem: &GuestMemory,
+        target: &mut [u8],
+    ) -> Result<usize, GuestMemoryError> {
+        read_from_payload_at_offset(&self.work.payload, offset, mem, target)
+    }
+
+    /// Consume this peeked work, advancing the queue's available index.
+    ///
+    /// Returns a [`VirtioQueueCallbackWork`] that must be completed (or will
+    /// auto-complete with 0 bytes on drop).
+    pub fn consume(self) -> VirtioQueueCallbackWork {
+        self.queue.core.advance();
+        VirtioQueueCallbackWork::new(self.work, &self.queue.used_handler)
+    }
+}
+
 #[derive(Debug, Inspect)]
 pub struct VirtioQueue {
     #[inspect(flatten)]
@@ -262,6 +365,47 @@ impl VirtioQueue {
             .try_next_work()
             .map_err(Error::other)?
             .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
+    }
+
+    /// Peek at the next available descriptor without advancing the available
+    /// index. Returns a [`PeekedWork`] that holds the descriptor payload and
+    /// a mutable reference to this queue.
+    ///
+    /// The descriptor stays in the available ring. Call
+    /// [`PeekedWork::consume`] to advance the index and get a normal
+    /// [`VirtioQueueCallbackWork`] for completion.
+    ///
+    /// Dropping the [`PeekedWork`] without consuming is a no-op — the
+    /// descriptor remains available.
+    ///
+    /// Calling `try_peek` again without consuming returns the **same**
+    /// descriptor.
+    pub fn try_peek(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
+        let work = self.core.try_peek_work().map_err(Error::other)?;
+        Ok(work.map(|w| PeekedWork::new(self, w)))
+    }
+
+    /// Polls until a descriptor is available for peeking, without advancing
+    /// the available index. See [`try_peek`](Self::try_peek).
+    pub fn poll_peek(&mut self, cx: &mut Context<'_>) -> Poll<Result<PeekedWork<'_>, Error>> {
+        loop {
+            if let Some(work) = self.core.try_peek_work().map_err(Error::other)? {
+                return Poll::Ready(Ok(PeekedWork::new(self, work)));
+            }
+            ready!(self.poll_kick(cx));
+        }
+    }
+
+    /// Waits until a descriptor is available for peeking, without advancing
+    /// the available index. See [`try_peek`](Self::try_peek).
+    pub async fn peek(&mut self) -> Result<PeekedWork<'_>, Error> {
+        let work = loop {
+            if let Some(work) = self.core.try_peek_work().map_err(Error::other)? {
+                break work;
+            }
+            std::future::poll_fn(|cx| self.poll_kick(cx)).await;
+        };
+        Ok(PeekedWork::new(self, work))
     }
 
     fn poll_next_buffer(
@@ -469,6 +613,10 @@ pub trait VirtioDevice: inspect::InspectMut + Send {
     /// the device status. On failure, the transport will log the error and
     /// leave `DRIVER_OK` unset, so the device remains inert and the guest
     /// will observe failures through IO timeouts.
+    ///
+    /// The transport guarantees this is only called on a device that is either
+    /// freshly constructed or fully disabled (i.e. `poll_disable` has returned
+    /// `Poll::Ready`). Implementations may assume this precondition holds.
     fn enable(&mut self, resources: Resources) -> anyhow::Result<()>;
     /// Poll the device to complete a disable/reset operation.
     ///
@@ -478,6 +626,9 @@ pub trait VirtioDevice: inspect::InspectMut + Send {
     ///
     /// Devices that don't need async cleanup can return `Poll::Ready(())`
     /// immediately.
+    ///
+    /// Once this returns `Poll::Ready`, the transport may call `enable` again
+    /// to re-initialize the device. Until then, `enable` will not be called.
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()>;
 }
 

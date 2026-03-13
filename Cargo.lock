@@ -5444,6 +5444,7 @@ dependencies = [
  "uidevices",
  "virtio",
  "virtio_blk",
+ "virtio_console",
  "virtio_net",
  "virtio_p9",
  "virtio_pmem",
@@ -9002,6 +9003,32 @@ dependencies = [
  "vm_resource",
  "vmcore",
  "zerocopy",
+]
+
+[[package]]
+name = "virtio_console"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "pal_event",
+ "parking_lot",
+ "serial_core",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
