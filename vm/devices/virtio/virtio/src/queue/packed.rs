@@ -11,7 +11,6 @@ use crate::queue::read_descriptor;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use crate::spec::queue::DescriptorFlags;
-use crate::spec::u32_le;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use spec::EventSuppressionFlags;
@@ -66,7 +65,7 @@ impl PackedQueueGetWork {
             let disable_event =
                 PackedEventSuppression::new().with_flags(EventSuppressionFlags::Disabled);
             self.device_event
-                .write_plain::<u32_le>(0, &disable_event.into_bits())
+                .write_plain(0, &disable_event)
                 .map_err(QueueError::Memory)?;
             atomic::fence(atomic::Ordering::Acquire);
             let descriptor: PackedDescriptor =
@@ -78,7 +77,7 @@ impl PackedQueueGetWork {
             let enable_event =
                 PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled);
             self.device_event
-                .write_plain::<u32_le>(0, &enable_event.into_bits())
+                .write_plain(0, &enable_event)
                 .map_err(QueueError::Memory)?;
             atomic::fence(atomic::Ordering::SeqCst);
             let descriptor: PackedDescriptor =
