@@ -39,18 +39,23 @@ mod tap_tests {
     /// without requiring root privileges on the host. Must be called while the
     /// process is still single-threaded.
     ///
-    /// Returns `Ok(())` on success, or `Err` with a message if the kernel does
-    /// not support the required namespace operations (e.g., unprivileged user
-    /// namespaces are disabled).
+    /// Returns `Ok(())` on success, or `Err` with a message if unprivileged
+    /// user namespaces are not available (EPERM). Panics on unexpected errors.
     fn enter_test_netns() -> Result<(), String> {
         // SAFETY: unshare() with CLONE_NEWUSER | CLONE_NEWNET is safe — it only
         // affects the calling process's namespace membership.
         let ret = unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) };
         if ret != 0 {
-            return Err(format!(
-                "unshare(CLONE_NEWUSER | CLONE_NEWNET) failed: {}",
-                std::io::Error::last_os_error(),
-            ));
+            let err = std::io::Error::last_os_error();
+            // EPERM means unprivileged user namespaces are disabled (e.g.,
+            // kernel.unprivileged_userns_clone=0 or restricted by LSM).
+            // Skip tests gracefully in that case; panic on anything else.
+            if err.raw_os_error() == Some(libc::EPERM) {
+                return Err(format!(
+                    "unshare(CLONE_NEWUSER | CLONE_NEWNET) failed: {err}",
+                ));
+            }
+            panic!("unshare(CLONE_NEWUSER | CLONE_NEWNET) failed unexpectedly: {err}");
         }
         // Note: we intentionally skip writing /proc/self/{setgroups,uid_map,gid_map}.
         // The unshare call alone grants full capabilities (including CAP_NET_ADMIN)
