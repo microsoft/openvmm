@@ -358,10 +358,14 @@ mod tap_tests {
     // ---------------------------------------------------------------------------
 
     pub(crate) fn main() {
-        // Enter the user + network namespace while still single-threaded.
-        enter_test_netns();
-
         let args = Arguments::from_args();
+
+        // Only enter the namespace when actually running tests—not when
+        // nextest calls `--list` to discover them.
+        if !args.list {
+            enter_test_netns();
+        }
+
         let tests = vec![
             Trial::test("tap_create", test_tap_create),
             async_trial("tap_get_queues", test_tap_get_queues),
