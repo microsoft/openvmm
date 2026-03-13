@@ -3,6 +3,8 @@
 
 //! Virtio vsock protocol definitions from the virtio specification, section 5.10.
 
+use bitfield_struct::bitfield;
+use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -46,7 +48,6 @@ pub struct VsockHeader {
     pub src_port: u32,
     pub dst_port: u32,
     pub len: u32,
-    /// The socket type (VIRTIO_VSOCK_TYPE_*).
     pub socket_type: u16,
     pub op: u16,
     pub flags: u32,
@@ -54,23 +55,51 @@ pub struct VsockHeader {
     pub fwd_cnt: u32,
 }
 
-/// Socket types for the `type` field.
-pub const VIRTIO_VSOCK_TYPE_STREAM: u16 = 1;
+pub struct VsockPacket<'a> {
+    pub header: VsockHeader,
+    pub data: &'a [u8],
+}
 
-/// Operations for the `op` field.
-#[allow(dead_code)]
-pub const VIRTIO_VSOCK_OP_INVALID: u16 = 0;
-pub const VIRTIO_VSOCK_OP_REQUEST: u16 = 1;
-pub const VIRTIO_VSOCK_OP_RESPONSE: u16 = 2;
-pub const VIRTIO_VSOCK_OP_RST: u16 = 3;
-pub const VIRTIO_VSOCK_OP_SHUTDOWN: u16 = 4;
-pub const VIRTIO_VSOCK_OP_RW: u16 = 5;
-pub const VIRTIO_VSOCK_OP_CREDIT_UPDATE: u16 = 6;
-pub const VIRTIO_VSOCK_OP_CREDIT_REQUEST: u16 = 7;
+impl<'a> VsockPacket<'a> {
+    pub fn new(header: VsockHeader, data: &'a [u8]) -> Self {
+        Self { header, data }
+    }
 
-/// Shutdown flags for VIRTIO_VSOCK_OP_SHUTDOWN.
-pub const VIRTIO_VSOCK_SHUTDOWN_F_RECEIVE: u32 = 1;
-pub const VIRTIO_VSOCK_SHUTDOWN_F_SEND: u32 = 2;
+    pub fn header_only(header: VsockHeader) -> Self {
+        Self { header, data: &[] }
+    }
+}
+
+open_enum! {
+    /// Socket types for the `type` field.
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    pub enum SocketType: u16 {
+        STREAM = 1,
+    }
+}
+
+open_enum! {
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    pub enum Operation: u16 {
+        INVALID = 0,
+        REQUEST = 1,
+        RESPONSE = 2,
+        RST = 3,
+        SHUTDOWN = 4,
+        RW = 5,
+        CREDIT_UPDATE = 6,
+        CREDIT_REQUEST = 7,
+    }
+}
+
+#[bitfield(u32)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct ShutdownFlags {
+    pub receive: bool,
+    pub send: bool,
+    #[bits(30)]
+    _reserved: u32,
+}
 
 #[allow(dead_code)]
 /// Event IDs for the event virtqueue.
@@ -86,18 +115,24 @@ pub struct VsockEvent {
 
 impl VsockHeader {
     /// Create a new header for a packet from the host to the guest.
-    pub fn new_reply(src_cid: u64, dst_cid: u64, src_port: u32, dst_port: u32, op: u16) -> Self {
+    pub fn new_reply(
+        src_cid: u64,
+        dst_cid: u64,
+        src_port: u32,
+        dst_port: u32,
+        op: Operation,
+    ) -> Self {
         Self {
-            src_cid: src_cid.to_le(),
-            dst_cid: dst_cid.to_le(),
-            src_port: src_port.to_le(),
-            dst_port: dst_port.to_le(),
-            len: 0u32.to_le(),
-            socket_type: VIRTIO_VSOCK_TYPE_STREAM.to_le(),
-            op: op.to_le(),
-            flags: 0u32.to_le(),
-            buf_alloc: 0u32.to_le(),
-            fwd_cnt: 0u32.to_le(),
+            src_cid,
+            dst_cid,
+            src_port,
+            dst_port,
+            len: 0,
+            socket_type: SocketType::STREAM.0,
+            op: op.0,
+            flags: ShutdownFlags::new().into(),
+            buf_alloc: 0,
+            fwd_cnt: 0,
         }
     }
 }

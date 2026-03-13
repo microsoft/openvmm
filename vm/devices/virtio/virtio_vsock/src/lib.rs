@@ -21,7 +21,8 @@ mod protocol;
 pub mod relay;
 pub mod resolver;
 
-use futures::FutureExt;
+use crate::protocol::VsockPacket;
+use crate::relay::RxWork;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -31,16 +32,16 @@ use protocol::VsockConfig;
 use protocol::VsockHeader;
 use relay::VsockRelay;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
 use task_control::AsyncRun;
 use task_control::StopTask;
 use task_control::TaskControl;
+use unicycle::FuturesUnordered;
 use unix_socket::UnixListener;
 use virtio::DeviceTraits;
-use virtio::QueueResources;
 use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
@@ -92,7 +93,10 @@ impl VirtioVsockDevice {
             listener,
             memory: memory.clone(),
             driver: driver_source.simple(),
-            worker: TaskControl::new(VsockWorker { mem: memory }),
+            worker: TaskControl::new(VsockWorker {
+                mem: memory,
+                work: FuturesUnordered::new(),
+            }),
         }
     }
 }
@@ -182,7 +186,6 @@ impl VirtioDevice for VirtioVsockDevice {
             rx_queue: queues.remove(0),
             tx_queue: queues.remove(0),
             event_queue: queues.remove(0),
-            pending_rx: Vec::new(),
             relay,
         };
 
@@ -205,13 +208,12 @@ struct VsockWorkerState {
     tx_queue: VirtioQueue,
     #[allow(dead_code)] // Required by the spec but not actively polled.
     event_queue: VirtioQueue,
-    /// Packets queued but not yet written to the rx virtqueue.
-    pending_rx: Vec<(VsockHeader, Vec<u8>)>,
     relay: VsockRelay,
 }
 
 struct VsockWorker {
     mem: GuestMemory,
+    work: FuturesUnordered<Pin<Box<dyn Future<Output = RxWork> + Send>>>,
 }
 
 impl VsockWorker {
@@ -247,62 +249,92 @@ impl VsockWorker {
         tracing::info!(?hdr, len = data.len(), "vsock tx request");
 
         // Process through the relay.
-        if let Some((reply_hdr, reply_data)) = state.relay.handle_guest_tx(&hdr, data) {
-            state.pending_rx.push((reply_hdr, reply_data));
-            self.deliver_rx_packets(state);
+        if let Some(work) = state.relay.handle_guest_tx(VsockPacket::new(hdr, data)) {
+            tracing::info!("queueing rx work from relay");
+            self.work.push(Box::pin(async move { work }));
         }
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
-    fn deliver_rx_packets(&mut self, state: &mut VsockWorkerState) {
-        while !state.pending_rx.is_empty() {
-            match state.rx_queue.try_next() {
-                Ok(Some(mut work)) => {
-                    let (hdr, data) = state.pending_rx.remove(0);
-                    let hdr_bytes = hdr.as_bytes();
-                    let total = hdr_bytes.len() + data.len();
+    async fn handle_rx_work(&mut self, state: &mut VsockWorkerState, rx_work: RxWork) {
+        // let work = poll_fn(|cx| state.rx_queue.poll_next_unpin(cx))
+        //     .await
+        //     .expect("vsock rx queue never ends");
 
-                    // Write header to the writeable descriptors.
-                    if let Err(err) = work.write(&self.mem, hdr_bytes) {
-                        tracing::error!(
-                            error = &err as &dyn std::error::Error,
-                            "failed to write vsock header to guest rx"
-                        );
-                        // Put the packet back.
-                        state.pending_rx.insert(0, (hdr, data));
-                        work.complete(0);
-                        break;
-                    }
+        // let work = match work {
+        //     Ok(w) => w,
+        //     Err(err) => {
+        //         tracing::error!(
+        //             error = &err as &dyn std::error::Error,
+        //             "error reading from vsock rx queue"
+        //         );
+        //         return;
+        //     }
+        // };
 
-                    // Write data payload after the header.
-                    if !data.is_empty() {
-                        if let Err(err) =
-                            work.write_at_offset(hdr_bytes.len() as u64, &self.mem, &data)
-                        {
-                            tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "failed to write vsock data to guest rx"
-                            );
-                            work.complete(hdr_bytes.len() as u32);
-                            continue;
-                        }
-                    }
+        if let Some(packet) = state.relay.get_rx_packet(rx_work) {
+            tracing::info!(?packet.header, "sending reply");
+            let mut work = state
+                .rx_queue
+                .try_next()
+                .expect("error reading stream")
+                .expect("must have queue items");
+            let header = packet.header.as_bytes();
+            work.write(&self.mem, header).expect("TODO");
+            work.write_at_offset(header.len() as u64, &self.mem, packet.data)
+                .expect("TODO");
 
-                    work.complete(total as u32);
-                }
-                Ok(None) => {
-                    // No buffers available right now; will retry on next kick.
-                    break;
-                }
-                Err(err) => {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "vsock rx queue error"
-                    );
-                    break;
-                }
-            }
+            work.complete((header.len() + packet.data.len()) as u32);
         }
+
+        // while !state.pending_rx.is_empty() {
+        //     match state.rx_queue.try_next() {
+        //         Ok(Some(mut work)) => {
+        //             let (hdr, data) = state.pending_rx.remove(0);
+        //             let hdr_bytes = hdr.as_bytes();
+        //             let total = hdr_bytes.len() + data.len();
+
+        //             // Write header to the writeable descriptors.
+        //             if let Err(err) = work.write(&self.mem, hdr_bytes) {
+        //                 tracing::error!(
+        //                     error = &err as &dyn std::error::Error,
+        //                     "failed to write vsock header to guest rx"
+        //                 );
+        //                 // Put the packet back.
+        //                 state.pending_rx.insert(0, (hdr, data));
+        //                 work.complete(0);
+        //                 break;
+        //             }
+
+        //             // Write data payload after the header.
+        //             if !data.is_empty() {
+        //                 if let Err(err) =
+        //                     work.write_at_offset(hdr_bytes.len() as u64, &self.mem, &data)
+        //                 {
+        //                     tracing::error!(
+        //                         error = &err as &dyn std::error::Error,
+        //                         "failed to write vsock data to guest rx"
+        //                     );
+        //                     work.complete(hdr_bytes.len() as u32);
+        //                     continue;
+        //                 }
+        //             }
+
+        //             work.complete(total as u32);
+        //         }
+        //         Ok(None) => {
+        //             // No buffers available right now; will retry on next kick.
+        //             break;
+        //         }
+        //         Err(err) => {
+        //             tracing::error!(
+        //                 error = &err as &dyn std::error::Error,
+        //                 "vsock rx queue error"
+        //             );
+        //             break;
+        //         }
+        //     }
+        // }
     }
 }
 
@@ -317,13 +349,18 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                 loop {
                     enum Event {
                         TxWork(std::io::Result<VirtioQueueCallbackWork>),
+                        RxWork(RxWork),
                     }
 
                     let event = std::future::poll_fn(|cx| {
-                        // TODO: Check for relay work.
                         if let Poll::Ready(item) = state.tx_queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::TxWork(item));
+                        }
+
+                        // TODO: Only check this if RX space available.
+                        if let Poll::Ready(Some(work)) = self.work.poll_next_unpin(cx) {
+                            return Poll::Ready(Event::RxWork(work));
                         }
 
                         Poll::Pending
@@ -342,6 +379,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             );
 
                             return false;
+                        }
+                        Event::RxWork(work) => {
+                            tracing::info!("got rx work from relay");
+                            self.handle_rx_work(state, work).await;
                         }
                     }
                 }

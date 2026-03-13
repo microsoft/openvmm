@@ -19,12 +19,15 @@ unix_socket.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+bitfield-struct.workspace = true
 event-listener.workspace = true
 futures.workspace = true
 mesh.workspace = true
+open_enum.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 tracelimit.workspace = true
+unicycle.workspace = true
 zerocopy.workspace = true
 
 [lints]
