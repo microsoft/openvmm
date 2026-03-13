@@ -311,7 +311,7 @@ impl MsixEmulator {
                 count,
                 state,
                 config_table_location: MsiTableLocation::new(bar, 0),
-                pending_bits_location: MsiTableLocation::new(bar, pending_bits_offset.into()),
+                pending_bits_location: MsiTableLocation::new(bar, pending_bits_offset),
             },
         )
     }

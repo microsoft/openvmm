@@ -362,7 +362,7 @@ impl VirtioMmioDevice {
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
                     let notification_address =
-                        (address & !0xfff) + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
+                        (address & !0xfff) + VirtioMmioRegister::QUEUE_NOTIFY.0;
                     for i in 0..self.events.len() {
                         self.doorbells.add(
                             notification_address,

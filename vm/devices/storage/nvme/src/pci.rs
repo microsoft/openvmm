@@ -234,7 +234,11 @@ impl NvmeController {
                 return IoResult::Err(IoError::InvalidAccessSize);
             };
             let value = u32::from_ne_bytes(data);
-            self.workers.doorbell(db_id as u16, value);
+            let db_id = match u16::try_from(db_id) {
+                Ok(id) => id,
+                Err(_) => return IoResult::Err(InvalidRegister),
+            };
+            self.workers.doorbell(db_id, value);
             return IoResult::Ok;
         }
 

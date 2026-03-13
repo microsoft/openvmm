@@ -187,10 +187,10 @@ impl VirtioPciDevice {
         ];
 
         let mut bars = DeviceBars::new().bar0(
-            BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
+            BAR0_DEVICE_CFG_OFFSET + traits.device_register_length as u64,
             BarMemoryKind::Intercept(mmio_registration.new_io_region(
                 "config",
-                BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
+                BAR0_DEVICE_CFG_OFFSET + traits.device_register_length as u64,
             )),
         );
 
@@ -474,7 +474,7 @@ impl VirtioPciDevice {
                 }
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
-                    let notification_address = (address & !0xfff) + BAR0_NOTIFY_OFFSET as u64;
+                    let notification_address = (address & !0xfff) + BAR0_NOTIFY_OFFSET;
                     for i in 0..self.events.len() {
                         self.doorbells.add(
                             notification_address,
