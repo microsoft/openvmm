@@ -887,8 +887,10 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
                 v.fixed = Some(Default::default());
             }
 
-            // Add same number of scsi sub channels as the vp count to allow IO
-            // on all CPUs. This is seemingly in addition to the default channel
+            // Configure SCSI so there are as many total channels as vCPUs to
+            // allow IO on all CPUs. scsi_sub_channels count beyond the first
+            // channel which is always present. so vp_count - 1 yeilds a total
+            // of vp_count channels.
             v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
         })
         .run()
