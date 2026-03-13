@@ -28,6 +28,10 @@ enum TestConfig {
     AkCertRequestFailureAndRetry,
     /// Test AK cert persistency across boots
     AkCertPersistentAcrossBoot,
+    /// Test skip hardware unsealing signal from IGVM Agent
+    KeyReleaseFailureSkipHwUnsealing,
+    /// Test key release failure without skip_hw_unsealing signal
+    KeyReleaseFailure,
 }
 
 impl From<TestConfig> for IgvmAttestTestConfig {
@@ -39,6 +43,10 @@ impl From<TestConfig> for IgvmAttestTestConfig {
             TestConfig::AkCertPersistentAcrossBoot => {
                 IgvmAttestTestConfig::AkCertPersistentAcrossBoot
             }
+            TestConfig::KeyReleaseFailureSkipHwUnsealing => {
+                IgvmAttestTestConfig::KeyReleaseFailureSkipHwUnsealing
+            }
+            TestConfig::KeyReleaseFailure => IgvmAttestTestConfig::KeyReleaseFailure,
         }
     }
 }
@@ -53,7 +61,7 @@ fn main() -> ExitCode {
             let args = Args::parse();
 
             let filter = EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("test_igvm_agent_rpc_server=info"));
+                .unwrap_or_else(|_| EnvFilter::new("test_igvm_agent_rpc_server=info,test_igvm_agent_lib=info"));
 
             let _ = fmt()
                 .with_env_filter(filter)
@@ -66,8 +74,8 @@ fn main() -> ExitCode {
             if let Some(test_config) = args.test_config {
                 let igvm_config: IgvmAttestTestConfig = test_config.into();
                 let setting = IgvmAgentTestSetting::TestConfig(igvm_config);
-                rpc::igvm_agent::install_plan(&setting);
-                tracing::info!(?test_config, "installed test configuration");
+                rpc::igvm_agent::install_default_plan(&setting);
+                tracing::info!(?test_config, "installed default test configuration");
             } else {
                 tracing::info!("no test configuration provided, using default behavior");
             }
