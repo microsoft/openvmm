@@ -53,11 +53,12 @@
 // UNSAFETY: Calling Win32 `OutputDebugStringA` and `IsDebuggerPresent`.
 #![expect(unsafe_code)]
 
+use smallvec::SmallVec;
 use tracing::Subscriber;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::layer::Filter;
-use winapi::um::debugapi::{IsDebuggerPresent, OutputDebugStringA};
+use windows_sys::Win32::System::Diagnostics::Debug::{IsDebuggerPresent, OutputDebugStringA};
 
 // ---------------------------------------------------------------------------
 // DebugOutputWriter
@@ -67,34 +68,26 @@ use winapi::um::debugapi::{IsDebuggerPresent, OutputDebugStringA};
 /// `OutputDebugStringA`.
 ///
 /// Suitable for use with `tracing_subscriber::fmt::layer().with_writer()`.
-#[derive(Default)]
-pub struct DebugOutputWriter;
+pub struct DebugOutputWriter {
+    _private: (),
+}
 
 impl DebugOutputWriter {
     /// Create a new writer.
     pub fn new() -> Self {
-        Self
+        Self { _private: () }
     }
 }
 
 impl std::io::Write for DebugOutputWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        // Use a stack buffer for typical messages to avoid a heap allocation.
-        // Only fall back to Vec for oversized output.
-        const STACK_BUF_SIZE: usize = 1024;
-        if buf.len() < STACK_BUF_SIZE {
-            let mut stack_buf = [0u8; STACK_BUF_SIZE];
-            stack_buf[..buf.len()].copy_from_slice(buf);
-            // stack_buf[buf.len()] is already 0 from the zero-init.
-            // SAFETY: The buffer is null-terminated and valid.
-            unsafe { OutputDebugStringA(stack_buf.as_ptr().cast::<i8>()) };
-        } else {
-            let mut null_terminated = Vec::with_capacity(buf.len() + 1);
-            null_terminated.extend_from_slice(buf);
-            null_terminated.push(b'\0');
-            // SAFETY: The buffer is null-terminated and valid.
-            unsafe { OutputDebugStringA(null_terminated.as_ptr().cast::<i8>()) };
-        }
+        // Use a SmallVec so typical messages stay on the stack and only
+        // spill to the heap for oversized output.
+        let mut null_terminated: SmallVec<[u8; 1024]> = SmallVec::with_capacity(buf.len() + 1);
+        null_terminated.extend_from_slice(buf);
+        null_terminated.push(b'\0');
+        // SAFETY: The buffer is null-terminated and valid.
+        unsafe { OutputDebugStringA(null_terminated.as_ptr()) };
         Ok(buf.len())
     }
 
