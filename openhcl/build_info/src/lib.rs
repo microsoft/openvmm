@@ -76,8 +76,8 @@ impl BuildInfo {
     }
 }
 
-/// Parse the OPENHCL_VERSION string of the form "major.minor.build.platform"
-/// into four u32 components. Missing or unparseable components default to 0.
+// Parse the OPENHCL_VERSION string of the form "major.minor.build.platform"
+// into four u32 components. Missing or unparseable components default to 0.
 pub fn parse_openhcl_version() -> (u32, u32, u32, u32) {
     let version = get().openhcl_version();
     let mut parts = version.splitn(4, '.');
