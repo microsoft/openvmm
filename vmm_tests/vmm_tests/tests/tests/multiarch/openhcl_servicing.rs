@@ -995,7 +995,7 @@ async fn apply_fault_with_keepalive(
     fault_start_updater.set(false).await;
     agent.ping().await?;
 
-// Uses inspect to return the CPU indices (per_cpu map keys) that have IO issuers in the NVMe driver.
+    // Uses inspect to return the CPU indices (per_cpu map keys) that have IO issuers in the NVMe driver.
 }
 
 async fn create_keepalive_test_config(
