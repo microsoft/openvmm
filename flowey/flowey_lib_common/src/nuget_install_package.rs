@@ -51,7 +51,6 @@ impl FlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<super::install_azure_cli::Node>();
         ctx.import::<super::install_dotnet_cli::Node>();
     }
 
@@ -96,7 +95,6 @@ impl Node {
         ctx: &mut NodeCtx<'_>,
         install: Vec<InstallRequest>,
     ) -> anyhow::Result<()> {
-        let az_cli_bin = ctx.reqv(super::install_azure_cli::Request::GetAzureCli);
         let dotnet_bin = ctx.reqv(super::install_dotnet_cli::Request::DotnetBin);
 
         for InstallRequest {
@@ -107,7 +105,6 @@ impl Node {
         } in install
         {
             ctx.emit_rust_step("restore nuget packages", |ctx| {
-                let az_cli_bin = az_cli_bin.clone().claim(ctx);
                 let dotnet_bin = dotnet_bin.clone().claim(ctx);
                 let install_dir = install_dir.claim(ctx);
                 pre_install_side_effects.claim(ctx);
@@ -119,7 +116,6 @@ impl Node {
                 let nuget_config_file = nuget_config_file.claim(ctx);
 
                 move |rt| {
-                    let az_cli_bin = rt.read(az_cli_bin);
                     let dotnet_bin = rt.read(dotnet_bin);
                     let nuget_config_file = rt.read(nuget_config_file);
                     let install_dir = rt.read(install_dir);
@@ -195,7 +191,7 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
                     // provider via the VSS_NUGET_EXTERNAL_FEED_ENDPOINTS
                     // env var (the same mechanism ADO CI uses).
                     let feed_endpoints_json = if matches!(rt.backend(), FlowBackend::Local) {
-                        get_feed_endpoints_json(rt, &az_cli_bin, parsed.feed_urls)?
+                        get_feed_endpoints_json(rt, parsed.feed_urls)?
                     } else {
                         None
                     };
@@ -346,7 +342,6 @@ fn parse_nuget_config(config_content: &str) -> anyhow::Result<ParsedNugetConfig>
 /// Returns `None` if no Azure DevOps feeds are found in the nuget.config.
 fn get_feed_endpoints_json(
     rt: &mut RustRuntimeServices<'_>,
-    az_cli_bin: &Path,
     feed_urls: Vec<String>,
 ) -> anyhow::Result<Option<String>> {
     // Filter to Azure DevOps feeds first — avoid requiring az/curl when the
@@ -360,6 +355,16 @@ fn get_feed_endpoints_json(
         log::info!("no Azure DevOps feeds found in nuget.config, skipping auth");
         return Ok(None);
     }
+
+    // Resolve the `az` CLI binary. We use `which` instead of a bare "az"
+    // because on Windows the CLI is installed as `az.cmd` and Rust's
+    // Command does not consult PATHEXT to find it.
+    let az_cli_bin = which::which("az").map_err(|_| {
+        anyhow::anyhow!(
+            "`az` CLI not found on PATH. \
+             Install the Azure CLI and run `az login` to authenticate."
+        )
+    })?;
 
     // 1. Get a bearer token from az CLI.
     // The resource ID 499b84ac-1321-427f-aa17-267ca6975798 is Azure DevOps.
