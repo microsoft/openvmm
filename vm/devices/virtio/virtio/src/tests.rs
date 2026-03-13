@@ -2840,7 +2840,10 @@ async fn verify_indirect_chain_clamped_to_queue_size(driver: DefaultDriver) {
     guest.queue_available_desc(0, next_descriptor);
 
     let result = queue.try_next();
-    assert!(result.is_err(), "Indirect chain exceeding queue_size must be rejected");
+    assert!(
+        result.is_err(),
+        "Indirect chain exceeding queue_size must be rejected"
+    );
 }
 
 /// An indirect table with exactly queue_size entries (last has no NEXT)

@@ -402,8 +402,7 @@ impl<'a> DescriptorChain<'a> {
                     .map_err(QueueError::Memory)?,
             );
             self.descriptor_index = Some(0);
-            let indirect_len =
-                (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16;
+            let indirect_len = (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16;
             self.indirect_table_len = Some(indirect_len);
             self.queue
                 .descriptor(indirect_queue, 0, Some(indirect_len))?
