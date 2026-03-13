@@ -27,6 +27,9 @@ tracing.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
 
+[build-dependencies]
+build_rs_git_info.workspace = true
+
 [dev-dependencies]
 gdma.workspace = true
 pci_core.workspace = true
