@@ -96,7 +96,16 @@ impl GuestBuffers {
 
     fn write_at(&self, offset: u32, buf: &[u8]) -> Result<(), RxBufferWriteOverflow> {
         let mut offset = offset as usize;
-        let total_size = self.locked_pages.pages().len() * PAGE_SIZE;
+        let total_size = self
+            .locked_pages
+            .pages()
+            .len()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(RxBufferWriteOverflow {
+                offset,
+                len: buf.len(),
+                total_size: usize::MAX,
+            })?;
         // Check for arithmetic overflow.
         let end = offset.checked_add(buf.len()).ok_or(RxBufferWriteOverflow {
             offset,

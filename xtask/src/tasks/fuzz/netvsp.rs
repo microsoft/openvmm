@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::cargo_fuzz::CargoFuzzCommand;
+use super::cargo_fuzz::coverage_binary_path;
 use super::parse_fuzz_crate_toml::RepoFuzzTarget;
 use anyhow::Context;
 use std::collections::BTreeMap;
@@ -279,10 +280,14 @@ pub(super) fn run_netvsp_coverage(
             continue;
         }
 
-        let Some(coverage_binary) = find_coverage_binary(&ctx.root, target_name)? else {
-            log::warn!("{}: no coverage binary found", target_name);
-            continue;
-        };
+        // Derive the coverage binary path using the same layout as cargo-fuzz:
+        //   target/<triple>/coverage/<triple>/release/<target_name>
+        let coverage_bin = coverage_binary_path(&ctx.root, target_name)?;
+        anyhow::ensure!(
+            coverage_bin.is_file(),
+            "xtask bug: coverage binary not found at {}. Was `cargo fuzz coverage` run first?",
+            coverage_bin.display()
+        );
 
         let raw_lcov = coverage_dir.join(target_name).join("coverage.lcov");
         let filtered_tmp = coverage_dir
@@ -301,7 +306,7 @@ pub(super) fn run_netvsp_coverage(
             .arg(format!("-instr-profile={}", profdata.display()))
             .arg("-format=lcov")
             .arg("-object")
-            .arg(&coverage_binary)
+            .arg(&coverage_bin)
             .arg("--ignore-filename-regex")
             .arg("rustc")
             .arg("--ignore-filename-regex")
@@ -467,40 +472,6 @@ fn find_llvm_cov_tools(nightly: &str) -> anyhow::Result<(PathBuf, PathBuf)> {
     }
 
     Ok((llvm_cov, profdata))
-}
-
-fn find_coverage_binary(repo_root: &Path, target_name: &str) -> anyhow::Result<Option<PathBuf>> {
-    let target_root = repo_root.join("target");
-    if !target_root.exists() {
-        return Ok(None);
-    }
-
-    // Coverage binaries live under target/<triple>/coverage/<deps|build|...>/
-    // Use Path::components() to match "coverage" in any path component,
-    // which is platform-agnostic (no hardcoded path separators).
-    for entry in walkdir::WalkDir::new(&target_root)
-        .into_iter()
-        .filter_map(Result::ok)
-    {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let Some(file_name) = path.file_name().and_then(|x| x.to_str()) else {
-            continue;
-        };
-
-        if file_name != target_name {
-            continue;
-        }
-
-        if path.components().any(|c| c.as_os_str() == "coverage") {
-            return Ok(Some(path.to_path_buf()));
-        }
-    }
-
-    Ok(None)
 }
 
 fn write_coverage_report(merged_lcov: &Path, text_report: &Path) -> anyhow::Result<()> {
