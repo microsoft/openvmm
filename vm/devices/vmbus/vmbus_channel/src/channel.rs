@@ -52,7 +52,14 @@ pub trait VmbusDevice: Send + Any + InspectMut {
     /// The offer parameters.
     fn offer(&self) -> OfferParams;
 
-    /// The maximum number of subchannels supported by this device.
+    /// The maximum number of subchannels this device will accept.
+    ///
+    /// This is the device's upper bound — the guest may request fewer (or
+    /// none). The VMBus framework uses this to allocate resources and to
+    /// reject [`ChannelControl::enable_subchannels`] calls that exceed
+    /// this limit.
+    ///
+    /// Returns 0 by default (no subchannels — primary channel only).
     fn max_subchannels(&self) -> u16 {
         0
     }
@@ -70,7 +77,14 @@ pub trait VmbusDevice: Send + Any + InspectMut {
     /// Closes the channel number `channel_idx`.
     async fn close(&mut self, channel_idx: u16);
 
-    /// Notifies the device that interrupts for channel will now target `target_vp`.
+    /// Notifies the device that the guest has retargeted interrupts for
+    /// `channel_idx` to `target_vp`.
+    ///
+    /// This is called when the guest sends a `ModifyChannel` message to
+    /// change the VP that handles interrupts and ring processing for a
+    /// channel. Devices that create VP-targeted workers (e.g., StorVSP)
+    /// should forward this to their task driver via
+    /// [`VmTaskDriver::retarget_vp`](vmcore::vm_task::VmTaskDriver::retarget_vp).
     async fn retarget_vp(&mut self, channel_idx: u16, target_vp: u32);
 
     /// Start processing of all channels.
@@ -124,6 +138,11 @@ pub struct ChannelResources {
 }
 
 /// Control object for enabling subchannels.
+///
+/// Obtained from [`DeviceResources`] after the device is installed. The
+/// device calls [`enable_subchannels`](Self::enable_subchannels) from its
+/// protocol handler when the guest requests subchannels — for example,
+/// StorVSP calls this when the guest sends `CREATE_SUB_CHANNELS`.
 #[derive(Debug, Default, Clone)]
 pub struct ChannelControl {
     send: Option<mesh::Sender<u16>>,
@@ -140,8 +159,10 @@ impl ChannelControl {
     ///
     /// If more than `count` subchannels are already enabled, this does nothing.
     ///
-    /// Fails if `count` is bigger than the requested maximum returned by
-    /// [`VmbusDevice::max_subchannels`].
+    /// Fails with [`TooManySubchannels`] if `count` exceeds the maximum
+    /// returned by [`VmbusDevice::max_subchannels`]. Callers should map
+    /// this error to an appropriate protocol response — for example,
+    /// StorVSP returns `INVALID_PARAMETER` to the guest.
     pub fn enable_subchannels(&self, count: u16) -> Result<(), TooManySubchannels> {
         if count > self.max {
             return Err(TooManySubchannels);
