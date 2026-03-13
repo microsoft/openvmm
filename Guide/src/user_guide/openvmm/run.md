@@ -195,6 +195,12 @@ For more details on running OpenHCL on OpenVMM, including
 [VMBus relay](../../reference/architecture/openhcl/vmbus.md) and device
 assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
 
+### Alpine Linux, via Direct Boot
+
+See the dedicated [Alpine Linux](./alpine.md) guide for a full walkthrough of
+booting Alpine from a cloud disk image using direct boot with PCIe and
+virtio-blk.
+
 ### DOS, via PCAT BIOS
 
 While DOS in particular is not a scenario that the OpenVMM has heavily invested
