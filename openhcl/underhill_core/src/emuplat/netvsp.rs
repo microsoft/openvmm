@@ -753,6 +753,14 @@ impl HclNetworkVFManagerWorker {
                     let exists = Path::new(&device_path).exists();
                     match (vtl2_device_state, exists) {
                         (Vtl2DeviceState::Missing, true) => NextWorkItem::ManaDeviceArrived,
+                        (Vtl2DeviceState::Reconfiguring, true) => {
+                            if self.is_shutdown_active {
+                                // Reconfig -> Shutdown -> DeviceArrived (ignore arrival)
+                                NextWorkItem::Continue
+                            } else {
+                                NextWorkItem::ManaDeviceArrived
+                            }
+                        }
                         _ => NextWorkItem::Continue,
                     }
                 });
@@ -1045,7 +1053,8 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     tracing::info!(vtl2_vfid, "VTL2 VF reconfiguration requested");
-                    // Remove VTL0 VF if present
+                    // Revoke the VTL0 VF from the guest if it has been offered.
+                    // Required for Guest Mana driver to remove stale SoC state.
                     *self.guest_state.vtl0_vfid.lock().await = None;
                     if self.guest_state.is_offered_to_guest().await {
                         tracing::warn!(
@@ -1128,10 +1137,11 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
-                    assert!(
-                        vf_reconfig_backoff.is_none(),
-                        "device arrival should only occur after device removal and not vf reconfiguration"
-                    );
+                    if vf_reconfig_backoff.take().is_some() {
+                        tracing::warn!("device arrived, abandoning vf reconfiguration");
+                        // In case startup fails, state should not be Reconfiguring.
+                        vtl2_device_state = Vtl2DeviceState::Missing;
+                    }
                     tracing::info!(vtl2_vfid, "VTL2 VF arrived");
                     let mut ctx =
                         mesh::CancelContext::new().with_timeout(std::time::Duration::from_secs(1));
@@ -1155,7 +1165,7 @@ impl HclNetworkVFManagerWorker {
                         .await
                     {
                         vtl2_device_state = Vtl2DeviceState::Present;
-                    }
+                    } // else: Device arrived, but startup failed. No attempt to retry.
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     assert!(!self.is_shutdown_active);
@@ -1173,8 +1183,9 @@ impl HclNetworkVFManagerWorker {
 
                     self.shutdown_vtl2_device(false).await;
                     vtl2_device_state = Vtl2DeviceState::Missing;
-                    // If the device is being removed, remove outstanding vf reconfiguration.
-                    vf_reconfig_backoff = None;
+                    if vf_reconfig_backoff.take().is_some() {
+                        tracing::warn!("device removed, abandoning vf reconfiguration");
+                    }
 
                     if let Err(err) = self.update_vtl2_device_bind_state(false).await {
                         tracing::error!(
