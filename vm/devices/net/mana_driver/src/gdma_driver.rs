@@ -100,6 +100,17 @@ const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
 const HWC_INTERRUPT_POLL_WAIT_MIN_MS: u32 = 20;
 const HWC_INTERRUPT_POLL_WAIT_MAX_MS: u32 = 500;
 
+/// Parse an OPENHCL_VERSION string of the form "major.minor.build.platform"
+/// into four u32 components. Missing or unparseable components default to 0.
+fn parse_openhcl_version(version: &str) -> (u32, u32, u32, u32) {
+    let mut parts = version.splitn(4, '.');
+    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let build = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let platform = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, build, platform)
+}
+
 #[derive(Inspect)]
 struct Bar0<T: Inspect> {
     mem: T,
@@ -1228,6 +1239,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
+        let (ver_major, ver_minor, ver_build, ver_platform) =
+            parse_openhcl_version(option_env!("OPENHCL_VERSION").unwrap_or(""));
+
         let mut req = GdmaVerifyVerReq {
             protocol_ver_min: 1,
             protocol_ver_max: 1,
@@ -1237,6 +1251,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
                 | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
             os_type: gdma_defs::OS_TYPE_OHCL,
+            os_ver_major: ver_major,
+            os_ver_minor: ver_minor,
+            os_ver_build: ver_build,
+            os_ver_platform: ver_platform,
             ..FromZeros::new_zeroed()
         };
 
