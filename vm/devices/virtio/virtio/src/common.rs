@@ -67,6 +67,40 @@ fn readable_payload_length(payload: &[VirtioQueuePayload]) -> u64 {
         .fold(0, |acc, p| acc + p.length as u64)
 }
 
+/// Read readable payload buffers into `target`, skipping the first `offset`
+/// bytes of readable data. Returns the number of bytes read.
+fn read_from_payload_at_offset(
+    payload: &[VirtioQueuePayload],
+    offset: u64,
+    mem: &GuestMemory,
+    target: &mut [u8],
+) -> Result<usize, GuestMemoryError> {
+    let mut skip = offset;
+    let mut remaining = target;
+    let mut read_bytes: usize = 0;
+    for payload in payload {
+        if payload.writeable {
+            continue;
+        }
+        let payload_len = payload.length as u64;
+        if skip >= payload_len {
+            skip -= payload_len;
+            continue;
+        }
+        let usable = (payload_len - skip) as usize;
+        let size = std::cmp::min(usable, remaining.len());
+        let (current, next) = remaining.split_at_mut(size);
+        mem.read_at(payload.address + skip, current)?;
+        read_bytes += size;
+        skip = 0;
+        if next.is_empty() {
+            break;
+        }
+        remaining = next;
+    }
+    Ok(read_bytes)
+}
+
 #[async_trait]
 pub trait VirtioQueueWorkerContext {
     async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool;
@@ -260,6 +294,17 @@ impl<'a> PeekedWork<'a> {
     /// Read all readable payload into `target`.
     pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
         read_from_payload(&self.work.payload, mem, target)
+    }
+
+    /// Read readable payload into `target`, skipping the first `offset`
+    /// bytes of readable data.
+    pub fn read_at_offset(
+        &self,
+        offset: u64,
+        mem: &GuestMemory,
+        target: &mut [u8],
+    ) -> Result<usize, GuestMemoryError> {
+        read_from_payload_at_offset(&self.work.payload, offset, mem, target)
     }
 
     /// Consume this peeked work, advancing the queue's available index.
@@ -568,6 +613,10 @@ pub trait VirtioDevice: inspect::InspectMut + Send {
     /// the device status. On failure, the transport will log the error and
     /// leave `DRIVER_OK` unset, so the device remains inert and the guest
     /// will observe failures through IO timeouts.
+    ///
+    /// The transport guarantees this is only called on a device that is either
+    /// freshly constructed or fully disabled (i.e. `poll_disable` has returned
+    /// `Poll::Ready`). Implementations may assume this precondition holds.
     fn enable(&mut self, resources: Resources) -> anyhow::Result<()>;
     /// Poll the device to complete a disable/reset operation.
     ///
@@ -577,6 +626,9 @@ pub trait VirtioDevice: inspect::InspectMut + Send {
     ///
     /// Devices that don't need async cleanup can return `Poll::Ready(())`
     /// immediately.
+    ///
+    /// Once this returns `Poll::Ready`, the transport may call `enable` again
+    /// to re-initialize the device. Until then, `enable` will not be called.
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()>;
 }
 

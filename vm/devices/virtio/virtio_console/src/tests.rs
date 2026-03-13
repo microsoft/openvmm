@@ -70,6 +70,11 @@ struct MockShared {
     connect_waker: Option<Waker>,
     /// Waker registered by poll_disconnect when connected.
     disconnect_waker: Option<Waker>,
+    /// If set, the next poll_write accepts at most this many bytes, then
+    /// auto-disconnects. Used to test partial-write-then-disconnect scenarios.
+    write_limit_then_disconnect: Option<usize>,
+    /// If set, each poll_write accepts at most this many bytes (persistent).
+    max_write_size: Option<usize>,
 }
 
 /// A mock `SerialIo` implementation backed by shared state.
@@ -145,8 +150,23 @@ impl AsyncWrite for MockSerialIo {
         if !shared.connected {
             return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
         }
-        shared.tx_buf.extend_from_slice(buf);
-        Poll::Ready(Ok(buf.len()))
+        if let Some(limit) = shared.write_limit_then_disconnect.take() {
+            let n = buf.len().min(limit);
+            shared.tx_buf.extend_from_slice(&buf[..n]);
+            // Auto-disconnect after this partial write.
+            shared.connected = false;
+            if let Some(w) = shared.rx_waker.take() {
+                w.wake();
+            }
+            if let Some(w) = shared.disconnect_waker.take() {
+                w.wake();
+            }
+            return Poll::Ready(Ok(n));
+        }
+        let max = shared.max_write_size.unwrap_or(usize::MAX);
+        let n = buf.len().min(max);
+        shared.tx_buf.extend_from_slice(&buf[..n]);
+        Poll::Ready(Ok(n))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -200,6 +220,17 @@ impl MockSerialHandle {
             w.wake();
         }
     }
+
+    /// Arrange for the next poll_write to accept at most `limit` bytes and
+    /// then auto-disconnect.
+    fn set_write_limit_then_disconnect(&self, limit: usize) {
+        self.shared.lock().write_limit_then_disconnect = Some(limit);
+    }
+
+    /// Set a persistent maximum write size for each poll_write call.
+    fn set_max_write_size(&self, max: usize) {
+        self.shared.lock().max_write_size = Some(max);
+    }
 }
 
 fn new_mock_serial() -> (MockSerialIo, MockSerialHandle) {
@@ -210,6 +241,8 @@ fn new_mock_serial() -> (MockSerialIo, MockSerialHandle) {
         rx_waker: None,
         connect_waker: None,
         disconnect_waker: None,
+        write_limit_then_disconnect: None,
+        max_write_size: None,
     }));
     (
         MockSerialIo {
@@ -683,6 +716,125 @@ async fn traits_are_correct(driver: DefaultDriver) {
     let traits = device.traits();
     assert_eq!(traits.device_id, 3); // VIRTIO_DEVICE_ID_CONSOLE
     assert_eq!(traits.max_queues, 2); // receiveq + transmitq
+}
+
+/// TX used ring entries must report len=0 (device writes nothing back to
+/// guest memory for OUT-only transmit descriptors).
+#[async_test]
+async fn guest_tx_used_len_is_zero(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable();
+
+    harness.post_tx_and_signal(0, b"test payload");
+    let (used_id, used_len) = harness.wait_for_tx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(
+        used_len, 0,
+        "TX used len must be 0 for OUT-only descriptors"
+    );
+}
+
+/// A TX payload larger than BUF_SIZE (4096) must be forwarded in full.
+#[async_test]
+async fn guest_tx_large_payload(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable();
+
+    let payload: Vec<u8> = (0..8000u16).map(|i| (i % 256) as u8).collect();
+    harness.post_tx_and_signal(0, &payload);
+
+    let (used_id, _) = harness.wait_for_tx_used().await;
+    assert_eq!(used_id, 0);
+
+    let written = harness.handle.take_tx_data();
+    assert_eq!(written.len(), payload.len(), "all bytes must be forwarded");
+    assert_eq!(written, payload);
+}
+
+/// A TX payload larger than BUF_SIZE with the backend doing small partial
+/// writes. This exercises the read_at_offset chunking path.
+#[async_test]
+async fn guest_tx_large_payload_partial_writes(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable();
+
+    // Limit each poll_write to 100 bytes to force many iterations.
+    harness.handle.set_max_write_size(100);
+
+    let payload: Vec<u8> = (0..10000u16).map(|i| (i % 256) as u8).collect();
+    harness.post_tx_and_signal(0, &payload);
+
+    let (used_id, _) = harness.wait_for_tx_used().await;
+    assert_eq!(used_id, 0);
+
+    let written = harness.handle.take_tx_data();
+    assert_eq!(written.len(), payload.len(), "all bytes must be forwarded");
+    assert_eq!(written, payload);
+}
+
+/// After a partial write followed by disconnect, the drain loop consumes the
+/// in-progress descriptor and resets partial_transmit. Verify that the next
+/// descriptor after reconnect is forwarded correctly from the beginning.
+#[async_test]
+async fn tx_partial_write_disconnect_reconnect(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable();
+
+    // Arrange: the next write accepts 3 bytes then auto-disconnects.
+    harness.handle.set_write_limit_then_disconnect(3);
+
+    // Post a TX descriptor. The device will write 3 bytes ("abc"), then the
+    // backend disconnects. The drain loop will consume the descriptor.
+    harness.post_tx_and_signal(0, b"abcdef");
+    let (used_id, _) = harness.wait_for_tx_used().await;
+    assert_eq!(used_id, 0);
+
+    // The mock received only the partial write.
+    let written = harness.handle.take_tx_data();
+    assert_eq!(written, b"abc");
+
+    // Reconnect.
+    harness.handle.reconnect();
+
+    // Send a fresh descriptor. It must arrive in full — partial_transmit
+    // must have been reset when the drain loop consumed descriptor 0.
+    harness.post_tx_and_signal(1, b"xyz123");
+    let (used_id, _) = harness.wait_for_tx_used().await;
+    assert_eq!(used_id, 1);
+
+    let written = harness.handle.take_tx_data();
+    assert_eq!(
+        written, b"xyz123",
+        "partial_transmit must be reset by drain loop"
+    );
+}
+
+/// A zero-length writeable RX descriptor must not cause a false disconnect.
+/// The device should consume it with len=0 and continue processing.
+#[async_test]
+async fn rx_zero_length_buffer_no_disconnect(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    harness.enable();
+
+    // Post a zero-length writeable RX buffer.
+    harness.post_rx_buffer_and_signal(0, 0);
+
+    // It should be completed immediately with len=0.
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, 0);
+
+    // The device must still be connected — verify by doing a normal RX.
+    let gpa = harness.post_rx_buffer_and_signal(1, 64);
+    harness.handle.inject_rx_data(b"still connected");
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 1);
+    assert_eq!(used_len, b"still connected".len() as u32);
+
+    let mut readback = vec![0u8; b"still connected".len()];
+    harness.mem.read_at(gpa, &mut readback).unwrap();
+    assert_eq!(&readback, b"still connected");
 }
 
 /// Config space read returns cols | (rows << 16) at offset 0.
