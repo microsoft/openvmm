@@ -48,6 +48,7 @@ use spec::VIRTIO_DEVICE_ID_CONSOLE;
 use spec::VirtioConsoleConfig;
 use std::future::poll_fn;
 use std::pin::Pin;
+use std::pin::pin;
 use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
@@ -248,7 +249,13 @@ async fn console_worker_loop(state: &mut ConsoleWorkerState) -> Result<(), Worke
                     work.consume().complete(0);
                 }
             };
-            connected = (wait_connect, drain_tx).race().await?;
+            // Give wait_connect priority so that drain_tx cannot
+            // consume a descriptor on the same poll cycle where
+            // the backend becomes connected.
+            connected = match futures::future::select(pin!(wait_connect), pin!(drain_tx)).await {
+                futures::future::Either::Left((result, _))
+                | futures::future::Either::Right((result, _)) => result?,
+            };
         } else {
             let rx = async {
                 'rx: loop {
