@@ -19,9 +19,23 @@ use spec::PackedEventSuppression;
 use std::sync::atomic;
 
 pub struct PackedQueueCompletionContext {
-    pub descriptor_index: u16,
     buffer_id: u16,
     descriptor_count: u16,
+}
+
+impl PackedQueueCompletionContext {
+    pub(super) fn new(last_descriptor: &QueueDescriptor, descriptor_count: u16) -> Self {
+        Self {
+            buffer_id: last_descriptor
+                .buffer_id
+                .expect("packed descriptors have buffer id"),
+            descriptor_count,
+        }
+    }
+
+    pub(super) fn descriptor_count(&self) -> u16 {
+        self.descriptor_count
+    }
 }
 
 #[derive(Debug, Inspect)]
@@ -89,26 +103,13 @@ impl PackedQueueGetWork {
         }
     }
 
-    pub fn consume_next_available_descriptors(
-        &mut self,
-        wrapped_index: u16,
-        count: u16,
-        last_descriptor: QueueDescriptor,
-    ) -> PackedQueueCompletionContext {
-        let completion_context = PackedQueueCompletionContext {
-            descriptor_index: wrapped_index,
-            buffer_id: last_descriptor
-                .buffer_id
-                .expect("packed descriptors have buffer id"),
-            descriptor_count: count,
-        };
-
-        let next_avail_index = (wrapped_index + count) % self.queue_size;
+    /// Advances `next_avail_index` by `count` descriptors.
+    pub fn advance(&mut self, count: u16) {
+        let next_avail_index = (self.next_avail_index + count) % self.queue_size;
         if next_avail_index < self.next_avail_index {
             self.wrapped_bit = !self.wrapped_bit;
         }
         self.next_avail_index = next_avail_index;
-        completion_context
     }
 }
 
