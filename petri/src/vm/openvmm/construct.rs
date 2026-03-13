@@ -612,7 +612,7 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
-                    cmdline: "console=ttyS0 debug panic=-1 rdinit=/bin/sh".into(),
+                    cmdline: "console=ttyS0 debug panic=-1 rdinit=/bin/sh initcall_blacklist=virtio_vsock_init".into(),
                     custom_dsdt: None,
                     enable_serial: true,
                 }
@@ -627,7 +627,7 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
-                    cmdline: "console=ttyAMA0 earlycon debug panic=-1 rdinit=/bin/sh".into(),
+                    cmdline: "console=ttyAMA0 earlycon debug panic=-1 rdinit=/bin/sh initcall_blacklist=virtio_vsock_init".into(),
                     custom_dsdt: None,
                     enable_serial: true,
                 }
@@ -713,7 +713,7 @@ impl PetriVmConfigSetupCore<'_> {
                         // data on the floor during boot.
                         append_cmdline(
                             &mut cmdline,
-                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
+                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh initcall_blacklist=virtio_vsock_init\"",
                         );
                         false
                     }
