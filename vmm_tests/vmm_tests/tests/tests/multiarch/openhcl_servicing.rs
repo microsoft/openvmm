@@ -57,6 +57,7 @@ use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
 use scsidisk_resources::SimpleScsiDiskHandle;
+use std::collections::HashMap;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
@@ -832,13 +833,15 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
 
+    let vp_count = 4;
+
     const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
 
     let (mut vm, agent) = config
         .with_vmbus_redirect(true)
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .with_processor_topology(ProcessorTopology {
-            vp_count: 4,
+            vp_count,
             ..Default::default()
         })
         .modify_backend(move |b| {
@@ -879,34 +882,30 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
                 )
                 .build(),
         )
+        .with_custom_vtl2_settings(move |v| {
+            if v.fixed.is_none() {
+                v.fixed = Some(Default::default());
+            }
+
+            // Add same number of scsi sub channels as the vp count to allow IO
+            // on all CPUs. This is seemingly in addition to the default channel
+            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
+        })
         .run()
         .await?;
 
     agent.ping().await?;
 
-    // Query inspect to find which CPUs have IO issuers after boot.
-    // Only CPUs with initialized issuers appear in the per_cpu map (unset
-    // OnceLock entries are absent). This makes the test deterministic —
-    // we guarantee we target a CPU that triggers create_io_queue().
-    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
-    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
-    let device = devices
-        .as_object()
-        .expect("devices should be an object")
-        .values()
-        .next()
-        .expect("should have at least one NVMe device");
-    let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
-    let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
-    let target_cpu = (0u32..4)
-        .find(|cpu| !per_cpu_map.contains_key(&cpu.to_string()))
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    let target_cpu = (0u32..vp_count)
+        .find(|cpu| !cpus_with_issuers.contains(&cpu.to_string()))
         .expect(
             "all 4 CPUs already have IO issuers after boot — \
              test cannot exercise create_io_queue. Consider increasing vp_count.",
         );
     tracing::info!(
         target_cpu,
-        existing_issuers = ?per_cpu_map.keys().collect::<Vec<_>>(),
+        existing_issuers = ?cpus_with_issuers,
         "selected target CPU with no IO issuer"
     );
 
@@ -965,6 +964,11 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
         .expect("IO on target CPU did not complete within 60 seconds after keepalive restore. create_io_queue may be stuck.")
         .expect("dd command failed");
 
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    assert!(
+        cpus_with_issuers.contains(&target_cpu.to_string()),
+        "target CPU should have an IO issuer on CPU {target_cpu} after pinning IO. CPUs with issuers: {cpus_with_issuers:?}"
+    );
     agent.ping().await?;
 
     // ── Second servicing cycle: verify queue state consistency ──
@@ -988,6 +992,29 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     agent.ping().await?;
 
     Ok(())
+}
+
+// Uses inspect to find and return a vector of issuers in the nvme driver per CPU.
+async fn find_cpus_with_io_issuers(
+    vm: &PetriVm<OpenVmmPetriBackend>,
+) -> Result<Vec<String>, anyhow::Error> {
+    // Query inspect to find which CPUs have IO issuers after boot.
+    // Only CPUs with initialized issuers appear in the per_cpu map (unset
+    // OnceLock entries are absent). This makes the test deterministic —
+    // we guarantee we target a CPU that triggers create_io_queue().
+    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
+    let device = devices
+        .as_object()
+        .expect("devices should be an object")
+        .values()
+        .next()
+        .expect("should have at least one NVMe device");
+    tracing::info!("device inspect: {device:?}");
+    let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
+    tracing::info!("per_cpu map: {per_cpu:?}");
+    let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
+    Ok(per_cpu_map.keys().cloned().collect::<Vec<_>>())
 }
 
 async fn apply_fault_with_keepalive(
