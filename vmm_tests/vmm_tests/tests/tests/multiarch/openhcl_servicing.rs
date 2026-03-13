@@ -842,6 +842,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
         .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
         .with_processor_topology(ProcessorTopology {
             vp_count,
+            vps_per_socket: Some(1),
             ..Default::default()
         })
         .modify_backend(move |b| {
