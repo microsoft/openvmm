@@ -591,6 +591,7 @@ impl Endpoint for DisconnectableEndpoint {
             match receive_update.next().await {
                 Some(m) => Message::DisconnectableEndpointUpdate(m),
                 None => {
+                    tracing::warn!("Failed to receive an update; receiver disconnected.");
                     pending::<()>().await;
                     unreachable!()
                 }
