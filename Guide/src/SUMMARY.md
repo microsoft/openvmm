@@ -94,6 +94,7 @@
       - [virtio-pmem]()
   - [VMBus]()
       - [storvsp](./reference/devices/vmbus/storvsp.md)
+        - [Channels & Subchannels](./reference/devices/vmbus/storvsp_channels.md)
       - [netvsp]()
       - [vpci]()
       - [serial]()
@@ -128,9 +129,12 @@
     - [Storage Configuration Model](./reference/architecture/openhcl/storage_configuration.md)
     - [Boot Flow](./reference/architecture/openhcl/boot.md)
     - [Sidecar](./reference/architecture/openhcl/sidecar.md)
+    - [CPU Scheduling](./reference/architecture/openhcl/cpu_scheduling.md)
     - [IGVM](./reference/architecture/openhcl/igvm.md)
   - [Device Architecture](./reference/architecture/devices.md)
     - [Storage Pipeline](./reference/architecture/devices/storage.md)
+  - [VMBus Architecture]()
+    - [Channels](./reference/architecture/vmbus/channels.md)
 
 ---
 
