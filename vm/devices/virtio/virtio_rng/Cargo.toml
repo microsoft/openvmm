@@ -16,11 +16,17 @@ vm_resource.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
-async-trait.workspace = true
-event-listener.workspace = true
+futures.workspace = true
 getrandom.workspace = true
 inspect.workspace = true
-tracing.workspace = true
+pal_async.workspace = true
+tracelimit.workspace = true
+
+[dev-dependencies]
+mesh.workspace = true
+pal_async.workspace = true
+pal_event.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true
