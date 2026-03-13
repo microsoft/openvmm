@@ -1247,8 +1247,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         };
 
         // Identify the driver and build to the SOC
-        // str1 = OS/driver name, str2 = build identity.
-        let name = b"OpenHCL";
+        // str1 = "OpenHCL", str2 = build identity.
+        let name = build_info::PRODUCT_NAME.as_bytes();
         req.os_ver_str1[..name.len()].copy_from_slice(name);
 
         let revision = build_info::get().scm_revision();

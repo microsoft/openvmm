@@ -76,6 +76,9 @@ impl BuildInfo {
     }
 }
 
+/// The product name identifying this build.
+pub const PRODUCT_NAME: &str = "OpenHCL";
+
 // Parse the OPENHCL_VERSION string of the form "major.minor.build.platform"
 // into four u32 components. Missing or unparseable components default to 0.
 pub fn parse_openhcl_version() -> (u32, u32, u32, u32) {

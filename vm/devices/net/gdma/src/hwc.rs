@@ -325,7 +325,19 @@ impl HwControl {
                     .ok()
                     .and_then(|c| c.to_str().ok())
                     .unwrap_or("<invalid>");
-                tracing::debug!(drv_name, drv_commit, "vf driver version");
+                tracing::info!(
+                    drv_name,
+                    drv_commit,
+                    os_type = format_args!("{:#x}", req.os_type),
+                    os_ver_major = req.os_ver_major,
+                    os_ver_minor = req.os_ver_minor,
+                    os_ver_build = req.os_ver_build,
+                    os_ver_platform = req.os_ver_platform,
+                    cap_flags1 = format_args!("{:#x}", req.gd_drv_cap_flags1),
+                    protocol_ver_min = req.protocol_ver_min,
+                    protocol_ver_max = req.protocol_ver_max,
+                    "vf driver version",
+                );
 
                 let resp = GdmaVerifyVerResp {
                     gdma_protocol_ver: req.protocol_ver_min,
