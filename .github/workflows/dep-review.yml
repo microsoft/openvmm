@@ -1,0 +1,48 @@
+# Dependency Review — checks for external (3rd-party) crate changes in
+# Cargo.lock and conditionally requests review from the dependency team.
+#
+# Replaces the blunt CODEOWNERS gate on Cargo.lock. Internal-only lockfile
+# changes (adding/removing workspace crates) don't trigger a review request.
+# External dependency additions or version bumps, and containment policy
+# violations, cause the workflow to request review from
+# @microsoft/openvmm-dependency-reviewers. If no issues are detected (or
+# they're resolved), the review request is removed.
+#
+# SECURITY NOTE: This workflow uses pull_request_target so it can manage
+# review requests. To avoid executing untrusted code, it checks out the
+# BASE branch only (not the PR branch) and runs the script from there.
+# All PR file contents are fetched via the GitHub API.
+
+name: "Dependency Review"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: dep-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dep-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base branch (safe — our own code)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          sparse-checkout: |
+            .github/scripts
+            .github/dep-policy.json
+          sparse-checkout-cone-mode: false
+
+      - name: Review Cargo.lock changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { run } = require('./.github/scripts/dep-review.js');
+            await run(github, context, core);
