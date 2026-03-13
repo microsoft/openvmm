@@ -197,7 +197,9 @@ def list_artifacts(run_id: str) -> list[str]:
             obj, end = decoder.raw_decode(text, pos)
             names.extend(a["name"] for a in obj.get("artifacts", []))
             pos = end
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"WARNING: Failed to parse artifact JSON at position {pos}: {e}", file=sys.stderr)
+            print(f"  Context: ...{text[max(0, pos-20):pos+40]}...", file=sys.stderr)
             break
         # skip whitespace between objects
         while pos < len(text) and text[pos] in " \t\n\r":
@@ -205,7 +207,7 @@ def list_artifacts(run_id: str) -> list[str]:
     return names
 
 
-def list_test_log_artifacts(run_id: str, all_artifacts: list[str]) -> list[str]:
+def list_test_log_artifacts(all_artifacts: list[str]) -> list[str]:
     """List available *-vmm-tests-logs artifact names for a run."""
     print()
     print("==> Listing available test log artifacts...")
@@ -282,7 +284,15 @@ def parse_junit_failures(xml_path: Path) -> list[dict]:
     """
     failures: list[dict] = []
     try:
-        tree = ET.parse(xml_path)  # noqa: S314 - trusted CI artifact
+        # CI artifacts come from potentially-untrusted PR code.
+        # Python's expat-based parser does not resolve external entities and
+        # has built-in entity expansion limits, but use defusedxml when
+        # available for belt-and-suspenders protection against XML DoS.
+        try:
+            import defusedxml.ElementTree as SafeET
+            tree = SafeET.parse(xml_path)
+        except ImportError:
+            tree = ET.parse(xml_path)
     except (ET.ParseError, OSError) as e:
         failures.append({"suite": "?", "test": "?", "message": f"(failed to parse JUnit XML: {e})", "output": ""})
         return failures
@@ -429,7 +439,7 @@ def main() -> None:
         sys.exit(0)
 
     all_artifacts = list_artifacts(run_id)
-    vmm_artifact_names = list_test_log_artifacts(run_id, all_artifacts)
+    vmm_artifact_names = list_test_log_artifacts(all_artifacts)
     junit_artifact_names = list_junit_artifacts(all_artifacts)
 
     if not vmm_artifact_names and not junit_artifact_names:
@@ -456,24 +466,25 @@ def main() -> None:
             print(f"  Total unit test failures: {junit_failure_count}")
 
     # --- VMM test failures (petri) ---
+    failed_markers: list[Path] = []
     if vmm_artifact_names:
         download_artifacts(run_id, vmm_artifact_names, workdir)
 
-    print()
-    print("==========================================")
-    print("  VMM TEST FAILURES (petri)")
-    print("==========================================")
+        print()
+        print("==========================================")
+        print("  VMM TEST FAILURES (petri)")
+        print("==========================================")
 
-    failed_markers = find_failed_tests(workdir)
+        failed_markers = find_failed_tests(workdir)
 
-    if not failed_markers:
-        print("  No petri.failed markers found.")
-        if junit_failure_count == 0:
-            print("  Tests may have passed, or failure occurred before test execution.")
-            sys.exit(0)
-
-    print(f"  Found {len(failed_markers)} failed test(s):")
-    print()
+        if not failed_markers:
+            print("  No petri.failed markers found.")
+            if junit_failure_count == 0:
+                print("  Tests may have passed, or failure occurred before test execution.")
+                sys.exit(0)
+        else:
+            print(f"  Found {len(failed_markers)} failed test(s):")
+            print()
 
     for marker in failed_markers:
         test_dir = marker.parent
@@ -505,7 +516,12 @@ def main() -> None:
     print("==========================================")
     print(f"  Run ID:       {run_id}")
     print(f"  Logview URL:  https://openvmm.dev/test-results/#/runs/{run_id}")
-    print(f"  Failed tests: {len(failed_markers)}")
+    if junit_failure_count > 0:
+        print(f"  Unit test failures: {junit_failure_count}")
+    if failed_markers:
+        print(f"  VMM test failures:  {len(failed_markers)}")
+    if junit_failure_count == 0 and not failed_markers:
+        print("  No test failures found.")
     print()
     print(f"  For full logs, examine files in: {workdir}")
     print("  Each test directory may contain:")

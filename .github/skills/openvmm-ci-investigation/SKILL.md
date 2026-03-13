@@ -5,13 +5,14 @@ description: Investigate CI failures on OpenVMM PRs. Load when a PR has failing 
 
 # Investigating CI Failures
 
-When a PR has failing CI checks, use this workflow to diagnose the root cause.
-A helper script is available at `repo_support/investigate_ci.py`.
+When a PR has failing CI checks, **always start by running the investigation
+script**. Do not manually query the GitHub API or download artifacts by hand
+— the script handles all of that automatically.
 
-## Quick Start
+## Step 1: Run the Script
 
 ```bash
-# Investigate a PR by number
+# Investigate a PR by number (ALWAYS use this first)
 python3 repo_support/investigate_ci.py 2946
 
 # Or by run ID directly
@@ -29,7 +30,19 @@ The script automatically:
 6. If no test or JUnit artifacts exist (build/fmt/clippy failure), shows the
    tail of the failed job's log
 
-## Manual Investigation Steps
+## Step 2: Analyze the Script Output
+
+Read the script's output to identify:
+- Which tests failed (unit tests and/or VMM tests)
+- Error messages and root causes
+- Whether it's a build/fmt/clippy failure vs. a test failure
+
+Then use the information to diagnose the issue and suggest fixes.
+
+## Reference: Manual Commands
+
+> **Only use these if the script fails or you need to dig deeper into a
+> specific artifact.** In normal usage, the script above is sufficient.
 
 If the script isn't available or you need more control, follow these steps:
 
@@ -66,7 +79,9 @@ python3 -c "
 import xml.etree.ElementTree as ET, sys
 for f in __import__('pathlib').Path(sys.argv[1]).rglob('*.xml'):
     for tc in ET.parse(f).iter('testcase'):
-        fail = tc.find('failure') or tc.find('error')
+        fail = tc.find('failure')
+        if fail is None:
+            fail = tc.find('error')
         if fail is not None:
             print(f'FAIL: {tc.get(\"classname\",\"\")}::{tc.get(\"name\",\"\")}')
             print(f'  {fail.get(\"message\",\"\")[:200]}')
