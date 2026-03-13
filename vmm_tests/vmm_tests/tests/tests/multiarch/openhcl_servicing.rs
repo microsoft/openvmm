@@ -56,6 +56,7 @@ use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use pipette_client::PipetteClient;
 use pipette_client::process::Child;
 use pipette_client::process::Stdio;
+use pipette_client::shell::Shell;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -935,35 +936,8 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     vm.restore_openhcl().await?;
     fault_start_updater.set(false).await;
 
-    // Mount sysfs and cgroup2, then create a cpuset cgroup to pin IO to
-    // the target CPU. The minimal Alpine initrd has neither `taskset` nor
-    // sysfs mounted, so we set this up manually.
-    let sh = agent.unix_shell();
-    let setup_cpuset = format!(
-        "mount -t sysfs none /sys 2>/dev/null || true; \
-         mkdir -p /sys/fs/cgroup; \
-         mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true; \
-         echo '+cpuset' > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \
-         mkdir -p /sys/fs/cgroup/pin{target_cpu}; \
-         echo {target_cpu} > /sys/fs/cgroup/pin{target_cpu}/cpuset.cpus; \
-         echo 0 > /sys/fs/cgroup/pin{target_cpu}/cpuset.mems"
-    );
-    cmd!(sh, "sh -c {setup_cpuset}").run().await?;
-
-    // Force IO on the target CPU. This CPU has no IO queue, so the NVMe
-    // driver will call create_io_queue() to create one via admin commands.
-    // The dd command must complete successfully — a hang here means the admin
-    // command didn't complete (the exact production failure scenario).
-    let pinned_dd = format!(
-        "echo $$ > /sys/fs/cgroup/pin{target_cpu}/cgroup.procs; \
-         dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct"
-    );
-    CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
-        .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
-        .await
-        .expect("IO on target CPU did not complete within 60 seconds after keepalive restore. create_io_queue may be stuck.")
-        .expect("dd command failed");
+    // This should trigger creation of a new io queue.
+    run_cpu_pinned_io(&agent, disk_path, target_cpu).await?;
 
     let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
     assert!(
@@ -981,41 +955,11 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
 
     // Issue IO again on the same CPU to confirm the queue survived the
     // second servicing cycle.
-    CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
-        .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
-        .await
-        .expect(
-            "IO on target CPU did not complete within 60 seconds after second keepalive restore.",
-        )
-        .expect("dd command failed after second restore");
+    run_cpu_pinned_io(&agent, disk_path, target_cpu).await?;
 
     agent.ping().await?;
 
     Ok(())
-}
-
-// Uses inspect to find and return a vector of issuers in the nvme driver per CPU.
-async fn find_cpus_with_io_issuers(
-    vm: &PetriVm<OpenVmmPetriBackend>,
-) -> Result<Vec<String>, anyhow::Error> {
-    // Query inspect to find which CPUs have IO issuers after boot.
-    // Only CPUs with initialized issuers appear in the per_cpu map (unset
-    // OnceLock entries are absent). This makes the test deterministic —
-    // we guarantee we target a CPU that triggers create_io_queue().
-    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
-    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
-    let device = devices
-        .as_object()
-        .expect("devices should be an object")
-        .values()
-        .next()
-        .expect("should have at least one NVMe device");
-    tracing::info!("device inspect: {device:?}");
-    let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
-    tracing::info!("per_cpu map: {per_cpu:?}");
-    let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
-    Ok(per_cpu_map.keys().cloned().collect::<Vec<_>>())
 }
 
 async fn apply_fault_with_keepalive(
@@ -1246,4 +1190,72 @@ async fn large_read_from_disk(
         .stderr(Stdio::null());
     let io_child = io_cmd.spawn().await?;
     Ok(io_child)
+}
+
+// Runs IO using dd that is pinned to a specific target CPU using cpuset
+// cgroups.
+// DEV NOTE: There is a known issue where this approach fails when there are more
+// than 1 processors assigned per socket. The CPU where the IO is observed is
+// off-by-one (At the time of writing, the cause is unknown)
+async fn run_cpu_pinned_io(
+    agent: &PipetteClient,
+    disk_path: &str,
+    target_cpu: u32,
+) -> Result<(), anyhow::Error> {
+    let sh = agent.unix_shell();
+
+    // Mount sysfs and cgroup2, then create a cpuset cgroup to pin IO to
+    // the target CPU. The minimal Alpine initrd has neither `taskset` nor
+    // sysfs mounted, so we set this up manually.
+    let setup_cpuset = format!(
+        "mount -t sysfs none /sys 2>/dev/null || true; \
+         mkdir -p /sys/fs/cgroup; \
+         mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null || true; \
+         echo '+cpuset' > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true; \
+         mkdir -p /sys/fs/cgroup/pin{target_cpu}; \
+         echo {target_cpu} > /sys/fs/cgroup/pin{target_cpu}/cpuset.cpus; \
+         echo 0 > /sys/fs/cgroup/pin{target_cpu}/cpuset.mems"
+    );
+    cmd!(sh, "sh -c {setup_cpuset}").run().await?;
+
+    // Force IO on the target CPU. This CPU has no IO queue, so the NVMe
+    // driver will call create_io_queue() to create one via admin commands.
+    // The dd command must complete successfully — a hang here means the admin
+    // command didn't complete (the exact production failure scenario).
+    let pinned_dd = format!(
+        "echo $$ > /sys/fs/cgroup/pin{target_cpu}/cgroup.procs; \
+         dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct"
+    );
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(cmd!(sh, "sh -c {pinned_dd}").run())
+        .await
+        .expect("IO on target CPU did not complete within 60 seconds after keepalive restore. create_io_queue may be stuck.")
+        .expect("dd command failed");
+
+    Ok(())
+}
+
+// Uses inspect to find and return a vector of issuers in the nvme driver. Proto
+// queues are not reported in the returned value.
+async fn find_cpus_with_io_issuers(
+    vm: &PetriVm<OpenVmmPetriBackend>,
+) -> Result<Vec<String>, anyhow::Error> {
+    // Query inspect to find which CPUs have IO issuers after boot.
+    // Only CPUs with initialized issuers appear in the per_cpu map (unset
+    // OnceLock entries are absent). This makes the test deterministic —
+    // we guarantee we target a CPU that triggers create_io_queue().
+    let devices = vm.inspect_openhcl("vm/nvme/devices", None, None).await?;
+    let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
+    let device = devices
+        .as_object()
+        .expect("devices should be an object")
+        .values()
+        .next()
+        .expect("should have at least one NVMe device");
+    tracing::info!("device inspect: {device:?}");
+    let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
+    tracing::info!("per_cpu map: {per_cpu:?}");
+    let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
+    Ok(per_cpu_map.keys().cloned().collect::<Vec<_>>())
 }
