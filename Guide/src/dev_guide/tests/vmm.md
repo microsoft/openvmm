@@ -39,6 +39,24 @@ engineers' local machines and in CI. Put these special words in your test to opt
 - `heavy` - if your test is heavier than the typical vmm_test. E.g., your test explicitly requests 16 virtual processors.
 - `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicitly requests 32 virtual processors.
 
+### "unstable" tests
+
+If a test is not yet reliable enough to gate PRs, add the `_unstable` suffix to
+the test function name. For example:
+
+```rust,ignore
+async fn my_new_boot_test_unstable(config: PetriVmConfig) -> Result<(), anyhow::Error> {
+    // ...
+}
+```
+
+Unstable tests run in the same CI job as stable tests. When an unstable test fails
+the CI pass will pass with a warning
+
+To promote an unstable test to stable, rename the function to remove the
+`_unstable` suffix. This is a single-place change — no CI or configuration
+updates are required.
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run the VMM tests locally is using the

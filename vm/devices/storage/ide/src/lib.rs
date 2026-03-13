@@ -1,6 +1,33 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Legacy PCI/ISA IDE controller emulator (PIIX4-compatible).
+//!
+//! Emulates the storage portion of an Intel PIIX4 (82371AB) PCI-to-ISA bridge
+//! with two IDE channels (primary + secondary), each supporting up to two
+//! devices. PCI vendor/device ID: `8086:7111`.
+//!
+//! # Drive types
+//!
+//! - **ATA hard drives** — use [`Disk`] for I/O. Support
+//!   PIO and DMA modes, 28-bit and 48-bit LBA, `IDENTIFY DEVICE`, `FLUSH CACHE`.
+//! - **ATAPI optical drives** — use `PACKET COMMAND` (0xA0) to transport SCSI
+//!   CDBs over the ATA interface, delegating to
+//!   [`SimpleScsiDvd`](scsidisk::scsidvd::SimpleScsiDvd).
+//!
+//! # Port I/O
+//!
+//! Primary channel: 0x1F0–0x1F7 + 0x3F6. Secondary: 0x170–0x177 + 0x376.
+//! Bus master DMA via PCI BAR4 (PRD scatter-gather table).
+//!
+//! # Enlightened I/O
+//!
+//! Microsoft-specific optimization: enlightened INT13 commands via ports
+//! 0x1E0 (primary) and 0x160 (secondary). The guest writes an
+//! `EnlightenedInt13Command` packet GPA, collapsing the multi-exit register
+//! programming sequence into a single VM exit. Uses the `DeferredWrite`
+//! pattern for async completion.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 

@@ -36,7 +36,7 @@ fn query_installed_packages(
             let fmt = "${binary:Package}\n";
             flowey::shell_cmd!(rt, "dpkg-query -W -f={fmt} {packages_to_check...}")
         }
-        FlowPlatformLinuxDistro::Fedora => {
+        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux => {
             let fmt = "%{NAME}\n";
             flowey::shell_cmd!(rt, "rpm -q --queryformat={fmt} {packages_to_check...}")
         }
@@ -72,6 +72,8 @@ fn update_packages(
     match distro {
         FlowPlatformLinuxDistro::Ubuntu => flowey::shell_cmd!(rt, "sudo apt-get update").run()?,
         FlowPlatformLinuxDistro::Fedora => flowey::shell_cmd!(rt, "sudo dnf update").run()?,
+        // tdnf auto-refreshes metadata; no explicit update step needed
+        FlowPlatformLinuxDistro::AzureLinux => (),
         // Running `pacman -Sy` without a full system update can break everything; do nothing
         FlowPlatformLinuxDistro::Arch => (),
         FlowPlatformLinuxDistro::Nix => {
@@ -103,6 +105,10 @@ fn install_packages(
         FlowPlatformLinuxDistro::Fedora => {
             let auto_accept = (!interactive).then_some("-y");
             flowey::shell_cmd!(rt, "sudo dnf install {auto_accept...} {packages...}").run()?;
+        }
+        FlowPlatformLinuxDistro::AzureLinux => {
+            let auto_accept = (!interactive).then_some("-y");
+            flowey::shell_cmd!(rt, "sudo tdnf install {auto_accept...} {packages...}").run()?;
         }
         FlowPlatformLinuxDistro::Arch => {
             let auto_accept = (!interactive).then_some("--noconfirm");

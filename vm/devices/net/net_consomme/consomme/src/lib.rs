@@ -29,6 +29,9 @@ mod udp;
 mod unix;
 mod windows;
 
+/// Standard DNS port number.
+const DNS_PORT: u16 = 53;
+
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal_async::driver::Driver;
@@ -55,6 +58,7 @@ use thiserror::Error;
 #[derive(InspectMut)]
 pub struct Consomme {
     state: ConsommeState,
+    #[inspect(mut)]
     tcp: tcp::Tcp,
     #[inspect(mut)]
     udp: udp::Udp,

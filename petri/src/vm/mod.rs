@@ -2702,6 +2702,8 @@ pub enum VmbusStorageType {
     Scsi,
     /// NVMe
     Nvme,
+    /// Virtio block device
+    VirtioBlk,
 }
 
 /// VM disk drive

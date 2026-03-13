@@ -82,6 +82,24 @@ pub mod pmem {
     }
 }
 
+pub mod blk {
+    use mesh::MeshPayload;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::DiskHandleKind;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioBlkHandle {
+        pub disk: Resource<DiskHandleKind>,
+        pub read_only: bool,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioBlkHandle {
+        const ID: &'static str = "virtio-blk";
+    }
+}
+
 pub mod net {
     use mesh::MeshPayload;
     use net_backend_resources::mac_address::MacAddress;

@@ -10,13 +10,18 @@ use crate::Resources;
 use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
-use crate::spec::pci::*;
+use crate::spec::pci::VIRTIO_PCI_COMMON_CFG_SIZE;
+use crate::spec::pci::VIRTIO_PCI_DEVICE_ID_BASE;
+use crate::spec::pci::VIRTIO_VENDOR_ID;
+use crate::spec::pci::VirtioPciCapType;
+use crate::spec::pci::VirtioPciCommonCfg;
 use crate::spec::*;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use chipset_device::poll_device::PollDevice;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
@@ -59,10 +64,18 @@ enum InterruptKind {
     IntX(Arc<IntxInterrupt>),
 }
 
+/// BAR0 layout: common cfg is at offset 0, followed by notify, ISR, and
+/// device-specific config regions.
+const BAR0_NOTIFY_OFFSET: u16 = VIRTIO_PCI_COMMON_CFG_SIZE;
+const BAR0_NOTIFY_SIZE: u16 = 4;
+const BAR0_ISR_OFFSET: u16 = BAR0_NOTIFY_OFFSET + BAR0_NOTIFY_SIZE;
+const BAR0_ISR_SIZE: u16 = 4;
+const BAR0_DEVICE_CFG_OFFSET: u16 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
+
 /// Run a virtio device over PCI
 #[derive(InspectMut)]
 pub struct VirtioPciDevice {
-    #[inspect(skip)]
+    #[inspect(mut)]
     device: Box<dyn VirtioDevice>,
     #[inspect(skip)]
     device_feature: VirtioDeviceFeatures,
@@ -84,6 +97,9 @@ pub struct VirtioPciDevice {
     interrupt_status: Arc<Mutex<u32>>,
     #[inspect(hex)]
     device_status: VirtioDeviceStatus,
+    disabling: bool,
+    #[inspect(skip)]
+    poll_waker: Option<std::task::Waker>,
     config_generation: u32,
     config_space: ConfigSpaceType0Emulator,
 
@@ -131,34 +147,51 @@ impl VirtioPciDevice {
         let mut caps: Vec<Box<dyn PciCapability>> = vec![
             Box::new(ReadOnlyCapability::new(
                 "virtio-common",
-                VirtioCapability::new(VIRTIO_PCI_CAP_COMMON_CFG, 0, 0, 0, 56),
+                VirtioCapability::new(
+                    VirtioPciCapType::COMMON_CFG.0,
+                    0,
+                    0,
+                    0,
+                    VIRTIO_PCI_COMMON_CFG_SIZE as u32,
+                ),
             )),
             Box::new(ReadOnlyCapability::new(
                 "virtio-notify",
-                VirtioNotifyCapability::new(0, 0, 56, 4),
+                VirtioNotifyCapability::new(
+                    0,
+                    0,
+                    BAR0_NOTIFY_OFFSET as u32,
+                    BAR0_NOTIFY_SIZE as u32,
+                ),
             )),
             Box::new(ReadOnlyCapability::new(
                 "virtio-pci-isr",
-                VirtioCapability::new(VIRTIO_PCI_CAP_ISR_CFG, 0, 0, 60, 4),
+                VirtioCapability::new(
+                    VirtioPciCapType::ISR_CFG.0,
+                    0,
+                    0,
+                    BAR0_ISR_OFFSET as u32,
+                    BAR0_ISR_SIZE as u32,
+                ),
             )),
             Box::new(ReadOnlyCapability::new(
                 "virtio-pci-device",
                 VirtioCapability::new(
-                    VIRTIO_PCI_CAP_DEVICE_CFG,
+                    VirtioPciCapType::DEVICE_CFG.0,
                     0,
                     0,
-                    64,
+                    BAR0_DEVICE_CFG_OFFSET as u32,
                     traits.device_register_length,
                 ),
             )),
         ];
 
         let mut bars = DeviceBars::new().bar0(
-            0x40 + traits.device_register_length as u64,
-            BarMemoryKind::Intercept(
-                mmio_registration
-                    .new_io_region("config", 0x40 + traits.device_register_length as u64),
-            ),
+            BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
+            BarMemoryKind::Intercept(mmio_registration.new_io_region(
+                "config",
+                BAR0_DEVICE_CFG_OFFSET as u64 + traits.device_register_length as u64,
+            )),
         );
 
         let msix: Option<MsixEmulator> = if let PciInterruptModel::Msix(msi_target) =
@@ -190,7 +223,7 @@ impl VirtioPciDevice {
             caps.push(Box::new(ReadOnlyCapability::new(
                 "virtio-pci-shm",
                 VirtioCapability64::new(
-                    VIRTIO_PCI_CAP_SHARED_MEMORY_CFG,
+                    VirtioPciCapType::SHARED_MEMORY_CFG.0,
                     4, // BAR 4
                     traits.shared_memory.id,
                     0,
@@ -210,16 +243,23 @@ impl VirtioPciDevice {
             }
         };
 
-        let mut device_feature = traits.device_features.clone();
-        device_feature.set_bank(
-            0,
-            device_feature
-                .bank0()
-                .with_ring_event_idx(true)
-                .with_ring_indirect_desc(true)
-                .into_bits(),
-        );
-        device_feature.set_bank(1, device_feature.bank1().with_version_1(true).into_bits());
+        let device_feature = traits
+            .device_features
+            .clone()
+            .with_bank0(
+                traits
+                    .device_features
+                    .bank0()
+                    .with_ring_event_idx(true)
+                    .with_ring_indirect_desc(true),
+            )
+            .with_bank1(
+                traits
+                    .device_features
+                    .bank1()
+                    .with_version_1(true)
+                    .with_ring_packed(true),
+            );
         Ok(VirtioPciDevice {
             device,
             device_feature,
@@ -233,6 +273,8 @@ impl VirtioPciDevice {
             msix_vectors,
             interrupt_status: Arc::new(Mutex::new(0)),
             device_status: VirtioDeviceStatus::new(),
+            disabling: false,
+            poll_waker: None,
             config_generation: 0,
             interrupt_kind,
             config_space,
@@ -260,26 +302,24 @@ impl VirtioPciDevice {
     fn read_u32(&mut self, offset: u16) -> u32 {
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
-        match offset {
-            // Device feature bank index
-            0 => self.device_feature_select,
-            // Device feature bank
-            4 => {
+        match VirtioPciCommonCfg(offset) {
+            VirtioPciCommonCfg::DEVICE_FEATURE_SELECT => self.device_feature_select,
+            VirtioPciCommonCfg::DEVICE_FEATURE => {
                 let feature_select = self.device_feature_select as usize;
                 self.device_feature.bank(feature_select)
             }
-            // Driver feature bank index
-            8 => self.driver_feature_select,
-            // Driver feature bank
-            12 => {
+            VirtioPciCommonCfg::DRIVER_FEATURE_SELECT => self.driver_feature_select,
+            VirtioPciCommonCfg::DRIVER_FEATURE => {
                 let feature_select = self.driver_feature_select as usize;
                 self.driver_feature.bank(feature_select)
             }
-            16 => (self.queues.len() as u32) << 16 | self.msix_config_vector as u32,
-            20 => {
+            VirtioPciCommonCfg::MSIX_CONFIG => {
+                (self.queues.len() as u32) << 16 | self.msix_config_vector as u32
+            }
+            VirtioPciCommonCfg::DEVICE_STATUS => {
                 self.queue_select << 24 | self.config_generation << 8 | self.device_status.as_u32()
             }
-            24 => {
+            VirtioPciCommonCfg::QUEUE_SIZE => {
                 let size = if queue_select < self.queues.len() {
                     self.queues[queue_select].size
                 } else {
@@ -288,8 +328,7 @@ impl VirtioPciDevice {
                 let msix_vector = self.msix_vectors.get(queue_select).copied().unwrap_or(0);
                 (msix_vector as u32) << 16 | size as u32
             }
-            // Current queue enabled
-            28 => {
+            VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let enable = if queue_select < self.queues.len() {
                     if self.queues[queue_select].enable {
                         1
@@ -307,57 +346,50 @@ impl VirtioPciDevice {
                 };
                 (notify_offset as u32) << 16 | enable as u32
             }
-            // Queue descriptor table address (low part)
-            32 => {
+            VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if queue_select < self.queues.len() {
                     self.queues[queue_select].desc_addr as u32
                 } else {
                     0
                 }
             }
-            // Queue descriptor table address (high part)
-            36 => {
+            VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if queue_select < self.queues.len() {
                     (self.queues[queue_select].desc_addr >> 32) as u32
                 } else {
                     0
                 }
             }
-            // Queue descriptor available ring address (low part)
-            40 => {
+            VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if queue_select < self.queues.len() {
                     self.queues[queue_select].avail_addr as u32
                 } else {
                     0
                 }
             }
-            // Queue descriptor available ring address (high part)
-            44 => {
+            VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if queue_select < self.queues.len() {
                     (self.queues[queue_select].avail_addr >> 32) as u32
                 } else {
                     0
                 }
             }
-            // Queue descriptor used ring address (low part)
-            48 => {
+            VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if queue_select < self.queues.len() {
                     self.queues[queue_select].used_addr as u32
                 } else {
                     0
                 }
             }
-            // Queue descriptor used ring address (high part)
-            52 => {
+            VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if queue_select < self.queues.len() {
                     (self.queues[queue_select].used_addr >> 32) as u32
                 } else {
                     0
                 }
             }
-            56 => 0, // queue notification register
-            // ISR
-            60 => {
+            VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => 0,
+            VirtioPciCommonCfg(BAR0_ISR_OFFSET) => {
                 let mut interrupt_status = self.interrupt_status.lock();
                 let status = *interrupt_status;
                 *interrupt_status = 0;
@@ -366,7 +398,9 @@ impl VirtioPciDevice {
                 }
                 status
             }
-            offset if offset >= 64 => self.device.read_registers_u32(offset - 64),
+            VirtioPciCommonCfg(offset) if offset >= BAR0_DEVICE_CFG_OFFSET => self
+                .device
+                .read_registers_u32(offset - BAR0_DEVICE_CFG_OFFSET),
             _ => {
                 tracing::warn!(offset, "unknown bar read");
                 0xffffffff
@@ -379,13 +413,10 @@ impl VirtioPciDevice {
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
         let queue_select = self.queue_select as usize;
-        match offset {
-            // Device feature bank index
-            0 => self.device_feature_select = val,
-            // Driver feature bank index
-            8 => self.driver_feature_select = val,
-            // Driver feature bank
-            12 => {
+        match VirtioPciCommonCfg(offset) {
+            VirtioPciCommonCfg::DEVICE_FEATURE_SELECT => self.device_feature_select = val,
+            VirtioPciCommonCfg::DRIVER_FEATURE_SELECT => self.driver_feature_select = val,
+            VirtioPciCommonCfg::DRIVER_FEATURE => {
                 let bank = self.driver_feature_select as usize;
                 if features_locked || bank >= self.device_feature.len() {
                     // Update is not persisted.
@@ -394,20 +425,36 @@ impl VirtioPciDevice {
                         .set_bank(bank, val & self.device_feature.bank(bank));
                 }
             }
-            16 => self.msix_config_vector = val as u16,
-            // Device status
-            20 => {
+            VirtioPciCommonCfg::MSIX_CONFIG => self.msix_config_vector = val as u16,
+            VirtioPciCommonCfg::DEVICE_STATUS => {
                 self.queue_select = val >> 16;
                 let val = val & 0xff;
                 if val == 0 {
+                    if self.disabling {
+                        return;
+                    }
                     let started = self.device_status.driver_ok();
-                    self.device_status = VirtioDeviceStatus::new();
                     self.config_generation = 0;
                     if started {
                         self.doorbells.clear();
-                        self.device.disable();
+                        // Try the fast path: poll with a noop waker to see if
+                        // the device can disable synchronously.
+                        let waker = std::task::Waker::noop();
+                        let mut cx = std::task::Context::from_waker(waker);
+                        if self.device.poll_disable(&mut cx).is_pending() {
+                            self.disabling = true;
+                            // Wake the real poll waker so that poll_device will
+                            // re-poll with a real waker, replacing the noop one.
+                            if let Some(waker) = self.poll_waker.take() {
+                                waker.wake();
+                            }
+                            return;
+                        }
                     }
+                    // Fast path: disable completed synchronously.
+                    self.device_status = VirtioDeviceStatus::new();
                     *self.interrupt_status.lock() = 0;
+                    return;
                 }
 
                 let new_status = VirtioDeviceStatus::from(val as u8);
@@ -427,7 +474,7 @@ impl VirtioPciDevice {
                 }
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
-                    let notification_address = (address & !0xfff) + 56;
+                    let notification_address = (address & !0xfff) + BAR0_NOTIFY_OFFSET as u64;
                     for i in 0..self.events.len() {
                         self.doorbells.add(
                             notification_address,
@@ -469,19 +516,31 @@ impl VirtioPciDevice {
                         })
                         .collect();
 
-                    self.device.enable(Resources {
+                    match self.device.enable(Resources {
                         features: self.driver_feature.clone(),
                         queues,
                         shared_memory_region: self.shared_memory_region.clone(),
                         shared_memory_size: self.shared_memory_size,
-                    });
-
-                    self.device_status.set_driver_ok(true);
+                    }) {
+                        Ok(()) => {
+                            self.device_status.set_driver_ok(true);
+                        }
+                        Err(err) => {
+                            self.doorbells.clear();
+                            // FUTURE: consider setting DEVICE_NEEDS_RESET and
+                            // delivering a config change interrupt so the guest
+                            // can detect the failure proactively instead of
+                            // waiting for IO timeouts.
+                            tracelimit::error_ratelimited!(
+                                error = &*err as &dyn std::error::Error,
+                                "virtio device enable failed"
+                            );
+                        }
+                    }
                     self.update_config_generation();
                 }
             }
-            // Queue current size
-            24 => {
+            VirtioPciCommonCfg::QUEUE_SIZE => {
                 let msix_vector = (val >> 16) as u16;
                 if !queues_locked && queue_select < self.queues.len() {
                     let val = val as u16;
@@ -494,74 +553,61 @@ impl VirtioPciDevice {
                     self.msix_vectors[queue_select] = msix_vector;
                 }
             }
-            // Current queue enabled
-            28 => {
+            VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let val = val & 0xffff;
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.enable = val != 0;
                 }
             }
-            // Queue descriptor table address (low part)
-            32 => {
+            VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.desc_addr = queue.desc_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor table address (high part)
-            36 => {
+            VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.desc_addr = (val as u64) << 32 | queue.desc_addr & 0xffffffff;
                 }
             }
-            // Queue descriptor available ring address (low part)
-            40 => {
+            VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.avail_addr = queue.avail_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor available ring address (high part)
-            44 => {
+            VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.avail_addr = (val as u64) << 32 | queue.avail_addr & 0xffffffff;
                 }
             }
-            // Queue descriptor used ring address (low part)
-            48 => {
+            VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if !queues_locked && (queue_select) < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.used_addr = queue.used_addr & 0xffffffff00000000 | val as u64;
                 }
             }
-            // Queue descriptor used ring address (high part)
-            52 => {
+            VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let queue = &mut self.queues[queue_select];
                     queue.used_addr = (val as u64) << 32 | queue.used_addr & 0xffffffff;
                 }
             }
-            // Queue notification register
-            56 => {
+            VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => {
                 if (val as usize) < self.events.len() {
                     self.events[val as usize].signal();
                 }
             }
-            offset if offset >= 64 => self.device.write_registers_u32(offset - 64, val),
+            VirtioPciCommonCfg(offset) if offset >= BAR0_DEVICE_CFG_OFFSET => self
+                .device
+                .write_registers_u32(offset - BAR0_DEVICE_CFG_OFFSET, val),
             _ => {
                 tracing::warn!(offset, "unknown bar write at offset");
             }
         }
-    }
-}
-
-impl Drop for VirtioPciDevice {
-    fn drop(&mut self) {
-        // TODO conditionalize
-        self.device.disable();
     }
 }
 
@@ -599,7 +645,27 @@ impl ChangeDeviceState for VirtioPciDevice {
     async fn stop(&mut self) {}
 
     async fn reset(&mut self) {
-        // TODO
+        if self.device_status.driver_ok() || self.disabling {
+            self.doorbells.clear();
+            std::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+        }
+        self.device_status = VirtioDeviceStatus::new();
+        self.disabling = false;
+        self.config_generation = 0;
+        *self.interrupt_status.lock() = 0;
+    }
+}
+
+impl PollDevice for VirtioPciDevice {
+    fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
+        self.poll_waker = Some(cx.waker().clone());
+        if self.disabling {
+            if self.device.poll_disable(cx).is_ready() {
+                self.device_status = VirtioDeviceStatus::new();
+                self.disabling = false;
+                *self.interrupt_status.lock() = 0;
+            }
+        }
     }
 }
 
@@ -609,6 +675,10 @@ impl ChipsetDevice for VirtioPciDevice {
     }
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+        Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
         Some(self)
     }
 }
@@ -658,7 +728,7 @@ impl PciConfigSpace for VirtioPciDevice {
 }
 
 pub(crate) mod capabilities {
-    use crate::spec::pci::VIRTIO_PCI_CAP_NOTIFY_CFG;
+    use crate::spec::pci::VirtioPciCapType;
     use pci_core::spec::caps::CapabilityId;
 
     use zerocopy::Immutable;
@@ -753,7 +823,7 @@ pub(crate) mod capabilities {
             Self {
                 common: VirtioCapabilityCommon::new(
                     size_of::<Self>() as u8,
-                    VIRTIO_PCI_CAP_NOTIFY_CFG,
+                    VirtioPciCapType::NOTIFY_CFG.0,
                     bar,
                     0,
                     addr_off,

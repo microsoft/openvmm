@@ -76,6 +76,9 @@ fn linux_distro() -> FlowPlatformLinuxDistro {
             FlowPlatformLinuxDistro::Ubuntu
         } else if etc_os_release.contains("ID=fedora") {
             FlowPlatformLinuxDistro::Fedora
+        } else if etc_os_release.contains("ID=azurelinux") || etc_os_release.contains("ID=mariner")
+        {
+            FlowPlatformLinuxDistro::AzureLinux
         } else if etc_os_release.contains("ID=arch") {
             FlowPlatformLinuxDistro::Arch
         } else {

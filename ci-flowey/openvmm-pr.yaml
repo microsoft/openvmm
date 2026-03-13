@@ -17,8 +17,8 @@ parameters:
   type: boolean
   default: false
 jobs:
-- job: job12
-  displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
+- job: job0
+  displayName: quick check [fmt, clippy x64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -86,6 +86,144 @@ jobs:
       )
       $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
     displayName: 🌼🔎 Self-check YAML
+  - bash: |
+      set -e
+      echo '"debug"' | $FLOWEY_BIN v 0 'FLOWEY_LOG' update
+      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 0 '_internal_WORKING_DIR' --is-raw-string update
+
+      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 0 'verbose' update
+      ${{ parameters.verbose }}
+      EOF
+    displayName: 🌼🛫 Initialize job
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:299:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46 write-to-env ado floweyvar1
+      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46' write-to-env ado FLOWEY_CONDITION
+    displayName: check if openvmm needs to be cloned
+  - checkout: self
+    path: repo0
+    fetchTags: false
+    fetchDepth: 1
+    persistCredentials: $(floweyvar1)
+    submodules: recursive
+    displayName: checkout repo openvmm
+    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 2
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+    displayName: report cloned repo directories
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::install_rust 0
+    displayName: install Rust
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::install_rust 1
+      $(FLOWEY_BIN) e 0 flowey_lib_common::cfg_cargo_common_flags 0
+    displayName: detect active toolchain
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+    displayName: set '-Dwarnings' in .cargo/config.toml
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::download_gh_release 0
+    displayName: create gh-release-download cache dir
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+    displayName: Pre-processing cache vars
+  - task: Cache@2
+    inputs:
+      key: $(floweyvar3)
+      path: $(floweyvar2)
+      cacheHitVar: FLOWEY_CACHE_HITVAR
+    displayName: 'Restore cache: gh-release-download'
+  - bash: |-
+      set -e
+      $FLOWEY_BIN v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $(FLOWEY_CACHE_HITVAR)
+      EOF
+      $(FLOWEY_BIN) e 0 flowey_lib_common::cache 2
+    displayName: map ADO hitvar to flowey
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::download_gh_release 1
+    displayName: download artifacts from github releases
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::install_dist_pkg 0
+    displayName: checking if packages need to be installed
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::install_dist_pkg 1
+    displayName: installing packages
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::resolve_protoc 0
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+    displayName: unpack protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 2
+    displayName: symlink protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_build 1
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_cargo_build 2
+    displayName: cargo build xtask
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_split_debug_info 0
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_cargo_build 3
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::build_xtask 1
+    displayName: split debug symbols
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 1
+    displayName: run xtask fmt
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_build 0
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_cargo_build 0
+    displayName: cargo build xtask
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_split_debug_info 1
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_cargo_build 1
+      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::build_xtask 0
+    displayName: split debug symbols
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_clippy 0
+    displayName: determine clippy exclusions
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_clippy 0
+    displayName: cargo clippy
+  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::cache 3
+    displayName: 'validate cache entry: gh-release-download'
+  - bash: rm $(AgentTempDirNormal)/bootstrapped-flowey/job0.json
+    displayName: 🌼🧼 Redact bootstrap var db
+  - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+    displayName: 🌼🥾 Publish bootstrapped flowey
+    artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+- job: job12
+  displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
+  pool: HvLite-CI-Linux-Pool-CentralUS
+  dependsOn:
+  - job0
+  condition: and(succeeded(), not(canceled()))
+  variables:
+  - name: FLOWEY_TEMP_DIR
+    value: $(Build.StagingDirectory)/.flowey-internal
+  steps:
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
+    inputs:
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
+  - bash: |
+      set -e
+      AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
+      AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+      echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
+
+      chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+      FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
+      echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
+    displayName: Set flowey path
   - bash: |
       set -e
       echo '"debug"' | $FLOWEY_BIN v 12 'FLOWEY_LOG' update
@@ -263,56 +401,20 @@ jobs:
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::cache 7
     displayName: 'validate cache entry: gh-release-download'
 - job: job11
-  displayName: clippy [x64-linux, macos], unit tests [x64-linux]
+  displayName: clippy [macos], unit tests [x64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
     value: $(Build.StagingDirectory)/.flowey-internal
   steps:
-  - bash: |
-      set -x
-      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-      . "$HOME/.cargo/env"
-      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
-    condition: eq(variables['Agent.OS'], 'Linux')
-    displayName: rustup (Linux)
-  - bash: |
-      set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-      ./rustup-init.exe -y --default-toolchain=1.93.1
-      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    displayName: rustup (Windows X64)
-  - bash: |
-      set -x
-      rustup show
-    displayName: Verify rustup installation
-  - checkout: self
-    fetchTags: false
-    fetchDepth: 1
-    path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-    workingDirectory: ../flowey_bootstrap
-    displayName: Build flowey
-  - bash: |
-      mkdir ./flowey_bootstrap_temp
-      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
-      mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-    workingDirectory: ../flowey_bootstrap
-    displayName: Stage flowey artifact
-  - task: CopyFiles@2
-    displayName: Copy flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
-      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-  - bash: rm -rf ./flowey_bootstrap_temp
-    workingDirectory: ../flowey_bootstrap
-    displayName: Cleanup staged flowey artifact
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - bash: |
       set -e
       AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
@@ -323,14 +425,6 @@ jobs:
       FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
       echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
     displayName: Set flowey path
-  - bash: |-
-      ESCAPED_AGENT_TEMPDIR=$(
-      cat <<'EOF' | sed 's/\\/\\\\/g'
-      $(FLOWEY_TEMP_DIR)
-      EOF
-      )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
-    displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
       echo '"debug"' | $FLOWEY_BIN v 11 'FLOWEY_LOG' update
@@ -347,6 +441,10 @@ jobs:
       $(FLOWEY_BIN) e 11 flowey_lib_common::install_rust 1
       $(FLOWEY_BIN) e 11 flowey_lib_common::cfg_cargo_common_flags 0
     displayName: detect active toolchain
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::install_dist_pkg 0
+    displayName: checking if packages need to be installed
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::install_dist_pkg 1
+    displayName: installing packages
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::git_checkout 0
@@ -391,10 +489,6 @@ jobs:
     displayName: map ADO hitvar to flowey
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::download_gh_release 1
     displayName: download artifacts from github releases
-  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::install_dist_pkg 0
-    displayName: checking if packages need to be installed
-  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::install_dist_pkg 1
-    displayName: installing packages
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_common::resolve_protoc 0
@@ -403,43 +497,22 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 4
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 1
     displayName: symlink protoc
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_build 2
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 2
-    displayName: cargo build xtask
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 0
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 3
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_xtask 1
-    displayName: split debug symbols
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::_jobs::check_clippy 1
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 0
-    displayName: determine clippy exclusions
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_clippy 0
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 3
-    displayName: cargo clippy
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_build 1
+      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_build 0
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 0
     displayName: cargo build xtask
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 2
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 1
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_xtask 0
     displayName: split debug symbols
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_hvlite::_jobs::check_clippy 0
     displayName: determine clippy exclusions
-  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_clippy 1
+  - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_clippy 0
     displayName: cargo clippy
   - bash: |-
       set -e
@@ -478,19 +551,19 @@ jobs:
     displayName: installing cargo-nextest
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_build 0
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 4
+      $(FLOWEY_BIN) e 11 flowey_lib_common::run_cargo_build 1
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 2
     displayName: cargo build xtask
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 1
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 5
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_xtask 2
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_split_debug_info 0
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_build 3
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_xtask 1
     displayName: split debug symbols
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::build_nextest_unit_tests 0
-      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 1
+      $(FLOWEY_BIN) e 11 flowey_lib_hvlite::init_cross_build 0
       $(FLOWEY_BIN) e 11 flowey_lib_hvlite::run_cargo_nextest_run 0
     displayName: determine unit test exclusions
   - bash: $(FLOWEY_BIN) e 11 flowey_lib_common::gen_cargo_nextest_run_cmd 0
@@ -524,7 +597,8 @@ jobs:
 - job: job10
   displayName: clippy [x64-windows], unit tests [x64-windows]
   pool: HvLite-CI-Win-Pool
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -749,54 +823,18 @@ jobs:
 - job: job9
   displayName: build openhcl [x64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
     value: $(Build.StagingDirectory)/.flowey-internal
   steps:
-  - bash: |
-      set -x
-      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-      . "$HOME/.cargo/env"
-      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
-    condition: eq(variables['Agent.OS'], 'Linux')
-    displayName: rustup (Linux)
-  - bash: |
-      set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-      ./rustup-init.exe -y --default-toolchain=1.93.1
-      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    displayName: rustup (Windows X64)
-  - bash: |
-      set -x
-      rustup show
-    displayName: Verify rustup installation
-  - checkout: self
-    fetchTags: false
-    fetchDepth: 1
-    path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-    workingDirectory: ../flowey_bootstrap
-    displayName: Build flowey
-  - bash: |
-      mkdir ./flowey_bootstrap_temp
-      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
-      mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-    workingDirectory: ../flowey_bootstrap
-    displayName: Stage flowey artifact
-  - task: CopyFiles@2
-    displayName: Copy flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
-      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-  - bash: rm -rf ./flowey_bootstrap_temp
-    workingDirectory: ../flowey_bootstrap
-    displayName: Cleanup staged flowey artifact
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - bash: |
       set -e
       AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
@@ -807,14 +845,6 @@ jobs:
       FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
       echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
     displayName: Set flowey path
-  - bash: |-
-      ESCAPED_AGENT_TEMPDIR=$(
-      cat <<'EOF' | sed 's/\\/\\\\/g'
-      $(FLOWEY_TEMP_DIR)
-      EOF
-      )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
-    displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
       echo '"debug"' | $FLOWEY_BIN v 9 'FLOWEY_LOG' update
@@ -1136,62 +1166,21 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-openhcl-igvm-extras
     displayName: 🌼📦 Publish x64-openhcl-igvm-extras
     artifact: x64-openhcl-igvm-extras
-  - bash: rm $(AgentTempDirNormal)/bootstrapped-flowey/job9.json
-    displayName: 🌼🧼 Redact bootstrap var db
-  - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-    displayName: 🌼🥾 Publish bootstrapped flowey
-    artifact: _internal-flowey-bootstrap-x86_64-linux-uid-4
 - job: job8
   displayName: build openhcl [aarch64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
     value: $(Build.StagingDirectory)/.flowey-internal
   steps:
-  - bash: |
-      set -x
-      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-      . "$HOME/.cargo/env"
-      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
-    condition: eq(variables['Agent.OS'], 'Linux')
-    displayName: rustup (Linux)
-  - bash: |
-      set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-      ./rustup-init.exe -y --default-toolchain=1.93.1
-      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    displayName: rustup (Windows X64)
-  - bash: |
-      set -x
-      rustup show
-    displayName: Verify rustup installation
-  - checkout: self
-    fetchTags: false
-    fetchDepth: 1
-    path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-    workingDirectory: ../flowey_bootstrap
-    displayName: Build flowey
-  - bash: |
-      mkdir ./flowey_bootstrap_temp
-      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
-      mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-    workingDirectory: ../flowey_bootstrap
-    displayName: Stage flowey artifact
-  - task: CopyFiles@2
-    displayName: Copy flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
-      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-  - bash: rm -rf ./flowey_bootstrap_temp
-    workingDirectory: ../flowey_bootstrap
-    displayName: Cleanup staged flowey artifact
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - bash: |
       set -e
       AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
@@ -1202,14 +1191,6 @@ jobs:
       FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
       echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
     displayName: Set flowey path
-  - bash: |-
-      ESCAPED_AGENT_TEMPDIR=$(
-      cat <<'EOF' | sed 's/\\/\\\\/g'
-      $(FLOWEY_TEMP_DIR)
-      EOF
-      )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
-    displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
       echo '"debug"' | $FLOWEY_BIN v 8 'FLOWEY_LOG' update
@@ -1443,54 +1424,18 @@ jobs:
 - job: job7
   displayName: build artifacts [x64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
     value: $(Build.StagingDirectory)/.flowey-internal
   steps:
-  - bash: |
-      set -x
-      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-      . "$HOME/.cargo/env"
-      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
-    condition: eq(variables['Agent.OS'], 'Linux')
-    displayName: rustup (Linux)
-  - bash: |
-      set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-      ./rustup-init.exe -y --default-toolchain=1.93.1
-      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    displayName: rustup (Windows X64)
-  - bash: |
-      set -x
-      rustup show
-    displayName: Verify rustup installation
-  - checkout: self
-    fetchTags: false
-    fetchDepth: 1
-    path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-    workingDirectory: ../flowey_bootstrap
-    displayName: Build flowey
-  - bash: |
-      mkdir ./flowey_bootstrap_temp
-      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
-      mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-    workingDirectory: ../flowey_bootstrap
-    displayName: Stage flowey artifact
-  - task: CopyFiles@2
-    displayName: Copy flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
-      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-  - bash: rm -rf ./flowey_bootstrap_temp
-    workingDirectory: ../flowey_bootstrap
-    displayName: Cleanup staged flowey artifact
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - bash: |
       set -e
       AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
@@ -1501,14 +1446,6 @@ jobs:
       FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
       echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
     displayName: Set flowey path
-  - bash: |-
-      ESCAPED_AGENT_TEMPDIR=$(
-      cat <<'EOF' | sed 's/\\/\\\\/g'
-      $(FLOWEY_TEMP_DIR)
-      EOF
-      )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
-    displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
       echo '"debug"' | $FLOWEY_BIN v 7 'FLOWEY_LOG' update
@@ -1779,54 +1716,18 @@ jobs:
 - job: job6
   displayName: build artifacts [aarch64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
     value: $(Build.StagingDirectory)/.flowey-internal
   steps:
-  - bash: |
-      set -x
-      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-      . "$HOME/.cargo/env"
-      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
-    condition: eq(variables['Agent.OS'], 'Linux')
-    displayName: rustup (Linux)
-  - bash: |
-      set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-      ./rustup-init.exe -y --default-toolchain=1.93.1
-      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    displayName: rustup (Windows X64)
-  - bash: |
-      set -x
-      rustup show
-    displayName: Verify rustup installation
-  - checkout: self
-    fetchTags: false
-    fetchDepth: 1
-    path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-    workingDirectory: ../flowey_bootstrap
-    displayName: Build flowey
-  - bash: |
-      mkdir ./flowey_bootstrap_temp
-      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
-      mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-    workingDirectory: ../flowey_bootstrap
-    displayName: Stage flowey artifact
-  - task: CopyFiles@2
-    displayName: Copy flowey artifact
+  - task: DownloadPipelineArtifact@2
+    displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
-      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-  - bash: rm -rf ./flowey_bootstrap_temp
-    workingDirectory: ../flowey_bootstrap
-    displayName: Cleanup staged flowey artifact
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
+      path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - bash: |
       set -e
       AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
@@ -1837,14 +1738,6 @@ jobs:
       FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
       echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
     displayName: Set flowey path
-  - bash: |-
-      ESCAPED_AGENT_TEMPDIR=$(
-      cat <<'EOF' | sed 's/\\/\\\\/g'
-      $(FLOWEY_TEMP_DIR)
-      EOF
-      )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
-    displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
       echo '"debug"' | $FLOWEY_BIN v 6 'FLOWEY_LOG' update
@@ -2063,7 +1956,8 @@ jobs:
 - job: job5
   displayName: build artifacts (for VMM tests) [x64-windows]
   pool: HvLite-CI-Win-Pool
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -2347,11 +2241,12 @@ jobs:
     displayName: 🌼🧼 Redact bootstrap var db
   - publish: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
     displayName: 🌼🥾 Publish bootstrapped flowey
-    artifact: _internal-flowey-bootstrap-x86_64-windows-uid-8
+    artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
 - job: job15
   displayName: run vmm-tests [x64-linux]
   pool: HvLite-CI-Linux-Pool-CentralUS
   dependsOn:
+  - job0
   - job5
   - job7
   - job9
@@ -2363,7 +2258,7 @@ jobs:
   - task: DownloadPipelineArtifact@2
     displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-4
+      artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
       path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-guest_test_uefi
@@ -2568,6 +2463,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-amd]
   pool: HvLite-CI-Win-Pool
   dependsOn:
+  - job0
   - job5
   - job7
   - job9
@@ -2579,7 +2475,7 @@ jobs:
   - task: DownloadPipelineArtifact@2
     displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-8
+      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
       path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-guest_test_uefi
@@ -2834,6 +2730,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-intel]
   pool: HvLite-CI-Win-Pool
   dependsOn:
+  - job0
   - job5
   - job7
   - job9
@@ -2845,7 +2742,7 @@ jobs:
   - task: DownloadPipelineArtifact@2
     displayName: 🌼🥾 Download bootstrapped flowey
     inputs:
-      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-8
+      artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
       path: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
   - task: DownloadPipelineArtifact@2
     displayName: 🌼📦 Download x64-guest_test_uefi
@@ -3099,7 +2996,8 @@ jobs:
 - job: job4
   displayName: build artifacts (not for VMM tests) [x64-windows]
   pool: HvLite-CI-Win-Pool
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -3296,7 +3194,8 @@ jobs:
 - job: job3
   displayName: build artifacts (for VMM tests) [aarch64-windows]
   pool: HvLite-CI-Win-Pool
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -3446,8 +3345,16 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 7
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 2
     displayName: symlink protoc
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 4
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 6
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_tmk_vmm 0
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 4
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 7
+    displayName: cargo build tmk_vmm
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 2
@@ -3539,15 +3446,7 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_pipette 0
       $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 3
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 2
     displayName: cargo build pipette
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 4
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 6
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_tmk_vmm 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 4
-    displayName: cargo build tmk_vmm
   - bash: $(FLOWEY_BIN) e 3 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
   - bash: $(FLOWEY_BIN) e 3 flowey_lib_common::cache 7
@@ -3579,7 +3478,8 @@ jobs:
 - job: job2
   displayName: build artifacts (not for VMM tests) [aarch64-windows]
   pool: HvLite-CI-Win-Pool
-  dependsOn: []
+  dependsOn:
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -3770,168 +3670,10 @@ jobs:
     displayName: 🌼📦 Publish aarch64-windows-vmgs_lib
     artifact: aarch64-windows-vmgs_lib
 - job: job1
-  displayName: xtask fmt (linux)
-  pool: HvLite-CI-Linux-Pool-CentralUS
-  dependsOn: []
-  condition: and(succeeded(), not(canceled()))
-  variables:
-  - name: FLOWEY_TEMP_DIR
-    value: $(Build.StagingDirectory)/.flowey-internal
-  steps:
-  - bash: |
-      set -x
-      i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
-      sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-      curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
-      . "$HOME/.cargo/env"
-      echo '##vso[task.prependpath]$(HOME)/.cargo/bin'
-    condition: eq(variables['Agent.OS'], 'Linux')
-    displayName: rustup (Linux)
-  - bash: |
-      set -x
-      curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-      ./rustup-init.exe -y --default-toolchain=1.93.1
-      echo '##vso[task.prependpath]$(USERPROFILE)\\.cargo\\bin'
-    condition: eq(variables['Agent.OS'], 'Windows_NT')
-    displayName: rustup (Windows X64)
-  - bash: |
-      set -x
-      rustup show
-    displayName: Verify rustup installation
-  - checkout: self
-    fetchTags: false
-    fetchDepth: 1
-    path: flowey_bootstrap
-  - bash: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-    workingDirectory: ../flowey_bootstrap
-    displayName: Build flowey
-  - bash: |
-      mkdir ./flowey_bootstrap_temp
-      mv ./ci-flowey/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-      mv ./ci-flowey/openvmm-pr.json ./flowey_bootstrap_temp/pipeline.json
-      mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-    workingDirectory: ../flowey_bootstrap
-    displayName: Stage flowey artifact
-  - task: CopyFiles@2
-    displayName: Copy flowey artifact
-    inputs:
-      SourceFolder: ../flowey_bootstrap/flowey_bootstrap_temp
-      TargetFolder: $(FLOWEY_TEMP_DIR)/bootstrapped-flowey
-  - bash: rm -rf ./flowey_bootstrap_temp
-    workingDirectory: ../flowey_bootstrap
-    displayName: Cleanup staged flowey artifact
-  - bash: |
-      set -e
-      AgentTempDirNormal="$(FLOWEY_TEMP_DIR)"
-      AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-      echo "##vso[task.setvariable variable=AgentTempDirNormal;]$AgentTempDirNormal"
-
-      chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
-      FLOWEY_BIN="$AgentTempDirNormal/bootstrapped-flowey/flowey"
-      echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
-    displayName: Set flowey path
-  - bash: |-
-      ESCAPED_AGENT_TEMPDIR=$(
-      cat <<'EOF' | sed 's/\\/\\\\/g'
-      $(FLOWEY_TEMP_DIR)
-      EOF
-      )
-      $(FLOWEY_BIN) pipeline ado --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out ci-flowey/openvmm-pr.yaml ci checkin-gates --config=pr
-    displayName: 🌼🔎 Self-check YAML
-  - bash: |
-      set -e
-      echo '"debug"' | $FLOWEY_BIN v 1 'FLOWEY_LOG' update
-      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 1 '_internal_WORKING_DIR' --is-raw-string update
-
-      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 1 'verbose' update
-      ${{ parameters.verbose }}
-      EOF
-    displayName: 🌼🛫 Initialize job
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:299:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46' write-to-env ado FLOWEY_CONDITION
-    displayName: check if openvmm needs to be cloned
-  - checkout: self
-    path: repo0
-    fetchTags: false
-    fetchDepth: 1
-    persistCredentials: $(floweyvar1)
-    submodules: recursive
-    displayName: checkout repo openvmm
-    condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 2
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::git_checkout_openvmm_repo 0
-    displayName: report cloned repo directories
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::install_rust 0
-    displayName: install Rust
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::install_rust 1
-      $(FLOWEY_BIN) e 1 flowey_lib_common::cfg_cargo_common_flags 0
-    displayName: detect active toolchain
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
-    displayName: set '-Dwarnings' in .cargo/config.toml
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::download_gh_release 0
-    displayName: create gh-release-download cache dir
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
-    displayName: Pre-processing cache vars
-  - task: Cache@2
-    inputs:
-      key: $(floweyvar3)
-      path: $(floweyvar2)
-      cacheHitVar: FLOWEY_CACHE_HITVAR
-    displayName: 'Restore cache: gh-release-download'
-  - bash: |-
-      set -e
-      $FLOWEY_BIN v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
-      $(FLOWEY_CACHE_HITVAR)
-      EOF
-      $(FLOWEY_BIN) e 1 flowey_lib_common::cache 2
-    displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::download_gh_release 1
-    displayName: download artifacts from github releases
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::install_dist_pkg 0
-    displayName: checking if packages need to be installed
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::install_dist_pkg 1
-    displayName: installing packages
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::resolve_protoc 0
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
-    displayName: unpack protoc
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::init_cross_build 0
-    displayName: symlink protoc
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_common::run_cargo_build 0
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::run_cargo_build 0
-    displayName: cargo build xtask
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::run_split_debug_info 0
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::run_cargo_build 1
-      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::build_xtask 0
-    displayName: split debug symbols
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
-    displayName: run xtask fmt
-  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::cache 3
-    displayName: 'validate cache entry: gh-release-download'
-- job: job0
   displayName: xtask fmt (windows)
   pool: HvLite-CI-Win-Pool
   dependsOn:
-  - job1
+  - job0
   condition: and(succeeded(), not(canceled()))
   variables:
   - name: FLOWEY_TEMP_DIR
@@ -3999,18 +3741,18 @@ jobs:
     displayName: 🌼🔎 Self-check YAML
   - bash: |
       set -e
-      echo '"debug"' | $FLOWEY_BIN v 0 'FLOWEY_LOG' update
-      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 0 '_internal_WORKING_DIR' --is-raw-string update
+      echo '"debug"' | $FLOWEY_BIN v 1 'FLOWEY_LOG' update
+      echo "$(FLOWEY_TEMP_DIR)/work" | $FLOWEY_BIN v 1 '_internal_WORKING_DIR' --is-raw-string update
 
-      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 0 'verbose' update
+      cat <<'EOF' | tr '[:upper:]' '[:lower:]' | $FLOWEY_BIN v 1 'verbose' update
       ${{ parameters.verbose }}
       EOF
     displayName: 🌼🛫 Initialize job
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 0
-      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:299:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46 write-to-env ado floweyvar1
-      $FLOWEY_BIN v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46' write-to-env ado FLOWEY_CONDITION
+      $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 0
+      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:299:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46 write-to-env ado floweyvar1
+      $FLOWEY_BIN v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:300:46' write-to-env ado FLOWEY_CONDITION
     displayName: check if openvmm needs to be cloned
   - checkout: self
     path: repo0
@@ -4022,25 +3764,25 @@ jobs:
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::git_checkout 2
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      $(FLOWEY_BIN) e 1 flowey_lib_common::git_checkout 2
+      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::git_checkout_openvmm_repo 0
     displayName: report cloned repo directories
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::install_rust 0
+  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::install_rust 0
     displayName: install Rust
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::install_rust 1
-      $(FLOWEY_BIN) e 0 flowey_lib_common::cfg_cargo_common_flags 0
+      $(FLOWEY_BIN) e 1 flowey_lib_common::install_rust 1
+      $(FLOWEY_BIN) e 1 flowey_lib_common::cfg_cargo_common_flags 0
     displayName: detect active toolchain
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+  - bash: $(FLOWEY_BIN) e 1 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
     displayName: set '-Dwarnings' in .cargo/config.toml
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::download_gh_release 0
+  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::download_gh_release 0
     displayName: create gh-release-download cache dir
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::cache 0
-      $FLOWEY_BIN v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
-      $FLOWEY_BIN v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
+      $(FLOWEY_BIN) e 1 flowey_lib_common::cache 0
+      $FLOWEY_BIN v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:236:72' --is-raw-string write-to-env ado floweyvar2
+      $FLOWEY_BIN v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:237:72' --is-raw-string write-to-env ado floweyvar3
     displayName: Pre-processing cache vars
   - task: Cache@2
     inputs:
@@ -4050,30 +3792,30 @@ jobs:
     displayName: 'Restore cache: gh-release-download'
   - bash: |-
       set -e
-      $FLOWEY_BIN v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
+      $FLOWEY_BIN v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:300:70' --is-raw-string update --env-source FLOWEY_CACHE_HITVAR <<'EOF'
       $(FLOWEY_CACHE_HITVAR)
       EOF
-      $(FLOWEY_BIN) e 0 flowey_lib_common::cache 2
+      $(FLOWEY_BIN) e 1 flowey_lib_common::cache 2
     displayName: map ADO hitvar to flowey
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::download_gh_release 1
+  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::download_gh_release 1
     displayName: download artifacts from github releases
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::resolve_protoc 0
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+      $(FLOWEY_BIN) e 1 flowey_lib_common::resolve_protoc 0
+      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::cfg_openvmm_magicpath 0
     displayName: unpack protoc
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::init_cross_build 0
     displayName: symlink protoc
   - bash: |-
       set -e
-      $(FLOWEY_BIN) e 0 flowey_lib_common::run_cargo_build 0
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::run_cargo_build 0
-      $(FLOWEY_BIN) e 0 flowey_lib_hvlite::build_xtask 0
+      $(FLOWEY_BIN) e 1 flowey_lib_common::run_cargo_build 0
+      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::run_cargo_build 0
+      $(FLOWEY_BIN) e 1 flowey_lib_hvlite::build_xtask 0
     displayName: cargo build xtask
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
+  - bash: $(FLOWEY_BIN) e 1 flowey_lib_hvlite::_jobs::check_xtask_fmt 0
     displayName: run xtask fmt
-  - bash: $(FLOWEY_BIN) e 0 flowey_lib_common::cache 3
+  - bash: $(FLOWEY_BIN) e 1 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'

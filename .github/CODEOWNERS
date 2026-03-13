@@ -5,7 +5,10 @@
 
 # Any CI changes require special approval
 /ci/ @microsoft/openvmm-ci-reviewers
-/.github/ @microsoft/openvmm-ci-reviewers
+/.github/CODEOWNERS @microsoft/openvmm-maintainers
+/.github/labeler.yml @microsoft/openvmm-ci-reviewers
+/.github/scripts/ @microsoft/openvmm-ci-reviewers
+/.github/workflows/ @microsoft/openvmm-ci-reviewers
 
 # Areas with specific maintainers. In some cases, general maintainers can also approve.
 

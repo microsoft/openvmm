@@ -31,7 +31,6 @@ use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
@@ -420,10 +419,14 @@ impl VmService {
         {
             vmservice::vm_config::BootConfig::DirectBoot(boot) => {
                 let kernel = File::open(boot.kernel_path).context("failed to open kernel")?;
-                let initrd_file = File::open(boot.initrd_path).context("failed to open initrd")?;
+                let initrd = if boot.initrd_path.is_empty() {
+                    None
+                } else {
+                    Some(File::open(boot.initrd_path).context("failed to open initrd")?)
+                };
                 LoadMode::Linux {
                     kernel,
-                    initrd: Some(initrd_file),
+                    initrd,
                     cmdline: boot.kernel_cmdline,
                     custom_dsdt: None,
                     enable_serial: true,
@@ -470,8 +473,10 @@ impl VmService {
                     .checked_mul(0x100000)
                     .context("invalid memory configuration")?,
                 mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
+                pci_ecam_gaps: vec![],
+                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
-                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
+                private_memory: false,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {

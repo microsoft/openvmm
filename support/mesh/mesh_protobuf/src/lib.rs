@@ -1526,4 +1526,33 @@ mod tests {
         let m = encode(("foo", 2, 3));
         decode::<(String, String, String)>(&m).unwrap_err();
     }
+
+    /// Test that decoding a transparent enum where the wire data contains two
+    /// different variant fields (protobuf "last one wins") does not corrupt
+    /// memory. The second variant decode must properly drop the first variant
+    /// before overwriting its storage.
+    #[test]
+    fn test_transparent_enum_variant_switch() {
+        #[derive(Protobuf, Clone, PartialEq, Eq, Debug)]
+        enum Switchy {
+            #[mesh(transparent)]
+            Str(String),
+            #[mesh(transparent)]
+            Num(u32),
+        }
+
+        // Encode Num first, then Str. Concatenating their bytes simulates a
+        // protobuf message with two oneof fields present (legal per the spec;
+        // last one wins). This order matters: decoding Str when Num is already
+        // stored writes a String at offset 0 (because size_of::<String>() ==
+        // size_of::<Switchy>()), overwriting the full enum. Without the fix,
+        // the old variant is then dropped with corrupted memory (double-free).
+        let num_bytes = encode(Switchy::Num(42));
+        let str_bytes = encode(Switchy::Str("hello".to_owned()));
+        let mut combined = num_bytes;
+        combined.extend_from_slice(&str_bytes);
+
+        let result: Switchy = decode(&combined).unwrap();
+        assert_eq!(result, Switchy::Str("hello".to_owned()));
+    }
 }

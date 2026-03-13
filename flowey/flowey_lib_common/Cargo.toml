@@ -10,16 +10,17 @@ rust-version.workspace = true
 flowey.workspace = true
 
 anyhow.workspace = true
-dirs.workspace = true
 fs-err.workspace = true
 home.workspace = true
 log.workspace = true
 rlimit.workspace = true
+roxmltree.workspace = true
 rustc-hash.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
 toml_edit.workspace = true
+tempfile.workspace = true
 which.workspace = true
 xshell.workspace = true
 

@@ -63,6 +63,7 @@ use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
+use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::error::RemoteError;
@@ -81,7 +82,6 @@ use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
@@ -117,6 +117,7 @@ use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::future::pending;
 use std::io;
@@ -652,6 +653,28 @@ async fn vm_config_from_command_line(
         )?;
     }
 
+    for &cli_args::DiskCli {
+        vtl,
+        ref kind,
+        read_only,
+        is_dvd,
+        ref underhill,
+        ref pcie_port,
+    } in &opt.virtio_blk
+    {
+        if underhill.is_some() {
+            anyhow::bail!("underhill not supported with virtio-blk");
+        }
+        storage.add(
+            vtl,
+            None,
+            storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
+            kind,
+            is_dvd,
+            read_only,
+        )?;
+    }
+
     let floppy_disks: Vec<_> = opt
         .floppy
         .iter()
@@ -667,18 +690,22 @@ async fn vm_config_from_command_line(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut mana_nics = [(); 3].map(|()| None);
+    let mut vpci_mana_nics = [(); 3].map(|()| None);
+    let mut pcie_mana_nics = BTreeMap::<String, GdmaDeviceHandle>::new();
     let mut underhill_nics = Vec::new();
     let mut vpci_devices = Vec::new();
 
     let mut nic_index = 0;
     for cli_cfg in &opt.net {
+        if cli_cfg.pcie_port.is_some() {
+            anyhow::bail!("`--net` does not support PCIe");
+        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         if cli_cfg.underhill {
             if !opt.no_alias_map {
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
-            let mana = mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
+            let mana = vpci_mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
                 let vpci_instance_id = Guid::new_random();
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
@@ -703,6 +730,7 @@ async fn vm_config_from_command_line(
                 endpoint: EndpointConfigCli::Consomme { cidr: None },
                 max_queues: None,
                 underhill: false,
+                pcie_port: None,
             },
             &mut nic_index,
             &mut resources,
@@ -732,7 +760,7 @@ async fn vm_config_from_command_line(
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(
             port_name = %cli_cfg.port_name,
-            socket_path = ?cli_cfg.socket_path,
+            socket_addr = ?cli_cfg.socket_addr,
             "instantiating PCIe remote device"
         );
 
@@ -748,7 +776,7 @@ async fn vm_config_from_command_line(
             port_name: cli_cfg.port_name.clone(),
             resource: pcie_remote_resources::PcieRemoteHandle {
                 instance_id,
-                socket_path: cli_cfg.socket_path.clone(),
+                socket_addr: cli_cfg.socket_addr.clone(),
                 hu: cli_cfg.hu,
                 controller: cli_cfg.controller,
             }
@@ -788,58 +816,138 @@ async fn vm_config_from_command_line(
 
     for vport in &opt.mana {
         let vport = parse_endpoint(vport, &mut nic_index, &mut resources)?;
-        mana_nics[vport.vtl as usize]
-            .get_or_insert_with(|| (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() }))
-            .1
-            .vports
-            .push(VportDefinition {
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            });
+        let vport_array = match (vport.vtl as usize, vport.pcie_port) {
+            (vtl, None) => {
+                &mut vpci_mana_nics[vtl]
+                    .get_or_insert_with(|| {
+                        (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() })
+                    })
+                    .1
+                    .vports
+            }
+            (0, Some(pcie_port)) => {
+                &mut pcie_mana_nics
+                    .entry(pcie_port)
+                    .or_insert(GdmaDeviceHandle { vports: Vec::new() })
+                    .vports
+            }
+            _ => anyhow::bail!("PCIe NICs only supported to VTL0"),
+        };
+        vport_array.push(VportDefinition {
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        });
     }
 
-    vpci_devices.extend(mana_nics.into_iter().enumerate().filter_map(|(vtl, nic)| {
-        nic.map(|(instance_id, handle)| VpciDeviceConfig {
-            vtl: match vtl {
-                0 => DeviceVtl::Vtl0,
-                1 => DeviceVtl::Vtl1,
-                2 => DeviceVtl::Vtl2,
-                _ => unreachable!(),
-            },
-            instance_id,
-            resource: handle.into_resource(),
-        })
-    }));
+    vpci_devices.extend(
+        vpci_mana_nics
+            .into_iter()
+            .enumerate()
+            .filter_map(|(vtl, nic)| {
+                nic.map(|(instance_id, handle)| VpciDeviceConfig {
+                    vtl: match vtl {
+                        0 => DeviceVtl::Vtl0,
+                        1 => DeviceVtl::Vtl1,
+                        2 => DeviceVtl::Vtl2,
+                        _ => unreachable!(),
+                    },
+                    instance_id,
+                    resource: handle.into_resource(),
+                })
+            }),
+    );
+
+    pcie_devices.extend(
+        pcie_mana_nics
+            .into_iter()
+            .map(|(pcie_port, handle)| PcieDeviceConfig {
+                port_name: pcie_port,
+                resource: handle.into_resource(),
+            }),
+    );
+
+    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
+    // mmio gap for VTL2.
+    let use_vtl2_gap = opt.vtl2
+        && !matches!(
+            opt.igvm_vtl2_relocation_type,
+            Vtl2BaseAddressType::Vtl2Allocate { .. },
+        );
+
+    #[cfg(guest_arch = "aarch64")]
+    let arch = MachineArch::Aarch64;
+    #[cfg(guest_arch = "x86_64")]
+    let arch = MachineArch::X86_64;
+
+    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, arch) {
+        (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+        (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+        (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
+        (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
+    };
+
+    let mut pci_ecam_gaps = Vec::new();
+    let mut pci_mmio_gaps = Vec::new();
+
+    let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
+    let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
+
+    let mut pcie_root_complexes = Vec::new();
+    for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
+        let ports = opt
+            .pcie_root_port
+            .iter()
+            .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
+            .map(|port_cli| PcieRootPortConfig {
+                name: port_cli.name.clone(),
+                hotplug: port_cli.hotplug,
+            })
+            .collect();
+
+        const ONE_MB: u64 = 1024 * 1024;
+        let low_mmio_size = (rc_cli.low_mmio as u64).next_multiple_of(ONE_MB);
+        let high_mmio_size = rc_cli
+            .high_mmio
+            .checked_next_multiple_of(ONE_MB)
+            .context("high mmio rounding error")?;
+        let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
+
+        let low_pci_mmio_start = low_mmio_start
+            .checked_sub(low_mmio_size)
+            .context("pci low mmio underflow")?;
+        let ecam_start = low_pci_mmio_start
+            .checked_sub(ecam_size)
+            .context("pci ecam underflow")?;
+        low_mmio_start = ecam_start;
+        high_mmio_end = high_mmio_end
+            .checked_add(high_mmio_size)
+            .context("pci high mmio overflow")?;
+
+        let ecam_range = MemoryRange::new(ecam_start..ecam_start + ecam_size);
+        let low_mmio = MemoryRange::new(low_pci_mmio_start..low_pci_mmio_start + low_mmio_size);
+        let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
+
+        pci_ecam_gaps.push(ecam_range);
+        pci_mmio_gaps.push(low_mmio);
+        pci_mmio_gaps.push(high_mmio);
+
+        pcie_root_complexes.push(PcieRootComplexConfig {
+            index: i as u32,
+            name: rc_cli.name.clone(),
+            segment: rc_cli.segment,
+            start_bus: rc_cli.start_bus,
+            end_bus: rc_cli.end_bus,
+            ecam_range,
+            low_mmio,
+            high_mmio,
+            ports,
+        });
+    }
+
+    pci_ecam_gaps.sort();
+    pci_mmio_gaps.sort();
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
-
-    let pcie_root_complexes = opt
-        .pcie_root_complex
-        .iter()
-        .enumerate()
-        .map(|(i, cli)| {
-            let ports = opt
-                .pcie_root_port
-                .iter()
-                .filter(|port_cli| port_cli.root_complex_name == cli.name)
-                .map(|port_cli| PcieRootPortConfig {
-                    name: port_cli.name.clone(),
-                    hotplug: port_cli.hotplug,
-                })
-                .collect();
-
-            PcieRootComplexConfig {
-                index: i as u32,
-                name: cli.name.clone(),
-                segment: cli.segment,
-                start_bus: cli.start_bus,
-                end_bus: cli.end_bus,
-                low_mmio_size: cli.low_mmio,
-                high_mmio_size: cli.high_mmio,
-                ports,
-            }
-        })
-        .collect();
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -875,9 +983,6 @@ async fn vm_config_from_command_line(
         None
     };
 
-    let is_arm = cfg!(guest_arch = "aarch64");
-    let is_x86 = cfg!(guest_arch = "x86_64");
-
     let load_mode;
     let with_hv;
 
@@ -900,11 +1005,7 @@ async fn vm_config_from_command_line(
         } else {
             BaseChipsetType::UnenlightenedLinuxDirect
         },
-        if is_x86 {
-            MachineArch::X86_64
-        } else {
-            MachineArch::Aarch64
-        },
+        arch,
     );
 
     if framebuffer.is_some() {
@@ -956,7 +1057,7 @@ async fn vm_config_from_command_line(
         };
     } else if opt.pcat {
         // Emit a nice error early instead of complaining about missing firmware.
-        if !is_x86 {
+        if arch != MachineArch::X86_64 {
             anyhow::bail!("pcat not supported on this architecture");
         }
         with_hv = true;
@@ -1223,29 +1324,20 @@ async fn vm_config_from_command_line(
         // load base vars from specified template, or use an empty set of base
         // vars if none was specified.
         let base_vars = match opt.secure_boot_template {
-            Some(template) => {
-                if is_x86 {
-                    match template {
-                        SecureBootTemplateCli::Windows => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        SecureBootTemplateCli::UefiCa => {
-                            hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                        }
-                    }
-                } else if is_arm {
-                    match template {
-                        SecureBootTemplateCli::Windows => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        SecureBootTemplateCli::UefiCa => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                        }
-                    }
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
+            Some(template) => match (arch, template) {
+                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
                 }
-            }
+                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                }
+            },
             None => CustomVars::default(),
         };
 
@@ -1321,24 +1413,6 @@ async fn vm_config_from_command_line(
 
     let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
     let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
-
-    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
-    // mmio gap for VTL2.
-    let mmio_gaps = if opt.vtl2
-        && !matches!(
-            opt.igvm_vtl2_relocation_type,
-            Vtl2BaseAddressType::Vtl2Allocate { .. },
-        ) {
-        if is_x86 {
-            DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into()
-        } else {
-            DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into()
-        }
-    } else if is_x86 {
-        DEFAULT_MMIO_GAPS_X86.into()
-    } else {
-        DEFAULT_MMIO_GAPS_AARCH64.into()
-    };
 
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
@@ -1436,6 +1510,9 @@ async fn vm_config_from_command_line(
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
+        if cli_cfg.pcie_port.is_some() {
+            anyhow::bail!("use --mana to add PCIe NICs")
+        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         add_virtio_device(
             VirtioBusCli::Auto,
@@ -1507,7 +1584,9 @@ async fn vm_config_from_command_line(
             mem_size: opt.memory,
             mmio_gaps,
             prefetch_memory: opt.prefetch,
-            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
+            private_memory: opt.private_memory,
+            pci_ecam_gaps,
+            pci_mmio_gaps,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -1682,6 +1761,7 @@ fn parse_endpoint(
         endpoint,
         mac_address: mac_address.into(),
         max_queues: cli_cfg.max_queues,
+        pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
 
@@ -1692,6 +1772,7 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
+    pcie_port: Option<String>,
 }
 
 impl NicConfig {

@@ -50,7 +50,6 @@ use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
@@ -86,6 +85,8 @@ use uidevices_resources::SynthVideoHandle;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 use video_core::SharedFramebufferHandle;
+use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::blk::VirtioBlkHandle;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::IntoResource;
@@ -303,8 +304,10 @@ impl PetriVmConfigOpenVmm {
                     }
                     MmioConfig::Custom(ranges) => ranges,
                 },
+                pci_ecam_gaps: vec![],
+                pci_mmio_gaps: vec![],
                 prefetch_memory: false,
-                pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
+                private_memory: false,
             }
         };
 
@@ -598,8 +601,20 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
+        // The test kernel has both CONFIG_VIRTIO_VSOCK=y and
+        // CONFIG_HYPERV_VSOCKETS=y built in. The kernel only allows one G2H
+        // vsock transport, and virtio_vsock_init runs first, claiming the
+        // slot. This causes hv_sock registration to fail with -EBUSY,
+        // breaking pipette's AF_VSOCK connection. Blacklist virtio_vsock_init
+        // so that hv_sock can register as the G2H transport.
+        const VIRTIO_VSOCK_BLACKLIST: &str = "initcall_blacklist=virtio_vsock_init";
+
         Ok(match (self.arch, &self.firmware) {
-            (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
+            (arch, Firmware::LinuxDirect { kernel, initrd }) => {
+                let console = match arch {
+                    MachineArch::X86_64 => "console=ttyS0",
+                    MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
+                };
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?
                     .into();
@@ -609,22 +624,9 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
-                    cmdline: "console=ttyS0 debug panic=-1 rdinit=/bin/sh".into(),
-                    custom_dsdt: None,
-                    enable_serial: true,
-                }
-            }
-            (MachineArch::Aarch64, Firmware::LinuxDirect { kernel, initrd }) => {
-                let kernel = File::open(kernel.clone())
-                    .context("Failed to open kernel")?
-                    .into();
-                let initrd = File::open(initrd.clone())
-                    .context("Failed to open initrd")?
-                    .into();
-                LoadMode::Linux {
-                    kernel,
-                    initrd: Some(initrd),
-                    cmdline: "console=ttyAMA0 earlycon debug panic=-1 rdinit=/bin/sh".into(),
+                    cmdline: format!(
+                        "{console} debug panic=-1 rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}"
+                    ),
                     custom_dsdt: None,
                     enable_serial: true,
                 }
@@ -710,7 +712,9 @@ impl PetriVmConfigSetupCore<'_> {
                         // data on the floor during boot.
                         append_cmdline(
                             &mut cmdline,
-                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
+                            format!(
+                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}\""
+                            ),
                         );
                         false
                     }
@@ -1127,6 +1131,38 @@ fn vmbus_storage_controllers_to_openvmm(
                     }
                     .into_resource(),
                 });
+            }
+            VmbusStorageType::VirtioBlk => {
+                // Each virtio-blk drive needs a unique VPCI instance ID.
+                // Use a fixed template GUID with data1 set to the LUN.
+                const VIRTIO_BLK_INSTANCE_ID_TEMPLATE: Guid = Guid {
+                    data1: 0,
+                    data2: 0x1234,
+                    data3: 0x5678,
+                    data4: [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89],
+                };
+                for (lun, Drive { disk, is_dvd }) in &controller.drives {
+                    if *is_dvd {
+                        anyhow::bail!("dvd not supported with virtio-blk");
+                    }
+                    let Some(disk) = disk else {
+                        anyhow::bail!("empty drive not supported with virtio-blk");
+                    };
+                    let mut drive_id = VIRTIO_BLK_INSTANCE_ID_TEMPLATE;
+                    drive_id.data1 = *lun;
+                    vpci_devices.push(VpciDeviceConfig {
+                        vtl,
+                        instance_id: drive_id,
+                        resource: VirtioPciDeviceHandle(
+                            VirtioBlkHandle {
+                                disk: petri_disk_to_openvmm(disk)?,
+                                read_only: false,
+                            }
+                            .into_resource(),
+                        )
+                        .into_resource(),
+                    });
+                }
             }
         }
     }

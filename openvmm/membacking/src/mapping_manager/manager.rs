@@ -35,7 +35,11 @@ pub struct MappingManager {
 
 impl MappingManager {
     /// Returns a new mapping manager that can map addresses up to `max_addr`.
-    pub fn new(spawn: impl Spawn, max_addr: u64) -> Self {
+    ///
+    /// If `private_ram` is true, mappers created from this manager will use
+    /// anonymous private memory for guest RAM instead of shared file-backed
+    /// memory.
+    pub fn new(spawn: impl Spawn, max_addr: u64, private_ram: bool) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -50,6 +54,7 @@ impl MappingManager {
                 id: ObjectId::new(),
                 req_send,
                 max_addr,
+                private_ram,
             },
         }
     }
@@ -67,6 +72,7 @@ pub struct MappingManagerClient {
     req_send: mesh::Sender<MappingRequest>,
     id: ObjectId,
     max_addr: u64,
+    private_ram: bool,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -74,13 +80,16 @@ static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 impl MappingManagerClient {
     /// Returns a VA mapper for this guest memory.
     ///
-    /// This will single instance the mapper, so this is safe to call multiple times.
+    /// This will single instance the mapper, so this is safe to call multiple
+    /// times. If `private_ram` was set when creating the [`MappingManager`],
+    /// the mapper will use anonymous private memory for guest RAM.
     pub async fn new_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
         // Get the VA mapper from the mapper cache if possible to avoid keeping
         // multiple VA ranges for this memory per process.
+        let private_ram = self.private_ram;
         MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                VaMapper::new(self.req_send.clone(), self.max_addr, None).await
+                VaMapper::new(self.req_send.clone(), self.max_addr, None, private_ram).await
             })
             .await
     }
@@ -89,12 +98,19 @@ impl MappingManagerClient {
     /// address space of `process`.
     ///
     /// Each call will allocate a new unique mapper.
+    ///
+    /// Returns an error if private memory mode is enabled, since private
+    /// anonymous pages would be committed in the remote process and not
+    /// accessible locally.
     pub async fn new_remote_mapper(
         &self,
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
+        if self.private_ram {
+            return Err(VaMapperError::RemoteWithPrivateMemory);
+        }
         Ok(Arc::new(
-            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process)).await?,
+            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process), false).await?,
         ))
     }
 

@@ -61,6 +61,10 @@ pub struct Options {
     #[clap(long)]
     pub prefetch: bool,
 
+    /// use private anonymous memory for guest RAM
+    #[clap(long)]
+    pub private_memory: bool,
+
     /// start in paused state
     #[clap(short = 'P', long)]
     pub paused: bool,
@@ -136,8 +140,16 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+    `prwrap:<disk>`                persistent reservations wrapper
 
 flags:
     `ro`                           open disk as read-only
@@ -160,8 +172,16 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+    `prwrap:<disk>`                persistent reservations wrapper
 
 flags:
     `ro`                           open disk as read-only
@@ -174,6 +194,26 @@ options:
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
+
+    /// attach a disk via a virtio-blk controller
+    #[clap(long_help = r#"
+e.g: --virtio-blk memdiff:file:/path/to/disk.vhd
+
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
+
+valid disk kinds:
+    `mem:<len>`                    memory backed disk
+        <len>: length of ramdisk, e.g.: `1G`
+    `memdiff:<disk>`               memory backed diff disk
+        <disk>: lower disk, e.g.: `file:base.img`
+    `file:<path>`                  file-backed disk
+        <path>: path to file
+
+flags:
+    `ro`                           open disk as read-only
+"#)]
+    #[clap(long = "virtio-blk")]
+    pub virtio_blk: Vec<DiskCli>,
 
     /// number of sub-channels for the SCSI controller
     #[clap(long, value_name = "COUNT", default_value = "0")]
@@ -445,6 +485,9 @@ flags:
     pub gdb: Option<u16>,
 
     /// enable emulated MANA devices with the given network backend (see --net)
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
+    /// at the specified port.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
@@ -481,8 +524,17 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+
+additional wrapper kinds (e.g., `autocache`, `prwrap`) are also supported;
+this list is not exhaustive.
 
 flags:
     `ro`                           open disk as read-only
@@ -495,7 +547,7 @@ flags:
     /// attach a floppy drive (should be able to be passed multiple times). VM must be generation 1 (no UEFI)
     ///
     #[clap(long_help = r#"
-e.g: --floppy memdiff:/path/to/disk.vfd,ro
+e.g: --floppy memdiff:file:/path/to/disk.vfd,ro
 
 syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
@@ -504,8 +556,14 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
 
 flags:
     `ro`                           open disk as read-only
@@ -575,7 +633,7 @@ Options:
     `segment=<value>`              configures the PCI Express segment, default 0
     `start_bus=<value>`            lowest valid bus number, default 0
     `end_bus=<value>`              highest valid bus number, default 255
-    `low_mmio=<size>`              low MMIO window size, default 4M
+    `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
 "#)]
     #[clap(long, conflicts_with("pcat"))]
@@ -641,20 +699,20 @@ Examples:
     # Attach to root port rc0rp0 with default socket
     --pcie-remote rc0rp0
 
-    # Attach with custom socket path
-    --pcie-remote rc0rp0,socket=/tmp/custom.sock
+    # Attach with custom socket address
+    --pcie-remote rc0rp0,socket=0.0.0.0:48914
 
     # Specify HU and controller identifiers
     --pcie-remote rc0rp0,hu=1,controller=0
 
     # Multiple devices on different ports
-    --pcie-remote rc0rp0,socket=/tmp/dev0.sock
-    --pcie-remote rc0rp1,socket=/tmp/dev1.sock
+    --pcie-remote rc0rp0,socket=0.0.0.0:48914
+    --pcie-remote rc0rp1,socket=0.0.0.0:48915
 
 Syntax: <port_name>[,opt=arg,...]
 
 Options:
-    `socket=<path>`                 Unix socket path (default: /tmp/qemu-pci-remote-0-ep.sock)
+    `socket=<address>`              TCP socket (default: localhost:48914)
     `hu=<value>`                    Hardware unit identifier (default: 0)
     `controller=<value>`            Controller identifier (default: 0)
 "#)]
@@ -1284,6 +1342,7 @@ pub struct NicConfigCli {
     pub endpoint: EndpointConfigCli,
     pub max_queues: Option<u16>,
     pub underhill: bool,
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for NicConfigCli {
@@ -1293,11 +1352,18 @@ impl FromStr for NicConfigCli {
         let mut vtl = DeviceVtl::Vtl0;
         let mut max_queues = None;
         let mut underhill = false;
+        let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
             if let Some((opt, val)) = opt.split_once('=') {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "pcie_port" => {
+                        if val.is_empty() {
+                            return Err("`pcie_port=` requires port name argument".into());
+                        }
+                        pcie_port = Some(val.to_string());
                     }
                     _ => break,
                 }
@@ -1317,12 +1383,17 @@ impl FromStr for NicConfigCli {
             return Err("`uh` is incompatible with `vtl2`".into());
         }
 
+        if pcie_port.is_some() && (underhill || vtl != DeviceVtl::Vtl0) {
+            return Err("`pcie_port` is incompatible with `uh` and `vtl2`".into());
+        }
+
         let endpoint = s.parse()?;
         Ok(NicConfigCli {
             vtl,
             endpoint,
             max_queues,
             underhill,
+            pcie_port,
         })
     }
 }
@@ -1505,7 +1576,7 @@ impl FromStr for PcieRootComplexCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 4 * 1024 * 1024; // 4M
+        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 64 * 1024 * 1024; // 64M
         const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
 
         let mut opts = s.split(',');
@@ -1674,8 +1745,8 @@ impl FromStr for GenericPcieSwitchCli {
 pub struct PcieRemoteCli {
     /// Name of the PCIe downstream port to attach to.
     pub port_name: String,
-    /// Unix socket path for the remote simulator.
-    pub socket_path: Option<String>,
+    /// TCP socket address for the remote simulator.
+    pub socket_addr: Option<String>,
     /// Hardware unit identifier for plug request.
     pub hu: u16,
     /// Controller identifier for plug request.
@@ -1692,7 +1763,7 @@ impl FromStr for PcieRemoteCli {
             anyhow::bail!("must provide a port name");
         }
 
-        let mut socket_path = None;
+        let mut socket_addr = None;
         let mut hu = 0u16;
         let mut controller = 0u16;
 
@@ -1703,14 +1774,14 @@ impl FromStr for PcieRemoteCli {
 
             match key {
                 "socket" => {
-                    let path = value.context("socket requires a path")?;
+                    let addr = value.context("socket requires an address")?;
                     if let Some(extra) = kv.next() {
                         anyhow::bail!("unexpected token: '{extra}'")
                     }
-                    if path.is_empty() {
-                        anyhow::bail!("socket path cannot be empty");
+                    if addr.is_empty() {
+                        anyhow::bail!("socket address cannot be empty");
                     }
-                    socket_path = Some(path.to_string());
+                    socket_addr = Some(addr.to_string());
                 }
                 "hu" => {
                     let val = value.context("hu requires a value")?;
@@ -1732,7 +1803,7 @@ impl FromStr for PcieRemoteCli {
 
         Ok(PcieRemoteCli {
             port_name: port_name.to_string(),
-            socket_path,
+            socket_addr,
             hu,
             controller,
         })
@@ -2184,26 +2255,39 @@ mod tests {
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
         assert!(config.max_queues.is_none());
         assert!(!config.underhill);
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl2);
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with queues
         let config = NicConfigCli::from_str("queues=4:none").unwrap();
         assert_eq!(config.max_queues, Some(4));
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with underhill
         let config = NicConfigCli::from_str("uh:none").unwrap();
         assert!(config.underhill);
+        assert!(config.pcie_port.is_none());
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with pcie_port
+        let config = NicConfigCli::from_str("pcie_port=rp0:none").unwrap();
+        assert_eq!(config.pcie_port.unwrap(), "rp0".to_string());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
+        assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
+        assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
+        assert!(NicConfigCli::from_str("pcie_port=:none").is_err());
+        assert!(NicConfigCli::from_str("pcie_port:none").is_err());
     }
 
     #[test]
@@ -2266,7 +2350,7 @@ mod tests {
         const ONE_MB: u64 = 1024 * 1024;
         const ONE_GB: u64 = 1024 * ONE_MB;
 
-        const DEFAULT_LOW_MMIO: u32 = (4 * ONE_MB) as u32;
+        const DEFAULT_LOW_MMIO: u32 = (64 * ONE_MB) as u32;
         const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
 
         assert_eq!(
@@ -2487,18 +2571,18 @@ mod tests {
             PcieRemoteCli::from_str("rc0rp0").unwrap(),
             PcieRemoteCli {
                 port_name: "rc0rp0".to_string(),
-                socket_path: None,
+                socket_addr: None,
                 hu: 0,
                 controller: 0,
             }
         );
 
-        // With socket path
+        // With socket address
         assert_eq!(
-            PcieRemoteCli::from_str("rc0rp0,socket=/tmp/custom.sock").unwrap(),
+            PcieRemoteCli::from_str("rc0rp0,socket=localhost:22567").unwrap(),
             PcieRemoteCli {
                 port_name: "rc0rp0".to_string(),
-                socket_path: Some("/tmp/custom.sock".to_string()),
+                socket_addr: Some("localhost:22567".to_string()),
                 hu: 0,
                 controller: 0,
             }
@@ -2506,10 +2590,10 @@ mod tests {
 
         // With all options
         assert_eq!(
-            PcieRemoteCli::from_str("myport,socket=/tmp/dev.sock,hu=1,controller=2").unwrap(),
+            PcieRemoteCli::from_str("myport,socket=localhost:22568,hu=1,controller=2").unwrap(),
             PcieRemoteCli {
                 port_name: "myport".to_string(),
-                socket_path: Some("/tmp/dev.sock".to_string()),
+                socket_addr: Some("localhost:22568".to_string()),
                 hu: 1,
                 controller: 2,
             }
@@ -2520,7 +2604,7 @@ mod tests {
             PcieRemoteCli::from_str("port0,hu=5,controller=3").unwrap(),
             PcieRemoteCli {
                 port_name: "port0".to_string(),
-                socket_path: None,
+                socket_addr: None,
                 hu: 5,
                 controller: 3,
             }

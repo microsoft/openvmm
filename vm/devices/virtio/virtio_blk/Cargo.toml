@@ -1,0 +1,39 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "virtio_blk"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vm_resource.workspace = true
+
+disk_backend.workspace = true
+guestmem.workspace = true
+inspect.workspace = true
+inspect_counters.workspace = true
+pal_async.workspace = true
+scsi_buffers.workspace = true
+task_control.workspace = true
+tracelimit.workspace = true
+virtio.workspace = true
+virtio_resources.workspace = true
+vmcore.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+unicycle.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+disklayer_ram.workspace = true
+mesh.workspace = true
+pal_async.workspace = true
+pal_event.workspace = true
+parking_lot.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

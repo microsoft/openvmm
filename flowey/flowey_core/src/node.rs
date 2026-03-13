@@ -951,6 +951,8 @@ pub enum FlowPlatformLinuxDistro {
     Fedora,
     /// Ubuntu (including WSL2)
     Ubuntu,
+    /// Azure Linux (tdnf-based)
+    AzureLinux,
     /// Arch Linux (including WSL2)
     Arch,
     /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)

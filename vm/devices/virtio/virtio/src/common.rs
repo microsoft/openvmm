@@ -17,6 +17,7 @@ use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MappedMemoryRegion;
+use inspect::Inspect;
 use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::wait::PolledWait;
@@ -39,10 +40,13 @@ pub trait VirtioQueueWorkerContext {
     async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct VirtioQueueUsedHandler {
+    #[inspect(skip)]
     core: QueueCoreCompleteWork,
+    #[inspect(with = "|x| x.lock().0")]
     outstanding_desc_count: Arc<Mutex<(u16, event_listener::Event)>>,
+    #[inspect(skip)]
     notify_guest: Interrupt,
 }
 
@@ -210,10 +214,12 @@ impl Drop for VirtioQueueCallbackWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct VirtioQueue {
+    #[inspect(flatten)]
     core: QueueCoreGetWork,
     used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
+    #[inspect(skip)]
     queue_event: PolledWait<Event>,
 }
 
@@ -237,20 +243,37 @@ impl VirtioQueue {
         })
     }
 
+    /// Polls until the queue is kicked by the guest, indicating new work may be available.
+    pub fn poll_kick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        Poll::Ready(())
+    }
+
+    /// Try to get the next work item from the queue. Returns `Ok(None)` if no
+    /// work is currently available, or an error if there was an issue accessing
+    /// the queue.
+    ///
+    /// If `None` is returned, then the queue will be armed so that the guest
+    /// will kick it when new work is available; the caller can use
+    /// [`poll_kick`](Self::poll_kick) to wait for this.
+    pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
+        Ok(self
+            .core
+            .try_next_work()
+            .map_err(Error::other)?
+            .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
+    }
+
     fn poll_next_buffer(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<VirtioQueueCallbackWork>, QueueError>> {
-        let work = loop {
-            if let Some(work) = self.core.try_next_work()? {
-                break work;
-            };
-            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
-        };
-        Poll::Ready(Ok(Some(VirtioQueueCallbackWork::new(
-            work,
-            &self.used_handler,
-        ))))
+    ) -> Poll<Result<Option<VirtioQueueCallbackWork>, Error>> {
+        loop {
+            if let Some(work) = self.try_next()? {
+                return Ok(Some(work)).into();
+            }
+            ready!(self.poll_kick(cx));
+        }
     }
 }
 
@@ -266,11 +289,9 @@ impl Stream for VirtioQueue {
     type Item = Result<VirtioQueueCallbackWork, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let Some(r) = ready!(self.get_mut().poll_next_buffer(cx)).transpose() else {
-            return Poll::Ready(None);
-        };
-
-        Poll::Ready(Some(r.map_err(Error::other)))
+        ready!(self.get_mut().poll_next_buffer(cx))
+            .transpose()
+            .into()
     }
 }
 
@@ -437,12 +458,27 @@ pub struct DeviceTraits {
     pub shared_memory: DeviceTraitsSharedMemory,
 }
 
-pub trait VirtioDevice: Send {
+pub trait VirtioDevice: inspect::InspectMut + Send {
     fn traits(&self) -> DeviceTraits;
     fn read_registers_u32(&self, offset: u16) -> u32;
     fn write_registers_u32(&mut self, offset: u16, val: u32);
-    fn enable(&mut self, resources: Resources);
-    fn disable(&mut self);
+    /// Enable the device with the given resources.
+    ///
+    /// Called when the guest sets `DRIVER_OK`. On success, the device should
+    /// start processing queues and the transport will reflect `DRIVER_OK` in
+    /// the device status. On failure, the transport will log the error and
+    /// leave `DRIVER_OK` unset, so the device remains inert and the guest
+    /// will observe failures through IO timeouts.
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()>;
+    /// Poll the device to complete a disable/reset operation.
+    ///
+    /// This is called when the guest writes status=0 (device reset). The device
+    /// should stop workers and drain any in-flight IO. Returns `Poll::Ready(())`
+    /// when the disable is complete, or `Poll::Pending` if more work is needed.
+    ///
+    /// Devices that don't need async cleanup can return `Poll::Ready(())`
+    /// immediately.
+    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()>;
 }
 
 pub struct QueueResources {

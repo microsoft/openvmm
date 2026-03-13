@@ -270,3 +270,72 @@ async fn vpci_relay_tdisp_device(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
+#[openvmm_test(linux_direct_x64)]
+async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use disk_backend_resources::LayeredDiskHandle;
+    use disk_backend_resources::layer::RamDiskLayerHandle;
+    use openvmm_defs::config::VirtioBus;
+    use virtio_resources::blk::VirtioBlkHandle;
+
+    let disk_size: u64 = 8 * 1024 * 1024; // 8 MiB
+    let disk_resource = LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+        len: Some(disk_size),
+    })
+    .into_resource();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.virtio_devices.push((
+                    VirtioBus::Mmio,
+                    VirtioBlkHandle {
+                        disk: disk_resource,
+                        read_only: false,
+                    }
+                    .into_resource(),
+                ));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Verify virtio-blk device appears as /dev/vda via sysfs
+    let vda_size = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    let expected_sectors = disk_size / 512;
+    assert_eq!(
+        vda_sectors, expected_sectors,
+        "unexpected disk size in sectors"
+    );
+
+    // Verify we can write and read back data
+    cmd!(
+        sh,
+        "sh -c 'echo hello_virtio_blk | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to virtio-blk device")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda bs=512 count=1 2>/dev/null | head -c 16'"
+    )
+    .read()
+    .await
+    .context("read from virtio-blk device")?;
+    assert!(
+        readback.starts_with("hello_virtio_blk"),
+        "read back data mismatch: {readback}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

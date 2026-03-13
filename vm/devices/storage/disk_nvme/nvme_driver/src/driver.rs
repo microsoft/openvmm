@@ -857,6 +857,32 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
         let admin = worker.admin.insert(admin);
 
+        // Diagnostic: peek at the admin CQ immediately after restore to detect
+        // phantom completions written by the device during the keepalive window.
+        if let Some(diag) = admin.issuer().request_diagnostic_dump().await {
+            if diag.peek_phase_match {
+                tracing::warn!(
+                    ?pci_id,
+                    cq_head = diag.head,
+                    expected_phase = diag.expected_phase,
+                    peek_cid = diag.peek_cid,
+                    peek_sqid = diag.peek_sqid,
+                    peek_status_raw = format_args!("{:#x}", diag.peek_status_raw),
+                    pending_count = diag.pending_count,
+                    "admin CQ has a completion at head after restore — \
+                     phantom completion from keepalive window detected"
+                );
+            } else {
+                tracing::info!(
+                    ?pci_id,
+                    cq_head = diag.head,
+                    expected_phase = diag.expected_phase,
+                    pending_count = diag.pending_count,
+                    "admin CQ peek after restore: no phantom completion at head"
+                );
+            }
+        }
+
         // Spawn a task to handle asynchronous events.
         let async_event_task = this.driver.spawn("nvme_async_event", {
             let admin = admin.issuer().clone();
@@ -1310,9 +1336,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             }
         }
 
+        let pci_id = self.device.id().to_owned();
         let issuer = match self
             .create_io_queue(state, cpu)
-            .instrument(info_span!("create_nvme_io_queue", cpu))
+            .instrument(info_span!("create_nvme_io_queue", cpu, pci_id = ?pci_id))
             .await
         {
             Ok(issuer) => issuer,
@@ -1431,11 +1458,16 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
         let io_queue = self.io.last_mut().unwrap();
 
         let admin = self.admin.as_ref().unwrap().issuer().as_ref();
+        let pci_id_str = self.device.id().to_owned();
 
         let mut created_completion_queue = false;
         let r = async {
-            admin
-                .issue_raw(spec::Command {
+            Self::issue_admin_with_diagnostic(
+                admin,
+                &self.driver,
+                &pci_id_str,
+                spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE,
+                spec::Command {
                     cdw10: spec::Cdw10CreateIoQueue::new()
                         .with_qid(qid)
                         .with_qsize_z(state.qsize - 1)
@@ -1447,14 +1479,19 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                         .into(),
                     dptr: [io_cq_addr, 0],
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE)
-                })
-                .await
-                .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
+                },
+            )
+            .await
+            .map_err(|err| DeviceError::IoCompletionQueueFailure(err.into(), qid))?;
 
             created_completion_queue = true;
 
-            admin
-                .issue_raw(spec::Command {
+            Self::issue_admin_with_diagnostic(
+                admin,
+                &self.driver,
+                &pci_id_str,
+                spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE,
+                spec::Command {
                     cdw10: spec::Cdw10CreateIoQueue::new()
                         .with_qid(qid)
                         .with_qsize_z(state.qsize - 1)
@@ -1465,9 +1502,10 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
                         .into(),
                     dptr: [io_sq_addr, 0],
                     ..admin_cmd(spec::AdminOpcode::CREATE_IO_SUBMISSION_QUEUE)
-                })
-                .await
-                .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
+                },
+            )
+            .await
+            .map_err(|err| DeviceError::IoSubmissionQueueFailure(err.into(), qid))?;
 
             Ok(())
         };
@@ -1497,6 +1535,71 @@ impl<D: DeviceBacking> DriverWorkerTask<D> {
             issuer: io_queue.queue.issuer().clone(),
             cpu,
         })
+    }
+
+    /// Issue an admin command with a diagnostic timer. If the command does not
+    /// complete within 10 seconds, requests a diagnostic dump from the admin
+    /// queue handler (CQ peek, pending count, interrupt count) and logs it.
+    /// The command is NOT aborted — it continues to be awaited after
+    /// diagnostics are emitted.
+    async fn issue_admin_with_diagnostic(
+        admin: &Issuer,
+        driver: &VmTaskDriver,
+        device_id: &str,
+        opcode: spec::AdminOpcode,
+        command: spec::Command,
+    ) -> Result<spec::Completion, RequestError> {
+        use futures::FutureExt;
+        use pal_async::timer::PolledTimer;
+        use std::time::Duration;
+
+        let mut cmd_future = std::pin::pin!(admin.issue_raw(command).fuse());
+
+        let mut timer = PolledTimer::new(driver);
+        let mut sleep = std::pin::pin!(timer.sleep(Duration::from_secs(10)).fuse());
+
+        futures::select! {
+            result = cmd_future => result,
+            _ = sleep => {
+                tracing::error!(
+                    pci_id = %device_id,
+                    opcode = opcode.0,
+                    "admin command not completed after 10s — requesting CQ diagnostic dump"
+                );
+
+                // Request a diagnostic dump from the admin QueueHandler.
+                // This peeks at the CQ head without advancing it.
+                if let Some(diag) = admin.request_diagnostic_dump().await {
+                    tracing::error!(
+                        pci_id = %device_id,
+                        opcode = opcode.0,
+                        cq_head = diag.head,
+                        expected_phase = diag.expected_phase,
+                        peek_phase_match = diag.peek_phase_match,
+                        peek_cid = diag.peek_cid,
+                        peek_sqid = diag.peek_sqid,
+                        peek_status_raw = format_args!("{:#x}", diag.peek_status_raw),
+                        pending_count = diag.pending_count,
+                        interrupt_count = diag.interrupt_count,
+                        "admin CQ diagnostic dump: {}",
+                        if diag.peek_phase_match {
+                            "COMPLETION PRESENT in CQ but interrupt not delivered — likely interrupt routing issue"
+                        } else {
+                            "no completion in CQ at head — device has not processed the command"
+                        }
+                    );
+                } else {
+                    tracing::error!(
+                        pci_id = %device_id,
+                        opcode = opcode.0,
+                        "failed to get diagnostic dump from admin queue handler"
+                    );
+                }
+
+                // Continue awaiting the original command (do NOT abort).
+                cmd_future.await
+            }
+        }
     }
 
     /// Save NVMe driver state for servicing.

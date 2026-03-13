@@ -142,7 +142,8 @@ impl<'a, T: SpawnDriver + Clone> ProxyIntegrationBuilder<'a, T> {
     /// Builds and starts the `ProxyIntegration`.
     pub async fn build(self) -> io::Result<ProxyIntegration> {
         let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
-        let mut proxy = VmbusProxy::new(self.driver, self.handle, cancel_ctx)?;
+        let (drop_send, drop_recv) = mesh::oneshot();
+        let mut proxy = VmbusProxy::new(self.driver, self.handle, cancel_ctx, drop_send)?;
         let handle = proxy.handle().try_clone_to_owned()?;
         if let Some(mem) = self.mem {
             proxy.set_memory(mem).await?;
@@ -159,6 +160,7 @@ impl<'a, T: SpawnDriver + Clone> ProxyIntegrationBuilder<'a, T> {
                 flush_recv,
                 self.require_flush_before_start,
                 self.vp_to_physical_node_map,
+                drop_recv,
             ),
         );
 
@@ -1127,6 +1129,7 @@ async fn proxy_thread(
     flush_recv: mesh::Receiver<FailableRpc<(), ()>>,
     await_flush: bool,
     vp_to_physical_node_map: Vec<u16>,
+    proxy_drop_recv: mesh::OneshotReceiver<()>,
 ) {
     // Separate the hvsocket relay channels.
     let (hvsock_request_recv, hvsock_response_send) = server
@@ -1159,7 +1162,7 @@ async fn proxy_thread(
         vtl2_control,
         hvsock_response_send,
         vtl2_hvsock_response_send,
-        Arc::clone(&proxy),
+        proxy,
         VpToPhysicalNodeMap(vp_to_physical_node_map),
     ));
     let offers = task.run_proxy_actions(send, flush_recv, await_flush);
@@ -1173,6 +1176,12 @@ async fn proxy_thread(
     );
 
     futures::future::join(offers, requests).await;
+    drop(task);
+
+    // Wait for the `VmbusProxy` object to be dropped. This guarantees that all tasks running
+    // requests have finished and the IO completion port has been disassociated when this function
+    // returns.
+    let _ = proxy_drop_recv.await;
     tracing::debug!("proxy thread finished");
     // BUGBUG: cancel all IO if something goes wrong?
 }

@@ -1,18 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Virtio network device implementation.
+//!
+//! This crate implements a virtio-net device that connects a guest's virtual
+//! NIC to a pluggable [`net_backend::Endpoint`]. It currently operates with a
+//! single queue pair (one RX, one TX) and supports synchronous and asynchronous
+//! TX completion modes depending on the backend.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod buffers;
 pub mod resolver;
 
-// use anyhow::Context;
+#[cfg(test)]
+mod tests;
+
 use crate::buffers::VirtioWorkPool;
+use anyhow::Context as _;
 use bitfield_struct::bitfield;
-use futures::FutureExt;
-use futures::StreamExt;
-use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -31,6 +38,7 @@ use pal_async::wait::PolledWait;
 use std::future::pending;
 use std::mem::offset_of;
 use std::sync::Arc;
+use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::InspectTaskMut;
@@ -202,7 +210,7 @@ struct VirtioNetHeader {
     pub padding_reserved: u16, // Only if VIRTIO_NET_F_HASH_REPORT negotiated
 }
 
-fn header_size() -> usize {
+const fn header_size() -> usize {
     // TODO: Verify hash flags are not set, since header size would be larger in that case.
     offset_of!(VirtioNetHeader, hash_value)
 }
@@ -218,13 +226,8 @@ pub struct Device {
     registers: NetConfig,
     memory: GuestMemory,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
-    coordinator_send: Option<mesh::Sender<CoordinatorMessage>>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
-}
-
-impl Drop for Device {
-    fn drop(&mut self) {}
 }
 
 impl VirtioDevice for Device {
@@ -261,7 +264,7 @@ impl VirtioDevice for Device {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         let mut queue_resources: Vec<_> = resources.queues.into_iter().collect();
         let mut workers = Vec::with_capacity(queue_resources.len() / 2);
         while queue_resources.len() > 1 {
@@ -273,121 +276,88 @@ impl VirtioDevice for Device {
             }
 
             let rx_queue_size = rx_resources.params.size;
-            let rx_queue_event = PolledWait::new(&self.adapter.driver, rx_resources.event);
-            if let Err(err) = rx_queue_event {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating queue event"
-                );
-                continue;
-            }
+            let rx_queue_event = PolledWait::new(&self.adapter.driver, rx_resources.event)
+                .context("failed creating rx queue event")?;
             let rx_queue = VirtioQueue::new(
                 resources.features.clone(),
                 rx_resources.params,
                 self.memory.clone(),
                 rx_resources.notify,
-                rx_queue_event.unwrap(),
-            );
-            if let Err(err) = rx_queue {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating virtio net receive queue"
-                );
-                continue;
-            }
+                rx_queue_event,
+            )
+            .context("failed creating virtio net receive queue")?;
 
             let tx_queue_size = tx_resources.params.size;
-            let tx_queue_event = PolledWait::new(&self.adapter.driver, tx_resources.event);
-            if let Err(err) = tx_queue_event {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating queue event"
-                );
-                continue;
-            }
+            let tx_queue_event = PolledWait::new(&self.adapter.driver, tx_resources.event)
+                .context("failed creating tx queue event")?;
             let tx_queue = VirtioQueue::new(
                 resources.features.clone(),
                 tx_resources.params,
                 self.memory.clone(),
                 tx_resources.notify,
-                tx_queue_event.unwrap(),
-            );
-            if let Err(err) = tx_queue {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed creating virtio net transmit queue"
-                );
-                continue;
-            }
+                tx_queue_event,
+            )
+            .context("failed creating virtio net transmit queue")?;
+
             workers.push(VirtioState {
-                rx_queue: rx_queue.unwrap(),
+                rx_queue,
                 rx_queue_size,
-                tx_queue: tx_queue.unwrap(),
+                tx_queue,
                 tx_queue_size,
             });
         }
 
-        let (tx, rx) = mesh::channel();
-        self.coordinator_send = Some(tx);
-        self.insert_coordinator(rx, workers.len() as u16);
+        self.insert_coordinator(workers.len() as u16);
         for (i, virtio_state) in workers.into_iter().enumerate() {
             self.insert_worker(virtio_state, i);
         }
         self.coordinator.start();
+        Ok(())
     }
 
-    fn disable(&mut self) {
-        if let Some(send) = self.coordinator_send.take() {
-            send.send(CoordinatorMessage::Disable);
+    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        // Stop the coordinator task.
+        let _ = std::task::ready!(self.coordinator.poll_stop(cx));
+        // Stop all workers (coordinator may not have stopped them if it was
+        // cancelled before reaching its own stop_workers call).
+        if let Some(coordinator) = self.coordinator.state_mut() {
+            for worker in &mut coordinator.workers {
+                let _ = std::task::ready!(worker.poll_stop(cx));
+            }
         }
+        // Remove the coordinator state so that a subsequent enable() can
+        // re-insert it.
+        let _ = self.coordinator.remove();
+        Poll::Ready(())
     }
 }
 
+#[derive(InspectMut)]
 struct EndpointQueueState {
+    #[inspect(mut)]
     queue: Box<dyn net_backend::Queue>,
 }
 
+#[derive(InspectMut)]
 struct NetQueue {
+    #[inspect(flatten, mut)]
     state: Option<EndpointQueueState>,
 }
 
 impl InspectTaskMut<Worker> for NetQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>, worker: Option<&mut Worker>) {
-        if worker.is_none() && self.state.is_none() {
-            req.ignore();
-            return;
-        }
-        let mut resp = req.respond();
-        if let Some(worker) = worker {
-            resp.field(
-                "pending_tx_packets",
-                worker
-                    .active_state
-                    .pending_tx_packets
-                    .iter()
-                    .fold(0, |acc, next| acc + if next.is_some() { 1 } else { 0 }),
-            )
-            .field(
-                "pending_rx_packets",
-                worker.active_state.pending_rx_packets.ready().len(),
-            )
-            .field(
-                "pending_tx",
-                !worker.active_state.data.tx_segments.is_empty(),
-            )
-            .merge(&worker.active_state.stats);
-        }
-
-        if let Some(epqueue_state) = &mut self.state {
-            resp.field_mut("queue", &mut epqueue_state.queue);
-        }
+        req.respond().merge(self).merge(worker);
     }
 }
 
 /// Buffers used during packet processing.
+#[derive(Inspect)]
 struct ProcessingData {
+    #[inspect(with = "Vec::len")]
     tx_segments: Vec<TxSegment>,
+    #[inspect(skip)]
     tx_done: Box<[TxId]>,
+    #[inspect(skip)]
     rx_ready: Box<[RxId]>,
 }
 
@@ -411,7 +381,9 @@ struct QueueStats {
     rx_packets_per_wake: Histogram<10>,
 }
 
+#[derive(Inspect)]
 struct ActiveState {
+    #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
     pending_rx_packets: VirtioWorkPool,
     data: ProcessingData,
@@ -486,7 +458,6 @@ impl NicBuilder {
             registers,
             memory,
             coordinator,
-            coordinator_send: None,
             adapter,
             driver_source: driver_source.clone(),
         }
@@ -506,12 +477,11 @@ impl InspectMut for Device {
 }
 
 impl Device {
-    fn insert_coordinator(&mut self, recv: mesh::Receiver<CoordinatorMessage>, num_queues: u16) {
+    fn insert_coordinator(&mut self, num_queues: u16) {
         self.coordinator.insert(
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
             Coordinator {
-                recv,
                 workers: (0..self.adapter.max_queues)
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
@@ -551,13 +521,7 @@ impl Device {
     }
 }
 
-#[derive(PartialEq)]
-enum CoordinatorMessage {
-    Disable,
-}
-
 struct Coordinator {
-    recv: mesh::Receiver<CoordinatorMessage>,
     workers: Vec<TaskControl<NetQueue, Worker>>,
     num_queues: u16,
     restart: bool,
@@ -624,37 +588,16 @@ impl Coordinator {
                 self.restart = false;
             }
             self.start_workers();
-            enum Message {
-                Internal(CoordinatorMessage),
-                ChannelDisconnected,
-                UpdateFromEndpoint(EndpointAction),
-            }
-            let message = {
-                let wait_for_message = async {
-                    let internal_msg = self
-                        .recv
-                        .next()
-                        .map(|x| x.map_or(Message::ChannelDisconnected, Message::Internal));
-                    let endpoint_restart = state
-                        .endpoint
-                        .wait_for_endpoint_action()
-                        .map(Message::UpdateFromEndpoint);
-                    (internal_msg, endpoint_restart).race().await
-                };
-                stop.until_stopped(wait_for_message).await?
-            };
-            match message {
-                Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
-                Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(_)) => {
+            match stop
+                .until_stopped(state.endpoint.wait_for_endpoint_action())
+                .await?
+            {
+                EndpointAction::RestartRequired => self.restart = true,
+                EndpointAction::LinkStatusNotify(_) => {
                     tracing::error!("unexpected link status notification")
                 }
-                Message::Internal(CoordinatorMessage::Disable) | Message::ChannelDisconnected => {
-                    stop.until_stopped(self.stop_workers()).await?;
-                    break;
-                }
-            };
+            }
         }
-        Ok(())
     }
 
     async fn stop_workers(&mut self) {
@@ -734,6 +677,7 @@ impl AsyncRun<Worker> for NetQueue {
     }
 }
 
+#[derive(Inspect)]
 struct VirtioState {
     rx_queue: VirtioQueue,
     rx_queue_size: u16,
@@ -765,6 +709,7 @@ enum PacketError {
     Empty,
 }
 
+#[derive(InspectMut)]
 struct Worker {
     virtio_state: VirtioState,
     active_state: ActiveState,
@@ -798,6 +743,7 @@ impl Worker {
         loop {
             let did_some_work = self.process_endpoint_rx(epqueue_state.queue.as_mut())?
                 | self.process_virtio_rx(epqueue_state.queue.as_mut())?
+                | self.process_virtio_tx(epqueue_state)?
                 | self.process_endpoint_tx(epqueue_state.queue.as_mut())?;
 
             if !did_some_work {
@@ -807,55 +753,55 @@ impl Worker {
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
             // cancellation.
-            stop.until_stopped(async {
-                enum WakeReason {
-                    PacketFromClient(Result<VirtioQueueCallbackWork, std::io::Error>),
-                    PacketToClient(Result<VirtioQueueCallbackWork, std::io::Error>),
-                    NetworkBackend,
+            stop.until_stopped(std::future::poll_fn(|cx| {
+                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx) {
+                    return Poll::Ready(());
                 }
-                loop {
-                    let net_queue = std::future::poll_fn(|cx| -> Poll<()> {
-                        // Check the network endpoint for tx completion or rx.
-                        epqueue_state.queue.poll_ready(cx)
-                    })
-                    .map(|_| WakeReason::NetworkBackend);
-                    let to_client = self.virtio_state.rx_queue.next().map(|work| {
-                        WakeReason::PacketToClient(work.expect("queue never completes"))
-                    });
-                    let wake_reason = if self.active_state.data.tx_segments.is_empty() {
-                        let from_client = self.virtio_state.tx_queue.next().map(|work| {
-                            WakeReason::PacketFromClient(work.expect("queue never completes"))
-                        });
-                        (net_queue, from_client, to_client).race().await
-                    } else {
-                        (net_queue, to_client).race().await
-                    };
-                    match wake_reason {
-                        WakeReason::NetworkBackend => {
-                            tracing::trace!("endpoint ready");
-                            return Ok::<(), WorkerError>(());
-                        }
-                        WakeReason::PacketFromClient(work) => {
-                            tracing::trace!("tx packet");
-                            let work = work.map_err(WorkerError::VirtioQueue)?;
-                            self.queue_tx_packet(work)?;
-                            self.process_virtio_rx(epqueue_state.queue.as_mut())?;
-                            if !self.transmit_pending_segments(epqueue_state)? {
-                                self.active_state.stats.tx_stalled.increment();
-                            }
-                        }
-                        WakeReason::PacketToClient(work) => {
-                            tracing::trace!("rx packet");
-                            let work = work.map_err(WorkerError::VirtioQueue)?;
-                            epqueue_state
-                                .queue
-                                .rx_avail(&[self.active_state.pending_rx_packets.queue_work(work)]);
-                        }
-                    }
+
+                if self.active_state.data.tx_segments.is_empty()
+                    && let Poll::Ready(()) = self.virtio_state.tx_queue.poll_kick(cx)
+                {
+                    return Poll::Ready(());
                 }
-            })
-            .await??;
+
+                if let Poll::Ready(()) = self.virtio_state.rx_queue.poll_kick(cx) {
+                    return Poll::Ready(());
+                }
+
+                Poll::Pending
+            }))
+            .await?;
         }
+    }
+
+    fn process_virtio_tx(
+        &mut self,
+        queue_state: &mut EndpointQueueState,
+    ) -> Result<bool, WorkerError> {
+        let mut did_work = false;
+        loop {
+            did_work |= self.transmit_pending_segments(queue_state)?;
+            if !self.active_state.data.tx_segments.is_empty() {
+                break;
+            }
+            // Only batch up to 8 packets at a time.
+            for _ in 0..8 {
+                let Some(work) = self
+                    .virtio_state
+                    .tx_queue
+                    .try_next()
+                    .map_err(WorkerError::VirtioQueue)?
+                else {
+                    break;
+                };
+                self.queue_tx_packet(work)?;
+                did_work = true;
+            }
+            if self.active_state.data.tx_segments.is_empty() {
+                break;
+            }
+        }
+        Ok(did_work)
     }
 
     fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
@@ -912,9 +858,13 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         // Fill the receive queue with any available buffers.
         let mut rx_ids = Vec::new();
-        while let Some(Some(work)) = self.virtio_state.rx_queue.next().now_or_never() {
+        while let Some(work) = self
+            .virtio_state
+            .rx_queue
+            .try_next()
+            .map_err(WorkerError::VirtioQueue)?
+        {
             tracing::trace!("rx packet");
-            let work = work.map_err(WorkerError::VirtioQueue)?;
             rx_ids.push(self.active_state.pending_rx_packets.queue_work(work));
         }
         if !rx_ids.is_empty() {
@@ -958,22 +908,9 @@ impl Worker {
             return Ok(false);
         }
 
-        let pending_segment_id = if !self.active_state.data.tx_segments.is_empty() {
-            let TxSegmentType::Head(metadata) = &self.active_state.data.tx_segments[0].ty else {
-                unreachable!()
-            };
-            Some(metadata.id)
-        } else {
-            None
-        };
         for i in 0..n {
             let id = self.active_state.data.tx_done[i];
             self.complete_tx_packet(id)?;
-            if let Some(pending_segment_id) = pending_segment_id {
-                if pending_segment_id.0 == id.0 {
-                    self.active_state.data.tx_segments.clear();
-                }
-            }
         }
         self.active_state
             .stats
@@ -990,31 +927,30 @@ impl Worker {
         if self.active_state.data.tx_segments.is_empty() {
             return Ok(false);
         }
-        let TxSegmentType::Head(metadata) = &self.active_state.data.tx_segments[0].ty else {
-            unreachable!()
-        };
-        let id = metadata.id;
-        self.transmit_segments(queue_state, id)?;
-        Ok(true)
-    }
-
-    fn transmit_segments(
-        &mut self,
-        queue_state: &mut EndpointQueueState,
-        id: TxId,
-    ) -> Result<(), WorkerError> {
         let (sync, segments_sent) = queue_state
             .queue
             .tx_avail(&self.active_state.data.tx_segments)
             .map_err(WorkerError::Endpoint)?;
 
-        assert!(segments_sent <= self.active_state.data.tx_segments.len());
-
-        if sync && segments_sent == self.active_state.data.tx_segments.len() {
-            self.active_state.data.tx_segments.clear();
-            self.complete_tx_packet(id)?;
+        if sync {
+            // Complete the packets now.
+            let mut i = 0;
+            loop {
+                let segments = &self.active_state.data.tx_segments[..segments_sent][i..];
+                let Some(head) = segments.first() else {
+                    break;
+                };
+                let TxSegmentType::Head(metadata) = &head.ty else {
+                    unreachable!()
+                };
+                let id = metadata.id;
+                i += metadata.segment_count as usize;
+                self.complete_tx_packet(id)?;
+            }
         }
-        Ok(())
+
+        self.active_state.data.tx_segments.drain(..segments_sent);
+        Ok(segments_sent != 0)
     }
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {

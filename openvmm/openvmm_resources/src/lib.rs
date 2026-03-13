@@ -69,6 +69,7 @@ vm_resource::register_static_resolvers! {
     scsidisk::resolver::SimpleScsiResolver,
 
     // Virtio devices
+    virtio_blk::resolver::VirtioBlkResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtiofs::resolver::VirtioFsResolver,
     #[cfg(any(windows, target_os = "linux"))]

@@ -98,8 +98,6 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
-pub const DEFAULT_PCIE_ECAM_BASE: u64 = 0x8_0000_0000; // 32GB, size depends on configuration
-
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -176,8 +174,9 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub low_mmio_size: u32,
-    pub high_mmio_size: u64,
+    pub ecam_range: MemoryRange,
+    pub low_mmio: MemoryRange,
+    pub high_mmio: MemoryRange,
     pub ports: Vec<PcieRootPortConfig>,
 }
 
@@ -269,9 +268,11 @@ pub enum ArchTopologyConfig {
 #[derive(Debug, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
-    pub mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
-    pub pcie_ecam_base: u64,
+    pub private_memory: bool,
+    pub mmio_gaps: Vec<MemoryRange>,
+    pub pci_ecam_gaps: Vec<MemoryRange>,
+    pub pci_mmio_gaps: Vec<MemoryRange>,
 }
 
 #[derive(Debug, MeshPayload, Default)]

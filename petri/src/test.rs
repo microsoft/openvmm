@@ -170,9 +170,28 @@ impl Test {
         self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> libtest_mimic::Trial {
-        libtest_mimic::Trial::test(self.name(), move || {
-            self.run(resolve).map_err(|err| format!("{err:#}").into())
+        let name = self.name();
+        let is_unstable = name.ends_with("_unstable");
+        libtest_mimic::Trial::test(name, move || {
+            map_test_result(self.run(resolve), &self.name(), is_unstable)
         })
+    }
+}
+
+/// Maps a test result to a libtest-mimic result, suppressing failures for
+/// unstable tests.
+fn map_test_result(
+    result: anyhow::Result<()>,
+    test_name: &str,
+    is_unstable: bool,
+) -> Result<(), libtest_mimic::Failed> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if is_unstable => {
+            tracing::warn!("unstable test failed (non-gating): {test_name}: {err:#}");
+            Ok(())
+        }
+        Err(err) => Err(format!("{err:#}").into()),
     }
 }
 
@@ -373,4 +392,36 @@ pub fn test_main(
         .collect();
 
     libtest_mimic::run(&args.inner, trials).exit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_test_failure_propagates() {
+        let result: anyhow::Result<()> = Err(anyhow::anyhow!("boom"));
+        assert!(map_test_result(result, "some_test", false).is_err());
+    }
+
+    #[test]
+    fn unstable_test_failure_is_suppressed() {
+        let result: anyhow::Result<()> = Err(anyhow::anyhow!("boom"));
+        assert!(map_test_result(result, "some_test_unstable", true).is_ok());
+    }
+
+    #[test]
+    fn unstable_test_success_passes_through() {
+        let result: anyhow::Result<()> = Ok(());
+        assert!(map_test_result(result, "some_test_unstable", true).is_ok());
+    }
+
+    #[test]
+    fn mid_name_unstable_is_not_suppressed() {
+        // _unstable appearing mid-name should not be treated as unstable.
+        // The caller (trial) uses ends_with("_unstable") to set is_unstable,
+        // so a mid-name occurrence means is_unstable=false.
+        let result: anyhow::Result<()> = Err(anyhow::anyhow!("boom"));
+        assert!(map_test_result(result, "foo_unstable_bar", false).is_err());
+    }
 }
