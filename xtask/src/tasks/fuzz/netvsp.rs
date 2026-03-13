@@ -187,23 +187,32 @@ pub(super) fn run_netvsp_campaign(
             println!("  {}: clean", target_name);
         } else {
             println!(
-                "  {}: {} crashes, {} timeouts, {} slow-units, {} OOM",
-                target_name, counts.crashes, counts.timeouts, counts.slow_units, counts.oom
+                "  {}: {} crashes, {} timeouts, {} slow-units, {} OOM, {} leaks",
+                target_name,
+                counts.crashes,
+                counts.timeouts,
+                counts.slow_units,
+                counts.oom,
+                counts.leaks
             );
         }
     }
 
     println!();
     println!(
-        " Total (new): {} crashes, {} timeouts, {} slow-units, {} OOM",
-        total_counts.crashes, total_counts.timeouts, total_counts.slow_units, total_counts.oom
+        " Total (new): {} crashes, {} timeouts, {} slow-units, {} OOM, {} leaks",
+        total_counts.crashes,
+        total_counts.timeouts,
+        total_counts.slow_units,
+        total_counts.oom,
+        total_counts.leaks
     );
     println!(" Targets failed: {} / {}", failed, NETVSP_TARGETS.len());
 
     if !crash_timeout_files.is_empty() {
         println!();
         println!("==============================================");
-        println!(" New Crash/Timeout Artifacts");
+        println!(" New Artifacts");
         println!("==============================================");
         for file in crash_timeout_files {
             if let Ok(meta) = fs_err::metadata(&file) {
@@ -566,6 +575,7 @@ struct ArtifactCounts {
     timeouts: u32,
     slow_units: u32,
     oom: u32,
+    leaks: u32,
 }
 
 impl ArtifactCounts {
@@ -574,10 +584,11 @@ impl ArtifactCounts {
         self.timeouts += other.timeouts;
         self.slow_units += other.slow_units;
         self.oom += other.oom;
+        self.leaks += other.leaks;
     }
 
     fn total(&self) -> u32 {
-        self.crashes + self.timeouts + self.slow_units + self.oom
+        self.crashes + self.timeouts + self.slow_units + self.oom + self.leaks
     }
 }
 
@@ -616,8 +627,13 @@ fn count_new_artifacts(
             crash_timeout_files.push(path.to_path_buf());
         } else if file_name.starts_with("slow-unit-") {
             counts.slow_units += 1;
+            crash_timeout_files.push(path.to_path_buf());
         } else if file_name.starts_with("oom-") {
             counts.oom += 1;
+            crash_timeout_files.push(path.to_path_buf());
+        } else if file_name.starts_with("leak-") {
+            counts.leaks += 1;
+            crash_timeout_files.push(path.to_path_buf());
         }
     }
 
