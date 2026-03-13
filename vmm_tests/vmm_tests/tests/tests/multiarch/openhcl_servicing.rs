@@ -997,7 +997,6 @@ async fn apply_fault_with_keepalive(
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
-    agent.ping().await?;
 
     // Uses inspect to return the CPU indices (per_cpu map keys) that have IO issuers in the NVMe driver.
     Ok(vm)
