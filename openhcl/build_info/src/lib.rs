@@ -70,6 +70,22 @@ impl BuildInfo {
     pub fn scm_branch(&self) -> &'static str {
         self.branch
     }
+
+    pub fn openhcl_version(&self) -> &'static str {
+        self.openhcl_version
+    }
+}
+
+/// Parse the OPENHCL_VERSION string of the form "major.minor.build.platform"
+/// into four u32 components. Missing or unparseable components default to 0.
+pub fn parse_openhcl_version() -> (u32, u32, u32, u32) {
+    let version = get().openhcl_version();
+    let mut parts = version.splitn(4, '.');
+    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let build = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let platform = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    (major, minor, build, platform)
 }
 
 // Placing into a separate section to make easier to discover

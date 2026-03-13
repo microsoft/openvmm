@@ -3948,7 +3948,7 @@ name = "mana_driver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_git_info",
+ "build_info",
  "chipset_device",
  "futures",
  "gdma",

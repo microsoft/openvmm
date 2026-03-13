@@ -100,17 +100,6 @@ const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
 const HWC_INTERRUPT_POLL_WAIT_MIN_MS: u32 = 20;
 const HWC_INTERRUPT_POLL_WAIT_MAX_MS: u32 = 500;
 
-/// Parse an OPENHCL_VERSION string of the form "major.minor.build.platform"
-/// into four u32 components. Missing or unparseable components default to 0.
-fn parse_openhcl_version(version: &str) -> (u32, u32, u32, u32) {
-    let mut parts = version.splitn(4, '.');
-    let major = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let minor = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let build = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let platform = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    (major, minor, build, platform)
-}
-
 #[derive(Inspect)]
 struct Bar0<T: Inspect> {
     mem: T,
@@ -1239,8 +1228,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
-        let (ver_major, ver_minor, ver_build, ver_platform) =
-            parse_openhcl_version(option_env!("OPENHCL_VERSION").unwrap_or(""));
+        let (ver_major, ver_minor, ver_build, ver_platform) = build_info::parse_openhcl_version();
 
         let mut req = GdmaVerifyVerReq {
             protocol_ver_min: 1,
@@ -1263,9 +1251,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let name = b"OpenHCL";
         req.os_ver_str1[..name.len()].copy_from_slice(name);
 
-        let commit = option_env!("BUILD_GIT_SHA").unwrap_or("unknown");
-        let len = commit.len().min(req.os_ver_str2.len() - 1);
-        req.os_ver_str2[..len].copy_from_slice(&commit.as_bytes()[..len]);
+        let revision = build_info::get().scm_revision();
+        let len = revision.len().min(req.os_ver_str2.len() - 1);
+        req.os_ver_str2[..len].copy_from_slice(&revision.as_bytes()[..len]);
 
         let resp: GdmaVerifyVerResp = self
             .request(
