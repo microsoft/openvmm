@@ -13,7 +13,6 @@ use crate::arch::tdx::TdxIoAccess;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
-use core::fmt;
 use core::fmt::Write;
 use memory_range::MemoryRange;
 #[cfg(target_arch = "x86_64")]
@@ -31,8 +30,8 @@ enum Logger {
     None,
 }
 
-impl Logger {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
+impl Write for Logger {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
         match self {
             Logger::Serial(serial) => serial.write_str(s),
             #[cfg(target_arch = "x86_64")]
@@ -93,17 +92,9 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
 
     // Emit any in-memory log to the runtime logger.
     if let Some(buf) = BOOT_LOGGER.in_memory_logger.borrow_mut().as_mut() {
-        let _ = logger.write_str(buf.contents());
-    }
-}
-
-impl Write for &BootLogger {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
-            // Ignore the errors from the in memory logger.
-            let _ = buf.append(s);
+        for entry in buf.entries() {
+            let _ = writeln!(logger, "[{}] {}", entry.level, entry.message);
         }
-        self.logger.borrow_mut().write_str(s)
     }
 }
 
@@ -114,7 +105,16 @@ impl log::Log for BootLogger {
     }
 
     fn log(&self, record: &log::Record<'_>) {
-        let _ = writeln!(&*self, "[{}] {}", record.level(), record.args());
+        if let Some(buf) = self.in_memory_logger.borrow_mut().as_mut() {
+            // Ignore errors from the in memory logger.
+            let _ = buf.append_log(record.level(), record.args());
+        }
+        let _ = writeln!(
+            self.logger.borrow_mut(),
+            "[{}] {}",
+            record.level(),
+            record.args()
+        );
     }
 
     fn flush(&self) {}
