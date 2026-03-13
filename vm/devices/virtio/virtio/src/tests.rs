@@ -81,6 +81,20 @@ async fn must_recv_in_timeout<T: 'static + Send>(
         .unwrap()
 }
 
+async fn assert_no_recv_in_timeout<T: 'static + Send>(
+    recv: &mut mesh::Receiver<T>,
+    timeout: Duration,
+) {
+    if mesh::CancelContext::new()
+        .with_timeout(timeout)
+        .until_cancelled(recv.next())
+        .await
+        .is_ok()
+    {
+        panic!("Expected timeout, but received a value");
+    }
+}
+
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
@@ -283,6 +297,7 @@ struct VirtioTestGuest {
     info: VirtioQueueInfo,
     use_ring_event_index: bool,
     avail_descriptors: Vec<Vec<bool>>,
+    auto_arm_event: bool,
 }
 
 impl VirtioTestGuest {
@@ -309,6 +324,7 @@ impl VirtioTestGuest {
             }),
             use_ring_event_index,
             avail_descriptors,
+            auto_arm_event: true,
         };
         for i in 0..num_queues {
             test_guest.add_queue_memory(i);
@@ -340,7 +356,7 @@ impl VirtioTestGuest {
             }),
             use_ring_event_index,
             avail_descriptors,
-            exit_event: event_listener::Event::new(),
+            auto_arm_event: true,
         };
         for i in 0..num_queues {
             test_guest.add_queue_memory(i);
@@ -621,6 +637,16 @@ impl VirtioTestGuest {
                 .modify_memory_map(base, &0_u32.to_le_bytes(), true);
             self.test_mem
                 .modify_memory_map(base + 4, &0_u32.to_le_bytes(), false);
+            self.test_mem.modify_memory_map(
+                self.get_queue_available_base_address(queue_index),
+                &0_u32.to_le_bytes(),
+                false,
+            );
+            self.test_mem.modify_memory_map(
+                self.get_queue_used_base_address(queue_index),
+                &0_u32.to_le_bytes(),
+                true,
+            );
             return;
         }
 
@@ -979,7 +1005,7 @@ impl VirtioTestGuest {
             panic!("Not a split queue");
         };
 
-        if self.use_ring_event_index {
+        if self.auto_arm_event && self.use_ring_event_index {
             self.test_mem.modify_memory_map(
                 avail_base_addr + 4 + 2 * self.queue_size as u64,
                 &cur_used_index.to_le_bytes(),
@@ -1041,6 +1067,88 @@ impl VirtioTestGuest {
             self.free_descriptor(queue_index, descriptor_index);
         }
         Some((descriptor_index, bytes_written))
+    }
+
+    fn enable_interrupt(&mut self, queue_index: u16, desc_index: Option<u16>) {
+        assert!(desc_index.is_none() || self.use_ring_event_index);
+        let base = self.get_queue_available_base_address(queue_index);
+        if let VirtioQueueInfo::Packed(packed) = &mut self.info {
+            if let Some(desc_index) = desc_index {
+                let wrapped_bit = if packed.next_ready_index[queue_index as usize] > desc_index {
+                    if packed.ready_wrapped_bit[queue_index as usize] {
+                        0
+                    } else {
+                        1
+                    }
+                } else {
+                    if packed.ready_wrapped_bit[queue_index as usize] {
+                        1
+                    } else {
+                        0
+                    }
+                };
+                let packed_event = desc_index as u32 | (wrapped_bit << 15) | (2_u32 << 16);
+                self.test_mem
+                    .modify_memory_map(base, &packed_event.to_le_bytes(), false);
+                self.auto_arm_event = false;
+            } else {
+                self.test_mem
+                    .modify_memory_map(base, &0_u32.to_le_bytes(), false);
+                self.auto_arm_event = true;
+            }
+        } else {
+            if let Some(desc_index) = desc_index {
+                self.test_mem.modify_memory_map(
+                    base + 4 + 2 * self.queue_size as u64,
+                    &desc_index.to_le_bytes(),
+                    false,
+                );
+                self.auto_arm_event = false;
+            } else {
+                if self.use_ring_event_index {
+                    let next_index = if let VirtioQueueInfo::Split(split) = &self.info {
+                        split.last_used_index[queue_index as usize]
+                    } else {
+                        panic!("Not a split queue");
+                    };
+                    self.test_mem.modify_memory_map(
+                        base + 4 + 2 * self.queue_size as u64,
+                        &next_index.to_le_bytes(),
+                        false,
+                    );
+                } else {
+                    self.test_mem
+                        .modify_memory_map(base, &0_u16.to_le_bytes(), false);
+                }
+                self.auto_arm_event = true;
+            }
+        }
+    }
+
+    fn disable_interrupt(&mut self, queue_index: u16) {
+        let base = self.get_queue_available_base_address(queue_index);
+        if matches!(self.info, VirtioQueueInfo::Packed(_)) {
+            self.test_mem
+                .modify_memory_map(base, &(1_u32 << 16).to_le_bytes(), false);
+        } else {
+            if self.use_ring_event_index {
+                // Can't really disable, but can set the next event to be far away.
+                let last_index = if let VirtioQueueInfo::Split(split) = &self.info {
+                    split.last_used_index[queue_index as usize] - 1
+                } else {
+                    panic!("Not a split queue");
+                };
+                self.test_mem.modify_memory_map(
+                    base + 4 + 2 * self.queue_size as u64,
+                    &last_index.to_le_bytes(),
+                    false,
+                );
+            } else {
+                self.test_mem
+                    .modify_memory_map(base, &1_u16.to_le_bytes(), false);
+            }
+        }
+        self.auto_arm_event = false;
     }
 }
 
@@ -1799,6 +1907,102 @@ async fn verify_split_queue_simple(driver: DefaultDriver) {
 async fn verify_packed_queue_simple(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_queue_simple_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)).await;
+}
+
+async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest, with_index: bool) {
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
+                let mut work = work.expect("Queue failure");
+                assert_eq!(work.payload.len(), 1);
+                assert_eq!(work.payload[0].length, 0x1000);
+                work.complete(123);
+                true
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // interrupt on a specific descriptor
+    if with_index {
+        guest.enable_interrupt(0, Some(1));
+        guest.add_to_avail_queue(0);
+        event.signal();
+        assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        guest.add_to_avail_queue(0);
+        event.signal();
+        must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+
+        let (_, len) = guest.get_next_completed(0).unwrap();
+        assert_eq!(len, 123);
+        let (_, len) = guest.get_next_completed(0).unwrap();
+        assert_eq!(len, 123);
+        assert_eq!(guest.get_next_completed(0).is_none(), true);
+    }
+    // always interrupt
+    guest.enable_interrupt(0, None);
+    guest.add_to_avail_queue(0);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (_, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(len, 123);
+    assert_eq!(guest.get_next_completed(0).is_none(), true);
+
+    // never interrupt
+    guest.disable_interrupt(0);
+    guest.add_to_avail_queue(0);
+    guest.add_to_avail_queue(0);
+    event.signal();
+    assert_no_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (_, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(len, 123);
+    let (_, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(len, 123);
+
+    queues[0].stop().await;
+}
+
+#[async_test]
+async fn verify_split_queue_simple_interrupt_control(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_simple_interrupt_control_inner(
+        VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, false),
+        false,
+    )
+    .await;
+}
+#[async_test]
+async fn verify_split_queue_simple_interrupt_control_with_index(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_simple_interrupt_control_inner(
+        VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true),
+        true,
+    )
+    .await;
+}
+#[async_test]
+async fn verify_packed_queue_simple_interrupt_control(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_simple_interrupt_control_inner(
+        VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, false),
+        false,
+    )
+    .await;
+}
+#[async_test]
+async fn verify_packed_queue_simple_interrupt_control_with_index(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_queue_simple_interrupt_control_inner(
+        VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, true),
+        true,
+    )
+    .await;
 }
 
 async fn verify_queue_indirect_inner(mut guest: VirtioTestGuest) {

@@ -11,6 +11,7 @@ use crate::queue::read_descriptor;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use crate::spec::queue::DescriptorFlags;
+use crate::spec::u32_le;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use spec::EventSuppressionFlags;
@@ -44,9 +45,12 @@ impl PackedQueueGetWork {
         let queue_desc = mem
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
             .map_err(QueueError::Memory)?;
-        let offset = params.desc_addr + descriptor_offset(params.size);
         let device_event = mem
-            .subrange(offset, size_of::<PackedEventSuppression>() as u64, true)
+            .subrange(
+                params.used_addr,
+                size_of::<PackedEventSuppression>() as u64,
+                true,
+            )
             .map_err(QueueError::Memory)?;
         Ok(Self {
             queue_desc,
@@ -62,7 +66,7 @@ impl PackedQueueGetWork {
             let disable_event =
                 PackedEventSuppression::new().with_flags(EventSuppressionFlags::Disabled);
             self.device_event
-                .write_plain(0, &disable_event.into_bits())
+                .write_plain::<u32_le>(0, &disable_event.into_bits())
                 .map_err(QueueError::Memory)?;
             atomic::fence(atomic::Ordering::Acquire);
             let descriptor: PackedDescriptor =
@@ -74,7 +78,7 @@ impl PackedQueueGetWork {
             let enable_event =
                 PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled);
             self.device_event
-                .write_plain(0, &enable_event.into_bits())
+                .write_plain::<u32_le>(0, &enable_event.into_bits())
                 .map_err(QueueError::Memory)?;
             atomic::fence(atomic::Ordering::SeqCst);
             let descriptor: PackedDescriptor =
@@ -128,11 +132,12 @@ impl PackedQueueCompleteWork {
         let queue_desc = mem
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
             .map_err(QueueError::Memory)?;
-        let offset = params.desc_addr
-            + descriptor_offset(params.size)
-            + size_of::<PackedEventSuppression>() as u64;
         let driver_event = mem
-            .subrange(offset, size_of::<PackedEventSuppression>() as u64, true)
+            .subrange(
+                params.avail_addr,
+                size_of::<PackedEventSuppression>() as u64,
+                true,
+            )
             .map_err(QueueError::Memory)?;
         Ok(Self {
             queue_desc,
