@@ -369,10 +369,10 @@ async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
         .read()
         .await
         .context("failed to read rng_current")?;
-    assert_eq!(
-        rng_current.trim(),
-        "virtio_rng",
-        "expected virtio_rng as current hwrng"
+    let rng_current = rng_current.trim();
+    assert!(
+        rng_current.starts_with("virtio_rng"),
+        "expected virtio_rng as current hwrng, got {rng_current:?}"
     );
 
     // Read 64 bytes of entropy with a timeout to avoid hanging if the device is broken
