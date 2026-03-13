@@ -17,12 +17,12 @@
 //! `CONNECT <port>` text protocol (the same hybrid vsock protocol used by
 //! Firecracker and others).
 
-use crate::protocol::Operation;
-use crate::protocol::ShutdownFlags;
-use crate::protocol::SocketType;
-use crate::protocol::VSOCK_CID_HOST;
-use crate::protocol::VsockHeader;
-use crate::protocol::VsockPacket;
+use crate::spec::Operation;
+use crate::spec::ShutdownFlags;
+use crate::spec::SocketType;
+use crate::spec::VSOCK_CID_HOST;
+use crate::spec::VsockHeader;
+use crate::spec::VsockPacket;
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use futures::AsyncReadExt;

@@ -112,27 +112,3 @@ pub const VIRTIO_VSOCK_EVENT_TRANSPORT_RESET: u32 = 0;
 pub struct VsockEvent {
     pub id: u32,
 }
-
-impl VsockHeader {
-    /// Create a new header for a packet from the host to the guest.
-    pub fn new_reply(
-        src_cid: u64,
-        dst_cid: u64,
-        src_port: u32,
-        dst_port: u32,
-        op: Operation,
-    ) -> Self {
-        Self {
-            src_cid,
-            dst_cid,
-            src_port,
-            dst_port,
-            len: 0,
-            socket_type: SocketType::STREAM.0,
-            op: op.0,
-            flags: ShutdownFlags::new().into(),
-            buf_alloc: 0,
-            fwd_cnt: 0,
-        }
-    }
-}

@@ -17,20 +17,21 @@
 
 #![forbid(unsafe_code)]
 
-pub mod connection;
-mod protocol;
+mod connection;
 pub mod resolver;
+mod spec;
+mod unix_relay;
 
 use crate::connection::RxWork;
-use crate::protocol::VsockPacket;
+use crate::spec::VsockPacket;
 use connection::ConnectionManager;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
-use protocol::VIRTIO_DEVICE_TYPE_VSOCK;
-use protocol::VsockConfig;
-use protocol::VsockHeader;
+use spec::VIRTIO_DEVICE_TYPE_VSOCK;
+use spec::VsockConfig;
+use spec::VsockHeader;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::Context;
