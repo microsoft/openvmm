@@ -89,7 +89,7 @@ enum RelayEvent {
 /// Connections initiated by the guest are relayed to Unix domain sockets on the
 /// host. The relay looks up the socket path as `<base_path>_<port>` for each
 /// destination port.
-pub struct VsockRelay {
+pub struct ConnectionManager {
     guest_cid: u64,
     driver: VmTaskDriver,
     base_path: PathBuf,
@@ -98,7 +98,7 @@ pub struct VsockRelay {
     listener: Option<PolledSocket<UnixListener>>,
 }
 
-impl VsockRelay {
+impl ConnectionManager {
     /// Creates a new relay.
     ///
     /// `guest_cid` is the CID assigned to the guest.

@@ -17,12 +17,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod connection;
 mod protocol;
-pub mod relay;
 pub mod resolver;
 
+use crate::connection::RxWork;
 use crate::protocol::VsockPacket;
-use crate::relay::RxWork;
+use connection::ConnectionManager;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -30,7 +31,6 @@ use pal_async::wait::PolledWait;
 use protocol::VIRTIO_DEVICE_TYPE_VSOCK;
 use protocol::VsockConfig;
 use protocol::VsockHeader;
-use relay::VsockRelay;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::Context;
@@ -166,7 +166,7 @@ impl VirtioDevice for VirtioVsockDevice {
             queues.push(queue);
         }
 
-        let relay = match VsockRelay::new(
+        let relay = match ConnectionManager::new(
             self.driver.clone(),
             self.guest_cid,
             self.base_path.clone(),
@@ -208,7 +208,7 @@ struct VsockWorkerState {
     tx_queue: VirtioQueue,
     #[allow(dead_code)] // Required by the spec but not actively polled.
     event_queue: VirtioQueue,
-    relay: VsockRelay,
+    relay: ConnectionManager,
 }
 
 struct VsockWorker {
