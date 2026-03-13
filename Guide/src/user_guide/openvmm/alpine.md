@@ -8,7 +8,7 @@ virtio-blk disks, and use virtio-net for networking.
 
 Run the setup script from the openvmm repo:
 
-```shell
+```bash
 ./scripts/setup-alpine.sh [output-dir]
 ```
 
@@ -17,6 +17,12 @@ boot command when it finishes. It also writes a `README` file to the output
 directory with the same command for future reference.
 
 Login: `root` / `alpine`. Quit OpenVMM with `ctrl-q` then `q`.
+
+```admonish warning
+The default password is intended for local development only. Change it
+or configure SSH keys before using a networking backend that exposes
+the VM to other hosts.
+```
 
 ## What the script does
 

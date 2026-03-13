@@ -42,7 +42,7 @@ cd "$OUTDIR"
 
 if [ ! -f "${IMAGE_NAME}.qcow2" ]; then
     echo "Downloading Alpine ${ALPINE_RELEASE} cloud image..."
-    curl -Lo "${IMAGE_NAME}.qcow2" "$IMAGE_URL"
+    curl --fail -Lo "${IMAGE_NAME}.qcow2" "$IMAGE_URL"
 else
     echo "Alpine cloud image already downloaded."
 fi
@@ -59,11 +59,19 @@ qemu-img convert -f qcow2 -O raw "${IMAGE_NAME}.qcow2" disk.raw
 
 echo "Extracting kernel and initramfs from disk image..."
 MNT=$(mktemp -d)
+cleanup() {
+    if mountpoint -q "$MNT" 2>/dev/null; then
+        sudo umount "$MNT"
+    fi
+    rmdir "$MNT" 2>/dev/null || true
+}
+trap cleanup EXIT
 sudo mount -o loop,offset=1048576,ro disk.raw "$MNT"
 sudo cp "$MNT/boot/vmlinuz-virt" vmlinuz-virt
 sudo cp "$MNT/boot/initramfs-virt" initramfs-virt
 sudo umount "$MNT"
 rmdir "$MNT"
+trap - EXIT
 sudo chown "$(id -u):$(id -g)" vmlinuz-virt initramfs-virt
 chmod 644 vmlinuz-virt initramfs-virt
 
