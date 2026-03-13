@@ -61,6 +61,13 @@ mod tap_tests {
         // The unshare call alone grants full capabilities (including CAP_NET_ADMIN)
         // inside the new user namespace — UID/GID mapping only affects how
         // ownership appears and is not needed for TAP device operations.
+
+        // Verify that TAP devices actually work inside the namespace. Some CI
+        // environments allow user namespaces but restrict /dev/net/tun access.
+        if let Err(e) = TapEndpoint::new("tap_probe") {
+            return Err(format!("TAP not available in namespace: {e}"));
+        }
+
         Ok(())
     }
 
