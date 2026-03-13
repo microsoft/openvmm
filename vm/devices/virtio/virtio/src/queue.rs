@@ -235,7 +235,9 @@ impl QueueCoreGetWork {
                     flags: descriptor.flags(),
                     buffer_id: Some(descriptor.buffer_id.get()),
                     next: if descriptor.flags().next() {
-                        Some(index.wrapping_add(1))
+                        // Packed ring descriptors are sequential and wrap at
+                        // queue_size (guaranteed power of 2).
+                        Some(index.wrapping_add(1) & (self.queue_size - 1))
                     } else if let Some(active_indirect_len) = active_indirect_len {
                         // Packed descriptors consume all of the indirect
                         // descriptors, even when the next flag is not set.

@@ -2113,6 +2113,50 @@ async fn verify_packed_queue_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_queue_linked_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true)).await;
 }
+/// A packed linked chain that starts near the end of the ring and wraps to
+/// the beginning (indices 2 → 3 → 0 in a queue_size=4 ring). Without
+/// correct index wrapping in `descriptor()`, the NEXT index after 3 would
+/// be 4 (out of bounds) instead of 0.
+#[async_test]
+async fn verify_packed_queue_linked_wrapping(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let queue_size = 4u16;
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, queue_size, true);
+
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                work.complete(work.payload.len() as u32);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Submit and complete 2 single descriptors to advance the packed ring
+    // cursor to index 2.
+    for _ in 0..2 {
+        guest.add_to_avail_queue(0);
+        event.signal();
+        must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        guest.get_next_completed(0).unwrap();
+    }
+
+    // Submit a 3-descriptor linked chain starting at index 2.
+    // The chain wraps: 2 → 3 → 0.
+    guest.add_linked_to_avail_queue(0, 3);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (_desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(len, 3);
+
+    queues[0].stop().await;
+}
 
 async fn verify_queue_indirect_linked_inner(mut guest: VirtioTestGuest) {
     let (tx, mut rx) = mesh::mpsc_channel();
