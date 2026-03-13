@@ -372,6 +372,13 @@ flags:
     #[clap(long, value_name = "PATH")]
     pub virtio_pmem: Option<String>,
 
+    /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
+    ///
+    /// Accepts serial config (console | stderr | listen=\<path\> |
+    /// file=\<path\> | listen=tcp:\<ip\>:\<port\> | term | none)
+    #[clap(long)]
+    pub virtio_console: Option<SerialConfigCli>,
+
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///
