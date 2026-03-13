@@ -1915,12 +1915,10 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 assert_eq!(work.payload.len(), 1);
                 assert_eq!(work.payload[0].length, 0x1000);
                 work.complete(123);
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
