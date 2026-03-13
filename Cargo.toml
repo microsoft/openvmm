@@ -340,6 +340,7 @@ vga = { path = "vm/devices/vga" }
 vga_proxy = { path = "vm/devices/vga_proxy" }
 virtio = { path = "vm/devices/virtio/virtio" }
 virtio_blk = { path = "vm/devices/virtio/virtio_blk" }
+virtio_console = { path = "vm/devices/virtio/virtio_console" }
 virtio_p9 = { path = "vm/devices/virtio/virtio_p9" }
 virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }

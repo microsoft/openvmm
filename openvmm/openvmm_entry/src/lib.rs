@@ -563,6 +563,12 @@ async fn vm_config_from_command_line(
         "debugcon",
     )?;
 
+    let virtio_console_backend = if let Some(serial_cfg) = opt.virtio_console.clone() {
+        setup_serial("virtio-console", serial_cfg, "hvc0")?
+    } else {
+        None
+    };
+
     let mut resources = VmResources::default();
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
@@ -1577,6 +1583,13 @@ async fn vm_config_from_command_line(
         add_virtio_device(
             opt.virtio_rng_bus,
             virtio_resources::rng::VirtioRngHandle.into_resource(),
+        );
+    }
+
+    if let Some(backend) = virtio_console_backend {
+        add_virtio_device(
+            VirtioBusCli::Auto,
+            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource(),
         );
     }
 

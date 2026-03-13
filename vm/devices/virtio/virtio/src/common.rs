@@ -467,6 +467,10 @@ pub trait VirtioDevice: inspect::InspectMut + Send {
     /// the device status. On failure, the transport will log the error and
     /// leave `DRIVER_OK` unset, so the device remains inert and the guest
     /// will observe failures through IO timeouts.
+    ///
+    /// The transport guarantees this is only called on a device that is either
+    /// freshly constructed or fully disabled (i.e. `poll_disable` has returned
+    /// `Poll::Ready`). Implementations may assume this precondition holds.
     fn enable(&mut self, resources: Resources) -> anyhow::Result<()>;
     /// Poll the device to complete a disable/reset operation.
     ///
@@ -476,6 +480,9 @@ pub trait VirtioDevice: inspect::InspectMut + Send {
     ///
     /// Devices that don't need async cleanup can return `Poll::Ready(())`
     /// immediately.
+    ///
+    /// Once this returns `Poll::Ready`, the transport may call `enable` again
+    /// to re-initialize the device. Until then, `enable` will not be called.
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()>;
 }
 
