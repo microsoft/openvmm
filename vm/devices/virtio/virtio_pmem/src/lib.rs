@@ -86,13 +86,13 @@ impl VirtioDeviceV2 for Device {
         }
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, _offset: u64) -> u32 {
         // The PmemConfig type is not used--instead, the memory region is
         // reported via the shared memory capability.
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {}
 
     fn set_shared_memory_region(
         &mut self,

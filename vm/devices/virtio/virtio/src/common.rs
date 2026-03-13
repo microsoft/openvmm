@@ -458,8 +458,8 @@ pub struct DeviceTraits {
 
 pub trait VirtioDevice: inspect::InspectMut + Send {
     fn traits(&self) -> DeviceTraits;
-    fn read_registers_u32(&mut self, offset: u16) -> u32;
-    fn write_registers_u32(&mut self, offset: u16, val: u32);
+    fn read_registers_u32(&mut self, offset: u64) -> u32;
+    fn write_registers_u32(&mut self, offset: u64, val: u32);
     /// Enable the device with the given resources.
     ///
     /// Called when the guest sets `DRIVER_OK`. On success, the device should

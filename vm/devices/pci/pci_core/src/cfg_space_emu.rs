@@ -704,7 +704,7 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     // ===== Utility and Query Functions =====
 
     /// Finds a BAR + offset by address.
-    pub fn find_bar(&self, address: u64) -> Option<(u8, u16)> {
+    pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
         self.active_bars.find(address)
     }
 
@@ -980,7 +980,7 @@ impl ConfigSpaceType0Emulator {
     }
 
     /// Finds a BAR + offset by address.
-    pub fn find_bar(&self, address: u64) -> Option<(u8, u16)> {
+    pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
         self.common.find_bar(address)
     }
 
