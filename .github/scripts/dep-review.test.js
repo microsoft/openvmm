@@ -78,19 +78,17 @@ describe("parseExternalDeps", () => {
   it("extracts external packages (those with source)", () => {
     const deps = parseExternalDeps(LOCK_MINIMAL);
     assert.equal(deps.size, 2);
-    assert.equal(
-      deps.get("serde\tregistry+https://github.com/rust-lang/crates.io-index"),
-      "1.0.200"
+    assert.ok(
+      deps.has("serde\t1.0.200\tregistry+https://github.com/rust-lang/crates.io-index")
     );
-    assert.equal(
-      deps.get("serde_derive\tregistry+https://github.com/rust-lang/crates.io-index"),
-      "1.0.200"
+    assert.ok(
+      deps.has("serde_derive\t1.0.200\tregistry+https://github.com/rust-lang/crates.io-index")
     );
   });
 
   it("ignores internal packages (no source)", () => {
     const deps = parseExternalDeps(LOCK_MINIMAL);
-    for (const key of deps.keys()) {
+    for (const key of deps) {
       assert.ok(!key.startsWith("my_crate\t"));
       assert.ok(!key.startsWith("helper\t"));
     }
@@ -110,8 +108,32 @@ source = "git+https://github.com/org/foo?branch=main#abc123"
 `;
     const deps = parseExternalDeps(lock);
     assert.equal(deps.size, 1);
-    const key = [...deps.keys()][0];
-    assert.ok(key.startsWith("foo\tgit+"));
+    const key = [...deps][0];
+    assert.ok(key.startsWith("foo\t0.1.0\tgit+"));
+  });
+
+  it("tracks multiple versions of the same crate", () => {
+    const lock = `
+[[package]]
+name = "windows-sys"
+version = "0.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aaa"
+
+[[package]]
+name = "windows-sys"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbb"
+`;
+    const deps = parseExternalDeps(lock);
+    assert.equal(deps.size, 2);
+    assert.ok(
+      deps.has("windows-sys\t0.48.0\tregistry+https://github.com/rust-lang/crates.io-index")
+    );
+    assert.ok(
+      deps.has("windows-sys\t0.52.0\tregistry+https://github.com/rust-lang/crates.io-index")
+    );
   });
 });
 
@@ -136,38 +158,42 @@ describe("fmtSource", () => {
 
 describe("diffDeps", () => {
   it("detects added crates", () => {
-    const base = new Map();
-    const pr = new Map([["foo\tsrc", "1.0.0"]]);
-    const { added, changed } = diffDeps(base, pr);
+    const base = new Set();
+    const pr = new Set(["foo\t1.0.0\tsrc"]);
+    const { added } = diffDeps(base, pr);
     assert.equal(added.length, 1);
     assert.equal(added[0].name, "foo");
-    assert.equal(changed.length, 0);
   });
 
-  it("detects version changes", () => {
-    const base = new Map([["foo\tsrc", "1.0.0"]]);
-    const pr = new Map([["foo\tsrc", "2.0.0"]]);
-    const { added, changed } = diffDeps(base, pr);
-    assert.equal(added.length, 0);
-    assert.equal(changed.length, 1);
-    assert.equal(changed[0].from, "1.0.0");
-    assert.equal(changed[0].to, "2.0.0");
+  it("detects version changes as additions", () => {
+    const base = new Set(["foo\t1.0.0\tsrc"]);
+    const pr = new Set(["foo\t2.0.0\tsrc"]);
+    const { added } = diffDeps(base, pr);
+    assert.equal(added.length, 1);
+    assert.equal(added[0].name, "foo");
+    assert.equal(added[0].version, "2.0.0");
   });
 
   it("does not report removals", () => {
-    const base = new Map([["foo\tsrc", "1.0.0"]]);
-    const pr = new Map();
-    const { added, changed } = diffDeps(base, pr);
+    const base = new Set(["foo\t1.0.0\tsrc"]);
+    const pr = new Set();
+    const { added } = diffDeps(base, pr);
     assert.equal(added.length, 0);
-    assert.equal(changed.length, 0);
   });
 
   it("reports nothing when identical", () => {
-    const base = new Map([["foo\tsrc", "1.0.0"]]);
-    const pr = new Map([["foo\tsrc", "1.0.0"]]);
-    const { added, changed } = diffDeps(base, pr);
+    const base = new Set(["foo\t1.0.0\tsrc"]);
+    const pr = new Set(["foo\t1.0.0\tsrc"]);
+    const { added } = diffDeps(base, pr);
     assert.equal(added.length, 0);
-    assert.equal(changed.length, 0);
+  });
+
+  it("detects new version alongside existing version", () => {
+    const base = new Set(["foo\t1.0.0\tsrc"]);
+    const pr = new Set(["foo\t1.0.0\tsrc", "foo\t2.0.0\tsrc"]);
+    const { added } = diffDeps(base, pr);
+    assert.equal(added.length, 1);
+    assert.equal(added[0].version, "2.0.0");
   });
 });
 
@@ -177,19 +203,9 @@ describe("buildSummary", () => {
   it("includes added crates", () => {
     const summary = buildSummary({
       added: [{ name: "foo", version: "1.0.0", source: "registry+x" }],
-      changed: [],
     });
-    assert.ok(summary.includes("**Added:**"));
+    assert.ok(summary.includes("**New external crate versions:**"));
     assert.ok(summary.includes("`foo` 1.0.0"));
-  });
-
-  it("includes changed crates", () => {
-    const summary = buildSummary({
-      added: [],
-      changed: [{ name: "bar", from: "1.0", to: "2.0", source: "registry+x" }],
-    });
-    assert.ok(summary.includes("**Version changed:**"));
-    assert.ok(summary.includes("`bar` 1.0 → 2.0"));
   });
 });
 
@@ -345,7 +361,6 @@ describe("integration", () => {
     const prDeps = parseExternalDeps(LOCK_MINIMAL);
     const diff = diffDeps(baseDeps, prDeps);
     assert.equal(diff.added.length, 0);
-    assert.equal(diff.changed.length, 0);
 
     const pathMap = parseCratePathMap(MANIFEST_MINIMAL);
     const baseGraph = parseInternalDepGraph(LOCK_MINIMAL);

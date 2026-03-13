@@ -15,11 +15,15 @@
 // --- Pure functions (no GitHub API, easily testable) ---
 
 /**
- * Parse a Cargo.lock file into a Map of "name\tsource" -> version
+ * Parse a Cargo.lock file into a Set of "name\tversion\tsource" strings
  * for external packages (those with a `source` field).
+ *
+ * Cargo.lock can contain multiple versions of the same crate from the
+ * same registry (e.g., windows-sys 0.48 and 0.52), so each unique
+ * (name, version, source) tuple is tracked independently.
  */
 function parseExternalDeps(content) {
-  const deps = new Map();
+  const deps = new Set();
   const blocks = content.split(/\n(?=\[\[package\]\])/);
   for (const block of blocks) {
     if (!block.includes("[[package]]")) continue;
@@ -28,7 +32,7 @@ function parseExternalDeps(content) {
     const source = block.match(/^source\s*=\s*"(.+?)"/m)?.[1];
     if (!name || !version) continue;
     if (source) {
-      deps.set(`${name}\t${source}`, version);
+      deps.add(`${name}\t${version}\t${source}`);
     }
   }
   return deps;
@@ -45,42 +49,32 @@ function fmtSource(source) {
 }
 
 /**
- * Diff two parsed dependency maps.
- * Returns { added, changed } arrays. Removals are not tracked
- * because dropping a dependency doesn't require review.
+ * Diff two parsed dependency sets.
+ * Returns { added } array — entries present in prDeps but not baseDeps.
+ * Removals are not tracked because dropping a dependency doesn't require review.
  */
 function diffDeps(baseDeps, prDeps) {
   const added = [];
-  const changed = [];
 
-  for (const [key, version] of prDeps) {
-    const [name, source] = key.split("\t");
+  for (const key of prDeps) {
     if (!baseDeps.has(key)) {
+      const [name, version, source] = key.split("\t");
       added.push({ name, version, source });
-    } else if (baseDeps.get(key) !== version) {
-      changed.push({ name, source, from: baseDeps.get(key), to: version });
     }
   }
 
-  return { added, changed };
+  return { added };
 }
 
 /** Build a markdown summary of dependency changes. */
 function buildSummary(diff) {
-  const { added, changed } = diff;
+  const { added } = diff;
   let summary = "### External dependency changes detected\n\n";
 
   if (added.length > 0) {
-    summary += "**Added:**\n";
+    summary += "**New external crate versions:**\n";
     for (const d of added) {
       summary += `- \`${d.name}\` ${d.version}${fmtSource(d.source)}\n`;
-    }
-    summary += "\n";
-  }
-  if (changed.length > 0) {
-    summary += "**Version changed:**\n";
-    for (const d of changed) {
-      summary += `- \`${d.name}\` ${d.from} → ${d.to}${fmtSource(d.source)}\n`;
     }
     summary += "\n";
   }
@@ -93,6 +87,13 @@ function buildSummary(diff) {
 /**
  * Parse root Cargo.toml [workspace.dependencies] to build a map of
  * crate name → directory path (only for path-based / internal deps).
+ *
+ * NOTE: This only covers crates listed in [workspace.dependencies], not all
+ * workspace members. Crates that are workspace members but not listed there
+ * (e.g., fuzz targets) won't be covered by containment checks. In practice
+ * this is fine — such crates are leaf crates unlikely to introduce
+ * cross-boundary deps, and resolving all members would require fetching
+ * individual Cargo.toml files for each member.
  */
 function parseCratePathMap(cargoTomlContent) {
   const map = new Map();
@@ -245,6 +246,21 @@ async function run(github, context, core) {
   const lockfileChanged = allFiles.some((f) => f.filename === "Cargo.lock");
   if (!lockfileChanged) {
     console.log("Cargo.lock not modified — nothing to review.");
+
+    // Remove any stale review request from a previous push that did touch Cargo.lock
+    try {
+      await github.rest.pulls.removeRequestedReviewers({
+        owner: context.repo.owner,
+        repo: context.repo.repo,
+        pull_number: prNumber,
+        team_reviewers: [DEP_REVIEW_TEAM],
+      });
+      console.log(`Removed stale review request from @microsoft/${DEP_REVIEW_TEAM}`);
+    } catch (e) {
+      if (e.status !== 422) {
+        console.log(`Note: failed to remove review request (${e.status}): ${e.message}`);
+      }
+    }
     return;
   }
 
@@ -279,7 +295,7 @@ async function run(github, context, core) {
   const baseDeps = parseExternalDeps(baseContent);
   const prDeps = parseExternalDeps(prContent);
   const diff = diffDeps(baseDeps, prDeps);
-  const hasExternalChanges = diff.added.length > 0 || diff.changed.length > 0;
+  const hasExternalChanges = diff.added.length > 0;
 
   // Step 4: Check containment policies
   const fs = require("fs");
@@ -466,7 +482,7 @@ function runChecks(baseContent, prContent, baseManifest, prManifest, policy) {
   const baseDeps = parseExternalDeps(baseContent);
   const prDeps = parseExternalDeps(prContent);
   const diff = diffDeps(baseDeps, prDeps);
-  const hasExternalChanges = diff.added.length > 0 || diff.changed.length > 0;
+  const hasExternalChanges = diff.added.length > 0;
 
   if (hasExternalChanges) {
     console.log(buildSummary(diff));

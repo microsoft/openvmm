@@ -27,7 +27,7 @@
 # CODEOWNERS, so that internal-only lockfile changes don't require a dependency
 # reviewer. See .github/workflows/dep-review.yml for details.
 #
-# Changes to the dep-review infrastructure itself require dependency reviewer approval.
-/.github/scripts/dep-review* @microsoft/openvmm-dependency-reviewers
-/.github/workflows/dep-review* @microsoft/openvmm-dependency-reviewers
-/.github/dep-policy.json @microsoft/openvmm-dependency-reviewers
+# Changes to the dep-review infrastructure itself require both CI and dependency reviewer approval.
+/.github/scripts/dep-review* @microsoft/openvmm-ci-reviewers @microsoft/openvmm-dependency-reviewers
+/.github/workflows/dep-review* @microsoft/openvmm-ci-reviewers @microsoft/openvmm-dependency-reviewers
+/.github/dep-policy.json @microsoft/openvmm-ci-reviewers @microsoft/openvmm-dependency-reviewers
