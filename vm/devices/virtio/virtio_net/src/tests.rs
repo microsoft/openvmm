@@ -70,7 +70,7 @@ const DATA_BASE: u64 = 0x20000;
 const TOTAL_MEM_SIZE: usize = 0x30000;
 
 // Virtio-net header size, derived from the actual layout.
-const NET_HEADER_SIZE: u32 = crate::header_size() as u32;
+const NET_HEADER_SIZE: u32 = header_size() as u32;
 
 // --- Simplified segment info for assertions ---
 
@@ -1551,5 +1551,4 @@ impl Endpoint for MockEndpointWithOffloads {
     async fn wait_for_endpoint_action(&mut self) -> EndpointAction {
         pending().await
     }
->>>>>>> 310214160 (virtio_net: enable checksum and GSO offloads)
 }
