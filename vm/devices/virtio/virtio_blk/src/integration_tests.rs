@@ -49,7 +49,7 @@ use zerocopy::IntoBytes;
 
 // --- Constants ---
 
-const QUEUE_SIZE: u16 = 16;
+const QUEUE_SIZE: u16 = 32;
 
 // Memory layout for the single requestq
 const DESC_ADDR: u64 = 0x0000;
