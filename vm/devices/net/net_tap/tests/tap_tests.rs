@@ -385,18 +385,16 @@ mod tap_tests {
             }
         };
 
-        let tests = if ns_available {
-            vec![
-                Trial::test("tap_create", test_tap_create),
-                async_trial("tap_get_queues", test_tap_get_queues),
-                async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
-                async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
-                async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
-            ]
-        } else {
-            // Return an empty list so all tests are effectively skipped.
-            vec![]
-        };
+        let ignored = !ns_available;
+        let tests = [
+            Trial::test("tap_create", test_tap_create),
+            async_trial("tap_get_queues", test_tap_get_queues),
+            async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
+            async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
+            async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
+        ]
+        .map(|t| t.with_ignored_flag(ignored))
+        .into();
 
         libtest_mimic::run(&args, tests).exit();
     }
