@@ -1423,11 +1423,14 @@ fn log_connect_error(err: &io::Error) {
             // FUTURE: send ICMP unreachable to guest
             tracing::debug!(
                 error = err as &dyn std::error::Error,
-                "connect failed, network unreachable"
+                "connect failed, unreachable"
             );
         }
         _ => {
-            tracing::warn!(error = err as &dyn std::error::Error, "connect failed");
+            tracelimit::warn_ratelimited!(
+                error = err as &dyn std::error::Error,
+                "connect failed"
+            );
         }
     }
 }

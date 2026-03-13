@@ -195,7 +195,7 @@ impl<T: Client> Access<'_, T> {
             // Check if connection has timed out
             if now.duration_since(conn.last_activity) > timeout {
                 tracing::debug!(
-                    addr = %format!("{}:{}", dst_addr.ip(), dst_addr.port()),
+                    addr = %dst_addr,
                     "UDP connection timed out"
                 );
                 return false;
