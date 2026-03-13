@@ -1427,10 +1427,7 @@ fn log_connect_error(err: &io::Error) {
             );
         }
         _ => {
-            tracelimit::warn_ratelimited!(
-                error = err as &dyn std::error::Error,
-                "connect failed"
-            );
+            tracelimit::warn_ratelimited!(error = err as &dyn std::error::Error, "connect failed");
         }
     }
 }

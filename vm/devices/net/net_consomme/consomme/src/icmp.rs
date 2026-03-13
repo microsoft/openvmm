@@ -119,7 +119,10 @@ impl IcmpConnection {
                     self.stats.rx_packets.increment();
                 }
                 Poll::Ready(Err(err)) => {
-                    tracelimit::error_ratelimited!(error = &err as &dyn std::error::Error, "recv error");
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "recv error"
+                    );
                     break;
                 }
                 Poll::Pending => break,
