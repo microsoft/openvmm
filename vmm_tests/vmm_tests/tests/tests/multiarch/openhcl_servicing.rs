@@ -1251,9 +1251,7 @@ async fn find_cpus_with_io_issuers(
         .values()
         .next()
         .expect("should have at least one NVMe device");
-    tracing::info!("device inspect: {device:?}");
     let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
-    tracing::info!("per_cpu map: {per_cpu:?}");
     let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
     Ok(per_cpu_map.keys().cloned().collect::<Vec<_>>())
 }
