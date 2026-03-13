@@ -148,7 +148,7 @@ The storage resolver chain is recursive. An NVMe controller resolves each namesp
 **Example:** `--disk memdiff:file:path/to/disk.vhdx`
 
 1. CLI parses this into a `LayeredDiskHandle` with two layers:
-   - Layer 0: `RamDiskLayerHandle { len: None }` (RAM diff, inherits size from backing disk)
+   - Layer 0: `RamDiskLayerHandle { len: None, sector_size: None }` (RAM diff, inherits size and sector size from backing disk)
    - Layer 1: `DiskLayerHandle(FileDiskHandle(...))` (the file)
 2. The layered disk resolver resolves both layers in parallel.
 3. The RAM layer attaches on top of the file layer, inheriting its sector size and capacity.
@@ -232,7 +232,7 @@ Both CLI options map to the layered disk model:
 - **`mem:1G`** creates a single-layer `LayeredDisk` with a `RamDiskLayer` sized to 1 GB. No backing disk — the RAM layer is the entire disk.
 - **`memdiff:file:disk.vhdx`** creates a two-layer `LayeredDisk`: a `RamDiskLayer` (inheriting size from the backing disk) on top of the file. Writes go to the RAM layer; reads fall through to the file for sectors not yet written.
 
-Both use `RamDiskLayerHandle` under the hood. The difference is `len: Some(size)` for `mem:` (standalone RAM disk with explicit size) vs. `len: None` for `memdiff:` (inherits from backing disk). The [Running OpenVMM](../../../user_guide/openvmm/run.md) page shows concrete examples.
+Both use `RamDiskLayerHandle` under the hood. The difference is `len: Some(size)` for `mem:` (standalone RAM disk with explicit size) vs. `len: None` for `memdiff:` (inherits from backing disk). The optional `sector_size` field (default `None`) lets you override the sector size; when `None`, it inherits from the lower layer or defaults to 512 bytes. The [Running OpenVMM](../../../user_guide/openvmm/run.md) page shows concrete examples.
 
 ## Controller identity and Azure disk classification
 
