@@ -1193,8 +1193,8 @@ async fn large_read_from_disk(
 // Runs IO using dd that is pinned to a specific target CPU using cpuset
 // cgroups.
 // DEV NOTE: There is a known issue where this approach fails when there are more
-// than 1 processors assigned per socket. The CPU where the IO is observed is
-// off-by-one (At the time of writing, the cause is unknown)
+// than 1 processor assigned per socket. The CPU where the IO is observed is
+// off-by-one (at the time of writing, the cause is unknown).
 async fn run_cpu_pinned_io(
     agent: &PipetteClient,
     disk_path: &str,
