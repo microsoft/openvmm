@@ -287,7 +287,7 @@ async fn try_unlock_vmgs(
             secure_key_release::RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(
                 igvm_attest::key_release::KeyReleaseError::ParseHeader(
                     igvm_attest::Error::Attestation {
-                        skip_hw_unsealing: true,
+                        skip_hw_unsealing_signal: true,
                         ..
                     },
                 ),
@@ -921,11 +921,10 @@ async fn get_derived_keys(
             });
 
             // When the IGVM agent signals skip_hw_unsealing, set both
-            // keys to None so the code falls through to the
-            // scheme-specific error below (KP / GSP / GspById).  When
-            // both keys were actually available, additionally emit a
-            // warning and a fatal event-log entry to make the
-            // deliberate skip visible.
+            // hardware_key_protector and hardware_derived_keys to None
+            // so the code falls through to the scheme-specific error below.
+            // When hardware sealing keys were actually available, additionally
+            // emit a warning and a host event that make the skip visible.
             if skip_hw_unsealing {
                 if hardware_key_protector.is_some() && hardware_derived_keys.is_some() {
                     tracing::warn!(

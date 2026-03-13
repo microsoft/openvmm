@@ -54,13 +54,13 @@ pub enum Error {
         latest_version: IgvmAttestResponseVersion,
     },
     #[error(
-        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing ({skip_hw_unsealing})"
+        "attest failed ({igvm_error_code}-{http_status_code}), retry recommendation ({retry_signal}), skip hw unsealing recommendation ({skip_hw_unsealing_signal})"
     )]
     Attestation {
         igvm_error_code: u32,
         http_status_code: u32,
         retry_signal: bool,
-        skip_hw_unsealing: bool,
+        skip_hw_unsealing_signal: bool,
     },
 }
 
@@ -248,7 +248,7 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
                 igvm_error_code: igvm_error_info.error_code,
                 http_status_code: igvm_error_info.http_status_code,
                 retry_signal: igvm_error_info.igvm_signal.retry(),
-                skip_hw_unsealing: igvm_error_info.igvm_signal.skip_hw_unsealing(),
+                skip_hw_unsealing_signal: igvm_error_info.igvm_signal.skip_hw_unsealing(),
             })?
         }
     }
@@ -707,7 +707,7 @@ mod tests {
                 igvm_error_code: 1103,
                 http_status_code: 403,
                 retry_signal: true,
-                skip_hw_unsealing: false
+                skip_hw_unsealing_signal: false
             }
             .to_string()
         );
@@ -730,7 +730,7 @@ mod tests {
                 igvm_error_code: 1103,
                 http_status_code: 503,
                 retry_signal: false,
-                skip_hw_unsealing: false
+                skip_hw_unsealing_signal: false
             }
             .to_string()
         );
@@ -754,7 +754,7 @@ mod tests {
                 igvm_error_code: 1103,
                 http_status_code: 400,
                 retry_signal: true,
-                skip_hw_unsealing: true
+                skip_hw_unsealing_signal: true
             }
             .to_string()
         );
@@ -778,7 +778,7 @@ mod tests {
                 igvm_error_code: 1103,
                 http_status_code: 400,
                 retry_signal: false,
-                skip_hw_unsealing: true
+                skip_hw_unsealing_signal: true
             }
             .to_string()
         );
