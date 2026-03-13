@@ -1247,10 +1247,61 @@ fn tx_offload_tso_without_needs_csum() {
     assert_eq!(meta.max_tcp_segment_size, 1460);
 }
 
+/// VLAN-tagged frame: 802.1Q tag (EtherType 0x8100) wrapping IPv4.
+#[test]
+fn tx_offload_vlan_ipv4() {
+    // Build a VLAN-tagged Ethernet header: dst(6) + src(6) + 0x8100(2) + TCI(2) + 0x0800(2) = 18 bytes
+    let mut vlan_header = [0u8; 18];
+    vlan_header[12..14].copy_from_slice(&0x8100u16.to_be_bytes()); // VLAN EtherType
+    vlan_header[14..16].copy_from_slice(&0x0001u16.to_be_bytes()); // TCI (VLAN ID 1)
+    vlan_header[16..18].copy_from_slice(&ETHERTYPE_IPV4.to_be_bytes()); // Inner EtherType
+
+    // needs_csum, TCP checksum. L2=18 (VLAN), L3=20 (IPv4), so csum_start=38.
+    let header = make_virtio_header(
+        true,
+        VirtioNetHeaderGsoProtocol::NONE,
+        0,
+        0,
+        38, // csum_start (18 + 20)
+        16, // TCP checksum offset
+    );
+    let meta = Worker::parse_tx_offloads(Some(&header), &vlan_header, 1000);
+    assert!(meta.flags.offload_tcp_checksum(), "TCP csum should be set");
+    assert!(meta.flags.is_ipv4(), "should detect IPv4 through VLAN tag");
+    assert!(!meta.flags.is_ipv6());
+    assert_eq!(meta.l2_len, 18, "VLAN-tagged L2 header is 18 bytes");
+    assert_eq!(meta.l3_len, 20);
+}
+
+/// VLAN-tagged frame wrapping IPv6.
+#[test]
+fn tx_offload_vlan_ipv6() {
+    let mut vlan_header = [0u8; 18];
+    vlan_header[12..14].copy_from_slice(&0x8100u16.to_be_bytes());
+    vlan_header[14..16].copy_from_slice(&0x0001u16.to_be_bytes());
+    vlan_header[16..18].copy_from_slice(&ETHERTYPE_IPV6.to_be_bytes());
+
+    // needs_csum, UDP checksum. L2=18 (VLAN), L3=40 (IPv6), so csum_start=58.
+    let header = make_virtio_header(
+        true,
+        VirtioNetHeaderGsoProtocol::NONE,
+        0,
+        0,
+        58, // csum_start (18 + 40)
+        6,  // UDP checksum offset
+    );
+    let meta = Worker::parse_tx_offloads(Some(&header), &vlan_header, 1000);
+    assert!(meta.flags.offload_udp_checksum(), "UDP csum should be set");
+    assert!(meta.flags.is_ipv6(), "should detect IPv6 through VLAN tag");
+    assert!(!meta.flags.is_ipv4());
+    assert_eq!(meta.l2_len, 18);
+    assert_eq!(meta.l3_len, 40);
+}
+
 // --- End-to-end TX Offload Test ---
 
 /// Post a TX packet with a virtio-net header containing TCP checksum offload
-/// flags. Verify the TxMetadata in the logged segments reflects the offloads.
+/// flags. Verify the packet is processed and completed successfully.
 #[async_test]
 async fn tx_offload_end_to_end_tcp_csum(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
@@ -1477,7 +1528,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     assert!(bank0.guest_csum(), "GUEST_CSUM should always be set");
     assert!(
         bank0.host_tso4(),
-        "HOST_TSO4 should be set when tso+tcp supported"
+        "HOST_TSO4 should be set when tso+tcp+ipv4_header supported"
     );
     assert!(
         bank0.host_tso6(),

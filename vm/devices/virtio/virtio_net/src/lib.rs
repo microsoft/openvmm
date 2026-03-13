@@ -240,7 +240,9 @@ impl VirtioDevice for Device {
         // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
         let csum = offloads.tcp || offloads.udp;
         // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
-        let host_tso4 = offloads.tso && offloads.tcp;
+        // TSO4 also requires IPv4 header checksum support since the backend
+        // must compute per-segment IPv4 header checksums.
+        let host_tso4 = offloads.tso && offloads.tcp && offloads.ipv4_header;
         let host_tso6 = offloads.tso && offloads.tcp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
@@ -727,6 +729,10 @@ impl From<task_control::Cancelled> for WorkerError {
 enum PacketError {
     #[error("Empty packet")]
     Empty,
+    #[error("packet too small for virtio-net header")]
+    TooSmall,
+    #[error("too many segments for a single packet")]
+    TooManySegments,
 }
 
 #[derive(InspectMut)]
@@ -829,12 +835,19 @@ impl Worker {
         // the EtherType (and a potential VLAN tag).
         const ETH_PEEK: usize = 18; // 14 standard + 4 for VLAN tag
         let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
-        let bytes_read = work
-            .read(
-                &self.active_state.mem,
-                &mut peek_buf[..header_size() + ETH_PEEK],
-            )
-            .unwrap_or(0);
+        let bytes_read = match work.read(
+            &self.active_state.mem,
+            &mut peek_buf[..header_size() + ETH_PEEK],
+        ) {
+            Ok(n) => n,
+            Err(err) => {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to read virtio-net header from guest memory"
+                );
+                0
+            }
+        };
         let header = VirtioNetHeader::read_from_prefix(&peek_buf)
             .map(|(h, _)| h)
             .ok();
@@ -876,16 +889,34 @@ impl Worker {
             return Err(WorkerError::Packet(PacketError::Empty));
         }
         let idx = work.descriptor_index();
-        let packet_len: u32 = (work.get_payload_length(false) as usize - header_size())
-            .try_into()
-            .unwrap();
+        let total_readable = work.get_payload_length(false) as usize;
+        let packet_len: u32 = match total_readable.checked_sub(header_size()) {
+            Some(len) => match u32::try_from(len) {
+                Ok(len) => len,
+                Err(_) => {
+                    work.complete(0);
+                    return Err(WorkerError::Packet(PacketError::TooSmall));
+                }
+            },
+            None => {
+                work.complete(0);
+                return Err(WorkerError::Packet(PacketError::TooSmall));
+            }
+        };
+        let segment_count: u8 = match u8::try_from(segments.len()) {
+            Ok(c) => c,
+            Err(_) => {
+                work.complete(0);
+                return Err(WorkerError::Packet(PacketError::TooManySegments));
+            }
+        };
 
         // Map virtio-net header fields to TxMetadata offload flags.
         let tx_metadata = Self::parse_tx_offloads(header.as_ref(), packet_prefix, packet_len);
 
         segments[0].ty = TxSegmentType::Head(TxMetadata {
             id: TxId(idx.into()),
-            segment_count: segments.len().try_into().unwrap(),
+            segment_count,
             len: packet_len,
             ..tx_metadata
         });
@@ -960,6 +991,14 @@ impl Worker {
             // Prefer GSO-derived IP version, then EtherType-derived.
             let is_ipv4 = is_ipv4_from_gso || (!is_ipv6_from_gso && is_ipv4_from_eth);
             let is_ipv6 = is_ipv6_from_gso || (!is_ipv4_from_gso && is_ipv6_from_eth);
+
+            // Only enable checksum offloads if we know the IP version;
+            // backends require consistent is_ipv4/is_ipv6 and header lengths.
+            if !is_ipv4 && !is_ipv6 {
+                flags.set_offload_tcp_checksum(false);
+                flags.set_offload_udp_checksum(false);
+            }
+
             flags.set_is_ipv4(is_ipv4);
             flags.set_is_ipv6(is_ipv6);
             // Don't set offload_ip_header_checksum here: virtio guests
@@ -996,8 +1035,11 @@ impl Worker {
             //   hdr_len = l2_len + l3_len + l4_len (total header length)
             let total_hdr = header.hdr_len as u32;
             let l2_l3 = l2_len as u32 + l3_len as u32;
-            if total_hdr > l2_l3 {
-                l4_len = (total_hdr - l2_l3) as u8;
+            if total_hdr > l2_l3 && total_hdr <= packet_len {
+                let computed_l4 = total_hdr - l2_l3;
+                if computed_l4 <= u8::MAX as u32 {
+                    l4_len = computed_l4 as u8;
+                }
             }
         }
 
@@ -1020,14 +1062,14 @@ impl Worker {
         const ETHERTYPE_VLAN: u16 = 0x8100;
 
         if packet.len() < 14 {
-            return (14, false, false);
+            return (0, false, false);
         }
 
         let ethertype = u16::from_be_bytes([packet[12], packet[13]]);
         if ethertype == ETHERTYPE_VLAN {
             // VLAN-tagged: real EtherType is 4 bytes further.
             if packet.len() < 18 {
-                return (18, false, false);
+                return (0, false, false);
             }
             let inner = u16::from_be_bytes([packet[16], packet[17]]);
             (18, inner == ETHERTYPE_IPV4, inner == ETHERTYPE_IPV6)

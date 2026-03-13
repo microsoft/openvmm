@@ -129,8 +129,9 @@ impl BufferAccess for VirtioWorkPool {
         assert!(metadata.len > 0);
 
         // Map RxMetadata checksum state to virtio-net header flags.
-        // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums are
-        // known good, telling the guest it can skip re-verification.
+        // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums have
+        // been validated (Good or ValidatedButWrong, e.g. after RSC/LRO),
+        // telling the guest it can skip re-verification.
         let data_valid = metadata.ip_checksum.is_valid() && metadata.l4_checksum.is_valid();
         let flags = VirtioNetHeaderFlags::new().with_data_valid(data_valid);
 
