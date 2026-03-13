@@ -2032,7 +2032,6 @@ name = "flowey_lib_common"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "dirs",
  "flowey",
  "fs-err",
  "home",
@@ -9085,15 +9084,15 @@ name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "event-listener",
  "fuse",
+ "futures",
  "guestmem",
  "inspect",
  "lx",
  "lxutil",
  "ntapi",
  "pal",
+ "pal_async",
  "parking_lot",
  "task_control",
  "tracing",

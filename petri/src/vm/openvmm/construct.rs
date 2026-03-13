@@ -601,8 +601,20 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
+        // The test kernel has both CONFIG_VIRTIO_VSOCK=y and
+        // CONFIG_HYPERV_VSOCKETS=y built in. The kernel only allows one G2H
+        // vsock transport, and virtio_vsock_init runs first, claiming the
+        // slot. This causes hv_sock registration to fail with -EBUSY,
+        // breaking pipette's AF_VSOCK connection. Blacklist virtio_vsock_init
+        // so that hv_sock can register as the G2H transport.
+        const VIRTIO_VSOCK_BLACKLIST: &str = "initcall_blacklist=virtio_vsock_init";
+
         Ok(match (self.arch, &self.firmware) {
-            (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
+            (arch, Firmware::LinuxDirect { kernel, initrd }) => {
+                let console = match arch {
+                    MachineArch::X86_64 => "console=ttyS0",
+                    MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
+                };
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?
                     .into();
@@ -612,22 +624,9 @@ impl PetriVmConfigSetupCore<'_> {
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
-                    cmdline: "console=ttyS0 debug panic=-1 rdinit=/bin/sh".into(),
-                    custom_dsdt: None,
-                    enable_serial: true,
-                }
-            }
-            (MachineArch::Aarch64, Firmware::LinuxDirect { kernel, initrd }) => {
-                let kernel = File::open(kernel.clone())
-                    .context("Failed to open kernel")?
-                    .into();
-                let initrd = File::open(initrd.clone())
-                    .context("Failed to open initrd")?
-                    .into();
-                LoadMode::Linux {
-                    kernel,
-                    initrd: Some(initrd),
-                    cmdline: "console=ttyAMA0 earlycon debug panic=-1 rdinit=/bin/sh".into(),
+                    cmdline: format!(
+                        "{console} debug panic=-1 rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}"
+                    ),
                     custom_dsdt: None,
                     enable_serial: true,
                 }
@@ -713,7 +712,9 @@ impl PetriVmConfigSetupCore<'_> {
                         // data on the floor during boot.
                         append_cmdline(
                             &mut cmdline,
-                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
+                            format!(
+                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}\""
+                            ),
                         );
                         false
                     }

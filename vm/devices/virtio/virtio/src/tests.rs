@@ -8,20 +8,16 @@
 
 use crate::DeviceTraits;
 use crate::PciInterruptModel;
-use crate::QueueResources;
 use crate::Resources;
 use crate::VirtioDevice;
+use crate::VirtioQueue;
 use crate::VirtioQueueCallbackWork;
-use crate::VirtioQueueState;
-use crate::VirtioQueueWorker;
-use crate::VirtioQueueWorkerContext;
 use crate::queue::QueueParams;
 use crate::spec::pci::*;
 use crate::spec::queue::*;
 use crate::spec::*;
 use crate::transport::VirtioMmioDevice;
 use crate::transport::VirtioPciDevice;
-use async_trait::async_trait;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -34,6 +30,7 @@ use inspect::InspectMut;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
+use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
 use pci_core::msi::MsiConnection;
@@ -46,6 +43,9 @@ use std::io;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::time::Duration;
+use task_control::AsyncRun;
+use task_control::Cancelled;
+use task_control::StopTask;
 use task_control::TaskControl;
 use test_with_tracing::test;
 use vmcore::interrupt::Interrupt;
@@ -243,8 +243,7 @@ impl DoorbellRegistration for VirtioTestMemoryAccess {
     }
 }
 
-type VirtioTestWorkCallback =
-    Box<dyn Fn(anyhow::Result<VirtioQueueCallbackWork>) -> bool + Sync + Send>;
+type VirtioTestWorkCallback = Box<dyn Fn(VirtioQueueCallbackWork) + Sync + Send>;
 struct CreateDirectQueueParams {
     process_work: VirtioTestWorkCallback,
     notify: Interrupt,
@@ -261,7 +260,6 @@ struct VirtioTestGuest {
     last_avail_index: Vec<u16>,
     last_used_index: Vec<u16>,
     avail_descriptors: Vec<Vec<bool>>,
-    exit_event: event_listener::Event,
 }
 
 impl VirtioTestGuest {
@@ -286,7 +284,6 @@ impl VirtioTestGuest {
             last_avail_index,
             last_used_index,
             avail_descriptors,
-            exit_event: event_listener::Event::new(),
         };
         for i in 0..num_queues {
             test_guest.add_queue_memory(i);
@@ -298,30 +295,32 @@ impl VirtioTestGuest {
         GuestMemory::new("test", self.test_mem.clone())
     }
 
-    fn create_direct_queues<F>(&self, f: F) -> Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>
+    fn create_direct_queues<F>(&self, f: F) -> Vec<TaskControl<TestQueueWorker, TestQueueState>>
     where
         F: Fn(u16) -> CreateDirectQueueParams,
     {
         (0..self.num_queues)
             .map(|i| {
                 let params = f(i);
-                let worker = VirtioQueueWorker::new(
-                    self.driver.clone(),
-                    Box::new(VirtioTestWork {
-                        callback: params.process_work,
-                    }),
-                );
-                worker.into_running_task(
-                    "virtio-test-queue".to_string(),
-                    self.mem(),
+                let queue_event = PolledWait::new(&self.driver, params.event).unwrap();
+                let queue = VirtioQueue::new(
                     self.queue_features(),
-                    QueueResources {
-                        params: self.queue_params(i),
-                        notify: params.notify,
-                        event: params.event,
-                    },
-                    self.exit_event.listen(),
+                    self.queue_params(i),
+                    self.mem(),
+                    params.notify,
+                    queue_event,
                 )
+                .expect("failed to create virtio queue");
+                let mut tc = TaskControl::new(TestQueueWorker {
+                    callback: params.process_work,
+                });
+                tc.insert(
+                    self.driver.clone(),
+                    "virtio-test-queue",
+                    TestQueueState { queue },
+                );
+                tc.start();
+                tc
             })
             .collect::<Vec<_>>()
     }
@@ -761,14 +760,29 @@ impl VirtioTestGuest {
     }
 }
 
-struct VirtioTestWork {
+struct TestQueueWorker {
     callback: VirtioTestWorkCallback,
 }
 
-#[async_trait]
-impl VirtioQueueWorkerContext for VirtioTestWork {
-    async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool {
-        (self.callback)(work)
+struct TestQueueState {
+    queue: VirtioQueue,
+}
+
+impl AsyncRun<TestQueueState> for TestQueueWorker {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut TestQueueState,
+    ) -> Result<(), Cancelled> {
+        loop {
+            let work = stop.until_stopped(state.queue.next()).await?;
+            let Some(work) = work else { break };
+            match work {
+                Ok(work) => (self.callback)(work),
+                Err(err) => panic!("queue error: {}", err),
+            }
+        }
+        Ok(())
     }
 }
 struct VirtioPciTestDevice {
@@ -813,8 +827,7 @@ struct TestDevice {
     queue_work: Option<TestDeviceQueueWorkFn>,
     driver: vmcore::vm_task::VmTaskDriver,
     mem: GuestMemory,
-    workers: Vec<TaskControl<VirtioQueueWorker, VirtioQueueState>>,
-    exit_event: event_listener::Event,
+    workers: Vec<TaskControl<TestDeviceTask, TestDeviceQueue>>,
 }
 
 impl TestDevice {
@@ -830,7 +843,6 @@ impl TestDevice {
             driver: driver_source.simple(),
             mem: mem.clone(),
             workers: Vec::new(),
-            exit_event: event_listener::Event::new(),
         }
     }
 }
@@ -855,27 +867,35 @@ impl VirtioDevice for TestDevice {
                 if !queue_resources.params.enable {
                     return None;
                 }
-                let worker = VirtioQueueWorker::new(
-                    self.driver.clone(),
-                    Box::new(TestDeviceWorker {
-                        index: i as u16,
-                        queue_work: self.queue_work.clone(),
-                    }),
-                );
-                Some(worker.into_running_task(
-                    "virtio-test-queue".to_string(),
-                    self.mem.clone(),
+
+                let mut tc = TaskControl::new(TestDeviceTask {
+                    index: i as u16,
+                    queue_work: self.queue_work.clone(),
+                });
+
+                let queue_event = PolledWait::new(&self.driver, queue_resources.event).unwrap();
+                let queue = VirtioQueue::new(
                     resources.features.clone(),
-                    queue_resources,
-                    self.exit_event.listen(),
-                ))
+                    queue_resources.params,
+                    self.mem.clone(),
+                    queue_resources.notify,
+                    queue_event,
+                )
+                .expect("failed to create virtio queue");
+
+                tc.insert(
+                    self.driver.clone(),
+                    "virtio-test-queue",
+                    TestDeviceQueue { queue },
+                );
+                tc.start();
+                Some(tc)
             })
             .collect();
         Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
-        self.exit_event.notify(usize::MAX);
         for worker in &mut self.workers {
             std::task::ready!(worker.poll_stop(cx));
         }
@@ -884,25 +904,39 @@ impl VirtioDevice for TestDevice {
     }
 }
 
-struct TestDeviceWorker {
+struct TestDeviceTask {
     index: u16,
     queue_work: Option<TestDeviceQueueWorkFn>,
 }
 
-#[async_trait]
-impl VirtioQueueWorkerContext for TestDeviceWorker {
-    async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool {
-        if let Err(err) = work {
-            panic!(
-                "Invalid virtio queue state index {} error {}",
-                self.index,
-                err.as_ref() as &dyn std::error::Error
-            );
+struct TestDeviceQueue {
+    queue: VirtioQueue,
+}
+
+impl AsyncRun<TestDeviceQueue> for TestDeviceTask {
+    async fn run(
+        &mut self,
+        stop: &mut StopTask<'_>,
+        state: &mut TestDeviceQueue,
+    ) -> Result<(), Cancelled> {
+        loop {
+            let work = stop.until_stopped(state.queue.next()).await?;
+            let Some(work) = work else { break };
+            match work {
+                Ok(work) => {
+                    if let Some(ref func) = self.queue_work {
+                        (func)(self.index, work);
+                    }
+                }
+                Err(err) => {
+                    panic!(
+                        "Invalid virtio queue state index {} error {}",
+                        self.index, err
+                    );
+                }
+            }
         }
-        if let Some(ref func) = self.queue_work {
-            (func)(self.index, work.unwrap());
-        }
-        true
+        Ok(())
     }
 }
 
@@ -1439,8 +1473,7 @@ async fn verify_queue_simple(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 assert_eq!(work.payload.len(), 1);
                 assert_eq!(work.payload[0].length, 0x1000);
                 match work.payload[0].address {
@@ -1448,7 +1481,6 @@ async fn verify_queue_simple(driver: DefaultDriver) {
                     addr if addr == base_addr + 0x1000 => work.complete(456),
                     _ => panic!("Unexpected address {}", work.payload[0].address),
                 }
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
@@ -1487,8 +1519,7 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 assert_eq!(work.payload.len(), 1);
                 assert_eq!(work.payload[0].length, 0x1000);
                 match work.payload[0].address {
@@ -1496,7 +1527,6 @@ async fn verify_queue_indirect(driver: DefaultDriver) {
                     addr if addr == base_addr + 0x1000 => work.complete(456),
                     _ => panic!("Unexpected address {}", work.payload[0].address),
                 }
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
@@ -1535,8 +1565,7 @@ async fn verify_queue_linked(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 if work.payload.len() == 3 {
                     for i in 0..work.payload.len() {
                         assert_eq!(work.payload[i].address, base_address + 0x1000 * i as u64);
@@ -1547,7 +1576,6 @@ async fn verify_queue_linked(driver: DefaultDriver) {
                     assert_eq!(work.payload.len(), 1);
                     work.complete(456);
                 }
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
@@ -1585,8 +1613,7 @@ async fn verify_queue_indirect_linked(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 if work.payload.len() == 3 {
                     for i in 0..work.payload.len() {
                         assert_eq!(
@@ -1600,7 +1627,6 @@ async fn verify_queue_indirect_linked(driver: DefaultDriver) {
                     assert_eq!(work.payload.len(), 1);
                     work.complete(456);
                 }
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
@@ -1639,13 +1665,11 @@ async fn verify_queue_avail_rollover(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 assert_eq!(work.payload.len(), 1);
                 assert_eq!(work.payload[0].address, base_addr);
                 assert_eq!(work.payload[0].length, 0x1000);
                 work.complete(123);
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
@@ -1679,13 +1703,11 @@ async fn verify_multi_queue(driver: DefaultDriver) {
         let tx = tx.clone();
         let base_addr = guest.get_queue_descriptor_backing_memory_address(queue_index);
         CreateDirectQueueParams {
-            process_work: Box::new(move |work: anyhow::Result<VirtioQueueCallbackWork>| {
-                let mut work = work.expect("Queue failure");
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
                 assert_eq!(work.payload.len(), 1);
                 assert_eq!(work.payload[0].address, base_addr);
                 assert_eq!(work.payload[0].length, 0x1000);
                 work.complete(123 * queue_index as u32);
-                true
             }),
             notify: Interrupt::from_fn(move || {
                 tx.send(queue_index as usize);
