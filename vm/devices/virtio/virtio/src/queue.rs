@@ -60,21 +60,19 @@ pub struct QueueDescriptor {
 }
 
 pub enum QueueCompletionContext {
-    Split(SplitQueueCompletionContext),
+    Split,
     Packed(PackedQueueCompletionContext),
 }
 
 pub struct QueueWork {
     context: QueueCompletionContext,
+    descriptor_index: u16,
     pub payload: Vec<VirtioQueuePayload>,
 }
 
 impl QueueWork {
     pub fn descriptor_index(&self) -> u16 {
-        match &self.context {
-            QueueCompletionContext::Split(context) => context.descriptor_index,
-            QueueCompletionContext::Packed(context) => context.descriptor_index,
-        }
+        self.descriptor_index
     }
 }
 
@@ -151,25 +149,52 @@ impl QueueCoreGetWork {
     }
 
     pub fn try_next_work(&mut self) -> Result<Option<QueueWork>, QueueError> {
+        match self.try_peek_work() {
+            Ok(Some(work)) => {
+                self.advance(&work);
+                Ok(Some(work))
+            }
+            r => r,
+        }
+    }
+
+    /// Like [`try_next_work`](Self::try_next_work), but does not advance
+    /// the available index. The caller must call [`advance`](Self::advance) to
+    /// consume the peeked descriptor before peeking again.
+    pub fn try_peek_work(&mut self) -> Result<Option<QueueWork>, QueueError> {
         let index = match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.is_available()?,
             QueueGetWorkInner::Packed(packed) => packed.is_available()?,
         };
-        let Some(index) = index else {
-            return Ok(None);
-        };
+        let Some(index) = index else { return Ok(None) };
+        self.work_from_index(index).map(Some)
+    }
+
+    /// Advances the available index after a successful
+    /// [`try_peek_work`](Self::try_peek_work) call.
+    pub fn advance(&mut self, work: &QueueWork) {
+        match &mut self.inner {
+            QueueGetWorkInner::Split(split) => split.advance(),
+            QueueGetWorkInner::Packed(packed) => {
+                let QueueCompletionContext::Packed(ctx) = &work.context else {
+                    unreachable!();
+                };
+                packed.advance(ctx.descriptor_count());
+            }
+        }
+    }
+
+    fn work_from_index(&mut self, index: u16) -> Result<QueueWork, QueueError> {
         if let QueueGetWorkInner::Split(split) = &mut self.inner {
-            // Fetch descriptor index from given available index.
             let descriptor_index = split.get_available_descriptor_index(index)?;
             let payload = self
                 .reader(descriptor_index)
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(Some(QueueWork {
-                context: QueueCompletionContext::Split(SplitQueueCompletionContext {
-                    descriptor_index,
-                }),
+            Ok(QueueWork {
+                descriptor_index,
+                context: QueueCompletionContext::Split,
                 payload,
-            }))
+            })
         } else {
             let (payload, last_primary_desc_index) = {
                 let mut reader = self.reader(index);
@@ -185,18 +210,12 @@ impl QueueCoreGetWork {
                 // Wrapped around the end of the queue.
                 self.queue_size - index + last_primary_desc_index + 1
             };
-            // Packed descriptors can use additional ring-contiguous
-            // descriptors to describe a buffer. Find the last descriptor in
-            // the current chain and update the available index accordingly.
-            // Indirect descriptors are ignored.
-            let QueueGetWorkInner::Packed(packed) = &mut self.inner else {
-                unreachable!();
-            };
-            let completion_context = packed.consume_next_available_descriptors(index, count, last);
-            Ok(Some(QueueWork {
+            let completion_context = PackedQueueCompletionContext::new(&last, count);
+            Ok(QueueWork {
                 context: QueueCompletionContext::Packed(completion_context),
                 payload,
-            }))
+                descriptor_index: index,
+            })
         }
     }
 
@@ -305,10 +324,7 @@ impl QueueCoreCompleteWork {
     ) -> Result<bool, QueueError> {
         match &mut self.inner {
             QueueCompleteWorkInner::Split(split) => {
-                let QueueCompletionContext::Split(context) = &work.context else {
-                    panic!("mismatched queue completion context for split queue");
-                };
-                split.complete_descriptor(context, bytes_written)
+                split.complete_descriptor(work.descriptor_index, bytes_written)
             }
             QueueCompleteWorkInner::Packed(packed) => {
                 let QueueCompletionContext::Packed(context) = &work.context else {

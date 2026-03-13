@@ -12,9 +12,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::sync::atomic;
 
-pub struct SplitQueueCompletionContext {
-    pub descriptor_index: u16,
-}
+pub struct SplitQueueCompletionContext;
 
 #[derive(Debug, Inspect)]
 #[inspect(extra = "Self::inspect_extra")]
@@ -78,6 +76,9 @@ impl SplitQueueGetWork {
             .get())
     }
 
+    /// Checks whether a descriptor is available, returning its wrapped index.
+    /// Does not advance `last_avail_index`; call [`advance`](Self::advance)
+    /// to consume the descriptor.
     pub fn is_available(&mut self) -> Result<Option<u16>, QueueError> {
         let mut avail_index = Self::get_available_index(self)?;
         if avail_index == self.last_avail_index {
@@ -100,12 +101,16 @@ impl SplitQueueGetWork {
         } else {
             self.set_used_flags(spec::UsedFlags::new().with_no_notify(true))?;
         }
-        let next_avail_index = self.last_avail_index;
-        self.last_avail_index = self.last_avail_index.wrapping_add(1);
         // Ensure available index read is ordered before subsequent descriptor
         // reads.
         atomic::fence(atomic::Ordering::Acquire);
-        Ok(Some(next_avail_index % self.queue_size))
+        Ok(Some(self.last_avail_index % self.queue_size))
+    }
+
+    /// Advances `last_avail_index` by one, consuming the descriptor returned
+    /// by [`is_available`](Self::is_available).
+    pub fn advance(&mut self) {
+        self.last_avail_index = self.last_avail_index.wrapping_add(1);
     }
 
     pub fn get_available_descriptor_index(&self, wrapped_index: u16) -> Result<u16, QueueError> {
@@ -170,14 +175,10 @@ impl SplitQueueCompleteWork {
 
     pub fn complete_descriptor(
         &mut self,
-        context: &SplitQueueCompletionContext,
+        descriptor_index: u16,
         bytes_written: u32,
     ) -> Result<bool, QueueError> {
-        self.set_used_descriptor(
-            self.last_used_index,
-            context.descriptor_index,
-            bytes_written,
-        )?;
+        self.set_used_descriptor(self.last_used_index, descriptor_index, bytes_written)?;
         let last_used_index = self.last_used_index;
         self.last_used_index = self.last_used_index.wrapping_add(1);
 
