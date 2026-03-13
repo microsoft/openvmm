@@ -1107,7 +1107,7 @@ async fn vm_config_from_command_line(
         let mut cmdline = "panic=-1 debug".to_string();
 
         with_hv = opt.hv;
-        if with_hv {
+        if with_hv && opt.pcie_root_complex.is_empty() {
             cmdline += " pci=off";
         }
 
@@ -1510,19 +1510,21 @@ async fn vm_config_from_command_line(
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
-        if cli_cfg.pcie_port.is_some() {
-            anyhow::bail!("use --mana to add PCIe NICs")
-        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::net::VirtioNetHandle {
-                max_queues: vport.max_queues,
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            }
-            .into_resource(),
-        );
+        let resource = virtio_resources::net::VirtioNetHandle {
+            max_queues: vport.max_queues,
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &cli_cfg.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     for args in &opt.virtio_fs {
