@@ -32,7 +32,6 @@ disklayer_ram.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
-parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

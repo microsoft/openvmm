@@ -2381,12 +2381,8 @@ mod tests {
     use crate::scsi;
     use crate::scsidvd::ISO_SECTOR_SIZE;
     use crate::scsidvd::SimpleScsiDvd;
-    use disk_backend::Disk;
-    use disk_backend::DiskError;
-    use disk_backend::DiskIo;
+    use futures::FutureExt;
     use guestmem::GuestMemory;
-    use guestmem::MemoryWrite;
-    use inspect::Inspect;
     use pal_async::async_test;
     use scsi::AdditionalSenseCode;
     use scsi::ScsiOp;
@@ -2399,117 +2395,25 @@ mod tests {
     use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
-    #[derive(Debug)]
-    struct TestDisk {
-        sector_count: u64,
-        sector_size: u32,
-        storage: Vec<u8>,
-        read_only: bool,
-    }
+    fn new_scsi_dvd(sector_size: u32, sector_count: u64) -> SimpleScsiDvd {
+        let disk_size = sector_count * sector_size as u64;
+        let disk = disklayer_ram::ram_disk_with_sector_size(disk_size, false, sector_size).unwrap();
 
-    impl Inspect for TestDisk {
-        fn inspect(&self, req: inspect::Request<'_>) {
-            req.respond();
-        }
-    }
+        // Pre-fill the disk with the repeating pattern expected by tests.
+        let pattern = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
+        let mem = GuestMemory::allocate(pattern.len());
+        mem.write_at(0, &pattern).unwrap();
+        let buffers = OwnedRequestBuffers::linear(0, pattern.len(), false);
+        disk.write_vectored(&buffers.buffer(&mem), 0, false)
+            .now_or_never()
+            .expect("RAM disk write should not block")
+            .unwrap();
 
-    impl TestDisk {
-        pub fn new(sector_size: u32, sector_count: u64, read_only: bool) -> TestDisk {
-            let buffer = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
-
-            TestDisk {
-                sector_count,
-                sector_size,
-                storage: buffer,
-                read_only,
-            }
-        }
-    }
-
-    impl DiskIo for TestDisk {
-        fn disk_type(&self) -> &str {
-            "test"
-        }
-
-        fn sector_count(&self) -> u64 {
-            self.sector_count
-        }
-
-        fn sector_size(&self) -> u32 {
-            self.sector_size
-        }
-
-        fn is_read_only(&self) -> bool {
-            self.read_only
-        }
-
-        fn disk_id(&self) -> Option<[u8; 16]> {
-            None
-        }
-
-        fn physical_sector_size(&self) -> u32 {
-            self.sector_size
-        }
-
-        fn is_fua_respected(&self) -> bool {
-            false
-        }
-
-        async fn eject(&self) -> Result<(), DiskError> {
-            Err(DiskError::UnsupportedEject)
-        }
-
-        async fn read_vectored(
-            &self,
-            buffers: &RequestBuffers<'_>,
-            sector: u64,
-        ) -> Result<(), DiskError> {
-            let offset = sector as usize * self.sector_size() as usize;
-            let end_point = offset + buffers.len();
-
-            if self.storage.len() < end_point {
-                return Err(DiskError::IllegalBlock);
-            }
-
-            buffers.writer().write(&self.storage[offset..end_point])?;
-            Ok(())
-        }
-
-        async fn write_vectored(
-            &self,
-            _buffers: &RequestBuffers<'_>,
-            _sector: u64,
-            _fua: bool,
-        ) -> Result<(), DiskError> {
-            todo!()
-        }
-
-        async fn sync_cache(&self) -> Result<(), DiskError> {
-            todo!()
-        }
-
-        async fn unmap(
-            &self,
-            _sector: u64,
-            _count: u64,
-            _block_level_only: bool,
-        ) -> Result<(), DiskError> {
-            Ok(())
-        }
-
-        fn unmap_behavior(&self) -> disk_backend::UnmapBehavior {
-            disk_backend::UnmapBehavior::Ignored
-        }
-    }
-
-    fn new_scsi_dvd(sector_size: u32, sector_count: u64, read_only: bool) -> SimpleScsiDvd {
-        let disk = TestDisk::new(sector_size, sector_count, read_only);
-        let scsi_dvd = SimpleScsiDvd::new(Some(Disk::new(disk).unwrap()));
+        let scsi_dvd = SimpleScsiDvd::new(Some(disk));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
         assert_eq!(scsi_dvd.sector_count(), sector_count / scsi_dvd.balancer());
         assert_eq!(scsi_dvd.sector_shift(), sector_shift);
         if let Media::Loaded(disk) = &*scsi_dvd.media.read() {
-            assert_eq!(disk.is_read_only(), read_only);
             assert_eq!(disk.sector_size(), sector_size);
         } else {
             panic!("unexpected Media::Unloaded");
@@ -2638,14 +2542,14 @@ mod tests {
 
     #[test]
     fn validate_new_scsi_dvd() {
-        new_scsi_dvd(512, 2048, true);
+        new_scsi_dvd(512, 2048);
     }
 
     #[async_test]
     async fn validate_read16() {
         let sector_size = 512;
         let sector_count = 2048;
-        let mut scsi_dvd = new_scsi_dvd(sector_size, sector_count, true);
+        let mut scsi_dvd = new_scsi_dvd(sector_size, sector_count);
 
         let dvd_sector_size = ISO_SECTOR_SIZE as u64;
         let dvd_sector_count = scsi_dvd.sector_count();
@@ -2680,14 +2584,14 @@ mod tests {
 
     #[test]
     fn validate_save_restore_scsi_dvd_no_change() {
-        let scsi_dvd = new_scsi_dvd(512, 2048, true);
+        let scsi_dvd = new_scsi_dvd(512, 2048);
         let saved_state = save_scsi_dvd(&scsi_dvd);
         restore_scsi_dvd(saved_state, &scsi_dvd);
     }
 
     #[test]
     fn validate_save_restore_scsi_dvd_with_sense_data() {
-        let scsi_dvd = new_scsi_dvd(512, 2048, true);
+        let scsi_dvd = new_scsi_dvd(512, 2048);
         let mut saved_state = save_scsi_dvd(&scsi_dvd);
         saved_state.sense_data = Some(SavedSenseData {
             sense_key: SenseKey::UNIT_ATTENTION.0,

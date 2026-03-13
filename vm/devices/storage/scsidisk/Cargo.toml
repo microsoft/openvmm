@@ -37,6 +37,7 @@ getrandom.workspace = true
 
 [dev-dependencies]
 disk_prwrap.workspace = true
+disklayer_ram.workspace = true
 test_with_tracing.workspace = true
 
 [lints]
