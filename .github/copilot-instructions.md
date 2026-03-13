@@ -17,19 +17,20 @@ For cross-compilation from WSL2 to Windows, see
 `Guide/src/dev_guide/getting_started/cross_compile.md` and source
 `. ./build_support/setup_windows_cross.sh`.
 
-## Formatting & Linting
+## Pre-Commit Checklist (MANDATORY)
 
-Always run before committing:
-```bash
-cargo xtask fmt --fix
-cargo clippy --all-targets -p <package-name>
-cargo doc -p <package-name>
-```
+**You MUST run these commands before every `git commit` in this repo.
+Do NOT commit without completing all three steps.**
 
-`cargo xtask fmt --fix` runs all formatting checks (rustfmt, copyright
-headers, naming conventions) and applies auto-fixes where supported. If it
-still fails, fix the remaining reported issues manually and re-run until it
-succeeds. Do not run individual `--pass` commands afterward.
+1. `cargo clippy --all-targets -p <package-name>` — for each modified package.
+2. `cargo doc -p <package-name>` — for each modified package.
+3. `cargo xtask fmt --fix` — fix formatting, headers, naming conventions.
+   Run this **last** because fixing clippy/doc issues may introduce
+   formatting changes that need to be cleaned up.
+
+If `cargo xtask fmt --fix` still fails after auto-fixes, fix the remaining
+reported issues manually and re-run until it succeeds. Do not run individual
+`--pass` commands afterward.
 
 ## Trust Boundaries & Safety
 
