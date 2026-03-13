@@ -24,7 +24,6 @@ tracelimit.workspace = true
 
 [dev-dependencies]
 mesh.workspace = true
-pal_async.workspace = true
 pal_event.workspace = true
 test_with_tracing.workspace = true
 
