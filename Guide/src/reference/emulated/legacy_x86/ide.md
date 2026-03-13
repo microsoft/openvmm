@@ -123,6 +123,44 @@ completes it when the disk operation finishes.
 Both HDD and optical drives support enlightened commands, with
 separate completion paths.
 
+## IDE accelerator (StorVSP-backed)
+
+OpenVMM offers an **IDE accelerator** that enhances Gen1 VM storage
+performance. The standard PCI-based IDE emulation path requires the
+guest to program ATA registers via port I/O, causing multiple VM exits
+per command. The accelerator provides a parallel VMBus-based data path
+using ring buffers — the same transport StorVSP uses for SCSI.
+
+Both paths coexist: the emulation path always exists for control-plane
+operations, while the accelerator handles data-plane I/O when the
+guest supports it. The guest's `storvsc` driver recognizes the IDE
+accelerator VMBus offer and uses ring buffers instead of port I/O for
+data transfer. Under the hood, StorVSP builds the device with
+[`StorageDevice::build_ide()`](https://openvmm.dev/rustdoc/linux/storvsp/struct.StorageDevice.html#method.build_ide),
+which:
+
+- Constructs a [`ScsiController`](https://openvmm.dev/rustdoc/linux/storvsp/struct.ScsiController.html)
+  with a single disk at the matching `(channel_id, device_id)` path.
+- Generates a deterministic `instance_id` from the channel and device
+  IDs.
+- Sets `max_sub_channel_count = 0` — the accelerator uses only the
+  primary channel. All I/O is serialized through one worker.
+
+The accelerator exists for **throughput** (ring buffers avoid the
+multi-exit register-programming sequence), not for parallelism. It
+does not support subchannels or multi-queue I/O. For parallel
+storage I/O, use a SCSI controller with subchannels — see the
+[StorVSP Channels & Subchannels](../../devices/vmbus/storvsp_channels.md)
+page.
+
+```admonish note
+The IDE accelerator and the standard IDE emulator coexist. The
+emulator handles control-plane operations (IDENTIFY, SET FEATURES,
+power management) while the accelerator handles data-plane I/O. If
+the guest doesn't support the accelerator, all I/O uses the PCI
+emulation path.
+```
+
 ## Limitations
 
 - No hot-add or hot-remove.

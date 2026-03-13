@@ -21,6 +21,11 @@
 //! to [`AsyncScsiDisk`] implementations — StorVSP
 //! never interprets SCSI data CDBs itself.
 //!
+//! For the channel/sub-channel model, CPU affinity, and performance
+//! characteristics, see the
+//! [StorVSP Channels & Subchannels](https://openvmm.dev/reference/devices/vmbus/storvsp_channels.html)
+//! page in the OpenVMM Guide.
+//!
 //! # Key types
 //!
 //! - [`StorageDevice`] — the VMBus device. Implements `VmbusDevice` and
