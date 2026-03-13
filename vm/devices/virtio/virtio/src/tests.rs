@@ -2152,7 +2152,8 @@ async fn verify_packed_queue_linked_wrapping(driver: DefaultDriver) {
     guest.add_linked_to_avail_queue(0, 3);
     event.signal();
     must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
-    let (_desc, len) = guest.get_next_completed(0).unwrap();
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 2);
     assert_eq!(len, 3);
 
     queues[0].stop().await;
