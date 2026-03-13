@@ -2396,6 +2396,10 @@ mod tests {
     use zerocopy::IntoBytes;
 
     fn new_scsi_dvd(sector_size: u32, sector_count: u64) -> SimpleScsiDvd {
+        // The disk is always created writable so the test can pre-fill it with
+        // pattern data. The SCSI DVD layer enforces read-only at the command
+        // level; these tests exercise DVD protocol behavior, not write
+        // protection.
         let disk_size = sector_count * sector_size as u64;
         let disk = disklayer_ram::ram_disk_with_sector_size(disk_size, false, sector_size).unwrap();
 
@@ -2406,7 +2410,7 @@ mod tests {
         let buffers = OwnedRequestBuffers::linear(0, pattern.len(), false);
         disk.write_vectored(&buffers.buffer(&mem), 0, false)
             .now_or_never()
-            .expect("RAM disk write should not block")
+            .expect("RAM disk write should complete synchronously")
             .unwrap();
 
         let scsi_dvd = SimpleScsiDvd::new(Some(disk));
