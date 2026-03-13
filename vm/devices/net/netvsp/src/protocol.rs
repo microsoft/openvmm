@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(feature = "test", allow(dead_code))]
 #![cfg_attr(not(feature = "test"), expect(dead_code))]
 
 use crate::rndisprot;
