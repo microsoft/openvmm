@@ -962,9 +962,11 @@ impl Worker {
             let is_ipv6 = is_ipv6_from_gso || (!is_ipv4_from_gso && is_ipv6_from_eth);
             flags.set_is_ipv4(is_ipv4);
             flags.set_is_ipv6(is_ipv6);
-            if is_ipv4 {
-                flags.set_offload_ip_header_checksum(true);
-            }
+            // Don't set offload_ip_header_checksum here: virtio guests
+            // always compute the IPv4 header checksum themselves (the
+            // virtio CSUM feature only covers L4 checksums). The GSO
+            // path below sets it because hardware backends (e.g. MANA)
+            // need it to know they must compute per-segment checksums.
         }
 
         // GSO (segmentation offload)

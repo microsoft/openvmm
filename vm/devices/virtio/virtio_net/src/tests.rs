@@ -1124,8 +1124,8 @@ fn tx_offload_tcp_checksum() {
         "UDP csum should not be set"
     );
     assert!(
-        meta.flags.offload_ip_header_checksum(),
-        "IPv4 header csum should be set"
+        !meta.flags.offload_ip_header_checksum(),
+        "IPv4 header csum should not be set (virtio guests compute it themselves)"
     );
     assert!(meta.flags.is_ipv4(), "should be IPv4");
     assert!(!meta.flags.is_ipv6(), "should not be IPv6");
