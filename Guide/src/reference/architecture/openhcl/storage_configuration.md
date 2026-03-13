@@ -31,7 +31,7 @@ globally, not per-controller. The key storage-related field is
 
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
-| `scsi_sub_channels` | `u32` | `0` | Maximum sub-channel count for all SCSI controllers. Clamped to 256 at runtime. |
+| `scsi_sub_channels` | `u16` | `0` | Maximum sub-channel count for all SCSI controllers. Clamped to 256 at runtime. |
 | `io_ring_size` | `u32` | `256` | Size of each per-CPU io_uring submission queue in the OpenHCL threadpool. Not StorVSP-specific — affects all async I/O. |
 
 See [StorVSP Channels & Subchannels](../../devices/vmbus/storvsp_channels.md)
@@ -190,7 +190,7 @@ The runtime model and schema enforce several important constraints:
 | `Striped` must carry at least two backing devices | `schema::v1` rejects too few devices |
 | NVMe namespace IDs cannot be `0` or `!0` | `schema::v1` validates `location` for NVMe |
 | NVMe children cannot be DVDs | `schema::v1` rejects `is_dvd` on NVMe |
-| SCSI subchannel count is clamped to 256 | `vtl2_settings_worker.rs`, `scsi_sub_channels.min(256)` |
+| SCSI subchannel count is clamped to 256 | `underhill_core::dispatch::vtl2_settings_worker`, `scsi_sub_channels.min(256)` |
 | IDE can be a guest-visible target but not a VTL2 backing source | `petri::vtl2_settings` and `openvmm_entry::storage_builder` reject IDE backing |
 
 These rules are useful when debugging configuration failures because they tell you whether the problem is in controller selection, child addressing, or backing-device declaration.

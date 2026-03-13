@@ -286,12 +286,15 @@ runtime via the inspect tree — it's stored as an `AtomicU32` and
 exposed through `inspect::AtomicMut`:
 
 ```bash
-# View current poll mode queue depth
-openvmm inspect storvsp/poll_mode_queue_depth
+# View current poll mode queue depth (replace GUID with your instance)
+openvmm inspect vm/scsi:<INSTANCE_ID>/poll_mode_queue_depth
 
 # Change it at runtime (e.g., to 8)
-openvmm inspect storvsp/poll_mode_queue_depth --update 8
+openvmm inspect vm/scsi:<INSTANCE_ID>/poll_mode_queue_depth --update 8
 ```
+
+To find the instance ID, run `inspect vm` and look for the
+`scsi:<guid>` entry.
 
 ```mermaid
 stateDiagram-v2
@@ -455,39 +458,53 @@ due to host-side scheduling, not protocol incompatibility.
 
 ## Inspect
 
-StorVSP exposes channel state through the inspect tree:
+StorVSP exposes channel state through the inspect tree. The inspect
+path is `vm/scsi:<instance_id>`, where the instance ID is a GUID
+assigned to the SCSI controller (visible via `inspect vm`).
 
 ```text
-storvsp/
+scsi:ba6163d9-04a1-4d29-b605-72e2ffb1dc7f/
   channels/
     0/                          # primary channel
-      state: ready
-      version: Win8
+      state: "ready"
+      version: "blue"
       subchannel_count: 2
       pending_packets: 0
-      stats: { ... }
-      ring: { ... }
       max_io_queue_depth: 256
+      io: _
+      ring: _
+      stats: _
+      driver: _
     1/                          # subchannel 1
-      pending_packets: 3
-      io/
-        0/
-          transaction_id: 42
-          address: 0:0:0
-          operation: ScsiCommand(Read16)
-      stats: { ... }
-      ring: { ... }
+      pending_packets: 0
       max_io_queue_depth: 256
+      io: _
+      ring: _
+      stats: _
+      driver: _
+    2/                          # subchannel 2
+      pending_packets: 0
+      max_io_queue_depth: 256
+      io: _
+      ring: _
+      stats: _
+      driver: _
   disks/
     0:0:0/
-      disk: { ... }
+      disk_id: <guid>
+      logical_sector_size: 512
+      physical_sector_size: 512
+      sector_count: 438464
+      backend: _
   poll_mode_queue_depth: 1
 ```
 
-The primary channel (index 0) shows the negotiated protocol version
-and subchannel count. All channels show pending packets, per-I/O
-state, and ring buffer statistics.
+The primary channel (index 0) shows the negotiated protocol `version`
+(e.g., "blue" for the latest) and the active `subchannel_count`.
+Subchannel entries don't repeat these fields — they only appear on
+the primary. All channels show `pending_packets`, `max_io_queue_depth`,
+and expandable `io`, `ring`, and `stats` sub-trees.
 
-At the VMBus level, subchannels appear under:
-`vmbus/<instance_id>/subchannels/<n>` — showing offer state, channel
-ID, and connection state.
+At the VMBus level, channel state appears under:
+`vmbus/channels/<channel_id>` — showing offer state, connection info,
+and per-channel interrupt targeting.
