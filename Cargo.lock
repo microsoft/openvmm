@@ -4527,7 +4527,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "fs-err",
  "futures",
  "guestmem",
  "inspect",
