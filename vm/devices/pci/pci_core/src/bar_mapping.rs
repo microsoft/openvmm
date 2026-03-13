@@ -70,10 +70,7 @@ impl BarMappings {
             if address >= bar_mapping.base_address
                 && address - bar_mapping.base_address < bar_mapping.len
             {
-                return Some((
-                    bar_mapping.index,
-                    (address - bar_mapping.base_address).try_into().unwrap(),
-                ));
+                return Some((bar_mapping.index, address - bar_mapping.base_address));
             }
         }
         None

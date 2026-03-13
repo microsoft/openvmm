@@ -259,11 +259,14 @@ impl NvmeFaultController {
             if (db_id << DOORBELL_STRIDE_BITS) != base {
                 return IoResult::Err(InvalidRegister);
             }
+            let Ok(db_id) = u16::try_from(db_id) else {
+                return IoResult::Err(InvalidRegister);
+            };
             let Ok(data) = data.try_into() else {
                 return IoResult::Err(IoError::InvalidAccessSize);
             };
             let value = u32::from_ne_bytes(data);
-            self.workers.doorbell(db_id as u16, value);
+            self.workers.doorbell(db_id, value);
             return IoResult::Ok;
         }
 
