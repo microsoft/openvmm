@@ -66,11 +66,11 @@ enum InterruptKind {
 
 /// BAR0 layout: common cfg is at offset 0, followed by notify, ISR, and
 /// device-specific config regions.
-const BAR0_NOTIFY_OFFSET: u16 = VIRTIO_PCI_COMMON_CFG_SIZE;
-const BAR0_NOTIFY_SIZE: u16 = 4;
-const BAR0_ISR_OFFSET: u16 = BAR0_NOTIFY_OFFSET + BAR0_NOTIFY_SIZE;
-const BAR0_ISR_SIZE: u16 = 4;
-const BAR0_DEVICE_CFG_OFFSET: u16 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
+const BAR0_NOTIFY_OFFSET: u64 = VIRTIO_PCI_COMMON_CFG_SIZE;
+const BAR0_NOTIFY_SIZE: u64 = 4;
+const BAR0_ISR_OFFSET: u64 = BAR0_NOTIFY_OFFSET + BAR0_NOTIFY_SIZE;
+const BAR0_ISR_SIZE: u64 = 4;
+const BAR0_DEVICE_CFG_OFFSET: u64 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
 
 /// Run a virtio device over PCI
 #[derive(InspectMut)]
@@ -299,7 +299,7 @@ impl VirtioPciDevice {
         }
     }
 
-    fn read_u32(&mut self, offset: u16) -> u32 {
+    fn read_u32(&mut self, offset: u64) -> u32 {
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
         match VirtioPciCommonCfg(offset) {
@@ -408,7 +408,7 @@ impl VirtioPciDevice {
         }
     }
 
-    fn write_u32(&mut self, address: u64, offset: u16, val: u32) {
+    fn write_u32(&mut self, address: u64, offset: u64, val: u32) {
         assert!(offset & 3 == 0);
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
@@ -612,7 +612,7 @@ impl VirtioPciDevice {
 }
 
 impl VirtioPciDevice {
-    fn read_bar_u32(&mut self, bar: u8, offset: u16) -> u32 {
+    fn read_bar_u32(&mut self, bar: u8, offset: u64) -> u32 {
         match bar {
             0 => self.read_u32(offset),
             2 => {
@@ -626,7 +626,7 @@ impl VirtioPciDevice {
         }
     }
 
-    fn write_bar_u32(&mut self, address: u64, bar: u8, offset: u16, value: u32) {
+    fn write_bar_u32(&mut self, address: u64, bar: u8, offset: u64, value: u32) {
         match bar {
             0 => self.write_u32(address, offset, value),
             2 => {

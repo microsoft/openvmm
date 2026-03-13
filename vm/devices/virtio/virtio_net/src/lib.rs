@@ -243,7 +243,7 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&self, offset: u64) -> u32 {
         match offset {
             0 => u32::from_le_bytes(self.registers.mac[..4].try_into().unwrap()),
             4 => {
@@ -262,7 +262,7 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {}
 
     fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         let mut queue_resources: Vec<_> = resources.queues.into_iter().collect();

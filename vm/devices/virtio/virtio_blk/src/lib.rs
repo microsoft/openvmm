@@ -323,7 +323,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&self, offset: u64) -> u32 {
         // The transport reads the device config space as a sequence of u32s.
         // We serialize VirtioBlkConfig to bytes and return the requested
         // 4-byte window. Three cases:
@@ -345,7 +345,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {
         // Config space is read-only for virtio-blk.
     }
 

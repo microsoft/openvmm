@@ -113,7 +113,7 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&self, offset: u64) -> u32 {
         let offset = offset as usize;
         let config = self.config.as_bytes();
         if offset < config.len() {
@@ -127,7 +127,7 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, offset: u16, val: u32) {
+    fn write_registers_u32(&mut self, offset: u64, val: u32) {
         tracing::warn!(offset, val, "[virtiofs] Unknown write",);
     }
 

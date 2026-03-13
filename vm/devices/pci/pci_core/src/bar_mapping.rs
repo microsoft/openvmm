@@ -65,7 +65,7 @@ impl BarMappings {
     }
 
     /// Finds a BAR + offset by address.
-    pub fn find(&self, address: u64) -> Option<(u8, u16)> {
+    pub fn find(&self, address: u64) -> Option<(u8, u64)> {
         for bar_mapping in self.0.iter() {
             if address >= bar_mapping.base_address
                 && address - bar_mapping.base_address < bar_mapping.len

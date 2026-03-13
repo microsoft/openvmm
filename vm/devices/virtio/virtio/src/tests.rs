@@ -1197,11 +1197,11 @@ impl VirtioDevice for FailingTestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    fn read_registers_u32(&self, _offset: u64) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {}
 
     fn enable(&mut self, _resources: Resources) -> anyhow::Result<()> {
         anyhow::bail!("intentional enable failure for testing")
@@ -1244,11 +1244,11 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    fn read_registers_u32(&self, _offset: u64) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {}
 
     fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         self.workers = resources
