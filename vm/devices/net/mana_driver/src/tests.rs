@@ -232,7 +232,7 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
         "vf_reconfiguration_pending should be false"
     );
 
-    // Trigger the reconfig event
+    // Trigger the reconfig event (EQE 135).
     gdma.generate_reconfig_vf_event().await.unwrap();
     gdma.process_all_eqs();
     assert!(
