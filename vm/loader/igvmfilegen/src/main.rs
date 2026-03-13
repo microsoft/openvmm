@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 
+mod diff;
 mod file_loader;
 mod identity_mapping;
 mod signed_measurement;
@@ -55,6 +56,27 @@ enum Options {
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
     },
+    /// Diff two IGVM files by extracting parts and running diffoscope
+    Diff {
+        /// First IGVM file
+        #[clap(short, long)]
+        left: PathBuf,
+        /// Second IGVM file
+        #[clap(short, long)]
+        right: PathBuf,
+        /// Map file (.bin.map) for the first IGVM file
+        #[clap(long)]
+        left_map: PathBuf,
+        /// Map file (.bin.map) for the second IGVM file
+        #[clap(long)]
+        right_map: PathBuf,
+        /// Keep extracted temp directories after diffoscope exits
+        #[clap(long)]
+        keep_extracted: bool,
+        /// Additional arguments to pass to diffoscope
+        #[clap(last = true)]
+        diffoscope_args: Vec<String>,
+    },
     /// Build an IGVM file according to a manifest
     Manifest {
         /// Config manifest file path
@@ -90,6 +112,21 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match opts {
+        Options::Diff {
+            left,
+            right,
+            left_map,
+            right_map,
+            keep_extracted,
+            diffoscope_args,
+        } => diff::diff_igvm_files(
+            &left,
+            &right,
+            &left_map,
+            &right_map,
+            keep_extracted,
+            &diffoscope_args,
+        ),
         Options::Dump { file_path } => {
             let image = fs_err::read(file_path).context("reading input file")?;
             let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_bytes())

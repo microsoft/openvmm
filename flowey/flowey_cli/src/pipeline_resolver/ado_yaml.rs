@@ -78,6 +78,8 @@ pub fn ado_yaml(
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
         job_command_wrappers: BTreeMap::new(),
+        job_platforms: BTreeMap::new(),
+        job_archs: BTreeMap::new(),
     };
 
     let mut ado_jobs = Vec::new();
@@ -130,6 +132,11 @@ pub fn ado_yaml(
                 .job_command_wrappers
                 .insert(job_idx.index(), wrapper_kind.clone());
         }
+
+        pipeline_static_db
+            .job_platforms
+            .insert(job_idx.index(), platform);
+        pipeline_static_db.job_archs.insert(job_idx.index(), arch);
 
         let mut ado_steps = Vec::new();
 

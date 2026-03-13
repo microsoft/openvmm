@@ -16,7 +16,7 @@ pub struct LocalRunArgs {
 
     /// Run builds with --locked
     #[clap(long)]
-    locked: bool,
+    pub locked: bool,
 
     /// Automatically install all required dependencies
     #[clap(long)]

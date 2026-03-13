@@ -13,6 +13,7 @@ use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use flowey_lib_hvlite::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
 use flowey_lib_hvlite::run_cargo_build::common::CommonProfile;
@@ -833,6 +834,102 @@ impl IntoPipeline for CheckinGatesCli {
                     .finish();
                 all_jobs.push(job);
             }
+        }
+
+        // emit reproducible openhcl build job (nix-based)
+        //
+        // This job mirrors the local `build-reproducible` pipeline, running
+        // inside `nix-shell --pure` so that the resulting IGVM is
+        // byte-for-byte reproducible.
+        if !matches!(backend_hint, PipelineBackendHint::Ado) {
+            let (pub_openhcl_igvm, use_openhcl_igvm) =
+                pipeline.new_artifact("x64-cvm-reproducible-openhcl-igvm");
+            let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
+                pipeline.new_artifact("x64-cvm-reproducible-openhcl-igvm-extras");
+
+            // Always use the ship profile for reproducible builds so that
+            // codegen-units=1 is set, which is required for deterministic
+            // DWARF debug info generation.
+            let openvmm_hcl_profile = OpenvmmHclBuildProfile::OpenvmmHclShip;
+
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix),
+                    FlowArch::X86_64,
+                    "build reproducible openhcl [x64-cvm-linux-nix]",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .set_command_wrapper(flowey::shell::CommandWrapperKind::NixShell {
+                    path: Some(crate::repo_root().join("shell.nix")),
+                })
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_openhcl_igvm_from_recipe_nix::Params {
+                        arch: CommonArch::X86_64,
+                        kernel_kind: OpenhclKernelPackageKind::Cvm,
+                        igvm_files: vec![OpenhclIgvmBuildParams {
+                            profile: openvmm_hcl_profile,
+                            recipe: OpenhclIgvmRecipe::X64Cvm,
+                            custom_target: Some(CommonTriple::Custom(openhcl_musl_target(
+                                CommonArch::X86_64,
+                            ))),
+                        }],
+                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
+                        artifact_dir_openhcl_igvm_extras: ctx
+                            .publish_artifact(pub_openhcl_igvm_extras),
+                        artifact_openhcl_verify_size_baseline: None,
+                        done: ctx.new_done_handle(),
+                    }
+                })
+                .finish();
+
+            all_jobs.push(job);
+
+            // Verify that `cargo xflowey build-reproducible` produces
+            // byte-identical output to the node-based build above.
+            // This is split into two jobs so the local build artifact is
+            // published before the comparison runs.
+            let (pub_local_igvm, use_local_igvm) =
+                pipeline.new_artifact("x64-cvm-local-reproducible-openhcl-igvm");
+            let (pub_local_igvm_extras, _use_local_igvm_extras) =
+                pipeline.new_artifact("x64-cvm-local-reproducible-openhcl-igvm-extras");
+
+            let local_build_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix),
+                    FlowArch::X86_64,
+                    "build local reproducible openhcl [x64-cvm-linux-nix]",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::test_reproducible_build::Request {
+                        recipe: "x64-cvm".into(),
+                        artifact_dir_local_igvm: ctx.publish_artifact(pub_local_igvm),
+                        artifact_dir_local_igvm_extras: ctx.publish_artifact(pub_local_igvm_extras),
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .finish();
+
+            all_jobs.push(local_build_job);
+
+            let verify_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "verify reproducible openhcl [x64-cvm-linux-nix]",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                .dep_on(
+                    |ctx| flowey_lib_hvlite::_jobs::check_reproducible_build::Request {
+                        artifact_dir_a: ctx.use_artifact(&use_openhcl_igvm),
+                        artifact_dir_b: ctx.use_artifact(&use_local_igvm),
+                        file_names: vec!["openhcl-cvm.bin".into()],
+                        done: ctx.new_done_handle(),
+                    },
+                )
+                .finish();
+
+            all_jobs.push(verify_job);
         }
 
         // Emit clippy + unit-test jobs

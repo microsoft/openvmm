@@ -93,6 +93,36 @@ let
     let kernelFile = if arch == "x86_64" then "vmlinux" else "Image";
     in "--use-local-deps --custom-openvmm-deps ${baseDeps.openvmm_deps} --custom-uefi=${baseDeps.uefi_mu_msvm}/MSVM.fd --custom-kernel ${kernel}/${kernelFile} --custom-kernel-modules ${kernel}/modules --custom-protoc ${protoc}";
 
+  # Rustflags components (mirroring .cargo/config.toml target.<cfg> sections).
+  # Composed into per-target RUSTFLAGS_* env vars below since RUSTFLAGS
+  # overrides all config.toml target rustflags.
+  remapCargoRegistry = "--remap-path-prefix=${builtins.getEnv "HOME"}/.cargo/registry=";
+  remapCargoGit = "--remap-path-prefix=${builtins.getEnv "HOME"}/.cargo/git=";
+
+  commonRustflags = [
+    "-Cforce-frame-pointers=yes"
+    "-Csymbol-mangling-version=v0"
+    remapCargoRegistry
+    remapCargoGit
+  ];
+
+  aarch64Rustflags = [
+    "-Ctarget-feature=+lse,+neon"
+  ];
+
+  muslRustflags = [
+    "-Clink-self-contained=n"
+    "-Ctarget-feature=+crt-static"
+    "-Clink-arg=-Wl,-z,pack-relative-relocs"
+    "-Cforce-unwind-tables=no"
+  ];
+
+  aarch64MuslRustflags = [
+    "-Ctarget-feature=-sve,-sve2"
+  ];
+
+  mkRustflags = flags: builtins.concatStringsSep " " flags;
+
 in pkgs.mkShell {
   nativeBuildInputs = [
     rust
@@ -166,6 +196,23 @@ in pkgs.mkShell {
   NIX_KERNEL_X64_CVM_DEV = "${x64KernelCvmDev}";
   NIX_KERNEL_AARCH64 = "${aarch64Kernel}";
   NIX_KERNEL_AARCH64_DEV = "${aarch64KernelDev}";
+
+  # Per-target RUSTFLAGS (mirrors .cargo/config.toml target.<cfg> sections
+  # plus --remap-path-prefix for reproducible builds). Setting RUSTFLAGS
+  # overrides all config.toml rustflags, so all flags are composed here.
+  # Note: the repo source path remap (--remap-path-prefix=<repo>=) is NOT
+  # included here because in CI, shell.nix lives in the flowey_bootstrap
+  # checkout, not the actual build checkout. The repo path remap is added
+  # dynamically by init_cross_build / run_cargo_build instead.
+  # Default RUSTFLAGS includes a local repo remap for manual `cargo build`.
+  RUSTFLAGS = mkRustflags (commonRustflags
+    ++ (if hostArch == "aarch64" then aarch64Rustflags else [])
+    ++ ["--remap-path-prefix=${toString ./.}="]);
+  RUSTFLAGS_X64 = mkRustflags commonRustflags;
+  RUSTFLAGS_X64_MUSL = mkRustflags (commonRustflags ++ muslRustflags);
+  RUSTFLAGS_AARCH64 = mkRustflags (commonRustflags ++ aarch64Rustflags);
+  RUSTFLAGS_AARCH64_MUSL = mkRustflags (commonRustflags
+    ++ aarch64Rustflags ++ muslRustflags ++ aarch64MuslRustflags);
 
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;

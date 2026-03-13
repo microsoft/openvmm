@@ -170,11 +170,39 @@ impl FlowNode for Node {
                 }
             }
 
-            ctx.emit_minor_rust_step("inject cross env", |ctx| {
+            // When running under Nix, inject the correct per-target RUSTFLAGS
+            // from the shell.nix-provided env vars (RUSTFLAGS_X64, RUSTFLAGS_X64_MUSL,
+            // etc.) so that --remap-path-prefix and target-specific flags are applied.
+            // This overrides any ambient RUSTFLAGS from the nix-shell environment.
+            let nix_rustflags_env = if matches!(
+                host_platform,
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+            ) {
+                let name = match (target.architecture, target.environment) {
+                    (Architecture::Aarch64(_), target_lexicon::Environment::Musl) => {
+                        "RUSTFLAGS_AARCH64_MUSL"
+                    }
+                    (Architecture::Aarch64(_), _) => "RUSTFLAGS_AARCH64",
+                    (_, target_lexicon::Environment::Musl) => "RUSTFLAGS_X64_MUSL",
+                    _ => "RUSTFLAGS_X64",
+                };
+                Some(name.to_string())
+            } else {
+                None
+            };
+
+            ctx.emit_rust_step("inject cross env", |ctx| {
                 pre_build_deps.claim(ctx);
                 let injected_env_write = injected_env_write.claim(ctx);
                 move |rt| {
+                    let mut injected_env = injected_env;
+                    if let Some(rustflags_env) = &nix_rustflags_env {
+                        let rustflags =
+                            flowey::shell_cmd!(rt, "printenv {rustflags_env}").read()?;
+                        injected_env.insert("RUSTFLAGS".to_string(), rustflags);
+                    }
                     rt.write(injected_env_write, &injected_env);
+                    Ok(())
                 }
             });
         }

@@ -78,6 +78,12 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                 false,
             ));
+            ctx.req(flowey_lib_common::install_rust::Request::SkipInstall(
+                matches!(
+                    ctx.platform(),
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                ),
+            ));
             let token = ctx.get_gh_context_var().global().token();
             ctx.req(flowey_lib_common::use_gh_cli::Request::WithAuth(
                 flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(token),
@@ -93,6 +99,12 @@ impl SimpleFlowNode for Node {
             ctx.req(flowey_lib_common::install_rust::Request::AutoInstall(true));
             ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                 false,
+            ));
+            ctx.req(flowey_lib_common::install_rust::Request::SkipInstall(
+                matches!(
+                    ctx.platform(),
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                ),
             ));
         } else if matches!(ctx.backend(), FlowBackend::Local) {
             let local_only =
@@ -114,6 +126,12 @@ impl SimpleFlowNode for Node {
                 ));
                 ctx.req(flowey_lib_common::install_rust::Request::IgnoreVersion(
                     ignore_rust_version,
+                ));
+                ctx.req(flowey_lib_common::install_rust::Request::SkipInstall(
+                    matches!(
+                        ctx.platform(),
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                    ),
                 ));
             }
 
