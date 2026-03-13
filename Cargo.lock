@@ -2032,7 +2032,6 @@ name = "flowey_lib_common"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "dirs",
  "flowey",
  "fs-err",
  "home",
