@@ -157,7 +157,8 @@ pub struct TooManySubchannels;
 impl ChannelControl {
     /// Enables the first `count` subchannels.
     ///
-    /// If more than `count` subchannels are already enabled, this does nothing.
+    /// If `count` or more subchannels are already enabled, this does
+    /// nothing (the count only grows, never shrinks).
     ///
     /// Fails with [`TooManySubchannels`] if `count` exceeds the maximum
     /// returned by [`VmbusDevice::max_subchannels`]. Callers should map
