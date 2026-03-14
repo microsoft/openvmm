@@ -224,12 +224,12 @@ const DEP_REVIEW_TEAM = "openvmm-dependency-reviewers";
 async function run(github, context, core) {
   const prNumber = context.payload.pull_request.number;
   const baseSha = context.payload.pull_request.base.sha;
-  const prHead = context.payload.pull_request.head;
 
   // Step 1: Check if Cargo.lock was modified
   let allFiles = [];
   let page = 1;
-  while (page <= 30) {
+  const MAX_PAGES = 30;
+  while (page <= MAX_PAGES) {
     const { data: files } = await github.rest.pulls.listFiles({
       owner: context.repo.owner,
       repo: context.repo.repo,
@@ -243,7 +243,14 @@ async function run(github, context, core) {
     page++;
   }
 
-  const lockfileChanged = allFiles.some((f) => f.filename === "Cargo.lock");
+  if (page > MAX_PAGES) {
+    core.warning(
+      `PR has more than ${MAX_PAGES * 100} changed files — ` +
+        `Cargo.lock detection may be incomplete. Assuming it changed.`
+    );
+  }
+
+  const lockfileChanged = page > MAX_PAGES || allFiles.some((f) => f.filename === "Cargo.lock");
   if (!lockfileChanged) {
     console.log("Cargo.lock not modified — nothing to review.");
 
@@ -265,10 +272,12 @@ async function run(github, context, core) {
   }
 
   // Step 2: Fetch base and PR Cargo.lock via API
-  async function fetchFile(owner, repo, path, ref) {
+  // Always fetch from the base repo — for forked PRs, use the merge ref
+  // (refs/pull/N/head) so we don't need access to the fork itself.
+  async function fetchFile(path, ref) {
     const { data } = await github.rest.repos.getContent({
-      owner,
-      repo,
+      owner: context.repo.owner,
+      repo: context.repo.repo,
       path,
       ref,
     });
@@ -278,18 +287,10 @@ async function run(github, context, core) {
     return Buffer.from(data.content, "base64").toString("utf8");
   }
 
-  const baseContent = await fetchFile(
-    context.repo.owner,
-    context.repo.repo,
-    "Cargo.lock",
-    baseSha
-  );
-  const prContent = await fetchFile(
-    prHead.repo.owner.login,
-    prHead.repo.name,
-    "Cargo.lock",
-    prHead.sha
-  );
+  const prRef = `refs/pull/${prNumber}/head`;
+
+  const baseContent = await fetchFile("Cargo.lock", baseSha);
+  const prContent = await fetchFile("Cargo.lock", prRef);
 
   // Step 3: Diff external deps
   const baseDeps = parseExternalDeps(baseContent);
@@ -305,18 +306,8 @@ async function run(github, context, core) {
   if (fs.existsSync(policyPath)) {
     const policy = JSON.parse(fs.readFileSync(policyPath, "utf8"));
 
-    const baseManifest = await fetchFile(
-      context.repo.owner,
-      context.repo.repo,
-      "Cargo.toml",
-      baseSha
-    );
-    const prManifest = await fetchFile(
-      prHead.repo.owner.login,
-      prHead.repo.name,
-      "Cargo.toml",
-      prHead.sha
-    );
+    const baseManifest = await fetchFile("Cargo.toml", baseSha);
+    const prManifest = await fetchFile("Cargo.toml", prRef);
 
     const basePathMap = parseCratePathMap(baseManifest);
     const prPathMap = parseCratePathMap(prManifest);
@@ -387,10 +378,12 @@ async function localMain() {
       "Usage:\n" +
         "  node dep-review.js --check              Compare working tree against merge-base with origin/main\n" +
         "  node dep-review.js --check <upstream>    Compare working tree against merge-base with <upstream>\n" +
-        "  node dep-review.js --base <file> --pr <file> [--manifest <Cargo.toml>] [--policy <dep-policy.json>]\n" +
+        "  node dep-review.js --base <file> --pr <file> [--manifest <Cargo.toml> --policy <dep-policy.json>]\n" +
         "\nThe --check mode automatically finds the merge base, reads the base\n" +
         "Cargo.lock/Cargo.toml from git, and compares against the working tree.\n" +
-        "It also auto-discovers dep-policy.json relative to the script location."
+        "It also auto-discovers dep-policy.json relative to the script location.\n" +
+        "\nIn --base/--pr mode, --manifest and --policy must be specified together\n" +
+        "for containment policy checks (both are optional if you only want dep diff)."
     );
     process.exit(0);
   }
