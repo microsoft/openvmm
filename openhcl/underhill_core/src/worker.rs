@@ -32,6 +32,8 @@ use crate::emuplat::local_clock::UnderhillLocalClock;
 use crate::emuplat::netvsp::HclNetworkVFManager;
 use crate::emuplat::netvsp::HclNetworkVFManagerEndpointInfo;
 use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
+use crate::emuplat::netvsp::NetworkAdapterIndex;
+use crate::emuplat::netvsp::NetworkAdapterIndexSavedState;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::non_volatile_store::VmgsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
@@ -679,6 +681,8 @@ struct UhVmNetworkSettings {
     vp_count: usize,
     #[inspect(skip)]
     dma_mode: net_mana::GuestDmaMode,
+    #[inspect(skip)]
+    network_adapter_index: Arc<Mutex<NetworkAdapterIndex>>,
 }
 
 impl UhVmNetworkSettings {
@@ -745,7 +749,7 @@ impl UhVmNetworkSettings {
             self.begin_vf_teardown(vf_managers, remove_vtl0_vf);
 
         // Close vmbus channels and drop all of the NICs.
-        let mut endpoints: Vec<_> =
+        let mut endpoints_info: Vec<_> =
             join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
                 async {
                     let nic = channel.remove().await.revoke().await;
@@ -755,6 +759,14 @@ impl UhVmNetworkSettings {
                 .await
             }))
             .await;
+
+        let mut endpoints: Vec<_> = endpoints_info
+            .drain(..)
+            .map(|(endpoint, mac_address)| {
+                self.network_adapter_index.lock().remove(&mac_address);
+                endpoint
+            })
+            .collect();
 
         let shutdown_vfs = join_all(vf_managers.drain(..).map(
             async |(instance_id, mut manager)| {
@@ -857,6 +869,7 @@ impl UhVmNetworkSettings {
             keepalive_mode,
             dma_clients,
             saved_mana_state,
+            self.network_adapter_index.clone(),
         )
         .await?;
 
@@ -1076,18 +1089,34 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         Ok(params)
     }
 
-    async fn save(&mut self) -> Option<Vec<ManaSavedState>> {
+    async fn save(
+        &mut self,
+        keep_vf_alive: bool,
+    ) -> (
+        Option<Vec<ManaSavedState>>,
+        Option<Vec<NetworkAdapterIndexSavedState>>,
+    ) {
+        // Save the network adapter index state prior to removing the network adapters
+        // from the adapter indexes.
+        let network_adapter_index_save_state = self.network_adapter_index.lock().save();
+
+        // Do not start VF teardown if VF save state is not requested. The teardown will
+        // happen as part of the regular process.
+        if !keep_vf_alive {
+            return (None, network_adapter_index_save_state);
+        }
+
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
 
         // Nothing to save
         if vf_managers.is_empty() {
-            return None;
+            return (None, network_adapter_index_save_state);
         }
 
         let (vf_managers, mut nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
 
-        let mut endpoints: Vec<_> =
+        let mut endpoints_info: Vec<_> =
             join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
                 async {
                     let nic = channel.remove().await.revoke().await;
@@ -1097,6 +1126,14 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 .await
             }))
             .await;
+
+        let mut endpoints: Vec<_> = endpoints_info
+            .drain(..)
+            .map(|(endpoint, mac_address)| {
+                self.network_adapter_index.lock().remove(&mac_address);
+                endpoint
+            })
+            .collect();
 
         let run_endpoints = async {
             loop {
@@ -1118,7 +1155,10 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         let state = (run_endpoints, save_vf_managers).race().await;
 
         // Discard any vf_managers that failed to return valid save state.
-        Some(state.into_iter().flatten().collect())
+        (
+            Some(state.into_iter().flatten().collect()),
+            network_adapter_index_save_state,
+        )
     }
 }
 
@@ -3390,6 +3430,10 @@ async fn new_underhill_vm(
         anyhow::bail!("built without vpci support");
     }
 
+    let network_adapter_index = Arc::new(Mutex::new(NetworkAdapterIndex::restore(
+        servicing_state.network_adapter_index,
+    )));
+
     // Networking
     let mut uh_network_settings = UhVmNetworkSettings {
         nics: Vec::new(),
@@ -3401,7 +3445,9 @@ async fn new_underhill_vm(
         } else {
             net_mana::GuestDmaMode::DirectDma
         },
+        network_adapter_index: network_adapter_index.clone(),
     };
+
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());
     if !controllers.mana.is_empty() {
         let _span = tracing::info_span!("network_settings", CVM_ALLOWED).entered();
