@@ -152,7 +152,11 @@ impl VmTaskDriverBuilder<'_> {
     /// The strength of this guarantee depends on the backend:
     ///
     /// - **OpenHCL threadpool backend:** strong — tasks run on a
-    ///   CPU-affinitized thread for the target VP.
+    ///   CPU-affinitized thread for the target VP, once the VP is
+    ///   online. Before that (e.g., sidecar VPs not yet onlined),
+    ///   work may run on a different CPU. Use
+    ///   [`VmTaskDriver::is_target_vp_ready`] /
+    ///   [`VmTaskDriver::wait_target_vp_ready`] to check.
     /// - **Thread backend (OpenVMM):** ignored — the thread backend does
     ///   not use `run_on_target`. Whether a dedicated thread is created
     ///   depends solely on whether [`target_vp`](Self::target_vp) is set.
