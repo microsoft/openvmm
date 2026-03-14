@@ -66,11 +66,11 @@ impl VirtioDevice for VirtioRngDevice {
         }
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    fn read_registers_u32(&self, _offset: u64) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {}
 
     fn enable(&mut self, mut resources: Resources) -> anyhow::Result<()> {
         let queue_resources = resources.queues.remove(0);

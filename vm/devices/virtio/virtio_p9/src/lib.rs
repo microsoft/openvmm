@@ -83,7 +83,7 @@ impl VirtioDevice for VirtioPlan9Device {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&self, offset: u64) -> u32 {
         assert!(self.tag.len().is_multiple_of(4));
         assert!(offset.is_multiple_of(4));
 
@@ -99,7 +99,7 @@ impl VirtioDevice for VirtioPlan9Device {
         }
     }
 
-    fn write_registers_u32(&mut self, offset: u16, val: u32) {
+    fn write_registers_u32(&mut self, offset: u64, val: u32) {
         tracing::warn!(offset, val, "[VIRTIO 9P] Unknown write",);
     }
 
