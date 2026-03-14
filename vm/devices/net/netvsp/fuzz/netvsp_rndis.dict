@@ -1,0 +1,401 @@
+# Shared dictionary for NetVSP/NVSP/RNDIS fuzz targets.
+#
+# Usage example:
+#   cargo xtask fuzz run fuzz_netvsp_interop -- -- -dict=vm/devices/net/netvsp/fuzz/netvsp_rndis.dict
+
+# =============================================================================
+# NVSP PROTOCOL VERSION NUMBERS (little-endian u32)
+# =============================================================================
+"nvsp_version_v1"="\x00\x00\x02\x00"
+"nvsp_version_v2"="\x02\x00\x03\x00"
+"nvsp_version_v4"="\x00\x00\x04\x00"
+"nvsp_version_v5"="\x00\x00\x05\x00"
+"nvsp_version_v6"="\x00\x00\x06\x00"
+"nvsp_version_v61"="\x01\x00\x06\x00"
+"nvsp_version_invalid"="\xFF\xFF\xFF\xFF"
+
+# =============================================================================
+# NVSP MESSAGE TYPE dwords (little-endian u32)
+# =============================================================================
+# V0 / core messages
+"nvsp_msg_none"="\x00\x00\x00\x00"
+"nvsp_msg_init"="\x01\x00\x00\x00"
+"nvsp_msg_init_complete"="\x02\x00\x00\x00"
+
+# V1 messages (100..108)
+"nvsp_msg_send_ndis_version"="\x64\x00\x00\x00"
+"nvsp_msg_send_receive_buffer"="\x65\x00\x00\x00"
+"nvsp_msg_send_receive_buffer_complete"="\x66\x00\x00\x00"
+"nvsp_msg_revoke_receive_buffer"="\x67\x00\x00\x00"
+"nvsp_msg_send_send_buffer"="\x68\x00\x00\x00"
+"nvsp_msg_send_send_buffer_complete"="\x69\x00\x00\x00"
+"nvsp_msg_revoke_send_buffer"="\x6A\x00\x00\x00"
+"nvsp_msg_send_rndis_packet"="\x6B\x00\x00\x00"
+"nvsp_msg_send_rndis_packet_complete"="\x6C\x00\x00\x00"
+
+# V2 messages (109..127) — only send_ndis_config (125) is implemented
+"nvsp_msg_send_chimney_delegated_buffer"="\x6D\x00\x00\x00"
+"nvsp_msg_send_ndis_config"="\x7D\x00\x00\x00"
+
+# V4 messages
+"nvsp_msg_send_vf_association"="\x80\x00\x00\x00"
+"nvsp_msg_switch_data_path"="\x81\x00\x00\x00"
+
+# V5 messages (131..134)
+"nvsp_msg_oid_query_ex"="\x83\x00\x00\x00"
+"nvsp_msg_oid_query_ex_complete"="\x84\x00\x00\x00"
+"nvsp_msg_sub_channel"="\x85\x00\x00\x00"
+"nvsp_msg_send_indirection_table"="\x86\x00\x00\x00"
+
+# V6 messages (135..136)
+"nvsp_msg_pd_api"="\x87\x00\x00\x00"
+"nvsp_msg_pd_post_batch"="\x88\x00\x00\x00"
+
+# =============================================================================
+# NVSP STATUS VALUES (little-endian u32)
+# =============================================================================
+"nvsp_status_none"="\x00\x00\x00\x00"
+"nvsp_status_success"="\x01\x00\x00\x00"
+"nvsp_status_failure"="\x02\x00\x00\x00"
+"nvsp_status_invalid_rndis_packet"="\x05\x00\x00\x00"
+"nvsp_status_busy"="\x06\x00\x00\x00"
+"nvsp_status_protocol_version_unsupported"="\x07\x00\x00\x00"
+
+# =============================================================================
+# NVSP FIELD VALUES
+# =============================================================================
+"nvsp_channel_data"="\x00\x00\x00\x00"
+"nvsp_channel_control"="\x01\x00\x00\x00"
+"nvsp_data_path_synthetic"="\x00\x00\x00\x00"
+"nvsp_data_path_vf"="\x01\x00\x00\x00"
+"nvsp_subchannel_op_none"="\x00\x00\x00\x00"
+"nvsp_subchannel_op_allocate"="\x01\x00\x00\x00"
+"nvsp_section_index_direct"="\xFF\xFF\xFF\xFF"
+
+# NVSP packet sizes
+"nvsp_packet_size_v1"="\x1C\x00\x00\x00"
+"nvsp_packet_size_v61"="\x28\x00\x00\x00"
+
+# Operational status
+"nvsp_op_status_ok"="\x00\x00\x00\x00"
+"nvsp_op_status_degraded"="\x01\x00\x00\x00"
+"nvsp_op_status_nonrecoverable"="\x02\x00\x00\x00"
+"nvsp_op_status_no_contact"="\x03\x00\x00\x00"
+"nvsp_op_status_lost_comm"="\x04\x00\x00\x00"
+
+# =============================================================================
+# Canonical NVSP handshake payloads (header + body, 8-byte aligned)
+# =============================================================================
+"nvsp_pkt_init_v5_v6"="\x01\x00\x00\x00\x00\x00\x05\x00\x00\x00\x06\x00\x00\x00\x00\x00"
+"nvsp_pkt_init_v61"="\x01\x00\x00\x00\x01\x00\x06\x00\x00\x00\x06\x00\x00\x00\x00\x00"
+"nvsp_pkt_init_v1"="\x01\x00\x00\x00\x00\x00\x02\x00\x00\x00\x02\x00\x00\x00\x00\x00"
+"nvsp_pkt_ndis_config_mtu1500"="\x7D\x00\x00\x00\xDC\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_ndis_config_sriov"="\x7D\x00\x00\x00\xDC\x05\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_ndis_version_6_30"="\x64\x00\x00\x00\x06\x00\x00\x00\x1E\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_send_receive_buffer_gpadl1"="\x65\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_send_send_buffer_gpadl2"="\x68\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_revoke_receive_buffer_id0"="\x67\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_revoke_send_buffer_id0"="\x6A\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_switch_to_synthetic"="\x81\x00\x00\x00\x00\x00\x00\x00"
+"nvsp_pkt_switch_to_vf"="\x81\x00\x00\x00\x01\x00\x00\x00"
+"nvsp_pkt_subchannel_alloc_1"="\x85\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00"
+
+# VF completion transaction IDs used by product code
+"nvsp_tid_vf_association"="\x00\x00\x00\x00\x00\x00\x00\x80"
+"nvsp_tid_switch_data_path"="\x01\x00\x00\x00\x00\x00\x00\x80"
+
+# Send buffer section size (6144 = 0x1800)
+"send_buffer_section_size"="\x00\x18\x00\x00"
+
+# =============================================================================
+# RNDIS MESSAGE TYPE dwords (little-endian u32)
+# =============================================================================
+"rndis_msg_packet"="\x01\x00\x00\x00"
+"rndis_msg_initialize"="\x02\x00\x00\x00"
+"rndis_msg_halt"="\x03\x00\x00\x00"
+"rndis_msg_query"="\x04\x00\x00\x00"
+"rndis_msg_set"="\x05\x00\x00\x00"
+"rndis_msg_reset"="\x06\x00\x00\x00"
+"rndis_msg_indicate_status"="\x07\x00\x00\x00"
+"rndis_msg_keepalive"="\x08\x00\x00\x00"
+"rndis_msg_set_ex"="\x09\x00\x00\x00"
+"rndis_msg_initialize_cmplt"="\x02\x00\x00\x80"
+"rndis_msg_query_cmplt"="\x04\x00\x00\x80"
+"rndis_msg_set_cmplt"="\x05\x00\x00\x80"
+"rndis_msg_reset_cmplt"="\x06\x00\x00\x80"
+"rndis_msg_keepalive_cmplt"="\x08\x00\x00\x80"
+"rndis_msg_set_ex_cmplt"="\x09\x00\x00\x80"
+"rndis_msg_bus"="\x01\x00\x00\xFF"
+
+# RNDIS version/medium/device flags
+"rndis_major_version"="\x01\x00\x00\x00"
+"rndis_minor_version"="\x00\x00\x00\x00"
+"rndis_medium_802_3"="\x00\x00\x00\x00"
+"rndis_medium_802_5"="\x01\x00\x00\x00"
+"rndis_medium_fddi"="\x02\x00\x00\x00"
+"rndis_medium_wan"="\x03\x00\x00\x00"
+"rndis_medium_local_talk"="\x04\x00\x00\x00"
+"rndis_medium_arcnet_raw"="\x06\x00\x00\x00"
+"rndis_medium_arcnet878_2"="\x07\x00\x00\x00"
+"rndis_medium_atm"="\x08\x00\x00\x00"
+"rndis_medium_wireless_wan"="\x09\x00\x00\x00"
+"rndis_medium_irda"="\x0A\x00\x00\x00"
+"rndis_medium_co_wan"="\x0B\x00\x00\x00"
+"rndis_medium_max"="\x0D\x00\x00\x00"
+"rndis_df_connectionless"="\x01\x00\x00\x00"
+"rndis_df_connection_oriented"="\x02\x00\x00\x00"
+"rndis_df_raw_data"="\x04\x00\x00\x00"
+"rndis_media_state_connected"="\x00\x00\x00\x00"
+"rndis_media_state_disconnected"="\x01\x00\x00\x00"
+
+# =============================================================================
+# RNDIS / NDIS STATUS CODES (little-endian u32)
+# =============================================================================
+"ndis_status_success"="\x00\x00\x00\x00"
+"ndis_status_pending"="\x03\x01\x00\x00"
+"ndis_status_not_recognized"="\x01\x00\x01\x00"
+"ndis_status_not_copied"="\x02\x00\x01\x00"
+"ndis_status_not_accepted"="\x03\x00\x01\x00"
+"ndis_status_call_active"="\x07\x00\x01\x00"
+"ndis_status_online"="\x03\x00\x01\x40"
+"ndis_status_reset_start"="\x04\x00\x01\x40"
+"ndis_status_reset_end"="\x05\x00\x01\x40"
+"ndis_status_media_connect"="\x0B\x00\x01\x40"
+"ndis_status_media_disconnect"="\x0C\x00\x01\x40"
+"ndis_status_link_speed_change"="\x13\x00\x01\x40"
+"ndis_status_task_offload_current_config"="\x06\x00\x02\x40"
+"ndis_status_buffer_overflow"="\x05\x00\x00\x80"
+"ndis_status_failure"="\x01\x00\x00\xC0"
+"ndis_status_resources"="\x9A\x00\x00\xC0"
+"ndis_status_not_supported"="\xBB\x00\x00\xC0"
+"ndis_status_closing"="\x02\x00\x01\xC0"
+"ndis_status_bad_version"="\x04\x00\x01\xC0"
+"ndis_status_request_aborted"="\x0C\x00\x01\xC0"
+"ndis_status_reset_in_progress"="\x0D\x00\x01\xC0"
+"ndis_status_invalid_packet"="\x0F\x00\x01\xC0"
+"ndis_status_invalid_length"="\x14\x00\x01\xC0"
+"ndis_status_invalid_data"="\x15\x00\x01\xC0"
+"ndis_status_buffer_too_short"="\x16\x00\x01\xC0"
+"ndis_status_invalid_oid"="\x17\x00\x01\xC0"
+
+# =============================================================================
+# OIDs – General (little-endian u32)
+# =============================================================================
+"oid_gen_supported_list"="\x01\x01\x01\x00"
+"oid_gen_hardware_status"="\x02\x01\x01\x00"
+"oid_gen_media_supported"="\x03\x01\x01\x00"
+"oid_gen_media_in_use"="\x04\x01\x01\x00"
+"oid_gen_maximum_lookahead"="\x05\x01\x01\x00"
+"oid_gen_maximum_frame_size"="\x06\x01\x01\x00"
+"oid_gen_link_speed"="\x07\x01\x01\x00"
+"oid_gen_transmit_buffer_space"="\x08\x01\x01\x00"
+"oid_gen_receive_buffer_space"="\x09\x01\x01\x00"
+"oid_gen_transmit_block_size"="\x0A\x01\x01\x00"
+"oid_gen_receive_block_size"="\x0B\x01\x01\x00"
+"oid_gen_vendor_id"="\x0C\x01\x01\x00"
+"oid_gen_vendor_description"="\x0D\x01\x01\x00"
+"oid_gen_current_packet_filter"="\x0E\x01\x01\x00"
+"oid_gen_current_lookahead"="\x0F\x01\x01\x00"
+"oid_gen_driver_version"="\x10\x01\x01\x00"
+"oid_gen_maximum_total_size"="\x11\x01\x01\x00"
+"oid_gen_protocol_options"="\x12\x01\x01\x00"
+"oid_gen_mac_options"="\x13\x01\x01\x00"
+"oid_gen_media_connect_status"="\x14\x01\x01\x00"
+"oid_gen_maximum_send_packets"="\x15\x01\x01\x00"
+"oid_gen_vendor_driver_version"="\x16\x01\x01\x00"
+"oid_gen_network_layer_addresses"="\x18\x01\x01\x00"
+"oid_gen_transport_header_offset"="\x19\x01\x01\x00"
+
+# OIDs – General v2 (RSS, config, etc.)
+"oid_gen_receive_scale_capabilities"="\x03\x02\x01\x00"
+"oid_gen_receive_scale_parameters"="\x04\x02\x01\x00"
+"oid_gen_max_link_speed"="\x06\x02\x01\x00"
+"oid_gen_link_state"="\x07\x02\x01\x00"
+"oid_gen_link_parameters"="\x08\x02\x01\x00"
+"oid_gen_rndis_config_parameter"="\x1B\x02\x01\x00"
+"oid_gen_friendly_name"="\x16\x02\x02\x00"
+"oid_gen_bytes_rcv"="\x19\x02\x02\x00"
+"oid_gen_bytes_xmit"="\x1A\x02\x02\x00"
+
+# OIDs – 802.3
+"oid_802_3_permanent_address"="\x01\x01\x01\x01"
+"oid_802_3_current_address"="\x02\x01\x01\x01"
+"oid_802_3_multicast_list"="\x03\x01\x01\x01"
+"oid_802_3_maximum_list_size"="\x04\x01\x01\x01"
+"oid_802_3_rcv_error_alignment"="\x01\x01\x02\x01"
+"oid_802_3_xmit_one_collision"="\x02\x01\x02\x01"
+"oid_802_3_xmit_more_collisions"="\x03\x01\x02\x01"
+
+# OIDs – Offload
+"oid_offload_encapsulation"="\x0A\x01\x01\x01"
+"oid_tcp_offload_current_config"="\x0B\x02\x01\xFC"
+"oid_tcp_offload_parameters"="\x0C\x02\x01\xFC"
+"oid_tcp_offload_hardware_capabilities"="\x0D\x02\x01\xFC"
+
+# =============================================================================
+# PACKET FILTER VALUES (little-endian u32)
+# =============================================================================
+"packet_filter_none"="\x00\x00\x00\x00"
+"packet_filter_directed"="\x01\x00\x00\x00"
+"packet_filter_multicast"="\x02\x00\x00\x00"
+"packet_filter_all_multicast"="\x04\x00\x00\x00"
+"packet_filter_broadcast"="\x08\x00\x00\x00"
+"packet_filter_nproto"="\x0D\x00\x00\x00"
+
+# =============================================================================
+# RSS / HASH CONSTANTS (little-endian u32)
+# =============================================================================
+"ndis_hash_function_toeplitz"="\x01\x00\x00\x00"
+"ndis_hash_ipv4"="\x00\x01\x00\x00"
+"ndis_hash_tcp_ipv4"="\x00\x02\x00\x00"
+"ndis_hash_ipv6"="\x00\x04\x00\x00"
+"ndis_hash_ipv6_ex"="\x00\x08\x00\x00"
+"ndis_hash_tcp_ipv6"="\x00\x10\x00\x00"
+"ndis_hash_tcp_ipv6_ex"="\x00\x20\x00\x00"
+"ndis_hash_udp_ipv4"="\x00\x40\x00\x00"
+"ndis_hash_udp_ipv6"="\x00\x80\x00\x00"
+"ndis_hash_udp_ipv6_ex"="\x00\x00\x01\x00"
+
+# RSS parameter flags (u16)
+"ndis_rss_flag_base_cpu_unchanged"="\x01\x00"
+"ndis_rss_flag_hash_info_unchanged"="\x02\x00"
+"ndis_rss_flag_itable_unchanged"="\x04\x00"
+"ndis_rss_flag_hash_key_unchanged"="\x08\x00"
+"ndis_rss_flag_disable_rss"="\x10\x00"
+"ndis_rss_flag_default_processor_unchanged"="\x20\x00"
+
+# RSS size constants
+"ndis_rss_indirection_table_size"="\x80\x00\x00\x00"
+"ndis_rss_hash_secret_key_size"="\x28\x00\x00\x00"
+"nvsp_max_indirection_table_entries"="\x80\x00\x00\x00"
+"nvsp_max_send_indirection_table_entries"="\x10\x00\x00\x00"
+
+# =============================================================================
+# NDIS OBJECT HEADERS (Type bytes + struct sizes as u16 LE)
+# =============================================================================
+"ndis_obj_type_default"="\x80"
+"ndis_obj_type_rss_capabilities"="\x88"
+"ndis_obj_type_rss_parameters"="\x89"
+"ndis_obj_type_oid_request"="\x96"
+"ndis_obj_type_offload"="\xA7"
+"ndis_obj_type_offload_encapsulation"="\xA8"
+
+# Struct sizes (little-endian u16, for NdisObjectHeader.size field)
+"ndis_sizeof_rss_caps_rev2"="\x12\x00"
+"ndis_sizeof_rss_params_rev1"="\x1C\x00"
+"ndis_sizeof_rss_params_rev2"="\x28\x00"
+"ndis_sizeof_rss_params_rev3"="\x2C\x00"
+"ndis_sizeof_offload_rev1"="\x70\x00"
+"ndis_sizeof_offload_rev3"="\x9C\x00"
+"ndis_sizeof_offload_encap_rev1"="\x1C\x00"
+"ndis_sizeof_offload_params_rev1"="\x14\x00"
+
+# Revision numbers (u8)
+"ndis_revision_1"="\x01"
+"ndis_revision_2"="\x02"
+"ndis_revision_3"="\x03"
+
+# =============================================================================
+# OFFLOAD CONSTANTS
+# =============================================================================
+"ndis_encapsulation_ieee_802_3"="\x02\x00\x00\x00"
+"ndis_offload_not_supported"="\x00\x00\x00\x00"
+"ndis_offload_supported"="\x01\x00\x00\x00"
+"ndis_offload_set_on"="\x01\x00\x00\x00"
+"ndis_offload_set_off"="\x02\x00\x00\x00"
+"lso_min_segment_count"="\x02\x00\x00\x00"
+"lso_max_offload_size"="\x3C\xF5\x00\x00"
+
+# Offload parameter checksum enum (u8)
+"offload_checksum_no_change"="\x00"
+"offload_checksum_tx_rx_disabled"="\x01"
+"offload_checksum_tx_enabled_rx_disabled"="\x02"
+"offload_checksum_rx_enabled_tx_disabled"="\x03"
+"offload_checksum_tx_rx_enabled"="\x04"
+
+# Offload parameter simple enum (u8)
+"offload_simple_no_change"="\x00"
+"offload_simple_disabled"="\x01"
+"offload_simple_enabled"="\x02"
+
+# NDIS config parameter types
+"ndis_param_type_integer"="\x00\x00\x00\x00"
+"ndis_param_type_hex_integer"="\x01\x00\x00\x00"
+"ndis_param_type_string"="\x02\x00\x00\x00"
+"ndis_param_type_multi_string"="\x03\x00\x00\x00"
+"ndis_param_type_binary"="\x04\x00\x00\x00"
+
+# NDIS config parameter names (UTF-16LE) for oid_set_rndis_config_parameter()
+# These exact strings are matched in handle_oid_set to configure offloads.
+"utf16_rndis_config_ipchecksumoffloadipv4"="\x2A\x00\x49\x00\x50\x00\x43\x00\x68\x00\x65\x00\x63\x00\x6B\x00\x73\x00\x75\x00\x6D\x00\x4F\x00\x66\x00\x66\x00\x6C\x00\x6F\x00\x61\x00\x64\x00\x49\x00\x50\x00\x76\x00\x34\x00"
+"utf16_rndis_config_lsov2ipv4"="\x2A\x00\x4C\x00\x73\x00\x6F\x00\x56\x00\x32\x00\x49\x00\x50\x00\x76\x00\x34\x00"
+"utf16_rndis_config_lsov2ipv6"="\x2A\x00\x4C\x00\x73\x00\x6F\x00\x56\x00\x32\x00\x49\x00\x50\x00\x76\x00\x36\x00"
+"utf16_rndis_config_tcpchecksumoffloadipv4"="\x2A\x00\x54\x00\x43\x00\x50\x00\x43\x00\x68\x00\x65\x00\x63\x00\x6B\x00\x73\x00\x75\x00\x6D\x00\x4F\x00\x66\x00\x66\x00\x6C\x00\x6F\x00\x61\x00\x64\x00\x49\x00\x50\x00\x76\x00\x34\x00"
+"utf16_rndis_config_tcpchecksumoffloadipv6"="\x2A\x00\x54\x00\x43\x00\x50\x00\x43\x00\x68\x00\x65\x00\x63\x00\x6B\x00\x73\x00\x75\x00\x6D\x00\x4F\x00\x66\x00\x66\x00\x6C\x00\x6F\x00\x61\x00\x64\x00\x49\x00\x50\x00\x76\x00\x36\x00"
+"utf16_rndis_config_udpchecksumoffloadipv4"="\x2A\x00\x55\x00\x44\x00\x50\x00\x43\x00\x68\x00\x65\x00\x63\x00\x6B\x00\x73\x00\x75\x00\x6D\x00\x4F\x00\x66\x00\x66\x00\x6C\x00\x6F\x00\x61\x00\x64\x00\x49\x00\x50\x00\x76\x00\x34\x00"
+"utf16_rndis_config_udpchecksumoffloadipv6"="\x2A\x00\x55\x00\x44\x00\x50\x00\x43\x00\x68\x00\x65\x00\x63\x00\x6B\x00\x73\x00\x75\x00\x6D\x00\x4F\x00\x66\x00\x66\x00\x6C\x00\x6F\x00\x61\x00\x64\x00\x49\x00\x50\x00\x76\x00\x36\x00"
+
+# UTF-16LE config parameter values: "0" to "4" (offload enable/disable)
+"utf16_value_0"="\x30\x00"
+"utf16_value_1"="\x31\x00"
+"utf16_value_2"="\x32\x00"
+"utf16_value_3"="\x33\x00"
+"utf16_value_4"="\x34\x00"
+
+# =============================================================================
+# MTU / FRAME SIZE CONSTANTS
+# =============================================================================
+"ethernet_header_len"="\x0E\x00\x00\x00"
+"default_mtu"="\xEA\x05\x00\x00"
+"min_mtu_minus_one"="\xE9\x05\x00\x00"
+"max_mtu"="\x00\x24\x00\x00"
+"max_mtu_plus_one"="\x01\x24\x00\x00"
+"sub_alloc_size_default_mtu"="\x0E\x07\x00\x00"
+
+# =============================================================================
+# PACKET INFO FLAGS (u8)
+# =============================================================================
+"pkt_info_flags_multi_suballoc"="\x01"
+"pkt_info_flags_first_fragment"="\x02"
+"pkt_info_flags_last_fragment"="\x04"
+"pkt_info_id_version_v1"="\x01"
+
+# =============================================================================
+# Canonical RNDIS handshake/control packets (header + body)
+# =============================================================================
+"rndis_pkt_initialize_request"="\x02\x00\x00\x00\x18\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"rndis_pkt_query_packet_filter"="\x04\x00\x00\x00\x1C\x00\x00\x00\x01\x00\x00\x00\x0E\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+"rndis_pkt_set_packet_filter_directed"="\x05\x00\x00\x00\x20\x00\x00\x00\x01\x00\x00\x00\x0E\x01\x01\x00\x04\x00\x00\x00\x14\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00"
+"rndis_pkt_set_packet_filter_promisc"="\x05\x00\x00\x00\x20\x00\x00\x00\x01\x00\x00\x00\x0E\x01\x01\x00\x04\x00\x00\x00\x14\x00\x00\x00\x00\x00\x00\x00\x20\x00\x00\x00"
+"rndis_pkt_halt"="\x03\x00\x00\x00\x0C\x00\x00\x00\x01\x00\x00\x00"
+"rndis_pkt_reset"="\x06\x00\x00\x00\x0C\x00\x00\x00\x00\x00\x00\x00"
+"rndis_pkt_keepalive"="\x08\x00\x00\x00\x0C\x00\x00\x00\x01\x00\x00\x00"
+
+# =============================================================================
+# RNDIS PACKET / PPI VALUES for datapath
+# =============================================================================
+"rndis_ppi_type_checksum"="\x00\x00\x00\x00"
+"rndis_ppi_type_lso"="\x02\x00\x00\x00"
+"rndis_packet_msg_len_44"="\x2C\x00\x00\x00"
+"rndis_packet_header_len"="\x24\x00\x00\x00"
+
+# Common RNDIS message lengths
+"rndis_msg_len_24"="\x18\x00\x00\x00"
+"rndis_msg_len_28"="\x1C\x00\x00\x00"
+"rndis_msg_len_32"="\x20\x00\x00\x00"
+"rndis_msg_len_12"="\x0C\x00\x00\x00"
+
+# =============================================================================
+# BOUNDARY / EDGE-CASE VALUES useful for mutation
+# =============================================================================
+"zero_u32"="\x00\x00\x00\x00"
+"one_u32"="\x01\x00\x00\x00"
+"max_u32"="\xFF\xFF\xFF\xFF"
+"max_u16"="\xFF\xFF"
+"zero_u64"="\x00\x00\x00\x00\x00\x00\x00\x00"
+"max_u64"="\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF"
+"nvsp_max_subchannels"="\x40\x00"
+"nvsp_max_packets_per_receive"="\x77\x01\x00\x00"
+"rx_reserved_control_buffers"="\x10\x00\x00\x00"
+"rx_reserved_minus_one"="\x0F\x00\x00\x00"
+"rx_reserved_plus_one"="\x11\x00\x00\x00"

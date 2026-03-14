@@ -7,12 +7,25 @@
 #![forbid(unsafe_code)]
 
 mod buffers;
+#[cfg(feature = "test")]
+pub mod protocol;
+#[cfg(not(feature = "test"))]
 mod protocol;
 pub mod resolver;
+#[cfg(feature = "test")]
+pub mod rndisprot;
+#[cfg(not(feature = "test"))]
 mod rndisprot;
 mod rx_bufs;
+#[cfg(feature = "test")]
+pub mod saved_state;
+#[cfg(not(feature = "test"))]
 mod saved_state;
 mod test;
+#[cfg(feature = "test")]
+pub mod test_helpers;
+#[cfg(not(feature = "test"))]
+mod test_helpers;
 
 use crate::buffers::GuestBuffers;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
@@ -57,8 +70,8 @@ use net_backend_resources::mac_address::MacAddress;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
 use ring::gparange::MultiPagedRangeIter;
+use rx_bufs::RxBufAllocateError;
 use rx_bufs::RxBuffers;
-use rx_bufs::SubAllocationInUse;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::pending;
@@ -403,7 +416,8 @@ struct RxBufferRanges {
 
 impl RxBufferRanges {
     fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
-        let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
+        let buffers_per_queue =
+            buffer_count.saturating_sub(RX_RESERVED_CONTROL_BUFFERS) / queue_count;
         #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
         (
@@ -1250,7 +1264,9 @@ impl VmbusDevice for Nic {
     }
 
     fn max_subchannels(&self) -> u16 {
-        self.adapter.max_queues
+        // max_queues includes the primary channel, so the number of
+        // *sub*channels is one less.
+        self.adapter.max_queues.saturating_sub(1)
     }
 
     fn install(&mut self, resources: DeviceResources) {
@@ -1314,7 +1330,20 @@ impl VmbusDevice for Nic {
 
         // Stop and remove the channel worker.
         {
-            let worker = &mut self.coordinator.state_mut().unwrap().workers[channel_idx as usize];
+            let workers = &mut self.coordinator.state_mut().unwrap().workers;
+            if channel_idx as usize >= workers.len() {
+                tracing::error!(
+                    channel_idx,
+                    workers_len = workers.len(),
+                    instance_id = %self.instance_id,
+                    "Close called with channel_idx out of range"
+                );
+                if restart {
+                    self.coordinator.start();
+                }
+                return;
+            }
+            let worker = &mut workers[channel_idx as usize];
             worker.stop().await;
             if worker.has_state() {
                 worker.remove();
@@ -1539,13 +1568,19 @@ enum NetRestoreError {
     #[error(transparent)]
     ReceiveBuffer(#[from] BufferError),
     #[error(transparent)]
-    SuballocationMisconfigured(#[from] SubAllocationInUse),
+    SuballocationMisconfigured(#[from] RxBufAllocateError),
     #[error(transparent)]
     Open(#[from] OpenError),
+    #[error("saved state has {count} channels but max_queues is {max}")]
+    TooManyChannels { count: usize, max: usize },
     #[error("invalid rss key size")]
     InvalidRssKeySize,
     #[error("reduced indirection table size")]
     ReducedIndirectionTableSize,
+    #[error("ready state must have at least one channel (primary)")]
+    EmptyChannels,
+    #[error("primary channel (channels[0]) must be present in ready state")]
+    MissingPrimaryChannel,
 }
 
 impl From<NetRestoreError> for RestoreError {
@@ -1566,6 +1601,18 @@ impl Nic {
                 saved_state::Primary::Version => vec![true],
                 saved_state::Primary::Init(_) => vec![true],
                 saved_state::Primary::Ready(ready) => {
+                    if ready.channels.is_empty() {
+                        return Err(NetRestoreError::EmptyChannels);
+                    }
+                    if ready.channels[0].is_none() {
+                        return Err(NetRestoreError::MissingPrimaryChannel);
+                    }
+                    if ready.channels.len() > self.adapter.max_queues as usize {
+                        return Err(NetRestoreError::TooManyChannels {
+                            count: ready.channels.len(),
+                            max: self.adapter.max_queues as usize,
+                        });
+                    }
                     ready.channels.iter().map(|x| x.is_some()).collect()
                 }
             };
@@ -1722,6 +1769,19 @@ impl Nic {
                         }));
                     }
                 }
+            }
+
+            // Clean up any existing coordinator and workers from a prior
+            // open().  In normal operation the caller creates a fresh Nic for
+            // each restore cycle, but defensive cleanup here keeps the code
+            // robust if restore is called on an already-opened instance (e.g.
+            // from a fuzz test).
+            if self.coordinator.has_state() {
+                self.coordinator.stop().await;
+                if let Some(coordinator) = self.coordinator.state_mut() {
+                    coordinator.stop_workers().await;
+                }
+                self.coordinator.remove();
             }
 
             // Insert the coordinator and mark that it should try to start the
@@ -1970,8 +2030,6 @@ enum WorkerError {
     Queue(#[from] queue::Error),
     #[error("too many control messages")]
     TooManyControlMessages,
-    #[error("invalid rndis packet completion")]
-    InvalidRndisPacketCompletion,
     #[error("missing transaction id")]
     MissingTransactionId,
     #[error("invalid gpadl")]
@@ -1980,6 +2038,13 @@ enum WorkerError {
     GpadlError(#[source] GuestMemoryError),
     #[error("gpa direct error")]
     GpaDirectError(#[source] GuestMemoryError),
+    #[error("MTU {mtu} exceeds maximum allowed value {max}")]
+    InvalidMtu { mtu: u32, max: u32 },
+    #[error(
+        "recv buffer sub_allocation_size {size} is too small for MTU {mtu} \
+         (minimum {min})"
+    )]
+    SubAllocationTooSmall { size: u32, mtu: u32, min: u32 },
     #[error("endpoint")]
     Endpoint(#[source] anyhow::Error),
     #[error("message not supported on sub channel: {0}")]
@@ -2046,8 +2111,6 @@ enum PacketOrderError {
     SendReceiveBufferMissingMTU,
     #[error("SendSendBuffer already exists")]
     SendSendBufferExists,
-    #[error("SwitchDataPathCompletion during PrimaryChannelState")]
-    SwitchDataPathCompletionPrimaryChannelState,
 }
 
 #[derive(Debug)]
@@ -2293,6 +2356,8 @@ struct ReceiveBuffer {
 enum BufferError {
     #[error("unsupported suballocation size {0}")]
     UnsupportedSuballocationSize(u32),
+    #[error("too few sub-allocations ({count}) for required reserved buffers ({reserved})")]
+    TooFewSubAllocations { count: u32, reserved: u32 },
     #[error("unaligned gpadl")]
     UnalignedGpadl,
     #[error("unknown gpadl ID")]
@@ -2320,6 +2385,14 @@ impl ReceiveBuffer {
             return Err(BufferError::UnsupportedSuballocationSize(
                 sub_allocation_size,
             ));
+        }
+        // The receive buffer must have enough sub-allocations for reserved
+        // control buffers plus at least one data buffer.
+        if num_sub_allocations <= RX_RESERVED_CONTROL_BUFFERS {
+            return Err(BufferError::TooFewSubAllocations {
+                count: num_sub_allocations,
+                reserved: RX_RESERVED_CONTROL_BUFFERS,
+            });
         }
         let recv_buffer = Self {
             gpadl,
@@ -3148,13 +3221,26 @@ impl<T: RingMem> NetChannel<T> {
 
             if let Some(message) = primary.control_messages.pop_front() {
                 primary.control_messages_len -= message.data.len();
-                self.handle_rndis_control_message(
+                if let Err(err) = self.handle_rndis_control_message(
                     primary,
                     buffers,
                     message.message_type,
                     message.data.as_ref(),
                     id.0,
-                )?;
+                ) {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        message_type = message.message_type,
+                        "failed to handle RNDIS control message, skipping"
+                    );
+                    // Free the receive buffer and return the control buffer
+                    // since either no response was sent or the response send
+                    // failed. If a response was already sent to the guest
+                    // before this error, the guest's completion will find
+                    // the buffer already freed and be handled gracefully.
+                    drop(state.rx_bufs.free(id.0));
+                    primary.free_control_buffers.push(id);
+                }
             } else if primary.pending_offload_change
                 && primary.rndis_state == RndisState::Operational
             {
@@ -3578,7 +3664,7 @@ impl Adapter {
         if params.hash_secret_key_size != 40 {
             return Err(OidError::InvalidInput("hash_secret_key_size"));
         }
-        if params.indirection_table_size % 4 != 0 {
+        if params.indirection_table_size % 4 != 0 || params.indirection_table_size == 0 {
             return Err(OidError::InvalidInput("indirection_table_size"));
         }
         let indirection_table_size =
@@ -3738,7 +3824,12 @@ impl Adapter {
                 let value = value.read_n::<u16>(info.value_length as usize / 2)?;
                 let value =
                     String::from_utf16(&value).map_err(|_| OidError::InvalidInput("value"))?;
-                let as_num = value.as_bytes().first().map_or(0, |c| c - b'0');
+                let as_num = value
+                    .as_bytes()
+                    .first()
+                    .map(|c| c.wrapping_sub(b'0'))
+                    .filter(|&c| c <= 9)
+                    .ok_or(OidError::InvalidInput("value as num"))?;
                 let tx = as_num & 1 != 0;
                 let rx = as_num & 2 != 0;
 
@@ -4471,6 +4562,20 @@ impl Coordinator {
         let mut rx_buffers = Vec::new();
         {
             let buffers = &state.buffers;
+            if buffers.ndis_config.mtu > MAX_MTU {
+                return Err(WorkerError::InvalidMtu {
+                    mtu: buffers.ndis_config.mtu,
+                    max: MAX_MTU,
+                });
+            }
+            let sub_alloc_min = sub_allocation_size_for_mtu(buffers.ndis_config.mtu);
+            if buffers.recv_buffer.sub_allocation_size < sub_alloc_min {
+                return Err(WorkerError::SubAllocationTooSmall {
+                    size: buffers.recv_buffer.sub_allocation_size,
+                    mtu: buffers.ndis_config.mtu,
+                    min: sub_alloc_min,
+                });
+            }
             let guest_buffers = Arc::new(
                 GuestBuffers::new(
                     buffers.mem.clone(),
@@ -4751,8 +4856,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<Option<Packet<'a>>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let packet = match read.try_read() {
-            Ok(packet) => parse_packet(&packet, send_buffer, version, external_data)
-                .map_err(WorkerError::Packet)?,
+            Ok(packet) => match parse_packet(&packet, send_buffer, version, external_data) {
+                Ok(p) => p,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to parse packet, skipping"
+                    );
+                    return Ok(None);
+                }
+            },
             Err(queue::TryReadError::Empty) => return Ok(None),
             Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
         };
@@ -4893,12 +5006,37 @@ impl<T: 'static + RingMem> NetChannel<T> {
 
                         let sub_allocation_size = sub_allocation_size_for_mtu(mtu);
 
-                        let recv_buffer = ReceiveBuffer::new(
+                        let recv_buffer = match ReceiveBuffer::new(
                             &self.gpadl_map,
                             message.gpadl_handle,
                             message.id,
                             sub_allocation_size,
-                        )?;
+                        ) {
+                            Ok(buf) => buf,
+                            Err(err) => {
+                                tracelimit::error_ratelimited!(
+                                    error = &err as &dyn std::error::Error,
+                                    "failed to set up receive buffer"
+                                );
+                                self.send_completion(
+                                    packet.transaction_id,
+                                    Some(&self.message(
+                                        protocol::MESSAGE1_TYPE_SEND_RECEIVE_BUFFER_COMPLETE,
+                                        protocol::Message1SendReceiveBufferComplete {
+                                            status: protocol::Status::FAILURE,
+                                            num_sections: 0,
+                                            sections: [protocol::ReceiveBufferSection {
+                                                offset: 0,
+                                                sub_allocation_size: 0,
+                                                num_sub_allocations: 0,
+                                                end_offset: 0,
+                                            }],
+                                        },
+                                    )),
+                                )?;
+                                continue;
+                            }
+                        };
 
                         self.send_completion(
                             packet.transaction_id,
@@ -4926,7 +5064,27 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             ));
                         }
 
-                        let send_buffer = SendBuffer::new(&self.gpadl_map, message.gpadl_handle)?;
+                        let send_buffer =
+                            match SendBuffer::new(&self.gpadl_map, message.gpadl_handle) {
+                                Ok(buf) => buf,
+                                Err(err) => {
+                                    tracelimit::error_ratelimited!(
+                                        error = &err as &dyn std::error::Error,
+                                        "failed to set up send buffer"
+                                    );
+                                    self.send_completion(
+                                        packet.transaction_id,
+                                        Some(&self.message(
+                                            protocol::MESSAGE1_TYPE_SEND_SEND_BUFFER_COMPLETE,
+                                            protocol::Message1SendSendBufferComplete {
+                                                status: protocol::Status::FAILURE,
+                                                section_size: 0,
+                                            },
+                                        )),
+                                    )?;
+                                    continue;
+                                }
+                            };
                         self.send_completion(
                             packet.transaction_id,
                             Some(&self.message(
@@ -5431,7 +5589,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 }
                 PacketData::RndisPacketComplete(_completion) => {
                     data.rx_done.clear();
-                    state
+                    if state
                         .release_recv_buffers(
                             packet
                                 .transaction_id
@@ -5439,7 +5597,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             &queue_state.rx_buffer_range,
                             &mut data.rx_done,
                         )
-                        .ok_or(WorkerError::InvalidRndisPacketCompletion)?;
+                        .is_none()
+                    {
+                        // Transaction ID did not map to a valid receive buffer. Nothing gets freed.
+                        // If the guest sends enough invalid completions, it could eventually starve itself.
+                        tracelimit::error_ratelimited!(
+                            transaction_id = packet.transaction_id,
+                            "invalid RNDIS packet completion from guest, skipping"
+                        );
+                        continue;
+                    }
                     queue_state.queue.rx_avail(&data.rx_done);
                 }
                 PacketData::SubChannelRequest(request) if state.primary.is_some() => {
@@ -5517,10 +5684,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     )?;
                 }
                 p => {
-                    tracing::warn!(request = ?p, "unexpected packet");
-                    return Err(WorkerError::UnexpectedPacketOrder(
-                        PacketOrderError::SwitchDataPathCompletionPrimaryChannelState,
-                    ));
+                    tracelimit::warn_ratelimited!(request = ?p, "unexpected packet, skipping");
                 }
             }
         }

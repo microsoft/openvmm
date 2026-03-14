@@ -19,9 +19,24 @@ const START_MASK: u32 = 0x80000000;
 const INVALID: u32 = !START_MASK;
 const END: u32 = !1 & !START_MASK;
 
+/// Error returned by [`RxBuffers::allocate`].
 #[derive(Debug, Error)]
-#[error("suballocation is already in use")]
-pub struct SubAllocationInUse;
+pub enum RxBufAllocateError {
+    /// A buffer ID in the allocation is already in use.
+    #[error("suballocation is already in use")]
+    SubAllocationInUse,
+    /// The allocation is empty.
+    #[error("empty allocation")]
+    EmptyAllocation,
+    /// A buffer ID is out of range for the configured receive buffer count.
+    #[error("rx buffer id {id} is out of range (count {count})")]
+    IdOutOfRange {
+        /// The offending buffer ID.
+        id: u32,
+        /// The number of receive buffers configured.
+        count: u32,
+    },
+}
 
 impl RxBuffers {
     pub fn new(count: u32) -> Self {
@@ -37,16 +52,25 @@ impl RxBuffers {
     pub fn allocate<I: Iterator<Item = u32> + Clone>(
         &mut self,
         ids: impl IntoIterator<Item = u32, IntoIter = I>,
-    ) -> Result<(), SubAllocationInUse> {
+    ) -> Result<(), RxBufAllocateError> {
         let ids = ids.into_iter();
-        let first = ids.clone().next().unwrap();
+        let Some(first) = ids.clone().next() else {
+            return Err(RxBufAllocateError::EmptyAllocation);
+        };
+        let count = self.state.len() as u32;
+        // Validate all IDs are in range before modifying state.
+        for id in ids.clone() {
+            if id as usize >= self.state.len() {
+                return Err(RxBufAllocateError::IdOutOfRange { id, count });
+            }
+        }
         let next_ids = ids.clone().skip(1).chain(std::iter::once(END));
         for (n, (id, next_id)) in ids.clone().zip(next_ids).enumerate() {
             if self.state[id as usize] != INVALID {
                 for id in ids.take(n) {
                     self.state[id as usize] = INVALID;
                 }
-                return Err(SubAllocationInUse);
+                return Err(RxBufAllocateError::SubAllocationInUse);
             }
             self.state[id as usize] = next_id;
         }
