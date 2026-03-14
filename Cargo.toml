@@ -51,6 +51,8 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  # support crates consumed by closed-source only
+  "support/debug_output_tracing",
 ]
 exclude = [
   "xsync",
