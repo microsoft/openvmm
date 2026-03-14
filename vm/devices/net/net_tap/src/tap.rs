@@ -97,7 +97,7 @@ pub fn open_tap(name: &str) -> Result<OwnedFd, Error> {
 ///
 /// Wraps a validated TAP fd with `IFF_VNET_HDR` and the correct vnet header
 /// size. Does not set offloads — the caller is responsible for configuring
-/// offloads via [`set_offloads`] before constructing this.
+/// offloads via [`Tap::set_offloads`] before passing to [`TapEndpoint`](super::TapEndpoint).
 #[derive(Debug)]
 pub struct Tap {
     tap: File,
