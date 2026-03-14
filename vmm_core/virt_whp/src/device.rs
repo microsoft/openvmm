@@ -174,7 +174,7 @@ fn probe_power_register(device: &whp::Device<'_>) -> Option<u32> {
         }
     };
 
-    let mut next = read(0x34 as u64) & !3;
+    let mut next = read(0x34_u64) & !3;
     while next != 0 {
         let val = read(next as u64);
         let cap = val & 0xff;
@@ -237,8 +237,7 @@ impl MmioMapping {
         );
         unsafe {
             std::ptr::copy_nonoverlapping(
-                (self.0.VirtualAddress as *const u8)
-                    .add((offset as u64 - self.0.OffsetInBytes) as usize),
+                (self.0.VirtualAddress as *const u8).add((offset - self.0.OffsetInBytes) as usize),
                 data.as_mut_ptr(),
                 data.len(),
             )
@@ -258,7 +257,7 @@ impl MmioMapping {
                 self.0
                     .VirtualAddress
                     .cast::<u8>()
-                    .add((offset as u64 - self.0.OffsetInBytes) as usize),
+                    .add((offset - self.0.OffsetInBytes) as usize),
                 data.len(),
             )
         }
