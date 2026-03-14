@@ -26,8 +26,8 @@ linkme.workspace = true
 parking_lot.workspace = true
 slab.workspace = true
 thiserror.workspace = true
-time = { workspace = true, optional = true }
 tracing.workspace = true
 zerocopy.workspace = true
+
 [lints]
 workspace = true

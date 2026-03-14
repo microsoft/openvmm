@@ -172,6 +172,7 @@ fs-err.workspace = true
 futures-concurrency.workspace = true
 futures.workspace = true
 getrandom.workspace = true
+jiff.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -179,10 +180,10 @@ serde_helpers.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 socket2.workspace = true
 thiserror = { workspace = true, features = ["std"] }
-time = { workspace = true, features = ["macros"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
+
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 firmware_pcat.workspace = true
 
