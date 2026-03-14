@@ -88,6 +88,7 @@ mod sys {
 /// On Unix, this is an empty (uninhabitable) enum.
 pub type RemoteProcess = sys::RemoteProcess;
 
+pub use mapping_manager::Mappable;
 pub use memory_manager::DeviceMemoryMapper;
 pub use memory_manager::GuestMemoryBuilder;
 pub use memory_manager::GuestMemoryClient;

@@ -127,6 +127,16 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Use a file-backed memory region instead of anonymous RAM.
+    ///
+    /// The file at the given path will be created (or opened) and sized to
+    /// match the VM's configured memory. Guest memory is then backed by
+    /// this file, which persists across snapshot save/restore.
+    pub fn with_memory_backing_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.memory_backing_file = Some(path.into());
+        self
+    }
+
     /// This is intended for special one-off use cases. As soon as something
     /// is needed in multiple tests we should consider making it a supported
     /// pattern.

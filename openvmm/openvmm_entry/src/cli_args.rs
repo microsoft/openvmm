@@ -61,8 +61,19 @@ pub struct Options {
     #[clap(long)]
     pub prefetch: bool,
 
+    /// back guest RAM with a file instead of anonymous memory.
+    /// The file is created/opened and sized to the guest RAM size.
+    /// Enables snapshot save (fsync) and restore (open + mmap).
+    #[clap(long, value_name = "FILE", conflicts_with = "private_memory")]
+    pub memory_backing_file: Option<PathBuf>,
+
+    /// Restore VM from a snapshot directory (implies file-backed memory from
+    /// the snapshot's memory.bin). Do not combine with --memory-backing-file.
+    #[clap(long, value_name = "DIR", conflicts_with = "memory_backing_file")]
+    pub restore_snapshot: Option<PathBuf>,
+
     /// use private anonymous memory for guest RAM
-    #[clap(long)]
+    #[clap(long, conflicts_with = "memory_backing_file")]
     pub private_memory: bool,
 
     /// start in paused state
