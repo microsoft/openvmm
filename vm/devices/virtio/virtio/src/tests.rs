@@ -2113,6 +2113,159 @@ async fn verify_packed_queue_linked(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_queue_linked_inner(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true)).await;
 }
+/// A packed linked chain that starts near the end of the ring and wraps to
+/// the beginning (indices 2 → 3 → 0 in a queue_size=4 ring). Without
+/// correct index wrapping in `descriptor()`, the NEXT index after 3 would
+/// be 4 (out of bounds) instead of 0.
+#[async_test]
+async fn verify_packed_queue_linked_wrapping(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let queue_size = 4u16;
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, queue_size, true);
+
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                work.complete(work.payload.len() as u32);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Submit and complete 2 single descriptors to advance the packed ring
+    // cursor to index 2.
+    for _ in 0..2 {
+        guest.add_to_avail_queue(0);
+        event.signal();
+        must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        guest.get_next_completed(0).unwrap();
+    }
+
+    // Submit a 3-descriptor linked chain starting at index 2.
+    // The chain wraps: 2 → 3 → 0.
+    guest.add_linked_to_avail_queue(0, 3);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 2);
+    assert_eq!(len, 3);
+
+    queues[0].stop().await;
+}
+
+/// Verify that packed indirect descriptors ignore the NEXT flag. Per the
+/// virtio spec, packed indirect descriptors consume all entries based on
+/// the buffer length, not the NEXT flag. If the device checks NEXT before
+/// checking `active_indirect_len`, a stale or malicious NEXT flag on the
+/// last indirect descriptor could cause out-of-bounds access or incorrect
+/// chaining using the primary ring size instead of the indirect table size.
+#[async_test]
+async fn verify_packed_indirect_ignores_next_flag(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let queue_size = 8u16;
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, queue_size, true);
+
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                work.complete(work.payload.len() as u32);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Submit an indirect descriptor chain of 3 entries, but set the NEXT
+    // flag on the last indirect descriptor. The device should still see
+    // exactly 3 payload entries, because packed indirect tables are sized
+    // by buffer length, not the NEXT flag.
+    let buffer_addr = guest.get_queue_descriptor_backing_memory_address(0);
+    let indirect_count: u16 = 3;
+    for i in 0..indirect_count {
+        let base = buffer_addr + 0x10 * i as u64;
+        let indirect_buffer_addr = 0xffffffff00000000u64 + 0x1000 * i as u64;
+        // physical address
+        test_mem.modify_memory_map(base, &indirect_buffer_addr.to_le_bytes(), false);
+        // length
+        test_mem.modify_memory_map(base + 8, &0x1000u32.to_le_bytes(), false);
+        // buffer_id (ignored for indirect)
+        test_mem.modify_memory_map(base + 12, &0u16.to_le_bytes(), false);
+        // Set the NEXT flag on ALL indirect descriptors, including the last.
+        // The device must ignore this flag for packed indirect descriptors.
+        let flags = DescriptorFlags::new().with_next(true);
+        test_mem.modify_memory_map(base + 14, &flags.into_bits().to_le_bytes(), false);
+    }
+
+    guest.make_packed_descriptors_available(
+        0,
+        vec![DescriptorFlags::new().with_indirect(true)],
+        Some(indirect_count as u32),
+    );
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 0);
+    // Must be exactly 3 payload entries (not more from following NEXT).
+    assert_eq!(len, 3);
+
+    queues[0].stop().await;
+}
+
+/// Verify that packed queues work with a non-power-of-two queue size.
+/// The virtio spec (§2.8.10.1) does not require packed queue sizes to be
+/// powers of two, unlike split queues (§2.7.1).
+#[async_test]
+async fn verify_packed_queue_non_power_of_two(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let queue_size = 6u16;
+    let mut guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, queue_size, true);
+
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                work.complete(work.payload.len() as u32);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Submit and complete 4 single descriptors to advance the cursor to
+    // index 4.
+    for _ in 0..4 {
+        guest.add_to_avail_queue(0);
+        event.signal();
+        must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+        guest.get_next_completed(0).unwrap();
+    }
+
+    // Submit a 3-descriptor linked chain starting at index 4.
+    // The chain wraps: 4 → 5 → 0.
+    guest.add_linked_to_avail_queue(0, 3);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 4);
+    assert_eq!(len, 3);
+
+    queues[0].stop().await;
+}
 
 async fn verify_queue_indirect_linked_inner(mut guest: VirtioTestGuest) {
     let (tx, mut rx) = mesh::mpsc_channel();
