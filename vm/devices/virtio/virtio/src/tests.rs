@@ -2720,3 +2720,244 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
         "DRIVER_OK must not be set when enable() fails"
     );
 }
+
+/// A linked chain using all queue_size descriptors (last has no NEXT flag)
+/// must succeed — this is the maximum valid chain length per spec §2.7.5.3.1.
+#[async_test]
+async fn verify_chain_at_queue_size_succeeds(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                assert_eq!(work.payload.len(), queue_size as usize);
+                work.complete(42);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    guest.add_linked_to_avail_queue(0, queue_size);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 0u16);
+    assert_eq!(len, 42);
+    queues[0].stop().await;
+}
+
+/// A descriptor chain that forms a cycle (all queue_size descriptors point to
+/// the next, with the last wrapping back to the first) must be rejected.
+#[async_test]
+async fn verify_chain_cycle_rejected(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+    )
+    .unwrap();
+
+    // Manually build a cycle: desc 0 → 1 → 2 → 3 → 0 (all with NEXT flag).
+    for i in 0..queue_size {
+        let base = guest.get_queue_descriptor(0, i);
+        let flags = u16::from(DescriptorFlags::new().with_next(true));
+        test_mem.modify_memory_map(base + 12, &flags.to_le_bytes(), false);
+        let next = (i + 1) % queue_size;
+        test_mem.modify_memory_map(base + 14, &next.to_le_bytes(), false);
+    }
+    guest.queue_available_desc(0, 0);
+
+    let result = queue.try_next();
+    assert!(result.is_err(), "Cyclic chain must produce an error");
+}
+
+/// An indirect descriptor table with more entries than queue_size must be
+/// clamped to queue_size (spec §2.7.5.3.1: "A driver MUST NOT create a
+/// descriptor chain longer than the Queue Size of the device").
+#[async_test]
+async fn verify_indirect_chain_clamped_to_queue_size(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+    )
+    .unwrap();
+
+    // Build an indirect descriptor pointing to an 8-entry table (> queue_size).
+    let indirect_entries: u16 = 8;
+    let next_descriptor = 0u16;
+    let desc_base = guest.get_queue_descriptor(0, next_descriptor);
+    // Set INDIRECT flag on the ring descriptor.
+    test_mem.modify_memory_map(
+        desc_base + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+    // Point addr/len to our indirect table in the backing buffer area.
+    let buffer_addr = guest.get_queue_descriptor_backing_memory_address(0);
+    test_mem.modify_memory_map(desc_base, &buffer_addr.to_le_bytes(), false);
+    test_mem.modify_memory_map(
+        desc_base + 8,
+        &(indirect_entries as u32 * 16).to_le_bytes(),
+        false,
+    );
+    // Fill out the indirect table: 8 linked entries.
+    for i in 0..indirect_entries {
+        let base = buffer_addr + 0x10 * i as u64;
+        let indirect_buffer_addr = 0xffffffff00000000u64 + 0x1000 * i as u64;
+        test_mem.modify_memory_map(base, &indirect_buffer_addr.to_le_bytes(), false);
+        test_mem.modify_memory_map(base + 8, &0x1000u32.to_le_bytes(), false);
+        let flags = if i < indirect_entries - 1 {
+            u16::from(DescriptorFlags::new().with_next(true))
+        } else {
+            0
+        };
+        test_mem.modify_memory_map(base + 12, &flags.to_le_bytes(), false);
+        let next = if i < indirect_entries - 1 { i + 1 } else { 0 };
+        test_mem.modify_memory_map(base + 14, &next.to_le_bytes(), false);
+    }
+    guest.queue_available_desc(0, next_descriptor);
+
+    let result = queue.try_next();
+    assert!(
+        result.is_err(),
+        "Indirect chain exceeding queue_size must be rejected"
+    );
+}
+
+/// An indirect table with exactly queue_size entries (last has no NEXT)
+/// must succeed — this is the maximum valid indirect chain.
+#[async_test]
+async fn verify_indirect_chain_at_queue_size_succeeds(driver: DefaultDriver) {
+    let queue_size: u16 = 4;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                assert_eq!(work.payload.len(), queue_size as usize);
+                work.complete(99);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    guest.add_indirect_linked_to_avail_queue(0, queue_size);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 0u16);
+    assert_eq!(len, 99);
+    queues[0].stop().await;
+}
+
+/// A chain of normal descriptors followed by an indirect descriptor must work
+/// (spec §2.7.5.3.2: "The device MUST handle the case of zero or more normal
+/// chained descriptors followed by a single descriptor with
+/// flags&VIRTQ_DESC_F_INDIRECT").
+#[async_test]
+async fn verify_normal_then_indirect_succeeds(driver: DefaultDriver) {
+    let queue_size: u16 = 8;
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, queue_size, true);
+    let (tx, mut rx) = mesh::mpsc_channel();
+    let event = Event::new();
+    let mut queues = guest.create_direct_queues(|i| {
+        let tx = tx.clone();
+        CreateDirectQueueParams {
+            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
+                // 1 normal descriptor + 3 indirect entries = 4 payload entries.
+                // (The indirect head descriptor is not itself a payload entry.)
+                assert_eq!(work.payload.len(), 4);
+                work.complete(77);
+            }),
+            notify: Interrupt::from_fn(move || {
+                tx.send(i as usize);
+            }),
+            event: event.clone(),
+        }
+    });
+
+    // Build: desc 0 (normal, NEXT→1) → desc 1 (INDIRECT, points to 3-entry table).
+    // Reserve the two ring descriptors we're using manually.
+    let d0 = guest.reserve_split_descriptor(0);
+    let d1 = guest.reserve_split_descriptor(0);
+    assert_eq!(d0, 0);
+    assert_eq!(d1, 1);
+
+    // Desc 0: normal descriptor with NEXT flag.
+    let desc0_base = guest.get_queue_descriptor(0, 0);
+    test_mem.modify_memory_map(
+        desc0_base + 12,
+        &u16::from(DescriptorFlags::new().with_next(true)).to_le_bytes(),
+        false,
+    );
+    test_mem.modify_memory_map(desc0_base + 14, &1u16.to_le_bytes(), false);
+
+    // Desc 1: INDIRECT descriptor pointing to a 3-entry indirect table.
+    let desc1_base = guest.get_queue_descriptor(0, 1);
+    let indirect_table_addr = 0xAABB00000000u64;
+    let indirect_entries: u16 = 3;
+    test_mem.modify_memory_map(desc1_base, &indirect_table_addr.to_le_bytes(), false);
+    test_mem.modify_memory_map(
+        desc1_base + 8,
+        &(indirect_entries as u32 * 16).to_le_bytes(),
+        false,
+    );
+    test_mem.modify_memory_map(
+        desc1_base + 12,
+        &u16::from(DescriptorFlags::new().with_indirect(true)).to_le_bytes(),
+        false,
+    );
+
+    // Create the indirect table in memory at indirect_table_addr.
+    for i in 0..indirect_entries {
+        let entry_base = indirect_table_addr + 0x10 * i as u64;
+        let entry_buf_addr = 0xDDEE00000000u64 + 0x1000 * i as u64;
+        test_mem.modify_memory_map(entry_base, &entry_buf_addr.to_le_bytes(), false);
+        test_mem.modify_memory_map(entry_base + 8, &0x1000u32.to_le_bytes(), false);
+        let flags = if i < indirect_entries - 1 {
+            u16::from(DescriptorFlags::new().with_next(true))
+        } else {
+            0
+        };
+        test_mem.modify_memory_map(entry_base + 12, &flags.to_le_bytes(), false);
+        let next = if i < indirect_entries - 1 { i + 1 } else { 0 };
+        test_mem.modify_memory_map(entry_base + 14, &next.to_le_bytes(), false);
+    }
+
+    guest.queue_available_desc(0, 0);
+    event.signal();
+    must_recv_in_timeout(&mut rx, Duration::from_millis(100)).await;
+    let (desc, len) = guest.get_next_completed(0).unwrap();
+    assert_eq!(desc, 0u16);
+    assert_eq!(len, 77);
+    queues[0].stop().await;
+}

@@ -350,28 +350,28 @@ impl Iterator for DescriptorReader<'_> {
 
 pub struct DescriptorChain<'a> {
     queue: &'a QueueCoreGetWork,
+    /// Maximum chain length — always the original ring queue size (spec §2.7.5.3.1).
     queue_size: u16,
     indirect_support: bool,
     indirect_queue: Option<GuestMemory>,
+    /// Entry count of the active indirect table, if any.
+    indirect_table_len: Option<u16>,
     descriptor_index: Option<u16>,
     last_primary_desc_index: u16,
     num_read: u16,
-    max_desc_chain: u16,
 }
 
 impl<'a> DescriptorChain<'a> {
-    const MAX_DESC_CHAIN: u16 = 128;
-
     fn new(queue: &'a QueueCoreGetWork, indirect_support: bool, descriptor_index: u16) -> Self {
         Self {
             queue,
             queue_size: queue.size(),
             indirect_support,
             indirect_queue: None,
+            indirect_table_len: None,
             descriptor_index: Some(descriptor_index),
             last_primary_desc_index: descriptor_index,
             num_read: 0,
-            max_desc_chain: std::cmp::min(queue.size(), Self::MAX_DESC_CHAIN),
         }
     }
 
@@ -384,7 +384,7 @@ impl<'a> DescriptorChain<'a> {
                 .as_ref()
                 .unwrap_or(&self.queue.queue_desc),
             descriptor_index,
-            self.indirect_queue.as_ref().map(|_| self.queue_size),
+            self.indirect_table_len,
         )?;
         let descriptor = if !self.indirect_support || !descriptor.flags.indirect() {
             if self.indirect_queue.is_none() {
@@ -402,20 +402,18 @@ impl<'a> DescriptorChain<'a> {
                     .map_err(QueueError::Memory)?,
             );
             self.descriptor_index = Some(0);
-            self.queue_size = std::cmp::min(
-                (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16,
-                self.queue_size,
-            );
-            self.max_desc_chain = std::cmp::min(self.queue_size, Self::MAX_DESC_CHAIN);
+            let indirect_len = (descriptor.length / size_of::<SplitDescriptor>() as u32) as u16;
+            self.indirect_table_len = Some(indirect_len);
             self.queue
-                .descriptor(indirect_queue, 0, Some(self.queue_size))?
+                .descriptor(indirect_queue, 0, Some(indirect_len))?
         };
 
         self.num_read += 1;
-        self.descriptor_index = descriptor.next.map(|next| next % self.queue_size);
-        // Limit the descriptor chain length to avoid running out of memory.
-        // This may be due to a cycle in the descriptor chain.
-        if self.descriptor_index.is_some() && self.num_read == self.max_desc_chain {
+        self.descriptor_index = descriptor.next;
+        // A descriptor chain must not exceed the queue size (virtio spec
+        // §2.7.5.3.1). Reject chains that hit this limit—this also catches
+        // cycles in the descriptor ring.
+        if self.descriptor_index.is_some() && self.num_read == self.queue_size {
             return Err(QueueError::TooLong);
         }
         Ok(Some(descriptor))
