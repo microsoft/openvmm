@@ -17,12 +17,14 @@
 //! `CONNECT <port>` text protocol (the same hybrid vsock protocol used by
 //! Firecracker and others).
 
+use crate::RxWorkQueue;
 use crate::spec::Operation;
 use crate::spec::ShutdownFlags;
 use crate::spec::SocketType;
 use crate::spec::VSOCK_CID_HOST;
 use crate::spec::VsockHeader;
 use crate::spec::VsockPacket;
+use crate::unix_relay::UnixSocketRelay;
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use futures::AsyncReadExt;
@@ -69,6 +71,10 @@ struct Connection {
     /// Total bytes received by the peer (guest) so far.
     peer_fwd_cnt: u32,
     pending_reply: PendingReply,
+    // TODO: I think we need to split this, and then give ownership of the read half to the future
+    // added to the work queue. There also needs to be a way to terminate the future when the,
+    // connection is closed or reset, e.g. an Arc<AtomicBool> or something.
+    socket: PolledSocket<UnixStream>,
 }
 
 /// Messages sent from connection tasks back to the relay worker.
@@ -91,11 +97,8 @@ enum RelayEvent {
 /// destination port.
 pub struct ConnectionManager {
     guest_cid: u64,
-    driver: VmTaskDriver,
-    base_path: PathBuf,
+    relay: UnixSocketRelay,
     conns: HashMap<ConnKey, Connection>,
-    next_local_port: u32,
-    listener: Option<PolledSocket<UnixListener>>,
 }
 
 impl ConnectionManager {
@@ -110,27 +113,13 @@ impl ConnectionManager {
         base_path: PathBuf,
         listener: Option<UnixListener>,
     ) -> anyhow::Result<Self> {
-        let listener = listener
-            .map(|listener| PolledSocket::new(&driver, listener))
-            .transpose()?;
-
         let relay = Self {
             guest_cid,
-            driver: driver.clone(),
-            base_path,
+            relay: UnixSocketRelay::new(driver, base_path),
             conns: HashMap::new(),
-            next_local_port: 1024,
-            listener,
         };
 
         Ok(relay)
-    }
-
-    /// Allocate a local port number for a new connection.
-    fn alloc_local_port(&mut self) -> u32 {
-        let port = self.next_local_port;
-        self.next_local_port = self.next_local_port.wrapping_add(1).max(1024);
-        port
     }
 
     /// Handle a packet received from the guest on the tx virtqueue.
@@ -155,19 +144,31 @@ impl ConnectionManager {
             Operation::REQUEST => {
                 tracing::info!(?packet.header, "connect request");
                 // Guest is initiating a connection to a port on the host.
-                // TODO: Connect
-                // TODO: Handle existing connection
-                self.conns.insert(
-                    key,
-                    Connection {
-                        key,
-                        peer_buf_alloc: packet.header.buf_alloc,
-                        peer_fwd_cnt: packet.header.fwd_cnt,
-                        pending_reply: PendingReply::new().with_respond(true),
-                    },
-                );
+                match self.relay.connect(key.local_port) {
+                    Ok(socket) => {
+                        // TODO: Handle existing connection
+                        self.conns.insert(
+                            key,
+                            Connection {
+                                key,
+                                peer_buf_alloc: packet.header.buf_alloc,
+                                peer_fwd_cnt: packet.header.fwd_cnt,
+                                pending_reply: PendingReply::new().with_respond(true),
+                                socket,
+                            },
+                        );
 
-                Some(RxWork::Connection(key))
+                        Some(RxWork::Connection(key))
+                    }
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            port = key.local_port,
+                            "failed to connect to host socket for vsock request"
+                        );
+                        Some(RxWork::SendReset(key))
+                    }
+                }
             }
             Operation::RW => {
                 // Guest is sending data.
@@ -293,16 +294,21 @@ impl ConnectionManager {
     //     self.new_reply_packet(key, Operation::RESPONSE)
     // }
 
-    pub fn get_rx_packet(&mut self, work: RxWork) -> Option<VsockPacket<'_>> {
+    pub fn get_rx_packet(
+        &mut self,
+        work: RxWork,
+        work_queue: &mut RxWorkQueue,
+    ) -> Option<VsockPacket<'_>> {
         match work {
             RxWork::Connection(key) => {
                 let conn = self.conns.get_mut(&key)?;
                 if conn.pending_reply.reset() {
                     // Remove the connection immediately on reset.
                     self.conns.remove(&key);
-                    return Some(self.new_rst_packet(key));
+                    Some(self.new_rst_packet(key))
                 } else if conn.pending_reply.respond() {
                     conn.pending_reply.set_respond(false);
+
                     Some(self.new_reply_packet(key, Operation::RESPONSE))
                 } else {
                     None
@@ -463,27 +469,6 @@ impl ConnectionManager {
         //     }
         // }
         // packets
-    }
-
-    /// Look up the Unix domain socket path for a given vsock port.
-    fn host_uds_path(&self, port: u32) -> anyhow::Result<PathBuf> {
-        // Try port-specific path first: <base_path>_<port>
-        let mut path = self.base_path.as_os_str().to_owned();
-        path.push(format!("_{port}"));
-        let specific = PathBuf::from(&path);
-        if specific.try_exists()? {
-            return Ok(specific);
-        }
-
-        // Fall back to the base path itself.
-        if self.base_path.try_exists()? {
-            return Ok(self.base_path.clone());
-        }
-
-        anyhow::bail!(
-            "no vsock listener at {} for port {port}",
-            self.base_path.display()
-        );
     }
 
     fn new_reply_packet(&self, key: ConnKey, op: Operation) -> VsockPacket<'_> {

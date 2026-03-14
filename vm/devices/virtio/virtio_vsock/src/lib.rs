@@ -212,9 +212,11 @@ struct VsockWorkerState {
     relay: ConnectionManager,
 }
 
+type RxWorkQueue = FuturesUnordered<Pin<Box<dyn Future<Output = RxWork> + Send>>>;
+
 struct VsockWorker {
     mem: GuestMemory,
-    work: FuturesUnordered<Pin<Box<dyn Future<Output = RxWork> + Send>>>,
+    work: RxWorkQueue,
 }
 
 impl VsockWorker {
