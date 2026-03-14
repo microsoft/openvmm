@@ -164,8 +164,9 @@ impl VirtioMmioDevice {
 
 impl VirtioMmioDevice {
     pub(crate) fn read_u32(&self, address: u64) -> u32 {
-        assert!(address & 3 == 0);
-        match VirtioMmioRegister(address) {
+        let offset = address & 0xfff;
+        assert!(offset & 3 == 0);
+        match VirtioMmioRegister(offset) {
             VirtioMmioRegister::MAGIC_VALUE => u32::from_le_bytes(*b"virt"),
             VirtioMmioRegister::VERSION => 2,
             VirtioMmioRegister::DEVICE_ID => self.device_id,
@@ -271,11 +272,12 @@ impl VirtioMmioDevice {
     }
 
     pub(crate) fn write_u32(&mut self, address: u64, val: u32) {
-        assert!(address & 3 == 0);
+        let offset = address & 0xfff;
+        assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
-        match VirtioMmioRegister(address) {
+        match VirtioMmioRegister(offset) {
             VirtioMmioRegister::DEVICE_FEATURES_SEL => self.device_feature_select = val,
             VirtioMmioRegister::DRIVER_FEATURES => {
                 let bank = self.driver_feature_select as usize;
