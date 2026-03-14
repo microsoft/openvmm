@@ -153,8 +153,9 @@ impl VmTaskDriverBuilder<'_> {
     ///
     /// - **OpenHCL threadpool backend:** strong — tasks run on a
     ///   CPU-affinitized thread for the target VP.
-    /// - **Thread backend (OpenVMM):** a dedicated worker thread is created,
-    ///   but without physical CPU affinity.
+    /// - **Thread backend (OpenVMM):** ignored — the thread backend does
+    ///   not use `run_on_target`. Whether a dedicated thread is created
+    ///   depends solely on whether [`target_vp`](Self::target_vp) is set.
     /// - **Single-driver backend:** ignored — everything runs on one thread.
     ///
     /// StorVSP uses `run_on_target(true)` together with [`target_vp`](Self::target_vp)
@@ -210,9 +211,11 @@ pub struct VmTaskDriver {
 impl VmTaskDriver {
     /// Updates the target VP for the task.
     ///
-    /// After this call, newly scheduled work and IO will target `target_vp`.
-    /// In-flight IO is **not** retargeted — it completes on the original VP's
-    /// thread.
+    /// In backends that support retargeting (e.g., the OpenHCL threadpool),
+    /// newly scheduled work and IO will target `target_vp` after this call.
+    /// In-flight IO is **not** retargeted — it completes on the original
+    /// VP's thread. In backends that don't support retargeting (e.g., the
+    /// OpenVMM thread backend), this is a no-op.
     pub fn retarget_vp(&self, target_vp: u32) {
         self.inner.retarget_vp(target_vp)
     }
