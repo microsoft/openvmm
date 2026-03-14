@@ -54,7 +54,12 @@ impl VpSpawner {
         if underhill_threadpool::is_cpu_online(self.cpu)? {
             self.spawn_main_vp().await
         } else {
-            // The CPU is not online, so this should be a sidecar VP. Run the VP
+            // No sidecar and the CPU is offline; this VP cannot run.
+            if !self.vp.sidecar_enabled() {
+                anyhow::bail!("cpu {} is offline", self.cpu);
+            }
+
+            // The CPU is not online and it's a sidecar managed CPU. Run the VP
             // remotely via the sidecar kernel.
             if self.isolation.is_isolated() {
                 anyhow::bail!(
