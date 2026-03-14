@@ -29,10 +29,11 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -55,7 +56,7 @@ impl VirtioRngDevice {
     }
 }
 
-impl VirtioDevice for VirtioRngDevice {
+impl VirtioDeviceV2 for VirtioRngDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_RNG_DEVICE_ID,
@@ -72,20 +73,24 @@ impl VirtioDevice for VirtioRngDevice {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, mut resources: Resources) -> anyhow::Result<()> {
-        let queue_resources = resources.queues.remove(0);
-        if !queue_resources.params.enable {
-            return Ok(());
-        }
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
 
-        let queue_event = PolledWait::new(&self.driver, queue_resources.event)
+        let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            resources.features,
-            queue_resources.params,
+            features.clone(),
+            resources.params,
             self.worker.task().mem.clone(),
-            queue_resources.notify,
+            resources.notify,
             queue_event,
+            initial_state,
         )
         .context("failed to create virtio queue")?;
 
@@ -95,12 +100,14 @@ impl VirtioDevice for VirtioRngDevice {
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(self.worker.poll_stop(cx));
-        if self.worker.has_state() {
-            self.worker.remove();
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return Poll::Ready(None);
         }
-        Poll::Ready(())
+        ready!(self.worker.poll_stop(cx));
+        let state = self.worker.remove().queue.queue_state();
+        Poll::Ready(Some(state))
     }
 }
 
@@ -183,8 +190,8 @@ mod tests {
     use pal_event::Event;
     use test_with_tracing::test;
     use virtio::QueueResources;
-    use virtio::Resources;
     use virtio::queue::QueueParams;
+    use virtio::spec::VirtioDeviceFeatures;
     use virtio::spec::queue::AVAIL_ELEMENT_SIZE;
     use virtio::spec::queue::AVAIL_OFFSET_FLAGS;
     use virtio::spec::queue::AVAIL_OFFSET_IDX;
@@ -309,24 +316,24 @@ mod tests {
         fn enable(&mut self) {
             let interrupt = Interrupt::from_event(self.interrupt_event.clone());
 
-            let resources = Resources {
-                features: VirtioDeviceFeatures::new(),
-                queues: vec![QueueResources {
-                    params: QueueParams {
-                        size: QUEUE_SIZE,
-                        enable: true,
-                        desc_addr: DESC_ADDR,
-                        avail_addr: AVAIL_ADDR,
-                        used_addr: USED_ADDR,
+            self.device
+                .start_queue(
+                    0,
+                    QueueResources {
+                        params: QueueParams {
+                            size: QUEUE_SIZE,
+                            enable: true,
+                            desc_addr: DESC_ADDR,
+                            avail_addr: AVAIL_ADDR,
+                            used_addr: USED_ADDR,
+                        },
+                        notify: interrupt,
+                        event: self.queue_event.clone(),
                     },
-                    notify: interrupt,
-                    event: self.queue_event.clone(),
-                }],
-                shared_memory_region: None,
-                shared_memory_size: 0,
-            };
-
-            self.device.enable(resources).unwrap();
+                    &VirtioDeviceFeatures::new(),
+                    None,
+                )
+                .unwrap();
         }
 
         /// Submit a single writable buffer and wait for completion.
