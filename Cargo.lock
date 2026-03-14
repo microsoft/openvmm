@@ -4539,6 +4539,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
+ "zerocopy",
 ]
 
 [[package]]
