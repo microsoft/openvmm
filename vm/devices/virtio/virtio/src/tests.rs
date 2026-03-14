@@ -386,6 +386,7 @@ impl VirtioTestGuest {
                     self.mem(),
                     params.notify,
                     queue_event,
+                    None,
                 )
                 .expect("failed to create virtio queue");
                 let mut tc = TaskControl::new(TestQueueWorker {
@@ -1272,6 +1273,7 @@ impl VirtioDevice for TestDevice {
                     self.mem.clone(),
                     queue_resources.notify,
                     queue_event,
+                    None,
                 )
                 .expect("failed to create virtio queue");
 
@@ -2921,6 +2923,7 @@ async fn verify_chain_cycle_rejected(driver: DefaultDriver) {
         guest.mem(),
         Interrupt::from_fn(|| {}),
         queue_event,
+        None,
     )
     .unwrap();
 
@@ -2954,6 +2957,7 @@ async fn verify_indirect_chain_clamped_to_queue_size(driver: DefaultDriver) {
         guest.mem(),
         Interrupt::from_fn(|| {}),
         queue_event,
+        None,
     )
     .unwrap();
 
@@ -3129,6 +3133,7 @@ async fn verify_peek_does_not_advance(mut guest: VirtioTestGuest) {
         guest.mem(),
         notify,
         queue_event,
+        None,
     )
     .expect("failed to create virtio queue");
 
@@ -3178,6 +3183,32 @@ async fn verify_peek_does_not_advance(mut guest: VirtioTestGuest) {
 }
 
 #[async_test]
+async fn split_queue_state_initial_zero(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, false);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let state = queue.queue_state();
+    assert_eq!(
+        state,
+        crate::queue::QueueState {
+            avail_index: 0,
+            used_index: 0
+        }
+    );
+}
+
+#[async_test]
+#[async_test]
 async fn verify_split_peek_does_not_advance(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_peek_does_not_advance(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
@@ -3199,6 +3230,7 @@ async fn verify_peek_then_next(mut guest: VirtioTestGuest) {
         guest.mem(),
         notify,
         queue_event,
+        None,
     )
     .expect("failed to create virtio queue");
 
@@ -3263,6 +3295,7 @@ async fn verify_packed_peek_linked(mut guest: VirtioTestGuest) {
         guest.mem(),
         notify,
         queue_event,
+        None,
     )
     .expect("failed to create virtio queue");
 
@@ -3318,4 +3351,96 @@ async fn verify_packed_peek_linked_multi_descriptor(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     // Need enough queue size to hold the linked descriptors.
     verify_packed_peek_linked(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true)).await;
+}
+
+#[async_test]
+async fn split_queue_state_advances_on_pop(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, false);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+
+    guest.queue_available_desc(0, 0);
+    let work = queue.try_next().unwrap().unwrap();
+    let state = queue.queue_state();
+    assert_eq!(state.avail_index, 1);
+    // Complete the descriptor → used_index advances
+    drop(work);
+    let state = queue.queue_state();
+    assert_eq!(state.used_index, 1);
+}
+
+#[async_test]
+async fn split_queue_new_with_state_roundtrip(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, false);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let initial = crate::queue::QueueState {
+        avail_index: 5,
+        used_index: 3,
+    };
+    let queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        Some(initial),
+    )
+    .unwrap();
+    assert_eq!(queue.queue_state(), initial);
+}
+
+#[async_test]
+async fn packed_queue_state_initial(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, false);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    let queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        None,
+    )
+    .unwrap();
+    let state = queue.queue_state();
+    // Initial packed state: index=0, wrap=true → avail = 0 | (1 << 15) = 0x8000
+    assert_eq!(state.avail_index, 0x8000);
+    assert_eq!(state.used_index, 0x8000);
+}
+
+#[async_test]
+async fn packed_queue_new_with_state_roundtrip(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let guest = VirtioTestGuest::new_packed(&driver, &test_mem, 1, 4, false);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
+    // index=3, wrap=true → 3 | 0x8000 = 0x8003
+    let initial = crate::queue::QueueState {
+        avail_index: 0x8003,
+        used_index: 0x8001,
+    };
+    let queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        Interrupt::from_fn(|| {}),
+        queue_event,
+        Some(initial),
+    )
+    .unwrap();
+    assert_eq!(queue.queue_state(), initial);
 }

@@ -284,6 +284,7 @@ impl VirtioDevice for Device {
                 self.memory.clone(),
                 rx_resources.notify,
                 rx_queue_event,
+                None,
             )
             .context("failed creating virtio net receive queue")?;
 
@@ -296,6 +297,7 @@ impl VirtioDevice for Device {
                 self.memory.clone(),
                 tx_resources.notify,
                 tx_queue_event,
+                None,
             )
             .context("failed creating virtio net transmit queue")?;
 

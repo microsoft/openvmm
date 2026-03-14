@@ -368,6 +368,7 @@ impl VirtioDevice for VirtioBlkDevice {
             self.worker.task().memory.clone(),
             queue_resources.notify,
             queue_event,
+            None,
         )
         .context("failed to create virtio queue")?;
 

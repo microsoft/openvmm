@@ -122,6 +122,7 @@ impl VirtioDevice for VirtioPlan9Device {
             self.worker.task().mem.clone(),
             queue_resources.notify,
             queue_event,
+            None,
         )
         .context("failed to create virtio queue")?;
 

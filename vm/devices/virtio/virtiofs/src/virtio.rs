@@ -155,6 +155,7 @@ impl VirtioDevice for VirtioFsDevice {
                     self.mem.clone(),
                     queue_resources.notify,
                     queue_event,
+                    None,
                 )
                 .expect("failed to create virtio queue");
 

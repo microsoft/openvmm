@@ -54,6 +54,8 @@ impl PackedQueueGetWork {
         _features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_index: u16,
+        initial_wrap: bool,
     ) -> Result<Self, QueueError> {
         let queue_desc = mem
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
@@ -69,9 +71,14 @@ impl PackedQueueGetWork {
             queue_desc,
             device_event,
             queue_size: params.size,
-            next_avail_index: 0,
-            wrapped_bit: true,
+            next_avail_index: initial_index,
+            wrapped_bit: initial_wrap,
         })
+    }
+
+    /// Return the packed avail state: `index | (wrap_counter << 15)`.
+    pub fn avail_state(&self) -> u16 {
+        self.next_avail_index | (u16::from(self.wrapped_bit) << 15)
     }
 
     pub fn is_available(&self) -> Result<Option<u16>, QueueError> {
@@ -128,6 +135,8 @@ impl PackedQueueCompleteWork {
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_index: u16,
+        initial_wrap: bool,
     ) -> Result<Self, QueueError> {
         let queue_desc = mem
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
@@ -143,10 +152,15 @@ impl PackedQueueCompleteWork {
             queue_desc,
             driver_event,
             queue_size: params.size,
-            next_index: 0,
-            wrapped_bit: true,
+            next_index: initial_index,
+            wrapped_bit: initial_wrap,
             use_event_index: features.bank0().ring_event_idx(),
         })
+    }
+
+    /// Return the packed used state: `index | (wrap_counter << 15)`.
+    pub fn used_state(&self) -> u16 {
+        self.next_index | (u16::from(self.wrapped_bit) << 15)
     }
 
     pub fn complete_descriptor(
