@@ -23,6 +23,7 @@ libc.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 guestmem.workspace = true
