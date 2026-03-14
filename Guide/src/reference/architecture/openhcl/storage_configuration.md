@@ -23,6 +23,21 @@ The same tree appears in three places:
 
 This page lines those views up so you do not have to infer the schema from the JSON alone.
 
+## Fixed settings
+
+The `fixed` section of VTL2 settings contains values that apply
+globally, not per-controller. The key storage-related field is
+`scsi_sub_channels`:
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `scsi_sub_channels` | `u16` | `0` | Maximum sub-channel count for all SCSI controllers. Clamped to 256 at runtime. |
+| `io_ring_size` | `u32` | `256` | Size of each per-CPU io_uring submission queue in the OpenHCL threadpool. Not StorVSP-specific — affects all async I/O. |
+
+See [StorVSP Channels & Subchannels](../../devices/vmbus/storvsp_channels.md)
+for the full subchannel model, performance characteristics, and
+configuration guidance.
+
 ## One controller tree
 
 ```text
@@ -175,6 +190,7 @@ The runtime model and schema enforce several important constraints:
 | `Striped` must carry at least two backing devices | `schema::v1` rejects too few devices |
 | NVMe namespace IDs cannot be `0` or `!0` | `schema::v1` validates `location` for NVMe |
 | NVMe children cannot be DVDs | `schema::v1` rejects `is_dvd` on NVMe |
+| SCSI subchannel count is clamped to 256 | `underhill_core::dispatch::vtl2_settings_worker`, `scsi_sub_channels.min(256)` |
 | IDE can be a guest-visible target but not a VTL2 backing source | `petri::vtl2_settings` and `openvmm_entry::storage_builder` reject IDE backing |
 
 These rules are useful when debugging configuration failures because they tell you whether the problem is in controller selection, child addressing, or backing-device declaration.
