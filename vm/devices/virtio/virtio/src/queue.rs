@@ -117,8 +117,9 @@ impl QueueCoreGetWork {
         mem: GuestMemory,
         params: QueueParams,
     ) -> Result<Self, QueueError> {
-        // Queue size must be a power of 2
-        if !params.size.is_power_of_two() {
+        // Split queues require power-of-2 sizes (virtio spec §2.7.1).
+        // Packed queues do not (§2.8.10.1).
+        if !features.bank1().ring_packed() && !params.size.is_power_of_two() {
             return Err(QueueError::InvalidQueueSize(params.size));
         }
         let queue_desc = mem
@@ -234,18 +235,24 @@ impl QueueCoreGetWork {
                     length: descriptor.length.get(),
                     flags: descriptor.flags(),
                     buffer_id: Some(descriptor.buffer_id.get()),
-                    next: if descriptor.flags().next() {
-                        // Packed ring descriptors are sequential and wrap at
-                        // queue_size (guaranteed power of 2).
-                        Some(index.wrapping_add(1) & (self.queue_size - 1))
-                    } else if let Some(active_indirect_len) = active_indirect_len {
+                    next: if let Some(active_indirect_len) = active_indirect_len {
                         // Packed descriptors consume all of the indirect
-                        // descriptors, even when the next flag is not set.
+                        // descriptors based on the buffer length, regardless
+                        // of the NEXT flag.
                         let next = index.wrapping_add(1);
                         if next < active_indirect_len {
                             Some(next)
                         } else {
                             None
+                        }
+                    } else if descriptor.flags().next() {
+                        // Packed ring descriptors are sequential and wrap
+                        // at queue_size.
+                        let next = index.wrapping_add(1);
+                        if next >= self.queue_size {
+                            Some(0)
+                        } else {
+                            Some(next)
                         }
                     } else {
                         None
