@@ -207,6 +207,7 @@ impl VirtioDeviceV2 for VirtioFsDevice {
     fn reset(&mut self) {
         self.workers.clear();
         self.shared_memory_region = None;
+        self.fs.destroy();
     }
 }
 
