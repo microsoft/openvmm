@@ -50,7 +50,7 @@ use thiserror::Error;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::QueueState;
@@ -251,7 +251,7 @@ enum QueuePairState {
     Active,
 }
 
-impl VirtioDeviceV2 for Device {
+impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
         let offloads = &self.adapter.tx_offload_support;
 

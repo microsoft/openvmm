@@ -6,7 +6,6 @@
 use crate::VirtioBlkDevice;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
-use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::blk::VirtioBlkHandle;
@@ -44,13 +43,12 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioBlkHandle> for VirtioBlkReso
             )
             .await?;
 
-        let device = VirtioBlkDevice::new(
+        Ok(VirtioBlkDevice::new(
             input.driver_source,
             input.guest_memory.clone(),
             disk.0,
             resource.read_only,
-        );
-
-        Ok(VirtioDeviceAdapter::new(device).into())
+        )
+        .into())
     }
 }

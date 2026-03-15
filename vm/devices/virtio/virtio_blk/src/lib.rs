@@ -35,7 +35,7 @@ use unicycle::FuturesUnordered;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::QueueState;
@@ -296,7 +296,7 @@ impl VirtioBlkDevice {
     }
 }
 
-impl VirtioDeviceV2 for VirtioBlkDevice {
+impl VirtioDevice for VirtioBlkDevice {
     fn traits(&self) -> DeviceTraits {
         let mut features = VIRTIO_BLK_F_SEG_MAX
             | VIRTIO_BLK_F_BLK_SIZE

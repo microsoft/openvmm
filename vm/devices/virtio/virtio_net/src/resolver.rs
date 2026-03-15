@@ -6,7 +6,6 @@
 use crate::Device;
 use async_trait::async_trait;
 use net_backend::resolve::ResolveEndpointParams;
-use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::net::VirtioNetHandle;
@@ -55,6 +54,6 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
             resource.mac_address,
         );
 
-        Ok(VirtioDeviceAdapter::new(device).into())
+        Ok(device.into())
     }
 }
