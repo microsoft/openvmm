@@ -316,6 +316,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_madvise_hugepage() {
         let page_size = SparseMapping::page_size();
         let size = 2 * 1024 * 1024;
