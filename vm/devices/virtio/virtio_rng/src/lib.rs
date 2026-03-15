@@ -66,7 +66,7 @@ impl VirtioDevice for VirtioRngDevice {
         }
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
