@@ -68,6 +68,8 @@ pub struct PetriVmArtifacts<T: PetriVmmBackend> {
     pub agent_image: Option<AgentImage>,
     /// Agent to run in OpenHCL
     pub openhcl_agent_image: Option<AgentImage>,
+    /// Raw pipette binary path (for embedding in initrd via CPIO append)
+    pub pipette_binary: Option<ResolvedArtifact>,
 }
 
 impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
@@ -84,6 +86,16 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
             return None;
         }
 
+        let pipette_binary = if with_vtl0_pipette {
+            Some(Self::resolve_pipette_binary(
+                resolver,
+                firmware.os_flavor(),
+                arch,
+            ))
+        } else {
+            None
+        };
+
         Some(Self {
             backend: T::new(resolver),
             arch,
@@ -97,8 +109,34 @@ impl<T: PetriVmmBackend> PetriVmArtifacts<T> {
             } else {
                 None
             },
+            pipette_binary,
             firmware,
         })
+    }
+
+    fn resolve_pipette_binary(
+        resolver: &ArtifactResolver<'_>,
+        os_flavor: OsFlavor,
+        arch: MachineArch,
+    ) -> ResolvedArtifact {
+        use petri_artifacts_common::artifacts as common_artifacts;
+        match (os_flavor, arch) {
+            (OsFlavor::Linux, MachineArch::X86_64) => resolver
+                .require(common_artifacts::PIPETTE_LINUX_X64)
+                .erase(),
+            (OsFlavor::Linux, MachineArch::Aarch64) => resolver
+                .require(common_artifacts::PIPETTE_LINUX_AARCH64)
+                .erase(),
+            (OsFlavor::Windows, MachineArch::X86_64) => resolver
+                .require(common_artifacts::PIPETTE_WINDOWS_X64)
+                .erase(),
+            (OsFlavor::Windows, MachineArch::Aarch64) => resolver
+                .require(common_artifacts::PIPETTE_WINDOWS_AARCH64)
+                .erase(),
+            (OsFlavor::FreeBsd | OsFlavor::Uefi, _) => {
+                panic!("No pipette binary for this OS flavor")
+            }
+        }
     }
 }
 
@@ -130,6 +168,11 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     openhcl_agent_image: Option<AgentImage>,
     /// The boot device type for the VM
     boot_device_type: BootDeviceType,
+
+    // Raw pipette binary path (for CPIO embedding in initrd).
+    pipette_binary: Option<ResolvedArtifact>,
+    // Pre-built initrd with pipette already injected (skips runtime injection).
+    prebuilt_initrd: Option<PathBuf>,
 }
 
 impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
@@ -146,6 +189,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("agent_image", &self.agent_image)
             .field("openhcl_agent_image", &self.openhcl_agent_image)
             .field("boot_device_type", &self.boot_device_type)
+            .field("prebuilt_initrd", &self.prebuilt_initrd)
             .finish()
     }
 }
@@ -190,6 +234,12 @@ pub struct PetriVmProperties {
     pub using_vpci: bool,
     /// The OS flavor of the guest in the VM
     pub os_flavor: OsFlavor,
+    /// Pipette embeds in initrd as PID 1 (non-OpenHCL Linux direct boot)
+    pub uses_pipette_as_init: bool,
+    /// Pre-built initrd path with pipette already injected
+    pub prebuilt_initrd: Option<PathBuf>,
+    /// Whether the VM has a CIDATA agent disk attached
+    pub has_agent_disk: bool,
 }
 
 /// VM configuration that can be changed after the VM is created
@@ -290,6 +340,7 @@ pub struct PetriVm<T: PetriVmmBackend> {
     guest_quirks: GuestQuirksInner,
     vmm_quirks: VmmQuirks,
     expected_boot_event: Option<FirmwareEvent>,
+    uses_pipette_as_init: bool,
 
     config: PetriVmRuntimeConfig,
 }
@@ -347,9 +398,68 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             agent_image: artifacts.agent_image,
             openhcl_agent_image: artifacts.openhcl_agent_image,
             boot_device_type,
+
+            pipette_binary: artifacts.pipette_binary,
+            prebuilt_initrd: None,
         }
         .add_petri_scsi_controllers()
         .add_guest_crash_disk(params.post_test_hooks))
+    }
+
+    /// Supply a pre-built initrd with pipette already injected.
+    ///
+    /// When set, the builder skips the runtime gzip decompress/inject/
+    /// recompress cycle, using this initrd directly. Use
+    /// [`prepare_initrd`](Self::prepare_initrd) to build the initrd
+    /// ahead of time.
+    pub fn with_prebuilt_initrd(mut self, path: PathBuf) -> Self {
+        self.prebuilt_initrd = Some(path);
+        self
+    }
+
+    /// Pre-build the modified initrd with pipette injected.
+    ///
+    /// Reads the original initrd from the firmware artifacts, injects
+    /// the pipette binary via CPIO, and writes the result to a temp file.
+    /// Returns the path to the temp file. The caller must keep the
+    /// `TempPath` alive until after the VM boots.
+    ///
+    /// Call this once before timing, then pass the path to
+    /// [`with_prebuilt_initrd`](Self::with_prebuilt_initrd) for each
+    /// iteration.
+    pub fn prepare_initrd(&self) -> anyhow::Result<TempPath> {
+        use anyhow::Context;
+        use std::io::Write;
+
+        let initrd_path = self
+            .config
+            .firmware
+            .linux_direct_initrd()
+            .context("prepare_initrd requires Linux direct boot with initrd")?;
+        let pipette_path = self
+            .pipette_binary
+            .as_ref()
+            .context("prepare_initrd requires a pipette binary")?;
+
+        let initrd_gz = std::fs::read(initrd_path)
+            .with_context(|| format!("failed to read initrd at {}", initrd_path.display()))?;
+        let pipette_data = std::fs::read(pipette_path.get()).with_context(|| {
+            format!(
+                "failed to read pipette binary at {}",
+                pipette_path.get().display()
+            )
+        })?;
+
+        let merged_gz =
+            crate::cpio::inject_into_initrd(&initrd_gz, "pipette", &pipette_data, 0o100755)
+                .context("failed to inject pipette into initrd")?;
+
+        let mut tmp = tempfile::NamedTempFile::new()
+            .context("failed to create temp file for pre-built initrd")?;
+        tmp.write_all(&merged_gz)
+            .context("failed to write pre-built initrd")?;
+
+        Ok(tmp.into_temp_path())
     }
 
     fn add_petri_scsi_controllers(self) -> Self {
@@ -579,14 +689,30 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             using_vtl0_pipette: self.using_vtl0_pipette(),
             using_vpci: self.boot_device_type.requires_vpci_boot(),
             os_flavor: self.config.firmware.os_flavor(),
+            uses_pipette_as_init: self.uses_pipette_as_init(),
+            prebuilt_initrd: self.prebuilt_initrd.clone(),
+            has_agent_disk: self.agent_image.is_some(),
         }
+    }
+
+    /// Whether pipette will run as PID 1 init in the initrd.
+    ///
+    /// True for non-OpenHCL Linux direct boot when a pipette binary is
+    /// available. Pipette is injected into the initrd via CPIO and set
+    /// as `rdinit=/pipette`.
+    fn uses_pipette_as_init(&self) -> bool {
+        self.config.firmware.is_linux_direct()
+            && !self.config.firmware.is_openhcl()
+            && self.pipette_binary.is_some()
     }
 
     /// Whether this VM is using pipette in VTL0
     pub fn using_vtl0_pipette(&self) -> bool {
-        self.agent_image
-            .as_ref()
-            .is_some_and(|x| x.contains_pipette())
+        self.uses_pipette_as_init()
+            || self
+                .agent_image
+                .as_ref()
+                .is_some_and(|x| x.contains_pipette())
     }
 
     /// Build and run the VM, then wait for the VM to emit the expected boot
@@ -610,10 +736,24 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // Add the boot disk now to allow the test to modify the boot type
         // Add the agent disks now to allow the test to add custom files
         self = self.add_boot_disk().add_agent_disks();
+
+        // Auto-prepare the initrd with pipette injected if needed.
+        // This centralizes the injection logic so backends only ever
+        // receive a prebuilt_initrd path.
+        let _prepared_initrd_guard;
+        if self.uses_pipette_as_init() && self.prebuilt_initrd.is_none() {
+            let tmp = self.prepare_initrd()?;
+            self.prebuilt_initrd = Some(tmp.to_path_buf());
+            _prepared_initrd_guard = Some(tmp);
+        } else {
+            _prepared_initrd_guard = None;
+        }
+
         tracing::debug!(builder = ?self);
 
         let arch = self.config.arch;
         let expect_reset = self.expect_reset();
+        let uses_pipette_as_init = self.uses_pipette_as_init();
         let properties = self.properties();
 
         let (mut runtime, config) = self
@@ -638,6 +778,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             guest_quirks: self.guest_quirks,
             vmm_quirks: self.vmm_quirks,
             expected_boot_event: self.expected_boot_event,
+            uses_pipette_as_init,
 
             config,
         };
@@ -1342,7 +1483,12 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         // connecting to the agent.
         // TODO: remove this once the bug is fixed, since it shouldn't be
         // necessary and a guest could in theory support pipette and not the IC
-        self.runtime.wait_for_enlightened_shutdown_ready().await?;
+        //
+        // Skip when pipette runs as PID 1 init — the shutdown IC may not
+        // be present (e.g., minimal mode).
+        if !self.uses_pipette_as_init {
+            self.runtime.wait_for_enlightened_shutdown_ready().await?;
+        }
         self.runtime.wait_for_agent(false).await
     }
 
@@ -2127,6 +2273,14 @@ impl Firmware {
             | Firmware::Uefi { .. }
             | Firmware::OpenhclUefi { .. }
             | Firmware::OpenhclPcat { .. } => false,
+        }
+    }
+
+    /// Get the initrd path for Linux direct boot firmware.
+    pub fn linux_direct_initrd(&self) -> Option<&Path> {
+        match self {
+            Firmware::LinuxDirect { initrd, .. } => Some(initrd.get()),
+            _ => None,
         }
     }
 

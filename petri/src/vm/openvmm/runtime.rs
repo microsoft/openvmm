@@ -498,9 +498,35 @@ impl PetriVmInner {
             &self.resources.output_dir,
         )
         .await
-        .context("failed to connect to pipette");
+        .context("failed to connect to pipette")?;
         tracing::info!(set_high_vtl, "completed pipette handshake");
-        client
+
+        // When pipette runs as PID 1 init and a CIDATA agent disk is
+        // attached, mount it so test files are available at /cidata.
+        if !set_high_vtl
+            && self.resources.properties.uses_pipette_as_init
+            && self.resources.properties.has_agent_disk
+        {
+            tracing::info!("mounting CIDATA agent disk via pipette");
+            client
+                .unix_shell()
+                .cmd("mkdir")
+                .arg("-p")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to create /cidata mount point")?;
+            client
+                .unix_shell()
+                .cmd("mount")
+                .arg("LABEL=cidata")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to mount CIDATA disk")?;
+        }
+
+        Ok(client)
     }
 
     async fn resume(&self) -> anyhow::Result<()> {

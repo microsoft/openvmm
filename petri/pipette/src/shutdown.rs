@@ -3,12 +3,32 @@
 
 //! Handler for the power off request.
 
-// UNSAFETY: required for Windows shutdown API
-#![cfg_attr(windows, expect(unsafe_code))]
+// UNSAFETY: required for Windows and Linux shutdown APIs
+#![cfg_attr(any(windows, target_os = "linux"), expect(unsafe_code))]
 
 #[cfg(target_os = "linux")]
 pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
     use anyhow::Context;
+
+    // When forked from PID 1 (the pipette-as-init fork pattern), call
+    // reboot(2) directly. No external `poweroff` binary exists in the
+    // initrd.
+    if crate::init::was_forked_from_pid1() {
+        let cmd = match request.shutdown_type {
+            pipette_protocol::ShutdownType::PowerOff => libc::RB_POWER_OFF,
+            pipette_protocol::ShutdownType::Reboot => libc::RB_AUTOBOOT,
+        };
+
+        // Flush any pending writes before powering off.
+        //
+        // SAFETY: calling as documented.
+        unsafe { libc::sync() };
+        // reboot(2) with RB_POWER_OFF / RB_AUTOBOOT does not return on success.
+        //
+        // SAFETY: calling as documented with a valid cmd.
+        unsafe { libc::reboot(cmd) };
+        anyhow::bail!("reboot(2) syscall returned unexpectedly");
+    }
 
     let program = match request.shutdown_type {
         pipette_protocol::ShutdownType::PowerOff => "poweroff",

@@ -115,7 +115,10 @@ impl PetriVmConfigOpenVmm {
     /// Run the VM, configuring pipette to automatically start if it is
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
-        let launch_linux_direct_pipette = if self.resources.properties.using_vtl0_pipette {
+        let launch_linux_direct_pipette = if self.resources.properties.uses_pipette_as_init {
+            // Pipette runs as PID 1 from the initrd — no serial agent needed
+            false
+        } else if self.resources.properties.using_vtl0_pipette {
             if matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
                 && !self.resources.properties.is_isolated
             {

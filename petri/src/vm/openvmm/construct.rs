@@ -135,6 +135,7 @@ impl PetriVmConfigOpenVmm {
             tpm_config: tpm_config.as_ref(),
             mesh: &mesh,
             openvmm_path,
+            uses_pipette_as_init: properties.uses_pipette_as_init,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -156,7 +157,23 @@ impl PetriVmConfigOpenVmm {
             },
         );
 
-        let load_mode = setup.load_firmware()?;
+        let mut load_mode = setup.load_firmware()?;
+
+        // If using pipette-as-init, replace the initrd with the pre-built
+        // one that has pipette injected. run_core() guarantees that
+        // prebuilt_initrd is set when uses_pipette_as_init is true.
+        if properties.uses_pipette_as_init {
+            if let LoadMode::Linux { initrd, .. } = &mut load_mode {
+                let prebuilt = properties
+                    .prebuilt_initrd
+                    .as_ref()
+                    .expect("uses_pipette_as_init requires prebuilt_initrd");
+                let file = std::fs::File::open(prebuilt).with_context(|| {
+                    format!("failed to open prebuilt initrd at {}", prebuilt.display())
+                })?;
+                *initrd = Some(file);
+            }
+        }
 
         let SerialData {
             mut emulated_serial_config,
@@ -523,6 +540,7 @@ struct PetriVmConfigSetupCore<'a> {
     tpm_config: Option<&'a TpmConfig>,
     mesh: &'a Mesh,
     openvmm_path: &'a ResolvedArtifact,
+    uses_pipette_as_init: bool,
 }
 
 struct SerialData {
@@ -613,8 +631,8 @@ impl PetriVmConfigSetupCore<'_> {
         Ok(match (self.arch, &self.firmware) {
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
-                    MachineArch::X86_64 => "console=ttyS0",
-                    MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
+                    MachineArch::X86_64 => " console=ttyS0",
+                    MachineArch::Aarch64 => " console=ttyAMA0 earlycon",
                 };
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?
@@ -622,12 +640,20 @@ impl PetriVmConfigSetupCore<'_> {
                 let initrd = File::open(initrd.clone())
                     .context("Failed to open initrd")?
                     .into();
+
+                let init = if self.uses_pipette_as_init {
+                    "/pipette"
+                } else {
+                    "/bin/sh"
+                };
+
+                let cmdline =
+                    format!("{console} debug panic=-1 rdinit={init} {VIRTIO_VSOCK_BLACKLIST}");
+
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
-                    cmdline: format!(
-                        "{console} debug panic=-1 rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}"
-                    ),
+                    cmdline,
                     custom_dsdt: None,
                     enable_serial: true,
                 }
