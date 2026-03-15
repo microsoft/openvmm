@@ -694,11 +694,6 @@ impl SparseMapping {
         Ok(())
     }
 
-    /// No-op on Windows — Transparent Huge Pages are a Linux concept.
-    pub fn madvise_hugepage(&self, _offset: usize, _len: usize) -> Result<(), Error> {
-        Ok(())
-    }
-
     /// Unmaps a range of mappings.
     pub fn unmap(&self, offset: usize, len: usize) -> io::Result<()> {
         let end = self.validate_offset_len(offset, len)?;

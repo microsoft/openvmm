@@ -327,6 +327,7 @@ impl GuestMemoryBuilder {
 
             // Mark private RAM as THP-eligible so khugepaged can collapse
             // 4K pages into 2MB huge pages.
+            #[cfg(target_os = "linux")]
             if self.transparent_hugepages {
                 for range in &ram_ranges {
                     if let Err(e) =

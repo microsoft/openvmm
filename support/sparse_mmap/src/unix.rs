@@ -375,12 +375,6 @@ impl SparseMapping {
         Ok(())
     }
 
-    /// No-op on non-Linux platforms.
-    #[cfg(not(target_os = "linux"))]
-    pub fn madvise_hugepage(&self, _offset: usize, _len: usize) -> Result<(), Error> {
-        Ok(())
-    }
-
     /// Commits a range of memory, making it accessible.
     ///
     /// On Linux, this is a no-op because the kernel handles page faults

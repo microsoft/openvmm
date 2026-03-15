@@ -277,6 +277,7 @@ impl VaMapper {
     /// Marks a range as eligible for Transparent Huge Pages.
     ///
     /// Only valid when private_ram mode is enabled.
+    #[cfg(target_os = "linux")]
     pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         assert!(
             self.private_ram,
