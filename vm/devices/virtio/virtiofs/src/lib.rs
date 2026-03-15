@@ -396,11 +396,10 @@ impl VirtioFs {
             return Ok(());
         }
 
-        // This section exists to superceed error codes when various combination of flags 
+        // This section exists to supersede error codes when various combination of flags
         // are passed to the open() call. This helps maintain POSIX compatibility
-        // If O_CREAT && file_exists => EROFS
         // If O_CREAT | O_EXCL && file_exists => EEXIST
-        // If O_CREAT && file_exists => fallthrough to check other flags
+        // If O_CREAT && file_exists => fallthrough to check other checks
         // If O_CREAT && !file_exists => EROFS
         // Other errors that occur while checking file_exists should bubble up
         if flags & lx::O_CREAT as u32 != 0 {
