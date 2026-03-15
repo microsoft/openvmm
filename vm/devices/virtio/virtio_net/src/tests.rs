@@ -31,8 +31,7 @@ use std::task::Waker;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::VirtioDeviceV2;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
@@ -542,10 +541,12 @@ impl TestHarness {
         let rx_interrupt = Interrupt::from_event(self.rx_interrupt_event.clone());
         let tx_interrupt = Interrupt::from_event(self.tx_interrupt_event.clone());
 
-        let resources = Resources {
-            features: VirtioDeviceFeatures::new(),
-            queues: vec![
-                // Queue 0: RX
+        let features = VirtioDeviceFeatures::new();
+
+        // Queue 0: RX
+        self.device
+            .start_queue(
+                0,
                 QueueResources {
                     params: QueueParams {
                         size: QUEUE_SIZE,
@@ -557,7 +558,15 @@ impl TestHarness {
                     notify: rx_interrupt,
                     event: self.rx_event.clone(),
                 },
-                // Queue 1: TX
+                &features,
+                None,
+            )
+            .unwrap();
+
+        // Queue 1: TX
+        self.device
+            .start_queue(
+                1,
                 QueueResources {
                     params: QueueParams {
                         size: QUEUE_SIZE,
@@ -569,12 +578,10 @@ impl TestHarness {
                     notify: tx_interrupt,
                     event: self.tx_event.clone(),
                 },
-            ],
-            shared_memory_region: None,
-            shared_memory_size: 0,
-        };
-
-        self.device.enable(resources).unwrap();
+                &features,
+                None,
+            )
+            .unwrap();
 
         // Wait for the mock endpoint to provide a queue handle
         mesh::CancelContext::new()
@@ -681,9 +688,11 @@ impl TestHarness {
             .expect("timed out waiting for RX used ring entry")
     }
 
-    /// Disable the device (calls poll_disable to completion).
+    /// Disable the device (stops all queues).
     async fn disable(&mut self) {
-        futures::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 1)).await;
+        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 0)).await;
+        self.device.reset();
     }
 
     /// Reset memory layout tracking for a fresh enable cycle.
