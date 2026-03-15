@@ -350,7 +350,8 @@ impl VirtioQueue {
     /// descriptor remains available.
     ///
     /// Calling `try_peek` again without consuming returns the **same**
-    /// descriptor.
+    /// descriptor, but note that the guest may have modified the underlying
+    /// queue memory in the meantime, so the payload contents may differ.
     pub fn try_peek(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
         let work = self.core.try_peek_work().map_err(Error::other)?;
         Ok(work.map(|w| PeekedWork::new(self, w)))
@@ -358,6 +359,10 @@ impl VirtioQueue {
 
     /// Waits until a descriptor is available for peeking, without advancing
     /// the available index. See [`try_peek`](Self::try_peek).
+    ///
+    /// Note that the guest may modify descriptor memory between a peek and a
+    /// subsequent consume or re-peek, so callers must not assume the payload
+    /// contents are stable.
     pub async fn peek(&mut self) -> Result<PeekedWork<'_>, Error> {
         let work = loop {
             if let Some(work) = self.core.try_peek_work().map_err(Error::other)? {

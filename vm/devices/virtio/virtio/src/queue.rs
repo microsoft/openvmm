@@ -159,7 +159,9 @@ impl QueueCoreGetWork {
 
     /// Like [`try_next_work`](Self::try_next_work), but does not advance
     /// the available index. The caller must call [`advance`](Self::advance) to
-    /// consume the peeked descriptor before peeking again.
+    /// consume the peeked descriptor and move to the next one. Calling this
+    /// again without advancing will return the same descriptor, but note that
+    /// the guest may have modified the descriptor memory in the meantime.
     pub fn try_peek_work(&mut self) -> Result<Option<QueueWork>, QueueError> {
         let index = match &mut self.inner {
             QueueGetWorkInner::Split(split) => split.is_available()?,
