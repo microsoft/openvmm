@@ -3249,3 +3249,73 @@ async fn verify_packed_peek_then_next(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_peek_then_next(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)).await;
 }
+
+/// Peek a linked buffer that spans multiple packed descriptors, then consume it.
+/// Exercises the `descriptor_count` / `advance(count)` path for packed queues.
+async fn verify_packed_peek_linked(mut guest: VirtioTestGuest) {
+    let base_address = guest.get_queue_descriptor_backing_memory_address(0);
+    let event = Event::new();
+    let queue_event = PolledWait::new(&guest.driver(), event.clone()).unwrap();
+    let notify = Interrupt::from_fn(|| {});
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        notify,
+        queue_event,
+    )
+    .expect("failed to create virtio queue");
+
+    let desc_count = 3;
+    guest.add_linked_to_avail_queue(0, desc_count);
+    event.signal();
+
+    // Peek should return a work item spanning all linked descriptors.
+    let peeked = queue
+        .try_peek()
+        .unwrap()
+        .expect("linked descriptor available");
+    assert_eq!(
+        peeked.payload().len(),
+        desc_count as usize,
+        "peek should return all linked descriptors"
+    );
+    for i in 0..desc_count as usize {
+        assert_eq!(
+            peeked.payload()[i].address,
+            base_address + 0x1000 * i as u64
+        );
+        assert_eq!(peeked.payload()[i].length, 0x1000);
+    }
+
+    // Drop without consuming — descriptor should remain available.
+    drop(peeked);
+
+    // Peek again — same linked descriptor chain.
+    let peeked2 = queue
+        .try_peek()
+        .unwrap()
+        .expect("same linked descriptor still available");
+    assert_eq!(peeked2.payload().len(), desc_count as usize);
+
+    // Consume and complete.
+    let mut work = peeked2.consume();
+    assert_eq!(work.payload.len(), desc_count as usize);
+    work.complete(99);
+
+    let (_, len) = guest.get_next_completed(0).expect("completion expected");
+    assert_eq!(len, 99);
+
+    // Queue should be empty now.
+    assert!(
+        queue.try_peek().unwrap().is_none(),
+        "queue should be empty after consuming linked descriptors"
+    );
+}
+
+#[async_test]
+async fn verify_packed_peek_linked_multi_descriptor(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    // Need enough queue size to hold the linked descriptors.
+    verify_packed_peek_linked(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 8, true)).await;
+}
