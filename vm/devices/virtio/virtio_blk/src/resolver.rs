@@ -6,6 +6,7 @@
 use crate::VirtioBlkDevice;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
+use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::blk::VirtioBlkHandle;
@@ -50,6 +51,6 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioBlkHandle> for VirtioBlkReso
             resource.read_only,
         );
 
-        Ok(device.into())
+        Ok(VirtioDeviceAdapter::new(device).into())
     }
 }
