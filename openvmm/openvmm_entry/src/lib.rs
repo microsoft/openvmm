@@ -1592,6 +1592,7 @@ async fn vm_config_from_command_line(
             mmio_gaps,
             prefetch_memory: opt.prefetch,
             private_memory: opt.private_memory,
+            transparent_hugepages: opt.thp,
             pci_ecam_gaps,
             pci_mmio_gaps,
         },

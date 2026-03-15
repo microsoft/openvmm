@@ -906,6 +906,7 @@ impl InitializedVm {
             .vtl0_alias_map(vtl0_alias_map)
             .prefetch_ram(cfg.memory.prefetch_memory)
             .private_memory(cfg.memory.private_memory)
+            .transparent_hugepages(cfg.memory.transparent_hugepages)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );

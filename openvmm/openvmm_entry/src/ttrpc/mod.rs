@@ -477,6 +477,7 @@ impl VmService {
                 pci_mmio_gaps: vec![],
                 prefetch_memory: false,
                 private_memory: false,
+                transparent_hugepages: false,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {

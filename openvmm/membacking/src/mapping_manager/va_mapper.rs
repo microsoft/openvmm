@@ -274,6 +274,17 @@ impl VaMapper {
         self.inner.mapping.alloc(offset, len)
     }
 
+    /// Marks a range as eligible for Transparent Huge Pages.
+    ///
+    /// Only valid when private_ram mode is enabled.
+    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        assert!(
+            self.private_ram,
+            "madvise_hugepage requires private RAM mode"
+        );
+        self.inner.mapping.madvise_hugepage(offset, len)
+    }
+
     /// Decommits a range of private RAM, releasing physical pages back to the
     /// host.
     ///
@@ -470,5 +481,21 @@ mod tests {
         let mut buf = vec![0u8; 64];
         mapping.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, pattern);
+    }
+
+    #[test]
+    fn test_madvise_hugepage() {
+        let size = 2 * 1024 * 1024;
+        let mapping = SparseMapping::new(size).unwrap();
+        mapping.alloc(0, size).unwrap();
+
+        mapping.madvise_hugepage(0, size).unwrap();
+
+        // Memory should still work after the madvise.
+        let data = [0xABu8; 128];
+        mapping.write_at(0, &data).unwrap();
+        let mut buf = [0u8; 128];
+        mapping.read_at(0, &mut buf).unwrap();
+        assert_eq!(buf, data);
     }
 }
