@@ -136,6 +136,7 @@ impl PetriVmConfigOpenVmm {
             mesh: &mesh,
             openvmm_path,
             uses_pipette_as_init: properties.uses_pipette_as_init,
+            enable_serial: properties.enable_serial,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -175,11 +176,23 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        let SerialData {
-            mut emulated_serial_config,
-            serial_tasks: log_stream_tasks,
-            linux_direct_serial_agent,
-        } = setup.configure_serial(log_source)?;
+        let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
+            if properties.minimal_mode && !properties.enable_serial {
+                // Minimal mode without serial: no serial ports at all
+                ([None, None, None, None], Vec::new(), None)
+            } else {
+                let SerialData {
+                    emulated_serial_config,
+                    serial_tasks,
+                    linux_direct_serial_agent,
+                } = setup.configure_serial(log_source)?;
+                (
+                    emulated_serial_config,
+                    serial_tasks,
+                    linux_direct_serial_agent,
+                )
+            };
+        let mut emulated_serial_config = emulated_serial_config;
 
         let (video_dev, framebuffer, framebuffer_view) = match setup.config_video()? {
             Some((v, fb, fba)) => {
@@ -244,12 +257,14 @@ impl PetriVmConfigOpenVmm {
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
-        chipset = chipset.with_serial(emulated_serial_config);
-        // Set so that we don't pull serial data until the guest is
-        // ready. Otherwise, Linux will drop the input serial data
-        // on the floor during boot.
-        if matches!(firmware, Firmware::LinuxDirect { .. }) {
-            chipset = chipset.with_serial_wait_for_rts();
+        if !properties.minimal_mode || properties.enable_serial {
+            chipset = chipset.with_serial(emulated_serial_config);
+            // Set so that we don't pull serial data until the guest is
+            // ready. Otherwise, Linux will drop the input serial data
+            // on the floor during boot.
+            if matches!(firmware, Firmware::LinuxDirect { .. }) {
+                chipset = chipset.with_serial_wait_for_rts();
+            }
         }
 
         // Extract video configuration
@@ -262,28 +277,38 @@ impl PetriVmConfigOpenVmm {
             None => None,
         };
 
-        // Add the Hyper-V Shutdown IC
-        let (shutdown_ic_send, shutdown_ic_recv) = mesh::channel();
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            ShutdownIcHandle {
-                recv: shutdown_ic_recv,
-            }
-            .into_resource(),
-        ));
+        // Add default VMBus devices (skipped in minimal mode).
+        let (shutdown_ic_send, kvp_ic_send) = if !properties.minimal_mode {
+            let (shutdown_ic_send, shutdown_ic_recv) = mesh::channel();
+            vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                ShutdownIcHandle {
+                    recv: shutdown_ic_recv,
+                }
+                .into_resource(),
+            ));
 
-        // Add the Hyper-V KVP IC
-        let (kvp_ic_send, kvp_ic_recv) = mesh::channel();
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_ic_recv }.into_resource(),
-        ));
+            let (kvp_ic_send, kvp_ic_recv) = mesh::channel();
+            vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_ic_recv }.into_resource(),
+            ));
 
-        // Add the Hyper-V timesync IC
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
-        ));
+            vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
+            ));
+
+            (shutdown_ic_send, kvp_ic_send)
+        } else {
+            // Minimal mode: no ICs. Create dummy senders so the fields
+            // are populated (calls to send_enlightened_shutdown will fail
+            // with a channel error, which is fine — minimal VMs shut down
+            // via reboot(2) directly).
+            let (shutdown_ic_send, _) = mesh::channel();
+            let (kvp_ic_send, _) = mesh::channel();
+            (shutdown_ic_send, kvp_ic_send)
+        };
 
         // Make a vmbus vsock path for pipette connections
         let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
@@ -541,6 +566,7 @@ struct PetriVmConfigSetupCore<'a> {
     mesh: &'a Mesh,
     openvmm_path: &'a ResolvedArtifact,
     uses_pipette_as_init: bool,
+    enable_serial: bool,
 }
 
 struct SerialData {
@@ -643,21 +669,33 @@ impl PetriVmConfigSetupCore<'_> {
                     .context("Failed to open initrd")?
                     .into();
 
-                let init = if self.uses_pipette_as_init {
-                    "/pipette"
+                let (cmdline, enable_serial) = if self.uses_pipette_as_init {
+                    let console_arg = if self.enable_serial {
+                        match arch {
+                            MachineArch::X86_64 => " console=ttyS0",
+                            MachineArch::Aarch64 => " console=ttyAMA0 earlycon",
+                        }
+                    } else {
+                        ""
+                    };
+                    // Pipette-as-init: pipette is the init process
+                    (
+                        format!("panic=-1 rdinit=/pipette{console_arg} {VIRTIO_VSOCK_BLACKLIST}"),
+                        self.enable_serial,
+                    )
                 } else {
-                    "/bin/sh"
+                    (
+                        format!("{console} debug panic=-1 rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}"),
+                        true,
+                    )
                 };
-
-                let cmdline =
-                    format!("{console} debug panic=-1 rdinit={init} {VIRTIO_VSOCK_BLACKLIST}");
 
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
                     cmdline,
                     custom_dsdt: None,
-                    enable_serial: true,
+                    enable_serial,
                 }
             }
             (
