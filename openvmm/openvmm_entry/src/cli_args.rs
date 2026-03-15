@@ -66,7 +66,7 @@ pub struct Options {
     pub private_memory: bool,
 
     /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
-    #[clap(long)]
+    #[clap(long, requires("private_memory"))]
     pub thp: bool,
 
     /// start in paused state

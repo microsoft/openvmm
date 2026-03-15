@@ -17,6 +17,8 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
+* `--private-memory`: Use private anonymous memory for guest RAM instead of shared file-backed sections.
+* `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only). Requires `--private-memory`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.

@@ -99,7 +99,7 @@ pub enum MemoryBuildError {
     #[error("failed to allocate private RAM range {1}")]
     PrivateRamAlloc(#[source] std::io::Error, MemoryRange),
     /// THP requires private memory mode.
-    #[error("transparent huge pages requires --private-memory")]
+    #[error("transparent huge pages requires private memory mode")]
     ThpWithoutPrivateMemory,
     /// THP is only supported on Linux.
     #[error("transparent huge pages is only supported on Linux")]
