@@ -117,6 +117,9 @@ impl QueueCoreGetWork {
         mem: GuestMemory,
         params: QueueParams,
     ) -> Result<Self, QueueError> {
+        if params.size == 0 {
+            return Err(QueueError::InvalidQueueSize(params.size));
+        }
         // Split queues require power-of-2 sizes (virtio spec §2.7.1).
         // Packed queues do not (§2.8.10.1).
         if !features.bank1().ring_packed() && !params.size.is_power_of_two() {
