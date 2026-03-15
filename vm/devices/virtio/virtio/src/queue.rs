@@ -18,7 +18,6 @@ use spec::DescriptorFlags;
 use spec::PackedDescriptor;
 use spec::SplitDescriptor;
 use split::SplitQueueCompleteWork;
-pub use split::SplitQueueCompletionContext;
 use split::SplitQueueGetWork;
 use thiserror::Error;
 use zerocopy::FromBytes;

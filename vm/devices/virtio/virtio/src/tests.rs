@@ -3114,3 +3114,138 @@ async fn verify_normal_then_indirect_succeeds(driver: DefaultDriver) {
     assert_eq!(len, 77);
     queues[0].stop().await;
 }
+
+// ---------------------------------------------------------------------------
+// Peek tests
+// ---------------------------------------------------------------------------
+
+async fn verify_peek_does_not_advance(mut guest: VirtioTestGuest) {
+    let event = Event::new();
+    let queue_event = PolledWait::new(&guest.driver(), event.clone()).unwrap();
+    let notify = Interrupt::from_fn(|| {});
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        notify,
+        queue_event,
+    )
+    .expect("failed to create virtio queue");
+
+    // Make one descriptor available.
+    guest.add_to_avail_queue(0);
+    event.signal();
+
+    // Peek should return Some.
+    let peeked = queue.try_peek().unwrap();
+    assert!(peeked.is_some(), "expected a peeked descriptor");
+    let peeked = peeked.unwrap();
+    let first_payload_addr = peeked.payload()[0].address;
+
+    // Drop without consuming.
+    drop(peeked);
+
+    // Peek again — should return the *same* descriptor since we didn't advance.
+    let peeked2 = queue
+        .try_peek()
+        .unwrap()
+        .expect("same descriptor available");
+    assert_eq!(
+        peeked2.payload()[0].address,
+        first_payload_addr,
+        "peeking again must return the same descriptor"
+    );
+
+    // The used ring should be empty — nothing was completed.
+    assert!(
+        guest.get_next_completed(0).is_none(),
+        "no completions expected after drop"
+    );
+
+    // Consume the peeked work and complete it.
+    let mut work = peeked2.consume();
+    work.complete(42);
+
+    // Now the used ring should have the completion.
+    let (_, len) = guest.get_next_completed(0).expect("completion expected");
+    assert_eq!(len, 42);
+
+    // And a subsequent peek should return None (queue drained).
+    assert!(
+        queue.try_peek().unwrap().is_none(),
+        "queue should be empty after consume"
+    );
+}
+
+#[async_test]
+async fn verify_split_peek_does_not_advance(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_peek_does_not_advance(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
+}
+
+#[async_test]
+async fn verify_packed_peek_does_not_advance(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_peek_does_not_advance(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)).await;
+}
+
+async fn verify_peek_then_next(mut guest: VirtioTestGuest) {
+    let event = Event::new();
+    let queue_event = PolledWait::new(&guest.driver(), event.clone()).unwrap();
+    let notify = Interrupt::from_fn(|| {});
+    let mut queue = VirtioQueue::new(
+        guest.queue_features(),
+        guest.queue_params(0),
+        guest.mem(),
+        notify,
+        queue_event,
+    )
+    .expect("failed to create virtio queue");
+
+    // Make two descriptors available.
+    guest.add_to_avail_queue(0);
+    guest.add_to_avail_queue(0);
+    event.signal();
+
+    // Peek at the first — don't consume.
+    {
+        let peeked = queue.try_peek().unwrap().expect("first descriptor");
+        // Drop it without consuming.
+        drop(peeked);
+    }
+
+    // try_next should return the same first descriptor (peek didn't advance).
+    let mut work = queue
+        .try_next()
+        .unwrap()
+        .expect("first descriptor via next");
+    let first_desc = work.descriptor_index();
+    work.complete(10);
+
+    // Now the next descriptor should be different.
+    let mut work2 = queue.try_next().unwrap().expect("second descriptor");
+    assert_ne!(
+        work2.descriptor_index(),
+        first_desc,
+        "second descriptor should differ"
+    );
+    work2.complete(20);
+
+    let (_, len) = guest.get_next_completed(0).expect("first completion");
+    assert_eq!(len, 10);
+    let (_, len) = guest.get_next_completed(0).expect("second completion");
+    assert_eq!(len, 20);
+    assert!(guest.get_next_completed(0).is_none());
+}
+
+#[async_test]
+async fn verify_split_peek_then_next(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_peek_then_next(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;
+}
+
+#[async_test]
+async fn verify_packed_peek_then_next(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    verify_peek_then_next(VirtioTestGuest::new_packed(&driver, &test_mem, 1, 2, true)).await;
+}

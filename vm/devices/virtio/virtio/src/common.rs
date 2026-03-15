@@ -83,7 +83,10 @@ fn read_from_payload_at_offset(
         let usable = (payload_len - skip) as usize;
         let size = std::cmp::min(usable, remaining.len());
         let (current, next) = remaining.split_at_mut(size);
-        mem.read_at(payload.address + skip, current)?;
+        // Use saturating add so that an overflowing guest-provided address
+        // is guaranteed to land out of range rather than wrapping to a low
+        // GPA.
+        mem.read_at(payload.address.saturating_add(skip), current)?;
         read_bytes += size;
         skip = 0;
         if next.is_empty() {

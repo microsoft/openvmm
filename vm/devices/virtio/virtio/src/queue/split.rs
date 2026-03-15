@@ -12,8 +12,6 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::sync::atomic;
 
-pub struct SplitQueueCompletionContext;
-
 #[derive(Debug, Inspect)]
 #[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct SplitQueueGetWork {
