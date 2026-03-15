@@ -195,7 +195,8 @@ impl GuestMemoryBuilder {
     ///
     /// When set, `madvise(MADV_HUGEPAGE)` is called on private RAM allocations
     /// to allow khugepaged to collapse 4K pages into 2MB huge pages.
-    /// Only effective with [`private_memory`](Self::private_memory) enabled.
+    /// Requires [`private_memory`](Self::private_memory) and Linux; `build()`
+    /// will return an error if either condition is not met.
     pub fn transparent_hugepages(mut self, enable: bool) -> Self {
         self.transparent_hugepages = enable;
         self
