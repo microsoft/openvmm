@@ -163,7 +163,7 @@ impl VirtioMmioDevice {
 }
 
 impl VirtioMmioDevice {
-    pub(crate) fn read_u32(&self, address: u64) -> u32 {
+    pub(crate) fn read_u32(&mut self, address: u64) -> u32 {
         let offset = (address & 0xfff) as u16;
         assert!(offset & 3 == 0);
         match VirtioMmioRegister(offset) {

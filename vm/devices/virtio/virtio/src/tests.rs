@@ -1197,7 +1197,7 @@ impl VirtioDevice for FailingTestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
@@ -1244,7 +1244,7 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 

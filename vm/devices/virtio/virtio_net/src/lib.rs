@@ -243,7 +243,7 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, offset: u16) -> u32 {
         match offset {
             0 => u32::from_le_bytes(self.registers.mac[..4].try_into().unwrap()),
             4 => {
