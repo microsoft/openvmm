@@ -648,12 +648,12 @@ impl HclNetworkVFManagerWorker {
         let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
         ctx.until_cancelled(disconnecting_endpoints)
             .await
-            .map_or_else(|e| {
-                tracing::warn!("endpoints cancelled on disconnect with error: {}", e);
-            },
-            |_| {
-                ()
-            });
+            .map_or_else(
+                |e| {
+                    tracing::warn!("endpoints cancelled on disconnect with error: {}", e);
+                },
+                |_| (),
+            );
     }
 
     async fn update_vtl2_device_bind_state(&self, is_bound: bool) -> anyhow::Result<()> {
