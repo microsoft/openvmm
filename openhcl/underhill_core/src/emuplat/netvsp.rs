@@ -649,8 +649,12 @@ impl HclNetworkVFManagerWorker {
         ctx.until_cancelled(disconnecting_endpoints)
             .await
             .map_or_else(
-                |e| {
-                    tracing::warn!("endpoints cancelled on disconnect with error: {}", e);
+                |err| {
+                    tracing::error!(
+                        vtl2_vfid,
+                        "endpoint disconnect signalling cancelled: {}",
+                        err
+                    );
                 },
                 |_| (),
             );
