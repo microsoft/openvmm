@@ -241,7 +241,9 @@ const BUF_SIZE: usize = 4096;
 #[derive(Debug, thiserror::Error)]
 enum WorkerError {
     #[error("virtio queue error")]
-    Queue(#[source] std::io::Error),
+    Virtio(#[source] std::io::Error),
+    #[error("serial I/O error")]
+    Serial(#[source] std::io::Error),
     #[error("guest memory error")]
     GuestMemory(#[source] guestmem::GuestMemoryError),
 }
@@ -271,7 +273,7 @@ impl ConsoleWorker {
                 let wait_connect = async {
                     poll_fn(|cx| io.get_mut().poll_connect(cx))
                         .await
-                        .map_err(WorkerError::Queue)?;
+                        .map_err(WorkerError::Serial)?;
                     Ok::<_, WorkerError>(true)
                 };
                 let drain_tx = async {
@@ -279,7 +281,7 @@ impl ConsoleWorker {
                         std::future::pending().await
                     };
                     loop {
-                        let work = transmitq.peek().await.map_err(WorkerError::Queue)?;
+                        let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
                         work.consume().complete(0);
                         *partial_transmit = 0;
                     }
@@ -298,7 +300,7 @@ impl ConsoleWorker {
                         std::future::pending().await
                     };
                     'rx: loop {
-                        let work = receiveq.peek().await.map_err(WorkerError::Queue)?;
+                        let work = receiveq.peek().await.map_err(WorkerError::Virtio)?;
                         let writeable_len = work
                             .payload()
                             .iter()
@@ -345,7 +347,7 @@ impl ConsoleWorker {
                         std::future::pending().await
                     };
                     'tx: loop {
-                        let work = transmitq.peek().await.map_err(WorkerError::Queue)?;
+                        let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
                         let readable_len = work.readable_length() as usize;
                         let mut buf = [0u8; BUF_SIZE];
                         while *partial_transmit < readable_len {
