@@ -440,8 +440,7 @@ impl VtlPlatformTrait for HvTestCtx {
 impl HvTestCtx {
     /// Return the index of the VP that is currently executing this code.
     pub(crate) fn get_vp_idx() -> u32 {
-        // SAFETY: we are executing a valid CPUID instruction.
-        let result = unsafe { core::arch::x86_64::__cpuid(0x1) };
+        let result = core::arch::x86_64::__cpuid(0x1);
         (result.ebx >> 24) & 0xFF
     }
 

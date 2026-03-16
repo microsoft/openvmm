@@ -4,6 +4,7 @@
 //! Defines the resource resolver for virtio-rng devices.
 
 use crate::VirtioRngDevice;
+use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::rng::VirtioRngHandle;
@@ -29,6 +30,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioRngHandle> for VirtioRngResolver 
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let device = VirtioRngDevice::new(input.driver_source, input.guest_memory.clone());
-        Ok(device.into())
+        Ok(VirtioDeviceAdapter::new(device).into())
     }
 }

@@ -31,6 +31,7 @@ impl SplitQueueGetWork {
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_avail_index: u16,
     ) -> Result<Self, QueueError> {
         let queue_avail = mem
             .subrange(
@@ -55,9 +56,13 @@ impl SplitQueueGetWork {
             queue_avail,
             queue_used,
             queue_size: params.size,
-            last_avail_index: 0,
+            last_avail_index: initial_avail_index,
             use_ring_event_index: features.bank0().ring_event_idx(),
         })
+    }
+
+    pub fn last_avail_index(&self) -> u16 {
+        self.last_avail_index
     }
 
     fn set_used_flags(&self, flags: spec::UsedFlags) -> Result<(), QueueError> {
@@ -143,6 +148,7 @@ impl SplitQueueCompleteWork {
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_used_index: u16,
     ) -> Result<Self, QueueError> {
         let queue_avail = mem
             .subrange(
@@ -166,9 +172,13 @@ impl SplitQueueCompleteWork {
             queue_avail,
             queue_used,
             queue_size: params.size,
-            last_used_index: 0,
+            last_used_index: initial_used_index,
             use_ring_event_index: features.bank0().ring_event_idx(),
         })
+    }
+
+    pub fn last_used_index(&self) -> u16 {
+        self.last_used_index
     }
 
     pub fn complete_descriptor(

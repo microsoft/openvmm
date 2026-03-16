@@ -3,6 +3,7 @@
 
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
+use anyhow::Context as _;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
@@ -20,10 +21,11 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -54,6 +56,8 @@ pub struct VirtioFsDevice {
     #[inspect(skip)]
     workers: Vec<TaskControl<VirtioFsWorker, VirtioFsQueue>>,
     shmem_size: u64,
+    #[inspect(skip)]
+    shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     #[inspect(skip)]
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
 }
@@ -94,12 +98,13 @@ impl VirtioFsDevice {
             fs: Arc::new(fuse::Session::new(fs)),
             workers: Vec::new(),
             shmem_size,
+            shared_memory_region: None,
             notify_corruption,
         }
     }
 }
 
-impl VirtioDevice for VirtioFsDevice {
+impl VirtioDeviceV2 for VirtioFsDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_DEVICE_TYPE_FS,
@@ -131,51 +136,77 @@ impl VirtioDevice for VirtioFsDevice {
         tracing::warn!(offset, val, "[virtiofs] Unknown write",);
     }
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        self.workers = resources
-            .queues
-            .into_iter()
-            .filter_map(|queue_resources| {
-                if !queue_resources.params.enable {
-                    return None;
-                }
-
-                let mut tc = TaskControl::new(VirtioFsWorker {
-                    fs: self.fs.clone(),
-                    mem: self.mem.clone(),
-                    shared_memory_region: resources.shared_memory_region.clone(),
-                    shared_memory_size: resources.shared_memory_size,
-                    notify_corruption: self.notify_corruption.clone(),
-                });
-
-                let queue_event = PolledWait::new(&self.driver, queue_resources.event).unwrap();
-                let queue = VirtioQueue::new(
-                    resources.features.clone(),
-                    queue_resources.params,
-                    self.mem.clone(),
-                    queue_resources.notify,
-                    queue_event,
-                )
-                .expect("failed to create virtio queue");
-
-                tc.insert(
-                    self.driver.clone(),
-                    &*self.task_name,
-                    VirtioFsQueue { queue },
-                );
-                tc.start();
-                Some(tc)
-            })
-            .collect();
+    fn set_shared_memory_region(
+        &mut self,
+        region: &Arc<dyn MappedMemoryRegion>,
+    ) -> anyhow::Result<()> {
+        self.shared_memory_region = Some(region.clone());
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        for worker in &mut self.workers {
-            ready!(worker.poll_stop(cx));
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        let mut tc = TaskControl::new(VirtioFsWorker {
+            fs: self.fs.clone(),
+            mem: self.mem.clone(),
+            shared_memory_region: self.shared_memory_region.clone(),
+            shared_memory_size: self.shmem_size,
+            notify_corruption: self.notify_corruption.clone(),
+        });
+
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create polled wait")?;
+        let queue = VirtioQueue::new(
+            features.clone(),
+            resources.params,
+            self.mem.clone(),
+            resources.notify,
+            queue_event,
+            initial_state,
+        )
+        .context("failed to create virtio queue")?;
+
+        tc.insert(
+            self.driver.clone(),
+            &*self.task_name,
+            VirtioFsQueue { queue },
+        );
+        tc.start();
+
+        let idx = idx as usize;
+        if idx >= self.workers.len() {
+            self.workers.resize_with(idx + 1, || {
+                TaskControl::new(VirtioFsWorker {
+                    fs: self.fs.clone(),
+                    mem: self.mem.clone(),
+                    shared_memory_region: None,
+                    shared_memory_size: 0,
+                    notify_corruption: self.notify_corruption.clone(),
+                })
+            });
         }
+        self.workers[idx] = tc;
+        Ok(())
+    }
+
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        let idx = idx as usize;
+        if idx >= self.workers.len() || !self.workers[idx].has_state() {
+            return Poll::Ready(None);
+        }
+        ready!(self.workers[idx].poll_stop(cx));
+        let state = self.workers[idx].remove().queue.queue_state();
+        Poll::Ready(Some(state))
+    }
+
+    fn reset(&mut self) {
         self.workers.clear();
-        Poll::Ready(())
+        self.shared_memory_region = None;
     }
 }
 

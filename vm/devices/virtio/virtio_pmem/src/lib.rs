@@ -21,10 +21,11 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -71,7 +72,7 @@ struct PmemConfig {
     size: u64,
 }
 
-impl VirtioDevice for Device {
+impl VirtioDeviceV2 for Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: 27,
@@ -93,29 +94,35 @@ impl VirtioDevice for Device {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, mut resources: Resources) -> anyhow::Result<()> {
-        if !resources.queues[0].params.enable {
-            return Ok(());
-        }
-
-        let shared_memory_region = resources
-            .shared_memory_region
-            .clone()
-            .context("shared memory region not available")?;
-
-        shared_memory_region
+    fn set_shared_memory_region(
+        &mut self,
+        region: &std::sync::Arc<dyn guestmem::MappedMemoryRegion>,
+    ) -> anyhow::Result<()> {
+        region
             .map(0, &self.mappable, 0, self.len as usize, self.writable)
             .context("failed to map shared memory region")?;
 
-        let qr = resources.queues.remove(0);
-        let queue_event =
-            PolledWait::new(&self.driver, qr.event).context("failed to create polled wait")?;
+        Ok(())
+    }
+
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
+
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            resources.features,
-            qr.params,
+            features.clone(),
+            resources.params,
             self.worker.task().mem.clone(),
-            qr.notify,
+            resources.notify,
             queue_event,
+            initial_state,
         )
         .context("failed to create virtio queue")?;
 
@@ -128,12 +135,18 @@ impl VirtioDevice for Device {
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
-        ready!(self.worker.poll_stop(cx));
-        if self.worker.has_state() {
-            self.worker.remove();
+    fn poll_stop_queue(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        idx: u16,
+    ) -> Poll<Option<QueueState>> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return Poll::Ready(None);
         }
-        Poll::Ready(())
+        ready!(self.worker.poll_stop(cx));
+        let state = self.worker.remove().queue.queue_state();
+        Poll::Ready(Some(state))
     }
 }
 

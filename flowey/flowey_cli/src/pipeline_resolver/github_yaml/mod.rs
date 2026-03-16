@@ -196,22 +196,38 @@ pub fn github_yaml(
         // download any artifacts that'll be used
         artifact_names.extend(artifacts_used.iter().map(|a| a.name.as_str()));
         if !artifact_names.is_empty() {
-            let pattern = if let &[name] = artifact_names.as_slice() {
-                name.to_string()
-            } else {
-                format!("{{{}}}", artifact_names.join(","))
-            };
+            // When downloading a single artifact by name, the contents are
+            // extracted directly to `path/` without a subdirectory. For
+            // multiple artifacts with `merge-multiple: false` (the default),
+            // named subdirectories are created automatically.
+            //
+            // Use `name:` with an explicit subdirectory path for single
+            // artifacts, and `pattern:` for multiple artifacts.
             gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
-                    r#"
-                        name: '🌼📦 Download artifacts'
-                        uses: actions/download-artifact@v4
-                        with:
-                          pattern: '{pattern}'
-                          path: {RUNNER_TEMP}/used_artifacts/
-                    "#
-                ))
-                .unwrap();
+                let map: serde_yaml::Mapping = if let &[name] = artifact_names.as_slice() {
+                    serde_yaml::from_str(&format!(
+                        r#"
+                            name: '🌼📦 Download artifacts'
+                            uses: actions/download-artifact@v8
+                            with:
+                              name: '{name}'
+                              path: {RUNNER_TEMP}/used_artifacts/{name}/
+                        "#
+                    ))
+                    .unwrap()
+                } else {
+                    let pattern = format!("{{{}}}", artifact_names.join(","));
+                    serde_yaml::from_str(&format!(
+                        r#"
+                            name: '🌼📦 Download artifacts'
+                            uses: actions/download-artifact@v8
+                            with:
+                              pattern: '{pattern}'
+                              path: {RUNNER_TEMP}/used_artifacts/
+                        "#
+                    ))
+                    .unwrap()
+                };
                 map.into()
             });
         }
@@ -451,7 +467,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
-                        uses: actions/upload-artifact@v4
+                        uses: actions/upload-artifact@v7
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
@@ -485,7 +501,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                     name: 🌼🥾 Publish bootstrapped flowey
-                    uses: actions/upload-artifact@v4
+                    uses: actions/upload-artifact@v7
                     with:
                         name: {artifact}
                         path: {RUNNER_TEMP}/{flowey_path}

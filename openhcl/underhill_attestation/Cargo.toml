@@ -32,7 +32,6 @@ serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 static_assertions.workspace = true
 thiserror.workspace = true
-time = { workspace = true, features = ["macros"] }
 zerocopy.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

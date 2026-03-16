@@ -47,10 +47,11 @@ use task_control::TaskControl;
 use thiserror::Error;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -217,7 +218,7 @@ const fn header_size() -> usize {
 
 struct Adapter {
     driver: VmTaskDriver,
-    max_queues: u16,
+    max_queue_pairs: u16,
     tx_fast_completions: bool,
     mac_address: MacAddress,
 }
@@ -228,11 +229,27 @@ pub struct Device {
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
+    /// Per-pair state tracking.
+    pairs: Vec<QueuePairState>,
 }
 
-impl VirtioDevice for Device {
+/// Tracks the state of a queue pair through the start_queue lifecycle.
+enum QueuePairState {
+    /// No queues started for this pair.
+    Empty,
+    /// One queue started, waiting for its partner.
+    HalfOpen {
+        queue: VirtioQueue,
+        queue_size: u16,
+        /// true if this is the RX queue (even index), false if TX (odd).
+        is_rx: bool,
+    },
+    /// Both queues started, worker running.
+    Active,
+}
+
+impl VirtioDeviceV2 for Device {
     fn traits(&self) -> DeviceTraits {
-        // TODO: Add network features based on endpoint capabilities (NetworkFeatures::VIRTIO_NET_F_*)
         DeviceTraits {
             device_id: 1,
             device_features: VirtioDeviceFeatures::new()
@@ -264,71 +281,126 @@ impl VirtioDevice for Device {
 
     fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        let mut queue_resources: Vec<_> = resources.queues.into_iter().collect();
-        let mut workers = Vec::with_capacity(queue_resources.len() / 2);
-        while queue_resources.len() > 1 {
-            let mut next = queue_resources.drain(..2);
-            let rx_resources = next.next().unwrap();
-            let tx_resources = next.next().unwrap();
-            if !rx_resources.params.enable || !tx_resources.params.enable {
-                continue;
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        let queue_size = resources.params.size;
+        let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
+            .context("failed creating queue event")?;
+        let queue = VirtioQueue::new(
+            features.clone(),
+            resources.params,
+            self.memory.clone(),
+            resources.notify,
+            queue_event,
+            initial_state,
+        )
+        .context("failed creating virtio net queue")?;
+
+        let pair_idx = (idx / 2) as usize;
+        let is_rx = idx.is_multiple_of(2);
+
+        match &self.pairs[pair_idx] {
+            QueuePairState::Empty => {
+                // First queue of the pair — buffer it.
+                self.pairs[pair_idx] = QueuePairState::HalfOpen {
+                    queue,
+                    queue_size,
+                    is_rx,
+                };
             }
+            QueuePairState::HalfOpen {
+                is_rx: pending_is_rx,
+                ..
+            } => {
+                if *pending_is_rx == is_rx {
+                    anyhow::bail!(
+                        "duplicate {} queue for pair {pair_idx}",
+                        if is_rx { "RX" } else { "TX" }
+                    );
+                }
 
-            let rx_queue_size = rx_resources.params.size;
-            let rx_queue_event = PolledWait::new(&self.adapter.driver, rx_resources.event)
-                .context("failed creating rx queue event")?;
-            let rx_queue = VirtioQueue::new(
-                resources.features.clone(),
-                rx_resources.params,
-                self.memory.clone(),
-                rx_resources.notify,
-                rx_queue_event,
-            )
-            .context("failed creating virtio net receive queue")?;
+                // Second queue — extract the first, form the pair.
+                let first_pair = !self
+                    .pairs
+                    .iter()
+                    .any(|p| matches!(p, QueuePairState::Active));
 
-            let tx_queue_size = tx_resources.params.size;
-            let tx_queue_event = PolledWait::new(&self.adapter.driver, tx_resources.event)
-                .context("failed creating tx queue event")?;
-            let tx_queue = VirtioQueue::new(
-                resources.features.clone(),
-                tx_resources.params,
-                self.memory.clone(),
-                tx_resources.notify,
-                tx_queue_event,
-            )
-            .context("failed creating virtio net transmit queue")?;
+                let prev = std::mem::replace(&mut self.pairs[pair_idx], QueuePairState::Active);
+                let QueuePairState::HalfOpen {
+                    queue: pending_queue,
+                    queue_size: pending_queue_size,
+                    is_rx: pending_is_rx,
+                } = prev
+                else {
+                    unreachable!()
+                };
 
-            workers.push(VirtioState {
-                rx_queue,
-                rx_queue_size,
-                tx_queue,
-                tx_queue_size,
-            });
+                let (rx_queue, rx_queue_size, tx_queue, tx_queue_size) = if pending_is_rx {
+                    (pending_queue, pending_queue_size, queue, queue_size)
+                } else {
+                    (queue, queue_size, pending_queue, pending_queue_size)
+                };
+
+                if first_pair {
+                    self.insert_coordinator(self.pairs.len() as u16);
+                }
+
+                let virtio_state = VirtioState {
+                    rx_queue,
+                    rx_queue_size,
+                    tx_queue,
+                    tx_queue_size,
+                };
+                self.insert_worker(virtio_state, pair_idx);
+
+                if first_pair {
+                    self.coordinator.start();
+                }
+            }
+            QueuePairState::Active => {
+                anyhow::bail!("queue pair {pair_idx} already active");
+            }
         }
-
-        self.insert_coordinator(workers.len() as u16);
-        for (i, virtio_state) in workers.into_iter().enumerate() {
-            self.insert_worker(virtio_state, i);
-        }
-        self.coordinator.start();
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        // Stop the coordinator task.
-        let _ = std::task::ready!(self.coordinator.poll_stop(cx));
-        // Stop all workers (coordinator may not have stopped them if it was
-        // cancelled before reaching its own stop_workers call).
-        if let Some(coordinator) = self.coordinator.state_mut() {
-            for worker in &mut coordinator.workers {
-                let _ = std::task::ready!(worker.poll_stop(cx));
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        let pair_idx = (idx / 2) as usize;
+
+        if pair_idx < self.pairs.len() {
+            if let QueuePairState::HalfOpen { is_rx, .. } = self.pairs[pair_idx] {
+                let stopping_rx = idx.is_multiple_of(2);
+                if is_rx != stopping_rx {
+                    // The caller is stopping the queue that wasn't started;
+                    // leave the pending half intact.
+                    return Poll::Ready(None);
+                }
+                // Drop the pending half-open queue.
+                self.pairs[pair_idx] = QueuePairState::Empty;
+            } else if matches!(self.pairs[pair_idx], QueuePairState::Active) {
+                // Stop the coordinator (which stops all workers).
+                let _ = std::task::ready!(self.coordinator.poll_stop(cx));
+                if let Some(coordinator) = self.coordinator.state_mut() {
+                    for worker in &mut coordinator.workers {
+                        let _ = std::task::ready!(worker.poll_stop(cx));
+                    }
+                }
+                let _ = self.coordinator.remove();
+                self.pairs[pair_idx] = QueuePairState::Empty;
             }
         }
-        // Remove the coordinator state so that a subsequent enable() can
-        // re-insert it.
-        let _ = self.coordinator.remove();
-        Poll::Ready(())
+
+        // We don't support save/restore of virtio-net queue state yet.
+        Poll::Ready(None)
+    }
+
+    fn reset(&mut self) {
+        self.pairs.fill_with(|| QueuePairState::Empty);
     }
 }
 
@@ -407,12 +479,12 @@ struct PendingTxPacket {
 }
 
 pub struct NicBuilder {
-    max_queues: u16,
+    max_queue_pairs: u16,
 }
 
 impl NicBuilder {
-    pub fn max_queues(mut self, max_queues: u16) -> Self {
-        self.max_queues = max_queues;
+    pub fn max_queues(mut self, max_queue_pairs: u16) -> Self {
+        self.max_queue_pairs = max_queue_pairs;
         self
     }
 
@@ -426,13 +498,13 @@ impl NicBuilder {
     ) -> Device {
         // TODO: Implement VIRTIO_NET_F_MQ and VIRTIO_NET_F_RSS logic based on mulitqueue support.
         // let multiqueue = endpoint.multiqueue_support();
-        // let max_queues = self.max_queues.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
-        let max_queues = 1;
+        // let max_queue_pairs = self.max_queue_pairs.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
+        let max_queue_pairs = 1;
 
         let driver = driver_source.simple();
         let adapter = Arc::new(Adapter {
             driver,
-            max_queues,
+            max_queue_pairs,
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
         });
@@ -445,7 +517,7 @@ impl NicBuilder {
         let registers = NetConfig {
             mac: mac_address.to_bytes(),
             status: NetStatus::new().with_link_up(true).into(),
-            max_virtqueue_pairs: max_queues,
+            max_virtqueue_pairs: max_queue_pairs,
             mtu: DEFAULT_MTU,
             speed: 0xffffffff,
             duplex: 0xff,
@@ -460,13 +532,18 @@ impl NicBuilder {
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
+            pairs: (0..max_queue_pairs)
+                .map(|_| QueuePairState::Empty)
+                .collect(),
         }
     }
 }
 
 impl Device {
     pub fn builder() -> NicBuilder {
-        NicBuilder { max_queues: !0 }
+        NicBuilder {
+            max_queue_pairs: !0,
+        }
     }
 }
 
@@ -482,7 +559,7 @@ impl Device {
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
             Coordinator {
-                workers: (0..self.adapter.max_queues)
+                workers: (0..self.adapter.max_queue_pairs)
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
@@ -538,7 +615,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
 
         let adapter = self.adapter.as_ref();
         resp.field("mac_address", adapter.mac_address)
-            .field("max_queues", adapter.max_queues);
+            .field("max_queue_pairs", adapter.max_queue_pairs);
 
         resp.field("endpoint_type", self.endpoint.endpoint_type())
             .field(

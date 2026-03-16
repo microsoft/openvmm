@@ -34,10 +34,11 @@ use task_control::TaskControl;
 use unicycle::FuturesUnordered;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::VirtioDeviceFeaturesBank0;
 use vmcore::vm_task::VmTaskDriver;
@@ -295,7 +296,7 @@ impl VirtioBlkDevice {
     }
 }
 
-impl VirtioDevice for VirtioBlkDevice {
+impl VirtioDeviceV2 for VirtioBlkDevice {
     fn traits(&self) -> DeviceTraits {
         let mut features = VIRTIO_BLK_F_SEG_MAX
             | VIRTIO_BLK_F_BLK_SIZE
@@ -349,25 +350,25 @@ impl VirtioDevice for VirtioBlkDevice {
         // Config space is read-only for virtio-blk.
     }
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        let queue_resources = resources.queues.into_iter().next();
-        let Some(queue_resources) = queue_resources else {
-            return Ok(());
-        };
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
 
-        if !queue_resources.params.enable {
-            return Ok(());
-        }
-
-        let queue_event = PolledWait::new(&self.driver, queue_resources.event)
+        let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create queue event")?;
 
         let queue = VirtioQueue::new(
-            resources.features,
-            queue_resources.params,
+            features.clone(),
+            resources.params,
             self.worker.task().memory.clone(),
-            queue_resources.notify,
+            resources.notify,
             queue_event,
+            initial_state,
         )
         .context("failed to create virtio queue")?;
 
@@ -380,7 +381,11 @@ impl VirtioDevice for VirtioBlkDevice {
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return Poll::Ready(None);
+        }
         // Stop the worker task (cancels the run loop via until_stopped).
         ready!(self.worker.poll_stop(cx));
         // Drain in-flight IOs to completion. The FuturesUnordered lives in
@@ -388,10 +393,8 @@ impl VirtioDevice for VirtioBlkDevice {
         // polled here until all descriptors are completed in the used ring.
         ready!(self.worker.task_mut().poll_drain(cx));
         // Remove the queue state (drops VirtioQueue).
-        if self.worker.has_state() {
-            self.worker.remove();
-        }
-        Poll::Ready(())
+        let state = self.worker.remove().queue.queue_state();
+        Poll::Ready(Some(state))
     }
 }
 

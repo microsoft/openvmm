@@ -152,10 +152,14 @@ pub fn ado_yaml(
                 )
                 .replace(
                     "{{FLOWEY_TARGET}}",
-                    match platform {
-                        FlowPlatform::Windows => "x86_64-pc-windows-msvc",
-                        FlowPlatform::Linux(_) => "x86_64-unknown-linux-gnu",
-                        platform => anyhow::bail!("unsupported ADO platform {platform:?}"),
+                    match (platform, arch) {
+                        (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
+                        (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
+                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
+                        (platform, arch) => anyhow::bail!(
+                            "unsupported ADO platform/arch combo {platform:?}/{arch:?}"
+                        ),
                     },
                 )
                 .replace(

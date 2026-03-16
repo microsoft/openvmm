@@ -17,6 +17,14 @@ For cross-compilation from WSL2 to Windows, see
 `Guide/src/dev_guide/getting_started/cross_compile.md` and source
 `. ./build_support/setup_windows_cross.sh`.
 
+## Git Commit Rules
+
+- **Never amend commits that have already been pushed.** Make new commits
+  instead. PRs are squash-merged, so a clean history is unnecessary.
+- Rebasing onto `main` to resolve conflicts is fine, but do not use
+  `git commit --amend`, `git rebase -i`, or `git push --force` to clean
+  up history on already-pushed commits.
+
 ## Pre-Commit Checklist (MANDATORY)
 
 **You MUST run these commands before every `git commit` in this repo.

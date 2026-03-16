@@ -22,10 +22,11 @@ use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -72,7 +73,7 @@ impl VirtioPlan9Device {
     }
 }
 
-impl VirtioDevice for VirtioPlan9Device {
+impl VirtioDeviceV2 for VirtioPlan9Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_DEVICE_TYPE_9P_TRANSPORT,
@@ -103,25 +104,24 @@ impl VirtioDevice for VirtioPlan9Device {
         tracing::warn!(offset, val, "[VIRTIO 9P] Unknown write",);
     }
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        let queue_resources = resources
-            .queues
-            .into_iter()
-            .next()
-            .context("expected single queue")?;
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
 
-        if !queue_resources.params.enable {
-            return Ok(());
-        }
-
-        let queue_event = PolledWait::new(&self.driver, queue_resources.event)
+        let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            resources.features,
-            queue_resources.params,
+            features.clone(),
+            resources.params,
             self.worker.task().mem.clone(),
-            queue_resources.notify,
+            resources.notify,
             queue_event,
+            initial_state,
         )
         .context("failed to create virtio queue")?;
 
@@ -131,12 +131,14 @@ impl VirtioDevice for VirtioPlan9Device {
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(self.worker.poll_stop(cx));
-        if self.worker.has_state() {
-            self.worker.remove();
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return Poll::Ready(None);
         }
-        Poll::Ready(())
+        ready!(self.worker.poll_stop(cx));
+        let state = self.worker.remove().queue.queue_state();
+        Poll::Ready(Some(state))
     }
 }
 

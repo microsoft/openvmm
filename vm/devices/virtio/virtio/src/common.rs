@@ -5,6 +5,7 @@ use crate::queue::QueueCoreCompleteWork;
 use crate::queue::QueueCoreGetWork;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
+use crate::queue::QueueState;
 use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
 use crate::queue::new_queue;
@@ -304,8 +305,9 @@ impl VirtioQueue {
         mem: GuestMemory,
         notify: Interrupt,
         queue_event: PolledWait<Event>,
+        initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
-        let (get_work, complete_work) = new_queue(features, mem, params)?;
+        let (get_work, complete_work) = new_queue(features, mem, params, initial_state)?;
         let used_handler = Arc::new(Mutex::new(VirtioQueueUsedHandler::new(
             complete_work,
             notify,
@@ -315,6 +317,14 @@ impl VirtioQueue {
             used_handler,
             queue_event,
         })
+    }
+
+    /// Returns the current queue progress state.
+    pub fn queue_state(&self) -> QueueState {
+        QueueState {
+            avail_index: self.core.avail_index(),
+            used_index: self.used_handler.lock().core.used_index(),
+        }
     }
 
     /// Polls until the queue is kicked by the guest, indicating new work may be available.

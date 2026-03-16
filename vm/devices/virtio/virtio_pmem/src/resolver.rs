@@ -4,6 +4,7 @@
 //! Defines the resource resolver for virtio-pmem devices.
 
 use crate::Device;
+use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::pmem::VirtioPmemHandle;
@@ -30,6 +31,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioPmemHandle> for VirtioPmemResolve
     ) -> Result<Self::Output, Self::Error> {
         let file = fs_err::File::open(resource.path)?.into();
         let device = Device::new(input.driver_source, input.guest_memory.clone(), file, false)?;
-        Ok(device.into())
+        Ok(VirtioDeviceAdapter::new(device).into())
     }
 }

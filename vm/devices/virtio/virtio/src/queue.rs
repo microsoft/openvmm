@@ -38,6 +38,17 @@ pub(crate) fn read_descriptor<T: IntoBytes + FromBytes + Immutable + KnownLayout
         .map_err(QueueError::Memory)
 }
 
+/// Saved progress state for a single virtio queue.
+///
+/// For split queues: `avail_index` and `used_index` are plain ring indices.
+/// For packed queues: bit 15 of each carries the wrap counter
+/// (`index | (wrap_counter << 15)`), matching the vhost-user wire format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueueState {
+    pub avail_index: u16,
+    pub used_index: u16,
+}
+
 #[derive(Debug, Error)]
 pub enum QueueError {
     #[error("error accessing queue memory")]
@@ -109,14 +120,23 @@ pub(crate) struct QueueCoreGetWork {
 }
 
 impl QueueCoreGetWork {
+    pub fn avail_index(&self) -> u16 {
+        match &self.inner {
+            QueueGetWorkInner::Split(split) => split.last_avail_index(),
+            QueueGetWorkInner::Packed(packed) => packed.avail_state(),
+        }
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
         if params.size == 0 {
             return Err(QueueError::InvalidQueueSize(params.size));
         }
+        let initial_avail = initial_state.map(|s| s.avail_index);
         // Split queues require power-of-2 sizes (virtio spec §2.7.1).
         // Packed queues do not (§2.8.10.1).
         if !features.bank1().ring_packed() && !params.size.is_power_of_two() {
@@ -126,16 +146,24 @@ impl QueueCoreGetWork {
             .subrange(params.desc_addr, descriptor_offset(params.size), true)
             .map_err(QueueError::Memory)?;
         let inner = if features.bank1().ring_packed() {
+            let (index, wrap) = match initial_avail {
+                Some(v) => (v & 0x7FFF, (v >> 15) != 0),
+                None => (0, true),
+            };
             QueueGetWorkInner::Packed(PackedQueueGetWork::new(
                 features.clone(),
                 mem.clone(),
                 params,
+                index,
+                wrap,
             )?)
         } else {
+            let index = initial_avail.unwrap_or(0);
             QueueGetWorkInner::Split(SplitQueueGetWork::new(
                 features.clone(),
                 mem.clone(),
                 params,
+                index,
             )?)
         };
         Ok(Self {
@@ -301,21 +329,38 @@ impl QueueCoreCompleteWork {
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
         params: QueueParams,
+        initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
+        let initial_used = initial_state.map(|s| s.used_index);
         let inner = if features.bank1().ring_packed() {
+            let (index, wrap) = match initial_used {
+                Some(v) => (v & 0x7FFF, (v >> 15) != 0),
+                None => (0, true),
+            };
             QueueCompleteWorkInner::Packed(PackedQueueCompleteWork::new(
                 features.clone(),
                 mem.clone(),
                 params,
+                index,
+                wrap,
             )?)
         } else {
+            let index = initial_used.unwrap_or(0);
             QueueCompleteWorkInner::Split(SplitQueueCompleteWork::new(
                 features.clone(),
                 mem.clone(),
                 params,
+                index,
             )?)
         };
         Ok(Self { inner })
+    }
+
+    pub fn used_index(&self) -> u16 {
+        match &self.inner {
+            QueueCompleteWorkInner::Split(split) => split.last_used_index(),
+            QueueCompleteWorkInner::Packed(packed) => packed.used_state(),
+        }
     }
 
     pub fn complete_descriptor(
@@ -341,9 +386,11 @@ pub(crate) fn new_queue(
     features: VirtioDeviceFeatures,
     mem: GuestMemory,
     params: QueueParams,
+    initial_state: Option<QueueState>,
 ) -> Result<(QueueCoreGetWork, QueueCoreCompleteWork), QueueError> {
-    let get_work = QueueCoreGetWork::new(features.clone(), mem.clone(), params)?;
-    let complete_work = QueueCoreCompleteWork::new(features.clone(), mem.clone(), params)?;
+    let get_work = QueueCoreGetWork::new(features.clone(), mem.clone(), params, initial_state)?;
+    let complete_work =
+        QueueCoreCompleteWork::new(features.clone(), mem.clone(), params, initial_state)?;
     Ok((get_work, complete_work))
 }
 
