@@ -205,7 +205,7 @@ pub fn github_yaml(
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: '🌼📦 Download artifacts'
-                        uses: actions/download-artifact@v4
+                        uses: actions/download-artifact@v8
                         with:
                           pattern: '{pattern}'
                           path: {RUNNER_TEMP}/used_artifacts/
@@ -451,7 +451,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
-                        uses: actions/upload-artifact@v4
+                        uses: actions/upload-artifact@v7
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
@@ -485,7 +485,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                     name: 🌼🥾 Publish bootstrapped flowey
-                    uses: actions/upload-artifact@v4
+                    uses: actions/upload-artifact@v7
                     with:
                         name: {artifact}
                         path: {RUNNER_TEMP}/{flowey_path}
