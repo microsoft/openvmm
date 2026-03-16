@@ -59,7 +59,7 @@ use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
@@ -92,7 +92,7 @@ impl VirtioConsoleDevice {
     }
 }
 
-impl VirtioDeviceV2 for VirtioConsoleDevice {
+impl VirtioDevice for VirtioConsoleDevice {
     fn traits(&self) -> DeviceTraits {
         let mut features = VirtioDeviceFeatures::new();
         features.set_bank(0, 1 << VIRTIO_CONSOLE_F_SIZE);

@@ -6,7 +6,6 @@
 use crate::VirtioConsoleDevice;
 use async_trait::async_trait;
 use serial_core::resources::ResolveSerialBackendParams;
-use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::console::VirtioConsoleHandle;
@@ -50,6 +49,6 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioConsoleHandle> for VirtioCon
             io.0.into_io(),
         );
 
-        Ok(VirtioDeviceAdapter::new(device).into())
+        Ok(device.into())
     }
 }
