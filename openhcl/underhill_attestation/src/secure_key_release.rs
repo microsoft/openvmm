@@ -96,8 +96,8 @@ pub async fn request_vmgs_encryption_keys(
         )
     })?;
 
-    let exponent = transfer_key.e().to_vec();
-    let modulus = transfer_key.n().to_vec();
+    let exponent = transfer_key.exponent();
+    let modulus = transfer_key.modulus();
     let host_time = get.host_time().await.to_jiff().timestamp().as_second();
 
     let mut igvm_attest_request_helper = IgvmAttestRequestHelper::prepare_key_release_request(

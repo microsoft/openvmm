@@ -30,7 +30,6 @@ inspect_counters = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 crypto.workspace = true
 async-trait.workspace = true
-cfg-if.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true
 serde_json = { workspace = true, features = ["std"] }

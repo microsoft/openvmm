@@ -1889,7 +1889,6 @@ dependencies = [
  "local_clock",
  "mesh",
  "open_enum",
- "openssl",
  "pal_async",
  "test_with_tracing",
  "thiserror 2.0.16",
@@ -9514,7 +9513,6 @@ name = "vmgs"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "cfg-if",
  "crc32fast",
  "crypto",
  "cvm_tracing",
