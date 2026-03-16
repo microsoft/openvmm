@@ -17,6 +17,7 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::future::Future;
 use std::io;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ops::Range;
@@ -2214,11 +2215,11 @@ impl GuestMemory {
     /// * 'paged_range' - The guest memory range to lock.
     /// * 'locked_range' - Receives a list of VA ranges to which each contiguous physical sub-range in `paged_range`
     ///   has been mapped. Must be initially empty.
-    pub fn lock_range<T: LockedRange>(
-        &self,
+    pub fn lock_range<'a, T: LockedRange<'a>>(
+        &'a self,
         paged_range: PagedRange<'_>,
         mut locked_range: T,
-    ) -> Result<LockedRangeImpl<T>, GuestMemoryError> {
+    ) -> Result<LockedRangeImpl<'a, T>, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
             let gpns = paged_range.gpns();
             for &gpn in gpns {
@@ -2236,6 +2237,7 @@ impl GuestMemory {
                 mem: self.inner.clone(),
                 gpns: store_gpns.then(|| paged_range.gpns().to_vec().into_boxed_slice()),
                 inner: locked_range,
+                _phantom: PhantomData,
             })
         })
     }
@@ -2353,24 +2355,25 @@ impl<'a> AsRef<[&'a Page]> for &'a LockedPages {
 /// to which the guest pages are mapped.
 /// The range may only partially span the first and last page and must fully span all
 /// intermediate pages.
-pub trait LockedRange {
+pub trait LockedRange<'a> {
     /// Adds a sub-range to this range.
-    fn push_sub_range(&mut self, sub_range: &[AtomicU8]);
+    fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]);
 }
 
-pub struct LockedRangeImpl<T: LockedRange> {
+pub struct LockedRangeImpl<'a, T: LockedRange<'a>> {
     mem: Arc<GuestMemoryInner>,
     gpns: Option<Box<[u64]>>,
     inner: T,
+    _phantom: PhantomData<&'a ()>,
 }
 
-impl<T: LockedRange> LockedRangeImpl<T> {
+impl<'a, T: LockedRange<'a>> LockedRangeImpl<'a, T> {
     pub fn get(&self) -> &T {
         &self.inner
     }
 }
 
-impl<T: LockedRange> Drop for LockedRangeImpl<T> {
+impl<'a, T: LockedRange<'a>> Drop for LockedRangeImpl<'a, T> {
     fn drop(&mut self) {
         if let Some(gpns) = &self.gpns {
             self.mem.imp.unlock_gpns(gpns);

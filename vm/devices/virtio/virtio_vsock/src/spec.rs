@@ -5,6 +5,7 @@
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
+use std::io::IoSlice;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -57,16 +58,25 @@ pub struct VsockHeader {
 
 pub struct VsockPacket<'a> {
     pub header: VsockHeader,
-    pub data: &'a [u8],
+    pub data: &'a [IoSlice<'a>],
+    pub data_len: usize,
 }
 
 impl<'a> VsockPacket<'a> {
-    pub fn new(header: VsockHeader, data: &'a [u8]) -> Self {
-        Self { header, data }
+    pub fn new(header: VsockHeader, data: &'a [IoSlice<'a>], data_len: usize) -> Self {
+        Self {
+            header,
+            data,
+            data_len,
+        }
     }
 
     pub fn header_only(header: VsockHeader) -> Self {
-        Self { header, data: &[] }
+        Self {
+            header,
+            data: &[],
+            data_len: 0,
+        }
     }
 }
 

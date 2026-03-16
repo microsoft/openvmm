@@ -33,7 +33,7 @@ impl ResolveResource<VirtioDeviceHandle, VirtioVsockHandle> for VirtioVsockResol
         let listener = resource
             .listener_path
             .as_ref()
-            .map(|path| UnixListener::bind(path))
+            .map(UnixListener::bind)
             .transpose()?;
 
         let device = VirtioVsockDevice::new(

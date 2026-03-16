@@ -15,23 +15,28 @@
 //! Host-side connectivity is provided through a Unix socket relay, similar to
 //! the hybrid vsock model used for Hyper-V sockets. See [`relay`] for details.
 
-#![forbid(unsafe_code)]
+#![allow(unsafe_code)]
 
 mod connection;
 pub mod resolver;
 mod spec;
 mod unix_relay;
 
+use crate::connection::ConnKey;
 use crate::connection::RxWork;
 use crate::spec::VsockPacket;
 use connection::ConnectionManager;
 use futures::StreamExt;
 use guestmem::GuestMemory;
+use guestmem::LockedRange;
+use guestmem::ranges::PagedRange;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
 use spec::VIRTIO_DEVICE_TYPE_VSOCK;
 use spec::VsockConfig;
 use spec::VsockHeader;
+use std::any;
+use std::io::IoSlice;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::Context;
@@ -51,6 +56,7 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// The number of virtqueues: rx, tx, event.
@@ -194,42 +200,60 @@ struct VsockWorker {
 }
 
 impl VsockWorker {
-    /// Handle a work item from the tx virtqueue (guest -> host).
     fn handle_tx_work(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
+        if let Err(err) = self.handle_tx_work_inner(state, work) {
+            tracelimit::error_ratelimited!(
+                error = err.as_ref() as &dyn std::error::Error,
+                "error handling vsock tx work"
+            );
+        }
+    }
+
+    /// Handle a work item from the tx virtqueue (guest -> host).
+    fn handle_tx_work_inner(
+        &mut self,
+        state: &mut VsockWorkerState,
+        work: VirtioQueueCallbackWork,
+    ) -> anyhow::Result<()> {
         let hdr_size = size_of::<VsockHeader>();
         let readable_len = work.get_payload_length(false) as usize;
 
         if readable_len < hdr_size {
             tracing::warn!(readable_len, "vsock tx packet too small for header");
-            return;
+            anyhow::bail!("vsock tx packet too small for header");
         }
 
-        // Read the full readable payload (header + data).
-        let mut buf = vec![0u8; readable_len];
-        if let Err(err) = work.read(&self.mem, &mut buf) {
-            tracing::error!(
-                error = &err as &dyn std::error::Error,
-                "failed to read vsock packet from guest"
-            );
-            return;
-        }
+        let mut header = VsockHeader::new_zeroed();
+        work.read(&self.mem, &mut header.as_mut_bytes()[..hdr_size])?;
 
-        let hdr = match VsockHeader::read_from_bytes(&buf[..hdr_size]) {
-            Ok(h) => h,
-            Err(_) => {
-                tracing::error!("failed to parse vsock header");
-                return;
+        // TODO: Avoid allocating.
+        let regions = data_regions(&work.payload, false, hdr_size as u64, header.len as u64);
+        let gpn_list = try_build_gpn_list(&regions);
+        let locked = if let Some((gpns, offset, len)) = &gpn_list {
+            if *len != header.len as usize {
+                let key = ConnKey::from_tx_packet(&header);
+                self.work
+                    .push(Box::pin(async move { RxWork::SendReset(key) }));
+                anyhow::bail!("data length mismatch in vsock tx packet");
             }
+            let paged_range = PagedRange::new(*offset, *len, gpns).unwrap();
+            self.mem
+                .lock_range(paged_range, LockedIoSlice(Vec::new()))?
+        } else {
+            todo!("read into temp buffer");
         };
 
-        let data = &buf[hdr_size..];
-        tracing::info!(?hdr, len = data.len(), "vsock tx request");
-
         // Process through the relay.
-        if let Some(work) = state.relay.handle_guest_tx(VsockPacket::new(hdr, data)) {
+        if let Some(work) = state.relay.handle_guest_tx(VsockPacket::new(
+            header,
+            &locked.get().0,
+            header.len as usize,
+        )) {
             tracing::info!("queueing rx work from relay");
             self.work.push(Box::pin(async move { work }));
         }
+
+        Ok(())
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
@@ -249,19 +273,16 @@ impl VsockWorker {
         //     }
         // };
 
-        if let Some(packet) = state.relay.get_rx_packet(rx_work) {
-            tracing::info!(?packet.header, "sending reply");
+        if let Some(header) = state.relay.get_rx_packet(rx_work) {
+            tracing::info!(?header, "sending reply");
             let mut work = state
                 .rx_queue
                 .try_next()
                 .expect("error reading stream")
                 .expect("must have queue items");
-            let header = packet.header.as_bytes();
+            let header = header.as_bytes();
             work.write(&self.mem, header).expect("TODO");
-            work.write_at_offset(header.len() as u64, &self.mem, packet.data)
-                .expect("TODO");
-
-            work.complete((header.len() + packet.data.len()) as u32);
+            work.complete(header.len() as u32);
         }
 
         // while !state.pending_rx.is_empty() {
@@ -329,15 +350,29 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                         RxWork(RxWork),
                     }
 
+                    let pending_rx_item = match state.rx_queue.try_peek() {
+                        Ok(item) => item,
+                        Err(err) => {
+                            tracing::error!(
+                                error = &err as &dyn std::error::Error,
+                                "error reading from virtio rx queue"
+                            );
+                            return false;
+                        }
+                    };
+
+                    let has_rx_item = pending_rx_item.is_some();
                     let event = std::future::poll_fn(|cx| {
                         if let Poll::Ready(item) = state.tx_queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::TxWork(item));
                         }
 
-                        // TODO: Only check this if RX space available.
-                        if let Poll::Ready(Some(work)) = self.work.poll_next_unpin(cx) {
-                            return Poll::Ready(Event::RxWork(work));
+                        // Only poll the work queue if there is space to write to the guest.
+                        if has_rx_item {
+                            if let Poll::Ready(Some(work)) = self.work.poll_next_unpin(cx) {
+                                return Poll::Ready(Event::RxWork(work));
+                            }
                         }
 
                         Poll::Pending
@@ -397,5 +432,128 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
             .await?
         {}
         Ok(())
+    }
+}
+
+/// TODO: Share with virtio_blk
+struct DataRegion {
+    addr: u64,
+    len: u64,
+}
+
+/// Extract the data-carrying regions from a descriptor chain.
+///
+/// Filters descriptors by direction (`writable`), skips `skip_bytes`
+/// (the request header for writes), and limits the total to `data_len`
+/// (which excludes the status byte for reads).
+fn data_regions(
+    payloads: &[virtio::queue::VirtioQueuePayload],
+    writable: bool,
+    skip_bytes: u64,
+    data_len: u64,
+) -> Vec<DataRegion> {
+    let mut result = Vec::new();
+    let mut skip = skip_bytes;
+    let mut remaining = data_len;
+    for payload in payloads {
+        if payload.writeable != writable || remaining == 0 {
+            continue;
+        }
+        let mut addr = payload.address;
+        let mut plen = payload.length as u64;
+        if skip > 0 {
+            let s = skip.min(plen);
+            addr += s;
+            plen -= s;
+            skip -= s;
+        }
+        if plen == 0 {
+            continue;
+        }
+        let chunk = plen.min(remaining);
+        remaining -= chunk;
+        result.push(DataRegion { addr, len: chunk });
+    }
+    result
+}
+
+/// Try to build a single `PagedRange` GPN list from the data regions.
+///
+/// Returns `Some((gpns, offset, len))` if every region boundary falls on
+/// a page boundary (or regions are GPA-contiguous), so the whole chain
+/// can be expressed as one [`PagedRange`]. Returns `None` if any
+/// interior boundary violates the constraint.
+fn try_build_gpn_list(regions: &[DataRegion]) -> Option<(Vec<u64>, usize, usize)> {
+    const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
+
+    let mut gpns = Vec::new();
+    let mut total_len: u64 = 0;
+    let mut first_offset: Option<usize> = None;
+    let mut prev_end: Option<u64> = None;
+
+    for region in regions {
+        let addr = region.addr;
+        let len = region.len;
+        if len == 0 {
+            continue;
+        }
+
+        let first_gpn = addr / PAGE_SIZE;
+        let last_gpn = (addr + len - 1) / PAGE_SIZE;
+
+        if let Some(pe) = prev_end {
+            if addr == pe {
+                // GPA-contiguous with the previous region.
+                // The shared page (if any) is already in gpns.
+                let last_gpn_in_list = *gpns.last().unwrap();
+                if first_gpn == last_gpn_in_list {
+                    // Same page — just add any new pages beyond it.
+                    for gpn in (first_gpn + 1)..=last_gpn {
+                        gpns.push(gpn);
+                    }
+                } else {
+                    // Previous region ended exactly at a page boundary,
+                    // so first_gpn is the next page.
+                    for gpn in first_gpn..=last_gpn {
+                        gpns.push(gpn);
+                    }
+                }
+            } else {
+                // Not GPA-contiguous. Both the previous end and this
+                // start must be page-aligned to avoid a gap or overlap
+                // within a page slot.
+                if pe % PAGE_SIZE != 0 || addr % PAGE_SIZE != 0 {
+                    return None;
+                }
+                for gpn in first_gpn..=last_gpn {
+                    gpns.push(gpn);
+                }
+            }
+        } else {
+            // First region.
+            first_offset = Some((addr % PAGE_SIZE) as usize);
+            for gpn in first_gpn..=last_gpn {
+                gpns.push(gpn);
+            }
+        }
+
+        prev_end = Some(addr + len);
+        total_len += len;
+    }
+
+    let offset = first_offset.unwrap_or(0);
+    Some((gpns, offset, total_len as usize))
+}
+
+// TODO: Use SmallVec.
+struct LockedIoSlice<'a>(Vec<IoSlice<'a>>);
+
+impl<'a> LockedRange<'a> for LockedIoSlice<'a> {
+    fn push_sub_range(&mut self, sub_range: &'a [std::sync::atomic::AtomicU8]) {
+        // SAFETY: Treating AtomicU8 as u8 for vectored IO. The lifetime annotations ensure the
+        // sub_range lives long enough for the IoSlice.
+        let slice =
+            unsafe { std::slice::from_raw_parts(sub_range.as_ptr().cast::<u8>(), sub_range.len()) };
+        self.0.push(IoSlice::new(slice));
     }
 }

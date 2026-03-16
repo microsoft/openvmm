@@ -17,7 +17,6 @@
 //! `CONNECT <port>` text protocol (the same hybrid vsock protocol used by
 //! Firecracker and others).
 
-use crate::RxWorkQueue;
 use crate::spec::Operation;
 use crate::spec::ShutdownFlags;
 use crate::spec::SocketType;
@@ -29,8 +28,12 @@ use anyhow::Context;
 use bitfield_struct::bitfield;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
+use futures::io;
 use pal_async::socket::PolledSocket;
 use std::collections::HashMap;
+use std::io::IoSlice;
+use std::io::Write;
+use std::num::Wrapping;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::path::PathBuf;
@@ -47,7 +50,7 @@ pub struct ConnKey {
 }
 
 impl ConnKey {
-    fn from_tx_packet(hdr: &VsockHeader) -> Self {
+    pub fn from_tx_packet(hdr: &VsockHeader) -> Self {
         Self {
             local_port: hdr.dst_port,
             peer_port: hdr.src_port,
@@ -68,13 +71,34 @@ struct Connection {
     key: ConnKey,
     /// Buffer allocation advertised by the peer (guest).
     peer_buf_alloc: u32,
-    /// Total bytes received by the peer (guest) so far.
-    peer_fwd_cnt: u32,
+    /// Received data that the peer has forwarded from its buffer.
+    peer_fwd_cnt: Wrapping<u32>,
+    /// Data received from the peer that has been forwarded to the unix socket relay.
+    fwd_cnt: Wrapping<u32>,
     pending_reply: PendingReply,
     // TODO: I think we need to split this, and then give ownership of the read half to the future
     // added to the work queue. There also needs to be a way to terminate the future when the,
     // connection is closed or reset, e.g. an Arc<AtomicBool> or something.
     socket: PolledSocket<UnixStream>,
+}
+
+impl Connection {
+    fn handle_guest_data(&mut self, data: &[IoSlice<'_>]) -> anyhow::Result<()> {
+        match self.socket.get_mut().write_vectored(data) {
+            Ok(n) => {
+                self.fwd_cnt += n as u32;
+
+                return Ok(());
+            }
+            Err(e) => {
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    return Err(e).context("failed to write to guest socket");
+                }
+            }
+        }
+
+        todo!("cache the data");
+    }
 }
 
 /// Messages sent from connection tasks back to the relay worker.
@@ -152,7 +176,8 @@ impl ConnectionManager {
                             Connection {
                                 key,
                                 peer_buf_alloc: packet.header.buf_alloc,
-                                peer_fwd_cnt: packet.header.fwd_cnt,
+                                peer_fwd_cnt: Wrapping(packet.header.fwd_cnt),
+                                fwd_cnt: Wrapping(0),
                                 pending_reply: PendingReply::new().with_respond(true),
                                 socket,
                             },
@@ -173,6 +198,20 @@ impl ConnectionManager {
             Operation::RW => {
                 // Guest is sending data.
                 tracing::info!(?packet.header, "We got data!");
+                let Some(conn) = self.conns.get_mut(&key) else {
+                    tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
+                    return Some(RxWork::SendReset(key));
+                };
+
+                if let Err(err) = conn.handle_guest_data(packet.data) {
+                    tracelimit::warn_ratelimited!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        ?key,
+                        "failed to write guest data to host socket"
+                    );
+                    return Some(RxWork::SendReset(key));
+                }
+
                 None
                 // if let Some(conn) = self.conns.get(&key) {
                 //     if !data.is_empty() {
@@ -294,7 +333,7 @@ impl ConnectionManager {
     //     self.new_reply_packet(key, Operation::RESPONSE)
     // }
 
-    pub fn get_rx_packet(&mut self, work: RxWork) -> Option<VsockPacket<'_>> {
+    pub fn get_rx_packet(&mut self, work: RxWork) -> Option<VsockHeader> {
         match work {
             RxWork::Connection(key) => {
                 let conn = self.conns.get_mut(&key)?;
@@ -467,8 +506,8 @@ impl ConnectionManager {
         // packets
     }
 
-    fn new_reply_packet(&self, key: ConnKey, op: Operation) -> VsockPacket<'_> {
-        VsockPacket::header_only(VsockHeader {
+    fn new_reply_packet(&self, key: ConnKey, op: Operation) -> VsockHeader {
+        VsockHeader {
             src_cid: VSOCK_CID_HOST,
             dst_cid: self.guest_cid,
             src_port: key.local_port,
@@ -479,11 +518,11 @@ impl ConnectionManager {
             flags: ShutdownFlags::new().into(),
             buf_alloc: TX_BUF_SIZE,
             fwd_cnt: 0, // TODO!
-        })
+        }
     }
 
-    fn new_rst_packet(&self, key: ConnKey) -> VsockPacket<'_> {
-        VsockPacket::header_only(VsockHeader {
+    fn new_rst_packet(&self, key: ConnKey) -> VsockHeader {
+        VsockHeader {
             src_cid: VSOCK_CID_HOST,
             dst_cid: self.guest_cid,
             src_port: key.local_port,
@@ -494,7 +533,7 @@ impl ConnectionManager {
             flags: ShutdownFlags::new().into(),
             buf_alloc: 0,
             fwd_cnt: 0,
-        })
+        }
     }
 }
 
