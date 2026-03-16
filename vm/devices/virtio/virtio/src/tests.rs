@@ -3227,7 +3227,7 @@ async fn split_queue_state_initial_zero(driver: DefaultDriver) {
     let state = queue.queue_state();
     assert_eq!(
         state,
-        crate::queue::QueueState {
+        QueueState {
             avail_index: 0,
             used_index: 0
         }
@@ -3411,7 +3411,7 @@ async fn split_queue_new_with_state_roundtrip(driver: DefaultDriver) {
     let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, false);
     let event = Event::new();
     let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
-    let initial = crate::queue::QueueState {
+    let initial = QueueState {
         avail_index: 5,
         used_index: 3,
     };
@@ -3455,7 +3455,7 @@ async fn packed_queue_new_with_state_roundtrip(driver: DefaultDriver) {
     let event = Event::new();
     let queue_event = PolledWait::new(&driver, event.clone()).unwrap();
     // index=3, wrap=true → 3 | 0x8000 = 0x8003
-    let initial = crate::queue::QueueState {
+    let initial = QueueState {
         avail_index: 0x8003,
         used_index: 0x8001,
     };

@@ -302,7 +302,7 @@ impl VirtioDeviceV2 for Device {
         .context("failed creating virtio net queue")?;
 
         let pair_idx = (idx / 2) as usize;
-        let is_rx = idx % 2 == 0;
+        let is_rx = idx.is_multiple_of(2);
 
         match &self.pairs[pair_idx] {
             QueuePairState::Empty => {
