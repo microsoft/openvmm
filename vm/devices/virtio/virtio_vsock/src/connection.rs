@@ -294,11 +294,7 @@ impl ConnectionManager {
     //     self.new_reply_packet(key, Operation::RESPONSE)
     // }
 
-    pub fn get_rx_packet(
-        &mut self,
-        work: RxWork,
-        work_queue: &mut RxWorkQueue,
-    ) -> Option<VsockPacket<'_>> {
+    pub fn get_rx_packet(&mut self, work: RxWork) -> Option<VsockPacket<'_>> {
         match work {
             RxWork::Connection(key) => {
                 let conn = self.conns.get_mut(&key)?;

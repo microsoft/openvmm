@@ -113,7 +113,7 @@ impl VirtioDevice for VirtioVsockDevice {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, offset: u16) -> u32 {
         // Device config: guest_cid is a 64-bit LE value.
         let config = VsockConfig {
             guest_cid: self.guest_cid.to_le(),
@@ -131,57 +131,30 @@ impl VirtioDevice for VirtioVsockDevice {
         tracing::warn!(offset, val, "vsock: unexpected config write");
     }
 
-    fn enable(&mut self, resources: Resources) {
+    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
         assert!(resources.queues.len() >= QUEUE_COUNT);
         let mut queues = Vec::with_capacity(QUEUE_COUNT);
         let mut resources_iter = resources.queues.into_iter();
         for _ in 0..QUEUE_COUNT {
             let queue_resources = resources_iter.next().expect("not enough queues provided");
-            let event = match PolledWait::new(&self.driver, queue_resources.event) {
-                Ok(e) => e,
-                Err(err) => {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to create event for vsock queue"
-                    );
-                    return;
-                }
-            };
+            let event = PolledWait::new(&self.driver, queue_resources.event)?;
 
-            let queue = match VirtioQueue::new(
+            let queue = VirtioQueue::new(
                 resources.features.clone(),
                 queue_resources.params,
                 self.memory.clone(),
                 queue_resources.notify,
                 event,
-            ) {
-                Ok(q) => q,
-                Err(err) => {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "failed to create vsock queue"
-                    );
-                    return;
-                }
-            };
+            )?;
             queues.push(queue);
         }
 
-        let relay = match ConnectionManager::new(
+        let relay = ConnectionManager::new(
             self.driver.clone(),
             self.guest_cid,
             self.base_path.clone(),
             self.listener.take(),
-        ) {
-            Ok(r) => r,
-            Err(err) => {
-                tracing::error!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to create vsock relay"
-                );
-                return;
-            }
-        };
+        )?;
 
         let state = VsockWorkerState {
             rx_queue: queues.remove(0),
@@ -193,6 +166,7 @@ impl VirtioDevice for VirtioVsockDevice {
         self.worker
             .insert(self.driver.clone(), "virtio-vsock-worker", state);
         self.worker.start();
+        Ok(())
     }
 
     fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
