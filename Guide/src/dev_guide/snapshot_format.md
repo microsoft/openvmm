@@ -20,15 +20,15 @@ The manifest is a protobuf message defined as `SnapshotManifest` in
 `openvmm/openvmm_entry/src/snapshot.rs`. It uses the `mesh` crate's
 protobuf encoding.
 
-| Field              | Type     | Mesh tag | Description                          |
-|--------------------|----------|----------|--------------------------------------|
-| `version`          | `u32`    | 1        | Manifest format version (currently 1)|
-| `created_at`       | `String` | 2        | Unix timestamp as string             |
-| `openvmm_version`  | `String` | 3        | OpenVMM version that created it      |
-| `memory_size_bytes`| `u64`    | 4        | Guest RAM size in bytes              |
-| `vp_count`         | `u32`    | 5        | Number of virtual processors         |
-| `page_size`        | `u32`    | 6        | Page size in bytes                   |
-| `architecture`     | `String` | 7        | `"x86_64"` or `"aarch64"`           |
+| Field              | Type        | Mesh tag | Description                      |
+|--------------------|-------------|----------|----------------------------------|
+| `version`          | `u32`       | 1        | Manifest format version (currently 1)|
+| `created_at`       | `Timestamp` | 2        | When the snapshot was created     |
+| `openvmm_version`  | `String`    | 3        | OpenVMM version that created it   |
+| `memory_size_bytes`| `u64`       | 4        | Guest RAM size in bytes           |
+| `vp_count`         | `u32`       | 5        | Number of virtual processors      |
+| `page_size`        | `u32`       | 6        | System page size in bytes         |
+| `architecture`     | `String`    | 7        | `"x86_64"` or `"aarch64"`         |
 
 ## Device state (`state.bin`)
 
@@ -61,12 +61,13 @@ hard-link step is skipped.
 
 ## Validation on restore
 
-The `validate_manifest()` function in `snapshot.rs` checks three fields
+The `validate_manifest()` function in `snapshot.rs` checks four fields
 against the current VM configuration:
 
-1. **Architecture** — must match `std::env::consts::ARCH`
-2. **Memory size** — must match the `--memory` CLI option
-3. **VP count** — must match the `--processors` CLI option
+1. **Version** — must match the current `MANIFEST_VERSION` constant
+2. **Architecture** — must match `std::env::consts::ARCH`
+3. **Memory size** — must match the `--memory` CLI option
+4. **VP count** — must match the `--processors` CLI option
 
 After manifest validation, the code also verifies that `memory.bin` has the
 expected file size.

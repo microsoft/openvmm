@@ -31,9 +31,11 @@ mesh.workspace = true
 unix_socket = { workspace = true, features = ["mesh"] }
 
 anyhow.workspace = true
+fs-err.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+sparse_mmap.workspace = true
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
 

@@ -49,7 +49,7 @@ Once the VM is running, open the interactive console and issue a save command,
 specifying the output directory:
 
 ```text
-save path/to/snapshot-dir
+save-snapshot path/to/snapshot-dir
 ```
 
 OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
@@ -57,7 +57,7 @@ into the specified directory.
 
 ## Restoring a snapshot
 
-To restore, pass the snapshot directory with `--restore`:
+To restore, pass the snapshot directory with `--restore-snapshot`:
 
 ```bash
 cargo run -- \
@@ -66,7 +66,7 @@ cargo run -- \
   --memory-backing-file path/to/snapshot-dir/memory.bin \
   --memory 4096 \
   --processors 4 \
-  --restore path/to/snapshot-dir
+  --restore-snapshot path/to/snapshot-dir
 ```
 
 ```admonish note

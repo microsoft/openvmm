@@ -2027,42 +2027,9 @@ fn disk_open_inner(
     Ok(())
 }
 
-/// Open (or create) a file to back guest RAM, and return the appropriate
-/// fd/handle for use as shared memory.
-fn open_memory_backing_file(
-    path: &Path,
-    size: u64,
-) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
-        .with_context(|| format!("failed to open memory backing file: {}", path.display()))?;
-
-    file.set_len(size)
-        .context("failed to set memory backing file size")?;
-
-    file_to_shared_memory_fd(file)
-}
-
-#[cfg(unix)]
-fn file_to_shared_memory_fd(
-    file: std::fs::File,
-) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
-    use std::os::unix::io::OwnedFd;
-    // On Unix, a file fd is directly mmappable.
-    Ok(OwnedFd::from(file))
-}
-
-#[cfg(windows)]
-fn file_to_shared_memory_fd(
-    file: std::fs::File,
-) -> anyhow::Result<openvmm_defs::worker::SharedMemoryFd> {
-    // On Windows, MapViewOfFile needs a section handle, not a raw file handle.
-    // sparse_mmap already has a helper that calls CreateFileMappingW.
-    Ok(sparse_mmap::new_mappable_from_file(&file, true, false)?)
+/// Get the system page size.
+fn system_page_size() -> u32 {
+    sparse_mmap::SparseMapping::page_size() as u32
 }
 
 /// Open a snapshot directory and validate it against the current VM config.
@@ -2085,11 +2052,10 @@ fn prepare_snapshot_restore(
     )?;
 
     // Open memory.bin (existing file, no create, no resize).
-    let memory_file = std::fs::OpenOptions::new()
+    let memory_file = fs_err::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(snapshot_dir.join("memory.bin"))
-        .with_context(|| format!("failed to open {}/memory.bin", snapshot_dir.display()))?;
+        .open(snapshot_dir.join("memory.bin"))?;
 
     // Validate file size matches expected memory size.
     let file_size = memory_file.metadata()?.len();
@@ -2100,7 +2066,7 @@ fn prepare_snapshot_restore(
         );
     }
 
-    let shared_memory_fd = file_to_shared_memory_fd(memory_file)?;
+    let shared_memory_fd = openvmm_defs::worker::file_to_shared_memory_fd(memory_file.into())?;
 
     // Reconstruct ProtobufMessage from the saved state bytes.
     // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
@@ -2580,7 +2546,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             let shared_memory = opt
                 .memory_backing_file
                 .as_ref()
-                .map(|path| open_memory_backing_file(path, opt.memory))
+                .map(|path| openvmm_defs::worker::open_memory_backing_file(path, opt.memory))
                 .transpose()?;
             (shared_memory, None)
         };
@@ -3103,24 +3069,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 let saved_state_bytes = mesh::payload::encode(saved_state_msg);
 
                 // Fsync the memory backing file.
-                let memory_file = std::fs::File::open(&memory_file_path)
-                    .context("failed to open memory backing file for fsync")?;
+                let memory_file = fs_err::File::open(&memory_file_path)?;
                 memory_file
                     .sync_all()
                     .context("failed to fsync memory backing file")?;
 
                 // Build manifest.
                 let manifest = snapshot::SnapshotManifest {
-                    version: 1,
-                    created_at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                        .to_string(),
+                    version: snapshot::MANIFEST_VERSION,
+                    created_at: std::time::SystemTime::now().into(),
                     openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
                     memory_size_bytes: opt.memory,
                     vp_count: opt.processors,
-                    page_size: 4096,
+                    page_size: system_page_size(),
                     architecture: std::env::consts::ARCH.to_string(),
                 };
 
@@ -3135,7 +3096,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         tracing::info!(
                             dir = %dir.display(),
                             "snapshot saved; VM is paused \
-                             (do not resume \u{2014} it would corrupt the snapshot)"
+                             (do not resume \u{2014} it would corrupt the snapshot). \
+                             Use 'shutdown' to exit."
                         );
                     }
                     Err(err) => {

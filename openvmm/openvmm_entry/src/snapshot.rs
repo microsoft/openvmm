@@ -5,7 +5,11 @@
 
 use anyhow::Context;
 use mesh::payload::Protobuf;
+use mesh::payload::Timestamp;
 use std::path::Path;
+
+/// Current manifest format version. Bump when making incompatible changes.
+pub const MANIFEST_VERSION: u32 = 1;
 
 /// Manifest describing a VM snapshot.
 #[derive(Clone, Protobuf)]
@@ -14,9 +18,9 @@ pub struct SnapshotManifest {
     /// Manifest format version.
     #[mesh(1)]
     pub version: u32,
-    /// Unix timestamp (seconds since epoch) when the snapshot was created.
+    /// When the snapshot was created.
     #[mesh(2)]
-    pub created_at: String,
+    pub created_at: Timestamp,
     /// OpenVMM version that created the snapshot.
     #[mesh(3)]
     pub openvmm_version: String,
@@ -46,57 +50,56 @@ pub fn write_snapshot(
     saved_state_bytes: &[u8],
     memory_file_path: &Path,
 ) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("failed to create snapshot directory {}", dir.display()))?;
+    fs_err::create_dir_all(dir)?;
 
     // Write manifest.
     let manifest_bytes = mesh::payload::encode(manifest.clone());
-    fs_err::write(dir.join("manifest.bin"), &manifest_bytes)
-        .context("failed to write manifest.bin")?;
+    fs_err::write(dir.join("manifest.bin"), &manifest_bytes)?;
 
     // Write device state.
-    fs_err::write(dir.join("state.bin"), saved_state_bytes).context("failed to write state.bin")?;
+    fs_err::write(dir.join("state.bin"), saved_state_bytes)?;
 
     // Handle memory.bin: hard-link from the backing file.
     let memory_bin_path = dir.join("memory.bin");
-    let canonical_source = std::fs::canonicalize(memory_file_path)
-        .with_context(|| format!("failed to canonicalize {}", memory_file_path.display()))?;
+    let canonical_source = fs_err::canonicalize(memory_file_path)?;
 
-    // If the target already exists (e.g., because the user pointed
-    // --memory-backing-file at <dir>/memory.bin directly), check whether
-    // source and target are the same file.
-    if memory_bin_path.exists() {
-        let canonical_target = std::fs::canonicalize(&memory_bin_path)
-            .with_context(|| format!("failed to canonicalize {}", memory_bin_path.display()))?;
+    // Check whether source and target are already the same file (e.g.,
+    // the user pointed --memory-backing-file at <dir>/memory.bin directly).
+    let needs_link = if memory_bin_path.exists() {
+        let canonical_target = fs_err::canonicalize(&memory_bin_path)?;
         if canonical_source == canonical_target {
-            // Already the same file — nothing to do.
-            return Ok(());
+            false
+        } else {
+            // Different file at the target path — remove it so the hard
+            // link can be created.
+            fs_err::remove_file(&memory_bin_path)?;
+            true
         }
-        // Different file at the target path — remove it so the hard link
-        // can be created.
-        std::fs::remove_file(&memory_bin_path)
-            .with_context(|| format!("failed to remove existing {}", memory_bin_path.display()))?;
-    }
+    } else {
+        true
+    };
 
-    if let Err(err) = std::fs::hard_link(&canonical_source, &memory_bin_path) {
-        if err.kind() == std::io::ErrorKind::CrossesDevices || err.raw_os_error() == Some(18)
-        // EXDEV
-        {
-            anyhow::bail!(
-                "memory backing file ({}) must be on the same filesystem as the snapshot \
-                 directory ({}), or pass `--memory-backing-file {}/memory.bin` directly",
-                memory_file_path.display(),
-                dir.display(),
-                dir.display(),
-            );
+    if needs_link {
+        if let Err(err) = std::fs::hard_link(&canonical_source, &memory_bin_path) {
+            if err.kind() == std::io::ErrorKind::CrossesDevices || err.raw_os_error() == Some(18)
+            // EXDEV
+            {
+                anyhow::bail!(
+                    "memory backing file ({}) must be on the same filesystem as the snapshot \
+                     directory ({}), or pass `--memory-backing-file {}/memory.bin` directly",
+                    memory_file_path.display(),
+                    dir.display(),
+                    dir.display(),
+                );
+            }
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to hard-link {} -> {}",
+                    canonical_source.display(),
+                    memory_bin_path.display()
+                )
+            });
         }
-        return Err(err).with_context(|| {
-            format!(
-                "failed to hard-link {} -> {}",
-                canonical_source.display(),
-                memory_bin_path.display()
-            )
-        });
     }
 
     Ok(())
@@ -119,14 +122,22 @@ pub fn read_snapshot(dir: &Path) -> anyhow::Result<(SnapshotManifest, Vec<u8>)> 
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
 ///
-/// Checks architecture, memory size, and VP count. Returns `Ok(())` if the
-/// manifest matches, or an error describing the first mismatch found.
+/// Checks version, architecture, memory size, and VP count. Returns `Ok(())`
+/// if the manifest matches, or an error describing the first mismatch found.
 pub fn validate_manifest(
     manifest: &SnapshotManifest,
     expected_arch: &str,
     expected_memory_size: u64,
     expected_vp_count: u32,
 ) -> anyhow::Result<()> {
+    if manifest.version != MANIFEST_VERSION {
+        anyhow::bail!(
+            "snapshot manifest version {} is not supported (expected {})",
+            manifest.version,
+            MANIFEST_VERSION,
+        );
+    }
+
     if manifest.architecture != expected_arch {
         anyhow::bail!(
             "snapshot architecture '{}' doesn't match expected '{}'",
@@ -161,8 +172,11 @@ mod tests {
     /// Helper: build a test manifest with sensible defaults.
     fn test_manifest() -> SnapshotManifest {
         SnapshotManifest {
-            version: 1,
-            created_at: "1234567890".to_string(),
+            version: MANIFEST_VERSION,
+            created_at: Timestamp {
+                seconds: 1234567890,
+                nanos: 0,
+            },
             openvmm_version: "test-0.1.0".to_string(),
             memory_size_bytes: 1024,
             vp_count: 2,
@@ -269,6 +283,17 @@ mod tests {
         let err = validate_manifest(&manifest, "x86_64", 1024, 99).unwrap_err();
         assert!(
             err.to_string().contains("VP count"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_manifest_wrong_version() {
+        let mut manifest = test_manifest();
+        manifest.version = 999;
+        let err = validate_manifest(&manifest, "x86_64", 1024, 2).unwrap_err();
+        assert!(
+            err.to_string().contains("version"),
             "unexpected error: {err}"
         );
     }
