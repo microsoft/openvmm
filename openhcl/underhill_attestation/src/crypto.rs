@@ -2,364 +2,108 @@
 // Licensed under the MIT License.
 
 //! Implementation of the required cryptographic functions for the crate.
+//!
+//! Delegates to the `crypto` crate for all cryptographic operations.
+
+pub(crate) use ::crypto::aes_256_cbc::Aes256CbcError;
+pub(crate) use ::crypto::aes_key_wrap::AesKeyWrapError;
+pub(crate) use ::crypto::hmac_sha_256::HmacSha256Error;
+pub(crate) use ::crypto::rsa::OaepHashAlgorithm as RsaOaepHashAlgorithm;
+pub(crate) use ::crypto::rsa::Pkcs11RsaAesKeyUnwrapError;
+pub(crate) use ::crypto::rsa::RsaError;
+pub(crate) use ::crypto::rsa::RsaKeyPair;
+pub(crate) use ::crypto::rsa::RsaOaepError;
 
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
-use openhcl_attestation_protocol::vmgs::HMAC_SHA_256_KEY_LENGTH;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
-use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(crate) enum KbkdfError {
     #[error("KDF derivation failed")]
-    Derive(#[from] openssl_kdf::kdf::KdfError),
+    Derive(#[from] ::crypto::kdf::KdfError),
 }
 
-#[derive(Debug, Error)]
-pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
-    #[error("expected wrapped AES key blob to be {0} bytes, but found {1} bytes")]
-    UndersizedWrappedAesKey(usize, usize),
-    #[error("wrapped RSA key blob cannot be empty")]
-    EmptyWrappedRsaKey,
-    #[error("RSA unwrap failed")]
-    RsaUnwrap(#[from] RsaOaepError),
-    #[error("AES unwrap failed")]
-    AesUnwrap(#[from] AesKeyWrapWithPaddingError),
-    #[error("failed to convert PKCS #8 DER format to PKey")]
-    ConvertPkcs8DerToPkey(#[source] openssl::error::ErrorStack),
-    #[error("failed to get an RSA key from PKey")]
-    PkeyToRsa(#[from] openssl::error::ErrorStack),
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum RsaOaepError {
-    #[error("failed to convert an RSA key to PKey")]
-    RsaToPkey(#[source] openssl::error::ErrorStack),
-    #[error("Pkeyctx::new() failed")]
-    PkeyCtxNew(#[source] openssl::error::ErrorStack),
-    #[error("PkeyCtx encrypt_init() failed")]
-    PkeyCtxEncryptInit(#[source] openssl::error::ErrorStack),
-    #[error("PkeyCtx decrypt_init() failed")]
-    PkeyCtxDecryptInit(#[source] openssl::error::ErrorStack),
-    #[error("PkeyCtx set_rsa_padding() failed")]
-    PkeyCtxSetRsaPadding(#[source] openssl::error::ErrorStack),
-    #[error("PkeyCtx set_rsa_oaep_md() failed")]
-    PkeyCtxSetRsaOaepMd(#[source] openssl::error::ErrorStack),
-    #[error("Encryption failed, OAEP hash algorithm {1:?}")]
-    Encrypt(#[source] openssl::error::ErrorStack, RsaOaepHashAlgorithm),
-    #[error("Decryption failed, OAEP hash algorithm {1:?}")]
-    Decrypt(#[source] openssl::error::ErrorStack, RsaOaepHashAlgorithm),
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum AesKeyWrapWithPaddingError {
-    #[error("invalid wrapping key size {0}")]
-    InvalidWrappingKeySize(usize),
-    #[error("Invalid unwrapping key size {0}")]
-    InvalidUnwrappingKeySize(usize),
-    #[error("CipherCtx::new failed")]
-    CipherCtxNew(#[source] openssl::error::ErrorStack),
-    #[error("CipherCtx encrypt_init() failed")]
-    CipherCtxEncryptInit(#[source] openssl::error::ErrorStack),
-    #[error("CipherCtx decrypt_init() failed")]
-    CipherCtxDecryptInit(#[source] openssl::error::ErrorStack),
-    #[error("AES key wrap with padding update failed")]
-    WrapUpdate(#[source] openssl::error::ErrorStack),
-    #[error("AES key unwrap with padding update failed")]
-    UnwrapUpdate(#[source] openssl::error::ErrorStack),
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum Aes256CbcError {
-    #[error("CipherCtx::new failed")]
-    CipherCtxNew(#[source] openssl::error::ErrorStack),
-    #[error("CipherCtx encrypt_init() failed")]
-    CipherCtxEncryptInit(#[source] openssl::error::ErrorStack),
-    #[error("CipherCtx decrypt_init() failed")]
-    CipherCtxDecryptInit(#[source] openssl::error::ErrorStack),
-    #[error("AES-256-CBC encrypt failed")]
-    Encrypt(#[source] openssl::error::ErrorStack),
-    #[error("AES-256-CBC decrypt failed")]
-    Decrypt(#[source] openssl::error::ErrorStack),
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum HmacSha256Error {
-    #[error("failed to convert an HMAC key to PKey")]
-    HmacKeyToPkey(#[source] openssl::error::ErrorStack),
-    #[error("MdCtx::new failed")]
-    MdCtxNew(#[source] openssl::error::ErrorStack),
-    #[error("HMAC init failed")]
-    HmacInit(#[source] openssl::error::ErrorStack),
-    #[error("HMAC update failed")]
-    HmacUpdate(#[source] openssl::error::ErrorStack),
-    #[error("HMAC final failed")]
-    HmacFinal(#[source] openssl::error::ErrorStack),
-    #[error("failed to get the required HMAC output size")]
-    GetHmacRequiredSize(#[source] openssl::error::ErrorStack),
-    #[error("HMAC SHA 256 failed")]
-    OpenSSL(#[from] openssl::error::ErrorStack),
-    #[error("invalid output size {0}, expected {1}")]
-    InvalidOutputSize(usize, usize),
-}
-
-/// KBKDF from SP800-108, using EVP_KDF functionality of OpenSSL
+/// KBKDF from SP800-108, using the crypto crate
 pub fn derive_key(
     key: &[u8],
     context: &[u8],
     label: &[u8],
 ) -> Result<[u8; AES_GCM_KEY_LENGTH], KbkdfError> {
     // SP800-108's Label is called "Salt" in OpenSSL
-    let mut kdf = Kbkdf::new(
-        openssl::hash::MessageDigest::sha256(),
+    let mut kdf = ::crypto::kdf::Kbkdf::new(
+        ::crypto::kdf::HashAlgorithm::Sha256,
         label.to_vec(),
         key.to_vec(),
     );
     kdf.set_context(context.to_vec());
     let mut output = [0; AES_GCM_KEY_LENGTH];
-    openssl_kdf::kdf::derive(kdf, &mut output)?;
+    ::crypto::kdf::derive(kdf, &mut output)?;
     Ok(output)
-}
-
-/// PKCS#11 RSA AES key unwrap implementation
-pub fn pkcs11_rsa_aes_key_unwrap(
-    unwrapping_rsa_key: &Rsa<Private>,
-    wrapped_key_blob: &[u8],
-) -> Result<Rsa<Private>, Pkcs11RsaAesKeyUnwrapError> {
-    let modulus_size = unwrapping_rsa_key.size() as usize;
-
-    let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
-        .split_at_checked(modulus_size)
-        .ok_or_else(|| {
-            Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
-                modulus_size,
-                wrapped_key_blob.len(),
-            )
-        })?;
-
-    if wrapped_rsa_key.is_empty() {
-        return Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey);
-    }
-
-    let unwrapped_aes_key = rsa_oaep_decrypt(
-        unwrapping_rsa_key,
-        wrapped_aes_key,
-        RsaOaepHashAlgorithm::Sha1,
-    )
-    .map_err(Pkcs11RsaAesKeyUnwrapError::RsaUnwrap)?;
-    let unwrapped_rsa_key = aes_key_unwrap_with_padding(&unwrapped_aes_key, wrapped_rsa_key)
-        .map_err(Pkcs11RsaAesKeyUnwrapError::AesUnwrap)?;
-    let unwrapped_rsa_key = openssl::pkey::PKey::private_key_from_pkcs8(&unwrapped_rsa_key)
-        .map_err(Pkcs11RsaAesKeyUnwrapError::ConvertPkcs8DerToPkey)?;
-    let unwrapped_rsa_key = unwrapped_rsa_key
-        .rsa()
-        .map_err(Pkcs11RsaAesKeyUnwrapError::PkeyToRsa)?;
-
-    Ok(unwrapped_rsa_key)
-}
-
-/// Support RSA-OAEP with SHA-1 or SHA-256 from OpenSSL
-#[derive(Debug)]
-pub enum RsaOaepHashAlgorithm {
-    /// SHA-1
-    Sha1,
-    /// SHA-256
-    Sha256,
 }
 
 /// RSA-OAEP encrypt
 pub fn rsa_oaep_encrypt(
-    rsa: &Rsa<Private>,
+    rsa: &RsaKeyPair,
     input: &[u8],
     hash_algorithm: RsaOaepHashAlgorithm,
 ) -> Result<Vec<u8>, RsaOaepError> {
-    let pkey = openssl::pkey::PKey::from_rsa(rsa.to_owned()).map_err(RsaOaepError::RsaToPkey)?;
-    let mut ctx = openssl::pkey_ctx::PkeyCtx::new(&pkey).map_err(RsaOaepError::PkeyCtxNew)?;
-
-    ctx.encrypt_init()
-        .map_err(RsaOaepError::PkeyCtxEncryptInit)?;
-    ctx.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)
-        .map_err(RsaOaepError::PkeyCtxSetRsaPadding)?;
-
-    match hash_algorithm {
-        RsaOaepHashAlgorithm::Sha1 => ctx.set_rsa_oaep_md(openssl::md::Md::sha1()),
-        RsaOaepHashAlgorithm::Sha256 => ctx.set_rsa_oaep_md(openssl::md::Md::sha256()),
-    }
-    .map_err(RsaOaepError::PkeyCtxSetRsaOaepMd)?;
-
-    let mut output = vec![];
-    ctx.encrypt_to_vec(input, &mut output)
-        .map_err(|e| RsaOaepError::Encrypt(e, hash_algorithm))?;
-
-    Ok(output)
+    rsa.oaep_encrypt(input, hash_algorithm)
 }
 
 /// RSA-OAEP decrypt
 pub fn rsa_oaep_decrypt(
-    rsa: &Rsa<Private>,
+    rsa: &RsaKeyPair,
     input: &[u8],
     hash_algorithm: RsaOaepHashAlgorithm,
 ) -> Result<Vec<u8>, RsaOaepError> {
-    let pkey = openssl::pkey::PKey::from_rsa(rsa.to_owned()).map_err(RsaOaepError::RsaToPkey)?;
-    let mut ctx = openssl::pkey_ctx::PkeyCtx::new(&pkey).map_err(RsaOaepError::PkeyCtxNew)?;
-
-    ctx.decrypt_init()
-        .map_err(RsaOaepError::PkeyCtxDecryptInit)?;
-    ctx.set_rsa_padding(openssl::rsa::Padding::PKCS1_OAEP)
-        .map_err(RsaOaepError::PkeyCtxSetRsaPadding)?;
-
-    match hash_algorithm {
-        RsaOaepHashAlgorithm::Sha1 => ctx.set_rsa_oaep_md(openssl::md::Md::sha1()),
-        RsaOaepHashAlgorithm::Sha256 => ctx.set_rsa_oaep_md(openssl::md::Md::sha256()),
-    }
-    .map_err(RsaOaepError::PkeyCtxSetRsaOaepMd)?;
-
-    let mut output = vec![];
-    ctx.decrypt_to_vec(input, &mut output)
-        .map_err(|e| RsaOaepError::Decrypt(e, hash_algorithm))?;
-
-    Ok(output)
+    rsa.oaep_decrypt(input, hash_algorithm)
 }
 
-/// Key wrap with padding scheme (RFC 5649) implementation from OpenSSL
+/// Key wrap with padding scheme (RFC 5649)
 pub fn aes_key_wrap_with_padding(
     wrapping_key: &[u8],
     payload: &[u8],
-) -> Result<Vec<u8>, AesKeyWrapWithPaddingError> {
-    let cipher = match wrapping_key.len() {
-        16 => openssl::cipher::Cipher::aes_128_wrap_pad(),
-        24 => openssl::cipher::Cipher::aes_192_wrap_pad(),
-        32 => openssl::cipher::Cipher::aes_256_wrap_pad(),
-        key_size => Err(AesKeyWrapWithPaddingError::InvalidWrappingKeySize(key_size))?,
-    };
-    let padding = 8 - payload.len() % 8;
-    let mut output = vec![0; payload.len() + padding + cipher.block_size()];
-    let mut ctx =
-        openssl::cipher_ctx::CipherCtx::new().map_err(AesKeyWrapWithPaddingError::CipherCtxNew)?;
-
-    ctx.set_flags(openssl::cipher_ctx::CipherCtxFlags::FLAG_WRAP_ALLOW);
-    ctx.encrypt_init(Some(cipher), Some(wrapping_key), None)
-        .map_err(AesKeyWrapWithPaddingError::CipherCtxEncryptInit)?;
-
-    let count = ctx
-        .cipher_update(payload, Some(&mut output))
-        .map_err(AesKeyWrapWithPaddingError::WrapUpdate)?;
-    // DEVNOTE: Skip the `cipher_final()`, which is effectively a no-op for this operation
-    // according to OpenSSL implementation.
-    output.truncate(count);
-
-    Ok(output)
+) -> Result<Vec<u8>, AesKeyWrapError> {
+    ::crypto::aes_key_wrap::wrap(wrapping_key, payload)
 }
 
-/// Key unwrap with padding scheme (RFC 5649) implementation from OpenSSL
+/// Key unwrap with padding scheme (RFC 5649)
 pub fn aes_key_unwrap_with_padding(
     unwrapping_key: &[u8],
     wrapped_payload: &[u8],
-) -> Result<Vec<u8>, AesKeyWrapWithPaddingError> {
-    let cipher = match unwrapping_key.len() {
-        16 => openssl::cipher::Cipher::aes_128_wrap_pad(),
-        24 => openssl::cipher::Cipher::aes_192_wrap_pad(),
-        32 => openssl::cipher::Cipher::aes_256_wrap_pad(),
-        key_size => Err(AesKeyWrapWithPaddingError::InvalidUnwrappingKeySize(
-            key_size,
-        ))?,
-    };
-    let mut output = vec![0; wrapped_payload.len() + cipher.block_size()];
-    let mut ctx =
-        openssl::cipher_ctx::CipherCtx::new().map_err(AesKeyWrapWithPaddingError::CipherCtxNew)?;
-
-    ctx.set_flags(openssl::cipher_ctx::CipherCtxFlags::FLAG_WRAP_ALLOW);
-    ctx.decrypt_init(Some(cipher), Some(unwrapping_key), None)
-        .map_err(AesKeyWrapWithPaddingError::CipherCtxDecryptInit)?;
-
-    let count = ctx
-        .cipher_update(wrapped_payload, Some(&mut output))
-        .map_err(AesKeyWrapWithPaddingError::UnwrapUpdate)?;
-    // DEVNOTE: Skip the `cipher_final()`, which is effectively a no-op for this operation
-    // according to OpenSSL implementation.
-    output.truncate(count);
-
-    Ok(output)
+) -> Result<Vec<u8>, AesKeyWrapError> {
+    ::crypto::aes_key_wrap::unwrap(unwrapping_key, wrapped_payload)
 }
 
 /// AES-256 CBC encrypt
 pub fn aes_256_cbc_encrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
-    let cipher = openssl::cipher::Cipher::aes_256_cbc();
-    let mut output = vec![0u8; data.len() + cipher.block_size()];
-    let mut ctx = openssl::cipher_ctx::CipherCtx::new().map_err(Aes256CbcError::CipherCtxNew)?;
-
-    ctx.encrypt_init(Some(cipher), Some(key), Some(iv))
-        .map_err(Aes256CbcError::CipherCtxEncryptInit)?;
-    ctx.set_padding(false);
-
-    let count = ctx
-        .cipher_update(data, Some(&mut output))
-        .map_err(Aes256CbcError::Encrypt)?;
-    let rest = ctx
-        .cipher_final(&mut output[count..])
-        .map_err(Aes256CbcError::Encrypt)?;
-    output.truncate(count + rest);
-
-    Ok(output)
+    ::crypto::aes_256_cbc::encrypt(key, data, iv)
 }
 
 /// AES-256 CBC decrypt
 pub fn aes_256_cbc_decrypt(key: &[u8], data: &[u8], iv: &[u8]) -> Result<Vec<u8>, Aes256CbcError> {
-    let cipher = openssl::cipher::Cipher::aes_256_cbc();
-    let mut output = vec![0u8; data.len() + cipher.block_size()];
-    let mut ctx = openssl::cipher_ctx::CipherCtx::new().map_err(Aes256CbcError::CipherCtxNew)?;
-
-    ctx.decrypt_init(Some(cipher), Some(key), Some(iv))
-        .map_err(Aes256CbcError::CipherCtxDecryptInit)?;
-    ctx.set_padding(false);
-
-    let count = ctx
-        .cipher_update(data, Some(&mut output))
-        .map_err(Aes256CbcError::Decrypt)?;
-    let rest = ctx
-        .cipher_final(&mut output[count..])
-        .map_err(Aes256CbcError::Decrypt)?;
-    output.truncate(count + rest);
-
-    Ok(output)
+    ::crypto::aes_256_cbc::decrypt(key, data, iv)
 }
 
 /// HMAC-SHA-256
 pub fn hmac_sha_256(
     key: &[u8],
     data: &[u8],
-) -> Result<[u8; HMAC_SHA_256_KEY_LENGTH], HmacSha256Error> {
-    let pkey = openssl::pkey::PKey::hmac(key).map_err(HmacSha256Error::HmacKeyToPkey)?;
-    let mut ctx = openssl::md_ctx::MdCtx::new().map_err(HmacSha256Error::MdCtxNew)?;
-
-    ctx.digest_sign_init(Some(openssl::md::Md::sha256()), &pkey)
-        .map_err(HmacSha256Error::HmacInit)?;
-    ctx.digest_sign_update(data)
-        .map_err(HmacSha256Error::HmacUpdate)?;
-
-    let size = ctx
-        .digest_sign_final(None)
-        .map_err(HmacSha256Error::GetHmacRequiredSize)?;
-    if size != HMAC_SHA_256_KEY_LENGTH {
-        Err(HmacSha256Error::InvalidOutputSize(
-            size,
-            HMAC_SHA_256_KEY_LENGTH,
-        ))?
-    }
-
-    let mut output = [0u8; HMAC_SHA_256_KEY_LENGTH];
-    ctx.digest_sign_final(Some(&mut output))
-        .map_err(HmacSha256Error::HmacFinal)?;
-
-    Ok(output)
+) -> Result<[u8; ::crypto::hmac_sha_256::OUTPUT_LEN], HmacSha256Error> {
+    ::crypto::hmac_sha_256::hmac_sha_256(key, data)
 }
 
 /// SHA-256
 pub fn sha_256(data: &[u8]) -> [u8; 32] {
-    let mut hasher = openssl::sha::Sha256::new();
-    hasher.update(data);
-    hasher.finish()
+    ::crypto::sha_256::sha_256(data)
+}
+
+/// PKCS#11 RSA AES key unwrap implementation
+pub fn pkcs11_rsa_aes_key_unwrap(
+    unwrapping_rsa_key: &RsaKeyPair,
+    wrapped_key_blob: &[u8],
+) -> Result<RsaKeyPair, Pkcs11RsaAesKeyUnwrapError> {
+    unwrapping_rsa_key.pkcs11_rsa_aes_key_unwrap(wrapped_key_blob)
 }
 
 #[cfg(test)]
@@ -479,7 +223,7 @@ mod tests {
 
     #[test]
     fn fail_to_unwrap_pkcs11_rsa_aep_with_undersized_wrapped_key_blob() {
-        let rsa = Rsa::generate(2048).unwrap();
+        let rsa = RsaKeyPair::generate(2048).unwrap();
 
         // undersized aes key blob
         let wrapped_key_blob = vec![0; 256 - 1];
@@ -502,7 +246,8 @@ mod tests {
 
     #[test]
     fn test_pkcs11_rsa_aes_key_unwrap() {
-        let target_key = Rsa::generate(2048).unwrap();
+        // Use openssl directly for test key generation
+        let target_key = openssl::rsa::Rsa::generate(2048).unwrap();
         let pkcs8_target_key = openssl::pkey::PKey::from_rsa(target_key.clone())
             .unwrap()
             .private_key_to_pkcs8()
@@ -511,7 +256,7 @@ mod tests {
         let mut wrapping_aes_key = [0u8; 32];
         openssl::rand::rand_bytes(&mut wrapping_aes_key[..]).unwrap();
 
-        let wrapping_rsa_key = Rsa::generate(2048).unwrap();
+        let wrapping_rsa_key = RsaKeyPair::generate(2048).unwrap();
         let wrapped_aes_key = rsa_oaep_encrypt(
             &wrapping_rsa_key,
             &wrapping_aes_key,

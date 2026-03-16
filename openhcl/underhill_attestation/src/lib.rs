@@ -45,8 +45,6 @@ use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
 use secure_key_release::VmgsEncryptionKeys;
 use static_assertions::const_assert_eq;
@@ -579,7 +577,7 @@ async fn unlock_vmgs_data_store(
         return Ok(());
     };
 
-    if !openssl::memcmp::eq(&new_ingress_key, &new_egress_key) {
+    if new_ingress_key != new_egress_key {
         tracing::trace!(CVM_ALLOWED, "EgressKey is different than IngressKey");
         new_key = true;
     }
@@ -678,7 +676,7 @@ async fn get_derived_keys(
     bios_guid: Guid,
     attestation_vm_config: &AttestationVmConfig,
     is_encrypted: bool,
-    ingress_rsa_kek: Option<&Rsa<Private>>,
+    ingress_rsa_kek: Option<&crypto::RsaKeyPair>,
     wrapped_des_key: Option<&[u8]>,
     tcb_version: Option<u64>,
     guest_state_encryption_policy: GuestStateEncryptionPolicy,

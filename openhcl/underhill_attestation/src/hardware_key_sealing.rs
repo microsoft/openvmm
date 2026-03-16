@@ -10,7 +10,6 @@ use cvm_tracing::CVM_ALLOWED;
 use openhcl_attestation_protocol::igvm_attest;
 use openhcl_attestation_protocol::vmgs;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
-use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
@@ -19,7 +18,7 @@ pub(crate) enum HardwareDerivedKeysError {
     #[error("failed to initialize hardware secret")]
     InitializeHardwareSecret(#[source] tee_call::Error),
     #[error("KDF derivation with hardware secret failed")]
-    KdfWithHardwareSecret(#[source] openssl_kdf::kdf::KdfError),
+    KdfWithHardwareSecret(#[source] ::crypto::kdf::KdfError),
 }
 
 #[derive(Debug, Error)]
@@ -61,15 +60,15 @@ impl HardwareDerivedKeys {
 
         let vm_config = serde_json::to_string(vm_config).expect("JSON serialization failed");
 
-        let mut kdf = Kbkdf::new(
-            openssl::hash::MessageDigest::sha256(),
+        let mut kdf = ::crypto::kdf::Kbkdf::new(
+            ::crypto::kdf::HashAlgorithm::Sha256,
             label.to_vec(),
             hardware_secret.to_vec(),
         );
         kdf.set_context(vm_config.as_bytes().to_vec());
 
         let mut output = [0u8; vmgs::AES_CBC_KEY_LENGTH + vmgs::HMAC_SHA_256_KEY_LENGTH];
-        openssl_kdf::kdf::derive(kdf, &mut output)
+        ::crypto::kdf::derive(kdf, &mut output)
             .map_err(HardwareDerivedKeysError::KdfWithHardwareSecret)?;
 
         let mut aes_key = [0u8; vmgs::AES_CBC_KEY_LENGTH];

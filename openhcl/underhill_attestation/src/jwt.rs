@@ -4,12 +4,10 @@
 //! This module handles parsing JSON Web Token (JWT) data.
 
 use base64::Engine;
-use openssl::hash::MessageDigest;
-use openssl::pkey::PKey;
-use openssl::rsa::Padding;
-use openssl::sign::Verifier;
-use openssl::x509::X509;
-use openssl::x509::X509VerifyResult;
+use crypto::x509::KeyType;
+use crypto::x509::PublicKey;
+use crypto::x509::X509Certificate;
+use crypto::x509::X509Error;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -39,7 +37,7 @@ pub(crate) enum JwtError {
     #[error("failed to decode X.509 certificate base64 format")]
     DecodeBase64JwtX509Certificate(#[source] base64::DecodeError),
     #[error("failed to convert raw bytes into X509 struct")]
-    RawBytesToX509(#[source] openssl::error::ErrorStack),
+    RawBytesToX509(#[source] X509Error),
     #[error("failed to validate certificate chain")]
     CertificateChainValidation(#[from] CertificateChainValidationError),
     #[error("failed to verify JWT signature")]
@@ -50,17 +48,11 @@ pub(crate) enum JwtError {
 pub(crate) enum JwtSignatureVerificationError {
     #[error("invalid key type {key_type:?}, expected {expected_type:?}")]
     InvalidKeyType {
-        key_type: openssl::pkey::Id,
-        expected_type: openssl::pkey::Id,
+        key_type: KeyType,
+        expected_type: KeyType,
     },
-    #[error("Verifier::new() failed")]
-    VerifierNew(#[source] openssl::error::ErrorStack),
-    #[error("Verifier set_rsa_padding() with PKCS1 failed")]
-    VerifierSetRsaPaddingPkcs1(#[source] openssl::error::ErrorStack),
-    #[error("Verifier update() failed")]
-    VerifierUpdate(#[source] openssl::error::ErrorStack),
-    #[error("Verifier verify() failed")]
-    VerifierVerify(#[source] openssl::error::ErrorStack),
+    #[error("signature verification failed")]
+    VerifySignature(#[source] X509Error),
 }
 
 #[derive(Debug, Error)]
@@ -68,9 +60,9 @@ pub(crate) enum CertificateChainValidationError {
     #[error("certificate chain is empty")]
     CertChainIsEmpty,
     #[error("failed to get public key from the certificate")]
-    GetPublicKeyFromCertificate(#[source] openssl::error::ErrorStack),
+    GetPublicKeyFromCertificate(#[source] X509Error),
     #[error("failed to verify the child certificate signature with parent public key")]
-    VerifyChildSignatureWithParentPublicKey(#[source] openssl::error::ErrorStack),
+    VerifyChildSignatureWithParentPublicKey(#[source] X509Error),
     #[error("cert chain validation failed -- signature mismatch")]
     CertChainSignatureMismatch,
     #[error("cert chain validation failed -- subject and issuer mismatch")]
@@ -163,7 +155,7 @@ impl<B: DeserializeOwned> JwtHelper<B> {
     }
 
     /// Get the cert chain from the JWT's x5c header.
-    pub fn cert_chain(&self) -> Result<Vec<X509>, JwtError> {
+    pub fn cert_chain(&self) -> Result<Vec<X509Certificate>, JwtError> {
         self.jwt
             .header
             .x5c
@@ -172,7 +164,7 @@ impl<B: DeserializeOwned> JwtHelper<B> {
                 let raw = base64::engine::general_purpose::STANDARD
                     .decode(encoded_cert)
                     .map_err(JwtError::DecodeBase64JwtX509Certificate)?;
-                X509::from_der(&raw).map_err(JwtError::RawBytesToX509)
+                X509Certificate::from_der(&raw).map_err(JwtError::RawBytesToX509)
             })
             .collect::<Result<Vec<_>, _>>()
     }
@@ -230,43 +222,32 @@ fn string_from_utf8_preserve_invalid_bytes(bytes: &[u8]) -> String {
     accumulator
 }
 
-/// Helper function for JWT signature validation using OpenSSL.
+/// Helper function for JWT signature validation.
 fn verify_jwt_signature(
     alg: &JwtAlgorithm,
-    pkey: &PKey<openssl::pkey::Public>,
+    pkey: &PublicKey,
     payload: &[u8],
     signature: &[u8],
 ) -> Result<bool, JwtSignatureVerificationError> {
-    let result = match alg {
+    match alg {
         JwtAlgorithm::RS256 => {
-            if pkey.id() != openssl::pkey::Id::RSA {
-                Err(JwtSignatureVerificationError::InvalidKeyType {
-                    key_type: pkey.id(),
-                    expected_type: openssl::pkey::Id::RSA,
-                })?
+            if pkey.key_type() != KeyType::Rsa {
+                return Err(JwtSignatureVerificationError::InvalidKeyType {
+                    key_type: pkey.key_type(),
+                    expected_type: KeyType::Rsa,
+                });
             }
 
-            let mut verifier = Verifier::new(MessageDigest::sha256(), pkey)
-                .map_err(JwtSignatureVerificationError::VerifierNew)?;
-            verifier
-                .set_rsa_padding(Padding::PKCS1)
-                .map_err(JwtSignatureVerificationError::VerifierSetRsaPaddingPkcs1)?;
-            verifier
-                .update(payload)
-                .map_err(JwtSignatureVerificationError::VerifierUpdate)?;
-            verifier
-                .verify(signature)
-                .map_err(JwtSignatureVerificationError::VerifierVerify)?
+            pkey.verify_rsa_sha256(payload, signature)
+                .map_err(JwtSignatureVerificationError::VerifySignature)
         }
-    };
-
-    Ok(result)
+    }
 }
 
-/// Helper function for x509 certificate chain validation using OpenSSL.
+/// Helper function for x509 certificate chain validation.
 fn validate_cert_chain(
-    cert_chain: &[X509],
-) -> Result<PKey<openssl::pkey::Public>, CertificateChainValidationError> {
+    cert_chain: &[X509Certificate],
+) -> Result<PublicKey, CertificateChainValidationError> {
     if cert_chain.is_empty() {
         Err(CertificateChainValidationError::CertChainIsEmpty)?
     }
@@ -289,7 +270,7 @@ fn validate_cert_chain(
             }
 
             let issued = parent.issued(child);
-            if issued != X509VerifyResult::OK {
+            if !issued {
                 Err(CertificateChainValidationError::CertChainSubjectIssuerMismatch)?
             }
         }
@@ -306,7 +287,13 @@ mod tests {
 
     use crate::test_helpers::CIPHERTEXT;
     use openhcl_attestation_protocol::igvm_attest::akv;
+    use openssl::pkey::PKey;
     use openssl::x509::X509Name;
+
+    /// Convert an openssl X509 to our X509Certificate type (for tests).
+    fn to_crypto_cert(x509: &openssl::x509::X509) -> X509Certificate {
+        X509Certificate::from_der(&x509.to_der().unwrap()).unwrap()
+    }
 
     /// Empty JWT body type to use for parsing invalid JWTs.
     #[derive(Debug, Serialize, Deserialize)]
@@ -430,12 +417,18 @@ mod tests {
     fn successfully_verify_jwt_signature_helper_function() {
         let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
         let private = PKey::from_rsa(rsa_key.clone()).unwrap();
-        let pem = rsa_key.public_key_to_pem().unwrap();
-        let public = PKey::public_key_from_pem(&pem).unwrap();
+
+        // Create a self-signed cert to extract the public key as a PublicKey type
+        let cert = crate::test_helpers::generate_x509(&private);
+        let cert = to_crypto_cert(&cert);
+        let public = cert.public_key().unwrap();
 
         let payload = "test";
-        let mut signer = openssl::sign::Signer::new(MessageDigest::sha256(), &private).unwrap();
-        signer.set_rsa_padding(Padding::PKCS1).unwrap();
+        let mut signer =
+            openssl::sign::Signer::new(openssl::hash::MessageDigest::sha256(), &private).unwrap();
+        signer
+            .set_rsa_padding(openssl::rsa::Padding::PKCS1)
+            .unwrap();
         signer.update(payload.as_bytes()).unwrap();
         let signature = signer.sign_to_vec().unwrap();
 
@@ -452,15 +445,18 @@ mod tests {
     #[test]
     fn fail_to_verify_inconsistent_rs256_signature() {
         let dsa_key = openssl::dsa::Dsa::generate(2048).unwrap();
-        let pem = dsa_key.public_key_to_pem().unwrap();
-        let public = PKey::public_key_from_pem(&pem).unwrap();
+        let dsa_private = PKey::from_dsa(dsa_key).unwrap();
+
+        let cert = crate::test_helpers::generate_x509(&dsa_private);
+        let cert = to_crypto_cert(&cert);
+        let public = cert.public_key().unwrap();
 
         let outcome = verify_jwt_signature(&JwtAlgorithm::RS256, &public, &[], &[]);
 
         assert!(outcome.is_err());
         assert_eq!(
             outcome.unwrap_err().to_string(),
-            "invalid key type Id(116), expected Id(6)".to_string()
+            "invalid key type Other, expected Rsa".to_string()
         );
     }
 
@@ -486,9 +482,10 @@ mod tests {
         let root_rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
         let root_private = PKey::from_rsa(root_rsa_key).unwrap();
 
-        let cert = crate::test_helpers::generate_x509(&cert_private);
-        let intermediate = crate::test_helpers::generate_x509(&intermediate_private);
-        let root = crate::test_helpers::generate_x509(&root_private);
+        let cert = to_crypto_cert(&crate::test_helpers::generate_x509(&cert_private));
+        let intermediate =
+            to_crypto_cert(&crate::test_helpers::generate_x509(&intermediate_private));
+        let root = to_crypto_cert(&crate::test_helpers::generate_x509(&root_private));
 
         let cert_chain = vec![cert, intermediate, root];
 
@@ -508,10 +505,10 @@ mod tests {
         let public = private.public_key_to_pem().unwrap();
         let public = PKey::public_key_from_pem(&public).unwrap();
 
-        let cert = crate::test_helpers::generate_x509(&private);
-        let intermediate = crate::test_helpers::generate_x509(&private);
+        let cert = to_crypto_cert(&crate::test_helpers::generate_x509(&private));
+        let intermediate = to_crypto_cert(&crate::test_helpers::generate_x509(&private));
 
-        let mut root = X509::builder().unwrap();
+        let mut root = openssl::x509::X509::builder().unwrap();
 
         root.set_pubkey(&public).unwrap();
 
@@ -538,8 +535,9 @@ mod tests {
         root.set_subject_name(&name).unwrap();
         root.set_issuer_name(&name).unwrap();
 
-        root.sign(&private, MessageDigest::sha256()).unwrap();
-        let root = root.build();
+        root.sign(&private, openssl::hash::MessageDigest::sha256())
+            .unwrap();
+        let root = to_crypto_cert(&root.build());
 
         let cert_chain = vec![cert, intermediate, root];
 

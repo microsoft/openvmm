@@ -6,6 +6,7 @@
 
 use crate::IgvmAttestRequestHelper;
 use crate::crypto;
+use crate::crypto::RsaKeyPair;
 use crate::igvm_attest;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
@@ -16,8 +17,6 @@ use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
 use tee_call::TeeCall;
 use thiserror::Error;
 use vmgs::Vmgs;
@@ -25,7 +24,7 @@ use vmgs::Vmgs;
 #[derive(Debug, Error)]
 pub(crate) enum RequestVmgsEncryptionKeysError {
     #[error("failed to generate an RSA transfer key")]
-    GenerateTransferKey(#[source] openssl::error::ErrorStack),
+    GenerateTransferKey(#[source] crypto::RsaError),
     #[error("failed to get a TEE attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
     #[error("failed to create an IgvmAttest WRAPPED_KEY request")]
@@ -72,7 +71,7 @@ struct WrappedKeyVmgsEncryptionKeys {
 pub struct VmgsEncryptionKeys {
     /// Optional ingress RSA key-encryption key.
     /// `None` indicate secure key release failed.
-    pub ingress_rsa_kek: Option<Rsa<Private>>,
+    pub ingress_rsa_kek: Option<RsaKeyPair>,
     /// Optional DiskEncryptionSettings key used by key rotation.
     pub wrapped_des_key: Option<Vec<u8>>,
     /// Optional TCB version used by hardware key sealing.
@@ -90,7 +89,7 @@ pub async fn request_vmgs_encryption_keys(
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
     // Generate an ephemeral transfer key
-    let transfer_key = Rsa::generate(TRANSFER_RSA_KEY_BITS).map_err(|e| {
+    let transfer_key = RsaKeyPair::generate(TRANSFER_RSA_KEY_BITS).map_err(|e| {
         (
             RequestVmgsEncryptionKeysError::GenerateTransferKey(e),
             false,
@@ -204,7 +203,7 @@ pub async fn request_vmgs_encryption_keys(
 /// Make the `IGVM_ATTEST` request to GET.
 async fn make_igvm_attest_requests(
     get: &GuestEmulationTransportClient,
-    transfer_key: &Rsa<Private>,
+    transfer_key: &RsaKeyPair,
     igvm_attest_request_helper: &mut IgvmAttestRequestHelper,
     attestation_report: &[u8],
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
@@ -321,7 +320,7 @@ async fn make_igvm_attest_requests(
         }
     };
 
-    match igvm_attest::key_release::parse_response(&response.response, transfer_key.size() as usize)
+    match igvm_attest::key_release::parse_response(&response.response, transfer_key.modulus_size())
     {
         Ok(rsa_aes_wrapped_key) => Ok(WrappedKeyVmgsEncryptionKeys {
             rsa_aes_wrapped_key,

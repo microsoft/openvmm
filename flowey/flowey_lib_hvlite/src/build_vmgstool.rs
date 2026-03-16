@@ -32,7 +32,6 @@ flowey_request! {
     pub struct Request {
         pub target: CommonTriple,
         pub profile: CommonProfile,
-        pub with_crypto: bool,
         pub with_test_helpers: bool,
         pub vmgstool: WriteVar<VmgstoolOutput>,
     }
@@ -52,36 +51,26 @@ impl SimpleFlowNode for Node {
         let Request {
             target,
             profile,
-            with_crypto,
             with_test_helpers,
             vmgstool,
         } = request;
 
-        let mut pre_build_deps = Vec::new();
-
-        if with_crypto {
-            let ssl_pkgs = match ctx.platform() {
-                FlowPlatform::Linux(
-                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
-                ) => vec!["openssl-devel".into(), "perl".into()],
-                _ => vec!["libssl-dev".into()],
-            };
-            pre_build_deps.push(ctx.reqv(|v| {
-                flowey_lib_common::install_dist_pkg::Request::Install {
+        let ssl_pkgs = match ctx.platform() {
+            FlowPlatform::Linux(
+                FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::AzureLinux,
+            ) => vec!["openssl-devel".into(), "perl".into()],
+            _ => vec!["libssl-dev".into()],
+        };
+        let pre_build_deps =
+            vec![
+                ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
                     package_names: ssl_pkgs,
                     done: v,
-                }
-            }));
-        }
+                }),
+            ];
 
         let mut features = Vec::new();
-        if with_crypto {
-            match target.as_triple().operating_system {
-                target_lexicon::OperatingSystem::Windows => features.push("encryption_win".into()),
-                target_lexicon::OperatingSystem::Linux => features.push("encryption_ossl".into()),
-                _ => unreachable!(),
-            };
-        }
+
         if with_test_helpers {
             features.push("test_helpers".into());
         }

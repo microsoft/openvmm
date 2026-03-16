@@ -354,9 +354,8 @@ dependencies = [
 name = "block_crypto"
 version = "0.0.0"
 dependencies = [
- "openssl",
+ "crypto",
  "thiserror 2.0.16",
- "windows 0.62.0",
 ]
 
 [[package]]
@@ -975,6 +974,18 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
+
+[[package]]
+name = "crypto"
+version = "0.0.0"
+dependencies = [
+ "openssl",
+ "openssl_kdf",
+ "thiserror 2.0.16",
+ "windows 0.62.0",
+ "windows-result 0.4.0",
+ "zerocopy",
+]
 
 [[package]]
 name = "crypto-common"
@@ -1866,6 +1877,7 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
+ "crypto",
  "der",
  "firmware_uefi_custom_vars",
  "generation_id",
@@ -8106,6 +8118,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "base64-serde",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -8116,8 +8129,6 @@ dependencies = [
  "guid",
  "mesh",
  "openhcl_attestation_protocol",
- "openssl",
- "openssl_kdf",
  "pal_async",
  "serde",
  "serde_json",
@@ -9505,6 +9516,7 @@ dependencies = [
  "async-trait",
  "cfg-if",
  "crc32fast",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -9513,7 +9525,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh_protobuf",
- "openssl",
  "pal_async",
  "parking_lot",
  "scsi_buffers",
@@ -9521,8 +9532,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
- "windows 0.62.0",
- "windows-result 0.4.0",
  "zerocopy",
 ]
 

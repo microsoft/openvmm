@@ -10,15 +10,10 @@ rust-version.workspace = true
 [features]
 default = []
 
-# Use native windows crypto APIs
-encryption_win = ["vmgs/encryption_win"]
-# Use OpenSSL crypto APIs
-encryption_ossl = ["vmgs/encryption_ossl"]
-
 test_helpers = ["vmgs/test_helpers", "getrandom"]
 
 # run windows encryption unit tests in CI
-ci = ["encryption_win"]
+ci = []
 
 [dependencies]
 disk_backend.workspace = true

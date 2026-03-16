@@ -86,13 +86,9 @@ pub enum Error {
     InvalidArgument(&'static str),
 
     /// OpenSSL error
-    #[cfg(feature = "encryption_ossl")]
-    #[error("OpenSSL error {1}: {0}")]
-    OpenSSL(#[source] openssl::error::ErrorStack, &'static str),
-    /// BCrypt error
-    #[cfg(all(windows, feature = "encryption_win"))]
-    #[error("BCrypt error {1}: {0}")]
-    BCrypt(#[source] windows_result::Error, &'static str),
+    #[cfg(with_encryption)]
+    #[error("crypto error {1}: {0}")]
+    Crypto(#[source] crypto::aes_256_gcm::Aes256GcmError, &'static str),
     /// Serde JSON error
     #[error("Serde JSON error: {0}")]
     Json(#[from] serde_json::Error),

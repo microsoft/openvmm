@@ -6,14 +6,6 @@ name = "vmgs_broker"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-default = []
-
-# Use native windows crypto APIs
-encryption_win = ["vmgs/encryption_win"]
-# Use OpenSSL crypto APIs
-encryption_ossl = ["vmgs/encryption_ossl"]
-
 [dependencies]
 vmgs_format.workspace = true
 vmgs_resources.workspace = true

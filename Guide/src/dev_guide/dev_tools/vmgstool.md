@@ -110,9 +110,3 @@ OpenHCL at least once, to ensure you have all necessary build dependencies
 installed.
 
 VmgsTool can be built with `cargo build -p vmgstool` for Windows and Linux.
-To interact with encrypted VMGS files, you will need to compile with the
-appropriate encryption feature.
-
-Windows: `cargo build --features "encryption_win" -p vmgstool`
-
-Linux/WSL2: `cargo build --features "encryption_ossl" -p vmgstool`

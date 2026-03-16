@@ -804,7 +804,6 @@ impl SimpleFlowNode for Node {
             let output = ctx.reqv(|v| crate::build_vmgstool::Request {
                 target: target.clone(),
                 profile: CommonProfile::from_release(release),
-                with_crypto: true,
                 with_test_helpers: true,
                 vmgstool: v,
             });

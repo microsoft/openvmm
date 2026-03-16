@@ -5,12 +5,11 @@
 
 use crate::Keys;
 use crate::crypto;
+use crate::crypto::RsaKeyPair;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -51,15 +50,15 @@ pub(crate) enum GetKeysFromKeyProtectorError {
     #[error("failed to unwrap the ingress DEK entry with RSA-OAEP in KeyProtector")]
     IngressDekRsaUnwrap(#[source] crypto::RsaOaepError),
     #[error("failed to unwrap the ingress DEK entry with AES-WRAP-WITH-PADDING in KeyProtector")]
-    IngressDekAesUnwrap(#[source] crypto::AesKeyWrapWithPaddingError),
+    IngressDekAesUnwrap(#[source] crypto::AesKeyWrapError),
     #[error("failed to unwrap the egress DEK entry with RSA-OAEP in KeyProtector")]
     EgressDekRsaUnwrap(#[source] crypto::RsaOaepError),
     #[error("failed to unwrap the egress DEK entry with AES-WRAP-WITH-PADDING in KeyProtector")]
-    EgressDekAesUnwrap(#[source] crypto::AesKeyWrapWithPaddingError),
+    EgressDekAesUnwrap(#[source] crypto::AesKeyWrapError),
     #[error("failed to wrap the egress key with RSA-OAEP")]
     EgressKeyRsaWrap(#[source] crypto::RsaOaepError),
     #[error("failed to wrap the egress key with AES-WRAP-WITH-PADDING")]
-    EgressKeyAesWrap(#[source] crypto::AesKeyWrapWithPaddingError),
+    EgressKeyAesWrap(#[source] crypto::AesKeyWrapError),
 }
 
 /// AES-Wrapped AES key size (32-byte with 8-byte padding)
@@ -74,7 +73,7 @@ pub trait KeyProtectorExt {
     /// and generate a new egress key for (re)encrypting VMGS.
     fn unwrap_and_rotate_keys(
         &mut self,
-        ingress_kek: &Rsa<Private>,
+        ingress_kek: &RsaKeyPair,
         wrapped_des_key: Option<&[u8]>,
         ingress_idx: usize,
         egress_idx: usize,
@@ -84,7 +83,7 @@ pub trait KeyProtectorExt {
 impl KeyProtectorExt for KeyProtector {
     fn unwrap_and_rotate_keys(
         &mut self,
-        ingress_kek: &Rsa<Private>,
+        ingress_kek: &RsaKeyPair,
         wrapped_des_key: Option<&[u8]>,
         ingress_idx: usize,
         egress_idx: usize,
@@ -96,7 +95,7 @@ impl KeyProtectorExt for KeyProtector {
         let mut ingress_key = [0u8; AES_GCM_KEY_LENGTH];
         let mut encrypt_egress_key = [0u8; AES_GCM_KEY_LENGTH];
         let use_des_key = wrapped_des_key.is_some(); // whether the wrapped key from DiskEncryptionSettings payload is used
-        let modulus_size = ingress_kek.size() as usize;
+        let modulus_size = ingress_kek.modulus_size();
 
         // If the `dek` entry is not empty or `wrapped_des_key` (RSA-wrapped) is present, decrypt the ingress key.
         // The use of `wrapped_des_key` from DiskEncryptionSettings implies that VMGS structure is new (3-blob) where
@@ -281,8 +280,8 @@ mod tests {
     use zerocopy::FromBytes;
 
     /// Generate an RSA-2k key
-    fn generate_rsa_2k() -> Rsa<Private> {
-        let result = Rsa::generate(2048);
+    fn generate_rsa_2k() -> RsaKeyPair {
+        let result = RsaKeyPair::generate(2048);
         assert!(result.is_ok());
 
         result.unwrap()
@@ -291,8 +290,7 @@ mod tests {
     /// Generate an AES-256 key
     fn generate_aes_256() -> [u8; 32] {
         let mut buf = [0u8; 32];
-        let result = openssl::rand::rand_bytes(&mut buf[..]);
-        assert!(result.is_ok());
+        getrandom::fill(&mut buf).expect("rng failure");
 
         buf
     }
@@ -357,7 +355,7 @@ mod tests {
 
         let result = crypto::rsa_oaep_decrypt(
             &kek,
-            &key_protector.dek[egress_index].dek_buffer[..kek.size() as usize],
+            &key_protector.dek[egress_index].dek_buffer[..kek.modulus_size()],
             crypto::RsaOaepHashAlgorithm::Sha256,
         );
         assert!(result.is_ok());
@@ -391,7 +389,7 @@ mod tests {
 
         let result = crypto::rsa_oaep_decrypt(
             &kek,
-            &key_protector.dek[egress_index].dek_buffer[..kek.size() as usize],
+            &key_protector.dek[egress_index].dek_buffer[..kek.modulus_size()],
             crypto::RsaOaepHashAlgorithm::Sha256,
         );
         assert!(result.is_ok());
