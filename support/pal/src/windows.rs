@@ -373,7 +373,13 @@ impl From<IoCompletionPort> for OwnedHandle {
 /// The caller must ensure that `handle` is valid and that changing the
 /// notification modes does not cause a safety issue elsewhere (e.g. by causing
 /// unexpected IO completions in a completion port).
-pub unsafe fn set_file_completion_notification_modes(handle: RawHandle, flags: u8) -> Result<()> {
+pub unsafe fn set_file_completion_notification_modes(handle: RawHandle, flags: u32) -> Result<()> {
+    let flags = u8::try_from(flags).map_err(|_| {
+        Error::new(
+            io::ErrorKind::InvalidInput,
+            "file completion flags out of range",
+        )
+    })?;
     // SAFETY: caller guarantees contract.
     if unsafe { SetFileCompletionNotificationModes(handle, flags) } == 0 {
         return Err(Error::last_os_error());

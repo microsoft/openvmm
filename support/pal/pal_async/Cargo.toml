@@ -35,6 +35,7 @@ libc = { workspace = true, features = ["extra_traits"] }
 
 [target.'cfg(windows)'.dependencies]
 headervec.workspace = true
+windows-result.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_Security",

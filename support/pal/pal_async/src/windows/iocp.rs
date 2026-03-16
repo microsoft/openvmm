@@ -418,10 +418,7 @@ impl SocketReadyDriver for IocpDriver {
             unsafe {
                 set_file_completion_notification_modes(
                     file.as_raw_handle(),
-                    u8::try_from(
-                        FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
-                    )
-                    .expect("FILE_SKIP flags fit in u8"),
+                    FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
                 )?;
             }
             Ok(file)
@@ -545,8 +542,7 @@ impl OverlappedIoDriver for IocpDriver {
         unsafe {
             set_file_completion_notification_modes(
                 handle,
-                u8::try_from(FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE)
-                    .expect("FILE_SKIP flags fit in u8"),
+                FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
             )?;
         }
 

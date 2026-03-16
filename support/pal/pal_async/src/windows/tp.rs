@@ -291,10 +291,7 @@ impl TpAfdHandle {
             unsafe {
                 set_file_completion_notification_modes(
                     file.as_raw_handle(),
-                    u8::try_from(
-                        FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS,
-                    )
-                    .expect("FILE_SKIP flags fit in u8"),
+                    FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS,
                 )?;
             }
 
@@ -498,8 +495,7 @@ impl OverlappedIoDriver for TpPool {
             let tp_io = TpIo::new(handle, Some(tp_io_callback), null_mut())?;
             set_file_completion_notification_modes(
                 handle,
-                u8::try_from(FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS)
-                    .expect("FILE_SKIP flags fit in u8"),
+                FILE_SKIP_SET_EVENT_ON_HANDLE | FILE_SKIP_COMPLETION_PORT_ON_SUCCESS,
             )?;
             Ok(OverlappedIo {
                 tp_io,
