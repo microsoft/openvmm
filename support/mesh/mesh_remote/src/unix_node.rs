@@ -1165,10 +1165,7 @@ impl UnixSocket {
 /// ErrorKind::WouldBlock.
 // x86_64-unknown-linux-musl targets have a different type defn for
 // `libc::cmsghdr`, hence why these lints are being suppressed.
-#[cfg_attr(
-    target_env = "gnu",
-    expect(clippy::needless_update, clippy::useless_conversion)
-)]
+#[allow(clippy::needless_update, clippy::useless_conversion)]
 fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Result<usize> {
     let mut cmsg = CmsgScmRights {
         hdr: libc::cmsghdr {
