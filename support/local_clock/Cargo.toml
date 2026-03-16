@@ -7,9 +7,9 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["time_exts", "inspect"]
+default = ["jiff_exts", "inspect"]
 
-time_exts = ["dep:jiff"]
+jiff_exts = ["dep:jiff"]
 inspect = ["dep:inspect"]
 
 [dependencies]

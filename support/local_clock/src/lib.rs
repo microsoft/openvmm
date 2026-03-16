@@ -21,9 +21,9 @@
 //! # Features
 //!
 //! - `inspect` - Derives the [`Inspect`] trait on various types.
-//! - `time_exts` - Integration with the [`time`] crate
+//! - `jiff_exts` - Integration with the [`jiff`] crate
 //!     - Provides `From`/`Into` implementations to interop with duration and
-//!       date/time types from `time`.
+//!       date/time types from `jiff`.
 //!     - Changes the `Debug` implementation of [`LocalClockTime`] to print a
 //!       human readable date (instead of a raw duration since the Unix Epoch).
 //!
@@ -165,7 +165,7 @@ pub struct LocalClockTime {
 
 impl Debug for LocalClockTime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        #[cfg(not(feature = "time_exts"))]
+        #[cfg(not(feature = "jiff_exts"))]
         {
             write!(
                 f,
@@ -179,7 +179,7 @@ impl Debug for LocalClockTime {
             )
         }
 
-        #[cfg(feature = "time_exts")]
+        #[cfg(feature = "jiff_exts")]
         {
             let date_time: Result<jiff::Timestamp, _> = (*self).try_into();
             match date_time {
@@ -298,8 +298,8 @@ impl From<LocalClockTime> for std::time::SystemTime {
 #[derive(Debug)]
 pub struct OverflowError;
 
-#[cfg(feature = "time_exts")]
-mod time_ext {
+#[cfg(feature = "jiff_exts")]
+mod jiff_ext {
     use super::LocalClockDelta;
     use super::LocalClockTime;
 
