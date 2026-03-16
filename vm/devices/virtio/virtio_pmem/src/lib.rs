@@ -135,7 +135,11 @@ impl VirtioDeviceV2 for Device {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut std::task::Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    fn poll_stop_queue(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        idx: u16,
+    ) -> Poll<Option<QueueState>> {
         assert_eq!(idx, 0);
         if !self.worker.has_state() {
             return Poll::Ready(None);

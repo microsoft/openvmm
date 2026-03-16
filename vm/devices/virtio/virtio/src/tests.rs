@@ -3235,7 +3235,6 @@ async fn split_queue_state_initial_zero(driver: DefaultDriver) {
 }
 
 #[async_test]
-#[async_test]
 async fn verify_split_peek_does_not_advance(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     verify_peek_does_not_advance(VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, true)).await;

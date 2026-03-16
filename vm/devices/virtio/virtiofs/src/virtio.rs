@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use anyhow::Context as _;
 use crate::virtio_util::VirtioPayloadReader;
 use crate::virtio_util::VirtioPayloadWriter;
+use anyhow::Context as _;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::MappedMemoryRegion;
