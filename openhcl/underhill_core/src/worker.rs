@@ -33,7 +33,6 @@ use crate::emuplat::netvsp::HclNetworkVFManager;
 use crate::emuplat::netvsp::HclNetworkVFManagerEndpointInfo;
 use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
 use crate::emuplat::netvsp::NetworkAdapterIndex;
-use crate::emuplat::netvsp::NetworkAdapterIndexSavedState;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::non_volatile_store::VmgsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
@@ -682,7 +681,7 @@ struct UhVmNetworkSettings {
     #[inspect(skip)]
     dma_mode: net_mana::GuestDmaMode,
     #[inspect(skip)]
-    network_adapter_index: Arc<Mutex<NetworkAdapterIndex>>,
+    network_adapter_index: NetworkAdapterIndex,
 }
 
 impl UhVmNetworkSettings {
@@ -763,7 +762,7 @@ impl UhVmNetworkSettings {
         let mut endpoints: Vec<_> = endpoints_info
             .drain(..)
             .map(|(endpoint, mac_address)| {
-                self.network_adapter_index.lock().remove(&mac_address);
+                self.network_adapter_index.remove(&mac_address);
                 endpoint
             })
             .collect();
@@ -1089,29 +1088,13 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         Ok(params)
     }
 
-    async fn save(
-        &mut self,
-        keep_vf_alive: bool,
-    ) -> (
-        Option<Vec<ManaSavedState>>,
-        Option<Vec<NetworkAdapterIndexSavedState>>,
-    ) {
-        // Save the network adapter index state prior to removing the network adapters
-        // from the adapter indexes.
-        let network_adapter_index_save_state = self.network_adapter_index.lock().save();
-
-        // Do not start VF teardown if VF save state is not requested. The teardown will
-        // happen as part of the regular process.
-        if !keep_vf_alive {
-            return (None, network_adapter_index_save_state);
-        }
-
+    async fn save(&mut self) -> Option<Vec<ManaSavedState>> {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
 
         // Nothing to save
         if vf_managers.is_empty() {
-            return (None, network_adapter_index_save_state);
+            return None;
         }
 
         let (vf_managers, mut nic_channels) = self.begin_vf_teardown(&mut vf_managers, false);
@@ -1130,7 +1113,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         let mut endpoints: Vec<_> = endpoints_info
             .drain(..)
             .map(|(endpoint, mac_address)| {
-                self.network_adapter_index.lock().remove(&mac_address);
+                self.network_adapter_index.remove(&mac_address);
                 endpoint
             })
             .collect();
@@ -1155,10 +1138,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         let state = (run_endpoints, save_vf_managers).race().await;
 
         // Discard any vf_managers that failed to return valid save state.
-        (
-            Some(state.into_iter().flatten().collect()),
-            network_adapter_index_save_state,
-        )
+        Some(state.into_iter().flatten().collect())
     }
 }
 
@@ -3430,9 +3410,8 @@ async fn new_underhill_vm(
         anyhow::bail!("built without vpci support");
     }
 
-    let network_adapter_index = Arc::new(Mutex::new(NetworkAdapterIndex::restore(
-        servicing_state.network_adapter_index,
-    )));
+    let network_adapter_index =
+        NetworkAdapterIndex::restore(is_restoring, servicing_state.emuplat.network_adapter_index);
 
     // Networking
     let mut uh_network_settings = UhVmNetworkSettings {
@@ -3665,6 +3644,7 @@ async fn new_underhill_vm(
             get_backed_adjust_gpa_range: emuplat_adjust_gpa_range,
             rtc_local_clock: rtc_time_source.0,
             netvsp_state,
+            network_adapter_index: network_adapter_index.clone(),
         },
         device_interfaces: Some(controllers.device_interfaces),
         vmbus_client,

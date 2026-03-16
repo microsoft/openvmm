@@ -38,6 +38,10 @@ mod state {
         pub get_backed_adjust_gpa_range: Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>,
         #[mesh(3)]
         pub netvsp_state: Vec<crate::emuplat::netvsp::SavedState>,
+        /// Index of the next network adapter to create.
+        #[mesh(4)]
+        pub network_adapter_index:
+            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     #[derive(Protobuf)]
@@ -87,10 +91,6 @@ mod state {
         pub vmbus_client: Option<vmbus_client::SavedState>,
         #[mesh(10003)]
         pub mana_state: Option<Vec<ManaSavedState>>,
-        /// Index of the next network adapter to create.
-        #[mesh(10004)]
-        pub network_adapter_index:
-            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     #[derive(Protobuf)]
@@ -211,9 +211,6 @@ pub mod transposed {
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
         pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
-        /// Network adapter index saved state.
-        pub network_adapter_index:
-            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -223,6 +220,8 @@ pub mod transposed {
         pub rtc_local_clock: Option<<crate::emuplat::local_clock::UnderhillLocalClock as SaveRestore>::SavedState>,
         pub get_backed_adjust_gpa_range: Option<Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>>,
         pub netvsp_state: Option<Vec<crate::emuplat::netvsp::SavedState>>,
+        pub network_adapter_index:
+            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     impl From<Option<ServicingInitState>> for OptionServicingInitState {
@@ -237,6 +236,7 @@ pub mod transposed {
                             rtc_local_clock,
                             get_backed_adjust_gpa_range,
                             netvsp_state,
+                            network_adapter_index,
                         },
                     flush_logs_result,
                     vmgs,
@@ -245,7 +245,6 @@ pub mod transposed {
                     mana_state,
                     dma_manager_state,
                     vmbus_client,
-                    network_adapter_index,
                 } = state;
 
                 OptionServicingInitState {
@@ -255,6 +254,7 @@ pub mod transposed {
                         rtc_local_clock: Some(rtc_local_clock),
                         get_backed_adjust_gpa_range: Some(get_backed_adjust_gpa_range),
                         netvsp_state: Some(netvsp_state),
+                        network_adapter_index,
                     },
                     flush_logs_result: Some(flush_logs_result),
                     vmgs,
@@ -263,7 +263,6 @@ pub mod transposed {
                     mana_state,
                     dma_manager_state: Some(dma_manager_state),
                     vmbus_client: Some(vmbus_client),
-                    network_adapter_index,
                 }
             } else {
                 OptionServicingInitState::default()

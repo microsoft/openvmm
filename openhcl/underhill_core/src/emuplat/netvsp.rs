@@ -322,7 +322,7 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     vf_reconfig_receiver: Option<mesh::Receiver<()>>,
     #[inspect(skip)]
-    network_adapter_index: Arc<parking_lot::Mutex<NetworkAdapterIndex>>,
+    network_adapter_index: NetworkAdapterIndex,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -339,7 +339,7 @@ impl HclNetworkVFManagerWorker {
         max_sub_channels: u16,
         dma_mode: GuestDmaMode,
         dma_clients: VfioDmaClients,
-        network_adapter_index: Arc<parking_lot::Mutex<NetworkAdapterIndex>>,
+        network_adapter_index: NetworkAdapterIndex,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -395,7 +395,7 @@ impl HclNetworkVFManagerWorker {
                             .await
                             .with_context(|| format!("failed to create mana vport {vtl2_vfid}"))?;
                         let mac_address = vport.mac_address();
-                        let adapter_index = self.network_adapter_index.lock().next(&mac_address);
+                        let adapter_index = self.network_adapter_index.next(&mac_address);
                         vport.set_serial_no(adapter_index).await.with_context(|| {
                             format!("failed to set vport serial number {mac_address} {vtl2_vfid}")
                         })?;
@@ -1307,7 +1307,12 @@ pub struct NetworkAdapterIndexSavedState {
 
 /// Provides for serializing the network adapter index generation across multiple
 /// network VF managers.
+#[derive(Clone)]
 pub struct NetworkAdapterIndex {
+    state: Arc<parking_lot::Mutex<NetworkAdapterIndexState>>,
+}
+
+struct NetworkAdapterIndexState {
     /// The next adapter index to issue.
     index: u32,
     mac_address_to_index: HashMap<MacAddress, u32>,
@@ -1316,48 +1321,57 @@ pub struct NetworkAdapterIndex {
 impl NetworkAdapterIndex {
     pub fn new(initial_value: Option<u32>) -> Self {
         Self {
-            // Adapter index is used to generate the serial number for the
-            // guest and there are various guest code that treat a serial number
-            // of '0' as invalid. Start at 1 to avoid that.
-            index: initial_value.unwrap_or(1),
-            mac_address_to_index: HashMap::default(),
+            state: Arc::new(parking_lot::Mutex::new(NetworkAdapterIndexState {
+                // Adapter index is used to generate the serial number for the
+                // guest and there are various guest code that treat a serial number
+                // of '0' as invalid. Start at 1 to avoid that.
+                index: initial_value.unwrap_or(1),
+                mac_address_to_index: HashMap::default(),
+            })),
         }
     }
 
     /// Returns the next adapter index and increments the internal counter.
-    pub fn next(&mut self, mac_address: &MacAddress) -> u32 {
-        if let Some(&index) = self.mac_address_to_index.get(&mac_address) {
+    pub fn next(&self, mac_address: &MacAddress) -> u32 {
+        let mut state = self.state.lock();
+        if let Some(&index) = state.mac_address_to_index.get(&mac_address) {
             return index;
         }
 
         assert!(
-            self.mac_address_to_index.len() < u32::MAX as usize,
-            "adapter index space exhausted"
+            state.mac_address_to_index.len() < 1024 as usize,
+            "network adapter index capacity exhausted; maximum supported network adapters is 1024"
         );
 
         // Find the next index that isn't already used by another MAC address
-        while self.mac_address_to_index.values().any(|&v| v == self.index) {
-            self.index += 1;
+        while state
+            .mac_address_to_index
+            .values()
+            .any(|&v| v == state.index)
+        {
+            state.index += 1;
         }
 
-        let assigned = self.index;
-        self.index += 1;
-        self.mac_address_to_index.insert(*mac_address, assigned);
+        let assigned = state.index;
+        state.index += 1;
+        state.mac_address_to_index.insert(*mac_address, assigned);
         assigned
     }
 
     /// Removes the adapter index associated with the given MAC address.
-    pub fn remove(&mut self, mac_address: &MacAddress) {
-        self.mac_address_to_index.remove(mac_address);
+    pub fn remove(&self, mac_address: &MacAddress) {
+        self.state.lock().mac_address_to_index.remove(mac_address);
     }
 
     /// Returns the saved state of the network adapter index mapping.
-    pub fn save(&mut self) -> Option<Vec<NetworkAdapterIndexSavedState>> {
-        let save_state = if self.mac_address_to_index.is_empty() {
+    pub fn save(&self) -> Option<Vec<NetworkAdapterIndexSavedState>> {
+        let state = self.state.lock();
+        let save_state = if state.mac_address_to_index.is_empty() {
             None
         } else {
             Some(
-                self.mac_address_to_index
+                state
+                    .mac_address_to_index
                     .iter()
                     .map(
                         |(&mac_address, &adapter_index)| NetworkAdapterIndexSavedState {
@@ -1373,16 +1387,26 @@ impl NetworkAdapterIndex {
     }
 
     /// Restores the network adapter index mapping from the saved state.
-    pub fn restore(saved_states: Option<Vec<NetworkAdapterIndexSavedState>>) -> Self {
-        let mut restored_state = Self::new(None);
+    pub fn restore(
+        is_restoring: bool,
+        saved_states: Option<Vec<NetworkAdapterIndexSavedState>>,
+    ) -> Self {
+        // When restoring from older saved state that lacks adapter index data,
+        // start at index 0 to preserve backward compatibility.
+        let restored_state = if is_restoring && saved_states.is_none() {
+            Self::new(Some(0))
+        } else {
+            Self::new(None)
+        };
         if let Some(saved_states) = saved_states {
-            for state in saved_states {
-                let mac_address = MacAddress::new(state.mac_address);
-                restored_state
+            let mut state = restored_state.state.lock();
+            for saved_state in saved_states {
+                let mac_address = MacAddress::new(saved_state.mac_address);
+                state
                     .mac_address_to_index
-                    .insert(mac_address, state.adapter_index);
-                if state.adapter_index >= restored_state.index {
-                    restored_state.index = state.adapter_index + 1;
+                    .insert(mac_address, saved_state.adapter_index);
+                if saved_state.adapter_index >= state.index {
+                    state.index = saved_state.adapter_index + 1;
                 }
             }
         }
@@ -1406,7 +1430,7 @@ impl HclNetworkVFManager {
         keepalive_mode: KeepAliveConfig,
         dma_clients: VfioDmaClients,
         mana_state: Option<&ManaSavedState>,
-        network_adapter_index: Arc<parking_lot::Mutex<NetworkAdapterIndex>>,
+        network_adapter_index: NetworkAdapterIndex,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
