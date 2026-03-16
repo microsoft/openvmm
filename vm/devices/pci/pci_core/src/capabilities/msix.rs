@@ -18,19 +18,20 @@ use vmcore::interrupt::Interrupt;
 #[derive(Debug, Inspect)]
 struct MsiTableLocation {
     #[inspect(hex)]
-    offset: u64,
+    // MSI-X table offsets are, per spec, no larger than 32 bits.
+    offset: u32,
     bar: u8,
 }
 
 impl MsiTableLocation {
-    fn new(bar: u8, offset: u64) -> Self {
+    fn new(bar: u8, offset: u32) -> Self {
         assert!(bar < 6);
         assert!(offset & 7 == 0);
         Self { offset, bar }
     }
 
     fn read_u32(&self) -> u32 {
-        (self.offset | self.bar as u64) as u32
+        self.offset | self.bar as u32
     }
 }
 
@@ -274,7 +275,8 @@ fn inspect_entries(entries: &mut [MsixMessageTableEntry]) -> impl '_ + InspectMu
 #[derive(Clone)]
 pub struct MsixEmulator {
     state: Arc<Mutex<MsixState>>,
-    pending_bits_offset: u64,
+    // PBA offsets, per spec, are no larger than 32 bits.
+    pending_bits_offset: u32,
     pending_bits_dword_count: u16,
 }
 
@@ -300,7 +302,7 @@ impl MsixEmulator {
                 .collect(),
         };
         let state = Arc::new(Mutex::new(state));
-        let pending_bits_offset = count as u64 * 16;
+        let pending_bits_offset = count as u32 * 16;
         (
             Self {
                 state: state.clone(),
@@ -317,21 +319,23 @@ impl MsixEmulator {
     }
 
     /// Return the total length of the MSI-X BAR
+    /// (Actually, the notion that there is an "MSI-X BAR" is an issue to fix sometime.
+    /// MSI-X tables are often in the same bar as other things.)
     pub fn bar_len(&self) -> u64 {
-        self.pending_bits_offset + self.pending_bits_dword_count as u64 * 4
+        self.pending_bits_offset as u64 + self.pending_bits_dword_count as u64 * 4
     }
 
     /// Read a `u32` from the MSI-X BAR at the given offset.
     pub fn read_u32(&self, offset: u64) -> u32 {
         let mut state = self.state.lock();
         let state: &mut MsixState = &mut state;
-        if offset < self.pending_bits_offset {
+        if offset < self.pending_bits_offset as u64 {
             let index = offset / 16;
             if let Some(entry) = state.vectors.get(index as usize) {
                 return entry.read_u32(offset & 0xf);
             }
         } else {
-            let dword = (offset - self.pending_bits_offset) / 4;
+            let dword = (offset - self.pending_bits_offset as u64) / 4;
             let start = dword as usize * 32;
             if start < state.vectors.len() {
                 let end = (start + 32).min(state.vectors.len());
@@ -351,7 +355,7 @@ impl MsixEmulator {
     /// Write a `u32` to the MSI-X BAR at the given offset.
     pub fn write_u32(&mut self, offset: u64, val: u32) {
         let mut state = self.state.lock();
-        if offset < self.pending_bits_offset {
+        if offset < self.pending_bits_offset as u64 {
             let index = offset / 16;
             let global = state.enabled;
             if let Some(entry) = state.vectors.get_mut(index as usize) {
@@ -370,7 +374,9 @@ impl MsixEmulator {
                 }
                 return;
             }
-        } else if offset - self.pending_bits_offset < self.pending_bits_dword_count as u64 * 4 {
+        } else if offset - (self.pending_bits_offset as u64)
+            < self.pending_bits_dword_count as u64 * 4
+        {
             return;
         }
         tracelimit::warn_ratelimited!(offset, "Unexpected write offset");

@@ -379,10 +379,10 @@ impl AssignedPciDevice {
         }
     }
 
-    fn write_phys_config(&self, offset: u64, value: u32) {
+    fn write_phys_config(&self, offset: u16, value: u32) {
         match self.device.device().write_register(
             whp::abi::WHvVpciConfigSpace,
-            offset,
+            offset as u64,
             &value.to_ne_bytes(),
         ) {
             Ok(_) => (),
