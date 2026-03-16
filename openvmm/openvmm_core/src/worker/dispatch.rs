@@ -1759,6 +1759,7 @@ impl InitializedVm {
 
             for rc in cfg.pcie_root_complexes {
                 let device_name = format!("pcie-root:{}", rc.name);
+                let signal_msi = partition.clone().into_signal_msi(Vtl::Vtl0);
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
@@ -1778,6 +1779,7 @@ impl InitializedVm {
                                 rc.end_bus,
                                 rc.ecam_range,
                                 root_port_definitions,
+                                signal_msi,
                             )
                         })?;
 

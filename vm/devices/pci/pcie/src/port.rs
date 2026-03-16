@@ -11,6 +11,7 @@ use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
 use pci_core::msi::MsiConnection;
+use pci_core::msi::SignalMsi;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
@@ -30,6 +31,11 @@ pub struct PcieDownstreamPort {
     /// The connected device, if any.
     #[inspect(skip)]
     pub link: Option<(Arc<str>, Box<dyn GenericPciBusDevice>)>,
+
+    /// The MSI connection for this port's interrupt capability.
+    /// Stored to allow connecting the MSI signal after construction.
+    #[inspect(skip)]
+    msi_connection: MsiConnection,
 }
 
 impl PcieDownstreamPort {
@@ -76,7 +82,17 @@ impl PcieDownstreamPort {
             name: port_name,
             cfg_space,
             link: None,
+            msi_connection: msi_conn,
         }
+    }
+
+    /// Connect the port's MSI capability to the platform's interrupt controller.
+    ///
+    /// This must be called after construction to enable MSI delivery for
+    /// hotplug events. Without this, MSI interrupts from this port will
+    /// be silently dropped.
+    pub fn connect_msi(&self, signal: Arc<dyn SignalMsi>) {
+        self.msi_connection.connect(signal);
     }
 
     /// Forward a configuration space read to the connected device.

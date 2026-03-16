@@ -23,6 +23,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::msi::SignalMsi;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -99,6 +100,7 @@ impl GenericPcieRootComplex {
         end_bus: u8,
         ecam_range: MemoryRange,
         ports: Vec<GenericPcieRootPortDefinition>,
+        signal_msi: Option<Arc<dyn SignalMsi>>,
     ) -> Self {
         assert_eq!(
             ecam_size_from_bus_numbers(start_bus, end_bus),
@@ -120,6 +122,10 @@ impl GenericPcieRootComplex {
                     None
                 };
                 let root_port = RootPort::new(definition.name.clone(), hotplug_slot_number);
+                // Connect port MSI to the platform's interrupt controller
+                if let Some(ref signal) = signal_msi {
+                    root_port.port.connect_msi(signal.clone());
+                }
                 (device_number, (definition.name, root_port))
             })
             .collect();
@@ -504,7 +510,7 @@ mod tests {
 
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
-        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, ecam, port_defs)
+        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, ecam, port_defs, None)
     }
 
     #[test]
