@@ -373,7 +373,13 @@ impl VirtioDeviceV2 for Device {
         let pair_idx = (idx / 2) as usize;
 
         if pair_idx < self.pairs.len() {
-            if matches!(self.pairs[pair_idx], QueuePairState::HalfOpen { .. }) {
+            if let QueuePairState::HalfOpen { is_rx, .. } = self.pairs[pair_idx] {
+                let stopping_rx = idx.is_multiple_of(2);
+                if is_rx != stopping_rx {
+                    // The caller is stopping the queue that wasn't started;
+                    // leave the pending half intact.
+                    return Poll::Ready(None);
+                }
                 // Drop the pending half-open queue.
                 self.pairs[pair_idx] = QueuePairState::Empty;
             } else if matches!(self.pairs[pair_idx], QueuePairState::Active) {
