@@ -40,36 +40,71 @@ use std::task::Poll;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
+// TODO: These virtio net header types duplicate definitions in virtio_net.
+// Consider extracting a shared `virtio_net_header` crate if more consumers
+// appear (e.g., vhost-user).
 mod vnet_hdr {
+    use bitfield_struct::bitfield;
     use zerocopy::FromBytes;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
+
+    /// Flags in the virtio network header.
+    #[bitfield(u8)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VirtioNetHdrFlags {
+        pub needs_csum: bool,
+        pub data_valid: bool,
+        #[bits(6)]
+        _reserved: u8,
+    }
+
+    /// GSO type bitfield in the virtio network header.
+    #[bitfield(u8)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct VirtioNetHdrGso {
+        #[bits(3)]
+        pub protocol: VirtioNetHdrGsoProtocol,
+        #[bits(4)]
+        _reserved: u8,
+        pub ecn: bool,
+    }
+
+    open_enum::open_enum! {
+        /// GSO protocol in the virtio network header.
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+        pub enum VirtioNetHdrGsoProtocol: u8 {
+            NONE = 0,
+            TCPV4 = 1,
+            UDP = 3,
+            TCPV6 = 4,
+        }
+    }
+
+    impl VirtioNetHdrGsoProtocol {
+        const fn from_bits(bits: u8) -> Self {
+            Self(bits)
+        }
+
+        const fn into_bits(self) -> u8 {
+            self.0
+        }
+    }
 
     /// The virtio network header prepended to packets when `IFF_VNET_HDR` is set.
     /// This is the 12-byte v1 format (without hash fields).
     #[repr(C)]
     #[derive(Debug, Default, Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct VirtioNetHdr {
-        pub flags: u8,
-        pub gso_type: u8,
+        pub flags: VirtioNetHdrFlags,
+        pub gso_type: VirtioNetHdrGso,
         pub hdr_len: u16,
         pub gso_size: u16,
         pub csum_start: u16,
         pub csum_offset: u16,
         pub num_buffers: u16,
     }
-
-    // VirtioNetHdr::flags
-    pub const VIRTIO_NET_HDR_F_NEEDS_CSUM: u8 = 1;
-    pub const VIRTIO_NET_HDR_F_DATA_VALID: u8 = 2;
-
-    // VirtioNetHdr::gso_type
-    pub const VIRTIO_NET_HDR_GSO_NONE: u8 = 0;
-    pub const VIRTIO_NET_HDR_GSO_TCPV4: u8 = 1;
-    pub const VIRTIO_NET_HDR_GSO_UDP: u8 = 3;
-    pub const VIRTIO_NET_HDR_GSO_TCPV6: u8 = 4;
-    pub const VIRTIO_NET_HDR_GSO_ECN: u8 = 0x80;
 }
 pub use vnet_hdr::*;
 
@@ -390,14 +425,14 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize, l3_len: usize) {
 /// TAP device that the packet requires no special handling.
 fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
     if meta.flags.offload_tcp_segmentation() {
-        let gso_type = if meta.flags.is_ipv4() {
-            VIRTIO_NET_HDR_GSO_TCPV4
+        let protocol = if meta.flags.is_ipv4() {
+            VirtioNetHdrGsoProtocol::TCPV4
         } else {
-            VIRTIO_NET_HDR_GSO_TCPV6
+            VirtioNetHdrGsoProtocol::TCPV6
         };
         VirtioNetHdr {
-            flags: VIRTIO_NET_HDR_F_NEEDS_CSUM,
-            gso_type,
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
             hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
             gso_size: meta.max_tcp_segment_size,
             csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -406,8 +441,8 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
         }
     } else if meta.flags.offload_tcp_checksum() {
         VirtioNetHdr {
-            flags: VIRTIO_NET_HDR_F_NEEDS_CSUM,
-            gso_type: VIRTIO_NET_HDR_GSO_NONE,
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new(),
             hdr_len: 0,
             gso_size: 0,
             csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -416,8 +451,8 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
         }
     } else if meta.flags.offload_udp_checksum() {
         VirtioNetHdr {
-            flags: VIRTIO_NET_HDR_F_NEEDS_CSUM,
-            gso_type: VIRTIO_NET_HDR_GSO_NONE,
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new(),
             hdr_len: 0,
             gso_size: 0,
             csum_start: meta.l2_len as u16 + meta.l3_len,
@@ -440,16 +475,15 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
 /// receive-side GSO, but we still parse it defensively to extract L4 protocol
 /// information if present.
 fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
-    let (ip_checksum, l4_checksum) = if hdr.flags & VIRTIO_NET_HDR_F_DATA_VALID != 0 {
+    let (ip_checksum, l4_checksum) = if hdr.flags.data_valid() {
         (RxChecksumState::Good, RxChecksumState::Good)
     } else {
         (RxChecksumState::Unknown, RxChecksumState::Unknown)
     };
 
-    let gso_base = hdr.gso_type & !VIRTIO_NET_HDR_GSO_ECN;
-    let l4_protocol = match gso_base {
-        VIRTIO_NET_HDR_GSO_TCPV4 | VIRTIO_NET_HDR_GSO_TCPV6 => L4Protocol::Tcp,
-        VIRTIO_NET_HDR_GSO_UDP => L4Protocol::Udp,
+    let l4_protocol = match hdr.gso_type.protocol() {
+        VirtioNetHdrGsoProtocol::TCPV4 | VirtioNetHdrGsoProtocol::TCPV6 => L4Protocol::Tcp,
+        VirtioNetHdrGsoProtocol::UDP => L4Protocol::Udp,
         _ => L4Protocol::Unknown,
     };
 
@@ -478,10 +512,11 @@ mod tests {
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
-        assert_eq!(hdr.flags, VIRTIO_NET_HDR_F_NEEDS_CSUM);
+        assert!(hdr.flags.needs_csum());
+        assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 16);
-        assert_eq!(hdr.gso_type, VIRTIO_NET_HDR_GSO_NONE);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
         assert_eq!(hdr.gso_size, 0);
     }
 
@@ -499,10 +534,11 @@ mod tests {
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
-        assert_eq!(hdr.gso_type, VIRTIO_NET_HDR_GSO_TCPV4);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::TCPV4);
         assert_eq!(hdr.gso_size, 1460);
         assert_eq!(hdr.hdr_len, 14 + 20 + 32);
-        assert_eq!(hdr.flags, VIRTIO_NET_HDR_F_NEEDS_CSUM);
+        assert!(hdr.flags.needs_csum());
+        assert!(!hdr.flags.data_valid());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 16);
     }
@@ -511,8 +547,9 @@ mod tests {
     fn vnet_hdr_from_tx_metadata_none() {
         let meta = TxMetadata::default();
         let hdr = build_vnet_hdr(&meta);
-        assert_eq!(hdr.flags, 0);
-        assert_eq!(hdr.gso_type, 0);
+        assert!(!hdr.flags.needs_csum());
+        assert!(!hdr.flags.data_valid());
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
         assert_eq!(hdr.hdr_len, 0);
         assert_eq!(hdr.gso_size, 0);
         assert_eq!(hdr.csum_start, 0);
@@ -530,17 +567,17 @@ mod tests {
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);
-        assert_eq!(hdr.flags, VIRTIO_NET_HDR_F_NEEDS_CSUM);
+        assert!(hdr.flags.needs_csum());
         assert_eq!(hdr.csum_start, 14 + 20);
         assert_eq!(hdr.csum_offset, 6);
-        assert_eq!(hdr.gso_type, VIRTIO_NET_HDR_GSO_NONE);
+        assert_eq!(hdr.gso_type.protocol(), VirtioNetHdrGsoProtocol::NONE);
     }
 
     #[test]
     fn rx_metadata_from_vnet_hdr_valid() {
         let hdr = VirtioNetHdr {
-            flags: VIRTIO_NET_HDR_F_DATA_VALID,
-            gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
+            flags: VirtioNetHdrFlags::new().with_data_valid(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);
@@ -554,8 +591,8 @@ mod tests {
         // We don't set TUN_F_CSUM so the kernel should never send NEEDS_CSUM,
         // but if it did, we conservatively treat it as Unknown (not Good).
         let hdr = VirtioNetHdr {
-            flags: VIRTIO_NET_HDR_F_NEEDS_CSUM,
-            gso_type: VIRTIO_NET_HDR_GSO_TCPV6,
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);
@@ -576,8 +613,8 @@ mod tests {
     #[test]
     fn rx_metadata_from_vnet_hdr_udp() {
         let hdr = VirtioNetHdr {
-            flags: VIRTIO_NET_HDR_F_DATA_VALID,
-            gso_type: VIRTIO_NET_HDR_GSO_UDP,
+            flags: VirtioNetHdrFlags::new().with_data_valid(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::UDP),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);

@@ -141,9 +141,9 @@ impl Tap {
             tun_get_vnet_hdr_sz(tap.as_raw_fd(), &mut actual_sz)
                 .map_err(|_e| Error::GetVnetHdrSize(io::Error::last_os_error()))?;
         };
-        if actual_sz as usize != size_of::<VirtioNetHdr>() {
+        if actual_sz != expected_sz {
             return Err(Error::WrongVnetHdrSize {
-                expected: size_of::<VirtioNetHdr>(),
+                expected: expected_sz as usize,
                 actual: actual_sz as usize,
             });
         }
