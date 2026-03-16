@@ -46,3 +46,37 @@ And serial devices can each be configured to be relayed to different endpoints:
   * `listen=tcp:IP:PORT`: As with `listen=PATH`, but listen for TCP
       connections on the given IP address and port. Typically IP will be
       127.0.0.1, to restrict connections to the current host.
+
+## PCIe Device Support
+
+OpenVMM can emulate a PCI Express topology using `--pcie-root-complex` and
+`--pcie-root-port`. Devices that support the `pcie_port=` option can be
+attached to a root port to appear as PCIe devices in the guest.
+
+### Setting up a PCIe topology
+
+```sh
+# Create a root complex and root port
+--pcie-root-complex rc0 --pcie-root-port rc0:rp0
+```
+
+### Attaching devices to PCIe
+
+Several device types support the `pcie_port=<name>` option to attach to a
+PCIe root port. The syntax varies slightly between disk and NIC arguments:
+
+**Disks** (comma-separated option): `--disk`, `--nvme`, `--virtio-blk`
+
+```sh
+--virtio-blk file:/path/to/disk.raw,pcie_port=rp0
+--nvme file:/path/to/disk.raw,pcie_port=rp0
+--disk file:/path/to/disk.raw,pcie_port=rp0
+```
+
+**NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
+
+```sh
+--virtio-net pcie_port=rp0:tap:tap0
+--net pcie_port=rp0:consomme
+--mana pcie_port=rp0:tap:tap0
+```

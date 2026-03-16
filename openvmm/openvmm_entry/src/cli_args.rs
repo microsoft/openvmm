@@ -161,6 +161,9 @@ flags:
     `vtl2`                         assign this disk to VTL2
     `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as SCSI)
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as SCSI)
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
@@ -215,6 +218,9 @@ valid disk kinds:
 
 flags:
     `ro`                           open disk as read-only
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port
 "#)]
     #[clap(long = "virtio-blk")]
     pub virtio_blk: Vec<DiskCli>,
@@ -230,7 +236,8 @@ flags:
     /// expose a virtual NIC with the given backend (consomme | dio | tap | none)
     ///
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
-    /// or `vtl2:` to assign this NIC to VTL2.
+    /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
+    /// expose the NIC over emulated PCIe at the specified port.
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
 
@@ -388,7 +395,8 @@ flags:
     /// none)
     ///
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
-    /// or `vtl2:` to assign this NIC to VTL2.
+    /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
+    /// expose the NIC over emulated PCIe at the specified port.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
