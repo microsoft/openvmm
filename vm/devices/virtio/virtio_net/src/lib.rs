@@ -1147,6 +1147,7 @@ impl Worker {
                 if l3_len > 0 && l4_len > 0 {
                     flags.set_offload_tcp_segmentation(true);
                     flags.set_offload_tcp_checksum(true);
+                    flags.set_offload_udp_checksum(false);
                     max_tcp_segment_size = header.gso_size;
 
                     flags.set_is_ipv4(is_ipv4_from_gso);
