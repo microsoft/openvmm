@@ -588,7 +588,9 @@ impl PetriVmConfigSetupCore<'_> {
             None
         };
 
-        if self.firmware.is_linux_direct() {
+        if self.firmware.is_linux_direct() && !self.uses_pipette_as_init {
+            // Non-pipette-as-init Linux direct: create serial1 and a serial
+            // agent so we can send shell commands to launch pipette.
             let (serial1_host, serial1) = self.create_serial_stream()?;
             let (serial1_read, _serial1_write) = serial1_host.split();
             let linux_direct_serial_agent =

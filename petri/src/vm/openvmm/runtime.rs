@@ -465,7 +465,10 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
-        // On linux direct pipette won't auto start, start it over serial
+        // On linux direct, pipette won't auto-start unless it is the init
+        // process. When it isn't, restart it over serial. (When pipette runs
+        // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
+        // this block is skipped and pipette restarts automatically on reboot.)
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
