@@ -35,7 +35,7 @@ use windows_sys::Win32::System::Memory::SECTION_MAP_READ;
 use windows_sys::Win32::System::Memory::SECTION_MAP_WRITE;
 use windows_sys::Win32::System::Memory::SECTION_QUERY;
 
-const SectionBasicInformation: i32 = 0;
+const SECTION_BASIC_INFORMATION_CLASS: i32 = 0;
 
 #[repr(C)]
 #[derive(Default)]
@@ -176,7 +176,7 @@ struct Section(OwnedHandle);
 impl Section {
     /// Creates a new pagefile-backed section object of `size` bytes.
     fn new(obj_attr: &ObjectAttributes<'_>, access: u32, size: u64) -> io::Result<Self> {
-        let mut maximum_size = size.try_into().expect("size fits in an i64");
+        let maximum_size = size.try_into().expect("size fits in an i64");
 
         // SAFETY: calling the API according to the NT API
         unsafe {
@@ -185,7 +185,7 @@ impl Section {
                 &mut handle,
                 access,
                 obj_attr.as_ptr(),
-                &mut maximum_size,
+                &maximum_size,
                 PAGE_READWRITE,
                 SEC_COMMIT,
                 null_mut(),
@@ -211,7 +211,7 @@ impl Section {
             let mut info: SECTION_BASIC_INFORMATION = zeroed();
             chk_status(NtQuerySection(
                 self.0.as_raw_handle().cast(),
-                SectionBasicInformation,
+                SECTION_BASIC_INFORMATION_CLASS,
                 std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info),
                 null_mut(),

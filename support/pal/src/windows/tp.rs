@@ -225,12 +225,12 @@ impl TpTimer {
     /// Returns `true` if the timer was already set.
     pub fn set(&self, timeout: Duration) -> bool {
         let due_time_100ns = -(timeout.as_nanos() / 100).try_into().unwrap_or(i64::MAX);
-        let mut due_time = FILETIME {
+        let due_time = FILETIME {
             dwLowDateTime: due_time_100ns as u32,
             dwHighDateTime: (due_time_100ns >> 32) as u32,
         };
         // SAFETY: The caller ensures this is safe when creating the object in `new`.
-        unsafe { SetThreadpoolTimerEx(self.0, &mut due_time, 0, 0) != 0 }
+        unsafe { SetThreadpoolTimerEx(self.0, &due_time, 0, 0) != 0 }
     }
 
     /// Cancels a timer.

@@ -53,6 +53,11 @@ use std::task::Context;
 use std::task::Poll;
 use tracing_helpers::ErrorValueExt;
 use unicycle::FuturesUnordered;
+use windows_sys::Wdk::System::SystemServices::DIRECTORY_CREATE_OBJECT;
+use windows_sys::Wdk::System::SystemServices::DIRECTORY_CREATE_SUBDIRECTORY;
+use windows_sys::Wdk::System::SystemServices::DIRECTORY_QUERY;
+use windows_sys::Wdk::System::SystemServices::DIRECTORY_TRAVERSE;
+use windows_sys::Win32::Storage::FileSystem::STANDARD_RIGHTS_REQUIRED;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -66,7 +71,11 @@ type InvitationMap =
 /// This value was chosen arbitrarily and has not been performance tested.
 const MAX_MESSAGE_SIZE: usize = 0x1000;
 const MAX_SMALL_EVENT_SIZE: usize = MAX_MESSAGE_SIZE - size_of::<protocol::PacketHeader>();
-const DIRECTORY_ALL_ACCESS: u32 = 0x000F000F;
+const DIRECTORY_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED
+    | DIRECTORY_QUERY
+    | DIRECTORY_TRAVERSE
+    | DIRECTORY_CREATE_OBJECT
+    | DIRECTORY_CREATE_SUBDIRECTORY;
 
 /// A node within a mesh that uses Windows ALPC to communicate.
 ///

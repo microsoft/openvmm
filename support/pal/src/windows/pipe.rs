@@ -94,7 +94,7 @@ pub fn pair() -> io::Result<(File, File)> {
 
 fn open_pipe_driver() -> io::Result<OwnedHandle> {
     let mut pathu: UnicodeString = "\\Device\\NamedPipe\\".try_into().expect("string fits");
-    let mut oa = OBJECT_ATTRIBUTES {
+    let oa = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: null_mut(),
         ObjectName: pathu.as_mut_ptr(),
@@ -108,7 +108,7 @@ fn open_pipe_driver() -> io::Result<OwnedHandle> {
         chk_status(NtOpenFile(
             &mut handle,
             GENERIC_READ | SYNCHRONIZE,
-            &mut oa,
+            &oa,
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_SYNCHRONOUS_IO_NONALERT,
@@ -187,7 +187,7 @@ fn create_named_pipe(
             path.try_into()
                 .map_err(|_| status_to_error(STATUS_NAME_TOO_LONG))?
         };
-        let mut oa = OBJECT_ATTRIBUTES {
+        let oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
@@ -202,7 +202,7 @@ fn create_named_pipe(
         chk_status(NtCreateNamedPipeFile(
             &mut handle,
             access | SYNCHRONIZE,
-            &mut oa,
+            &oa,
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             disposition,
@@ -243,7 +243,7 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
         )?;
 
         let mut empty_name = zeroed();
-        let mut oa = OBJECT_ATTRIBUTES {
+        let oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: read_pipe.as_raw_handle().cast::<c_void>(),
             ObjectName: &mut empty_name,
@@ -256,7 +256,7 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
         chk_status(NtOpenFile(
             &mut write_pipe_handle,
             GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
-            &mut oa,
+            &oa,
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
@@ -319,10 +319,9 @@ impl PipeExt for File {
         }
     }
 
-    fn set_pipe_mode(&self, mut mode: u32) -> io::Result<()> {
+    fn set_pipe_mode(&self, mode: u32) -> io::Result<()> {
         unsafe {
-            if SetNamedPipeHandleState(self.as_raw_handle(), &mut mode, null_mut(), null_mut()) == 0
-            {
+            if SetNamedPipeHandleState(self.as_raw_handle(), &mode, null_mut(), null_mut()) == 0 {
                 return Err(io::Error::last_os_error());
             }
         }

@@ -841,7 +841,7 @@ impl<'a> Builder<'a> {
             let stdout = self.stdout.eval(STD_OUTPUT_HANDLE)?;
             let stderr = self.stderr.eval(STD_ERROR_HANDLE)?;
 
-            let mut startup_info = STARTUPINFOEXW {
+            let startup_info = STARTUPINFOEXW {
                 StartupInfo: STARTUPINFOW {
                     cb: size_of::<STARTUPINFOEXW>() as u32,
                     dwFlags: STARTF_USESTDHANDLES,
@@ -954,7 +954,7 @@ impl<'a> Builder<'a> {
                 self.creation_flags | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                 ptr_or_null(&env_block) as *mut _,
                 ptr_or_null(&current_directory),
-                &mut startup_info.StartupInfo,
+                &startup_info.StartupInfo,
                 &mut process_info,
             ) == 0
             {

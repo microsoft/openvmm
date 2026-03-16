@@ -24,7 +24,7 @@ use windows_sys::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
 pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_INFORMATION> {
     let mut pathu = dos_to_nt_path(path)?;
 
-    let mut oa = OBJECT_ATTRIBUTES {
+    let oa = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: null_mut(),
         ObjectName: pathu.as_mut_ptr(),
@@ -38,7 +38,7 @@ pub fn query_stat_lx_by_name(path: &Path) -> io::Result<ntioapi::FILE_STAT_LX_IN
         let mut info: ntioapi::FILE_STAT_LX_INFORMATION = zeroed();
         let info_ptr = std::ptr::from_mut(&mut info).cast::<c_void>();
         chk_status(ntioapi::NtQueryInformationByName(
-            &mut oa,
+            &oa,
             &mut iosb,
             info_ptr,
             size_of_val(&info) as u32,
@@ -100,6 +100,6 @@ mod tests {
     #[test]
     fn test_query_stat_lx() {
         let result = query_stat_lx_by_name(r"C:\\".as_ref()).unwrap();
-        unsafe { assert_ne!(&0, result.FileId.QuadPart()) };
+        assert_ne!(0, result.FileId);
     }
 }

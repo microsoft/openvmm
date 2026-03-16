@@ -30,12 +30,7 @@ use windows_sys::Win32::Security::PSID;
 use windows_sys::Win32::Security::SACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
-
-const SE_GROUP_ENABLED: u32 = 4;
-
-type Bool = windows_sys::core::BOOL;
-type PHandle = *mut HANDLE;
-type LpSecurityCapabilities = *mut SECURITY_CAPABILITIES;
+use windows_sys::Win32::System::SystemServices::SE_GROUP_ENABLED;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
 
@@ -250,7 +245,7 @@ impl FromStr for LocalSecurityDescriptor {
                 U16CString::from_str(s)
                     .map_err(|e| std::io::Error::new(ErrorKind::InvalidInput, e))?
                     .as_ptr(),
-                SDDL_REVISION_1.into(),
+                SDDL_REVISION_1,
                 &mut ptr,
                 &mut len,
             ) == 0
@@ -295,7 +290,7 @@ impl SecurityDescriptor {
             let mut s16 = null_mut();
             if ConvertSecurityDescriptorToStringSecurityDescriptorW(
                 self.as_ptr(),
-                SDDL_REVISION_1.into(),
+                SDDL_REVISION_1,
                 OWNER_SECURITY_INFORMATION
                     | GROUP_SECURITY_INFORMATION
                     | DACL_SECURITY_INFORMATION
@@ -327,9 +322,9 @@ impl SecurityDescriptor {
 unsafe extern "C" {
     fn CreateAppContainerToken(
         token: HANDLE,
-        caps: LpSecurityCapabilities,
-        new_token: PHandle,
-    ) -> Bool;
+        caps: *mut SECURITY_CAPABILITIES,
+        new_token: *mut HANDLE,
+    ) -> windows_sys::core::BOOL;
 }
 
 #[repr(transparent)]
@@ -358,7 +353,7 @@ where
 {
     let mut caps_and_attrs: Vec<_> = capabilities
         .into_iter()
-        .map(|c| SidAndAttributes::new(c.as_ref(), SE_GROUP_ENABLED))
+        .map(|c| SidAndAttributes::new(c.as_ref(), SE_GROUP_ENABLED as u32))
         .collect();
     let mut caps = SECURITY_CAPABILITIES {
         AppContainerSid: sid.as_ptr(),

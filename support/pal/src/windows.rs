@@ -82,6 +82,7 @@ use windows_sys::Win32::System::WindowsProgramming::RtlFreeUnicodeString;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[allow(non_snake_case)]
 pub struct ANSI_STRING {
     pub Length: u16,
     pub MaximumLength: u16,
@@ -704,7 +705,7 @@ impl<'a> AnsiStringRef<'a> {
             ANSI_STRING {
                 Length: len,
                 MaximumLength: len,
-                Buffer: s.as_ptr() as *mut u8,
+                Buffer: s.as_ptr().cast_mut(),
             },
             PhantomData,
         ))

@@ -142,7 +142,7 @@ mod ntlpcapi {
         pub ValidAttributes: u32,
     }
 
-    pub type PALPC_MESSAGE_ATTRIBUTES = *mut ALPC_MESSAGE_ATTRIBUTES;
+    pub type PalpcMessageAttributes = *mut ALPC_MESSAGE_ATTRIBUTES;
 
     #[repr(C)]
     #[derive(Copy, Clone, Default)]
@@ -269,19 +269,19 @@ mod ntlpcapi {
     pub const LPC_PORT_CLOSED: u32 = 5;
     pub const LPC_CONNECTION_REQUEST: u32 = 10;
 
-    pub const AlpcAssociateCompletionPortInformation: i32 = 2;
-    pub const AlpcMessageHandleInformation: i32 = 3;
+    pub const ALPC_ASSOCIATE_COMPLETION_PORT_INFORMATION: i32 = 2;
+    pub const ALPC_MESSAGE_HANDLE_INFORMATION: i32 = 3;
 
     unsafe extern "C" {
         pub fn AlpcInitializeMessageAttribute(
             AttributeFlags: u32,
-            Buffer: PALPC_MESSAGE_ATTRIBUTES,
+            Buffer: PalpcMessageAttributes,
             BufferSize: usize,
             RequiredBufferSize: *mut usize,
         ) -> NTSTATUS;
 
         pub fn AlpcGetMessageAttribute(
-            Buffer: PALPC_MESSAGE_ATTRIBUTES,
+            Buffer: PalpcMessageAttributes,
             AttributeFlag: u32,
         ) -> *mut c_void;
 
@@ -712,7 +712,7 @@ impl RecvMessage<'_> {
                     chk_status(NtAlpcQueryInformationMessage(
                         port.0.as_raw_handle().cast::<c_void>(),
                         self.message.buf.as_ptr() as *mut _,
-                        AlpcMessageHandleInformation,
+                        ALPC_MESSAGE_HANDLE_INFORMATION,
                         std::ptr::from_mut(&mut info).cast(),
                         size_of_val(&info) as u32,
                         null_mut(),
@@ -1134,7 +1134,7 @@ impl Port {
         unsafe {
             chk_status(NtAlpcSetInformation(
                 self.0.as_raw_handle().cast::<c_void>(),
-                AlpcAssociateCompletionPortInformation,
+                ALPC_ASSOCIATE_COMPLETION_PORT_INFORMATION,
                 std::ptr::from_mut::<ALPC_PORT_ASSOCIATE_COMPLETION_PORT>(&mut info)
                     .cast::<c_void>(),
                 size_of_val(&info) as u32,
