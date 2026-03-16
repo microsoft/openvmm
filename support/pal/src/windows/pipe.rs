@@ -13,6 +13,9 @@ use ntioapi::FILE_PIPE_MESSAGE_MODE;
 use ntioapi::FILE_PIPE_MESSAGE_TYPE;
 use ntioapi::FILE_PIPE_QUEUE_OPERATION;
 use ntioapi::FILE_SYNCHRONOUS_IO_NONALERT;
+// TODO: Revert this ntapi fallback once windows/windows-sys expose
+// NtCreateNamedPipeFile directly.
+use ntapi::ntioapi::NtCreateNamedPipeFile;
 use ntioapi::NtFsControlFile;
 use ntioapi::NtOpenFile;
 use ntioapi::NtQueryInformationFile;
@@ -26,6 +29,7 @@ use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
+use winapi::shared::ntdef::LARGE_INTEGER;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem as ntioapi;
 use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
@@ -37,7 +41,6 @@ use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_LOCAL_INFORMATION;
 use windows_sys::Wdk::Storage::FileSystem::FilePipeLocalInformation;
 use windows_sys::Win32::Foundation::GENERIC_READ;
 use windows_sys::Win32::Foundation::GENERIC_WRITE;
-use windows_sys::Win32::Foundation::NTSTATUS;
 use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
 use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
@@ -56,25 +59,6 @@ use windows_sys::Win32::System::Pipes::GetNamedPipeHandleStateW;
 use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
 use windows_sys::Win32::System::Pipes::PIPE_SERVER_END;
 use windows_sys::Win32::System::Pipes::SetNamedPipeHandleState;
-
-unsafe extern "system" {
-    fn NtCreateNamedPipeFile(
-        file_handle: *mut windows_sys::Win32::Foundation::HANDLE,
-        desired_access: u32,
-        object_attributes: *const OBJECT_ATTRIBUTES,
-        io_status_block: *mut windows_sys::Win32::System::IO::IO_STATUS_BLOCK,
-        share_access: u32,
-        create_disposition: u32,
-        create_options: u32,
-        named_pipe_type: u32,
-        read_mode: u32,
-        completion_mode: u32,
-        maximum_instances: u32,
-        inbound_quota: u32,
-        outbound_quota: u32,
-        default_timeout: *const i64,
-    ) -> NTSTATUS;
-}
 
 /// Creates a pair of pipe files, returning (read, write).
 ///
@@ -187,7 +171,7 @@ fn create_named_pipe(
             path.try_into()
                 .map_err(|_| status_to_error(STATUS_NAME_TOO_LONG))?
         };
-        let oa = OBJECT_ATTRIBUTES {
+        let mut oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
             RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
@@ -202,7 +186,7 @@ fn create_named_pipe(
         chk_status(NtCreateNamedPipeFile(
             &mut handle,
             access | SYNCHRONIZE,
-            &oa,
+            (&mut oa as *mut OBJECT_ATTRIBUTES).cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             disposition,
@@ -225,7 +209,7 @@ fn create_named_pipe(
             !0,
             4096,
             4096,
-            std::ptr::from_mut::<i64>(&mut timeout),
+            std::ptr::from_mut::<i64>(&mut timeout).cast::<LARGE_INTEGER>(),
         ))?;
         Ok(File::from_raw_handle(handle.cast::<c_void>()))
     }

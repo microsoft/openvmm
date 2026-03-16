@@ -11,6 +11,11 @@ use crate::HandleMap;
 use fuse::Mapper;
 use fuse::protocol::FUSE_SETUPMAPPING_FLAG_WRITE;
 use lxutil::PathExt;
+// TODO: Revert this ntapi fallback once windows/windows-sys expose
+// NtQuerySection and SECTION_BASIC_INFORMATION.
+use ntapi::ntmmapi::NtQuerySection;
+use ntapi::ntmmapi::SECTION_BASIC_INFORMATION;
+use ntapi::ntmmapi::SectionBasicInformation;
 use pal::windows::ObjectAttributes;
 use pal::windows::UnicodeString;
 use pal::windows::chk_status;
@@ -28,32 +33,11 @@ use std::time::UNIX_EPOCH;
 use windows_sys::Wdk::Storage::FileSystem::NtCreateSection;
 use windows_sys::Wdk::System::Memory::NtOpenSection;
 use windows_sys::Wdk::System::SystemServices::DIRECTORY_TRAVERSE;
-use windows_sys::Win32::Foundation::NTSTATUS;
 use windows_sys::Win32::System::Memory::PAGE_READWRITE;
 use windows_sys::Win32::System::Memory::SEC_COMMIT;
 use windows_sys::Win32::System::Memory::SECTION_MAP_READ;
 use windows_sys::Win32::System::Memory::SECTION_MAP_WRITE;
 use windows_sys::Win32::System::Memory::SECTION_QUERY;
-
-const SECTION_BASIC_INFORMATION_CLASS: i32 = 0;
-
-#[repr(C)]
-#[derive(Default)]
-struct SECTION_BASIC_INFORMATION {
-    base_address: *mut std::ffi::c_void,
-    allocation_attributes: u32,
-    maximum_size: i64,
-}
-
-unsafe extern "system" {
-    fn NtQuerySection(
-        section_handle: windows_sys::Win32::Foundation::HANDLE,
-        section_information_class: i32,
-        section_information: *mut std::ffi::c_void,
-        section_information_length: usize,
-        return_length: *mut usize,
-    ) -> NTSTATUS;
-}
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -210,13 +194,13 @@ impl Section {
         unsafe {
             let mut info: SECTION_BASIC_INFORMATION = zeroed();
             chk_status(NtQuerySection(
-                self.0.as_raw_handle().cast(),
-                SECTION_BASIC_INFORMATION_CLASS,
+                self.0.as_raw_handle(),
+                SectionBasicInformation,
                 std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info),
                 null_mut(),
             ))?;
-            Ok(info.maximum_size as u64)
+            Ok(*info.MaximumSize.QuadPart() as u64)
         }
     }
 }

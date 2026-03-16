@@ -19,6 +19,16 @@ pub mod tp;
 
 use self::security::SecurityDescriptor;
 use handleapi::INVALID_HANDLE_VALUE;
+// TODO: Revert this ntapi fallback once windows/windows-sys expose
+// NtCreateWaitCompletionPacket, NtAssociateWaitCompletionPacket, and
+// NtCancelWaitCompletionPacket.
+use ntapi::ntioapi::FILE_COMPLETION_INFORMATION;
+use ntapi::ntioapi::FileReplaceCompletionInformation;
+use ntapi::ntioapi::IO_STATUS_BLOCK;
+use ntapi::ntioapi::NtAssociateWaitCompletionPacket;
+use ntapi::ntioapi::NtCancelWaitCompletionPacket;
+use ntapi::ntioapi::NtCreateWaitCompletionPacket;
+use ntapi::ntioapi::NtSetInformationFile;
 use processthreadsapi::GetExitCodeProcess;
 use std::cell::UnsafeCell;
 use std::ffi::OsStr;
@@ -41,11 +51,8 @@ use std::time::Duration;
 use widestring::U16CString;
 use widestring::Utf16Str;
 use windows_sys::Wdk::Foundation as ntdef;
-use windows_sys::Wdk::Storage::FileSystem::FILE_COMPLETION_INFORMATION;
-use windows_sys::Wdk::Storage::FileSystem::FileReplaceCompletionInformation;
 use windows_sys::Wdk::Storage::FileSystem::NtCreateDirectoryObject;
 use windows_sys::Wdk::Storage::FileSystem::NtOpenDirectoryObject;
-use windows_sys::Wdk::Storage::FileSystem::NtSetInformationFile;
 use windows_sys::Wdk::Storage::FileSystem::RtlAllocateHeap;
 use windows_sys::Wdk::Storage::FileSystem::RtlDosPathNameToNtPathName_U_WithStatus;
 use windows_sys::Wdk::Storage::FileSystem::RtlFreeHeap;
@@ -69,7 +76,6 @@ use windows_sys::Win32::System::Diagnostics::Debug::SEM_FAILCRITICALERRORS;
 use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
 use windows_sys::Win32::System::IO::CreateIoCompletionPort;
 use windows_sys::Win32::System::IO::GetQueuedCompletionStatusEx;
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::IO::OVERLAPPED_ENTRY;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
@@ -87,28 +93,6 @@ pub struct ANSI_STRING {
     pub Length: u16,
     pub MaximumLength: u16,
     pub Buffer: windows_sys::core::PSTR,
-}
-
-unsafe extern "system" {
-    fn NtCreateWaitCompletionPacket(
-        wait_completion_packet_handle: *mut windows_sys::Win32::Foundation::HANDLE,
-        desired_access: u32,
-        object_attributes: *const ntdef::OBJECT_ATTRIBUTES,
-    ) -> NTSTATUS;
-    fn NtAssociateWaitCompletionPacket(
-        wait_completion_packet_handle: windows_sys::Win32::Foundation::HANDLE,
-        io_completion_handle: windows_sys::Win32::Foundation::HANDLE,
-        target_object_handle: windows_sys::Win32::Foundation::HANDLE,
-        key_context: *mut c_void,
-        apc_context: *mut c_void,
-        io_status: NTSTATUS,
-        io_status_information: usize,
-        already_signaled: *mut u8,
-    ) -> NTSTATUS;
-    fn NtCancelWaitCompletionPacket(
-        wait_completion_packet_handle: windows_sys::Win32::Foundation::HANDLE,
-        remove_signaled_packet: u8,
-    ) -> NTSTATUS;
 }
 
 #[repr(transparent)]

@@ -18,9 +18,37 @@ getrandom.workspace = true
 headervec.workspace = true
 pal_event.workspace = true
 
+ntapi = { workspace = true, features = ["impl-default"] }
 socket2 = { workspace = true, features = ["all"] }
 widestring.workspace = true
 windows-result.workspace = true
+
+[target.'cfg(windows)'.dependencies.winapi]
+workspace = true
+features = [
+    "errhandlingapi",
+    "fileapi",
+    "handleapi",
+    "heapapi",
+    "ioapiset",
+    "impl-default",
+    "jobapi2",
+    "memoryapi",
+    "namedpipeapi",
+    "ntstatus",
+    "processenv",
+    "processthreadsapi",
+    "sddl",
+    "securitybaseapi",
+    "std",
+    "synchapi",
+    "threadpoolapiset",
+    "winbase",
+    "winerror",
+    "winioctl",
+    "winnt",
+    "winsock2",
+]
 
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true

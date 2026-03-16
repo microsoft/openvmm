@@ -18,215 +18,17 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null_mut;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::STATUS_TIMEOUT;
+use winapi::shared::ntstatus::STATUS_TIMEOUT;
 
 mod ntlpcapi {
-    #![expect(non_snake_case, dead_code)]
-    use std::ffi::c_void;
-    use windows_sys::Wdk::Foundation as ntdef;
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::Foundation::NTSTATUS;
-    use windows_sys::Win32::Security::SECURITY_QUALITY_OF_SERVICE;
+    #![allow(non_snake_case, dead_code)]
+    // TODO: Revert this ntapi fallback once windows/windows-sys provide a
+    // complete ALPC surface used by this module.
+    pub use ntapi::ntlpcapi::*;
+    use winapi::shared::ntdef::HANDLE;
+    use winapi::shared::ntdef::NTSTATUS;
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct CLIENT_ID {
-        pub UniqueProcess: HANDLE,
-        pub UniqueThread: HANDLE,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct PORT_MESSAGE_u1_s {
-        pub DataLength: i16,
-        pub TotalLength: i16,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct PORT_MESSAGE_u2_s {
-        pub Type: i16,
-        pub DataInfoOffset: i16,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union PORT_MESSAGE_u1 {
-        pub s: PORT_MESSAGE_u1_s,
-        pub Length: u32,
-    }
-
-    impl Default for PORT_MESSAGE_u1 {
-        fn default() -> Self {
-            Self { Length: 0 }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union PORT_MESSAGE_u2 {
-        pub s: PORT_MESSAGE_u2_s,
-        pub ZeroInit: u32,
-    }
-
-    impl Default for PORT_MESSAGE_u2 {
-        fn default() -> Self {
-            Self { ZeroInit: 0 }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union PORT_MESSAGE_u3 {
-        pub ClientId: CLIENT_ID,
-        pub DoNotUseThisField: f64,
-    }
-
-    impl Default for PORT_MESSAGE_u3 {
-        fn default() -> Self {
-            Self {
-                DoNotUseThisField: 0.0,
-            }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union PORT_MESSAGE_u4 {
-        pub ClientViewSize: usize,
-        pub CallbackId: u32,
-    }
-
-    impl Default for PORT_MESSAGE_u4 {
-        fn default() -> Self {
-            Self { ClientViewSize: 0 }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct PORT_MESSAGE {
-        pub u1: PORT_MESSAGE_u1,
-        pub u2: PORT_MESSAGE_u2,
-        pub u3: PORT_MESSAGE_u3,
-        pub MessageId: u32,
-        pub u4: PORT_MESSAGE_u4,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct ALPC_PORT_ATTRIBUTES {
-        pub Flags: u32,
-        pub SecurityQos: SECURITY_QUALITY_OF_SERVICE,
-        pub MaxMessageLength: usize,
-        pub MemoryBandwidth: usize,
-        pub MaxPoolUsage: usize,
-        pub MaxSectionSize: usize,
-        pub MaxViewSize: usize,
-        pub MaxTotalSectionSize: usize,
-        pub DupObjectTypes: u32,
-        pub Reserved: u32,
-    }
-
-    impl Default for ALPC_PORT_ATTRIBUTES {
-        fn default() -> Self {
-            // SAFETY: POD C struct.
-            unsafe { std::mem::zeroed() }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct ALPC_MESSAGE_ATTRIBUTES {
-        pub AllocatedAttributes: u32,
-        pub ValidAttributes: u32,
-    }
-
-    pub type PalpcMessageAttributes = *mut ALPC_MESSAGE_ATTRIBUTES;
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct ALPC_CONTEXT_ATTR {
-        pub PortContext: *mut c_void,
-        pub MessageContext: *mut c_void,
-        pub Sequence: u32,
-        pub MessageId: u32,
-        pub CallbackId: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub struct ALPC_HANDLE_ATTR {
-        pub Flags: u32,
-        pub u2: ALPC_HANDLE_ATTR_u2,
-        pub u3: ALPC_HANDLE_ATTR_u3,
-        pub u4: ALPC_HANDLE_ATTR_u4,
-    }
-
-    impl Default for ALPC_HANDLE_ATTR {
-        fn default() -> Self {
-            // SAFETY: ALPC_HANDLE_ATTR has no safety invariants.
-            unsafe { std::mem::zeroed() }
-        }
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union ALPC_HANDLE_ATTR_u2 {
-        pub Handle: HANDLE,
-        pub HandleAttrArray: *mut ALPC_HANDLE_ATTR32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union ALPC_HANDLE_ATTR_u3 {
-        pub ObjectType: u32,
-        pub HandleCount: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    pub union ALPC_HANDLE_ATTR_u4 {
-        pub DesiredAccess: u32,
-        pub GrantedAccess: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct ALPC_HANDLE_ATTR32 {
-        pub Flags: u32,
-        pub Handle: u32,
-        pub ObjectType: u32,
-        pub Access: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct ALPC_DATA_VIEW_ATTR {
-        pub Flags: u32,
-        pub SectionHandle: HANDLE,
-        pub ViewBase: *mut c_void,
-        pub ViewSize: usize,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct ALPC_PORT_ASSOCIATE_COMPLETION_PORT {
-        pub CompletionKey: *mut c_void,
-        pub CompletionPort: HANDLE,
-    }
-
-    #[repr(C)]
-    #[derive(Copy, Clone, Default)]
-    pub struct ALPC_MESSAGE_HANDLE_INFORMATION {
-        pub Index: u32,
-        pub Flags: u32,
-        pub Handle: u32,
-        pub ObjectType: u32,
-        pub GrantedAccess: u32,
-    }
-
-    // These constants are not surfaced in current generated bindings.
+    // These constants are not defined in ntapi.
     pub const LPC_CONNECTION_REPLY: u32 = 11;
     pub const LPC_CANCELED: u32 = 12;
 
@@ -236,142 +38,62 @@ mod ntlpcapi {
     pub const ALPC_PORFLG_ACCEPT_DUP_HANDLES: u32 = 0x00080000;
     pub const ALPC_PORFLG_ACCEPT_INDIRECT_HANDLES: u32 = 0x02000000;
 
-    pub const ALPC_HANDLEFLG_DUPLICATE_SAME_ACCESS: u32 = 0x00010000;
     pub const ALPC_HANDLEFLG_INDIRECT: u32 = 0x00040000;
 
     pub const ALPC_VIEWFLG_UNMAP_EXISTING: u32 = 0x00010000;
     pub const ALPC_VIEWFLG_AUTO_RELEASE: u32 = 0x00020000;
     pub const ALPC_VIEWFLG_SECURED_ACCESS: u32 = 0x00040000;
-    pub const ALPC_PORFLG_WAITABLE_PORT: u32 = 0x00040000;
-
-    pub const ALPC_MESSAGE_VIEW_ATTRIBUTE: u32 = 0x40000000;
-    pub const ALPC_MESSAGE_CONTEXT_ATTRIBUTE: u32 = 0x20000000;
-    pub const ALPC_MESSAGE_HANDLE_ATTRIBUTE: u32 = 0x10000000;
-
-    pub const ALPC_MSGFLG_RELEASE_MESSAGE: u32 = 0x00010000;
-
-    pub const OB_FILE_OBJECT_TYPE: u32 = 0x00000001;
-    pub const OB_THREAD_OBJECT_TYPE: u32 = 0x00000004;
-    pub const OB_SEMAPHORE_OBJECT_TYPE: u32 = 0x00000008;
-    pub const OB_EVENT_OBJECT_TYPE: u32 = 0x00000010;
-    pub const OB_PROCESS_OBJECT_TYPE: u32 = 0x00000020;
-    pub const OB_MUTANT_OBJECT_TYPE: u32 = 0x00000040;
-    pub const OB_SECTION_OBJECT_TYPE: u32 = 0x00000080;
-    pub const OB_REG_KEY_OBJECT_TYPE: u32 = 0x00000100;
-    pub const OB_TOKEN_OBJECT_TYPE: u32 = 0x00000200;
-    pub const OB_COMPOSITION_OBJECT_TYPE: u32 = 0x00000400;
-    pub const OB_JOB_OBJECT_TYPE: u32 = 0x00000800;
     pub const OB_ALL_OBJECT_TYPE_CODES: u32 = 0x00000ffd;
-
-    pub const LPC_REQUEST: u32 = 1;
-    pub const LPC_REPLY: u32 = 2;
-    pub const LPC_DATAGRAM: u32 = 3;
-    pub const LPC_PORT_CLOSED: u32 = 5;
-    pub const LPC_CONNECTION_REQUEST: u32 = 10;
-
-    pub const ALPC_ASSOCIATE_COMPLETION_PORT_INFORMATION: i32 = 2;
-    pub const ALPC_MESSAGE_HANDLE_INFORMATION: i32 = 3;
-
+    // This is defined incorrectly in ntapi 0.3.6.
     unsafe extern "C" {
         pub fn AlpcInitializeMessageAttribute(
             AttributeFlags: u32,
-            Buffer: PalpcMessageAttributes,
+            Buffer: PALPC_MESSAGE_ATTRIBUTES,
             BufferSize: usize,
             RequiredBufferSize: *mut usize,
         ) -> NTSTATUS;
+    }
 
-        pub fn AlpcGetMessageAttribute(
-            Buffer: PalpcMessageAttributes,
-            AttributeFlag: u32,
-        ) -> *mut c_void;
+    // This is defined incorrectly in ntapi 0.3.6.
+    #[repr(C)]
+    pub struct ALPC_HANDLE_ATTR {
+        pub Flags: u32,
+        pub u2: ALPC_HANDLE_ATTR_u2,
+        pub u3: ALPC_HANDLE_ATTR_u3,
+        pub u4: ALPC_HANDLE_ATTR_u4,
+    }
 
-        pub fn NtAlpcCreatePort(
-            PortHandle: *mut HANDLE,
-            ObjectAttributes: *mut ntdef::OBJECT_ATTRIBUTES,
-            PortAttributes: *mut ALPC_PORT_ATTRIBUTES,
-        ) -> NTSTATUS;
+    impl Default for ALPC_HANDLE_ATTR {
+        fn default() -> Self {
+            // SAFETY: ALPC_HANDLE_ATTR has no safety invariants
+            unsafe { std::mem::zeroed() }
+        }
+    }
 
-        pub fn NtAlpcConnectPortEx(
-            PortHandle: *mut HANDLE,
-            ConnectionPortObjectAttributes: *mut ntdef::OBJECT_ATTRIBUTES,
-            ClientPortObjectAttributes: *mut ntdef::OBJECT_ATTRIBUTES,
-            PortAttributes: *mut ALPC_PORT_ATTRIBUTES,
-            Flags: u32,
-            ServerSecurityRequirements: *mut c_void,
-            ConnectionMessage: *mut PORT_MESSAGE,
-            BufferLength: *mut usize,
-            OutMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES,
-            InMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES,
-            Timeout: *mut i64,
-        ) -> NTSTATUS;
+    #[repr(C)]
+    pub union ALPC_HANDLE_ATTR_u2 {
+        pub Handle: HANDLE,
+        pub HandleAttrArray: *mut ALPC_HANDLE_ATTR32,
+    }
 
-        pub fn NtAlpcAcceptConnectPort(
-            PortHandle: *mut HANDLE,
-            ConnectionPortHandle: HANDLE,
-            Flags: u32,
-            ObjectAttributes: *mut ntdef::OBJECT_ATTRIBUTES,
-            PortAttributes: *mut ALPC_PORT_ATTRIBUTES,
-            PortContext: *mut c_void,
-            ConnectionRequest: *mut PORT_MESSAGE,
-            ConnectionMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES,
-            AcceptConnection: u8,
-        ) -> NTSTATUS;
+    #[repr(C)]
+    pub union ALPC_HANDLE_ATTR_u3 {
+        pub ObjectType: u32,
+        pub HandleCount: u32,
+    }
 
-        pub fn NtAlpcSendWaitReceivePort(
-            PortHandle: HANDLE,
-            Flags: u32,
-            SendMessageA: *mut PORT_MESSAGE,
-            SendMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES,
-            ReceiveMessage: *mut PORT_MESSAGE,
-            BufferLength: *mut usize,
-            ReceiveMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES,
-            Timeout: *mut i64,
-        ) -> NTSTATUS;
+    #[repr(C)]
+    pub union ALPC_HANDLE_ATTR_u4 {
+        pub DesiredAccess: u32,
+        pub GrantedAccess: u32,
+    }
 
-        pub fn NtAlpcDisconnectPort(PortHandle: HANDLE, Flags: u32) -> NTSTATUS;
-
-        pub fn NtAlpcSetInformation(
-            PortHandle: HANDLE,
-            PortInformationClass: i32,
-            PortInformation: *mut c_void,
-            Length: u32,
-        ) -> NTSTATUS;
-
-        pub fn NtAlpcQueryInformationMessage(
-            PortHandle: HANDLE,
-            PortMessage: *mut PORT_MESSAGE,
-            MessageInformationClass: i32,
-            MessageInformation: *mut c_void,
-            Length: u32,
-            ReturnLength: *mut u32,
-        ) -> NTSTATUS;
-
-        pub fn NtAlpcCreatePortSection(
-            PortHandle: HANDLE,
-            Flags: u32,
-            SectionHandle: HANDLE,
-            SectionSize: usize,
-            AlpcSectionHandle: *mut HANDLE,
-            ActualSectionSize: *mut usize,
-        ) -> NTSTATUS;
-
-        pub fn NtAlpcDeletePortSection(
-            PortHandle: HANDLE,
-            Flags: u32,
-            SectionHandle: HANDLE,
-        ) -> NTSTATUS;
-
-        pub fn NtAlpcCreateSectionView(
-            PortHandle: HANDLE,
-            Flags: u32,
-            ViewAttributes: *mut ALPC_DATA_VIEW_ATTR,
-        ) -> NTSTATUS;
-
-        pub fn NtAlpcDeleteSectionView(
-            PortHandle: HANDLE,
-            Flags: u32,
-            ViewBase: *mut c_void,
-        ) -> NTSTATUS;
+    #[repr(C)]
+    pub struct ALPC_HANDLE_ATTR32 {
+        pub Flags: u32,
+        pub Handle: u32,
+        pub ObjectType: u32,
+        pub Access: u32,
     }
 }
 
@@ -426,7 +148,9 @@ impl PortConfig {
         let port = unsafe {
             chk_status(NtAlpcCreatePort(
                 &mut port,
-                obj_attr.as_ptr(),
+                obj_attr
+                    .as_ptr()
+                    .cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
                 &mut port_attr,
             ))?;
             OwnedHandle::from_raw_handle(port.cast())
@@ -450,7 +174,9 @@ impl PortConfig {
         let port = unsafe {
             chk_status(NtAlpcConnectPortEx(
                 &mut port,
-                obj_attr.as_ptr(),
+                obj_attr
+                    .as_ptr()
+                    .cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
                 null_mut(),
                 &mut port_attr,
                 0, // flags
@@ -712,7 +438,7 @@ impl RecvMessage<'_> {
                     chk_status(NtAlpcQueryInformationMessage(
                         port.0.as_raw_handle().cast::<c_void>(),
                         self.message.buf.as_ptr() as *mut _,
-                        ALPC_MESSAGE_HANDLE_INFORMATION,
+                        AlpcMessageHandleInformation,
                         std::ptr::from_mut(&mut info).cast(),
                         size_of_val(&info) as u32,
                         null_mut(),
@@ -1134,7 +860,7 @@ impl Port {
         unsafe {
             chk_status(NtAlpcSetInformation(
                 self.0.as_raw_handle().cast::<c_void>(),
-                ALPC_ASSOCIATE_COMPLETION_PORT_INFORMATION,
+                AlpcAssociateCompletionPortInformation,
                 std::ptr::from_mut::<ALPC_PORT_ASSOCIATE_COMPLETION_PORT>(&mut info)
                     .cast::<c_void>(),
                 size_of_val(&info) as u32,

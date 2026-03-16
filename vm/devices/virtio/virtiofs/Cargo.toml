@@ -28,6 +28,7 @@ parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
+ntapi.workspace = true
 windows-sys = { workspace = true, features = [
 	"Wdk_Storage_FileSystem",
 	"Wdk_System_Memory",

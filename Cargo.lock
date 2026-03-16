@@ -4643,6 +4643,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntapi"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5519,12 +5528,14 @@ dependencies = [
  "headervec",
  "landlock",
  "libc",
+ "ntapi",
  "pal_event",
  "seccompiler",
  "socket2",
  "thiserror 2.0.16",
  "tracing",
  "widestring",
+ "winapi",
  "windows 0.62.0",
  "windows-result 0.4.0",
  "windows-sys 0.61.0",
@@ -9111,6 +9122,7 @@ dependencies = [
  "inspect",
  "lx",
  "lxutil",
+ "ntapi",
  "pal",
  "pal_async",
  "parking_lot",
