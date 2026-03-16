@@ -1228,7 +1228,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
-        let (ver_major, ver_minor, ver_build, ver_platform) = build_info::parse_openhcl_version();
+        let ver = build_info::openhcl_version();
 
         let mut req = GdmaVerifyVerReq {
             protocol_ver_min: 1,
@@ -1239,16 +1239,16 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
                 | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
             os_type: gdma_defs::OS_TYPE_OHCL,
-            os_ver_major: ver_major,
-            os_ver_minor: ver_minor,
-            os_ver_build: ver_build,
-            os_ver_platform: ver_platform,
+            os_ver_major: ver.major(),
+            os_ver_minor: ver.minor(),
+            os_ver_build: ver.build(),
+            os_ver_platform: ver.platform(),
             ..FromZeros::new_zeroed()
         };
 
         // Identify the driver and build to the SOC
         // str1 = "OpenHCL", str2 = build identity.
-        let name = build_info::PRODUCT_NAME.as_bytes();
+        let name = ver.product_name().as_bytes();
         let len = name.len().min(req.os_ver_str1.len().saturating_sub(1));
         req.os_ver_str1[..len].copy_from_slice(&name[..len]);
 
