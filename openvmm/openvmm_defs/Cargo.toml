@@ -34,7 +34,6 @@ anyhow.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-sparse_mmap.workspace = true
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
 

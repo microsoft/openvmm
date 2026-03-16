@@ -55,6 +55,12 @@ save-snapshot path/to/snapshot-dir
 OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
 into the specified directory.
 
+```admonish warning
+After saving, the VM remains **paused**. Do **not** resume the VM — resuming
+would mutate guest RAM through the hard-linked `memory.bin`, corrupting the
+snapshot. Use `shutdown` to exit OpenVMM after saving.
+```
+
 ## Restoring a snapshot
 
 To restore, pass the snapshot directory with `--restore-snapshot`:
@@ -63,11 +69,14 @@ To restore, pass the snapshot directory with `--restore-snapshot`:
 cargo run -- \
   --uefi \
   --disk memdiff:file:path/to/disk.vhdx \
-  --memory-backing-file path/to/snapshot-dir/memory.bin \
   --memory 4096 \
   --processors 4 \
   --restore-snapshot path/to/snapshot-dir
 ```
+
+`--restore-snapshot` automatically opens `memory.bin` from the snapshot
+directory, so `--memory-backing-file` should not be specified (the two
+options are mutually exclusive).
 
 ```admonish note
 The `--memory` and `--processors` values must match the values recorded in

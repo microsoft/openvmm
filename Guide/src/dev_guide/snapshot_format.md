@@ -17,7 +17,8 @@ snapshot-dir/
 ## Manifest format
 
 The manifest is a protobuf message defined as `SnapshotManifest` in
-`openvmm/openvmm_entry/src/snapshot.rs`. It uses the `mesh` crate's
+`openvmm/openvmm_helpers/src/snapshot.rs` (re-exported by
+`openvmm/openvmm_entry/src/snapshot.rs`). It uses the `mesh` crate's
 protobuf encoding.
 
 | Field              | Type        | Mesh tag | Description                      |
@@ -74,7 +75,8 @@ expected file size.
 
 ## Code references
 
-- Manifest type and I/O: `openvmm/openvmm_entry/src/snapshot.rs`
+- Manifest type and I/O: `openvmm/openvmm_helpers/src/snapshot.rs`
+  (re-exported by `openvmm/openvmm_entry/src/snapshot.rs`)
 - Restore entry point: `prepare_snapshot_restore()` in
   `openvmm/openvmm_entry/src/lib.rs`
 - File-backed memory: `SharedMemoryFd` type alias in
