@@ -712,7 +712,6 @@ impl ChangeDeviceState for VirtioPciDevice {
                 let state = std::future::poll_fn(|cx| self.device.poll_stop_queue(cx, idx)).await;
                 self.saved_queue_states[i] = state;
             }
-            // Don't call reset() — this is the save path.
         }
     }
 
