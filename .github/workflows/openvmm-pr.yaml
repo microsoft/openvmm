@@ -396,8 +396,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -767,8 +767,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -1205,8 +1205,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -1418,8 +1418,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -4243,8 +4243,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -4337,8 +4337,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -5242,8 +5242,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -5519,8 +5519,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -5852,8 +5852,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -6131,8 +6131,8 @@ jobs:
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
