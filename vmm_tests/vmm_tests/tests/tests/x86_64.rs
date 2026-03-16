@@ -521,10 +521,9 @@ async fn snapshot_save_to_disk(
         "saved state should be non-empty"
     );
 
-    // Fsync the memory backing file so any dirty pages are flushed.
-    let mem_file = std::fs::File::open(&mem_path)?;
-    mem_file.sync_all()?;
-    let mem_size = mem_file.metadata()?.len();
+    // Get the size of the memory backing file. The VM is paused so dirty
+    // pages have already been flushed by the hypervisor.
+    let mem_size = std::fs::metadata(&mem_path)?.len();
     assert!(mem_size > 0, "memory file should be non-empty");
 
     // Build manifest and write snapshot to disk.
