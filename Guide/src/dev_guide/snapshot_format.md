@@ -66,7 +66,7 @@ The `validate_manifest()` function in `snapshot.rs` checks four fields
 against the current VM configuration:
 
 1. **Version** — must match the current `MANIFEST_VERSION` constant
-2. **Architecture** — must match `std::env::consts::ARCH`
+2. **Architecture** — must match the guest architecture (from `guest_arch` cfg)
 3. **Memory size** — must match the `--memory` CLI option
 4. **VP count** — must match the `--processors` CLI option
 

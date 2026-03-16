@@ -2032,6 +2032,13 @@ fn system_page_size() -> u32 {
     sparse_mmap::SparseMapping::page_size() as u32
 }
 
+/// The guest architecture string, derived from the compile-time `guest_arch` cfg.
+const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
+    "x86_64"
+} else {
+    "aarch64"
+};
+
 /// Open a snapshot directory and validate it against the current VM config.
 /// Returns the shared memory fd (from memory.bin) and the saved device state.
 fn prepare_snapshot_restore(
@@ -2044,12 +2051,7 @@ fn prepare_snapshot_restore(
     let (manifest, state_bytes) = snapshot::read_snapshot(snapshot_dir)?;
 
     // Validate manifest against current VM config.
-    snapshot::validate_manifest(
-        &manifest,
-        std::env::consts::ARCH,
-        opt.memory,
-        opt.processors,
-    )?;
+    snapshot::validate_manifest(&manifest, GUEST_ARCH, opt.memory, opt.processors)?;
 
     // Open memory.bin (existing file, no create, no resize).
     let memory_file = fs_err::OpenOptions::new()
@@ -2101,10 +2103,9 @@ async fn save_snapshot(
 
     // Get device state via existing VmRpc::Save.
     let saved_state_msg = vm_rpc
-        .call(VmRpc::Save, ())
+        .call_failable(VmRpc::Save, ())
         .await
-        .context("failed to call Save RPC")?
-        .map_err(|err| anyhow::anyhow!("failed to save state: {err:?}"))?;
+        .context("failed to save state")?;
 
     // Serialize the ProtobufMessage to bytes for writing to disk.
     let saved_state_bytes = mesh::payload::encode(saved_state_msg);
@@ -2123,7 +2124,7 @@ async fn save_snapshot(
         memory_size_bytes: opt.memory,
         vp_count: opt.processors,
         page_size: system_page_size(),
-        architecture: std::env::consts::ARCH.to_string(),
+        architecture: GUEST_ARCH.to_string(),
     };
 
     // Write snapshot directory.

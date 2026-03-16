@@ -88,7 +88,7 @@ validation error and refuse to start.
 
 On restore, OpenVMM validates that:
 
-1. The snapshot architecture matches the host architecture
+1. The snapshot architecture matches the guest architecture
 2. The `--memory` size matches `memory_size_bytes` in the manifest
 3. The `--processors` count matches `vp_count` in the manifest
 4. The `memory.bin` file size matches the manifest

@@ -534,7 +534,7 @@ async fn snapshot_save_to_disk(
         memory_size_bytes: mem_size,
         vp_count: 2,
         page_size: 4096,
-        architecture: std::env::consts::ARCH.to_string(),
+        architecture: "x86_64".to_string(),
     };
     openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
 
