@@ -3,7 +3,6 @@
 
 use super::chk_status;
 use super::dos_to_nt_path;
-use ntapi::ntioapi;
 use std::ffi::c_void;
 use std::fs;
 use std::io;
@@ -12,10 +11,11 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::null_mut;
 use widestring::U16CString;
-use windows_sys::Wdk::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem as ntioapi;
 use windows_sys::Win32::Foundation::GetLastError;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 use windows_sys::Win32::Storage::FileSystem::FindClose;
 use windows_sys::Win32::Storage::FileSystem::FindFirstFileW;
@@ -55,7 +55,7 @@ pub fn query_stat_lx(file: &fs::File) -> io::Result<ntioapi::FILE_STAT_LX_INFORM
         let mut info: ntioapi::FILE_STAT_LX_INFORMATION = zeroed();
         let info_ptr = std::ptr::from_mut(&mut info).cast::<c_void>();
         chk_status(ntioapi::NtQueryInformationFile(
-            handle,
+            handle.cast::<c_void>(),
             &mut iosb,
             info_ptr,
             size_of_val(&info) as u32,

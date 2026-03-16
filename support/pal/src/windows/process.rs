@@ -4,7 +4,6 @@
 use super::BorrowedHandleExt;
 use super::Process;
 use super::job::Job;
-use ntapi::ntpsapi::NtCurrentProcess;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -26,6 +25,7 @@ use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
 use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
 use windows_sys::Win32::System::Threading::DeleteProcThreadAttributeList;
 use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 use windows_sys::Win32::System::Threading::InitializeProcThreadAttributeList;
 use windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST;
 use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
@@ -1010,7 +1010,7 @@ pub fn empty_process() -> io::Result<EmptyProcess> {
 pub(crate) fn terminate(exit_code: i32) -> ! {
     // SAFETY: there are no safety requirements for calling this function.
     unsafe {
-        TerminateProcess(NtCurrentProcess, exit_code as u32);
+        TerminateProcess(GetCurrentProcess(), exit_code as u32);
     }
     std::process::abort()
 }

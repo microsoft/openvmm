@@ -24,8 +24,6 @@ tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
-ntapi.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 socket2.workspace = true

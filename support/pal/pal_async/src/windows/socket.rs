@@ -11,6 +11,7 @@ use pal::windows::Overlapped;
 use pal::windows::SendSyncRawHandle;
 use pal::windows::afd;
 use pal::windows::status_to_error;
+use pal::windows_result::HRESULT;
 use parking_lot::Mutex;
 use std::cell::UnsafeCell;
 use std::os::windows::prelude::*;
@@ -23,10 +24,6 @@ use windows_sys::Win32::Foundation::STATUS_PENDING;
 use windows_sys::Win32::Foundation::STATUS_SUCCESS;
 use windows_sys::Win32::System::IO::CancelIoEx;
 use windows_sys::Win32::System::IO::OVERLAPPED;
-
-fn nt_success(status: NTSTATUS) -> bool {
-    status >= 0
-}
 
 pub fn make_poll_handle_info(handle: RawHandle, events: PollEvents) -> afd::PollHandleInfo {
     let mut afd_events = afd::POLL_ABORT | afd::POLL_CONNECT_FAIL;
@@ -308,7 +305,7 @@ impl AfdSocketReadyOp {
         wakers: &mut WakerList,
     ) {
         loop {
-            let revents = if nt_success(status) {
+            let revents = if HRESULT::from_nt(status).is_ok() {
                 // SAFETY: there is no IO in flight, so we have exclusive access to the
                 // poll info buffer.
                 let poll_info = unsafe { &mut *self.poll_info.0.get() };

@@ -28,7 +28,6 @@ use mesh_node::resource::OsResource;
 use mesh_node::resource::Resource;
 use mesh_protobuf::Protobuf;
 use mesh_protobuf::buffer::Buffer;
-use ntapi::ntobapi::DIRECTORY_ALL_ACCESS;
 use pal::windows::BorrowedHandleExt;
 use pal::windows::ObjectAttributes;
 use pal::windows::OwnedSocketExt;
@@ -67,6 +66,7 @@ type InvitationMap =
 /// This value was chosen arbitrarily and has not been performance tested.
 const MAX_MESSAGE_SIZE: usize = 0x1000;
 const MAX_SMALL_EVENT_SIZE: usize = MAX_MESSAGE_SIZE - size_of::<protocol::PacketHeader>();
+const DIRECTORY_ALL_ACCESS: u32 = 0x000F000F;
 
 /// A node within a mesh that uses Windows ALPC to communicate.
 ///

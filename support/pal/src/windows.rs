@@ -19,22 +19,6 @@ pub mod tp;
 
 use self::security::SecurityDescriptor;
 use handleapi::INVALID_HANDLE_VALUE;
-use ntapi::ntioapi::FILE_COMPLETION_INFORMATION;
-use ntapi::ntioapi::FileReplaceCompletionInformation;
-use ntapi::ntioapi::IO_STATUS_BLOCK;
-use ntapi::ntioapi::NtAssociateWaitCompletionPacket;
-use ntapi::ntioapi::NtCancelWaitCompletionPacket;
-use ntapi::ntioapi::NtCreateWaitCompletionPacket;
-use ntapi::ntioapi::NtSetInformationFile;
-use ntapi::ntobapi::NtCreateDirectoryObject;
-use ntapi::ntobapi::NtOpenDirectoryObject;
-use ntapi::ntrtl;
-use ntdef::ANSI_STRING;
-use ntdef::UNICODE_STRING;
-use ntrtl::RtlAllocateHeap;
-use ntrtl::RtlDosPathNameToNtPathName_U_WithStatus;
-use ntrtl::RtlFreeUnicodeString;
-use ntrtl::RtlNtStatusToDosErrorNoTeb;
 use processthreadsapi::GetExitCodeProcess;
 use std::cell::UnsafeCell;
 use std::ffi::OsStr;
@@ -57,31 +41,74 @@ use std::time::Duration;
 use widestring::U16CString;
 use widestring::Utf16Str;
 use windows_sys::Wdk::Foundation as ntdef;
-use windows_sys::Wdk::Foundation::NTSTATUS;
+use windows_sys::Wdk::Storage::FileSystem::FILE_COMPLETION_INFORMATION;
+use windows_sys::Wdk::Storage::FileSystem::FileReplaceCompletionInformation;
+use windows_sys::Wdk::Storage::FileSystem::NtCreateDirectoryObject;
+use windows_sys::Wdk::Storage::FileSystem::NtOpenDirectoryObject;
+use windows_sys::Wdk::Storage::FileSystem::NtSetInformationFile;
+use windows_sys::Wdk::Storage::FileSystem::RtlAllocateHeap;
+use windows_sys::Wdk::Storage::FileSystem::RtlDosPathNameToNtPathName_U_WithStatus;
+use windows_sys::Wdk::Storage::FileSystem::RtlFreeHeap;
+use windows_sys::Wdk::Storage::FileSystem::RtlNtStatusToDosErrorNoTeb;
 use windows_sys::Win32::Foundation as handleapi;
 use windows_sys::Win32::Foundation as ntstatus;
 use windows_sys::Win32::Foundation as winnt;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_BAD_PATHNAME;
-use windows_sys::Win32::Foundation::INFINITE;
-use windows_sys::Win32::Foundation::SEM_FAILCRITICALERRORS;
+use windows_sys::Win32::Foundation::NTSTATUS;
 use windows_sys::Win32::Foundation::STATUS_PENDING;
+use windows_sys::Win32::Foundation::UNICODE_STRING;
 use windows_sys::Win32::Networking::WinSock as winsock2;
 use windows_sys::Win32::Networking::WinSock as ws2def;
+use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::SetFileCompletionNotificationModes;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
 use windows_sys::Win32::System::Console::SetStdHandle;
 use windows_sys::Win32::System::Diagnostics::Debug::GetErrorMode;
+use windows_sys::Win32::System::Diagnostics::Debug::SEM_FAILCRITICALERRORS;
 use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
 use windows_sys::Win32::System::IO::CreateIoCompletionPort;
 use windows_sys::Win32::System::IO::GetQueuedCompletionStatusEx;
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::IO::OVERLAPPED_ENTRY;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
 use windows_sys::Win32::System::Memory::GetProcessHeap;
 use windows_sys::Win32::System::Threading as processthreadsapi;
 use windows_sys::Win32::System::Threading as synchapi;
+use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::TerminateProcess;
+use windows_sys::Win32::System::WindowsProgramming::RtlFreeUnicodeString;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct ANSI_STRING {
+    pub Length: u16,
+    pub MaximumLength: u16,
+    pub Buffer: windows_sys::core::PSTR,
+}
+
+unsafe extern "system" {
+    fn NtCreateWaitCompletionPacket(
+        wait_completion_packet_handle: *mut windows_sys::Win32::Foundation::HANDLE,
+        desired_access: u32,
+        object_attributes: *const ntdef::OBJECT_ATTRIBUTES,
+    ) -> NTSTATUS;
+    fn NtAssociateWaitCompletionPacket(
+        wait_completion_packet_handle: windows_sys::Win32::Foundation::HANDLE,
+        io_completion_handle: windows_sys::Win32::Foundation::HANDLE,
+        target_object_handle: windows_sys::Win32::Foundation::HANDLE,
+        key_context: *mut c_void,
+        apc_context: *mut c_void,
+        io_status: NTSTATUS,
+        io_status_information: usize,
+        already_signaled: *mut u8,
+    ) -> NTSTATUS;
+    fn NtCancelWaitCompletionPacket(
+        wait_completion_packet_handle: windows_sys::Win32::Foundation::HANDLE,
+        remove_signaled_packet: u8,
+    ) -> NTSTATUS;
+}
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -383,7 +410,7 @@ pub unsafe fn disassociate_completion_port(handle: RawHandle) -> Result<()> {
     // SAFETY: caller guarantees contract.
     unsafe {
         chk_status(NtSetInformationFile(
-            handle,
+            handle.cast::<c_void>(),
             &mut iosb,
             std::ptr::from_mut::<FILE_COMPLETION_INFORMATION>(&mut info).cast(),
             size_of_val(&info) as u32,
@@ -404,7 +431,7 @@ impl WaitPacket {
         unsafe {
             let mut handle = null_mut();
             chk_status(NtCreateWaitCompletionPacket(&mut handle, 1, null_mut()))?;
-            Ok(Self(OwnedHandle::from_raw_handle(handle)))
+            Ok(Self(OwnedHandle::from_raw_handle(handle.cast())))
         }
     }
 
@@ -432,9 +459,9 @@ impl WaitPacket {
         unsafe {
             let mut already_signaled = 0;
             chk_status(NtAssociateWaitCompletionPacket(
-                self.0.as_raw_handle(),
-                iocp.as_handle().as_raw_handle(),
-                handle,
+                self.0.as_raw_handle().cast::<c_void>(),
+                iocp.as_handle().as_raw_handle().cast::<c_void>(),
+                handle.cast::<c_void>(),
                 key as *mut c_void,
                 apc as *mut c_void,
                 status,
@@ -452,7 +479,10 @@ impl WaitPacket {
     /// state of the object that was being waited upon).
     pub fn cancel(&self, remove_signaled_packet: bool) -> bool {
         match unsafe {
-            NtCancelWaitCompletionPacket(self.0.as_raw_handle(), remove_signaled_packet.into())
+            NtCancelWaitCompletionPacket(
+                self.0.as_raw_handle().cast::<c_void>(),
+                if remove_signaled_packet { 1 } else { 0 },
+            )
         } {
             ntstatus::STATUS_SUCCESS => true,
             STATUS_PENDING => false,
@@ -490,7 +520,8 @@ impl UnicodeString {
         // FUTURE: use RtlProcessHeap instead of GetProcessHeap. This relies on
         // unstable Rust features to get the PEB.
         unsafe {
-            let buf = RtlAllocateHeap(GetProcessHeap(), 0, byte_count.into()).cast::<u16>();
+            let buf = RtlAllocateHeap(GetProcessHeap().cast::<c_void>(), 0, byte_count.into())
+                .cast::<u16>();
             assert!(!buf.is_null(), "out of memory");
             std::ptr::copy(s.as_ptr(), buf, s.len());
             Ok(Self(UNICODE_STRING {
@@ -673,7 +704,7 @@ impl<'a> AnsiStringRef<'a> {
             ANSI_STRING {
                 Length: len,
                 MaximumLength: len,
-                Buffer: s.as_ptr() as *mut i8,
+                Buffer: s.as_ptr() as *mut u8,
             },
             PhantomData,
         ))
@@ -780,7 +811,7 @@ impl<'a> ObjectAttributes<'a> {
 
     /// Sets the root directory to `root`.
     pub fn root(&mut self, root: BorrowedHandle<'a>) -> &mut Self {
-        self.attributes.RootDirectory = root.as_raw_handle();
+        self.attributes.RootDirectory = root.as_raw_handle().cast::<c_void>();
         self
     }
 
@@ -792,7 +823,7 @@ impl<'a> ObjectAttributes<'a> {
 
     /// Sets the security descriptor to `sd`.
     pub fn security_descriptor(&mut self, sd: &'a SecurityDescriptor) -> &mut Self {
-        self.attributes.SecurityDescriptor = sd.as_ptr();
+        self.attributes.SecurityDescriptor = sd.as_ptr().cast::<SECURITY_DESCRIPTOR>();
         self
     }
 
@@ -819,7 +850,7 @@ pub fn open_object_directory(obj_attr: &ObjectAttributes<'_>, access: u32) -> Re
             access,
             obj_attr.as_ptr(),
         ))?;
-        Ok(OwnedHandle::from_raw_handle(handle))
+        Ok(OwnedHandle::from_raw_handle(handle.cast()))
     }
 }
 
@@ -835,7 +866,7 @@ pub fn create_object_directory(
             access,
             obj_attr.as_ptr(),
         ))?;
-        Ok(OwnedHandle::from_raw_handle(handle))
+        Ok(OwnedHandle::from_raw_handle(handle.cast()))
     }
 }
 
@@ -904,7 +935,11 @@ impl<T: ?Sized> Drop for RtlHeapBox<T> {
         // SAFETY: The pointer held by the RtlHeapBox must be allocated via RtlAllocateHeap from the constraints in
         //         RtlHeapBox::from_raw.
         unsafe {
-            ntrtl::RtlFreeHeap(GetProcessHeap(), 0, self.value.as_ptr().cast::<c_void>());
+            RtlFreeHeap(
+                GetProcessHeap().cast::<c_void>(),
+                0,
+                self.value.as_ptr().cast::<c_void>(),
+            );
         }
     }
 }
@@ -958,11 +993,8 @@ impl Overlapped {
     /// Sets the offset for the IO request.
     pub fn set_offset(&mut self, offset: i64) {
         let overlapped = self.0.get_mut();
-        // SAFETY: Writing to union field.
-        unsafe {
-            overlapped.u.s_mut().Offset = offset as u32;
-            overlapped.u.s_mut().OffsetHigh = (offset >> 32) as u32;
-        }
+        overlapped.Anonymous.Anonymous.Offset = offset as u32;
+        overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
     }
 
     pub fn set_event(&mut self, event: RawHandle) {

@@ -4186,7 +4186,6 @@ dependencies = [
  "mesh_channel",
  "mesh_node",
  "mesh_protobuf",
- "ntapi",
  "open_enum",
  "pal",
  "pal_async",
@@ -4640,15 +4639,6 @@ version = "0.0.0"
 dependencies = [
  "spin 0.10.0",
  "thiserror 2.0.16",
-]
-
-[[package]]
-name = "ntapi"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
-dependencies = [
- "winapi",
 ]
 
 [[package]]
@@ -5528,7 +5518,6 @@ dependencies = [
  "headervec",
  "landlock",
  "libc",
- "ntapi",
  "pal_event",
  "seccompiler",
  "socket2",
@@ -9121,7 +9110,6 @@ dependencies = [
  "inspect",
  "lx",
  "lxutil",
- "ntapi",
  "pal",
  "pal_async",
  "parking_lot",
@@ -9131,6 +9119,7 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 

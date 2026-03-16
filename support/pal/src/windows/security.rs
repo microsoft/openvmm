@@ -14,7 +14,6 @@ use std::ptr::null_mut;
 use std::str::FromStr;
 use widestring::U16CStr;
 use widestring::U16CString;
-use windows_sys::Win32::Foundation::BOOL;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
@@ -25,15 +24,18 @@ use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::DeriveCapabilitySidsFromName;
 use windows_sys::Win32::Security::GROUP_SECURITY_INFORMATION;
 use windows_sys::Win32::Security::LABEL_SECURITY_INFORMATION;
-use windows_sys::Win32::Security::LPSECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
-use windows_sys::Win32::Security::PHANDLE;
 use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
 use windows_sys::Win32::Security::PSID;
 use windows_sys::Win32::Security::SACL_SECURITY_INFORMATION;
-use windows_sys::Win32::Security::SE_GROUP_ENABLED;
 use windows_sys::Win32::Security::SECURITY_CAPABILITIES;
 use windows_sys::Win32::Security::SID_AND_ATTRIBUTES;
+
+const SE_GROUP_ENABLED: u32 = 4;
+
+type Bool = windows_sys::core::BOOL;
+type PHandle = *mut HANDLE;
+type LpSecurityCapabilities = *mut SECURITY_CAPABILITIES;
 
 const MAX_SUBAUTHORITY_COUNT: usize = 15;
 
@@ -325,9 +327,9 @@ impl SecurityDescriptor {
 unsafe extern "C" {
     fn CreateAppContainerToken(
         token: HANDLE,
-        caps: LPSECURITY_CAPABILITIES,
-        new_token: PHANDLE,
-    ) -> BOOL;
+        caps: LpSecurityCapabilities,
+        new_token: PHandle,
+    ) -> Bool;
 }
 
 #[repr(transparent)]

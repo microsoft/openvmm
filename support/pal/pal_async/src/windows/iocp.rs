@@ -47,8 +47,8 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use windows_sys::Win32::Storage::FileSystem::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
-use windows_sys::Win32::Storage::FileSystem::FILE_SKIP_SET_EVENT_ON_HANDLE;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_SET_EVENT_ON_HANDLE;
 
 /// A single-threaded task pool backed by an IO completion port.
 pub type IocpPool = IoPool<IocpBackend>;
@@ -418,7 +418,10 @@ impl SocketReadyDriver for IocpDriver {
             unsafe {
                 set_file_completion_notification_modes(
                     file.as_raw_handle(),
-                    FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
+                    u8::try_from(
+                        FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
+                    )
+                    .expect("FILE_SKIP flags fit in u8"),
                 )?;
             }
             Ok(file)
@@ -542,7 +545,8 @@ impl OverlappedIoDriver for IocpDriver {
         unsafe {
             set_file_completion_notification_modes(
                 handle,
-                FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE,
+                u8::try_from(FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE)
+                    .expect("FILE_SKIP flags fit in u8"),
             )?;
         }
 

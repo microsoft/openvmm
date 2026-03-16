@@ -11,18 +11,6 @@ use crate::HandleMap;
 use fuse::Mapper;
 use fuse::protocol::FUSE_SETUPMAPPING_FLAG_WRITE;
 use lxutil::PathExt;
-use ntapi::ntdef::LARGE_INTEGER;
-use ntapi::ntmmapi::NtCreateSection;
-use ntapi::ntmmapi::NtOpenSection;
-use ntapi::ntmmapi::NtQuerySection;
-use ntapi::ntmmapi::SECTION_BASIC_INFORMATION;
-use ntapi::ntmmapi::SectionBasicInformation;
-use ntapi::ntobapi::DIRECTORY_TRAVERSE;
-use ntapi::winnt::PAGE_READWRITE;
-use ntapi::winnt::SEC_COMMIT;
-use ntapi::winnt::SECTION_MAP_READ;
-use ntapi::winnt::SECTION_MAP_WRITE;
-use ntapi::winnt::SECTION_QUERY;
 use pal::windows::ObjectAttributes;
 use pal::windows::UnicodeString;
 use pal::windows::chk_status;
@@ -37,6 +25,35 @@ use std::ptr::null_mut;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use windows_sys::Wdk::Storage::FileSystem::NtCreateSection;
+use windows_sys::Wdk::System::Memory::NtOpenSection;
+use windows_sys::Wdk::System::SystemServices::DIRECTORY_TRAVERSE;
+use windows_sys::Win32::Foundation::NTSTATUS;
+use windows_sys::Win32::System::Memory::PAGE_READWRITE;
+use windows_sys::Win32::System::Memory::SEC_COMMIT;
+use windows_sys::Win32::System::Memory::SECTION_MAP_READ;
+use windows_sys::Win32::System::Memory::SECTION_MAP_WRITE;
+use windows_sys::Win32::System::Memory::SECTION_QUERY;
+
+const SectionBasicInformation: i32 = 0;
+
+#[repr(C)]
+#[derive(Default)]
+struct SECTION_BASIC_INFORMATION {
+    base_address: *mut std::ffi::c_void,
+    allocation_attributes: u32,
+    maximum_size: i64,
+}
+
+unsafe extern "system" {
+    fn NtQuerySection(
+        section_handle: windows_sys::Win32::Foundation::HANDLE,
+        section_information_class: i32,
+        section_information: *mut std::ffi::c_void,
+        section_information_length: usize,
+        return_length: *mut usize,
+    ) -> NTSTATUS;
+}
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -159,22 +176,21 @@ struct Section(OwnedHandle);
 impl Section {
     /// Creates a new pagefile-backed section object of `size` bytes.
     fn new(obj_attr: &ObjectAttributes<'_>, access: u32, size: u64) -> io::Result<Self> {
-        let mut large_int_size: LARGE_INTEGER = Default::default();
+        let mut maximum_size = size.try_into().expect("size fits in an i64");
 
         // SAFETY: calling the API according to the NT API
         unsafe {
-            *large_int_size.QuadPart_mut() = size.try_into().expect("size fits in an i64");
             let mut handle = null_mut();
             chk_status(NtCreateSection(
                 &mut handle,
                 access,
                 obj_attr.as_ptr(),
-                &mut large_int_size,
+                &mut maximum_size,
                 PAGE_READWRITE,
                 SEC_COMMIT,
                 null_mut(),
             ))?;
-            Ok(Self(OwnedHandle::from_raw_handle(handle)))
+            Ok(Self(OwnedHandle::from_raw_handle(handle.cast())))
         }
     }
 
@@ -182,9 +198,9 @@ impl Section {
     fn open(obj_attr: &ObjectAttributes<'_>, access: u32) -> io::Result<Self> {
         // SAFETY: calling the API according to the NT API
         unsafe {
-            let mut handle = null_mut();
+            let mut handle: windows_sys::Win32::Foundation::HANDLE = null_mut();
             chk_status(NtOpenSection(&mut handle, access, obj_attr.as_ptr()))?;
-            Ok(Self(OwnedHandle::from_raw_handle(handle)))
+            Ok(Self(OwnedHandle::from_raw_handle(handle.cast())))
         }
     }
 
@@ -194,13 +210,13 @@ impl Section {
         unsafe {
             let mut info: SECTION_BASIC_INFORMATION = zeroed();
             chk_status(NtQuerySection(
-                self.0.as_raw_handle(),
+                self.0.as_raw_handle().cast(),
                 SectionBasicInformation,
                 std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info),
                 null_mut(),
             ))?;
-            Ok(*info.MaximumSize.QuadPart() as u64)
+            Ok(info.maximum_size as u64)
         }
     }
 }

@@ -16,7 +16,6 @@ use pal::windows::status_to_error;
 use pal_async::driver::Driver;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
-use std::ffi::c_void;
 use std::io;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -26,11 +25,11 @@ use std::ptr;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
-use windows_sys::Win32::Foundation::INFINITE;
 use windows_sys::Win32::Foundation::STATUS_SUCCESS;
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::Storage::FileSystem::WriteFile;
 use windows_sys::Win32::System::IO::CancelIo;
+use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -197,7 +196,7 @@ impl DioQueue {
             let buf = &mut self.state.in_buf[buf_index];
             ReadFile(
                 self.nic.f.as_raw_handle(),
-                buf.as_mut_ptr().cast::<c_void>(),
+                buf.as_mut_ptr(),
                 buf.len() as u32,
                 ptr::null_mut(),
                 self.state.in_overlapped[buf_index].as_ptr(),
@@ -266,7 +265,7 @@ impl DioQueue {
                 unsafe {
                     WriteFile(
                         self.nic.f.as_raw_handle(),
-                        buf.as_ptr().cast::<c_void>(),
+                        buf.as_ptr(),
                         len as u32,
                         ptr::null_mut(),
                         o.as_ptr(),

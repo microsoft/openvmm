@@ -10,15 +10,14 @@ use super::UnicodeString;
 use super::chk_status;
 use ioapiset::DeviceIoControl;
 use minwinbase::OVERLAPPED;
-use ntapi::ntioapi::NtOpenFile;
-use ntdef::OBJECT_ATTRIBUTES;
 use std::fs::File;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
-use windows_sys::Wdk::Foundation as ntdef;
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::NtOpenFile;
 use windows_sys::Win32::Foundation as winerror;
-use windows_sys::Win32::Security as winnt;
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::IO as ioapiset;
 use windows_sys::Win32::System::IO as minwinbase;
 use winerror::ERROR_IO_PENDING;
@@ -70,13 +69,13 @@ pub fn open_afd() -> std::io::Result<File> {
         let mut iosb = zeroed();
         chk_status(NtOpenFile(
             &mut handle,
-            winnt::SYNCHRONIZE,
+            SYNCHRONIZE,
             &mut oa,
             &mut iosb,
             0,
             0,
         ))?;
-        Ok(File::from_raw_handle(handle))
+        Ok(File::from_raw_handle(handle.cast::<std::ffi::c_void>()))
     }
 }
 
