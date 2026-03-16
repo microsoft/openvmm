@@ -663,9 +663,7 @@ mod tests {
         let mut access = consomme.access(&mut client);
         let _ = access.send(&buffer[..packet_len], &ChecksumState::NONE);
 
-        #[allow(clippy::disallowed_methods)]
-        let waker = futures::task::noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
         access.poll(&mut cx);
 
         assert_eq!(

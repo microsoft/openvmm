@@ -66,10 +66,10 @@ const NET_HEADER_SIZE: u32 = crate::header_size() as u32;
 // --- Simplified segment info for assertions ---
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 struct TxSegmentInfo {
     is_head: bool,
     tx_id: Option<u32>,
+    #[expect(dead_code)]
     gpa: u64,
     len: u32,
 }
@@ -100,7 +100,7 @@ struct MockQueue {
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
     rx_ready: Arc<Mutex<VecDeque<RxId>>>,
-    #[allow(dead_code)] // kept alive for the MockQueueHandle's Arc clone
+    #[expect(dead_code)] // kept alive for the MockQueueHandle's Arc clone
     pool: Arc<Mutex<Option<Box<dyn net_backend::BufferAccess>>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
