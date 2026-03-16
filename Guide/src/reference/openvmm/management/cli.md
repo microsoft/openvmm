@@ -34,7 +34,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
 
-Serial devices can each be configured to be relayed to different endpoints:
+Serial devices can be configured to appear as different devices inside the guest:
 
 * `--com1/com2 <BACKEND>`: Configure a COM port serial device.
 * `--virtio-console <BACKEND>`: Expose a virtio console device (appears as

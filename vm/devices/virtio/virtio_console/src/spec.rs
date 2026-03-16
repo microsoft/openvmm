@@ -26,7 +26,10 @@ impl VirtioConsoleConfig {
         match offset {
             // cols at bytes 0..2, rows at bytes 2..4 — both fit in one u32 read
             0 => (self.cols as u32) | ((self.rows as u32) << 16),
-            _ => 0,
+            _ => {
+                tracelimit::warn_ratelimited!(offset, "invalid config read offset");
+                0
+            }
         }
     }
 }
