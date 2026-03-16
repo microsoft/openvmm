@@ -177,8 +177,8 @@ impl PetriVmConfigOpenVmm {
         }
 
         let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
-            if properties.minimal_mode && !properties.enable_serial {
-                // Minimal mode without serial: no serial ports at all
+            if !properties.enable_serial {
+                // No serial ports at all
                 ([None, None, None, None], Vec::new(), None)
             } else {
                 let SerialData {
@@ -257,12 +257,13 @@ impl PetriVmConfigOpenVmm {
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
-        if !properties.minimal_mode || properties.enable_serial {
+        if properties.enable_serial {
             chipset = chipset.with_serial(emulated_serial_config);
             // Set so that we don't pull serial data until the guest is
             // ready. Otherwise, Linux will drop the input serial data
             // on the floor during boot.
-            if matches!(firmware, Firmware::LinuxDirect { .. }) {
+            if matches!(firmware, Firmware::LinuxDirect { .. }) && !properties.uses_pipette_as_init
+            {
                 chipset = chipset.with_serial_wait_for_rts();
             }
         }
@@ -669,33 +670,27 @@ impl PetriVmConfigSetupCore<'_> {
                     .context("Failed to open initrd")?
                     .into();
 
-                let (cmdline, enable_serial) = if self.uses_pipette_as_init {
-                    let console_arg = if self.enable_serial {
-                        match arch {
-                            MachineArch::X86_64 => " console=ttyS0",
-                            MachineArch::Aarch64 => " console=ttyAMA0 earlycon",
-                        }
-                    } else {
-                        ""
-                    };
-                    // Pipette-as-init: pipette is the init process
-                    (
-                        format!("panic=-1 rdinit=/pipette{console_arg} {VIRTIO_VSOCK_BLACKLIST}"),
-                        self.enable_serial,
-                    )
+                let init = if self.uses_pipette_as_init {
+                    "/pipette"
                 } else {
-                    (
-                        format!("{console} debug panic=-1 rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}"),
-                        true,
-                    )
+                    "/bin/sh"
                 };
+
+                let serial_args = if self.enable_serial {
+                    format!("{console} debug ")
+                } else {
+                    String::new()
+                };
+
+                let cmdline =
+                    format!("{serial_args}panic=-1 rdinit={init} {VIRTIO_VSOCK_BLACKLIST}");
 
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
                     cmdline,
                     custom_dsdt: None,
-                    enable_serial,
+                    enable_serial: self.enable_serial,
                 }
             }
             (

@@ -411,7 +411,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
             minimal_mode: false,
             pipette_binary: artifacts.pipette_binary,
-            enable_serial: false,
+            enable_serial: true,
             prebuilt_initrd: None,
         }
         .add_petri_scsi_controllers()
