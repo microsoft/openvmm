@@ -36,8 +36,13 @@ from pathlib import Path
 REPO = "microsoft/openvmm"
 
 
-def gh(*args: str, check: bool = True) -> str:
-    """Run a gh CLI command and return its stdout."""
+def gh(*args: str, check: bool = True, quiet: bool = False) -> str:
+    """Run a gh CLI command and return its stdout.
+
+    When *check* is False and the command fails, returns an empty string
+    (ignoring any error body the server may have sent on stdout).
+    When *quiet* is True, suppresses warning output on failure.
+    """
     result = subprocess.run(
         ["gh", *args],
         capture_output=True,
@@ -49,13 +54,14 @@ def gh(*args: str, check: bool = True) -> str:
             print(f"ERROR: gh {' '.join(args)}", file=sys.stderr)
             print(result.stderr.strip(), file=sys.stderr)
             sys.exit(1)
-        else:
+        if not quiet:
             print(
                 f"WARNING: gh {' '.join(args)} failed with exit code {result.returncode}",
                 file=sys.stderr,
             )
             if result.stderr.strip():
                 print(result.stderr.strip(), file=sys.stderr)
+        return ""
     return result.stdout.strip()
 
 
@@ -402,19 +408,90 @@ def show_junit_failures(run_id: str, junit_artifact_names: list[str], workdir: P
     return total_failures
 
 
-def show_build_failure_log(run_id: str, failed_jobs: list[dict]) -> None:
-    """For build failures with no test artifacts, show the CI log tail."""
-    print()
-    print("==> Checking CI log for errors...")
+def show_build_failure_logs(run_id: str, failed_jobs: list[dict]) -> None:
+    """Show build/compile errors from the logs of all failed jobs."""
     if not failed_jobs:
         return
-    job = failed_jobs[0]
-    job_id = str(job["databaseId"])
-    print(f"    Last 50 lines of '{job['name']}':")
-    log = gh("run", "view", run_id, "-R", REPO, "--job", job_id, "--log", check=False)
-    if log:
-        for line in log.splitlines()[-50:]:
-            print(f"    {line}")
+
+    print()
+    print("==========================================")
+    print("  BUILD / JOB FAILURES")
+    print("==========================================")
+
+    for job in failed_jobs:
+        job_id = str(job["databaseId"])
+        job_name = job["name"]
+        print()
+        print(f"  --- {job_name} ---")
+
+        # Try the per-job logs API first (works for completed jobs even when
+        # the run is still in progress).
+        log = gh(
+            "api", f"repos/{REPO}/actions/jobs/{job_id}/logs",
+            check=False, quiet=True,
+        )
+        if not log:
+            # Fallback to the run-level log command.
+            log = gh("run", "view", run_id, "-R", REPO, "--job", job_id, "--log",
+                      check=False, quiet=True)
+        if not log:
+            # Last resort: get check-run annotations, which are available
+            # even while the run is still in progress.
+            ann_json = gh(
+                "api", f"repos/{REPO}/check-runs/{job_id}/annotations",
+                check=False,
+            )
+            if ann_json:
+                try:
+                    annotations = json.loads(ann_json)
+                    if annotations:
+                        for ann in annotations:
+                            level = ann.get("annotation_level", "?")
+                            title = ann.get("title", "")
+                            msg = ann.get("message", "").strip()
+                            prefix = f"[{level}]"
+                            if title:
+                                prefix += f" {title}"
+                            print(f"    {prefix}: {msg}")
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            print("    (no log available)")
+            continue
+
+        all_lines = log.splitlines()
+
+        # Extract lines that look like build errors.
+        # gh --log output format: "STEP_NAME\tTIMESTAMP TEXT" or plain text.
+        error_lines: list[str] = []
+        for line in all_lines:
+            # Strip the step-name prefix (tab-separated) for matching.
+            text = line.split("\t", 1)[-1] if "\t" in line else line
+            text_lower = text.lower()
+            if any((
+                "error[e" in text_lower,          # rustc error codes
+                "error:" in text_lower,            # generic compiler errors
+                "cannot find" in text_lower,       # resolution errors
+                "aborting due to" in text_lower,   # rustc abort summary
+                "could not compile" in text_lower, # cargo summary
+                "fatal error" in text_lower,       # C/C++ fatal errors
+                "undefined reference" in text_lower,
+                "linker error" in text_lower,
+                text_lower.strip().startswith("error "),
+            )):
+                error_lines.append(line)
+
+        if error_lines:
+            # Show up to 80 error lines.
+            for line in error_lines[:80]:
+                print(f"    {line}")
+            if len(error_lines) > 80:
+                print(f"    ... ({len(error_lines) - 80} more error lines)")
+        else:
+            # Fallback: show last 50 lines of the log.
+            print(f"    (no error patterns found; showing last 50 lines)")
+            for line in all_lines[-50:]:
+                print(f"    {line}")
 
 
 def find_failed_tests(workdir: Path) -> list[Path]:
@@ -442,8 +519,10 @@ def main() -> None:
     vmm_artifact_names = list_test_log_artifacts(all_artifacts)
     junit_artifact_names = list_junit_artifacts(all_artifacts)
 
+    # Always show build/job failure logs when jobs failed.
+    show_build_failure_logs(run_id, failed_jobs)
+
     if not vmm_artifact_names and not junit_artifact_names:
-        show_build_failure_log(run_id, failed_jobs)
         sys.exit(1)
 
     # Set up work directory
