@@ -105,11 +105,11 @@ impl VirtioDeviceV2 for VirtioConsoleDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
-        self.config.read_u32(offset)
+    fn read_registers_u32(&mut self, offset: u64) -> u32 {
+        self.config.read_u32((offset & 0xffff) as u16)
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
+    fn write_registers_u32(&mut self, _offset: u64, _val: u32) {
         // Console config is read-only from the guest perspective.
     }
 
