@@ -160,7 +160,9 @@ struct Section(OwnedHandle);
 impl Section {
     /// Creates a new pagefile-backed section object of `size` bytes.
     fn new(obj_attr: &ObjectAttributes<'_>, access: u32, size: u64) -> io::Result<Self> {
-        let maximum_size = size.try_into().expect("size fits in an i64");
+        let maximum_size = i64::try_from(size).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "section size exceeds i64::MAX")
+        })?;
 
         // SAFETY: calling the API according to the NT API
         unsafe {

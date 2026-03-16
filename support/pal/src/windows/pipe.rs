@@ -185,7 +185,8 @@ fn create_named_pipe(
         chk_status(NtCreateNamedPipeFile(
             &mut handle,
             access | SYNCHRONIZE,
-            (&mut oa as *mut OBJECT_ATTRIBUTES).cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
+            std::ptr::from_mut::<OBJECT_ATTRIBUTES>(&mut oa)
+                .cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             disposition,
