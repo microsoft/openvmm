@@ -128,6 +128,7 @@ impl<T: 'static + VirtioDeviceV2> VirtioDevice for VirtioDeviceAdapter<T> {
             }
             if let Err(e) = self.device.start_queue(idx, qr, &features, None) {
                 // Best-effort stop of already-started queues.
+                // TODO: reliably stop once this code is embedded in the transports.
                 for &started_idx in &started {
                     let _ = self.device.poll_stop_queue(
                         &mut Context::from_waker(std::task::Waker::noop()),
