@@ -58,9 +58,10 @@ use task_control::InspectTaskMut;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::QueueResources;
+use virtio::VirtioDeviceV2;
 use virtio::VirtioQueue;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -91,7 +92,7 @@ impl VirtioConsoleDevice {
     }
 }
 
-impl VirtioDevice for VirtioConsoleDevice {
+impl VirtioDeviceV2 for VirtioConsoleDevice {
     fn traits(&self) -> DeviceTraits {
         let mut features = VirtioDeviceFeatures::new();
         features.set_bank(0, 1 << VIRTIO_CONSOLE_F_SIZE);
@@ -112,49 +113,87 @@ impl VirtioDevice for VirtioConsoleDevice {
         // Console config is read-only from the guest perspective.
     }
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        // Both queues must be enabled.
-        if !resources.queues[0].params.enable || !resources.queues[1].params.enable {
-            return Ok(());
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        let queue = VirtioQueue::new(
+            features.clone(),
+            resources.params,
+            self.memory.clone(),
+            resources.notify,
+            pal_async::wait::PolledWait::new(&self.driver, resources.event)?,
+            initial_state,
+        )?;
+
+        assert!(idx < 2);
+
+        if self.worker.has_state() {
+            // Worker is already running with the other queue — inject this one.
+            // update_with cancels the current run iteration, applies the
+            // closure, then the worker restarts.
+            self.worker.update_with(move |_worker, state| {
+                if let Some(state) = state {
+                    if idx == 0 {
+                        state.receiveq = Some(queue);
+                    } else {
+                        state.transmitq = Some(queue);
+                    }
+                }
+            });
+        } else {
+            // First queue to start — create the worker state.
+            let (receiveq, transmitq) = if idx == 0 {
+                (Some(queue), None)
+            } else {
+                (None, Some(queue))
+            };
+            self.worker.insert(
+                &self.driver,
+                "virtio-console",
+                ConsoleWorkerState {
+                    receiveq,
+                    transmitq,
+                    mem: self.memory.clone(),
+                    partial_transmit: 0,
+                },
+            );
+            self.worker.start();
         }
-
-        let receiveq = VirtioQueue::new(
-            resources.features.clone(),
-            resources.queues[0].params,
-            self.memory.clone(),
-            resources.queues[0].notify.clone(),
-            pal_async::wait::PolledWait::new(&self.driver, resources.queues[0].event.clone())?,
-        )?;
-
-        let transmitq = VirtioQueue::new(
-            resources.features,
-            resources.queues[1].params,
-            self.memory.clone(),
-            resources.queues[1].notify.clone(),
-            pal_async::wait::PolledWait::new(&self.driver, resources.queues[1].event.clone())?,
-        )?;
-
-        self.worker.insert(
-            &self.driver,
-            "virtio-console",
-            ConsoleWorkerState {
-                receiveq,
-                transmitq,
-                mem: self.memory.clone(),
-                partial_transmit: 0,
-            },
-        );
-        self.worker.start();
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        if self.worker.has_state() {
-            ready!(self.worker.poll_stop(cx));
-            self.worker.remove();
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        if !self.worker.has_state() {
+            return Poll::Ready(None);
         }
-        Poll::Ready(())
+
+        // Stop the worker (shared by both queues). Once stopped, we can
+        // reach into the state to take the requested queue.
+        ready!(self.worker.poll_stop(cx));
+
+        let state = self.worker.state_mut().unwrap();
+        let queue = match idx {
+            0 => state.receiveq.take(),
+            1 => state.transmitq.take(),
+            _ => unreachable!(),
+        };
+
+        // If both queues have been taken, remove the worker state entirely.
+        // Otherwise, restart the worker so the remaining queue stays active.
+        if state.receiveq.is_none() && state.transmitq.is_none() {
+            self.worker.remove();
+        } else {
+            self.worker.start();
+        }
+
+        Poll::Ready(queue.map(|q| q.queue_state()))
     }
+
+    fn reset(&mut self) {}
 }
 
 #[derive(InspectMut)]
@@ -165,8 +204,8 @@ struct ConsoleWorker {
 
 #[derive(InspectMut)]
 struct ConsoleWorkerState {
-    receiveq: VirtioQueue,
-    transmitq: VirtioQueue,
+    receiveq: Option<VirtioQueue>,
+    transmitq: Option<VirtioQueue>,
     mem: GuestMemory,
     /// Bytes already written for the current transmitq descriptor.
     /// Must survive cancel/restart to avoid re-sending data.
@@ -220,6 +259,11 @@ impl ConsoleWorker {
         let mut io = parking_lot::Mutex::new(&mut self.io);
         let mem = &state.mem;
         let partial_transmit = &mut state.partial_transmit;
+
+        // If neither queue is present, there's nothing to do.
+        if receiveq.is_none() && transmitq.is_none() {
+            std::future::pending::<()>().await;
+        }
         loop {
             if !connected {
                 // Wait for the backend to connect, discarding any guest tx data
@@ -231,6 +275,9 @@ impl ConsoleWorker {
                     Ok::<_, WorkerError>(true)
                 };
                 let drain_tx = async {
+                    let Some(transmitq) = transmitq.as_mut() else {
+                        std::future::pending().await
+                    };
                     loop {
                         let work = transmitq.peek().await.map_err(WorkerError::Queue)?;
                         work.consume().complete(0);
@@ -247,6 +294,9 @@ impl ConsoleWorker {
                 };
             } else {
                 let rx = async {
+                    let Some(receiveq) = receiveq.as_mut() else {
+                        std::future::pending().await
+                    };
                     'rx: loop {
                         let work = receiveq.peek().await.map_err(WorkerError::Queue)?;
                         let writeable_len = work
@@ -291,6 +341,9 @@ impl ConsoleWorker {
                     }
                 };
                 let tx = async {
+                    let Some(transmitq) = transmitq.as_mut() else {
+                        std::future::pending().await
+                    };
                     'tx: loop {
                         let work = transmitq.peek().await.map_err(WorkerError::Queue)?;
                         let readable_len = work.readable_length() as usize;

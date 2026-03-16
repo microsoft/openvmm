@@ -28,8 +28,7 @@ use std::task::Waker;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
-use virtio::Resources;
-use virtio::VirtioDevice;
+use virtio::VirtioDeviceV2;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
@@ -389,13 +388,12 @@ impl TestHarness {
 
     /// Enable the device with both queues.
     fn enable(&mut self) {
-        let rx_interrupt = Interrupt::from_event(self.rx_interrupt_event.clone());
-        let tx_interrupt = Interrupt::from_event(self.tx_interrupt_event.clone());
+        let features = VirtioDeviceFeatures::new();
 
-        let resources = Resources {
-            features: VirtioDeviceFeatures::new(),
-            queues: vec![
-                // Queue 0: receiveq (host→guest)
+        // Queue 0: receiveq (host→guest)
+        self.device
+            .start_queue(
+                0,
                 QueueResources {
                     params: QueueParams {
                         size: QUEUE_SIZE,
@@ -404,10 +402,18 @@ impl TestHarness {
                         avail_addr: RX_AVAIL_ADDR,
                         used_addr: RX_USED_ADDR,
                     },
-                    notify: rx_interrupt,
+                    notify: Interrupt::from_event(self.rx_interrupt_event.clone()),
                     event: self.rx_event.clone(),
                 },
-                // Queue 1: transmitq (guest→host)
+                &features,
+                None,
+            )
+            .unwrap();
+
+        // Queue 1: transmitq (guest→host)
+        self.device
+            .start_queue(
+                1,
                 QueueResources {
                     params: QueueParams {
                         size: QUEUE_SIZE,
@@ -416,15 +422,13 @@ impl TestHarness {
                         avail_addr: TX_AVAIL_ADDR,
                         used_addr: TX_USED_ADDR,
                     },
-                    notify: tx_interrupt,
+                    notify: Interrupt::from_event(self.tx_interrupt_event.clone()),
                     event: self.tx_event.clone(),
                 },
-            ],
-            shared_memory_region: None,
-            shared_memory_size: 0,
-        };
-
-        self.device.enable(resources).unwrap();
+                &features,
+                None,
+            )
+            .unwrap();
     }
 
     /// Allocate a data region in guest memory and return its GPA.
@@ -519,7 +523,9 @@ impl TestHarness {
 
     /// Disable the device.
     async fn disable(&mut self) {
-        futures::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 0)).await;
+        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 1)).await;
+        self.device.reset();
     }
 
     /// Reset memory layout tracking for a fresh enable cycle.
@@ -847,4 +853,78 @@ async fn config_read(driver: DefaultDriver) {
     // Default config: cols=0, rows=0
     let val = device.read_registers_u32(0);
     assert_eq!(val, 0);
+}
+
+/// When only the transmitq (queue 1) is enabled, TX should still work.
+#[async_test]
+async fn tx_only_single_queue(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features = VirtioDeviceFeatures::new();
+
+    // Only start queue 1 (transmitq).
+    harness
+        .device
+        .start_queue(
+            1,
+            QueueResources {
+                params: QueueParams {
+                    size: QUEUE_SIZE,
+                    enable: true,
+                    desc_addr: TX_DESC_ADDR,
+                    avail_addr: TX_AVAIL_ADDR,
+                    used_addr: TX_USED_ADDR,
+                },
+                notify: Interrupt::from_event(harness.tx_interrupt_event.clone()),
+                event: harness.tx_event.clone(),
+            },
+            &features,
+            None,
+        )
+        .unwrap();
+
+    harness.post_tx_and_signal(0, b"tx-only");
+    let (used_id, _) = harness.wait_for_tx_used().await;
+    assert_eq!(used_id, 0);
+
+    let written = harness.handle.take_tx_data();
+    assert_eq!(written, b"tx-only");
+}
+
+/// When only the receiveq (queue 0) is enabled, RX should still work.
+#[async_test]
+async fn rx_only_single_queue(driver: DefaultDriver) {
+    let mut harness = TestHarness::new(&driver);
+    let features = VirtioDeviceFeatures::new();
+
+    // Only start queue 0 (receiveq).
+    harness
+        .device
+        .start_queue(
+            0,
+            QueueResources {
+                params: QueueParams {
+                    size: QUEUE_SIZE,
+                    enable: true,
+                    desc_addr: RX_DESC_ADDR,
+                    avail_addr: RX_AVAIL_ADDR,
+                    used_addr: RX_USED_ADDR,
+                },
+                notify: Interrupt::from_event(harness.rx_interrupt_event.clone()),
+                event: harness.rx_event.clone(),
+            },
+            &features,
+            None,
+        )
+        .unwrap();
+
+    let gpa = harness.post_rx_buffer_and_signal(0, 64);
+    harness.handle.inject_rx_data(b"rx-only");
+
+    let (used_id, used_len) = harness.wait_for_rx_used().await;
+    assert_eq!(used_id, 0);
+    assert_eq!(used_len, b"rx-only".len() as u32);
+
+    let mut readback = vec![0u8; b"rx-only".len()];
+    harness.mem.read_at(gpa, &mut readback).unwrap();
+    assert_eq!(&readback, b"rx-only");
 }
