@@ -394,7 +394,8 @@ options:
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
-    /// file=\<path\> | listen=tcp:\<ip\>:\<port\> | term | none)
+    /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
 

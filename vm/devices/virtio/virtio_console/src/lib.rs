@@ -308,6 +308,7 @@ impl ConsoleWorker {
                                 .await
                                 {
                                     Ok(written) => {
+                                        assert!(written > 0);
                                         written_this_chunk += written;
                                         *partial_transmit += written;
                                     }
