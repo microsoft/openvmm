@@ -16,9 +16,6 @@ use ntapi::ntioapi::FILE_PIPE_LISTENING_STATE;
 use ntapi::ntioapi::FILE_PIPE_LOCAL_INFORMATION;
 use ntapi::ntioapi::FilePipeLocalInformation;
 use ntapi::ntioapi::NtQueryInformationFile;
-use ntdef::LARGE_INTEGER;
-use ntdef::OBJ_CASE_INSENSITIVE;
-use ntdef::OBJECT_ATTRIBUTES;
 use ntioapi::FILE_CREATE;
 use ntioapi::FILE_NON_DIRECTORY_FILE;
 use ntioapi::FILE_PIPE_BYTE_STREAM_MODE;
@@ -39,20 +36,28 @@ use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
-use winapi::shared::ntdef;
-use winapi::shared::ntstatus::STATUS_NAME_TOO_LONG;
-use winapi::um::namedpipeapi;
-use winapi::um::namedpipeapi::DisconnectNamedPipe;
-use winapi::um::namedpipeapi::GetNamedPipeInfo;
-use winapi::um::winbase::PIPE_SERVER_END;
-use winapi::um::winioctl;
-use winapi::um::winnt;
-use winnt::FILE_READ_ATTRIBUTES;
-use winnt::FILE_SHARE_READ;
-use winnt::FILE_SHARE_WRITE;
-use winnt::GENERIC_READ;
-use winnt::GENERIC_WRITE;
-use winnt::SYNCHRONIZE;
+use windows_sys::Wdk::Foundation::OBJ_CASE_INSENSITIVE;
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Win32::Foundation::LARGE_INTEGER;
+use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
+use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
+use windows_sys::Win32::Security::FILE_READ_DATA;
+use windows_sys::Win32::Security::FILE_WRITE_DATA;
+use windows_sys::Win32::Security::GENERIC_READ;
+use windows_sys::Win32::Security::GENERIC_WRITE;
+use windows_sys::Win32::Security::SYNCHRONIZE;
+use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::System::Ioctl::FILE_ANY_ACCESS;
+use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NAMED_PIPE;
+use windows_sys::Win32::System::Ioctl::METHOD_BUFFERED;
+use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
+use windows_sys::Win32::System::Pipes::GetNamedPipeHandleStateW;
+use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+use windows_sys::Win32::System::Pipes::PIPE_SERVER_END;
+use windows_sys::Win32::System::Pipes::SetNamedPipeHandleState;
 
 /// Creates a pair of pipe files, returning (read, write).
 ///
@@ -63,7 +68,7 @@ pub fn pair() -> io::Result<(File, File)> {
     unsafe {
         let mut read = null_mut();
         let mut write = null_mut();
-        if namedpipeapi::CreatePipe(&mut read, &mut write, null_mut(), 0) == 0 {
+        if CreatePipe(&mut read, &mut write, null_mut(), 0) == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok((File::from_raw_handle(read), File::from_raw_handle(write)))
@@ -333,7 +338,7 @@ impl PipeExt for File {
                     null_mut(),
                     0,
                 );
-                if status != winapi::shared::ntstatus::STATUS_NOT_SUPPORTED {
+                if status != STATUS_NOT_SUPPORTED {
                     break;
                 }
             }
@@ -405,22 +410,22 @@ const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> 
 }
 
 const FSCTL_PIPE_EVENT_SELECT: u32 = ctl_code(
-    winioctl::FILE_DEVICE_NAMED_PIPE,
+    FILE_DEVICE_NAMED_PIPE,
     3071,
-    winioctl::METHOD_BUFFERED,
-    winioctl::FILE_ANY_ACCESS,
+    METHOD_BUFFERED,
+    FILE_ANY_ACCESS,
 );
 const FSCTL_PIPE_EVENT_SELECT_OLD: u32 = ctl_code(
-    winioctl::FILE_DEVICE_NAMED_PIPE,
+    FILE_DEVICE_NAMED_PIPE,
     3071,
-    winioctl::METHOD_BUFFERED,
-    winnt::FILE_WRITE_DATA,
+    METHOD_BUFFERED,
+    FILE_WRITE_DATA,
 );
 const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
-    winioctl::FILE_DEVICE_NAMED_PIPE,
+    FILE_DEVICE_NAMED_PIPE,
     3072,
-    winioctl::METHOD_BUFFERED,
-    winnt::FILE_READ_DATA,
+    METHOD_BUFFERED,
+    FILE_READ_DATA,
 );
 
 #[repr(C)]

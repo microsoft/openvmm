@@ -23,33 +23,6 @@ socket2 = { workspace = true, features = ["all"] }
 widestring.workspace = true
 windows-result.workspace = true
 
-[target.'cfg(windows)'.dependencies.winapi]
-workspace = true
-features = [
-    "errhandlingapi",
-    "fileapi",
-    "handleapi",
-    "heapapi",
-    "ioapiset",
-    "impl-default",
-    "jobapi2",
-    "memoryapi",
-    "namedpipeapi",
-    "ntstatus",
-    "processenv",
-    "processthreadsapi",
-    "sddl",
-    "securitybaseapi",
-    "std",
-    "synchapi",
-    "threadpoolapiset",
-    "winbase",
-    "winerror",
-    "winioctl",
-    "winnt",
-    "winsock2",
-]
-
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
 features = [
@@ -61,7 +34,21 @@ features = [
 [target.'cfg(windows)'.dependencies.windows-sys]
 workspace = true
 features = [
+    "Wdk_Foundation",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_Networking_WinSock",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
 ]
 
 [target.'cfg(unix)'.dependencies]

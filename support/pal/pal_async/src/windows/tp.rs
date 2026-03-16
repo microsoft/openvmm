@@ -47,13 +47,13 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
-use winapi::um::winbase::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
-use winapi::um::winbase::FILE_SKIP_SET_EVENT_ON_HANDLE;
-use winapi::um::winnt::TP_CALLBACK_INSTANCE;
-use winapi::um::winnt::TP_IO;
-use winapi::um::winnt::TP_TIMER;
-use winapi::um::winnt::TP_WAIT;
-use winapi::um::winnt::TP_WORK;
+use windows_sys::Win32::Storage::FileSystem::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+use windows_sys::Win32::Storage::FileSystem::FILE_SKIP_SET_EVENT_ON_HANDLE;
+use windows_sys::Win32::System::Threading::TP_CALLBACK_INSTANCE;
+use windows_sys::Win32::System::Threading::TP_IO;
+use windows_sys::Win32::System::Threading::TP_TIMER;
+use windows_sys::Win32::System::Threading::TP_WAIT;
+use windows_sys::Win32::System::Threading::TP_WORK;
 
 /// A Windows thread pool.
 #[derive(Debug, Clone)]

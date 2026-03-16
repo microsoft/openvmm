@@ -5535,7 +5535,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "widestring",
- "winapi",
  "windows 0.62.0",
  "windows-result 0.4.0",
  "windows-sys 0.61.0",
@@ -5564,7 +5563,6 @@ dependencies = [
  "tempfile",
  "unicycle",
  "unix_socket",
- "winapi",
  "windows-sys 0.61.0",
  "zerocopy",
 ]
@@ -9885,7 +9883,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "widestring",
- "winapi",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 

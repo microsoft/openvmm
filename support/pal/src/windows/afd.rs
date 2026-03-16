@@ -16,11 +16,11 @@ use std::fs::File;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::ptr::null_mut;
-use winapi::shared::ntdef;
-use winapi::shared::winerror;
-use winapi::um::ioapiset;
-use winapi::um::minwinbase;
-use winapi::um::winnt;
+use windows_sys::Wdk::Foundation as ntdef;
+use windows_sys::Win32::Foundation as winerror;
+use windows_sys::Win32::Security as winnt;
+use windows_sys::Win32::System::IO as ioapiset;
+use windows_sys::Win32::System::IO as minwinbase;
 use winerror::ERROR_IO_PENDING;
 
 #[repr(C)]

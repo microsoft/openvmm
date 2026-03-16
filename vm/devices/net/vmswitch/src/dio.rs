@@ -26,12 +26,12 @@ use std::ptr;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
-use winapi::shared::ntstatus;
-use winapi::um::fileapi::ReadFile;
-use winapi::um::fileapi::WriteFile;
-use winapi::um::ioapiset::CancelIo;
-use winapi::um::synchapi::WaitForSingleObject;
-use winapi::um::winbase::INFINITE;
+use windows_sys::Win32::Foundation::INFINITE;
+use windows_sys::Win32::Foundation::STATUS_SUCCESS;
+use windows_sys::Win32::Storage::FileSystem::ReadFile;
+use windows_sys::Win32::Storage::FileSystem::WriteFile;
+use windows_sys::Win32::System::IO::CancelIo;
+use windows_sys::Win32::System::Threading::WaitForSingleObject;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -181,7 +181,7 @@ impl DioQueue {
             Ok(())
         } else {
             match self.state.in_overlapped[self.state.in_next_pending].io_status() {
-                Some((ntstatus::STATUS_SUCCESS, _)) => {
+                Some((STATUS_SUCCESS, _)) => {
                     self.state.in_next_pending = (self.state.in_next_pending + 1) % IN_OP_COUNT;
                     Ok(())
                 }
@@ -248,7 +248,7 @@ impl DioQueue {
         for (i, o) in self.state.out_overlapped.iter_mut().enumerate() {
             if let Some((status, _)) = o.io_status() {
                 // This overlapped is available for reuse.
-                if status != ntstatus::STATUS_SUCCESS {
+                if status != STATUS_SUCCESS {
                     tracing::warn!(
                         error = &status_to_error(status) as &dyn std::error::Error,
                         "packet write failure"
