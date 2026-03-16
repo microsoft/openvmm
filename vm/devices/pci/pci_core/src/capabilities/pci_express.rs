@@ -200,6 +200,12 @@ impl PciExpressCapability {
 
         state.slot_control = masked_control;
 
+        // Set command_completed after Slot Control write (PCIe spec requirement).
+        // The guest pciehp driver waits for this after writing to Slot Control.
+        if !self.slot_capabilities.no_command_completed_support() {
+            state.slot_status.set_command_completed(true);
+        }
+
         // Slot Status upper 16 bits - handle RW1C and RO bits properly
         let new_slot_status = pci_express::SlotStatus::from_bits((val >> 16) as u16);
         let mut current_slot_status = state.slot_status;
@@ -331,6 +337,20 @@ impl PciExpressCapability {
             state
                 .slot_status
                 .with_presence_detect_state(if present { 1 } else { 0 });
+
+        // Set the RW1C changed bits so the guest sees the event
+        state.slot_status.set_presence_detect_changed(true);
+        state.slot_status.set_data_link_layer_state_changed(true);
+    }
+
+    /// Returns whether the hot plug interrupt is enabled in Slot Control.
+    pub fn hot_plug_interrupt_enabled(&self) -> bool {
+        self.state.lock().slot_control.hot_plug_interrupt_enable()
+    }
+
+    /// Returns a reference to the slot capabilities register.
+    pub fn slot_capabilities(&self) -> &pci_express::SlotCapabilities {
+        &self.slot_capabilities
     }
 }
 

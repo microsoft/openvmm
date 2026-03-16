@@ -95,6 +95,31 @@ impl PcieDownstreamPort {
         self.msi_connection.connect(signal);
     }
 
+    /// Fire MSI if hot_plug_interrupt_enable is set and MSI is configured.
+    ///
+    /// Called after presence detect state changes to notify the guest's
+    /// pciehp driver of hotplug events.
+    fn fire_hotplug_msi(&self) {
+        let hotplug_enabled = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .is_some_and(|pcie| pcie.hot_plug_interrupt_enabled());
+
+        if hotplug_enabled {
+            if let Some(interrupt) = self
+                .cfg_space
+                .capabilities()
+                .iter()
+                .find_map(|cap| cap.as_msi_cap())
+                .and_then(|msi| msi.interrupt())
+            {
+                interrupt.deliver();
+            }
+        }
+    }
+
     /// Forward a configuration space read to the connected device.
     /// Supports routing components for multi-level hierarchies.
     pub fn forward_cfg_read_with_routing(
@@ -229,6 +254,7 @@ impl PcieDownstreamPort {
 
             // Set presence detect state to true when a device is connected
             self.cfg_space.set_presence_detect_state(true);
+            self.fire_hotplug_msi();
 
             return Ok(());
         }
