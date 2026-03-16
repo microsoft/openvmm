@@ -37,11 +37,11 @@ pub fn was_forked_from_pid1() -> bool {
 
 /// Perform minimal init duties and fork.
 ///
-/// Mounts `/dev`, `/proc`, `/sys`, then forks. Returns normally in the
+/// Mounts `/dev`, `/proc`, `/sys`, then forks. Returns `Ok(())` in the
 /// child (which should continue to run the pipette agent). Never returns
 /// in the parent (PID 1 stays in a reap loop until the child exits,
 /// then calls `reboot(2)` to power off).
-pub fn init_as_pid1() {
+pub fn init_as_pid1() -> anyhow::Result<()> {
     eprintln!("Pipette running as PID 1, performing init duties");
 
     // Mount essential filesystems
@@ -50,16 +50,18 @@ pub fn init_as_pid1() {
     mount_or_warn("sysfs", "/sys", "sysfs");
 
     // Fork: child runs pipette, parent stays as PID 1 reaper.
+    // SAFETY: fork() is safe to call here. We have not spawned any
+    // threads yet, so the forked child has a consistent address space.
     let pid = unsafe { libc::fork() };
     match pid {
         -1 => {
-            eprintln!("fatal: fork() failed: {}", io::Error::last_os_error());
-            // Can't fork — just run pipette as PID 1 and hope for the best.
+            anyhow::bail!("fork() failed: {}", io::Error::last_os_error());
         }
         0 => {
             // Child: set flag so shutdown handler uses reboot(2),
             // then return to caller to run the normal pipette agent.
             FORKED_FROM_PID1.store(true, Ordering::Relaxed);
+            Ok(())
         }
         child_pid => {
             // Parent (PID 1): reap loop — never returns.
@@ -69,22 +71,39 @@ pub fn init_as_pid1() {
     }
 }
 
-/// PID 1 reap loop: wait for children forever, power off when the
-/// pipette child exits.
+/// PID 1 reap loop: wait for children forever.
+///
+/// Under normal operation, pipette does not exit — the host tears
+/// down the VM directly. If the pipette child does exit unexpectedly,
+/// we panic, which will cause the kernel to panic and the VMM to
+/// observe a triple fault.
 fn pid1_reap_loop(pipette_pid: i32) -> ! {
     loop {
         let mut status: i32 = 0;
+        // SAFETY: wait() is safe to call with a valid pointer to status.
         let pid = unsafe { libc::wait(&mut status) };
+
+        // wait() can only fail with ECHILD (no children) or EINTR
+        // (interrupted by signal). ECHILD is impossible because PID 1
+        // always has the pipette child, and adopted orphans keep the
+        // child count nonzero until the pipette child exits. EINTR
+        // just means we should retry.
+        if pid == -1 {
+            let err = io::Error::last_os_error();
+            assert!(
+                err.raw_os_error() == Some(libc::EINTR),
+                "wait() failed unexpectedly: {err}"
+            );
+            continue;
+        }
+
         if pid == pipette_pid {
-            // Pipette child exited — shut down the VM.
             let exit_code = if libc::WIFEXITED(status) {
                 libc::WEXITSTATUS(status)
             } else {
                 -1
             };
-            eprintln!("Pipette child {pipette_pid} exited (status {exit_code}), powering off");
-            // reboot(2) doesn't return, but if it somehow does:
-            std::process::exit(exit_code);
+            panic!("pipette child {pipette_pid} exited unexpectedly (status {exit_code})");
         }
         // Any other child — just reaped an orphan, continue looping.
     }
@@ -104,6 +123,9 @@ fn mount(source: &str, target: &str, fstype: &str) -> io::Result<()> {
     let target = CString::new(target).unwrap();
     let fstype = CString::new(fstype).unwrap();
 
+    // SAFETY: calling libc::mount with valid C string pointers and
+    // no mount data. The arguments are constructed from Rust &str
+    // values via CString::new above.
     let ret = unsafe {
         libc::mount(
             source.as_ptr(),

@@ -631,8 +631,8 @@ impl PetriVmConfigSetupCore<'_> {
         Ok(match (self.arch, &self.firmware) {
             (arch, Firmware::LinuxDirect { kernel, initrd }) => {
                 let console = match arch {
-                    MachineArch::X86_64 => " console=ttyS0",
-                    MachineArch::Aarch64 => " console=ttyAMA0 earlycon",
+                    MachineArch::X86_64 => "console=ttyS0",
+                    MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
                 };
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?

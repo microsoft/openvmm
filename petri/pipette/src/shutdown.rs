@@ -8,27 +8,39 @@
 
 #[cfg(target_os = "linux")]
 pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
-    use anyhow::Context;
-
-    // When forked from PID 1 (the pipette-as-init fork pattern), call
-    // reboot(2) directly. No external `poweroff` binary exists in the
-    // initrd.
     if crate::init::was_forked_from_pid1() {
-        let cmd = match request.shutdown_type {
-            pipette_protocol::ShutdownType::PowerOff => libc::RB_POWER_OFF,
-            pipette_protocol::ShutdownType::Reboot => libc::RB_AUTOBOOT,
-        };
-
-        // Flush any pending writes before powering off.
-        //
-        // SAFETY: calling as documented.
-        unsafe { libc::sync() };
-        // reboot(2) with RB_POWER_OFF / RB_AUTOBOOT does not return on success.
-        //
-        // SAFETY: calling as documented with a valid cmd.
-        unsafe { libc::reboot(cmd) };
-        anyhow::bail!("reboot(2) syscall returned unexpectedly");
+        handle_shutdown_via_reboot(request)
+    } else {
+        handle_shutdown_via_command(request)
     }
+}
+
+/// Shutdown when running as a child forked from PID 1.
+///
+/// Calls `reboot(2)` directly since no external `poweroff` binary
+/// exists in the initrd.
+#[cfg(target_os = "linux")]
+fn handle_shutdown_via_reboot(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
+    let cmd = match request.shutdown_type {
+        pipette_protocol::ShutdownType::PowerOff => libc::RB_POWER_OFF,
+        pipette_protocol::ShutdownType::Reboot => libc::RB_AUTOBOOT,
+    };
+
+    // Flush any pending writes before powering off.
+    //
+    // SAFETY: calling as documented.
+    unsafe { libc::sync() };
+    // reboot(2) with RB_POWER_OFF / RB_AUTOBOOT does not return on success.
+    //
+    // SAFETY: calling as documented with a valid cmd.
+    unsafe { libc::reboot(cmd) };
+    anyhow::bail!("reboot(2) syscall returned unexpectedly");
+}
+
+/// Shutdown by executing an external command (`poweroff` or `reboot`).
+#[cfg(target_os = "linux")]
+fn handle_shutdown_via_command(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
+    use anyhow::Context;
 
     let program = match request.shutdown_type {
         pipette_protocol::ShutdownType::PowerOff => "poweroff",

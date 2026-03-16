@@ -27,18 +27,18 @@ mod winsvc;
 fn main() -> anyhow::Result<()> {
     eprintln!("Pipette starting up");
 
-    // When running as PID 1 (rdinit=/pipette), perform minimal init duties
-    // before starting the agent.
-    #[cfg(target_os = "linux")]
-    if init::is_pid1() {
-        init::init_as_pid1();
-    }
-
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         eprintln!("Pipette panicked: {}", info);
         hook(info);
     }));
+
+    // When running as PID 1 (rdinit=/pipette), perform minimal init duties
+    // before starting the agent.
+    #[cfg(target_os = "linux")]
+    if init::is_pid1() {
+        init::init_as_pid1()?;
+    }
 
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--service") {
