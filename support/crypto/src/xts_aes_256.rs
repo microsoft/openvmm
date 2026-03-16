@@ -3,8 +3,6 @@
 
 //! XTS-AES-256 encryption and decryption for disk-level crypto.
 
-#![cfg(with_encryption)]
-
 use thiserror::Error;
 
 /// XTS-AES-256 encryption/decryption.
