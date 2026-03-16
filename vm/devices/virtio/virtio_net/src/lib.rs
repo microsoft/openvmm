@@ -218,7 +218,7 @@ const fn header_size() -> usize {
 
 struct Adapter {
     driver: VmTaskDriver,
-    max_queues: u16,
+    max_queue_pairs: u16,
     tx_fast_completions: bool,
     mac_address: MacAddress,
 }
@@ -473,12 +473,12 @@ struct PendingTxPacket {
 }
 
 pub struct NicBuilder {
-    max_queues: u16,
+    max_queue_pairs: u16,
 }
 
 impl NicBuilder {
-    pub fn max_queues(mut self, max_queues: u16) -> Self {
-        self.max_queues = max_queues;
+    pub fn max_queues(mut self, max_queue_pairs: u16) -> Self {
+        self.max_queue_pairs = max_queue_pairs;
         self
     }
 
@@ -492,13 +492,13 @@ impl NicBuilder {
     ) -> Device {
         // TODO: Implement VIRTIO_NET_F_MQ and VIRTIO_NET_F_RSS logic based on mulitqueue support.
         // let multiqueue = endpoint.multiqueue_support();
-        // let max_queues = self.max_queues.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
-        let max_queues = 1;
+        // let max_queue_pairs = self.max_queue_pairs.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
+        let max_queue_pairs = 1;
 
         let driver = driver_source.simple();
         let adapter = Arc::new(Adapter {
             driver,
-            max_queues,
+            max_queue_pairs,
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
         });
@@ -511,7 +511,7 @@ impl NicBuilder {
         let registers = NetConfig {
             mac: mac_address.to_bytes(),
             status: NetStatus::new().with_link_up(true).into(),
-            max_virtqueue_pairs: max_queues,
+            max_virtqueue_pairs: max_queue_pairs,
             mtu: DEFAULT_MTU,
             speed: 0xffffffff,
             duplex: 0xff,
@@ -526,14 +526,18 @@ impl NicBuilder {
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
-            pairs: (0..max_queues).map(|_| QueuePairState::Empty).collect(),
+            pairs: (0..max_queue_pairs)
+                .map(|_| QueuePairState::Empty)
+                .collect(),
         }
     }
 }
 
 impl Device {
     pub fn builder() -> NicBuilder {
-        NicBuilder { max_queues: !0 }
+        NicBuilder {
+            max_queue_pairs: !0,
+        }
     }
 }
 
@@ -549,7 +553,7 @@ impl Device {
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
             Coordinator {
-                workers: (0..self.adapter.max_queues)
+                workers: (0..self.adapter.max_queue_pairs)
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
@@ -605,7 +609,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
 
         let adapter = self.adapter.as_ref();
         resp.field("mac_address", adapter.mac_address)
-            .field("max_queues", adapter.max_queues);
+            .field("max_queue_pairs", adapter.max_queue_pairs);
 
         resp.field("endpoint_type", self.endpoint.endpoint_type())
             .field(

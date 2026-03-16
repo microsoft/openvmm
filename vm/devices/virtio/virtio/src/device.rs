@@ -49,6 +49,9 @@ pub trait VirtioDeviceV2: InspectMut + Send {
     /// DRIVER_OK (transport starts all enabled queues), or a vhost-user
     /// frontend activated a specific queue.
     ///
+    /// `idx` is in `0..DeviceTraits::max_queues`. The caller will never
+    /// pass an index outside that range.
+    ///
     /// `initial_state` provides restored queue indices for save/restore
     /// or vhost-user `SET_VRING_BASE`. If `None`, the queue starts fresh
     /// (indices at 0).
@@ -61,6 +64,9 @@ pub trait VirtioDeviceV2: InspectMut + Send {
     ) -> anyhow::Result<()>;
 
     /// Stop a single queue and return its state.
+    ///
+    /// `idx` is in `0..DeviceTraits::max_queues`. The caller will never
+    /// pass an index outside that range.
     ///
     /// Returns the queue's `QueueState` on completion, or `None` if the
     /// queue was not active.
