@@ -184,8 +184,8 @@ mod tap_tests {
         })
     }
 
-    /// Create a TapEndpoint by name, opening the TAP device and configuring
-    /// standard offloads.
+    /// Create a TapEndpoint by name, opening the TAP device with default
+    /// configuration.
     fn new_endpoint(name: &str) -> Result<TapEndpoint, tap::Error> {
         let fd = tap::open_tap(name)?;
         let tap = tap::Tap::new(fd)?;
