@@ -90,7 +90,10 @@ impl PetriVmConfigOpenVmm {
         let shared_memory = memory_backing_file
             .as_ref()
             .map(|mem_path| {
-                openvmm_defs::worker::open_memory_backing_file(mem_path, config.memory.mem_size)
+                openvmm_helpers::shared_memory::open_memory_backing_file(
+                    mem_path,
+                    config.memory.mem_size,
+                )
             })
             .transpose()?;
 

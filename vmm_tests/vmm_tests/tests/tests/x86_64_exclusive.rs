@@ -188,19 +188,28 @@ async fn snapshot_save_to_disk(
     let mem_size = mem_file.metadata()?.len();
     assert!(mem_size > 0, "memory file should be non-empty");
 
-    // Write snapshot artifacts to disk.
-    std::fs::create_dir_all(&snap_dir)?;
-    std::fs::write(snap_dir.join("state.bin"), &saved_state_bytes)?;
-    std::fs::hard_link(&mem_path, snap_dir.join("memory.bin"))?;
+    // Build manifest and write snapshot to disk.
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
+        created_at: std::time::SystemTime::now().into(),
+        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_size_bytes: mem_size,
+        vp_count: 2,
+        page_size: 4096,
+        architecture: std::env::consts::ARCH.to_string(),
+    };
+    openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
 
     // Verify all snapshot files exist and the saved state roundtrips.
+    assert!(snap_dir.join("manifest.bin").exists());
     assert!(snap_dir.join("state.bin").exists());
     assert!(snap_dir.join("memory.bin").exists());
-    let read_back = std::fs::read(snap_dir.join("state.bin"))?;
+    let (read_manifest, read_state) = openvmm_helpers::snapshot::read_snapshot(&snap_dir)?;
     assert_eq!(
-        read_back, saved_state_bytes,
+        read_state, saved_state_bytes,
         "state roundtrip through disk should match"
     );
+    assert_eq!(read_manifest.memory_size_bytes, mem_size);
 
     // Resume the VM and verify it is still functional.
     vm.backend().resume().await?;

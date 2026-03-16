@@ -31,7 +31,6 @@ mesh.workspace = true
 unix_socket = { workspace = true, features = ["mesh"] }
 
 anyhow.workspace = true
-fs-err.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
