@@ -178,7 +178,7 @@ impl PetriVmConfigOpenVmm {
 
         let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
             if !properties.enable_serial {
-                // No serial ports at all
+                // No emulated serial backends (OpenHCL VMBus serial stubs may still exist)
                 ([None, None, None, None], Vec::new(), None)
             } else {
                 let SerialData {

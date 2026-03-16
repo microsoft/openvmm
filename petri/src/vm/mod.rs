@@ -553,6 +553,9 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// Useful for diagnostics — the serial device overhead is negligible;
     /// the cost comes from kernel console output, which is controlled via
     /// the kernel cmdline (`quiet loglevel=0`).
+    ///
+    /// Note: this currently only affects LinuxDirect boot (kernel cmdline
+    /// and emulated serial backends). UEFI paths are unaffected.
     pub fn with_serial_output(mut self) -> Self {
         self.enable_serial = true;
         self
