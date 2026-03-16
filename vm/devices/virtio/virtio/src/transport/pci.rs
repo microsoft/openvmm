@@ -344,6 +344,9 @@ impl VirtioPciDevice {
         self.disabling = false;
         self.config_generation = 0;
         *self.interrupt_status.lock() = 0;
+        if let InterruptKind::IntX(line) = &self.interrupt_kind {
+            line.set_level(false);
+        }
         Poll::Ready(())
     }
 

@@ -3802,3 +3802,136 @@ async fn stop_completes_pending_disable_pci(_driver: DefaultDriver) {
     let mut transport = PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
     verify_stop_completes_pending_disable(&mut transport).await;
 }
+
+/// Verify that resetting a PCI device using IntX interrupts deasserts the IRQ line.
+///
+/// If poll_disable_all only clears interrupt_status without calling
+/// line.set_level(false), the IntX line stays asserted after reset.
+#[async_test]
+async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem.clone());
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+
+    let intc = TestLineInterruptTarget::new_arc();
+    let vector = 0;
+    let line = LineInterrupt::new_with_target("pci-intx-test", intc.clone(), vector);
+
+    let mut guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 2, false);
+
+    let mut dev = VirtioPciDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                max_queues: 1,
+                device_register_length: 12,
+                ..Default::default()
+            },
+            Some(Arc::new(|_i, mut work: VirtioQueueCallbackWork| {
+                work.complete(42);
+            })),
+            &mem,
+        )),
+        PciInterruptModel::IntX(pci_core::PciInterruptPin::IntA, line),
+        Some(doorbell_registration),
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    let bar_address: u64 = 0x10000000000;
+    dev.pci_cfg_write(0x14, (bar_address >> 32) as u32).unwrap();
+    dev.pci_cfg_write(0x10, bar_address as u32).unwrap();
+    dev.pci_cfg_write(
+        0x4,
+        cfg_space::Command::new()
+            .with_mmio_enabled(true)
+            .into_bits() as u32,
+    )
+    .unwrap();
+
+    // ACKNOWLEDGE -> DRIVER
+    dev.mmio_write(bar_address + 20, &[VIRTIO_ACKNOWLEDGE as u8])
+        .unwrap();
+    dev.mmio_write(bar_address + 20, &[VIRTIO_DRIVER as u8])
+        .unwrap();
+
+    // Accept features
+    dev.mmio_write(bar_address + 8, &0u32.to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 12, &2u32.to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 8, &1u32.to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 12, &VIRTIO_F_VERSION_1.to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 20, &[VIRTIO_FEATURES_OK as u8])
+        .unwrap();
+
+    // Set up queue 0 with addresses from test guest memory layout.
+    // queue_select = 0 (write to high half of DEVICE_STATUS register)
+    dev.mmio_write(bar_address + 22, &0u16.to_le_bytes())
+        .unwrap();
+    // queue_size = 2 (low half of QUEUE_SIZE register)
+    dev.mmio_write(bar_address + 24, &2u16.to_le_bytes())
+        .unwrap();
+    // queue descriptor address
+    let desc_addr = guest.get_queue_descriptor_base_address(0);
+    dev.mmio_write(bar_address + 32, &(desc_addr as u32).to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 36, &((desc_addr >> 32) as u32).to_le_bytes())
+        .unwrap();
+    // queue available address
+    let avail_addr = guest.get_queue_available_base_address(0);
+    dev.mmio_write(bar_address + 40, &(avail_addr as u32).to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 44, &((avail_addr >> 32) as u32).to_le_bytes())
+        .unwrap();
+    // queue used address
+    let used_addr = guest.get_queue_used_base_address(0);
+    dev.mmio_write(bar_address + 48, &(used_addr as u32).to_le_bytes())
+        .unwrap();
+    dev.mmio_write(bar_address + 52, &((used_addr >> 32) as u32).to_le_bytes())
+        .unwrap();
+    // enable queue
+    dev.mmio_write(bar_address + 28, &1u16.to_le_bytes())
+        .unwrap();
+
+    // DRIVER_OK — starts the queue worker
+    dev.mmio_write(bar_address + 20, &[VIRTIO_DRIVER_OK as u8])
+        .unwrap();
+
+    // Add a buffer to the avail ring and notify the device to process it.
+    guest.add_to_avail_queue(0);
+    dev.mmio_write(bar_address + 0x38, &0u32.to_le_bytes())
+        .unwrap();
+
+    // Wait for the queue worker to process the buffer and fire the IntX interrupt.
+    poll_fn(|cx| intc.poll_high(cx, vector)).await;
+
+    // Reset the device (write 0 to status) WITHOUT reading ISR first.
+    dev.mmio_write(bar_address + 20, &[0u8]).unwrap();
+
+    // Poll until the async disable completes and status resets to 0.
+    let mut timer = PolledTimer::new(&driver);
+    loop {
+        let waker = std::task::Waker::noop();
+        let mut cx = std::task::Context::from_waker(waker);
+        dev.poll_device(&mut cx);
+        let mut status_buf = [0u8; 1];
+        dev.mmio_read(bar_address + 20, &mut status_buf).unwrap();
+        if status_buf[0] == 0 {
+            break;
+        }
+        timer.sleep(Duration::from_millis(10)).await;
+    }
+
+    // After the fix, poll_disable_all deasserts the IntX line.
+    assert!(
+        !intc.is_high(vector),
+        "IntX line must be low after device reset"
+    );
+}
