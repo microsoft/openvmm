@@ -1245,7 +1245,10 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
             // BUGBUG: need to loop: possible to leak fds
             return Err(ErrorKind::InvalidData.into());
         }
-        (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
+        #[allow(clippy::unnecessary_cast)] // cmsg_len is u32 on musl and usize on gnu.
+        {
+            (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
+        }
     } else {
         0
     };
