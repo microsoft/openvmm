@@ -352,9 +352,12 @@ mod tests {
     fn print_env_cmd<'a>(sh: &'a FloweyShell, var: &str) -> xshell::Cmd<'a> {
         if cfg!(windows) {
             sh.xshell()
-                .cmd("cmd")
-                .arg("/C")
-                .arg(format!("if defined {var} (echo %{var}%) else exit /b 1"))
+                .cmd("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg(format!(
+                    "if ($env:{var}) {{ Write-Output $env:{var} }} else {{ exit 1 }}"
+                ))
         } else {
             sh.xshell().cmd("printenv").arg(var)
         }
@@ -362,7 +365,11 @@ mod tests {
 
     fn fail_cmd<'a>(sh: &'a FloweyShell) -> xshell::Cmd<'a> {
         if cfg!(windows) {
-            sh.xshell().cmd("cmd").arg("/C").arg("exit /b 1")
+            sh.xshell()
+                .cmd("powershell")
+                .arg("-NoProfile")
+                .arg("-Command")
+                .arg("exit 1")
         } else {
             sh.xshell().cmd("false")
         }
