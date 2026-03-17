@@ -16,8 +16,9 @@ snapshot-dir/
 
 ## Manifest format
 
-The manifest is a protobuf message defined as `SnapshotManifest` in
-`openvmm/openvmm_helpers/src/snapshot.rs` (re-exported by
+The manifest is a protobuf message defined as
+[`SnapshotManifest`](https://openvmm.dev/rustdoc/linux/openvmm_helpers/snapshot/struct.SnapshotManifest.html)
+in `openvmm/openvmm_helpers/src/snapshot.rs` (re-exported by
 `openvmm/openvmm_entry/src/snapshot.rs`). It uses the `mesh` crate's
 protobuf encoding.
 
@@ -39,7 +40,9 @@ encoded with `mesh::payload::encode()`. On restore, it is decoded back to a
 
 The internal structure depends on the set of devices configured in the VM and
 their individual save/restore implementations. Each device saves its own
-state using the `SaveRestore` trait.
+state using the `SaveRestore` trait. The [Save State](contrib/save-state.md)
+rules (forward/backward compatibility, mesh tag stability, default values)
+apply to all device state in snapshots.
 
 ## Memory (`memory.bin`)
 
@@ -87,7 +90,8 @@ expected file size.
 When adding new fields to `SnapshotManifest`, use the next available mesh
 tag number. The protobuf encoding is forward-compatible: older readers will
 ignore unknown fields. However, removing or reordering existing fields is a
-breaking change.
+breaking change. See [Save State](contrib/save-state.md) for the full set of
+compatibility rules.
 
 ```admonish warning
 Changing the mesh tag numbers of existing fields will break compatibility
