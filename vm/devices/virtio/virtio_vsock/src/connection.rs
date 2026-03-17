@@ -27,6 +27,7 @@ use crate::spec::SocketType;
 use crate::spec::VSOCK_CID_HOST;
 use crate::spec::VsockHeader;
 use crate::spec::VsockPacket;
+use crate::unix_relay::RelaySocket;
 use crate::unix_relay::UnixSocketRelay;
 use anyhow::Context;
 use bitfield_struct::bitfield;
@@ -71,8 +72,7 @@ impl ConnKey {
 struct PendingReply {
     reset: bool,
     respond: bool,
-    update: bool,
-    #[bits(29)]
+    #[bits(30)]
     _reserved: u32,
 }
 
@@ -87,11 +87,7 @@ struct Connection {
     fwd_cnt: Wrapping<u32>,
     last_sent_fwd_count: u32,
     pending_reply: PendingReply,
-    // TODO: I think we need to split this, and then give ownership of the read half to the future
-    // added to the work queue. There also needs to be a way to terminate the future when the,
-    // connection is closed or reset, e.g. an Arc<AtomicBool> or something.
-    read_half: Option<ReadHalf<UnixStream>>,
-    write_half: Option<WriteHalf<UnixStream>>,
+    socket: RelaySocket,
     recv_buf: Option<RingBuffer>,
 }
 
@@ -101,9 +97,8 @@ impl Connection {
         peer_buf_alloc: u32,
         peer_fwd_cnt: Wrapping<u32>,
         pending_reply: PendingReply,
-        socket: PolledSocket<UnixStream>,
+        socket: RelaySocket,
     ) -> Self {
-        let (read, write) = socket.split();
         Self {
             key,
             peer_buf_alloc,
@@ -111,8 +106,7 @@ impl Connection {
             fwd_cnt: Wrapping(0),
             last_sent_fwd_count: 0,
             pending_reply,
-            read_half: Some(read),
-            write_half: Some(write),
+            socket,
             recv_buf: None,
         }
     }
@@ -123,15 +117,10 @@ impl Connection {
         data_len: usize,
     ) -> anyhow::Result<Option<WriteReadyItem>> {
         let bytes_sent = if self.recv_buf.as_ref().is_none_or(|buf| buf.is_empty()) {
-            match self
-                .write_half
-                .as_mut()
-                .expect("write half must be present if the buffer is empty")
-                .get()
-                .write_vectored(data)
-            {
+            match self.socket.get().write_vectored(data) {
                 Ok(n) => {
                     self.fwd_cnt += n as u32;
+                    tracing::info!(self.fwd_cnt, self.last_sent_fwd_count, "forwarded");
                     if n == data_len {
                         return Ok(None);
                     }
@@ -166,19 +155,12 @@ impl Connection {
         }
 
         buf.write(data, bytes_sent);
-        let future = self
-            .write_half
-            .take()
-            .map(|write_half| -> WriteReadyItem { self.create_write_ready_future(write_half) });
-        Ok(future)
+        Ok(self.socket.await_write_ready(self.key))
     }
 
-    fn write_from_buffer(
-        &mut self,
-        write_half: WriteHalf<UnixStream>,
-    ) -> anyhow::Result<Option<WriteReadyItem>> {
+    fn write_from_buffer(&mut self) -> anyhow::Result<Option<WriteReadyItem>> {
         let buf = self.recv_buf.as_mut().expect("buffer must exist");
-        match buf.read_to(&mut write_half.get()) {
+        match buf.read_to(&mut self.socket.get()) {
             Ok(_) => (),
             Err(e) => {
                 if e.kind() != io::ErrorKind::WouldBlock {
@@ -188,26 +170,21 @@ impl Connection {
         }
 
         if buf.is_empty() {
-            assert!(self.write_half.replace(write_half).is_none());
             Ok(None)
         } else {
-            Ok(Some(self.create_write_ready_future(write_half)))
+            Ok(self.socket.await_write_ready(self.key))
         }
     }
 
-    fn create_write_ready_future(
-        &mut self,
-        mut write_half: WriteHalf<UnixStream>,
-    ) -> WriteReadyItem {
-        let key = self.key;
-        Box::pin(async move {
-            write_half
-                .wait_ready(PollEvents::OUT | PollEvents::HUP | PollEvents::ERR)
-                .await;
+    fn peer_needs_credit_update(&self) -> bool {
+        self.fwd_cnt.0 != self.last_sent_fwd_count
+    }
+}
 
-            // Regardless of the event, just let the worker retry the write.
-            WriteReady(key, write_half)
-        })
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // Shutdown the socket so any pending read/write polls will complete.
+        let _ = self.socket.get().shutdown(std::net::Shutdown::Both);
     }
 }
 
@@ -270,7 +247,7 @@ impl ConnectionManager {
                 "invalid source CID"
             );
 
-            return PendingWork::Rx(RxWork::SendReset(key));
+            return PendingWork::rx(RxWork::SendReset(key));
         }
 
         let op = Operation(packet.header.op);
@@ -292,7 +269,7 @@ impl ConnectionManager {
                             ),
                         );
 
-                        PendingWork::Rx(RxWork::Connection(key))
+                        PendingWork::rx(RxWork::Connection(key))
                     }
                     Err(err) => {
                         tracelimit::warn_ratelimited!(
@@ -300,7 +277,7 @@ impl ConnectionManager {
                             port = key.local_port,
                             "failed to connect to host socket for vsock request"
                         );
-                        PendingWork::Rx(RxWork::SendReset(key))
+                        PendingWork::rx(RxWork::SendReset(key))
                     }
                 }
             }
@@ -309,28 +286,22 @@ impl ConnectionManager {
                 tracing::info!(?packet.header, "We got data!");
                 let Some(conn) = self.conns.get_mut(&key) else {
                     tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
-                    return PendingWork::Rx(RxWork::SendReset(key));
+                    return PendingWork::rx(RxWork::SendReset(key));
                 };
 
                 match conn.handle_guest_data(packet.data, packet.header.len as usize) {
-                    Ok(future) => {
-                        if conn.last_sent_fwd_count != conn.fwd_cnt.0 {
-                            conn.pending_reply.set_update(true);
-                        }
-
-                        if let Some(future) = future {
-                            PendingWork::WriteReady(future)
-                        } else {
-                            PendingWork::None
-                        }
-                    }
+                    Ok(future) => PendingWork::new(
+                        future,
+                        conn.peer_needs_credit_update()
+                            .then_some(RxWork::Connection(key)),
+                    ),
                     Err(err) => {
                         tracelimit::warn_ratelimited!(
                             error = err.as_ref() as &dyn std::error::Error,
                             ?key,
                             "failed to write guest data to host socket"
                         );
-                        PendingWork::Rx(RxWork::SendReset(key))
+                        PendingWork::rx(RxWork::SendReset(key))
                     }
                 }
                 // if let Some(conn) = self.conns.get(&key) {
@@ -383,7 +354,7 @@ impl ConnectionManager {
                 if let Some(conn) = self.conns.remove(&key) {
                     tracing::debug!(?key, "guest reset connection");
                 }
-                PendingWork::None
+                PendingWork::NONE
             }
             Operation::CREDIT_UPDATE => {
                 // let mut conns = self.conns.lock();
@@ -412,29 +383,31 @@ impl ConnectionManager {
             _ => {
                 tracing::debug!(header = ?packet.header, "unknown vsock operation");
                 // TODO: Send RST for unknown operations?
-                PendingWork::None
+                PendingWork::NONE
             }
         }
     }
 
-    pub fn handle_write_ready(&mut self, write_ready: WriteReady) -> PendingWork {
-        let WriteReady(key, write_half) = write_ready;
+    pub fn handle_write_ready(&mut self, key: ConnKey) -> PendingWork {
         let Some(conn) = self.conns.get_mut(&key) else {
             // This is fine if the connection was reset but a write future was still pending.
             tracing::debug!(?key, "write ready for unknown connection");
-            return PendingWork::None;
+            return PendingWork::NONE;
         };
 
-        match conn.write_from_buffer(write_half) {
-            Ok(Some(future)) => PendingWork::WriteReady(future),
-            Ok(None) => PendingWork::None,
+        match conn.write_from_buffer() {
+            Ok(future) => PendingWork::new(
+                future,
+                conn.peer_needs_credit_update()
+                    .then_some(RxWork::Connection(key)),
+            ),
             Err(err) => {
                 tracelimit::warn_ratelimited!(
                     error = err.as_ref() as &dyn std::error::Error,
                     ?key,
                     "failed to write buffered data to host socket on write ready"
                 );
-                PendingWork::Rx(RxWork::SendReset(key))
+                PendingWork::rx(RxWork::SendReset(key))
             }
         }
     }
@@ -485,9 +458,18 @@ impl ConnectionManager {
                     Some(self.new_rst_packet(key))
                 } else if conn.pending_reply.respond() {
                     conn.pending_reply.set_respond(false);
+                    conn.last_sent_fwd_count = conn.fwd_cnt.0;
+                    let fwd_cnt = conn.fwd_cnt.0;
 
-                    Some(self.new_reply_packet(key, Operation::RESPONSE))
+                    Some(self.new_reply_packet(key, Operation::RESPONSE, fwd_cnt))
+                } else if conn.peer_needs_credit_update() {
+                    conn.last_sent_fwd_count = conn.fwd_cnt.0;
+                    let fwd_cnt = conn.fwd_cnt.0;
+
+                    tracing::info!(?key, fwd_cnt, "sending credit update");
+                    Some(self.new_reply_packet(key, Operation::CREDIT_UPDATE, fwd_cnt))
                 } else {
+                    assert_eq!(conn.pending_reply.into_bits(), 0);
                     None
                 }
 
@@ -648,7 +630,7 @@ impl ConnectionManager {
         // packets
     }
 
-    fn new_reply_packet(&self, key: ConnKey, op: Operation) -> VsockHeader {
+    fn new_reply_packet(&self, key: ConnKey, op: Operation, fwd_cnt: u32) -> VsockHeader {
         VsockHeader {
             src_cid: VSOCK_CID_HOST,
             dst_cid: self.guest_cid,
@@ -659,7 +641,7 @@ impl ConnectionManager {
             op: op.0,
             flags: ShutdownFlags::new().into(),
             buf_alloc: TX_BUF_SIZE,
-            fwd_cnt: 0, // TODO!
+            fwd_cnt,
         }
     }
 
@@ -786,5 +768,3 @@ pub enum RxWork {
     // For port combinations that may not actually exist
     SendReset(ConnKey),
 }
-
-pub struct WriteReady(ConnKey, WriteHalf<UnixStream>);

@@ -25,7 +25,6 @@ mod unix_relay;
 
 use crate::connection::ConnKey;
 use crate::connection::RxWork;
-use crate::connection::WriteReady;
 use crate::spec::VsockPacket;
 use connection::ConnectionManager;
 use futures::StreamExt;
@@ -49,6 +48,7 @@ use task_control::TaskControl;
 use unicycle::FuturesUnordered;
 use unix_socket::UnixListener;
 use virtio::DeviceTraits;
+use virtio::PeekedWork;
 use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
@@ -194,13 +194,33 @@ struct VsockWorkerState {
 }
 
 type RxWorkItem = Pin<Box<dyn Future<Output = RxWork> + Send>>;
-type WriteReadyItem = Pin<Box<dyn Future<Output = WriteReady> + Send>>;
+type WriteReadyItem = Pin<Box<dyn Future<Output = ConnKey> + Send>>;
 type RxWorkQueue = FuturesUnordered<RxWorkItem>;
 
-pub enum PendingWork {
-    None,
-    Rx(RxWork),
-    WriteReady(WriteReadyItem),
+struct PendingWork {
+    rx_work: Option<RxWork>,
+    write_ready_work: Option<WriteReadyItem>,
+}
+
+impl PendingWork {
+    const NONE: Self = Self {
+        rx_work: None,
+        write_ready_work: None,
+    };
+
+    fn rx(work: RxWork) -> Self {
+        Self {
+            rx_work: Some(work),
+            write_ready_work: None,
+        }
+    }
+
+    fn new(work: Option<WriteReadyItem>, rx_work: Option<RxWork>) -> Self {
+        Self {
+            rx_work,
+            write_ready_work: work,
+        }
+    }
 }
 
 struct VsockWorker {
@@ -236,40 +256,41 @@ impl VsockWorker {
         let mut header = VsockHeader::new_zeroed();
         work.read(&self.mem, &mut header.as_mut_bytes()[..hdr_size])?;
 
-        // TODO: Avoid allocating.
-        let regions = data_regions(&work.payload, false, hdr_size as u64, header.len as u64);
-        let gpn_list = try_build_gpn_list(&regions);
-        let locked = if let Some((gpns, offset, len)) = &gpn_list {
-            if *len != header.len as usize {
-                let key = ConnKey::from_tx_packet(&header);
-                self.work
-                    .push(Box::pin(async move { RxWork::SendReset(key) }));
-                anyhow::bail!("data length mismatch in vsock tx packet");
-            }
-            let paged_range = PagedRange::new(*offset, *len, gpns).unwrap();
-            self.mem
-                .lock_range(paged_range, LockedIoSlice(Vec::new()))?
-        } else {
-            todo!("read into temp buffer");
+        let pending_work = {
+            // TODO: Avoid allocating.
+            let regions = data_regions(&work.payload, false, hdr_size as u64, header.len as u64);
+            let gpn_list = try_build_gpn_list(&regions);
+            let locked = if let Some((gpns, offset, len)) = &gpn_list {
+                if *len != header.len as usize {
+                    let key = ConnKey::from_tx_packet(&header);
+                    self.work
+                        .push(Box::pin(async move { RxWork::SendReset(key) }));
+                    anyhow::bail!("data length mismatch in vsock tx packet");
+                }
+                let paged_range = PagedRange::new(*offset, *len, gpns).unwrap();
+                self.mem
+                    .lock_range(paged_range, LockedIoSlice(Vec::new()))?
+            } else {
+                todo!("read into temp buffer");
+            };
+
+            // Process through the relay.
+            state
+                .relay
+                .handle_guest_tx(VsockPacket::new(header, &locked.get().0))
         };
 
-        // Process through the relay.
-        match state
-            .relay
-            .handle_guest_tx(VsockPacket::new(header, &locked.get().0))
-        {
-            PendingWork::Rx(work) => {
-                tracing::info!("queueing rx work from relay");
-                self.work.push(Box::pin(async move { work }));
-            }
-            PendingWork::WriteReady(work) => {
-                tracing::info!("queueing write-ready work from relay");
-                self.write_ready_work.push(work);
-            }
-            PendingWork::None => (),
-        }
-
+        self.queue_pending_work(pending_work);
         Ok(())
+    }
+
+    fn queue_pending_work(&mut self, pending: PendingWork) {
+        if let Some(work) = pending.rx_work {
+            self.work.push(Box::pin(async move { work }));
+        }
+        if let Some(work) = pending.write_ready_work {
+            self.write_ready_work.push(work);
+        }
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
@@ -294,8 +315,9 @@ impl VsockWorker {
             let mut work = state
                 .rx_queue
                 .try_next()
-                .expect("error reading stream")
-                .expect("must have queue items");
+                .expect("peek already succeeded")
+                .expect("queue was already checked to have items");
+
             let header = header.as_bytes();
             work.write(&self.mem, header).expect("TODO");
             work.complete(header.len() as u32);
@@ -351,18 +373,8 @@ impl VsockWorker {
         // }
     }
 
-    fn handle_write_ready(&mut self, state: &mut VsockWorkerState, write_ready: WriteReady) {
-        match state.relay.handle_write_ready(write_ready) {
-            PendingWork::Rx(work) => {
-                tracing::info!("queueing rx work from relay");
-                self.work.push(Box::pin(async move { work }));
-            }
-            PendingWork::WriteReady(work) => {
-                tracing::info!("queueing write-ready work from relay");
-                self.write_ready_work.push(work);
-            }
-            PendingWork::None => (),
-        }
+    fn handle_write_ready(&mut self, state: &mut VsockWorkerState, key: ConnKey) {
+        self.queue_pending_work(state.relay.handle_write_ready(key));
     }
 }
 
@@ -378,22 +390,23 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     enum Event {
                         TxWork(std::io::Result<VirtioQueueCallbackWork>),
                         RxWork(RxWork),
-                        WriteReady(WriteReady),
+                        WriteReady(ConnKey),
+                        Retry,
                     }
 
-                    let pending_rx_item = match state.rx_queue.try_peek() {
-                        Ok(item) => item,
+                    let peeked = match state.rx_queue.try_peek() {
+                        Ok(p) => p,
                         Err(err) => {
                             tracing::error!(
                                 error = &err as &dyn std::error::Error,
-                                "error reading from virtio rx queue"
+                                "error peeking virtio rx queue"
                             );
                             return false;
                         }
                     };
 
-                    let has_rx_item = pending_rx_item.is_some();
-                    let event = std::future::poll_fn(|cx| {
+                    let has_rx_work = peeked.is_some();
+                    let event = std::future::poll_fn(|cx: &mut Context<'_>| {
                         if let Poll::Ready(Some(item)) = self.write_ready_work.poll_next_unpin(cx) {
                             return Poll::Ready(Event::WriteReady(item));
                         }
@@ -403,11 +416,13 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             return Poll::Ready(Event::TxWork(item));
                         }
 
-                        // Only poll the work queue if there is space to write to the guest.
-                        if has_rx_item {
+                        if has_rx_work {
                             if let Poll::Ready(Some(work)) = self.work.poll_next_unpin(cx) {
                                 return Poll::Ready(Event::RxWork(work));
                             }
+                        } else if state.rx_queue.poll_kick(cx) == Poll::Ready(()) {
+                            // New buffers are available in the rx queue; try to peek again to trigger processing.
+                            return Poll::Ready(Event::Retry);
                         }
 
                         Poll::Pending
@@ -431,10 +446,11 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             tracing::info!("got rx work from relay");
                             self.handle_rx_work(state, work);
                         }
-                        Event::WriteReady(work) => {
+                        Event::WriteReady(key) => {
                             tracing::info!("got write-ready work from relay");
-                            self.handle_write_ready(state, work);
+                            self.handle_write_ready(state, key);
                         }
+                        Event::Retry => (),
                     }
                 }
                 // // Collect any pending rx packets from the relay.
