@@ -4528,6 +4528,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "futures",
  "guestmem",
  "inspect",
@@ -4536,11 +4537,13 @@ dependencies = [
  "linux_net_bindings",
  "net_backend",
  "net_backend_resources",
+ "open_enum",
  "pal_async",
  "parking_lot",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
+ "zerocopy",
 ]
 
 [[package]]

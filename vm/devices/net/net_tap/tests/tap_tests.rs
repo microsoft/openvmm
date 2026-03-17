@@ -25,11 +25,13 @@ mod tap_tests {
     use net_backend::Endpoint;
     use net_backend::QueueConfig;
     use net_backend::RxId;
+    use net_backend::TxFlags;
     use net_backend::TxId;
     use net_backend::TxMetadata;
     use net_backend::TxSegment;
     use net_backend::TxSegmentType;
     use net_tap::TapEndpoint;
+    use net_tap::tap;
     use pal_async::DefaultDriver;
     use std::future::poll_fn;
     use std::os::fd::AsRawFd;
@@ -64,7 +66,7 @@ mod tap_tests {
 
         // Verify that TAP devices actually work inside the namespace. Some CI
         // environments allow user namespaces but restrict /dev/net/tun access.
-        if let Err(e) = TapEndpoint::new("tap_probe") {
+        if let Err(e) = new_endpoint("tap_probe") {
             return Err(format!("TAP not available in namespace: {e}"));
         }
 
@@ -182,19 +184,27 @@ mod tap_tests {
         })
     }
 
+    /// Create a TapEndpoint by name, opening the TAP device with default
+    /// configuration.
+    fn new_endpoint(name: &str) -> Result<TapEndpoint, tap::Error> {
+        let fd = tap::open_tap(name)?;
+        let tap = tap::Tap::new(fd)?;
+        TapEndpoint::new(tap)
+    }
+
     // ---------------------------------------------------------------------------
     // Test implementations
     // ---------------------------------------------------------------------------
 
     /// Validates that creating a TAP endpoint succeeds inside a user namespace.
     fn test_tap_create() -> Result<(), libtest_mimic::Failed> {
-        TapEndpoint::new("tap0").map_err(|e| format!("TapEndpoint::new failed: {e}"))?;
+        new_endpoint("tap0").map_err(|e| format!("TapEndpoint::new failed: {e}"))?;
         Ok(())
     }
 
     /// Validates that `get_queues` returns exactly one queue.
     async fn test_tap_get_queues(driver: DefaultDriver) {
-        let mut endpoint = TapEndpoint::new("tap0").unwrap();
+        let mut endpoint = new_endpoint("tap0").unwrap();
         let (pool, _mem) = make_pool();
         let initial_rx: Vec<_> = (1..128).map(RxId).collect();
         let config = vec![QueueConfig {
@@ -216,7 +226,7 @@ mod tap_tests {
 
     /// Validates that transmitting a frame through the TAP queue succeeds.
     async fn test_tap_tx_sends_frame(driver: DefaultDriver) {
-        let mut endpoint = TapEndpoint::new("tap0").unwrap();
+        let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
         let (pool, mem) = make_pool();
@@ -264,7 +274,7 @@ mod tap_tests {
     /// Validates that a packet sent into the network triggers an ARP request
     /// that can be received on the TAP queue.
     async fn test_tap_rx_receives_packet(driver: DefaultDriver) {
-        let mut endpoint = TapEndpoint::new("tap0").unwrap();
+        let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
         let (pool, mem) = make_pool();
@@ -317,7 +327,7 @@ mod tap_tests {
     /// Validates that flooding tx_avail doesn't panic or error — packets are
     /// silently dropped when the kernel buffer fills up.
     async fn test_tap_tx_wouldblock_drops(driver: DefaultDriver) {
-        let mut endpoint = TapEndpoint::new("tap0").unwrap();
+        let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
         let (pool, mem) = make_pool();
@@ -364,6 +374,74 @@ mod tap_tests {
         }
     }
 
+    /// Validates that transmitting with offloads succeeds through to the kernel.
+    async fn test_tap_tx_with_offloads(driver: DefaultDriver) {
+        let mut endpoint = new_endpoint("tap0").unwrap();
+        configure_tap("tap0", "10.0.0.1/24");
+
+        let (pool, mem) = make_pool();
+        let initial_rx: Vec<_> = (1..128).map(RxId).collect();
+        let config = vec![QueueConfig {
+            pool: Box::new(pool),
+            initial_rx: &initial_rx,
+            driver: Box::new(driver.clone()),
+        }];
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(config, None, &mut queues)
+            .await
+            .unwrap();
+        let queue = &mut queues[0];
+
+        // Build a minimal TCP/IPv4 packet:
+        // Ethernet (14) + IPv4 (20) + TCP (20) + payload
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // dst: broadcast
+        frame.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x01]); // src
+        frame.extend_from_slice(&[0x08, 0x00]); // ethertype: IPv4
+        // Minimal IPv4 header (20 bytes)
+        frame.extend_from_slice(&[
+            0x45, 0x00, 0x00, 0x28, // version/IHL, DSCP, total length (40)
+            0x00, 0x00, 0x00, 0x00, // id, flags, fragment offset
+            0x40, 0x06, 0x00, 0x00, // TTL, protocol (TCP), checksum
+            0x0a, 0x00, 0x00, 0x01, // src: 10.0.0.1
+            0x0a, 0x00, 0x00, 0x02, // dst: 10.0.0.2
+        ]);
+        // Minimal TCP header (20 bytes)
+        frame.extend_from_slice(&[
+            0x00, 0x50, 0x00, 0x51, // src port 80, dst port 81
+            0x00, 0x00, 0x00, 0x00, // seq
+            0x00, 0x00, 0x00, 0x00, // ack
+            0x50, 0x02, 0x00, 0x00, // data offset, flags (SYN)
+            0x00, 0x00, 0x00, 0x00, // checksum, urgent pointer
+        ]);
+        let frame_len = frame.len() as u32;
+
+        mem.write_at(0, &frame).unwrap();
+
+        let segments = [TxSegment {
+            ty: TxSegmentType::Head(TxMetadata {
+                id: TxId(0),
+                segment_count: 1,
+                flags: TxFlags::new()
+                    .with_offload_tcp_checksum(true)
+                    .with_offload_ip_header_checksum(true)
+                    .with_is_ipv4(true),
+                len: frame_len,
+                l2_len: 14,
+                l3_len: 20,
+                l4_len: 20,
+                ..Default::default()
+            }),
+            gpa: 0,
+            len: frame_len,
+        }];
+
+        let (completed, count) = queue.tx_avail(&segments).unwrap();
+        assert!(completed, "tx should complete synchronously");
+        assert_eq!(count, 1, "should have processed 1 segment");
+    }
+
     // ---------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------
@@ -392,6 +470,7 @@ mod tap_tests {
             async_trial("tap_tx_sends_frame", test_tap_tx_sends_frame),
             async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
             async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
+            async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
         ]
         .map(|t| t.with_ignored_flag(ignored))
         .into();
