@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::VirtioNetHeader;
-use crate::VirtioNetHeaderFlags;
 use crate::header_size;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -67,21 +66,13 @@ impl VirtioWorkPool {
     }
 
     /// Add a virtio work instance to the buffers available for use.
-    ///
-    /// Returns `Err` with the work item if the descriptor index is already in
-    /// use (duplicate submission by the guest).
-    pub fn queue_work(
-        &self,
-        work: VirtioQueueCallbackWork,
-    ) -> Result<RxId, VirtioQueueCallbackWork> {
+    pub fn queue_work(&self, work: VirtioQueueCallbackWork) -> RxId {
         let idx = work.descriptor_index();
         let mut packet = self.rx_packets[idx as usize].lock();
-        if packet.work.is_some() {
-            return Err(work);
-        }
+        assert!(packet.work.is_none());
         packet.work = Some(work);
         packet.len = 0;
-        Ok(RxId(idx.into()))
+        RxId(idx.into())
     }
 
     /// Notify the client that a receive packet is ready (network packet available).
@@ -136,15 +127,13 @@ impl BufferAccess for VirtioWorkPool {
         assert_eq!(metadata.offset, 0);
         assert!(metadata.len > 0);
 
-        // Map RxMetadata checksum state to virtio-net header flags.
-        // Set VIRTIO_NET_HDR_F_DATA_VALID when both IP and L4 checksums have
-        // been validated (Good or ValidatedButWrong, e.g. after RSC/LRO),
-        // telling the guest it can skip re-verification.
-        let data_valid = metadata.ip_checksum.is_valid() && metadata.l4_checksum.is_valid();
-        let flags = VirtioNetHeaderFlags::new().with_data_valid(data_valid);
+        // let flags = if let RxChecksumState::Good = metadata.ip_checksum {
+        //     VirtioNetHeaderFlags::VIRTIO_NET_HDR_F_DATA_VALID.bits()
+        // } else {
+        //     0
+        // };
 
         let virtio_net_header = VirtioNetHeader {
-            flags: flags.into(),
             num_buffers: 1,
             ..FromZeros::new_zeroed()
         };

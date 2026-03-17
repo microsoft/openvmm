@@ -174,9 +174,9 @@ fn probe_power_register(device: &whp::Device<'_>) -> Option<u32> {
         }
     };
 
-    let mut next = read(0x34_u64) & !3;
+    let mut next = read(0x34) & !3;
     while next != 0 {
-        let val = read(next as u64);
+        let val = read(next as u16);
         let cap = val & 0xff;
         if cap == 1 {
             return Some(next + 4);
@@ -207,7 +207,7 @@ unsafe impl Send for MmioMapping {}
 unsafe impl Sync for MmioMapping {}
 
 impl MmioMapping {
-    fn matches(&self, bar: u8, offset: u64, len: usize, write: bool) -> bool {
+    fn matches(&self, bar: u8, offset: u16, len: usize, write: bool) -> bool {
         self.0.Location.0 == bar as i32
             && self.fits(offset, len)
             && ((write
@@ -222,13 +222,14 @@ impl MmioMapping {
                         .is_set(whp::abi::WHvVpciMmioRangeFlagReadAccess)))
     }
 
-    fn fits(&self, offset: u64, len: usize) -> bool {
+    fn fits(&self, offset: u16, len: usize) -> bool {
+        let offset = offset as u64;
         offset >= self.0.OffsetInBytes
             && offset < self.0.OffsetInBytes + self.0.SizeInBytes
             && self.0.OffsetInBytes + self.0.SizeInBytes - offset >= len as u64
     }
 
-    fn read(&self, offset: u64, data: &mut [u8]) {
+    fn read(&self, offset: u16, data: &mut [u8]) {
         assert!(
             self.0
                 .Flags
@@ -237,14 +238,15 @@ impl MmioMapping {
         );
         unsafe {
             std::ptr::copy_nonoverlapping(
-                (self.0.VirtualAddress as *const u8).add((offset - self.0.OffsetInBytes) as usize),
+                (self.0.VirtualAddress as *const u8)
+                    .add((offset as u64 - self.0.OffsetInBytes) as usize),
                 data.as_mut_ptr(),
                 data.len(),
             )
         }
     }
 
-    fn write(&self, offset: u64, data: &[u8]) {
+    fn write(&self, offset: u16, data: &[u8]) {
         assert!(
             self.0
                 .Flags
@@ -257,7 +259,7 @@ impl MmioMapping {
                 self.0
                     .VirtualAddress
                     .cast::<u8>()
-                    .add((offset - self.0.OffsetInBytes) as usize),
+                    .add((offset as u64 - self.0.OffsetInBytes) as usize),
                 data.len(),
             )
         }
@@ -362,11 +364,11 @@ impl AssignedPciDevice {
 
     fn read_phys_config(&self, offset: u16) -> u32 {
         let mut data = [0; 4];
-        match self.device.device().read_register(
-            whp::abi::WHvVpciConfigSpace,
-            offset as u64,
-            &mut data,
-        ) {
+        match self
+            .device
+            .device()
+            .read_register(whp::abi::WHvVpciConfigSpace, offset, &mut data)
+        {
             Ok(_) => u32::from_ne_bytes(data),
             Err(e) => {
                 tracing::warn!(
@@ -382,7 +384,7 @@ impl AssignedPciDevice {
     fn write_phys_config(&self, offset: u16, value: u32) {
         match self.device.device().write_register(
             whp::abi::WHvVpciConfigSpace,
-            offset as u64,
+            offset,
             &value.to_ne_bytes(),
         ) {
             Ok(_) => (),
