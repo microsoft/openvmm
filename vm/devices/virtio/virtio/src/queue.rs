@@ -43,9 +43,12 @@ pub(crate) fn read_descriptor<T: IntoBytes + FromBytes + Immutable + KnownLayout
 /// For split queues: `avail_index` and `used_index` are plain ring indices.
 /// For packed queues: bit 15 of each carries the wrap counter
 /// (`index | (wrap_counter << 15)`), matching the vhost-user wire format.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, mesh::payload::Protobuf)]
+#[mesh(package = "virtio.queue")]
 pub struct QueueState {
+    #[mesh(1)]
     pub avail_index: u16,
+    #[mesh(2)]
     pub used_index: u16,
 }
 

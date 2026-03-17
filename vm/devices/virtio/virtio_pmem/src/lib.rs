@@ -148,6 +148,10 @@ impl VirtioDevice for Device {
         let state = self.worker.remove().queue.queue_state();
         Poll::Ready(Some(state))
     }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
 }
 
 #[derive(InspectMut)]

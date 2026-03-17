@@ -278,7 +278,12 @@ impl PetriVmOpenVmm {
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
-    petri_vm_fn!(pub(crate) async fn verify_save_restore(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Perform a pulse save/restore cycle: pause the VM, save all state,
+        /// reset, restore, and resume. Useful for verifying that device state
+        /// survives a save/restore round-trip.
+        pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
     /// Wrap the provided future in a race with the worker process's halt

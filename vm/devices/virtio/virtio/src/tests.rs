@@ -1324,6 +1324,10 @@ impl VirtioDevice for TestDevice {
     fn reset(&mut self) {
         self.workers.clear();
     }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
 }
 
 struct TestDeviceTask {
@@ -3934,4 +3938,229 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
         !intc.is_high(vector),
         "IntX line must be low after device reset"
     );
+}
+
+// ==================== Save/Restore Tests ====================
+
+#[async_test]
+async fn pci_save_restore_round_trip(driver: DefaultDriver) {
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+
+    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    guest.setup_pci_device(&mut dev, guest.queue_features());
+
+    // Stop the device (save path).
+    dev.pci_device.stop().await;
+
+    // Save state.
+    let saved = dev.pci_device.save().expect("save should succeed");
+
+    // Verify saved state has expected values.
+    assert_eq!(
+        saved.device_status,
+        u8::from(
+            VirtioDeviceStatus::new()
+                .with_acknowledge(true)
+                .with_driver(true)
+                .with_driver_ok(true)
+                .with_features_ok(true)
+        )
+    );
+    assert_eq!(saved.queues.len(), 1);
+    assert!(saved.queues[0].enable);
+
+    // Create a new device and restore into it.
+    let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    dev2.pci_device
+        .restore(saved)
+        .expect("restore should succeed");
+
+    // Stop and clean up — if restore incorrectly started queues we'd see
+    // the stop complete successfully.
+    dev2.pci_device.stop().await;
+}
+
+#[async_test]
+async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
+    use crate::spec::mmio::VirtioMmioRegister;
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem.clone();
+    let mem = GuestMemory::new("test", test_mem.clone());
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+
+    let interrupt = LineInterrupt::detached();
+    let mut dev = VirtioMmioDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            None,
+            &mem,
+        )),
+        interrupt,
+        Some(doorbell_registration.clone()),
+        0,
+        1,
+    );
+
+    guest.setup_chipset_device(&mut dev, guest.queue_features());
+
+    // Stop the device (save path).
+    dev.stop().await;
+
+    // Save state.
+    let saved = dev.save().expect("save should succeed");
+    assert_eq!(saved.queues.len(), 1);
+    assert!(saved.queues[0].enable);
+
+    // Create a new device and restore into it.
+    let interrupt2 = LineInterrupt::detached();
+    let mut dev2 = VirtioMmioDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+            None,
+            &mem,
+        )),
+        interrupt2,
+        Some(doorbell_registration),
+        0,
+        1,
+    );
+
+    dev2.restore(saved).expect("restore should succeed");
+    // Verify device is active after restore — read STATUS register.
+    assert_ne!(
+        dev2.read_u32(VirtioMmioRegister::STATUS.0 as u64) & VIRTIO_DRIVER_OK,
+        0
+    );
+
+    // Stop and clean up.
+    dev2.stop().await;
+}
+
+#[async_test]
+async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
+    use vmcore::device_state::ChangeDeviceState;
+    use vmcore::save_restore::SaveRestore;
+
+    let test_mem = VirtioTestMemoryAccess::new();
+    let mem = GuestMemory::new("test", test_mem.clone());
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+
+    let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
+
+    let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
+    // Negotiate features including the device-specific bit (bank 0, bit 1).
+    let mut driver_features = guest.queue_features();
+    driver_features.set_bank(0, driver_features.bank(0) | 2);
+    guest.setup_pci_device(&mut dev, driver_features);
+
+    dev.pci_device.stop().await;
+    let saved = dev.pci_device.save().expect("save should succeed");
+    // Confirm saved state includes the device-specific feature bit.
+    assert_ne!(saved.driver_feature_banks[0] & 2, 0);
+
+    // Create a new device that does NOT support that device-specific feature.
+    let msi_conn = MsiConnection::new();
+    let mut dev2 = VirtioPciDevice::new(
+        Box::new(TestDevice::new(
+            &driver_source,
+            DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new(), // no device-specific features
+                max_queues: 1,
+                device_register_length: 12,
+                ..Default::default()
+            },
+            None,
+            &mem,
+        )),
+        PciInterruptModel::Msix(msi_conn.target()),
+        None,
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    let result = dev2.restore(saved);
+    assert!(
+        result.is_err(),
+        "restore should fail with incompatible features"
+    );
+}
+
+#[async_test]
+async fn pci_save_not_supported_device(_driver: DefaultDriver) {
+    use vmcore::save_restore::SaveRestore;
+
+    let msi_conn = MsiConnection::new();
+
+    // FailingTestDevice does not override supports_save_restore (default false).
+    let mut dev = VirtioPciDevice::new(
+        Box::new(FailingTestDevice {
+            traits: DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new(),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+        }),
+        PciInterruptModel::Msix(msi_conn.target()),
+        None,
+        &mut ExternallyManagedMmioIntercepts,
+        None,
+    )
+    .unwrap();
+
+    let result = dev.save();
+    assert!(result.is_err(), "save should fail for unsupported device");
+}
+
+#[async_test]
+async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
+    use vmcore::save_restore::SaveRestore;
+
+    let interrupt = LineInterrupt::detached();
+
+    let mut dev = VirtioMmioDevice::new(
+        Box::new(FailingTestDevice {
+            traits: DeviceTraits {
+                device_id: 3,
+                device_features: VirtioDeviceFeatures::new(),
+                max_queues: 1,
+                device_register_length: 0,
+                ..Default::default()
+            },
+        }),
+        interrupt,
+        None,
+        0,
+        1,
+    );
+
+    let result = dev.save();
+    assert!(result.is_err(), "save should fail for unsupported device");
 }

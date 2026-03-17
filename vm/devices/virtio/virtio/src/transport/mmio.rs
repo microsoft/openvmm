@@ -29,10 +29,6 @@ use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
-use vmcore::save_restore::NoSavedState;
-use vmcore::save_restore::RestoreError;
-use vmcore::save_restore::SaveError;
-use vmcore::save_restore::SaveRestore;
 
 /// Run a virtio device over MMIO
 #[derive(InspectMut)]
@@ -553,15 +549,158 @@ impl ChipsetDevice for VirtioMmioDevice {
     }
 }
 
-impl SaveRestore for VirtioMmioDevice {
-    type SavedState = NoSavedState; // TODO
+mod saved_state {
+    mod state {
+        use crate::queue::QueueState;
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
 
-    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        Ok(NoSavedState)
+        #[derive(Protobuf)]
+        #[mesh(package = "virtio.transport.mmio")]
+        pub struct SavedQueueState {
+            #[mesh(1)]
+            pub size: u16,
+            #[mesh(2)]
+            pub enable: bool,
+            #[mesh(3)]
+            pub desc_addr: u64,
+            #[mesh(4)]
+            pub avail_addr: u64,
+            #[mesh(5)]
+            pub used_addr: u64,
+            #[mesh(6)]
+            pub queue_state: Option<QueueState>,
+        }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "virtio.transport.mmio")]
+        pub struct SavedState {
+            #[mesh(1)]
+            pub device_status: u8,
+            #[mesh(2)]
+            pub driver_feature_banks: Vec<u32>,
+            #[mesh(3)]
+            pub driver_feature_select: u32,
+            #[mesh(4)]
+            pub queue_select: u32,
+            #[mesh(5)]
+            pub config_generation: u32,
+            #[mesh(6)]
+            pub interrupt_status: u32,
+            #[mesh(7)]
+            pub queues: Vec<SavedQueueState>,
+        }
     }
 
-    fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
-        Ok(())
+    use super::*;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    #[derive(Debug, thiserror::Error)]
+    enum VirtioRestoreError {
+        #[error("driver feature bank {bank}: saved {saved:#x} has bits not in device {device:#x}")]
+        IncompatibleFeatures {
+            bank: usize,
+            saved: u32,
+            device: u32,
+        },
+        #[error("queue count mismatch: saved {saved} vs device {device}")]
+        QueueCountMismatch { saved: usize, device: usize },
+    }
+
+    impl SaveRestore for VirtioMmioDevice {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            if !self.device.supports_save_restore() {
+                return Err(SaveError::NotSupported);
+            }
+
+            Ok(state::SavedState {
+                device_status: self.device_status.into(),
+                driver_feature_banks: (0..self.device_feature.len())
+                    .map(|i| self.driver_feature.bank(i))
+                    .collect(),
+                driver_feature_select: self.driver_feature_select,
+                queue_select: self.queue_select,
+                config_generation: self.config_generation,
+                interrupt_status: self.interrupt_state.lock().status,
+                queues: self
+                    .queues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| state::SavedQueueState {
+                        size: q.size,
+                        enable: q.enable,
+                        desc_addr: q.desc_addr,
+                        avail_addr: q.avail_addr,
+                        used_addr: q.used_addr,
+                        queue_state: self.saved_queue_states[i],
+                    })
+                    .collect(),
+            })
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if !self.device.supports_save_restore() {
+                return Err(RestoreError::SavedStateNotSupported);
+            }
+
+            // Validate that the saved driver features are a subset of the
+            // current device features.
+            for (i, &bank) in state.driver_feature_banks.iter().enumerate() {
+                let device_bank = self.device_feature.bank(i);
+                if bank & !device_bank != 0 {
+                    return Err(RestoreError::InvalidSavedState(
+                        VirtioRestoreError::IncompatibleFeatures {
+                            bank: i,
+                            saved: bank,
+                            device: device_bank,
+                        }
+                        .into(),
+                    ));
+                }
+            }
+
+            if state.queues.len() != self.queues.len() {
+                return Err(RestoreError::InvalidSavedState(
+                    VirtioRestoreError::QueueCountMismatch {
+                        saved: state.queues.len(),
+                        device: self.queues.len(),
+                    }
+                    .into(),
+                ));
+            }
+
+            let new_status = VirtioDeviceStatus::from(state.device_status);
+
+            // Restore transport fields.
+            self.driver_feature = VirtioDeviceFeatures::new();
+            for (i, &bank) in state.driver_feature_banks.iter().enumerate() {
+                self.driver_feature.set_bank(i, bank);
+            }
+            self.driver_feature_select = state.driver_feature_select;
+            self.queue_select = state.queue_select;
+            self.config_generation = state.config_generation;
+            self.interrupt_state.lock().status = state.interrupt_status;
+
+            // Restore per-queue transport parameters.
+            for (i, sq) in state.queues.iter().enumerate() {
+                self.queues[i] = QueueParams {
+                    size: sq.size,
+                    enable: sq.enable,
+                    desc_addr: sq.desc_addr,
+                    avail_addr: sq.avail_addr,
+                    used_addr: sq.used_addr,
+                };
+                self.saved_queue_states[i] = sq.queue_state;
+            }
+
+            self.device_status = new_status;
+
+            Ok(())
+        }
     }
 }
 
