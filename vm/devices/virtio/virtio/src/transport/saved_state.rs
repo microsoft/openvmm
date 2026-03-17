@@ -66,17 +66,39 @@ pub(crate) enum VirtioRestoreError {
         saved: u32,
         device: u32,
     },
+    #[error("saved state has {saved} feature banks, device only has {device}")]
+    TooManyFeatureBanks { saved: usize, device: usize },
     #[error("queue count mismatch: saved {saved} vs device {device}")]
     QueueCountMismatch { saved: usize, device: usize },
+    #[error("queue {index}: saved size {size} exceeds max {max}")]
+    QueueSizeTooLarge { index: usize, size: u16, max: u16 },
 }
 
 /// Validate that saved driver features are a subset of the current device
-/// features. Returns an error if the saved state contains feature bits
-/// that the device does not advertise.
-pub(crate) fn validate_driver_features(
-    saved_banks: &[u32],
+/// features. Returns an error if the saved state has more banks than the
+/// device or contains feature bits that the device does not advertise.
+///
+/// Also validates that the queue count matches and all queue sizes are
+/// within bounds.
+pub(crate) fn validate_restore(
+    common: &state::CommonSavedState,
     device_features: &VirtioDeviceFeatures,
+    queue_sizes: impl Iterator<Item = (usize, u16)>,
+    device_queue_count: usize,
+    saved_queue_count: usize,
+    max_queue_size: u16,
 ) -> Result<(), RestoreError> {
+    // Validate feature banks.
+    let saved_banks = &common.driver_feature_banks;
+    if saved_banks.len() > device_features.len() {
+        return Err(RestoreError::InvalidSavedState(
+            VirtioRestoreError::TooManyFeatureBanks {
+                saved: saved_banks.len(),
+                device: device_features.len(),
+            }
+            .into(),
+        ));
+    }
     for (i, &bank) in saved_banks.iter().enumerate() {
         let device_bank = device_features.bank(i);
         if bank & !device_bank != 0 {
@@ -90,15 +112,31 @@ pub(crate) fn validate_driver_features(
             ));
         }
     }
-    Ok(())
-}
 
-/// Validate that the saved queue count matches the device's queue count.
-pub(crate) fn validate_queue_count(saved: usize, device: usize) -> Result<(), RestoreError> {
-    if saved != device {
+    // Validate queue count.
+    if saved_queue_count != device_queue_count {
         return Err(RestoreError::InvalidSavedState(
-            VirtioRestoreError::QueueCountMismatch { saved, device }.into(),
+            VirtioRestoreError::QueueCountMismatch {
+                saved: saved_queue_count,
+                device: device_queue_count,
+            }
+            .into(),
         ));
     }
+
+    // Validate queue sizes.
+    for (i, size) in queue_sizes {
+        if size > max_queue_size {
+            return Err(RestoreError::InvalidSavedState(
+                VirtioRestoreError::QueueSizeTooLarge {
+                    index: i,
+                    size,
+                    max: max_queue_size,
+                }
+                .into(),
+            ));
+        }
+    }
+
     Ok(())
 }

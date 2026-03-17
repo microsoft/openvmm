@@ -833,13 +833,13 @@ mod saved_state {
 
             let common = &state.common;
 
-            crate::transport::saved_state::validate_driver_features(
-                &common.driver_feature_banks,
+            crate::transport::saved_state::validate_restore(
+                common,
                 &self.device_feature,
-            )?;
-            crate::transport::saved_state::validate_queue_count(
-                state.queues.len(),
+                state.queues.iter().enumerate().map(|(i, q)| (i, q.common.size)),
                 self.queues.len(),
+                state.queues.len(),
+                QUEUE_MAX_SIZE,
             )?;
 
             let new_status = VirtioDeviceStatus::from(common.device_status);
