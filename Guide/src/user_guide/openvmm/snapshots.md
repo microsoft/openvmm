@@ -99,6 +99,10 @@ If any check fails, OpenVMM exits with a descriptive error message.
 
 - Snapshots are **not portable** across architectures (e.g., you cannot
   restore an x86_64 snapshot on aarch64)
+- After restoring, `memory.bin` in the snapshot directory becomes the live
+  guest RAM backing file and will be modified as the VM runs. To restore
+  from the same snapshot multiple times, copy the snapshot directory before
+  each restore.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - PCAT firmware does not support save/restore

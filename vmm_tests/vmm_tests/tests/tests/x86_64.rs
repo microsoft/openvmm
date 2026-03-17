@@ -527,6 +527,9 @@ async fn snapshot_save_to_disk(
     assert!(mem_size > 0, "memory file should be non-empty");
 
     // Build manifest and write snapshot to disk.
+    //
+    // vp_count and page_size are hardcoded to match the petri test defaults.
+    // If those defaults change, update these values accordingly.
     let manifest = openvmm_helpers::snapshot::SnapshotManifest {
         version: openvmm_helpers::snapshot::MANIFEST_VERSION,
         created_at: std::time::SystemTime::now().into(),

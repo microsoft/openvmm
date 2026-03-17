@@ -120,13 +120,15 @@ pub fn read_snapshot(dir: &Path) -> anyhow::Result<(SnapshotManifest, Vec<u8>)> 
 
 /// Validate that a snapshot manifest is compatible with the running VM config.
 ///
-/// Checks version, architecture, memory size, and VP count. Returns `Ok(())`
-/// if the manifest matches, or an error describing the first mismatch found.
+/// Checks version, architecture, memory size, VP count, and page size.
+/// Returns `Ok(())` if the manifest matches, or an error describing the
+/// first mismatch found.
 pub fn validate_manifest(
     manifest: &SnapshotManifest,
     expected_arch: &str,
     expected_memory_size: u64,
     expected_vp_count: u32,
+    expected_page_size: u32,
 ) -> anyhow::Result<()> {
     if manifest.version != MANIFEST_VERSION {
         anyhow::bail!(
@@ -157,6 +159,14 @@ pub fn validate_manifest(
             "snapshot VP count ({}) doesn't match expected ({})",
             manifest.vp_count,
             expected_vp_count,
+        );
+    }
+
+    if manifest.page_size != expected_page_size {
+        anyhow::bail!(
+            "snapshot page size ({}) doesn't match expected ({})",
+            manifest.page_size,
+            expected_page_size,
         );
     }
 
@@ -252,13 +262,13 @@ mod tests {
     #[test]
     fn validate_manifest_ok() {
         let manifest = test_manifest();
-        validate_manifest(&manifest, "x86_64", 1024, 2).unwrap();
+        validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap();
     }
 
     #[test]
     fn validate_manifest_wrong_arch() {
         let manifest = test_manifest();
-        let err = validate_manifest(&manifest, "aarch64", 1024, 2).unwrap_err();
+        let err = validate_manifest(&manifest, "aarch64", 1024, 2, 4096).unwrap_err();
         assert!(
             err.to_string().contains("architecture"),
             "unexpected error: {err}"
@@ -268,7 +278,7 @@ mod tests {
     #[test]
     fn validate_manifest_wrong_memory_size() {
         let manifest = test_manifest();
-        let err = validate_manifest(&manifest, "x86_64", 9999, 2).unwrap_err();
+        let err = validate_manifest(&manifest, "x86_64", 9999, 2, 4096).unwrap_err();
         assert!(
             err.to_string().contains("memory size"),
             "unexpected error: {err}"
@@ -278,9 +288,19 @@ mod tests {
     #[test]
     fn validate_manifest_wrong_vp_count() {
         let manifest = test_manifest();
-        let err = validate_manifest(&manifest, "x86_64", 1024, 99).unwrap_err();
+        let err = validate_manifest(&manifest, "x86_64", 1024, 99, 4096).unwrap_err();
         assert!(
             err.to_string().contains("VP count"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_manifest_wrong_page_size() {
+        let manifest = test_manifest();
+        let err = validate_manifest(&manifest, "x86_64", 1024, 2, 65536).unwrap_err();
+        assert!(
+            err.to_string().contains("page size"),
             "unexpected error: {err}"
         );
     }
@@ -289,7 +309,7 @@ mod tests {
     fn validate_manifest_wrong_version() {
         let mut manifest = test_manifest();
         manifest.version = 999;
-        let err = validate_manifest(&manifest, "x86_64", 1024, 2).unwrap_err();
+        let err = validate_manifest(&manifest, "x86_64", 1024, 2, 4096).unwrap_err();
         assert!(
             err.to_string().contains("version"),
             "unexpected error: {err}"

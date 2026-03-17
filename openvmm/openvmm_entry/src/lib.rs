@@ -2051,7 +2051,13 @@ fn prepare_snapshot_restore(
     let (manifest, state_bytes) = snapshot::read_snapshot(snapshot_dir)?;
 
     // Validate manifest against current VM config.
-    snapshot::validate_manifest(&manifest, GUEST_ARCH, opt.memory, opt.processors)?;
+    snapshot::validate_manifest(
+        &manifest,
+        GUEST_ARCH,
+        opt.memory,
+        opt.processors,
+        system_page_size(),
+    )?;
 
     // Open memory.bin (existing file, no create, no resize).
     let memory_file = fs_err::OpenOptions::new()
