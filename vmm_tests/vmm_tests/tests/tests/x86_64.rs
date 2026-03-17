@@ -362,7 +362,7 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     // Write new data after restore to confirm writes work too.
     cmd!(
         sh,
-        "sh -c 'echo post_restore_ok | dd of=/dev/vda oflag=direct bs=512 count=1 conv=notrunc 2>/dev/null'"
+        "sh -c 'echo post_restore_ok | dd of=/dev/vda oflag=direct bs=512 count=1 conv=sync,notrunc 2>/dev/null'"
     )
     .read()
     .await
