@@ -3962,7 +3962,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
 
     // Verify saved state has expected values.
     assert_eq!(
-        saved.device_status,
+        saved.common.device_status,
         u8::from(
             VirtioDeviceStatus::new()
                 .with_acknowledge(true)
@@ -3972,7 +3972,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
         )
     );
     assert_eq!(saved.queues.len(), 1);
-    assert!(saved.queues[0].enable);
+    assert!(saved.queues[0].common.enable);
 
     // Create a new device and restore into it.
     let mut dev2 = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
@@ -4025,7 +4025,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
     // Save state.
     let saved = dev.save().expect("save should succeed");
     assert_eq!(saved.queues.len(), 1);
-    assert!(saved.queues[0].enable);
+    assert!(saved.queues[0].common.enable);
 
     // Create a new device and restore into it.
     let interrupt2 = LineInterrupt::detached();
@@ -4079,7 +4079,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     dev.pci_device.stop().await;
     let saved = dev.pci_device.save().expect("save should succeed");
     // Confirm saved state includes the device-specific feature bit.
-    assert_ne!(saved.driver_feature_banks[0] & 2, 0);
+    assert_ne!(saved.common.driver_feature_banks[0] & 2, 0);
 
     // Create a new device that does NOT support that device-specific feature.
     let msi_conn = MsiConnection::new();

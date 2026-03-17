@@ -754,7 +754,8 @@ impl ChipsetDevice for VirtioPciDevice {
 
 mod saved_state {
     mod state {
-        use crate::queue::QueueState;
+        use crate::transport::saved_state::state::CommonQueueState;
+        use crate::transport::saved_state::state::CommonSavedState;
         use mesh::payload::Protobuf;
         use vmcore::save_restore::SavedStateRoot;
 
@@ -762,61 +763,28 @@ mod saved_state {
         #[mesh(package = "virtio.transport.pci")]
         pub struct SavedQueueState {
             #[mesh(1)]
-            pub size: u16,
+            pub common: CommonQueueState,
             #[mesh(2)]
-            pub enable: bool,
-            #[mesh(3)]
-            pub desc_addr: u64,
-            #[mesh(4)]
-            pub avail_addr: u64,
-            #[mesh(5)]
-            pub used_addr: u64,
-            #[mesh(6)]
             pub msix_vector: u16,
-            #[mesh(7)]
-            pub queue_state: Option<QueueState>,
         }
 
         #[derive(Protobuf, SavedStateRoot)]
         #[mesh(package = "virtio.transport.pci")]
         pub struct SavedState {
             #[mesh(1)]
-            pub device_status: u8,
+            pub common: CommonSavedState,
             #[mesh(2)]
-            pub driver_feature_banks: Vec<u32>,
-            #[mesh(3)]
-            pub driver_feature_select: u32,
-            #[mesh(4)]
-            pub queue_select: u32,
-            #[mesh(5)]
-            pub config_generation: u32,
-            #[mesh(6)]
-            pub interrupt_status: u32,
-            #[mesh(7)]
             pub msix_config_vector: u16,
-            #[mesh(8)]
+            #[mesh(3)]
             pub queues: Vec<SavedQueueState>,
-            #[mesh(9)]
-            pub device_feature_select: u32,
         }
     }
 
     use super::*;
+    use crate::transport::saved_state::state as common_state;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-
-    #[derive(Debug, thiserror::Error)]
-    enum VirtioRestoreError {
-        #[error("driver feature bank {bank}: saved {saved:#x} has bits not in device {device:#x}")]
-        IncompatibleFeatures {
-            bank: usize,
-            saved: u32,
-            device: u32,
-        },
-        #[error("queue count mismatch: saved {saved} vs device {device}")]
-        QueueCountMismatch { saved: usize, device: usize },
-    }
 
     impl SaveRestore for VirtioPciDevice {
         type SavedState = state::SavedState;
@@ -827,28 +795,32 @@ mod saved_state {
             }
 
             Ok(state::SavedState {
-                device_status: self.device_status.into(),
-                driver_feature_banks: (0..self.device_feature.len())
-                    .map(|i| self.driver_feature.bank(i))
-                    .collect(),
-                device_feature_select: self.device_feature_select,
-                driver_feature_select: self.driver_feature_select,
-                queue_select: self.queue_select,
-                config_generation: self.config_generation,
-                interrupt_status: *self.interrupt_status.lock(),
+                common: common_state::CommonSavedState {
+                    device_status: self.device_status.into(),
+                    driver_feature_banks: (0..self.device_feature.len())
+                        .map(|i| self.driver_feature.bank(i))
+                        .collect(),
+                    device_feature_select: self.device_feature_select,
+                    driver_feature_select: self.driver_feature_select,
+                    queue_select: self.queue_select,
+                    config_generation: self.config_generation,
+                    interrupt_status: *self.interrupt_status.lock(),
+                },
                 msix_config_vector: self.msix_config_vector,
                 queues: self
                     .queues
                     .iter()
                     .enumerate()
                     .map(|(i, q)| state::SavedQueueState {
-                        size: q.size,
-                        enable: q.enable,
-                        desc_addr: q.desc_addr,
-                        avail_addr: q.avail_addr,
-                        used_addr: q.used_addr,
+                        common: common_state::CommonQueueState {
+                            size: q.size,
+                            enable: q.enable,
+                            desc_addr: q.desc_addr,
+                            avail_addr: q.avail_addr,
+                            used_addr: q.used_addr,
+                            queue_state: self.saved_queue_states[i],
+                        },
                         msix_vector: self.msix_vectors[i],
-                        queue_state: self.saved_queue_states[i],
                     })
                     .collect(),
             })
@@ -859,60 +831,45 @@ mod saved_state {
                 return Err(RestoreError::SavedStateNotSupported);
             }
 
-            // Validate that the saved driver features are a subset of the
-            // current device features.
-            for (i, &bank) in state.driver_feature_banks.iter().enumerate() {
-                let device_bank = self.device_feature.bank(i);
-                if bank & !device_bank != 0 {
-                    return Err(RestoreError::InvalidSavedState(
-                        VirtioRestoreError::IncompatibleFeatures {
-                            bank: i,
-                            saved: bank,
-                            device: device_bank,
-                        }
-                        .into(),
-                    ));
-                }
-            }
+            let common = &state.common;
 
-            if state.queues.len() != self.queues.len() {
-                return Err(RestoreError::InvalidSavedState(
-                    VirtioRestoreError::QueueCountMismatch {
-                        saved: state.queues.len(),
-                        device: self.queues.len(),
-                    }
-                    .into(),
-                ));
-            }
+            crate::transport::saved_state::validate_driver_features(
+                &common.driver_feature_banks,
+                &self.device_feature,
+            )?;
+            crate::transport::saved_state::validate_queue_count(
+                state.queues.len(),
+                self.queues.len(),
+            )?;
 
-            let new_status = VirtioDeviceStatus::from(state.device_status);
+            let new_status = VirtioDeviceStatus::from(common.device_status);
 
             // Restore transport fields.
             self.driver_feature = VirtioDeviceFeatures::new();
-            for (i, &bank) in state.driver_feature_banks.iter().enumerate() {
+            for (i, &bank) in common.driver_feature_banks.iter().enumerate() {
                 self.driver_feature.set_bank(i, bank);
             }
-            self.device_feature_select = state.device_feature_select;
-            self.driver_feature_select = state.driver_feature_select;
-            self.queue_select = state.queue_select;
-            self.config_generation = state.config_generation;
-            *self.interrupt_status.lock() = state.interrupt_status;
+            self.device_feature_select = common.device_feature_select;
+            self.driver_feature_select = common.driver_feature_select;
+            self.queue_select = common.queue_select;
+            self.config_generation = common.config_generation;
+            *self.interrupt_status.lock() = common.interrupt_status;
             if let InterruptKind::IntX(line) = &self.interrupt_kind {
-                line.set_level(state.interrupt_status != 0);
+                line.set_level(common.interrupt_status != 0);
             }
             self.msix_config_vector = state.msix_config_vector;
 
             // Restore per-queue transport parameters.
             for (i, sq) in state.queues.iter().enumerate() {
                 self.queues[i] = QueueParams {
-                    size: sq.size,
-                    enable: sq.enable,
-                    desc_addr: sq.desc_addr,
-                    avail_addr: sq.avail_addr,
-                    used_addr: sq.used_addr,
+                    size: sq.common.size,
+                    enable: sq.common.enable,
+                    desc_addr: sq.common.desc_addr,
+                    avail_addr: sq.common.avail_addr,
+                    used_addr: sq.common.used_addr,
                 };
                 self.msix_vectors[i] = sq.msix_vector;
-                self.saved_queue_states[i] = sq.queue_state;
+                self.saved_queue_states[i] = sq.common.queue_state;
             }
 
             self.device_status = new_status;
