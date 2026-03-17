@@ -893,6 +893,10 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
             // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
             // channel which is always present. so vp_count - 1 yields a total
             // of vp_count channels.
+            assert!(
+                vp_count >= 1,
+                "vp_count must be at least 1 when configuring SCSI sub-channels"
+            );
             v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
         })
         .run()
@@ -997,6 +1001,9 @@ async fn apply_fault_with_keepalive(
     }
 
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+    // Ensure the agent is responsive after the restart before returning.
+    agent.ping().await?;
 
     fault_start_updater.set(false).await;
     Ok(vm)
@@ -1253,12 +1260,20 @@ async fn find_cpus_with_io_issuers(
     let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
     let device = devices
         .as_object()
-        .expect("devices should be an object")
+        .with_context(|| {
+            "inspect path 'vm/nvme/devices' did not yield a JSON object; NVMe inspect schema may have changed"
+        })?
         .values()
         .next()
-        .expect("should have at least one NVMe device");
+        .with_context(|| {
+            "no NVMe devices found under inspect path 'vm/nvme/devices'; device list is empty"
+        })?;
     let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
-    let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
+    let per_cpu_map = per_cpu
+        .as_object()
+        .with_context(|| {
+            "inspect field 'driver.driver.io_issuers.per_cpu' is not a JSON object; NVMe inspect schema may have changed"
+        })?;
     let cpu_indices = per_cpu_map
         .keys()
         .map(|key| {
