@@ -169,9 +169,15 @@ pub struct AdoPrTriggers {
     /// Automatically cancel the pipeline run if a new commit lands in the
     /// branch. Defaults to `true`.
     pub auto_cancel: bool,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub exclude_paths: Vec<String>,
 }
 
-/// Trigger ADO pipelines per PR
+/// Trigger ADO pipelines per CI
 #[derive(Debug, Default)]
 pub struct AdoCiTriggers {
     /// Run the pipeline whenever there is a change to these specified branches
@@ -188,6 +194,12 @@ pub struct AdoCiTriggers {
     pub exclude_tags: Vec<String>,
     /// Whether to batch changes per branch.
     pub batch: bool,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub exclude_paths: Vec<String>,
 }
 
 impl Default for AdoPrTriggers {
@@ -197,6 +209,8 @@ impl Default for AdoPrTriggers {
             exclude_branches: Vec::new(),
             run_on_draft: false,
             auto_cancel: true,
+            paths: Vec::new(),
+            exclude_paths: Vec::new(),
         }
     }
 }
