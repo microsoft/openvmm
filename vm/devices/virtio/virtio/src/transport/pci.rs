@@ -836,7 +836,11 @@ mod saved_state {
             crate::transport::saved_state::validate_restore(
                 common,
                 &self.device_feature,
-                state.queues.iter().enumerate().map(|(i, q)| (i, q.common.size)),
+                state
+                    .queues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| (i, q.common.size)),
                 self.queues.len(),
                 state.queues.len(),
                 QUEUE_MAX_SIZE,
