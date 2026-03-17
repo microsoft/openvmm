@@ -7582,6 +7582,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "titrate"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "jiff",
+ "openvmm_defs",
+ "pal_async",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
+ "petri_artifacts_vmm_test",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "tmk_core"
 version = "0.0.0"
 dependencies = [
