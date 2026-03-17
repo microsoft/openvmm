@@ -695,6 +695,8 @@ EOF
                     branches: gh_pr_triggers.branches.clone(),
                     branches_ignore: gh_pr_triggers.exclude_branches.clone(),
                     types: gh_pr_triggers.types.clone(),
+                    paths: gh_pr_triggers.paths.clone(),
+                    paths_ignore: gh_pr_triggers.paths_ignore.clone(),
                 })
             }
             None => None,
@@ -705,6 +707,8 @@ EOF
                 branches_ignore: gh_ci_triggers.exclude_branches,
                 tags: gh_ci_triggers.tags,
                 tags_ignore: gh_ci_triggers.exclude_tags,
+                paths: gh_ci_triggers.paths,
+                paths_ignore: gh_ci_triggers.paths_ignore,
             }),
             None => None,
         },
