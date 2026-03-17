@@ -890,7 +890,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
             }
 
             // Configure SCSI so there are as many total channels as vCPUs to
-            // allow IO on all CPUs. scsi_sub_channels count beyond the first
+            // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
             // channel which is always present. so vp_count - 1 yields a total
             // of vp_count channels.
             v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
@@ -902,7 +902,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
 
     let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
     let target_cpu = (0u32..vp_count)
-        .find(|cpu| !cpus_with_issuers.contains(&cpu.to_string()))
+        .find(|cpu| !cpus_with_issuers.contains(cpu))
         .unwrap_or_else(|| {
             panic!(
                 "all {vp_count} CPUs already have IO issuers after boot — \
@@ -945,7 +945,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
 
     let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
     assert!(
-        cpus_with_issuers.contains(&target_cpu.to_string()),
+        cpus_with_issuers.contains(&target_cpu),
         "target CPU should have an IO issuer on CPU {target_cpu} after pinning IO. CPUs with issuers: {cpus_with_issuers:?}"
     );
     agent.ping().await?;
@@ -999,8 +999,6 @@ async fn apply_fault_with_keepalive(
     vm.restart_openhcl(igvm_file.clone(), flags).await?;
 
     fault_start_updater.set(false).await;
-
-    // Uses inspect to return the CPU indices (per_cpu map keys) that have IO issuers in the NVMe driver.
     Ok(vm)
 }
 
@@ -1199,9 +1197,9 @@ async fn large_read_from_disk(
 
 // Runs IO using dd that is pinned to a specific target CPU using cpuset
 // cgroups.
-// DEV NOTE: There is a known issue where this approach fails when there are more
-// than 1 processor assigned per socket. The CPU where the IO is observed is
-// off-by-one (at the time of writing, the cause is unknown).
+// DEV NOTE: This approach fails when there is more than 1 processor assigned
+// per socket. The failure itself is seen as an off-by-one error when observing
+// which CPU gets the pinned IO.
 async fn run_cpu_pinned_io(
     agent: &PipetteClient,
     disk_path: &str,
@@ -1229,7 +1227,7 @@ async fn run_cpu_pinned_io(
     // command didn't complete (the exact production failure scenario).
     let pinned_dd = format!(
         "echo $$ > /sys/fs/cgroup/pin{target_cpu}/cgroup.procs; \
-         dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct"
+         dd if={disk_path} of=/dev/null bs=4k count=256 iflag=direct status=none"
     );
     CancelContext::new()
         .with_timeout(Duration::from_secs(60))
@@ -1241,11 +1239,12 @@ async fn run_cpu_pinned_io(
     Ok(())
 }
 
-// Uses inspect to find and return a vector of issuers in the nvme driver. Proto
-// queues are not reported in the returned value.
+// Uses inspect to find and return the CPU indices (per-CPU map keys) that have
+// IO issuers in the NVMe driver. Proto queues are not reported in the returned
+// value.
 async fn find_cpus_with_io_issuers(
     vm: &PetriVm<OpenVmmPetriBackend>,
-) -> Result<Vec<String>, anyhow::Error> {
+) -> Result<Vec<u32>, anyhow::Error> {
     // Query inspect to find which CPUs have IO issuers after boot.
     // Only CPUs with initialized issuers appear in the per_cpu map (unset
     // OnceLock entries are absent). This makes the test deterministic —
@@ -1260,5 +1259,12 @@ async fn find_cpus_with_io_issuers(
         .expect("should have at least one NVMe device");
     let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
     let per_cpu_map = per_cpu.as_object().expect("per_cpu should be an object");
-    Ok(per_cpu_map.keys().cloned().collect::<Vec<_>>())
+    let cpu_indices = per_cpu_map
+        .keys()
+        .map(|key| {
+            key.parse::<u32>()
+                .with_context(|| format!("per_cpu map key '{key}' is not a valid u32 CPU index"))
+        })
+        .collect::<Result<Vec<u32>, _>>()?;
+    Ok(cpu_indices)
 }
