@@ -16,14 +16,13 @@ use vmm_test_images::KnownTestArtifacts;
 /// artifacts (e.g., pipette).
 ///
 /// Infers the profile from the currently running binary's path (looking
-/// for `/release/` in the executable path). Defaults to `"debug"`.
+/// for a `release` component in the executable path). Defaults to `"debug"`.
 // DEVNOTE: `pub` in order to re-use in perf_tests and other crates.
 pub fn cargo_build_profile() -> &'static str {
     static PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PROFILE.get_or_init(|| {
         if let Ok(exe) = std::env::current_exe() {
-            let path = exe.to_string_lossy();
-            if path.contains("/release/") || path.contains("\\release\\") {
+            if exe.components().any(|c| c.as_os_str() == "release") {
                 return "release".to_string();
             }
         }

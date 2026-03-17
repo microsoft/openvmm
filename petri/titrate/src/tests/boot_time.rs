@@ -10,7 +10,6 @@
 
 use crate::report::MetricResult;
 use anyhow::Context as _;
-use std::path::PathBuf;
 use std::sync::OnceLock;
 
 const ARCH: petri_artifacts_common::tags::MachineArch =
@@ -78,8 +77,8 @@ pub struct BootTimeTest {
     pub diag: bool,
     /// RAM size in MiB (default: 2048).
     pub mem_mb: u64,
-    /// Cached pre-built initrd path (built once, reused across iterations).
-    pub prebuilt_initrd: OnceLock<PathBuf>,
+    /// Cached pre-built initrd (built once, reused across iterations).
+    pub prebuilt_initrd: OnceLock<tempfile::TempPath>,
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
@@ -151,18 +150,16 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             // decompress + CPIO inject + recompress). Cached and reused
             // for subsequent iterations so this cost is outside the
             // measurement window.
-            let initrd_path = self
-                .prebuilt_initrd
-                .get_or_init(|| {
-                    let path = builder.prepare_initrd().expect("failed to prepare initrd");
-                    // Leak the TempPath so the file persists for the
-                    // lifetime of the test. It will be cleaned up on
-                    // process exit.
-                    let path_buf = path.to_path_buf();
-                    std::mem::forget(path);
-                    path_buf
-                })
-                .clone();
+            let initrd_path = match self.prebuilt_initrd.get() {
+                Some(p) => p.to_path_buf(),
+                None => {
+                    let path = builder
+                        .prepare_initrd()
+                        .context("failed to prepare initrd")?;
+                    self.prebuilt_initrd.set(path).ok();
+                    self.prebuilt_initrd.get().unwrap().to_path_buf()
+                }
+            };
             builder = builder.with_prebuilt_initrd(initrd_path);
             builder
         } else {
