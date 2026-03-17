@@ -3547,7 +3547,7 @@ trait TestTransport {
     fn write_driver_ok(&mut self);
     /// Read the device status register.
     fn read_status(&mut self) -> u32;
-    /// Drive poll_device once with a real waker.
+    /// Drive poll_device once with a noop waker.
     fn poll_once(&mut self);
     /// Drive ChangeDeviceState::stop().
     fn stop(&mut self) -> impl Future<Output = ()>;

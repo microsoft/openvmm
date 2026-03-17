@@ -66,6 +66,11 @@ pub trait VirtioDevice: InspectMut + Send {
     ///
     /// Returns the queue's `QueueState` on completion, or `None` if the
     /// queue was not active.
+    ///
+    /// This must be idempotent: calling it on a queue that was never
+    /// started (or has already been stopped) must return
+    /// `Poll::Ready(None)` immediately. Transports rely on this during
+    /// reset/disable by iterating all queue indices, not just active ones.
     fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>>;
 
     /// Reset device-internal state to initial values.

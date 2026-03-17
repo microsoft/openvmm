@@ -355,9 +355,17 @@ impl VirtioMmioDevice {
                         return;
                     }
                     self.doorbells.clear();
-                    self.disabling = true;
-                    if let Some(waker) = self.poll_waker.take() {
-                        waker.wake();
+                    if self.device_status.driver_ok() {
+                        // Queues are active — need async teardown.
+                        self.disabling = true;
+                        if let Some(waker) = self.poll_waker.take() {
+                            waker.wake();
+                        }
+                    } else {
+                        // Never reached DRIVER_OK, reset synchronously.
+                        self.device_status = VirtioDeviceStatus::new();
+                        self.config_generation = 0;
+                        self.interrupt_state.lock().update(false, !0);
                     }
                     return;
                 }
