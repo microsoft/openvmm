@@ -2,38 +2,37 @@
 # Licensed under the MIT License.
 
 [package]
-name = "virtio_net"
+name = "virtio_console"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-vm_resource.workspace = true
-
-inspect.workspace = true
-inspect_counters.workspace = true
-net_backend.workspace = true
-net_backend_resources.workspace = true
-pal_async.workspace = true
-task_control.workspace = true
 virtio.workspace = true
 virtio_resources.workspace = true
+
+inspect.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
+vm_resource.workspace = true
+serial_core.workspace = true
+task_control.workspace = true
+pal_async.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-bitfield-struct.workspace = true
 futures.workspace = true
-open_enum.workspace = true
+futures-concurrency.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
-zerocopy.workspace = true
 
 [dev-dependencies]
+futures.workspace = true
 mesh.workspace = true
+pal_async.workspace = true
 pal_event.workspace = true
+parking_lot.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

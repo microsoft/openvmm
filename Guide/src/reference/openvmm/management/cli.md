@@ -34,9 +34,14 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
 
-And serial devices can each be configured to be relayed to different endpoints:
+Serial devices can be configured to appear as different devices inside the guest:
 
-* `--com1/com2 <none|console|stderr|listen=PATH|listen=tcp:IP:PORT>`
+* `--com1/com2 <BACKEND>`: Configure a COM port serial device.
+* `--virtio-console <BACKEND>`: Expose a virtio console device (appears as
+  `/dev/hvc0` inside the guest).
+
+The `BACKEND` argument is the same for all serial devices:
+
   * `none`: Serial output is dropped.
   * `console`: Serial input is read and output is written to the console.
   * `stderr`: Serial output is written to stderr.

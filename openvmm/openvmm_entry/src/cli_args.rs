@@ -391,6 +391,14 @@ options:
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_rng_bus: VirtioBusCli,
 
+    /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
+    ///
+    /// Accepts serial config (console | stderr | listen=\<path\> |
+    /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    #[clap(long)]
+    pub virtio_console: Option<SerialConfigCli>,
+
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///

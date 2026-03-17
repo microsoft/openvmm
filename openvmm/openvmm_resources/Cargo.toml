@@ -73,6 +73,7 @@ net_consomme = { workspace = true, optional = true }
 # Virtio devices
 virtio.workspace = true
 virtio_blk.workspace = true
+virtio_console.workspace = true
 virtiofs.workspace = true
 virtio_net.workspace = true
 virtio_p9.workspace = true

@@ -18,11 +18,14 @@ pal_async.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+bitfield-struct.workspace = true
 futures.workspace = true
 libc.workspace = true
+open_enum.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+zerocopy.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 guestmem.workspace = true

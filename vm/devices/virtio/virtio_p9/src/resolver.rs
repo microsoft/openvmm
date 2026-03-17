@@ -5,7 +5,6 @@
 
 use crate::VirtioPlan9Device;
 use plan9::Plan9FileSystem;
-use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::p9::VirtioPlan9Handle;
@@ -36,6 +35,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioPlan9Handle> for VirtioPlan9Resol
             Plan9FileSystem::new(&resource.root_path, resource.debug)?,
             input.guest_memory.clone(),
         );
-        Ok(VirtioDeviceAdapter::new(device).into())
+        Ok(device.into())
     }
 }

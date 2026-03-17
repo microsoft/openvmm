@@ -97,6 +97,11 @@ cargo nextest run -p <package-name>
 - **CI failures** — to investigate failing CI checks on a PR, load the
   `openvmm-ci-investigation` skill.
 
+## Rust Edition
+
+This project uses the **Rust 2024 edition** (`edition = "2024"` in root
+`Cargo.toml`).
+
 ## Common Pitfalls
 
 - **`guest_arch` not `target_arch`**: For guest-architecture-specific code,

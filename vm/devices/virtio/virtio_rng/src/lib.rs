@@ -30,7 +30,7 @@ use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::QueueState;
@@ -56,7 +56,7 @@ impl VirtioRngDevice {
     }
 }
 
-impl VirtioDeviceV2 for VirtioRngDevice {
+impl VirtioDevice for VirtioRngDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: VIRTIO_RNG_DEVICE_ID,
