@@ -79,21 +79,13 @@ use windows_sys::Win32::System::IO::GetQueuedCompletionStatusEx;
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::IO::OVERLAPPED_ENTRY;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
+use windows_sys::Win32::System::Kernel::STRING;
 use windows_sys::Win32::System::Memory::GetProcessHeap;
 use windows_sys::Win32::System::Threading as processthreadsapi;
 use windows_sys::Win32::System::Threading as synchapi;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::WindowsProgramming::RtlFreeUnicodeString;
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-#[allow(non_snake_case)]
-pub struct ANSI_STRING {
-    pub Length: u16,
-    pub MaximumLength: u16,
-    pub Buffer: windows_sys::core::PSTR,
-}
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
@@ -681,18 +673,18 @@ impl<'a> TryFrom<&'a Utf16Str> for UnicodeStringRef<'a> {
     }
 }
 
-/// Associates an ANSI_STRING with the lifetime of the buffer.
+/// Associates a STRING with the lifetime of the buffer.
 #[repr(transparent)]
-pub struct AnsiStringRef<'a>(ANSI_STRING, PhantomData<&'a [u8]>);
+pub struct AnsiStringRef<'a>(STRING, PhantomData<&'a [u8]>);
 
 impl<'a> AnsiStringRef<'a> {
     /// Creates a new `AnsiStringRef` using the specified buffer.
     ///
-    /// Returns `None` if the buffer is too big for an ANSI_STRING's maximum length.
+    /// Returns `None` if the buffer is too big for a STRING's maximum length.
     pub fn new(s: &'a [u8]) -> Option<Self> {
         let len: u16 = s.len().try_into().ok()?;
         Some(Self(
-            ANSI_STRING {
+            STRING {
                 Length: len,
                 MaximumLength: len,
                 Buffer: s.as_ptr().cast_mut(),
@@ -711,25 +703,25 @@ impl<'a> AnsiStringRef<'a> {
         self.0.Buffer.is_null()
     }
 
-    /// Returns a pointer to the contained `ANSI_STRING`
-    pub fn as_ptr(&self) -> *const ANSI_STRING {
+    /// Returns a pointer to the contained STRING.
+    pub fn as_ptr(&self) -> *const STRING {
         &self.0
     }
 
-    /// Returns a mutable pointer to the contained `ANSI_STRING`
-    pub fn as_mut_ptr(&mut self) -> *mut ANSI_STRING {
+    /// Returns a mutable pointer to the contained STRING.
+    pub fn as_mut_ptr(&mut self) -> *mut STRING {
         &mut self.0
     }
 
-    /// Returns the valid part of an ANSI_STRING's buffer as a slice.
+    /// Returns the valid part of a STRING's buffer as a slice.
     pub fn as_slice(&self) -> &[u8] {
-        let buffer = NonNull::new(self.0.Buffer.cast::<u8>()).unwrap_or_else(NonNull::dangling);
+        let buffer = NonNull::new(self.0.Buffer).unwrap_or_else(NonNull::dangling);
         unsafe { std::slice::from_raw_parts(buffer.as_ptr(), self.0.Length as usize) }
     }
 }
 
-impl AsRef<ANSI_STRING> for AnsiStringRef<'_> {
-    fn as_ref(&self) -> &ANSI_STRING {
+impl AsRef<STRING> for AnsiStringRef<'_> {
+    fn as_ref(&self) -> &STRING {
         &self.0
     }
 }
