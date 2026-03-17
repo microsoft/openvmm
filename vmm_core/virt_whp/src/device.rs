@@ -532,7 +532,7 @@ impl PciConfigSpace for AssignedPciDevice {
                         self.set_power_state(power_state);
                     }
                 } else {
-                    self.write_phys_config(offset.into(), value)
+                    self.write_phys_config(offset, value)
                 }
             }
         }
