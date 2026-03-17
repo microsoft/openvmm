@@ -89,6 +89,7 @@ struct Connection {
     pending_reply: PendingReply,
     socket: RelaySocket,
     recv_buf: Option<RingBuffer>,
+    is_write_shutdown: bool,
 }
 
 impl Connection {
@@ -108,6 +109,7 @@ impl Connection {
             pending_reply,
             socket,
             recv_buf: None,
+            is_write_shutdown: false,
         }
     }
 
@@ -116,6 +118,10 @@ impl Connection {
         data: &[IoSlice<'_>],
         data_len: usize,
     ) -> anyhow::Result<Option<WriteReadyItem>> {
+        if self.is_write_shutdown {
+            anyhow::bail!("peer has shutdown write side but sent data");
+        }
+
         let bytes_sent = if self.recv_buf.as_ref().is_none_or(|buf| buf.is_empty()) {
             match self.socket.get().write_vectored(data) {
                 Ok(n) => {
@@ -170,6 +176,13 @@ impl Connection {
         }
 
         if buf.is_empty() {
+            if self.is_write_shutdown {
+                self.socket
+                    .get()
+                    .shutdown(std::net::Shutdown::Write)
+                    .context("failed to shutdown write side of socket")?;
+            }
+
             Ok(None)
         } else {
             Ok(self.socket.await_write_ready(self.key))
@@ -178,6 +191,33 @@ impl Connection {
 
     fn peer_needs_credit_update(&self) -> bool {
         self.fwd_cnt.0 != self.last_sent_fwd_count
+    }
+
+    fn shutdown(&mut self, mut flags: ShutdownFlags) -> io::Result<()> {
+        if flags.send() {
+            // Don't actually shutdown the write side if we're still waiting to flush data out of
+            // the buffer.
+            if self.recv_buf.as_ref().is_some_and(|buf| !buf.is_empty()) {
+                flags.set_send(false);
+            }
+
+            self.is_write_shutdown = true;
+        }
+
+        let how = if flags.send() {
+            if flags.receive() {
+                std::net::Shutdown::Both
+            } else {
+                std::net::Shutdown::Write
+            }
+        } else if flags.receive() {
+            std::net::Shutdown::Read
+        } else {
+            return Ok(());
+        };
+
+        self.socket.get().shutdown(how)?;
+        Ok(())
     }
 }
 
@@ -283,7 +323,6 @@ impl ConnectionManager {
             }
             Operation::RW => {
                 // Guest is sending data.
-                tracing::info!(?packet.header, "We got data!");
                 let Some(conn) = self.conns.get_mut(&key) else {
                     tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
                     return PendingWork::rx(RxWork::SendReset(key));
@@ -332,26 +371,25 @@ impl ConnectionManager {
                 todo!();
             }
             Operation::SHUTDOWN => {
-                // let mut conns = self.conns.lock();
-                // if let Some(conn) = conns.remove(&key) {
-                //     drop(conn);
-                //     tracing::debug!(?key, flags, "guest shutdown connection");
-                // }
-                // // Send RST to complete the shutdown.
-                // Some((
-                //     VsockHeader::new_reply(
-                //         dst_cid,
-                //         src_cid,
-                //         dst_port,
-                //         src_port,
-                //         protocol::VIRTIO_VSOCK_OP_RST,
-                //     ),
-                //     Vec::new(),
-                // ))
-                todo!();
+                let Some(conn) = self.conns.get_mut(&key) else {
+                    tracelimit::warn_ratelimited!(?key, "SHUTDOWN for unknown connection");
+                    return PendingWork::rx(RxWork::SendReset(key));
+                };
+
+                if let Err(err) = conn.shutdown(ShutdownFlags::from_bits(packet.header.flags)) {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        ?key,
+                        "failed to shutdown connection"
+                    );
+
+                    PendingWork::rx(RxWork::SendReset(key))
+                } else {
+                    PendingWork::NONE
+                }
             }
             Operation::RST => {
-                if let Some(conn) = self.conns.remove(&key) {
+                if let Some(_conn) = self.conns.remove(&key) {
                     tracing::debug!(?key, "guest reset connection");
                 }
                 PendingWork::NONE

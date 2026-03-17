@@ -118,8 +118,9 @@ impl RelaySocket {
 }
 
 struct RelaySocketInner {
-    socket: UnixStream,
     poll: Mutex<PollImpl<dyn PollSocketReady>>,
+    // The UnixStream must not be destructed before PollImp, so this must come after.
+    socket: UnixStream,
     awaiting_read: AtomicBool,
     awaiting_write: AtomicBool,
 }

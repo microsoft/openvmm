@@ -256,6 +256,7 @@ impl VsockWorker {
         let mut header = VsockHeader::new_zeroed();
         work.read(&self.mem, &mut header.as_mut_bytes()[..hdr_size])?;
 
+        tracing::info!(?header, "got tx packet from guest");
         let pending_work = {
             // TODO: Avoid allocating.
             let regions = data_regions(&work.payload, false, hdr_size as u64, header.len as u64);
@@ -431,7 +432,6 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
 
                     match event {
                         Event::TxWork(Ok(work)) => {
-                            tracing::info!("got tx work from guest");
                             self.handle_tx_work(state, work);
                         }
                         Event::TxWork(Err(err)) => {
@@ -443,11 +443,9 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             return false;
                         }
                         Event::RxWork(work) => {
-                            tracing::info!("got rx work from relay");
                             self.handle_rx_work(state, work);
                         }
                         Event::WriteReady(key) => {
-                            tracing::info!("got write-ready work from relay");
                             self.handle_write_ready(state, key);
                         }
                         Event::Retry => (),
