@@ -15,7 +15,6 @@ use futures::Stream;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
-use guestmem::MappedMemoryRegion;
 use inspect::Inspect;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
@@ -456,45 +455,8 @@ pub struct DeviceTraits {
     pub shared_memory: DeviceTraitsSharedMemory,
 }
 
-pub trait VirtioDevice: inspect::InspectMut + Send {
-    fn traits(&self) -> DeviceTraits;
-    fn read_registers_u32(&mut self, offset: u16) -> u32;
-    fn write_registers_u32(&mut self, offset: u16, val: u32);
-    /// Enable the device with the given resources.
-    ///
-    /// Called when the guest sets `DRIVER_OK`. On success, the device should
-    /// start processing queues and the transport will reflect `DRIVER_OK` in
-    /// the device status. On failure, the transport will log the error and
-    /// leave `DRIVER_OK` unset, so the device remains inert and the guest
-    /// will observe failures through IO timeouts.
-    ///
-    /// The transport guarantees this is only called on a device that is either
-    /// freshly constructed or fully disabled (i.e. `poll_disable` has returned
-    /// `Poll::Ready`). Implementations may assume this precondition holds.
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()>;
-    /// Poll the device to complete a disable/reset operation.
-    ///
-    /// This is called when the guest writes status=0 (device reset). The device
-    /// should stop workers and drain any in-flight IO. Returns `Poll::Ready(())`
-    /// when the disable is complete, or `Poll::Pending` if more work is needed.
-    ///
-    /// Devices that don't need async cleanup can return `Poll::Ready(())`
-    /// immediately.
-    ///
-    /// Once this returns `Poll::Ready`, the transport may call `enable` again
-    /// to re-initialize the device. Until then, `enable` will not be called.
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()>;
-}
-
 pub struct QueueResources {
     pub params: QueueParams,
     pub notify: Interrupt,
     pub event: Event,
-}
-
-pub struct Resources {
-    pub features: VirtioDeviceFeatures,
-    pub queues: Vec<QueueResources>,
-    pub shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
-    pub shared_memory_size: u64,
 }

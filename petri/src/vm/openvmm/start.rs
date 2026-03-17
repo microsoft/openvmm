@@ -89,6 +89,8 @@ impl PetriVmConfigOpenVmm {
 
         let worker = Arc::new(worker);
 
+        let is_minimal = resources.properties.minimal_mode;
+
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
@@ -103,7 +105,7 @@ impl PetriVmConfigOpenVmm {
         vm.resume().await?;
 
         // Run basic save/restore test if it is supported
-        if supports_save_restore {
+        if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }

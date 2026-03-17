@@ -22,7 +22,7 @@ use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::QueueState;
@@ -72,7 +72,7 @@ struct PmemConfig {
     size: u64,
 }
 
-impl VirtioDeviceV2 for Device {
+impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: 27,

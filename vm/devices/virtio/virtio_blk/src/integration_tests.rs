@@ -27,7 +27,7 @@ use scsi_buffers::RequestBuffers;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::AVAIL_ELEMENT_SIZE;

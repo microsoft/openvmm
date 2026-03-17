@@ -68,7 +68,7 @@ attached to a root port to appear as PCIe devices in the guest.
 ### Attaching devices to PCIe
 
 Several device types support the `pcie_port=<name>` option to attach to a
-PCIe root port. The syntax varies slightly between disk and NIC arguments:
+PCIe root port. The syntax varies slightly between device types:
 
 **Disks** (comma-separated option): `--disk`, `--nvme`, `--virtio-blk`
 
@@ -84,4 +84,21 @@ PCIe root port. The syntax varies slightly between disk and NIC arguments:
 --virtio-net pcie_port=rp0:tap:tap0
 --net pcie_port=rp0:consomme
 --mana pcie_port=rp0:tap:tap0
+```
+
+**Filesystems and other virtio devices** (colon-prefixed):
+`--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
+
+```sh
+--virtio-fs pcie_port=rp0:myfs,/path/to/share
+--virtio-fs-shmem pcie_port=rp0:myfs,/path/to/share
+--virtio-9p pcie_port=rp0:myfs,/path/to/share
+--virtio-pmem pcie_port=rp0:/path/to/file
+```
+
+For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
+
+```sh
+--virtio-rng --virtio-rng-pcie-port rp0
+--virtio-console console --virtio-console-pcie-port rp0
 ```
