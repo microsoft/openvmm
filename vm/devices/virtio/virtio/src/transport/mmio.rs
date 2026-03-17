@@ -272,7 +272,7 @@ impl VirtioMmioDevice {
     }
 
     pub(crate) fn write_u32(&mut self, address: u64, val: u32) {
-        let offset = address & 0xfff;
+        let offset = (address & 0xfff) as u16;
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
         let queues_locked = self.device_status.driver_ok();
@@ -362,7 +362,7 @@ impl VirtioMmioDevice {
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
                     let notification_address =
-                        (address & !0xfff) + VirtioMmioRegister::QUEUE_NOTIFY.0;
+                        (address & !0xfff) + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
                     for i in 0..self.events.len() {
                         self.doorbells.add(
                             notification_address,

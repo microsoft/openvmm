@@ -148,7 +148,7 @@ pub mod pci {
     open_enum! {
         /// Byte offsets within the `virtio_pci_common_cfg` structure,
         /// accessed at u32-aligned boundaries.
-        pub enum VirtioPciCommonCfg: u64 {
+        pub enum VirtioPciCommonCfg: u16 {
             DEVICE_FEATURE_SELECT = 0,
             DEVICE_FEATURE = 4,
             DRIVER_FEATURE_SELECT = 8,
@@ -167,7 +167,7 @@ pub mod pci {
     }
 
     /// Total size of the common configuration structure.
-    pub const VIRTIO_PCI_COMMON_CFG_SIZE: u64 = 56;
+    pub const VIRTIO_PCI_COMMON_CFG_SIZE: u16 = 56;
 }
 
 /// Virtio over MMIO register offsets (virtio spec section 4.2.2)
@@ -176,7 +176,7 @@ pub mod mmio {
 
     open_enum! {
         /// MMIO register offsets for virtio MMIO transport.
-        pub enum VirtioMmioRegister: u64 {
+        pub enum VirtioMmioRegister: u16 {
             MAGIC_VALUE = 0x000,
             VERSION = 0x004,
             DEVICE_ID = 0x008,

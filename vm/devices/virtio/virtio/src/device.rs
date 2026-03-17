@@ -24,10 +24,10 @@ pub trait VirtioDeviceV2: InspectMut + Send {
     fn traits(&self) -> DeviceTraits;
 
     /// Read device-specific config registers.
-    fn read_registers_u32(&mut self, offset: u64) -> u32;
+    fn read_registers_u32(&mut self, offset: u16) -> u32;
 
     /// Write device-specific config registers.
-    fn write_registers_u32(&mut self, offset: u64, val: u32);
+    fn write_registers_u32(&mut self, offset: u16, val: u32);
 
     /// Provide the shared memory region to the device.
     ///
@@ -113,11 +113,11 @@ impl<T: 'static + VirtioDeviceV2> VirtioDevice for VirtioDeviceAdapter<T> {
         self.device.traits()
     }
 
-    fn read_registers_u32(&mut self, offset: u64) -> u32 {
+    fn read_registers_u32(&mut self, offset: u16) -> u32 {
         self.device.read_registers_u32(offset)
     }
 
-    fn write_registers_u32(&mut self, offset: u64, val: u32) {
+    fn write_registers_u32(&mut self, offset: u16, val: u32) {
         self.device.write_registers_u32(offset, val);
     }
 
@@ -206,11 +206,11 @@ mod tests {
             DeviceTraits::default()
         }
 
-        fn read_registers_u32(&mut self, _offset: u64) -> u32 {
+        fn read_registers_u32(&mut self, _offset: u16) -> u32 {
             0
         }
 
-        fn write_registers_u32(&mut self, _offset: u64, _val: u32) {}
+        fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
         fn start_queue(
             &mut self,
