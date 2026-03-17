@@ -262,6 +262,47 @@ impl PcieDownstreamPort {
         // If the name doesn't match, fail immediately (no forwarding)
         bail!("port name does not match")
     }
+
+    /// Hot-add a device to this port at runtime.
+    ///
+    /// Unlike `add_pcie_device`, this method verifies the port is hotplug-capable
+    /// and fires MSI to notify the guest's pciehp driver.
+    pub fn hotplug_add_device(
+        &mut self,
+        device_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> anyhow::Result<()> {
+        let is_hotplug_capable = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable());
+
+        if !is_hotplug_capable {
+            bail!("port '{}' is not hotplug capable", self.name);
+        }
+        if self.link.is_some() {
+            bail!("port '{}' is already occupied", self.name);
+        }
+
+        self.link = Some((device_name.into(), device));
+        self.cfg_space.set_presence_detect_state(true);
+        self.fire_hotplug_msi();
+        Ok(())
+    }
+
+    /// Hot-remove the device from this port at runtime.
+    pub fn hotplug_remove_device(&mut self) -> anyhow::Result<()> {
+        if self.link.is_none() {
+            bail!("port '{}' is empty", self.name);
+        }
+
+        self.link = None;
+        self.cfg_space.set_presence_detect_state(false);
+        self.fire_hotplug_msi();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

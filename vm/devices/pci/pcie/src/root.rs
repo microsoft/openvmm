@@ -178,6 +178,31 @@ impl GenericPcieRootComplex {
         ports
     }
 
+    /// Hot-add a device to a named port.
+    pub fn hotplug_add_device(
+        &mut self,
+        port_name: &str,
+        device_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> anyhow::Result<()> {
+        let (_, (_, root_port)) = self
+            .ports
+            .iter_mut()
+            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.hotplug_add_device(device_name, device)
+    }
+
+    /// Hot-remove the device from a named port.
+    pub fn hotplug_remove_device(&mut self, port_name: &str) -> anyhow::Result<()> {
+        let (_, (_, root_port)) = self
+            .ports
+            .iter_mut()
+            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.hotplug_remove_device()
+    }
+
     /// Returns the size of the ECAM MMIO region this root complex is emulating.
     pub fn ecam_size(&self) -> u64 {
         ecam_size_from_bus_numbers(self.start_bus, self.end_bus)
