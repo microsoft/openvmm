@@ -18,7 +18,7 @@ pub mod security;
 pub mod tp;
 
 use self::security::SecurityDescriptor;
-use handleapi::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 // TODO: Revert this ntapi fallback once windows/windows-sys expose
 // NtCreateWaitCompletionPacket, NtAssociateWaitCompletionPacket, and
 // NtCancelWaitCompletionPacket.
@@ -29,7 +29,6 @@ use ntapi::ntioapi::NtAssociateWaitCompletionPacket;
 use ntapi::ntioapi::NtCancelWaitCompletionPacket;
 use ntapi::ntioapi::NtCreateWaitCompletionPacket;
 use ntapi::ntioapi::NtSetInformationFile;
-use processthreadsapi::GetExitCodeProcess;
 use std::cell::UnsafeCell;
 use std::ffi::OsStr;
 use std::ffi::c_void;
@@ -50,23 +49,17 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use widestring::U16CString;
 use widestring::Utf16Str;
-use windows_sys::Wdk::Foundation as ntdef;
 use windows_sys::Wdk::Storage::FileSystem::NtCreateDirectoryObject;
 use windows_sys::Wdk::Storage::FileSystem::NtOpenDirectoryObject;
 use windows_sys::Wdk::Storage::FileSystem::RtlAllocateHeap;
 use windows_sys::Wdk::Storage::FileSystem::RtlDosPathNameToNtPathName_U_WithStatus;
 use windows_sys::Wdk::Storage::FileSystem::RtlFreeHeap;
 use windows_sys::Wdk::Storage::FileSystem::RtlNtStatusToDosErrorNoTeb;
-use windows_sys::Win32::Foundation as handleapi;
-use windows_sys::Win32::Foundation as ntstatus;
-use windows_sys::Win32::Foundation as winnt;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::ERROR_BAD_PATHNAME;
 use windows_sys::Win32::Foundation::NTSTATUS;
 use windows_sys::Win32::Foundation::STATUS_PENDING;
 use windows_sys::Win32::Foundation::UNICODE_STRING;
-use windows_sys::Win32::Networking::WinSock as winsock2;
-use windows_sys::Win32::Networking::WinSock as ws2def;
 use windows_sys::Win32::Security::SECURITY_DESCRIPTOR;
 use windows_sys::Win32::Storage::FileSystem::SetFileCompletionNotificationModes;
 use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
@@ -81,8 +74,7 @@ use windows_sys::Win32::System::IO::OVERLAPPED_ENTRY;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
 use windows_sys::Win32::System::Kernel::STRING;
 use windows_sys::Win32::System::Memory::GetProcessHeap;
-use windows_sys::Win32::System::Threading as processthreadsapi;
-use windows_sys::Win32::System::Threading as synchapi;
+use windows_sys::Win32::System::Threading::GetExitCodeProcess;
 use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::Threading::TerminateProcess;
 use windows_sys::Win32::System::WindowsProgramming::RtlFreeUnicodeString;
@@ -104,11 +96,11 @@ impl BorrowedHandleExt for BorrowedHandle<'_> {
         let options = if access.is_some() {
             0
         } else {
-            winnt::DUPLICATE_SAME_ACCESS
+            windows_sys::Win32::Foundation::DUPLICATE_SAME_ACCESS
         };
         unsafe {
-            let process = processthreadsapi::GetCurrentProcess();
-            if handleapi::DuplicateHandle(
+            let process = windows_sys::Win32::System::Threading::GetCurrentProcess();
+            if windows_sys::Win32::Foundation::DuplicateHandle(
                 process,
                 self.as_raw_handle(),
                 process,
@@ -139,8 +131,12 @@ pub trait OwnedSocketExt: Sized {
     fn from_handle(handle: OwnedHandle) -> Result<Self>;
 }
 
-const SIO_SOCKET_TRANSFER_BEGIN: u32 = ws2def::IOC_IN | ws2def::IOC_VENDOR | 301;
-const SIO_SOCKET_TRANSFER_END: u32 = ws2def::IOC_IN | ws2def::IOC_VENDOR | 302;
+const SIO_SOCKET_TRANSFER_BEGIN: u32 = windows_sys::Win32::Networking::WinSock::IOC_IN
+    | windows_sys::Win32::Networking::WinSock::IOC_VENDOR
+    | 301;
+const SIO_SOCKET_TRANSFER_END: u32 = windows_sys::Win32::Networking::WinSock::IOC_IN
+    | windows_sys::Win32::Networking::WinSock::IOC_VENDOR
+    | 302;
 
 /// Ensures WSAStartup has been called for the process.
 fn init_winsock() {
@@ -159,7 +155,7 @@ impl OwnedSocketExt for OwnedSocket {
         let mut bytes = 0;
         // SAFETY: calling the ioctl according to implementation requirements
         unsafe {
-            if winsock2::WSAIoctl(
+            if windows_sys::Win32::Networking::WinSock::WSAIoctl(
                 self.as_raw_socket() as _,
                 SIO_SOCKET_TRANSFER_BEGIN,
                 null_mut(),
@@ -171,7 +167,9 @@ impl OwnedSocketExt for OwnedSocket {
                 None,
             ) != 0
             {
-                return Err(Error::from_raw_os_error(winsock2::WSAGetLastError()));
+                return Err(Error::from_raw_os_error(
+                    windows_sys::Win32::Networking::WinSock::WSAGetLastError(),
+                ));
             }
             Ok(BorrowedHandle::borrow_raw(self.as_raw_socket() as RawHandle))
         }
@@ -183,10 +181,10 @@ impl OwnedSocketExt for OwnedSocket {
 
         let mut catalog_id: u32 = 0;
         let mut bytes = 0;
-        let mut socket = handle.as_raw_handle() as winsock2::SOCKET;
+        let mut socket = handle.as_raw_handle() as windows_sys::Win32::Networking::WinSock::SOCKET;
         // SAFETY: calling the ioctl according to implementation requirements
         unsafe {
-            if winsock2::WSAIoctl(
+            if windows_sys::Win32::Networking::WinSock::WSAIoctl(
                 socket,
                 SIO_SOCKET_TRANSFER_END,
                 std::ptr::from_mut(&mut catalog_id).cast(),
@@ -198,7 +196,9 @@ impl OwnedSocketExt for OwnedSocket {
                 None,
             ) != 0
             {
-                return Err(Error::from_raw_os_error(winsock2::WSAGetLastError()));
+                return Err(Error::from_raw_os_error(
+                    windows_sys::Win32::Networking::WinSock::WSAGetLastError(),
+                ));
             }
             // In theory SIO_SOCKET_TRANSFER_END could have changed `socket`, so
             // forget the handle and use the socket instead.
@@ -214,7 +214,14 @@ struct WaitObject(OwnedHandle);
 
 impl WaitObject {
     fn wait(&self) {
-        assert!(unsafe { synchapi::WaitForSingleObject(self.0.as_raw_handle(), INFINITE) } == 0);
+        assert!(
+            unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(
+                    self.0.as_raw_handle(),
+                    INFINITE,
+                )
+            } == 0
+        );
     }
 }
 
@@ -238,7 +245,9 @@ impl Process {
 
     pub fn id(&self) -> u32 {
         unsafe {
-            let pid = processthreadsapi::GetProcessId(self.as_handle().as_raw_handle());
+            let pid = windows_sys::Win32::System::Threading::GetProcessId(
+                self.as_handle().as_raw_handle(),
+            );
             assert_ne!(pid, 0);
             pid
         }
@@ -395,7 +404,7 @@ pub unsafe fn disassociate_completion_port(handle: RawHandle) -> Result<()> {
         chk_status(NtSetInformationFile(
             handle.cast::<c_void>(),
             &mut iosb,
-            std::ptr::from_mut::<FILE_COMPLETION_INFORMATION>(&mut info).cast(),
+            std::ptr::from_mut(&mut info).cast(),
             size_of_val(&info) as u32,
             FileReplaceCompletionInformation,
         ))?;
@@ -467,9 +476,9 @@ impl WaitPacket {
                 if remove_signaled_packet { 1 } else { 0 },
             )
         } {
-            ntstatus::STATUS_SUCCESS => true,
+            windows_sys::Win32::Foundation::STATUS_SUCCESS => true,
             STATUS_PENDING => false,
-            ntstatus::STATUS_CANCELLED => false,
+            windows_sys::Win32::Foundation::STATUS_CANCELLED => false,
             s => panic!(
                 "unexpected failure in NtCancelWaitCompletionPacket: {:?}",
                 chk_status(s).unwrap_err()
@@ -756,7 +765,7 @@ pub fn dos_to_nt_path<P: AsRef<Path>>(path: P) -> Result<UnicodeString> {
 /// A wrapper around OBJECT_ATTRIBUTES.
 #[repr(transparent)]
 pub struct ObjectAttributes<'a> {
-    attributes: ntdef::OBJECT_ATTRIBUTES,
+    attributes: windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES,
     phantom: PhantomData<&'a ()>,
 }
 
@@ -771,8 +780,8 @@ impl<'a> ObjectAttributes<'a> {
     /// attributes, or security information.
     pub fn new() -> Self {
         Self {
-            attributes: ntdef::OBJECT_ATTRIBUTES {
-                Length: size_of::<ntdef::OBJECT_ATTRIBUTES>() as u32,
+            attributes: windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES {
+                Length: size_of::<windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES>() as u32,
                 RootDirectory: null_mut(),
                 ObjectName: null_mut(),
                 Attributes: 0,
@@ -811,7 +820,7 @@ impl<'a> ObjectAttributes<'a> {
     }
 
     /// Returns the OBJECT_ATTRIBUTES pointer for passing to an NT syscall.
-    pub fn as_ptr(&self) -> *mut ntdef::OBJECT_ATTRIBUTES {
+    pub fn as_ptr(&self) -> *mut windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES {
         std::ptr::from_ref(&self.attributes).cast_mut()
     }
 }

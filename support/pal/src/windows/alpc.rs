@@ -21,7 +21,7 @@ use std::time::Duration;
 use winapi::shared::ntstatus::STATUS_TIMEOUT;
 
 mod ntlpcapi {
-    #![allow(non_snake_case, dead_code)]
+    #![expect(non_snake_case)]
     // TODO: Revert this ntapi fallback once windows/windows-sys provide a
     // complete ALPC surface used by this module.
     pub use ntapi::ntlpcapi::*;
@@ -148,9 +148,7 @@ impl PortConfig {
         let port = unsafe {
             chk_status(NtAlpcCreatePort(
                 &mut port,
-                obj_attr
-                    .as_ptr()
-                    .cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
+                obj_attr.as_ptr().cast(),
                 &mut port_attr,
             ))?;
             OwnedHandle::from_raw_handle(port.cast())
@@ -174,9 +172,7 @@ impl PortConfig {
         let port = unsafe {
             chk_status(NtAlpcConnectPortEx(
                 &mut port,
-                obj_attr
-                    .as_ptr()
-                    .cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
+                obj_attr.as_ptr().cast(),
                 null_mut(),
                 &mut port_attr,
                 0, // flags
@@ -800,7 +796,7 @@ impl Port {
                 &mut message_len,
                 message.attributes.as_mut_ptr(),
                 if timeout.is_some() {
-                    std::ptr::from_mut::<i64>(&mut timeout_100ns).cast()
+                    std::ptr::from_mut(&mut timeout_100ns).cast()
                 } else {
                     null_mut()
                 },
@@ -861,8 +857,7 @@ impl Port {
             chk_status(NtAlpcSetInformation(
                 self.0.as_raw_handle().cast::<c_void>(),
                 AlpcAssociateCompletionPortInformation,
-                std::ptr::from_mut::<ALPC_PORT_ASSOCIATE_COMPLETION_PORT>(&mut info)
-                    .cast::<c_void>(),
+                std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info) as u32,
             ))?;
             Ok(())

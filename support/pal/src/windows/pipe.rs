@@ -18,7 +18,6 @@ use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
-use winapi::shared::ntdef::LARGE_INTEGER;
 use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows_sys::Wdk::Storage::FileSystem::FILE_CREATE;
 use windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE;
@@ -185,8 +184,7 @@ fn create_named_pipe(
         chk_status(NtCreateNamedPipeFile(
             &mut handle,
             access | SYNCHRONIZE,
-            std::ptr::from_mut::<OBJECT_ATTRIBUTES>(&mut oa)
-                .cast::<winapi::shared::ntdef::OBJECT_ATTRIBUTES>(),
+            std::ptr::from_mut(&mut oa).cast(),
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             disposition,
@@ -209,7 +207,7 @@ fn create_named_pipe(
             !0,
             4096,
             4096,
-            std::ptr::from_mut::<i64>(&mut timeout).cast::<LARGE_INTEGER>(),
+            std::ptr::from_mut(&mut timeout).cast(),
         ))?;
         Ok(File::from_raw_handle(handle.cast::<c_void>()))
     }
@@ -332,8 +330,7 @@ impl PipeExt for File {
                     null_mut(),
                     &mut iosb,
                     fsctl,
-                    std::ptr::from_mut::<FILE_PIPE_EVENT_SELECT_BUFFER>(&mut input)
-                        .cast::<c_void>(),
+                    std::ptr::from_mut(&mut input).cast(),
                     size_of_val(&input) as u32,
                     null_mut(),
                     0,
@@ -359,9 +356,9 @@ impl PipeExt for File {
                 null_mut(),
                 &mut iosb,
                 FSCTL_PIPE_EVENT_ENUM,
-                std::ptr::from_mut::<u64>(&mut handle_to_reset).cast::<c_void>(),
+                std::ptr::from_mut(&mut handle_to_reset).cast(),
                 size_of_val(&handle_to_reset) as u32,
-                std::ptr::from_mut::<u32>(&mut events).cast::<c_void>(),
+                std::ptr::from_mut(&mut events).cast(),
                 size_of_val(&events) as u32,
             ))?;
             Ok(events)
@@ -376,7 +373,7 @@ impl PipeExt for File {
             chk_status(NtQueryInformationFile(
                 self.as_raw_handle().cast::<c_void>(),
                 &mut iosb,
-                std::ptr::from_mut::<FILE_PIPE_LOCAL_INFORMATION>(&mut info).cast(),
+                std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info) as u32,
                 FilePipeLocalInformation,
             ))?;

@@ -196,7 +196,7 @@ impl DioQueue {
             let buf = &mut self.state.in_buf[buf_index];
             ReadFile(
                 self.nic.f.as_raw_handle(),
-                buf.as_mut_ptr(),
+                buf.as_mut_ptr().cast(),
                 buf.len() as u32,
                 ptr::null_mut(),
                 self.state.in_overlapped[buf_index].as_ptr(),
@@ -265,7 +265,7 @@ impl DioQueue {
                 unsafe {
                     WriteFile(
                         self.nic.f.as_raw_handle(),
-                        buf.as_ptr(),
+                        buf.as_ptr().cast(),
                         len as u32,
                         ptr::null_mut(),
                         o.as_ptr(),
