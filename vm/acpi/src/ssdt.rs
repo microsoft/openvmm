@@ -131,9 +131,64 @@ impl Ssdt {
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));
 
-        // TODO: Add an _OSC method to grant native PCIe control. Linux ignores
-        // OSC and assumes control, but Windows will skip initialization of
-        // some PCIe features when OSC is not granted.
+        // _OSC method: grant native PCIe control to the OS.
+        //
+        // Method(_OSC, 4) {
+        //   // Arg0=UUID, Arg1=Rev, Arg2=Count, Arg3=Capabilities buffer
+        //   // Create a field over the first DWORD (status) of the capabilities buffer
+        //   CreateDWordField(Arg3, 0, STS0)
+        //   // Check UUID matches PCIe Host Bridge UUID
+        //   If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766"))) {
+        //     // Grant everything — return Arg3 unchanged (status = 0 = success)
+        //   } Else {
+        //     // Unrecognized UUID — set bit 2 of status DWORD
+        //     Or(STS0, 0x04, STS0)
+        //   }
+        //   Return(Arg3)
+        // }
+        let mut osc_method = Method::new(b"_OSC");
+        osc_method.set_arg_count(4);
+
+        // CreateDWordField(Arg3, 0, STS0)
+        osc_method.add_operation(&CreateDWordFieldOp {
+            source_buffer: encode_arg(3),
+            byte_index: encode_integer(0),
+            field_name: *b"STS0",
+        });
+
+        // If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")))
+        let uuid_buffer = encode_uuid_buffer("33DB4D5B-1FF7-401C-9657-7441C03DD766");
+        let lequal = LEqualOp {
+            left: encode_arg(0),
+            right: uuid_buffer,
+        };
+
+        // Else { Or(STS0, 0x04, STS0) }
+        let or_op = OrOp {
+            operand1: b"STS0".to_vec(),
+            operand2: encode_integer(0x04),
+            target_name: b"STS0".to_vec(),
+        };
+        let else_body = ElseOp {
+            body: or_op.to_bytes(),
+        };
+
+        // If block with empty body (grant everything), followed by Else
+        let if_body = Vec::new();
+        // Empty If body — success path does nothing (Arg3 returned unchanged)
+        let if_op = IfOp {
+            predicate: lequal.to_bytes(),
+            body: if_body.clone(),
+        };
+        osc_method.add_operation(&if_op);
+        osc_method.add_operation(&else_body);
+
+        // Return(Arg3)
+        osc_method.add_operation(&ReturnOp {
+            result: encode_arg(3),
+        });
+
+        pcie.add_object(&osc_method);
 
         let mut crs = CurrentResourceSettings::new();
         crs.add_resource(&BusNumber::new(

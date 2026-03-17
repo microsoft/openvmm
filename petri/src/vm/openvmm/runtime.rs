@@ -268,6 +268,20 @@ impl PetriVmOpenVmm {
             command_line: &str
         ) -> anyhow::Result<()>
     );
+
+    /// Hot-add a PCIe device to a named port at runtime.
+    pub async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.inner.add_pcie_device(port_name, resource).await
+    }
+
+    /// Hot-remove a PCIe device from a named port at runtime.
+    pub async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.inner.remove_pcie_device(port_name).await
+    }
     petri_vm_fn!(
         /// Resets the hardware state of the VM, simulating a power cycle.
         pub async fn reset(&mut self) -> anyhow::Result<()>
@@ -442,6 +456,18 @@ impl PetriVmInner {
 
     async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
         self.worker.update_command_line(command_line).await
+    }
+
+    async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.worker.add_pcie_device(port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.worker.remove_pcie_device(port_name).await
     }
 
     async fn restore_openhcl(&self) -> anyhow::Result<()> {

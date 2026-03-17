@@ -177,3 +177,114 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Test PCIe hotplug: hot-add a device to a hotplug-capable port, verify the
+/// guest sees it, then hot-remove it and verify it's gone.
+///
+/// Requires `CONFIG_HOTPLUG_PCI_PCIE=y` in the test kernel.
+#[openvmm_test(linux_direct_x64)]
+async fn pcie_hotplug(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const ECAM_SIZE: u64 = 256 * 1024 * 1024;
+    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+
+    let os_flavor = config.os_flavor();
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                let low_mmio_start = c.memory.mmio_gaps[0].start();
+                let high_mmio_end = c.memory.mmio_gaps[1].end();
+                let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
+                let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
+                let ecam_range = MemoryRange::new(pcie_low.start() - ECAM_SIZE..pcie_low.start());
+                c.memory.pci_ecam_gaps.push(ecam_range);
+                c.memory.pci_mmio_gaps.push(pcie_low);
+                c.memory.pci_mmio_gaps.push(pcie_high);
+                c.pcie_root_complexes.push(PcieRootComplexConfig {
+                    index: 0,
+                    name: "rc0".into(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: 255,
+                    ecam_range,
+                    low_mmio: pcie_low,
+                    high_mmio: pcie_high,
+                    ports: vec![
+                        PcieRootPortConfig {
+                            name: "rp0".into(),
+                            hotplug: true,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp1".into(),
+                            hotplug: false,
+                        },
+                    ],
+                })
+            })
+        })
+        .run()
+        .await?;
+
+    // Verify initial state: only root ports, no endpoints
+    let initial_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    let initial_endpoints = initial_devices
+        .iter()
+        .filter(|d| d.class_code != 0x060400) // filter out PCI-to-PCI bridges (root ports)
+        .count();
+    tracing::info!(?initial_devices, "initial PCI devices");
+    assert_eq!(initial_endpoints, 0, "expected no endpoints initially");
+
+    // Hot-add an NVMe controller (no namespaces) to rp0
+    let nvme_resource = vm_resource::Resource::new(nvme_resources::NvmeControllerHandle {
+        subsystem_id: guid::Guid::ZERO,
+        msix_count: 2,
+        max_io_queues: 1,
+        namespaces: vec![],
+        requests: None,
+    });
+    vm.add_pcie_device("rp0".into(), nvme_resource).await?;
+
+    // Wait for Linux to enumerate the device (poll with retries)
+    let mut found = false;
+    for attempt in 0..30 {
+        let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+        let endpoints = devices
+            .iter()
+            .filter(|d| d.class_code != 0x060400)
+            .count();
+        if endpoints >= 1 {
+            tracing::info!(?devices, attempt, "device appeared after hotplug");
+            found = true;
+            break;
+        }
+        // Use guest-side sleep to avoid needing tokio on the host
+        let sh = agent.unix_shell();
+        cmd!(sh, "sleep 0.5").run().await?;
+    }
+    assert!(found, "expected NVMe endpoint to appear after hot-add");
+
+    // Hot-remove the device
+    vm.remove_pcie_device("rp0".into()).await?;
+
+    // Wait for Linux to de-enumerate the device
+    let mut removed = false;
+    for attempt in 0..30 {
+        let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+        let endpoints = devices
+            .iter()
+            .filter(|d| d.class_code != 0x060400)
+            .count();
+        if endpoints == 0 {
+            tracing::info!(attempt, "device removed after hot-remove");
+            removed = true;
+            break;
+        }
+        let sh = agent.unix_shell();
+        cmd!(sh, "sleep 0.5").run().await?;
+    }
+    assert!(removed, "expected endpoint to disappear after hot-remove");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
