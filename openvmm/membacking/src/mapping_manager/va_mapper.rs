@@ -274,11 +274,23 @@ impl VaMapper {
         self.inner.mapping.alloc(offset, len)
     }
 
+    /// Marks a range as eligible for Transparent Huge Pages.
+    ///
+    /// Only valid when private_ram mode is enabled.
+    #[cfg(target_os = "linux")]
+    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        assert!(
+            self.private_ram,
+            "madvise_hugepage requires private RAM mode"
+        );
+        self.inner.mapping.madvise_hugepage(offset, len)
+    }
+
     /// Decommits a range of private RAM, releasing physical pages back to the
     /// host.
     ///
     /// Only valid when private_ram mode is enabled.
-    #[allow(dead_code)] // Will be used by ballooning / memory hot-remove.
+    #[expect(dead_code)] // Will be used by ballooning / memory hot-remove.
     pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         assert!(self.private_ram, "decommit requires private RAM mode");
         self.inner.mapping.decommit(offset, len)

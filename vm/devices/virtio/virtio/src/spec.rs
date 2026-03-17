@@ -238,8 +238,12 @@ pub mod queue {
         pub next: bool,
         pub write: bool,
         pub indirect: bool,
-        #[bits(13)]
+        #[bits(4)]
         _reserved: u16,
+        pub available: bool,
+        #[bits(7)]
+        _reserved2: u16,
+        pub used: bool,
     }
 
     /*
@@ -286,6 +290,79 @@ pub mod queue {
     pub struct UsedFlags {
         pub no_notify: bool,
         #[bits(15)]
+        _reserved: u16,
+    }
+
+    #[repr(C)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct PackedDescriptor {
+        pub address: u64_le,
+        pub length: u32_le,
+        pub buffer_id: u16_le,
+        pub flags_raw: u16_le,
+    }
+
+    impl PackedDescriptor {
+        pub fn new() -> Self {
+            Self {
+                address: u64_le::new(0),
+                length: u32_le::new(0),
+                buffer_id: u16_le::new(0),
+                flags_raw: u16_le::new(0),
+            }
+        }
+
+        pub fn with_buffer_id(mut self, buffer_id: u16) -> Self {
+            self.buffer_id = u16_le::new(buffer_id);
+            self
+        }
+
+        pub fn with_length(mut self, length: u32) -> Self {
+            self.length = u32_le::new(length);
+            self
+        }
+
+        pub fn with_flags(mut self, flags: DescriptorFlags) -> Self {
+            self.flags_raw = u16_le::new(flags.into_bits());
+            self
+        }
+
+        pub fn flags(&self) -> DescriptorFlags {
+            self.flags_raw.get().into()
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum EventSuppressionFlags {
+        Enabled = 0,
+        Disabled = 1,
+        DescriptorIndex = 2,
+        Reserved = 3,
+    }
+    impl EventSuppressionFlags {
+        const fn into_bits(self) -> u8 {
+            self as _
+        }
+        const fn from_bits(value: u8) -> Self {
+            match value {
+                0 => Self::Enabled,
+                1 => Self::Disabled,
+                2 => Self::DescriptorIndex,
+                _ => Self::Reserved,
+            }
+        }
+    }
+
+    #[bitfield(u32, repr = u32_le, from = u32_le::new, into = u32_le::get)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct PackedEventSuppression {
+        #[bits(15)]
+        pub offset: u16,
+        pub wrap: bool,
+        #[bits(2, default = EventSuppressionFlags::Enabled, from = EventSuppressionFlags::from_bits, into = EventSuppressionFlags::into_bits)]
+        pub flags: EventSuppressionFlags,
+        #[bits(14)]
         _reserved: u16,
     }
 }

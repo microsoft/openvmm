@@ -100,9 +100,14 @@ impl<'a> View<'a> {
         }
     }
 
-    pub fn iter(&self) -> impl '_ + Iterator<Item = &u8> {
+    /// Copies the view contents into `buf`.
+    ///
+    /// # Panics
+    /// Panics if `buf` is smaller than the view length.
+    pub fn copy_to_slice(&self, buf: &mut [u8]) {
         let (a, b) = self.as_slices();
-        a.iter().chain(b)
+        buf[..a.len()].copy_from_slice(a);
+        buf[a.len()..a.len() + b.len()].copy_from_slice(b);
     }
 }
 

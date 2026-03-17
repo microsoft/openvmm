@@ -6,6 +6,7 @@
 
 - [OpenVMM](./user_guide/openvmm.md)
   - [Running OpenVMM](./user_guide/openvmm/run.md)
+    - [Alpine Linux](./user_guide/openvmm/alpine.md)
   - [VM Configurations](./user_guide/openvmm/vm_configurations.md)
   - [Troubleshooting](./user_guide/openvmm/troubleshooting.md)
   - [Next Steps](./user_guide/openvmm/next_steps.md)

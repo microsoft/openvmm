@@ -191,7 +191,12 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
         .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
         layers: vec![
-            RamDiskLayerHandle { len: None }.into_resource().into(),
+            RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }
+            .into_resource()
+            .into(),
             DiskLayerHandle(disk).into_resource().into(),
         ],
     }
@@ -218,9 +223,11 @@ fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
 
 fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>> {
     Ok(match disk {
-        Disk::Memory(len) => {
-            LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(*len) }).into_resource()
-        }
+        Disk::Memory(len) => LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+            len: Some(*len),
+            sector_size: None,
+        })
+        .into_resource(),
         Disk::Differencing(path) => memdiff_disk(path)?,
         Disk::Persistent(path) => open_disk_type(path.as_ref(), false)?,
         Disk::Temporary(path) => open_disk_type(path.as_ref(), false)?,

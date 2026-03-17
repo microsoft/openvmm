@@ -6,6 +6,7 @@
 #![expect(missing_docs)]
 
 mod common;
+pub mod device;
 pub mod queue;
 pub mod resolve;
 pub mod resolver;
@@ -14,6 +15,7 @@ mod tests;
 pub mod transport;
 
 pub use common::*;
+pub use device::VirtioDevice;
 pub use transport::*;
 
-const QUEUE_MAX_SIZE: u16 = 0x40; // TODO: make queue size configurable
+pub const QUEUE_MAX_SIZE: u16 = 0x40; // TODO: make queue size configurable

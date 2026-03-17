@@ -27,7 +27,7 @@ pub struct FloweyShell {
 
 impl FloweyShell {
     /// Create a new `FloweyShell` with no command wrapper.
-    #[allow(clippy::disallowed_methods)]
+    #[expect(clippy::disallowed_methods)]
     pub fn new() -> anyhow::Result<Self> {
         Ok(Self {
             inner: xshell::Shell::new()?,
@@ -332,11 +332,7 @@ impl CommandWrapperKind {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::disallowed_macros,
-    clippy::disallowed_methods,
-    reason = "test module"
-)]
+#[expect(clippy::disallowed_macros, reason = "test module")]
 mod tests {
     use super::*;
 

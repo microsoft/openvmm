@@ -17,19 +17,28 @@ For cross-compilation from WSL2 to Windows, see
 `Guide/src/dev_guide/getting_started/cross_compile.md` and source
 `. ./build_support/setup_windows_cross.sh`.
 
-## Formatting & Linting
+## Git Commit Rules
 
-Always run before committing:
-```bash
-cargo xtask fmt --fix
-cargo clippy --all-targets -p <package-name>
-cargo doc -p <package-name>
-```
+- **Never amend commits that have already been pushed.** Make new commits
+  instead. PRs are squash-merged, so a clean history is unnecessary.
+- Rebasing onto `main` to resolve conflicts is fine, but do not use
+  `git commit --amend`, `git rebase -i`, or `git push --force` to clean
+  up history on already-pushed commits.
 
-`cargo xtask fmt --fix` runs all formatting checks (rustfmt, copyright
-headers, naming conventions) and applies auto-fixes where supported. If it
-still fails, fix the remaining reported issues manually and re-run until it
-succeeds. Do not run individual `--pass` commands afterward.
+## Pre-Commit Checklist (MANDATORY)
+
+**You MUST run these commands before every `git commit` in this repo.
+Do NOT commit without completing all three steps.**
+
+1. `cargo clippy --all-targets -p <package-name>` — for each modified package.
+2. `cargo doc -p <package-name>` — for each modified package.
+3. `cargo xtask fmt --fix` — fix formatting, headers, naming conventions.
+   Run this **last** because fixing clippy/doc issues may introduce
+   formatting changes that need to be cleaned up.
+
+If `cargo xtask fmt --fix` still fails after auto-fixes, fix the remaining
+reported issues manually and re-run until it succeeds. Do not run individual
+`--pass` commands afterward.
 
 ## Trust Boundaries & Safety
 
@@ -85,6 +94,13 @@ cargo nextest run -p <package-name>
 - Mark tests requiring special setup with `#[ignore]`.
 - Update `Guide/` docs when adding features or changing behavior
   (see `.github/instructions/doc-code-sync.instructions.md` for the mapping)
+- **CI failures** — to investigate failing CI checks on a PR, load the
+  `openvmm-ci-investigation` skill.
+
+## Rust Edition
+
+This project uses the **Rust 2024 edition** (`edition = "2024"` in root
+`Cargo.toml`).
 
 ## Common Pitfalls
 

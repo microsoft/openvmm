@@ -1941,12 +1941,12 @@ pub mod steps {
             /// action to use. For example, the following code generates the following yaml:
             ///
             /// ```ignore
-            /// GhStepBuilder::new("Check out repository code", "actions/checkout@v4").finish()
+            /// GhStepBuilder::new("Check out repository code", "actions/checkout@v6").finish()
             /// ```
             ///
             /// ```ignore
             /// - name: Check out repository code
-            ///   uses: actions/checkout@v4
+            ///   uses: actions/checkout@v6
             /// ```
             ///
             /// For more information on the yaml syntax for the `name` and `uses` parameters,

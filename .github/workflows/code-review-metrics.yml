@@ -24,7 +24,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Calculate Date Range
         id: date-range
@@ -251,7 +251,7 @@ jobs:
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
 
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: code-review-metrics-${{ github.run_number }}
           path: |

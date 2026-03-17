@@ -282,6 +282,7 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     let disk_size: u64 = 8 * 1024 * 1024; // 8 MiB
     let disk_resource = LayeredDiskHandle::single_layer(RamDiskLayerHandle {
         len: Some(disk_size),
+        sector_size: None,
     })
     .into_resource();
 
@@ -333,6 +334,74 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     assert!(
         readback.starts_with("hello_virtio_blk"),
         "read back data mismatch: {readback}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with a virtio-rng device via virtio-mmio and verify the guest can read entropy.
+#[openvmm_test(linux_direct_x64)]
+async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use virtio_resources::rng::VirtioRngHandle;
+
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                c.virtio_devices
+                    .push((VirtioBus::Mmio, VirtioRngHandle.into_resource()));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Fail fast if the virtio-rng driver isn't available in the guest kernel
+    cmd!(sh, "test -e /dev/hwrng")
+        .run()
+        .await
+        .context("/dev/hwrng not found — guest kernel may lack CONFIG_HW_RANDOM_VIRTIO")?;
+
+    // Verify virtio-rng driver bound to the device
+    let rng_current = cmd!(sh, "cat /sys/class/misc/hw_random/rng_current")
+        .read()
+        .await
+        .context("failed to read rng_current")?;
+    let rng_current = rng_current.trim();
+    assert!(
+        rng_current.starts_with("virtio_rng"),
+        "expected virtio_rng as current hwrng, got {rng_current:?}"
+    );
+
+    // Read 64 bytes of entropy with a timeout to avoid hanging if the device is broken
+    let read_entropy = async {
+        cmd!(
+            sh,
+            "sh -c 'dd if=/dev/hwrng bs=64 count=1 2>/dev/null | od -A n -t x1 | tr -d \" \\n\"'"
+        )
+        .read()
+        .await
+    };
+    let hex_output = mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(10))
+        .until_cancelled(read_entropy)
+        .await
+        .context("timed out reading from /dev/hwrng — device may be broken")?
+        .context("failed to read from /dev/hwrng")?;
+    let hex = hex_output.trim();
+    assert_eq!(
+        hex.len(),
+        128,
+        "expected 128 hex chars (64 bytes), got {}",
+        hex.len()
+    );
+    assert_ne!(
+        hex,
+        "0".repeat(128),
+        "hwrng returned all zeros — device not producing entropy"
     );
 
     agent.power_off().await?;

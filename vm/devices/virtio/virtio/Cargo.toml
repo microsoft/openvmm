@@ -27,7 +27,6 @@ tracelimit.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
-event-listener.workspace = true
 futures.workspace = true
 open_enum.workspace = true
 parking_lot.workspace = true

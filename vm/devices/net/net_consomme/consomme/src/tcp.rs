@@ -109,8 +109,8 @@ impl Tcp {
             connections: HashMap::new(),
             listeners: HashMap::new(),
             connection_params: ConnectionParams {
-                rx_buffer_size: 16384,
-                tx_buffer_size: 16384,
+                rx_buffer_size: 256 * 1024,
+                tx_buffer_size: 256 * 1024,
             },
         }
     }
@@ -497,13 +497,6 @@ impl<T: Client> Sender<'_, T> {
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_dst_addr(self.state.params.client_mac);
         eth_packet.set_src_addr(self.state.params.gateway_mac);
-        let copy_payload_into_buffer = |buf: &mut [u8], payload: Option<ring::View<'_>>| {
-            if let Some(payload) = payload {
-                for (b, c) in buf.iter_mut().zip(payload.iter()) {
-                    *b = *c;
-                }
-            }
-        };
         let ip = IpRepr::new(
             self.ft.dst.ip().into(),
             self.ft.src.ip().into(),
@@ -547,7 +540,9 @@ impl<T: Client> Sender<'_, T> {
         );
 
         // Copy payload into TCP packet
-        copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
+        if let Some(payload) = &payload {
+            payload.copy_to_slice(tcp_packet.payload_mut());
+        }
         tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
         let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match self.ft.dst {
@@ -657,10 +652,7 @@ impl TcpConnection {
             Ok(_) => unreachable!(),
             Err(err) if is_connect_incomplete_error(&err) => (),
             Err(err) => {
-                tracing::warn!(
-                    error = &err as &dyn std::error::Error,
-                    "socket connect error"
-                );
+                log_connect_error(&err);
                 sender.rst(TcpSeqNumber(0), Some(tcp.seq_number + tcp.segment_len()));
                 return Err(DropReason::Io(err));
             }
@@ -863,7 +855,7 @@ impl TcpConnectionInner {
                         let err = take_socket_error(socket);
                         match err.kind() {
                             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
-                            _ => tracing::warn!(
+                            _ => tracelimit::warn_ratelimited!(
                                 error = &err as &dyn std::error::Error,
                                 "socket failure after fin"
                             ),
@@ -893,7 +885,7 @@ impl TcpConnectionInner {
                                     error = &err as &dyn std::error::Error,
                                     "socket read error"
                                 ),
-                                _ => tracing::warn!(
+                                _ => tracelimit::warn_ratelimited!(
                                     error = &err as &dyn std::error::Error,
                                     "socket read error"
                                 ),
@@ -920,7 +912,7 @@ impl TcpConnectionInner {
                         match err.kind() {
                             ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {}
                             _ => {
-                                tracing::warn!(
+                                tracelimit::warn_ratelimited!(
                                     error = &err as &dyn std::error::Error,
                                     "socket write error"
                                 );
@@ -934,7 +926,10 @@ impl TcpConnectionInner {
             }
             if self.rx_buffer.is_empty() && self.state.rx_fin() && !self.is_shutdown {
                 if let Err(err) = socket.get().shutdown(Shutdown::Write) {
-                    tracing::warn!(error = &err as &dyn std::error::Error, "shutdown error");
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "shutdown error"
+                    );
                     sender.rst(self.tx_send, Some(self.rx_seq));
                     return false;
                 }
@@ -953,35 +948,13 @@ impl TcpConnectionInner {
         socket: &mut PolledSocket<Socket>,
     ) {
         let err = take_socket_error(socket);
-        let reset = match err.kind() {
-            ErrorKind::TimedOut => {
-                // Avoid resetting so that the guest doesn't
-                // think there is a responding TCP stack at this
-                // address. The guest will time out on its own.
-                tracing::debug!(error = &err as &dyn std::error::Error, "connect timed out");
-                false
-            }
-            ErrorKind::ConnectionRefused => {
-                // Presumably the remote TCP stack send a RST.
-                // Send a reset but don't log anything.
-                tracing::debug!(error = &err as &dyn std::error::Error, "connection refused");
-                true
-            }
-            _ => {
-                // Something unexpected happened. Log and reset.
-                //
-                // FUTURE: Handle more cases, especially
-                // ENETUNREACH and similar, once we figure out
-                // the right behavior for these. They might
-                // require sending ICMP packets.
-                tracing::warn!(
-                    error = &err as &dyn std::error::Error,
-                    "unhandled connect failure"
-                );
-                true
-            }
-        };
-        if reset {
+        if err.kind() == ErrorKind::TimedOut {
+            // Avoid resetting so that the guest doesn't think there is a
+            // responding TCP stack at this address. The guest will time out on
+            // its own.
+            tracing::debug!(error = &err as &dyn std::error::Error, "connect timed out");
+        } else {
+            log_connect_error(&err);
             sender.rst(self.tx_send, Some(self.rx_seq));
         }
     }
@@ -1429,6 +1402,28 @@ fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
         Ok(Some(err)) => err,
         Ok(_) => io::Error::other("missing error"),
         Err(err) => err,
+    }
+}
+
+/// Log a TCP connect error at the appropriate level.
+///
+/// Connection refused and network/host unreachable are expected failures logged
+/// at debug level. Everything else is logged at warn.
+fn log_connect_error(err: &io::Error) {
+    match err.kind() {
+        ErrorKind::ConnectionRefused => {
+            tracing::debug!(error = err as &dyn std::error::Error, "connect refused");
+        }
+        ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable => {
+            // FUTURE: send ICMP unreachable to guest
+            tracing::debug!(
+                error = err as &dyn std::error::Error,
+                "connect failed, unreachable"
+            );
+        }
+        _ => {
+            tracelimit::warn_ratelimited!(error = err as &dyn std::error::Error, "connect failed");
+        }
     }
 }
 

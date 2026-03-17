@@ -356,13 +356,23 @@ fn get_feed_endpoints_json(
         return Ok(None);
     }
 
+    // Resolve the `az` CLI binary. We use `which` instead of a bare "az"
+    // because on Windows the CLI is installed as `az.cmd` and Rust's
+    // Command does not consult PATHEXT to find it.
+    let az_cli_bin = which::which("az").map_err(|_| {
+        anyhow::anyhow!(
+            "`az` CLI not found on PATH. \
+             Install the Azure CLI and run `az login` to authenticate."
+        )
+    })?;
+
     // 1. Get a bearer token from az CLI.
     // The resource ID 499b84ac-1321-427f-aa17-267ca6975798 is Azure DevOps.
     // The output contains a credential, so mark the command as secret to
     // prevent it from appearing in process listings / logs.
     let bearer_token = flowey::shell_cmd!(
         rt,
-        "az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv"
+        "{az_cli_bin} account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv"
     )
     .secret()
     .read()

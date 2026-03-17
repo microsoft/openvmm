@@ -355,6 +355,26 @@ impl SparseMapping {
         Ok(())
     }
 
+    /// Marks a range as eligible for Transparent Huge Pages.
+    ///
+    /// This calls `madvise(MADV_HUGEPAGE)` so that khugepaged can collapse
+    /// small pages into huge pages. Only effective on anonymous mappings.
+    #[cfg(target_os = "linux")]
+    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), Error> {
+        let _ = self.validate_offset_len(offset, len)?;
+        if len == 0 {
+            return Ok(());
+        }
+        // SAFETY: the address and length have been validated above.
+        unsafe {
+            let addr = self.address.add(offset);
+            if libc::madvise(addr, len, libc::MADV_HUGEPAGE) < 0 {
+                return Err(Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
     /// Commits a range of memory, making it accessible.
     ///
     /// On Linux, this is a no-op because the kernel handles page faults
