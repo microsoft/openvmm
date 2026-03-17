@@ -670,6 +670,12 @@ mod saved_state {
 
             self.device_status = new_status;
 
+            // Reset ephemeral runtime state.
+            self.disabling = false;
+            self.disable_index = 0;
+            self.poll_waker = None;
+            self.doorbells.clear();
+
             Ok(())
         }
     }
