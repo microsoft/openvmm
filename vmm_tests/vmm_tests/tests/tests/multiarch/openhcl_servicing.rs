@@ -1260,26 +1260,17 @@ async fn find_cpus_with_io_issuers(
     let devices: serde_json::Value = serde_json::from_str(&format!("{}", devices.json()))?;
     let device = devices
         .as_object()
-        .with_context(|| {
-            "inspect path 'vm/nvme/devices' did not yield a JSON object; NVMe inspect schema may have changed"
-        })?
+        .expect("inspect path 'vm/nvme/devices' did not yield a JSON object; NVMe inspect schema may have changed")
         .values()
         .next()
-        .with_context(|| {
-            "no NVMe devices found under inspect path 'vm/nvme/devices'; device list is empty"
-        })?;
+        .expect("no NVMe devices found under inspect path 'vm/nvme/devices'; device list is empty");
     let per_cpu = &device["driver"]["driver"]["io_issuers"]["per_cpu"];
     let per_cpu_map = per_cpu
         .as_object()
-        .with_context(|| {
-            "inspect field 'driver.driver.io_issuers.per_cpu' is not a JSON object; NVMe inspect schema may have changed"
-        })?;
+        .expect("inspect field 'driver.driver.io_issuers.per_cpu' is not a JSON object; NVMe inspect schema may have changed");
     let cpu_indices = per_cpu_map
         .keys()
-        .map(|key| {
-            key.parse::<u32>()
-                .with_context(|| format!("per_cpu map key '{key}' is not a valid u32 CPU index"))
-        })
+        .map(|key| key.parse::<u32>())
         .collect::<Result<Vec<u32>, _>>()?;
     Ok(cpu_indices)
 }
