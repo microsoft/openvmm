@@ -47,13 +47,13 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use std::time::Duration;
-use winapi::um::winbase::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
-use winapi::um::winbase::FILE_SKIP_SET_EVENT_ON_HANDLE;
-use winapi::um::winnt::TP_CALLBACK_INSTANCE;
-use winapi::um::winnt::TP_IO;
-use winapi::um::winnt::TP_TIMER;
-use winapi::um::winnt::TP_WAIT;
-use winapi::um::winnt::TP_WORK;
+use windows_sys::Win32::System::Threading::PTP_CALLBACK_INSTANCE;
+use windows_sys::Win32::System::Threading::PTP_IO;
+use windows_sys::Win32::System::Threading::PTP_TIMER;
+use windows_sys::Win32::System::Threading::PTP_WAIT;
+use windows_sys::Win32::System::Threading::PTP_WORK;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_SET_EVENT_ON_HANDLE;
 
 /// A Windows thread pool.
 #[derive(Debug, Clone)]
@@ -131,9 +131,9 @@ impl Spawn for TpPool {
 }
 
 unsafe extern "system" fn tp_work_callback(
-    _: *mut TP_CALLBACK_INSTANCE,
+    _: PTP_CALLBACK_INSTANCE,
     context: *mut c_void,
-    _: *mut TP_WORK,
+    _: PTP_WORK,
 ) {
     // SAFETY: consume reference incremented in schedule().
     let next = unsafe { Arc::from_raw(context as *const NextRunnable) };
@@ -194,9 +194,9 @@ impl WaitDriver for TpPool {
 }
 
 unsafe extern "system" fn tp_wait_complete(
-    _: *mut TP_CALLBACK_INSTANCE,
+    _: PTP_CALLBACK_INSTANCE,
     context: *mut c_void,
-    _: *mut TP_WAIT,
+    _: PTP_WAIT,
     _: u32,
 ) {
     // SAFETY: Claiming the reference incremented in poll_wait.
@@ -325,12 +325,12 @@ impl AfdHandle for TpAfdHandle {
 }
 
 unsafe extern "system" fn tp_afd_io_complete(
-    _: *mut TP_CALLBACK_INSTANCE,
+    _: PTP_CALLBACK_INSTANCE,
     _: *mut c_void,
     overlapped: *mut c_void,
     _: u32,
     _: usize,
-    _: *mut TP_IO,
+    _: PTP_IO,
 ) {
     let mut wakers = WakerList::default();
     // SAFETY: the overlapped IO is complete (and will be considered so only once).
@@ -413,9 +413,9 @@ impl Drop for Timer {
 }
 
 unsafe extern "system" fn tp_timer_callback(
-    _: *mut TP_CALLBACK_INSTANCE,
+    _: PTP_CALLBACK_INSTANCE,
     context: *mut c_void,
-    _: *mut TP_TIMER,
+    _: PTP_TIMER,
 ) {
     let inner = unsafe { Arc::from_raw(context as *const Mutex<TimerInner>) };
     wake_locally(|| {
@@ -506,12 +506,12 @@ impl OverlappedIoDriver for TpPool {
 }
 
 unsafe extern "system" fn tp_io_callback(
-    _: *mut TP_CALLBACK_INSTANCE,
+    _: PTP_CALLBACK_INSTANCE,
     _: *mut c_void,
     overlapped: *mut c_void,
     _: u32,
     _: usize,
-    _: *mut TP_IO,
+    _: PTP_IO,
 ) {
     let mut wakers = WakerList::default();
     // SAFETY: the IO is done and will be considered so only once.
