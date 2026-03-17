@@ -254,6 +254,12 @@ pub struct GhPrTriggers {
     pub auto_cancel: bool,
     /// Run the pipeline whenever the PR trigger matches the specified types
     pub types: Vec<String>,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub paths_ignore: Vec<String>,
 }
 
 /// Trigger Github Actions pipelines per PR
@@ -271,6 +277,12 @@ pub struct GhCiTriggers {
     /// Specify any tags which should be filtered out from the list of `tags`
     /// (supports glob syntax)
     pub exclude_tags: Vec<String>,
+    /// Only run the pipeline when files matching these paths are changed
+    /// (supports glob syntax)
+    pub paths: Vec<String>,
+    /// Specify any paths which should be filtered out from the list of
+    /// `paths` (supports glob syntax)
+    pub paths_ignore: Vec<String>,
 }
 
 impl GhPrTriggers {
@@ -286,6 +298,8 @@ impl GhPrTriggers {
                 "ready_for_review".into(),
             ],
             auto_cancel: true,
+            paths: Vec::new(),
+            paths_ignore: Vec::new(),
         }
     }
 }
