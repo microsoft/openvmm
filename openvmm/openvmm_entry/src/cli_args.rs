@@ -360,7 +360,10 @@ options:
     pub igvm_vtl2_relocation_type: Vtl2BaseAddressType,
 
     /// add a virtio_9p device (e.g. myfs,C:\)
-    #[clap(long, value_name = "tag,root_path")]
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path")]
     pub virtio_9p: Vec<FsArgs>,
 
     /// output debug info from the 9p server
@@ -368,11 +371,17 @@ options:
     pub virtio_9p_debug: bool,
 
     /// add a virtio_fs device (e.g. myfs,C:\,uid=1000,gid=2000)
-    #[clap(long, value_name = "tag,root_path,[options]")]
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path,[options]")]
     pub virtio_fs: Vec<FsArgsWithOptions>,
 
     /// add a virtio_fs device for sharing memory (e.g. myfs,\SectionDirectoryPath)
-    #[clap(long, value_name = "tag,root_path")]
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path")]
     pub virtio_fs_shmem: Vec<FsArgs>,
 
     /// add a virtio_fs device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
@@ -380,8 +389,11 @@ options:
     pub virtio_fs_bus: VirtioBusCli,
 
     /// virtio PMEM device
-    #[clap(long, value_name = "PATH")]
-    pub virtio_pmem: Option<String>,
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]PATH")]
+    pub virtio_pmem: Option<VirtioPmemArgs>,
 
     /// add a virtio entropy (RNG) device
     #[clap(long)]
@@ -391,6 +403,10 @@ options:
     #[clap(long, value_name = "BUS", default_value = "auto")]
     pub virtio_rng_bus: VirtioBusCli,
 
+    /// attach the virtio-rng device to the specified PCIe port (overrides --virtio-rng-bus)
+    #[clap(long, value_name = "PORT", requires("virtio_rng"))]
+    pub virtio_rng_pcie_port: Option<String>,
+
     /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
     ///
     /// Accepts serial config (console | stderr | listen=\<path\> |
@@ -398,6 +414,10 @@ options:
     /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long)]
     pub virtio_console: Option<SerialConfigCli>,
+
+    /// attach the virtio-console device to the specified PCIe port
+    #[clap(long, value_name = "PORT", requires("virtio_console"))]
+    pub virtio_console_pcie_port: Option<String>,
 
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
@@ -752,19 +772,22 @@ Options:
 pub struct FsArgs {
     pub tag: String,
     pub path: String,
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for FsArgs {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (pcie_port, s) = parse_pcie_port_prefix(s);
         let mut s = s.split(',');
         let (Some(tag), Some(path), None) = (s.next(), s.next(), s.next()) else {
-            anyhow::bail!("expected <tag>,<path>");
+            anyhow::bail!("expected [pcie_port=<port>:]<tag>,<path>");
         };
         Ok(Self {
             tag: tag.to_owned(),
             path: path.to_owned(),
+            pcie_port,
         })
     }
 }
@@ -777,21 +800,25 @@ pub struct FsArgsWithOptions {
     pub path: String,
     /// The extra options, joined with ';'.
     pub options: String,
+    /// Optional PCIe port name.
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for FsArgsWithOptions {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (pcie_port, s) = parse_pcie_port_prefix(s);
         let mut s = s.split(',');
         let (Some(tag), Some(path)) = (s.next(), s.next()) else {
-            anyhow::bail!("expected <tag>,<path>[,<options>]");
+            anyhow::bail!("expected [pcie_port=<port>:]<tag>,<path>[,<options>]");
         };
         let options = s.collect::<Vec<_>>().join(";");
         Ok(Self {
             tag: tag.to_owned(),
             path: path.to_owned(),
             options,
+            pcie_port,
         })
     }
 }
@@ -802,6 +829,42 @@ pub enum VirtioBusCli {
     Mmio,
     Pci,
     Vpci,
+}
+
+/// Parse an optional `pcie_port=<name>:` prefix from a CLI argument string.
+///
+/// Returns `(Some(port_name), rest)` if the prefix is present, or
+/// `(None, original)` if not.
+fn parse_pcie_port_prefix(s: &str) -> (Option<String>, &str) {
+    if let Some(rest) = s.strip_prefix("pcie_port=") {
+        if let Some((port, rest)) = rest.split_once(':') {
+            if !port.is_empty() {
+                return (Some(port.to_string()), rest);
+            }
+        }
+    }
+    (None, s)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VirtioPmemArgs {
+    pub path: String,
+    pub pcie_port: Option<String>,
+}
+
+impl FromStr for VirtioPmemArgs {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (pcie_port, s) = parse_pcie_port_prefix(s);
+        if s.is_empty() {
+            anyhow::bail!("expected [pcie_port=<port>:]<path>");
+        }
+        Ok(Self {
+            path: s.to_owned(),
+            pcie_port,
+        })
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy)]
