@@ -99,7 +99,7 @@ pub async fn request_vmgs_encryption_keys(
 
     let exponent = transfer_key.e().to_vec();
     let modulus = transfer_key.n().to_vec();
-    let host_time = get_host_epoch_time(get).await;
+    let host_time = get.host_time().await.to_jiff().timestamp().as_second();
 
     let mut igvm_attest_request_helper = IgvmAttestRequestHelper::prepare_key_release_request(
         tee_call.tee_type(),
@@ -199,24 +199,6 @@ pub async fn request_vmgs_encryption_keys(
             Err((e, true))
         }
     }
-}
-
-/// Get windows epoch from host via GET and covert it into unix epoch.
-async fn get_host_epoch_time(get: &GuestEmulationTransportClient) -> i64 {
-    const WINDOWS_EPOCH: time::OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
-    const NANOS_IN_SECOND: i64 = 1_000_000_000;
-    const NANOS_100_IN_SECOND: i64 = NANOS_IN_SECOND / 100;
-    let response = get.host_time().await;
-
-    let host_time_since_windows_epoch = time::Duration::new(
-        response.utc / NANOS_100_IN_SECOND,
-        (response.utc % NANOS_100_IN_SECOND) as i32,
-    );
-
-    let linux_time =
-        WINDOWS_EPOCH + host_time_since_windows_epoch - time::OffsetDateTime::UNIX_EPOCH;
-
-    linux_time.whole_seconds()
 }
 
 /// Make the `IGVM_ATTEST` request to GET.

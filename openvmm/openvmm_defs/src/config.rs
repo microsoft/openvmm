@@ -268,10 +268,12 @@ pub enum ArchTopologyConfig {
 #[derive(Debug, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
+    pub prefetch_memory: bool,
+    pub private_memory: bool,
+    pub transparent_hugepages: bool,
     pub mmio_gaps: Vec<MemoryRange>,
     pub pci_ecam_gaps: Vec<MemoryRange>,
     pub pci_mmio_gaps: Vec<MemoryRange>,
-    pub prefetch_memory: bool,
 }
 
 #[derive(Debug, MeshPayload, Default)]

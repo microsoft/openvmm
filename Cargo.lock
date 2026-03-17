@@ -520,6 +520,7 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_counters",
+ "jiff",
  "local_clock",
  "mesh",
  "open_enum",
@@ -527,7 +528,6 @@ dependencies = [
  "power_resources",
  "test_with_tracing",
  "thiserror 2.0.16",
- "time",
  "tracelimit",
  "tracing",
  "vm_resource",
@@ -1005,6 +1005,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "debug_output_tracing"
+version = "0.0.0"
+dependencies = [
+ "smallvec",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.0",
+]
+
+[[package]]
 name = "debug_ptr"
 version = "0.0.0"
 
@@ -1101,15 +1111,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
-]
-
-[[package]]
-name = "deranged"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc3dc5ad92c2e2d1c193bbbbdf2ea477cb81331de4f3103f267ca18368b988c4"
-dependencies = [
- "powerfmt",
 ]
 
 [[package]]
@@ -1872,6 +1873,7 @@ dependencies = [
  "guestmem",
  "guid",
  "inspect",
+ "jiff",
  "local_clock",
  "mesh",
  "open_enum",
@@ -1879,7 +1881,6 @@ dependencies = [
  "pal_async",
  "test_with_tracing",
  "thiserror 2.0.16",
- "time",
  "tracelimit",
  "tracing",
  "ucs2 0.0.0",
@@ -2032,16 +2033,17 @@ name = "flowey_lib_common"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "dirs",
  "flowey",
  "fs-err",
  "home",
  "log",
  "rlimit",
+ "roxmltree",
  "rustc-hash 2.1.1",
  "serde",
  "serde_json",
  "target-lexicon",
+ "tempfile",
  "toml_edit",
  "which 8.0.0",
  "xshell",
@@ -2797,6 +2799,7 @@ dependencies = [
  "hvdef",
  "inspect",
  "inspect_counters",
+ "jiff",
  "mesh",
  "pal_async",
  "parking_lot",
@@ -3860,8 +3863,8 @@ name = "local_clock"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "jiff",
  "parking_lot",
- "time",
 ]
 
 [[package]]
@@ -4525,17 +4528,22 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "futures",
+ "guestmem",
  "inspect",
  "libc",
+ "libtest-mimic",
  "linux_net_bindings",
  "net_backend",
  "net_backend_resources",
+ "open_enum",
  "pal_async",
  "parking_lot",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4664,12 +4672,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "num-conv"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf97ec579c3c42f953ef76dbf8d55ac91fb219dde70e49aa4a6b7d74e9919050"
-
-[[package]]
 name = "num-integer"
 version = "0.1.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4718,15 +4720,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
-]
-
-[[package]]
-name = "num_threads"
-version = "0.1.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
-dependencies = [
- "libc",
 ]
 
 [[package]]
@@ -5443,9 +5436,11 @@ dependencies = [
  "uidevices",
  "virtio",
  "virtio_blk",
+ "virtio_console",
  "virtio_net",
  "virtio_p9",
  "virtio_pmem",
+ "virtio_rng",
  "virtiofs",
  "vm_resource",
  "vmbfs",
@@ -5794,6 +5789,7 @@ dependencies = [
  "disk_vhd1",
  "disk_vhdmp",
  "fatfs",
+ "flate2",
  "framebuffer",
  "fs-err",
  "fscommon",
@@ -5963,6 +5959,7 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
+ "libc",
  "mesh",
  "mesh_remote",
  "pal_async",
@@ -6084,12 +6081,6 @@ dependencies = [
  "mesh",
  "vm_resource",
 ]
-
-[[package]]
-name = "powerfmt"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "powershell_builder"
@@ -6414,6 +6405,12 @@ checksum = "7043b63bd0cd1aaa628e476b80e6d4023a3b50eb32789f2728908107bd0c793a"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rsa"
@@ -7575,38 +7572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "time"
-version = "0.3.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
-dependencies = [
- "deranged",
- "libc",
- "num-conv",
- "num_threads",
- "powerfmt",
- "serde_core",
- "time-core",
- "time-macros",
-]
-
-[[package]]
-name = "time-core"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
-
-[[package]]
-name = "time-macros"
-version = "0.2.27"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
-dependencies = [
- "num-conv",
- "time-core",
-]
-
-[[package]]
 name = "tinytemplate"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8166,7 +8131,6 @@ dependencies = [
  "tee_call",
  "test_with_tracing",
  "thiserror 2.0.16",
- "time",
  "tracing",
  "user_driver_emulated_mock",
  "vmgs",
@@ -8249,6 +8213,7 @@ dependencies = [
  "igvm_defs",
  "input_core",
  "inspect",
+ "jiff",
  "kmsg",
  "kmsg_defs",
  "kmsg_writer",
@@ -8299,7 +8264,6 @@ dependencies = [
  "tee_call",
  "test_with_tracing",
  "thiserror 2.0.16",
- "time",
  "tpm_device",
  "tpm_protocol",
  "tpm_resources",
@@ -8947,11 +8911,11 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "chipset_device",
  "device_emulators",
- "event-listener",
  "futures",
  "guestmem",
  "inspect",
  "mesh",
+ "open_enum",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -8988,13 +8952,38 @@ dependencies = [
  "task_control",
  "test_with_tracing",
  "tracelimit",
- "tracing",
  "unicycle",
  "virtio",
  "virtio_resources",
  "vm_resource",
  "vmcore",
  "zerocopy",
+]
+
+[[package]]
+name = "virtio_console"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "pal_event",
+ "parking_lot",
+ "serial_core",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
@@ -9018,6 +9007,7 @@ dependencies = [
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "virtio",
  "virtio_resources",
@@ -9031,10 +9021,10 @@ name = "virtio_p9"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "event-listener",
+ "futures",
  "guestmem",
  "inspect",
+ "pal_async",
  "plan9",
  "task_control",
  "tracing",
@@ -9049,11 +9039,11 @@ name = "virtio_pmem"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "event-listener",
  "fs-err",
+ "futures",
  "guestmem",
  "inspect",
+ "pal_async",
  "sparse_mmap",
  "task_control",
  "tracing",
@@ -9073,19 +9063,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio_rng"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "getrandom 0.3.3",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "pal_event",
+ "task_control",
+ "test_with_tracing",
+ "tracelimit",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
 name = "virtiofs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "event-listener",
  "fuse",
+ "futures",
  "guestmem",
  "inspect",
  "lx",
  "lxutil",
  "ntapi",
  "pal",
+ "pal_async",
  "parking_lot",
  "task_control",
  "tracing",
@@ -9507,7 +9518,6 @@ dependencies = [
  "save_restore_derive",
  "slab",
  "thiserror 2.0.16",
- "time",
  "tracelimit",
  "tracing",
  "vm_resource",

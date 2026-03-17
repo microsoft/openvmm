@@ -1,6 +1,41 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! VMBus SCSI controller emulator (StorVSP).
+//!
+//! StorVSP implements the Hyper-V synthetic SCSI protocol — a VMBus-based
+//! transport that carries SCSI CDBs between the guest's `storvsc` driver and
+//! the VMM. This is not a standard SCSI transport (like iSCSI or SAS); it's a
+//! Hyper-V-specific wire format defined in [`storvsp_protocol`].
+//!
+//! # Architecture
+//!
+//! The crate uses a multi-worker model. The primary VMBus channel handles
+//! protocol version negotiation (Win6 through Blue); sub-channels process I/O
+//! in parallel. Each worker owns a VMBus ring and processes packets
+//! concurrently via `FuturesUnordered`.
+//!
+//! StorVSP handles the transport (ring buffer management, GPADL setup, packet
+//! framing, sub-channel lifecycle) and a few SCSI control commands directly
+//! (`REPORT_LUNS`, `INQUIRY` for absent targets). All actual I/O is delegated
+//! to [`AsyncScsiDisk`] implementations — StorVSP
+//! never interprets SCSI data CDBs itself.
+//!
+//! # Key types
+//!
+//! - [`StorageDevice`] — the VMBus device. Implements `VmbusDevice` and
+//!   `SaveRestoreVmbusDevice`.
+//! - [`ScsiController`] — manages attached disks by [`ScsiPath`]. Supports
+//!   runtime attach/remove.
+//! - [`ScsiControllerDisk`] — wraps `Arc<dyn AsyncScsiDisk>`.
+//!
+//! # Performance
+//!
+//! Poll-mode optimization: when pending I/O count exceeds
+//! `poll_mode_queue_depth`, the worker switches from interrupt-driven to
+//! busy-poll for new requests, reducing guest exit frequency. Future storage
+//! for SCSI request processing is pooled to avoid allocation on the hot path.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 

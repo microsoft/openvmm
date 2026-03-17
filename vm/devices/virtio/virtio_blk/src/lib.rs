@@ -12,6 +12,7 @@ mod spec;
 mod integration_tests;
 
 use crate::spec::*;
+use anyhow::Context as _;
 use disk_backend::Disk;
 use futures::StreamExt;
 use guestmem::GuestMemory;
@@ -33,10 +34,11 @@ use task_control::TaskControl;
 use unicycle::FuturesUnordered;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
+use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::VirtioDeviceFeaturesBank0;
 use vmcore::vm_task::VmTaskDriver;
@@ -322,7 +324,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    fn read_registers_u32(&mut self, offset: u16) -> u32 {
         // The transport reads the device config space as a sequence of u32s.
         // We serialize VirtioBlkConfig to bytes and return the requested
         // 4-byte window. Three cases:
@@ -348,43 +350,27 @@ impl VirtioDevice for VirtioBlkDevice {
         // Config space is read-only for virtio-blk.
     }
 
-    fn enable(&mut self, resources: Resources) {
-        let queue_resources = resources.queues.into_iter().next();
-        let Some(queue_resources) = queue_resources else {
-            return;
-        };
+    fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
 
-        if !queue_resources.params.enable {
-            return;
-        }
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create queue event")?;
 
-        let queue_event = match PolledWait::new(&self.driver, queue_resources.event) {
-            Ok(e) => e,
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to create queue event"
-                );
-                return;
-            }
-        };
-
-        let queue = match VirtioQueue::new(
-            resources.features,
-            queue_resources.params,
+        let queue = VirtioQueue::new(
+            features.clone(),
+            resources.params,
             self.worker.task().memory.clone(),
-            queue_resources.notify,
+            resources.notify,
             queue_event,
-        ) {
-            Ok(q) => q,
-            Err(err) => {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to create virtio queue"
-                );
-                return;
-            }
-        };
+            initial_state,
+        )
+        .context("failed to create virtio queue")?;
 
         self.worker.insert(
             self.driver.clone(),
@@ -392,9 +378,14 @@ impl VirtioDevice for VirtioBlkDevice {
             BlkQueueState { queue },
         );
         self.worker.start();
+        Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return Poll::Ready(None);
+        }
         // Stop the worker task (cancels the run loop via until_stopped).
         ready!(self.worker.poll_stop(cx));
         // Drain in-flight IOs to completion. The FuturesUnordered lives in
@@ -402,10 +393,8 @@ impl VirtioDevice for VirtioBlkDevice {
         // polled here until all descriptors are completed in the used ring.
         ready!(self.worker.task_mut().poll_drain(cx));
         // Remove the queue state (drops VirtioQueue).
-        if self.worker.has_state() {
-            self.worker.remove();
-        }
-        Poll::Ready(())
+        let state = self.worker.remove().queue.queue_state();
+        Poll::Ready(Some(state))
     }
 }
 

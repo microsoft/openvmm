@@ -2,6 +2,10 @@
 // Licensed under the MIT License.
 
 //! Resource definitions for NVMe controllers.
+//!
+//! [`NvmeControllerHandle`] configures the controller with its initial
+//! namespaces, MSI-X count, and queue limits. [`NvmeControllerRequest`] enables
+//! runtime namespace add/remove.
 
 #![forbid(unsafe_code)]
 

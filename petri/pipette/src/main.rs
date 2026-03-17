@@ -4,7 +4,9 @@
 //! This is the petri pipette agent, which runs on the guest and executes
 //! commands and other requests from the host.
 
-#![cfg_attr(not(windows), forbid(unsafe_code))]
+// UNSAFETY: init.rs requires unsafe for libc calls (fork, mount, reboot, waitpid)
+// on Linux; shutdown.rs requires unsafe for the Windows shutdown API.
+#![cfg_attr(not(any(windows, target_os = "linux")), forbid(unsafe_code))]
 
 #[cfg(any(target_os = "linux", windows))]
 mod agent;
@@ -12,6 +14,8 @@ mod agent;
 mod crash;
 #[cfg(any(target_os = "linux", windows))]
 mod execute;
+#[cfg(target_os = "linux")]
+mod init;
 #[cfg(any(target_os = "linux", windows))]
 mod shutdown;
 #[cfg(any(target_os = "linux", windows))]
@@ -28,6 +32,13 @@ fn main() -> anyhow::Result<()> {
         eprintln!("Pipette panicked: {}", info);
         hook(info);
     }));
+
+    // When running as PID 1 (rdinit=/pipette), perform minimal init duties
+    // before starting the agent.
+    #[cfg(target_os = "linux")]
+    if init::is_pid1() {
+        init::init_as_pid1()?;
+    }
 
     #[cfg(windows)]
     if std::env::args().nth(1).as_deref() == Some("--service") {

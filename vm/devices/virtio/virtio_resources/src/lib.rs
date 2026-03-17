@@ -82,6 +82,19 @@ pub mod pmem {
     }
 }
 
+pub mod rng {
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioRngHandle;
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioRngHandle {
+        const ID: &'static str = "virtio-rng";
+    }
+}
+
 pub mod blk {
     use mesh::MeshPayload;
     use vm_resource::Resource;
@@ -117,5 +130,22 @@ pub mod net {
 
     impl ResourceId<VirtioDeviceHandle> for VirtioNetHandle {
         const ID: &'static str = "virtio-net";
+    }
+}
+
+pub mod console {
+    use mesh::MeshPayload;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::SerialBackendHandle;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioConsoleHandle {
+        pub backend: Resource<SerialBackendHandle>,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioConsoleHandle {
+        const ID: &'static str = "virtio-console";
     }
 }

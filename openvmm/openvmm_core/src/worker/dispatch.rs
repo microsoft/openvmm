@@ -276,7 +276,7 @@ pub struct RestartState {
     manifest: Manifest,
     running: bool,
     saved_state: SavedState,
-    shared_memory: SharedMemoryBacking,
+    shared_memory: Option<SharedMemoryBacking>,
     rpc: mesh::Receiver<VmRpc>,
     notify: mesh::Sender<HaltReason>,
 }
@@ -348,7 +348,7 @@ impl Worker for VmWorker {
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor,
             manifest,
-            Some(shared_memory),
+            shared_memory,
         ))?;
         pal_async::local::block_on(async {
             let mut vm = vm.load(Some(saved_state), notify).await?;
@@ -905,6 +905,8 @@ impl InitializedVm {
             .existing_backing(shared_memory)
             .vtl0_alias_map(vtl0_alias_map)
             .prefetch_ram(cfg.memory.prefetch_memory)
+            .private_memory(cfg.memory.private_memory)
+            .transparent_hugepages(cfg.memory.transparent_hugepages)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
             );
@@ -2620,6 +2622,9 @@ impl LoadedVm {
                         // First run the non-destructive operations.
                         let r = async {
                             let shared_memory = self.inner.memory_manager.shared_memory_backing();
+                            if shared_memory.is_none() {
+                                anyhow::bail!("restart is not supported with --private-memory");
+                            }
                             if self.running {
                                 self.state_units.stop().await;
                                 stopped = true;
@@ -2899,7 +2904,7 @@ impl LoadedVm {
     async fn serialize(
         mut self,
         rpc: mesh::Receiver<VmRpc>,
-        shared_memory: SharedMemoryBacking,
+        shared_memory: Option<SharedMemoryBacking>,
         saved_state: SavedState,
     ) -> RestartState {
         let notify = self.inner.partition_unit.teardown().await;

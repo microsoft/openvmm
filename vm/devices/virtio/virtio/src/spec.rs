@@ -128,15 +128,81 @@ pub const VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE: u32 = 2;
 
 /// Virtio over PCI specific constants
 pub mod pci {
-    pub const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
-    pub const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
-    pub const VIRTIO_PCI_CAP_ISR_CFG: u8 = 3;
-    pub const VIRTIO_PCI_CAP_DEVICE_CFG: u8 = 4;
-    // pub const VIRTIO_PCI_CAP_PCI_CFG: u8 = 5;
-    pub const VIRTIO_PCI_CAP_SHARED_MEMORY_CFG: u8 = 8;
+    use open_enum::open_enum;
+
+    open_enum! {
+        /// Virtio PCI capability config type.
+        pub enum VirtioPciCapType: u8 {
+            COMMON_CFG = 1,
+            NOTIFY_CFG = 2,
+            ISR_CFG = 3,
+            DEVICE_CFG = 4,
+            // PCI_CFG = 5,
+            SHARED_MEMORY_CFG = 8,
+        }
+    }
 
     pub const VIRTIO_VENDOR_ID: u16 = 0x1af4;
     pub const VIRTIO_PCI_DEVICE_ID_BASE: u16 = 0x1040;
+
+    open_enum! {
+        /// Byte offsets within the `virtio_pci_common_cfg` structure,
+        /// accessed at u32-aligned boundaries.
+        pub enum VirtioPciCommonCfg: u16 {
+            DEVICE_FEATURE_SELECT = 0,
+            DEVICE_FEATURE = 4,
+            DRIVER_FEATURE_SELECT = 8,
+            DRIVER_FEATURE = 12,
+            MSIX_CONFIG = 16,
+            DEVICE_STATUS = 20,
+            QUEUE_SIZE = 24,
+            QUEUE_ENABLE = 28,
+            QUEUE_DESC_LO = 32,
+            QUEUE_DESC_HI = 36,
+            QUEUE_AVAIL_LO = 40,
+            QUEUE_AVAIL_HI = 44,
+            QUEUE_USED_LO = 48,
+            QUEUE_USED_HI = 52,
+        }
+    }
+
+    /// Total size of the common configuration structure.
+    pub const VIRTIO_PCI_COMMON_CFG_SIZE: u16 = 56;
+}
+
+/// Virtio over MMIO register offsets (virtio spec section 4.2.2)
+pub mod mmio {
+    use open_enum::open_enum;
+
+    open_enum! {
+        /// MMIO register offsets for virtio MMIO transport.
+        pub enum VirtioMmioRegister: u16 {
+            MAGIC_VALUE = 0x000,
+            VERSION = 0x004,
+            DEVICE_ID = 0x008,
+            VENDOR_ID = 0x00c,
+            DEVICE_FEATURES = 0x010,
+            DEVICE_FEATURES_SEL = 0x014,
+            DRIVER_FEATURES = 0x020,
+            DRIVER_FEATURES_SEL = 0x024,
+            QUEUE_SEL = 0x030,
+            QUEUE_NUM_MAX = 0x034,
+            QUEUE_NUM = 0x038,
+            QUEUE_READY = 0x044,
+            QUEUE_NOTIFY = 0x050,
+            INTERRUPT_STATUS = 0x060,
+            INTERRUPT_ACK = 0x064,
+            STATUS = 0x070,
+            QUEUE_DESC_LOW = 0x080,
+            QUEUE_DESC_HIGH = 0x084,
+            QUEUE_AVAIL_LOW = 0x090,
+            QUEUE_AVAIL_HIGH = 0x094,
+            QUEUE_USED_LOW = 0x0a0,
+            QUEUE_USED_HIGH = 0x0a4,
+            CONFIG_GENERATION = 0x0fc,
+            CONFIG = 0x100,
+        }
+    }
 }
 
 /// Virtio queue definitions.
@@ -172,8 +238,12 @@ pub mod queue {
         pub next: bool,
         pub write: bool,
         pub indirect: bool,
-        #[bits(13)]
+        #[bits(4)]
         _reserved: u16,
+        pub available: bool,
+        #[bits(7)]
+        _reserved2: u16,
+        pub used: bool,
     }
 
     /*
@@ -220,6 +290,79 @@ pub mod queue {
     pub struct UsedFlags {
         pub no_notify: bool,
         #[bits(15)]
+        _reserved: u16,
+    }
+
+    #[repr(C)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct PackedDescriptor {
+        pub address: u64_le,
+        pub length: u32_le,
+        pub buffer_id: u16_le,
+        pub flags_raw: u16_le,
+    }
+
+    impl PackedDescriptor {
+        pub fn new() -> Self {
+            Self {
+                address: u64_le::new(0),
+                length: u32_le::new(0),
+                buffer_id: u16_le::new(0),
+                flags_raw: u16_le::new(0),
+            }
+        }
+
+        pub fn with_buffer_id(mut self, buffer_id: u16) -> Self {
+            self.buffer_id = u16_le::new(buffer_id);
+            self
+        }
+
+        pub fn with_length(mut self, length: u32) -> Self {
+            self.length = u32_le::new(length);
+            self
+        }
+
+        pub fn with_flags(mut self, flags: DescriptorFlags) -> Self {
+            self.flags_raw = u16_le::new(flags.into_bits());
+            self
+        }
+
+        pub fn flags(&self) -> DescriptorFlags {
+            self.flags_raw.get().into()
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    #[repr(u8)]
+    pub enum EventSuppressionFlags {
+        Enabled = 0,
+        Disabled = 1,
+        DescriptorIndex = 2,
+        Reserved = 3,
+    }
+    impl EventSuppressionFlags {
+        const fn into_bits(self) -> u8 {
+            self as _
+        }
+        const fn from_bits(value: u8) -> Self {
+            match value {
+                0 => Self::Enabled,
+                1 => Self::Disabled,
+                2 => Self::DescriptorIndex,
+                _ => Self::Reserved,
+            }
+        }
+    }
+
+    #[bitfield(u32, repr = u32_le, from = u32_le::new, into = u32_le::get)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct PackedEventSuppression {
+        #[bits(15)]
+        pub offset: u16,
+        pub wrap: bool,
+        #[bits(2, default = EventSuppressionFlags::Enabled, from = EventSuppressionFlags::from_bits, into = EventSuppressionFlags::into_bits)]
+        pub flags: EventSuppressionFlags,
+        #[bits(14)]
         _reserved: u16,
     }
 }

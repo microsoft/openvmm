@@ -27,7 +27,6 @@ use scsi_buffers::RequestBuffers;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
-use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
@@ -49,7 +48,7 @@ use zerocopy::IntoBytes;
 
 // --- Constants ---
 
-const QUEUE_SIZE: u16 = 16;
+const QUEUE_SIZE: u16 = 32;
 
 // Memory layout for the single requestq
 const DESC_ADDR: u64 = 0x0000;
@@ -205,24 +204,24 @@ impl TestHarness {
     fn enable(&mut self) {
         let interrupt = Interrupt::from_event(self.interrupt_event.clone());
 
-        let resources = Resources {
-            features: VirtioDeviceFeatures::new(),
-            queues: vec![QueueResources {
-                params: QueueParams {
-                    size: QUEUE_SIZE,
-                    enable: true,
-                    desc_addr: DESC_ADDR,
-                    avail_addr: AVAIL_ADDR,
-                    used_addr: USED_ADDR,
+        self.device
+            .start_queue(
+                0,
+                QueueResources {
+                    params: QueueParams {
+                        size: QUEUE_SIZE,
+                        enable: true,
+                        desc_addr: DESC_ADDR,
+                        avail_addr: AVAIL_ADDR,
+                        used_addr: USED_ADDR,
+                    },
+                    notify: interrupt,
+                    event: self.queue_event.clone(),
                 },
-                notify: interrupt,
-                event: self.queue_event.clone(),
-            }],
-            shared_memory_region: None,
-            shared_memory_size: 0,
-        };
-
-        self.device.enable(resources);
+                &VirtioDeviceFeatures::new(),
+                None,
+            )
+            .unwrap();
     }
 
     /// Allocate a data region in guest memory and return its GPA.

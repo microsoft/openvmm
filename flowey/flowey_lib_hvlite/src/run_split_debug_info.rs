@@ -57,28 +57,37 @@ impl SimpleFlowNode for Node {
                 },
                 _ => anyhow::bail!("Unsupported platform"),
             },
-            CommonArch::Aarch64 => {
-                let pkg = match platform {
-                    FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                        FlowPlatformLinuxDistro::Fedora
-                        | FlowPlatformLinuxDistro::Ubuntu
-                        | FlowPlatformLinuxDistro::AzureLinux => Some("binutils-aarch64-linux-gnu"),
-                        FlowPlatformLinuxDistro::Arch => {
-                            match_arch!(
-                                host_arch,
-                                FlowArch::X86_64,
-                                Some("aarch64-linux-gnu-binutils")
-                            )
-                        }
-                        FlowPlatformLinuxDistro::Nix => None,
-                        FlowPlatformLinuxDistro::Unknown => {
-                            anyhow::bail!("Unknown Linux distribution")
-                        }
+            CommonArch::Aarch64 => match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => (
+                        Some("binutils-aarch64-linux-gnu"),
+                        "aarch64-linux-gnu-objcopy",
+                    ),
+                    FlowPlatformLinuxDistro::AzureLinux => match host_arch {
+                        FlowArch::Aarch64 => (Some("binutils"), "objcopy"),
+                        FlowArch::X86_64 => (
+                            Some("binutils-aarch64-linux-gnu"),
+                            "aarch64-linux-gnu-objcopy",
+                        ),
+                        _ => anyhow::bail!("unsupported host arch {host_arch:?}"),
                     },
-                    _ => anyhow::bail!("Unsupported platform"),
-                };
-                (pkg, "aarch64-linux-gnu-objcopy")
-            }
+                    FlowPlatformLinuxDistro::Arch => {
+                        match_arch!(
+                            host_arch,
+                            FlowArch::X86_64,
+                            (
+                                Some("aarch64-linux-gnu-binutils"),
+                                "aarch64-linux-gnu-objcopy"
+                            )
+                        )
+                    }
+                    FlowPlatformLinuxDistro::Nix => (None, "aarch64-linux-gnu-objcopy"),
+                    FlowPlatformLinuxDistro::Unknown => {
+                        anyhow::bail!("Unknown Linux distribution")
+                    }
+                },
+                _ => anyhow::bail!("Unsupported platform"),
+            },
         };
 
         let installed_objcopy = objcopy_pkg.map(|objcopy_pkg| {

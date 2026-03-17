@@ -135,6 +135,8 @@ impl PetriVmConfigOpenVmm {
             tpm_config: tpm_config.as_ref(),
             mesh: &mesh,
             openvmm_path,
+            uses_pipette_as_init: properties.uses_pipette_as_init,
+            enable_serial: properties.enable_serial,
         };
 
         let mut chipset = VmManifestBuilder::new(
@@ -156,13 +158,41 @@ impl PetriVmConfigOpenVmm {
             },
         );
 
-        let load_mode = setup.load_firmware()?;
+        let mut load_mode = setup.load_firmware()?;
 
-        let SerialData {
-            mut emulated_serial_config,
-            serial_tasks: log_stream_tasks,
-            linux_direct_serial_agent,
-        } = setup.configure_serial(log_source)?;
+        // If using pipette-as-init, replace the initrd with the pre-built
+        // one that has pipette injected. run_core() guarantees that
+        // prebuilt_initrd is set when uses_pipette_as_init is true.
+        if properties.uses_pipette_as_init {
+            if let LoadMode::Linux { initrd, .. } = &mut load_mode {
+                let prebuilt = properties
+                    .prebuilt_initrd
+                    .as_ref()
+                    .expect("uses_pipette_as_init requires prebuilt_initrd");
+                let file = std::fs::File::open(prebuilt).with_context(|| {
+                    format!("failed to open prebuilt initrd at {}", prebuilt.display())
+                })?;
+                *initrd = Some(file);
+            }
+        }
+
+        let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
+            if !properties.enable_serial {
+                // No emulated serial backends (OpenHCL VMBus serial stubs may still exist)
+                ([None, None, None, None], Vec::new(), None)
+            } else {
+                let SerialData {
+                    emulated_serial_config,
+                    serial_tasks,
+                    linux_direct_serial_agent,
+                } = setup.configure_serial(log_source)?;
+                (
+                    emulated_serial_config,
+                    serial_tasks,
+                    linux_direct_serial_agent,
+                )
+            };
+        let mut emulated_serial_config = emulated_serial_config;
 
         let (video_dev, framebuffer, framebuffer_view) = match setup.config_video()? {
             Some((v, fb, fba)) => {
@@ -227,12 +257,15 @@ impl PetriVmConfigOpenVmm {
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
-        chipset = chipset.with_serial(emulated_serial_config);
-        // Set so that we don't pull serial data until the guest is
-        // ready. Otherwise, Linux will drop the input serial data
-        // on the floor during boot.
-        if matches!(firmware, Firmware::LinuxDirect { .. }) {
-            chipset = chipset.with_serial_wait_for_rts();
+        if properties.enable_serial {
+            chipset = chipset.with_serial(emulated_serial_config);
+            // Set so that we don't pull serial data until the guest is
+            // ready. Otherwise, Linux will drop the input serial data
+            // on the floor during boot.
+            if matches!(firmware, Firmware::LinuxDirect { .. }) && !properties.uses_pipette_as_init
+            {
+                chipset = chipset.with_serial_wait_for_rts();
+            }
         }
 
         // Extract video configuration
@@ -245,28 +278,38 @@ impl PetriVmConfigOpenVmm {
             None => None,
         };
 
-        // Add the Hyper-V Shutdown IC
-        let (shutdown_ic_send, shutdown_ic_recv) = mesh::channel();
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            ShutdownIcHandle {
-                recv: shutdown_ic_recv,
-            }
-            .into_resource(),
-        ));
+        // Add default VMBus devices (skipped in minimal mode).
+        let (shutdown_ic_send, kvp_ic_send) = if !properties.minimal_mode {
+            let (shutdown_ic_send, shutdown_ic_recv) = mesh::channel();
+            vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                ShutdownIcHandle {
+                    recv: shutdown_ic_recv,
+                }
+                .into_resource(),
+            ));
 
-        // Add the Hyper-V KVP IC
-        let (kvp_ic_send, kvp_ic_recv) = mesh::channel();
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_ic_recv }.into_resource(),
-        ));
+            let (kvp_ic_send, kvp_ic_recv) = mesh::channel();
+            vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_ic_recv }.into_resource(),
+            ));
 
-        // Add the Hyper-V timesync IC
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
-        ));
+            vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
+            ));
+
+            (shutdown_ic_send, kvp_ic_send)
+        } else {
+            // Minimal mode: no ICs. Create dummy senders so the fields
+            // are populated (calls to send_enlightened_shutdown will fail
+            // with a channel error, which is fine — minimal VMs shut down
+            // via reboot(2) directly).
+            let (shutdown_ic_send, _) = mesh::channel();
+            let (kvp_ic_send, _) = mesh::channel();
+            (shutdown_ic_send, kvp_ic_send)
+        };
 
         // Make a vmbus vsock path for pipette connections
         let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
@@ -307,6 +350,8 @@ impl PetriVmConfigOpenVmm {
                 pci_ecam_gaps: vec![],
                 pci_mmio_gaps: vec![],
                 prefetch_memory: false,
+                private_memory: false,
+                transparent_hugepages: false,
             }
         };
 
@@ -521,6 +566,8 @@ struct PetriVmConfigSetupCore<'a> {
     tpm_config: Option<&'a TpmConfig>,
     mesh: &'a Mesh,
     openvmm_path: &'a ResolvedArtifact,
+    uses_pipette_as_init: bool,
+    enable_serial: bool,
 }
 
 struct SerialData {
@@ -568,7 +615,9 @@ impl PetriVmConfigSetupCore<'_> {
             None
         };
 
-        if self.firmware.is_linux_direct() {
+        if self.firmware.is_linux_direct() && !self.uses_pipette_as_init {
+            // Non-pipette-as-init Linux direct: create serial1 and a serial
+            // agent so we can send shell commands to launch pipette.
             let (serial1_host, serial1) = self.create_serial_stream()?;
             let (serial1_read, _serial1_write) = serial1_host.split();
             let linux_direct_serial_agent =
@@ -600,35 +649,48 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
+        // The test kernel has both CONFIG_VIRTIO_VSOCK=y and
+        // CONFIG_HYPERV_VSOCKETS=y built in. The kernel only allows one G2H
+        // vsock transport, and virtio_vsock_init runs first, claiming the
+        // slot. This causes hv_sock registration to fail with -EBUSY,
+        // breaking pipette's AF_VSOCK connection. Blacklist virtio_vsock_init
+        // so that hv_sock can register as the G2H transport.
+        const VIRTIO_VSOCK_BLACKLIST: &str = "initcall_blacklist=virtio_vsock_init";
+
         Ok(match (self.arch, &self.firmware) {
-            (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
+            (arch, Firmware::LinuxDirect { kernel, initrd }) => {
+                let console = match arch {
+                    MachineArch::X86_64 => "console=ttyS0",
+                    MachineArch::Aarch64 => "console=ttyAMA0 earlycon",
+                };
                 let kernel = File::open(kernel.clone())
                     .context("Failed to open kernel")?
                     .into();
                 let initrd = File::open(initrd.clone())
                     .context("Failed to open initrd")?
                     .into();
+
+                let init = if self.uses_pipette_as_init {
+                    "/pipette"
+                } else {
+                    "/bin/sh"
+                };
+
+                let serial_args = if self.enable_serial {
+                    format!("{console} debug ")
+                } else {
+                    String::new()
+                };
+
+                let cmdline =
+                    format!("{serial_args}panic=-1 rdinit={init} {VIRTIO_VSOCK_BLACKLIST}");
+
                 LoadMode::Linux {
                     kernel,
                     initrd: Some(initrd),
-                    cmdline: "console=ttyS0 debug panic=-1 rdinit=/bin/sh".into(),
+                    cmdline,
                     custom_dsdt: None,
-                    enable_serial: true,
-                }
-            }
-            (MachineArch::Aarch64, Firmware::LinuxDirect { kernel, initrd }) => {
-                let kernel = File::open(kernel.clone())
-                    .context("Failed to open kernel")?
-                    .into();
-                let initrd = File::open(initrd.clone())
-                    .context("Failed to open initrd")?
-                    .into();
-                LoadMode::Linux {
-                    kernel,
-                    initrd: Some(initrd),
-                    cmdline: "console=ttyAMA0 earlycon debug panic=-1 rdinit=/bin/sh".into(),
-                    custom_dsdt: None,
-                    enable_serial: true,
+                    enable_serial: self.enable_serial,
                 }
             }
             (
@@ -712,7 +774,9 @@ impl PetriVmConfigSetupCore<'_> {
                         // data on the floor during boot.
                         append_cmdline(
                             &mut cmdline,
-                            "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh\"",
+                            format!(
+                                "UNDERHILL_SERIAL_WAIT_FOR_RTS=1 UNDERHILL_CMDLINE_APPEND=\"rdinit=/bin/sh {VIRTIO_VSOCK_BLACKLIST}\""
+                            ),
                         );
                         false
                     }

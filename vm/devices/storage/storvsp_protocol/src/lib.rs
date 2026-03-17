@@ -1,6 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Wire-format definitions for the Hyper-V SCSI VMBus protocol.
+//!
+//! Defines packet structures, interface GUIDs (`SCSI_INTERFACE_ID`,
+//! `IDE_ACCELERATOR_INTERFACE_ID`), and protocol version negotiation types.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
