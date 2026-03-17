@@ -59,24 +59,15 @@ pub struct VsockHeader {
 pub struct VsockPacket<'a> {
     pub header: VsockHeader,
     pub data: &'a [IoSlice<'a>],
-    pub data_len: usize,
 }
 
 impl<'a> VsockPacket<'a> {
-    pub fn new(header: VsockHeader, data: &'a [IoSlice<'a>], data_len: usize) -> Self {
-        Self {
-            header,
-            data,
-            data_len,
-        }
+    pub fn new(header: VsockHeader, data: &'a [IoSlice<'a>]) -> Self {
+        Self { header, data }
     }
 
     pub fn header_only(header: VsockHeader) -> Self {
-        Self {
-            header,
-            data: &[],
-            data_len: 0,
-        }
+        Self { header, data: &[] }
     }
 }
 

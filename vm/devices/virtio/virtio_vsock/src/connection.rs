@@ -17,6 +17,10 @@
 //! `CONNECT <port>` text protocol (the same hybrid vsock protocol used by
 //! Firecracker and others).
 
+use crate::PendingWork;
+use crate::RxWorkItem;
+use crate::WriteReadyItem;
+use crate::ring::RingBuffer;
 use crate::spec::Operation;
 use crate::spec::ShutdownFlags;
 use crate::spec::SocketType;
@@ -29,7 +33,11 @@ use bitfield_struct::bitfield;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::io;
+use pal_async::interest::PollEvents;
+use pal_async::socket::PollReadyExt;
 use pal_async::socket::PolledSocket;
+use pal_async::socket::ReadHalf;
+use pal_async::socket::WriteHalf;
 use std::collections::HashMap;
 use std::io::IoSlice;
 use std::io::Write;
@@ -62,7 +70,8 @@ impl ConnKey {
 struct PendingReply {
     reset: bool,
     respond: bool,
-    #[bits(30)]
+    update: bool,
+    #[bits(29)]
     _reserved: u32,
 }
 
@@ -75,29 +84,102 @@ struct Connection {
     peer_fwd_cnt: Wrapping<u32>,
     /// Data received from the peer that has been forwarded to the unix socket relay.
     fwd_cnt: Wrapping<u32>,
+    last_sent_fwd_count: u32,
     pending_reply: PendingReply,
     // TODO: I think we need to split this, and then give ownership of the read half to the future
     // added to the work queue. There also needs to be a way to terminate the future when the,
     // connection is closed or reset, e.g. an Arc<AtomicBool> or something.
-    socket: PolledSocket<UnixStream>,
+    read_half: Option<ReadHalf<UnixStream>>,
+    write_half: Option<WriteHalf<UnixStream>>,
+    recv_buf: Option<RingBuffer>,
 }
 
 impl Connection {
-    fn handle_guest_data(&mut self, data: &[IoSlice<'_>]) -> anyhow::Result<()> {
-        match self.socket.get_mut().write_vectored(data) {
-            Ok(n) => {
-                self.fwd_cnt += n as u32;
+    fn new(
+        key: ConnKey,
+        peer_buf_alloc: u32,
+        peer_fwd_cnt: Wrapping<u32>,
+        pending_reply: PendingReply,
+        socket: PolledSocket<UnixStream>,
+    ) -> Self {
+        let (read, write) = socket.split();
+        Self {
+            key,
+            peer_buf_alloc,
+            peer_fwd_cnt,
+            fwd_cnt: Wrapping(0),
+            last_sent_fwd_count: 0,
+            pending_reply,
+            read_half: Some(read),
+            write_half: Some(write),
+            recv_buf: None,
+        }
+    }
 
-                return Ok(());
-            }
-            Err(e) => {
-                if e.kind() != io::ErrorKind::WouldBlock {
-                    return Err(e).context("failed to write to guest socket");
+    fn handle_guest_data(
+        &mut self,
+        data: &[IoSlice<'_>],
+        data_len: usize,
+    ) -> anyhow::Result<Option<WriteReadyItem>> {
+        let bytes_sent = if self.recv_buf.as_ref().is_none_or(|buf| buf.is_empty()) {
+            match self
+                .write_half
+                .as_mut()
+                .expect("write half must be present if the buffer is empty")
+                .get()
+                .write_vectored(data)
+            {
+                Ok(n) => {
+                    self.fwd_cnt += n as u32;
+                    if n == data_len {
+                        return Ok(None);
+                    }
+
+                    n
+                }
+                Err(e) => {
+                    if e.kind() != io::ErrorKind::WouldBlock {
+                        return Err(e).context("failed to write to guest socket");
+                    }
+
+                    0
                 }
             }
+        } else {
+            0
+        };
+
+        let buf = self
+            .recv_buf
+            .get_or_insert_with(|| RingBuffer::new(TX_BUF_SIZE as usize));
+
+        let remaining = data_len - bytes_sent;
+
+        // The guest should not do this since it knows how much space we have.
+        if remaining > buf.available() {
+            anyhow::bail!(
+                "peer sent {} bytes, but only {} bytes available in buffer",
+                remaining,
+                buf.available()
+            );
         }
 
-        todo!("cache the data");
+        let key = self.key;
+        buf.write(data, bytes_sent);
+        let future = self
+            .write_half
+            .take()
+            .map(|mut write_half| -> WriteReadyItem {
+                Box::pin(async move {
+                    write_half
+                        .wait_ready(PollEvents::OUT | PollEvents::HUP | PollEvents::ERR)
+                        .await;
+
+                    // Regardless of the event, just let the worker retry the write.
+                    WriteReady(key, write_half)
+                })
+            });
+        Ok(future)
     }
 }
 
@@ -147,7 +229,7 @@ impl ConnectionManager {
     }
 
     /// Handle a packet received from the guest on the tx virtqueue.
-    pub fn handle_guest_tx(&mut self, packet: VsockPacket<'_>) -> Option<RxWork> {
+    pub fn handle_guest_tx(&mut self, packet: VsockPacket<'_>) -> PendingWork {
         let key = ConnKey::from_tx_packet(&packet.header);
 
         // Validate the packet. Only stream sockets are supported currently.
@@ -160,7 +242,7 @@ impl ConnectionManager {
                 "invalid source CID"
             );
 
-            return Some(RxWork::SendReset(key));
+            return PendingWork::Rx(RxWork::SendReset(key));
         }
 
         let op = Operation(packet.header.op);
@@ -173,17 +255,16 @@ impl ConnectionManager {
                         // TODO: Handle existing connection
                         self.conns.insert(
                             key,
-                            Connection {
+                            Connection::new(
                                 key,
-                                peer_buf_alloc: packet.header.buf_alloc,
-                                peer_fwd_cnt: Wrapping(packet.header.fwd_cnt),
-                                fwd_cnt: Wrapping(0),
-                                pending_reply: PendingReply::new().with_respond(true),
+                                packet.header.buf_alloc,
+                                Wrapping(packet.header.fwd_cnt),
+                                PendingReply::new().with_respond(true),
                                 socket,
-                            },
+                            ),
                         );
 
-                        Some(RxWork::Connection(key))
+                        PendingWork::Rx(RxWork::Connection(key))
                     }
                     Err(err) => {
                         tracelimit::warn_ratelimited!(
@@ -191,7 +272,7 @@ impl ConnectionManager {
                             port = key.local_port,
                             "failed to connect to host socket for vsock request"
                         );
-                        Some(RxWork::SendReset(key))
+                        PendingWork::Rx(RxWork::SendReset(key))
                     }
                 }
             }
@@ -200,19 +281,30 @@ impl ConnectionManager {
                 tracing::info!(?packet.header, "We got data!");
                 let Some(conn) = self.conns.get_mut(&key) else {
                     tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
-                    return Some(RxWork::SendReset(key));
+                    return PendingWork::Rx(RxWork::SendReset(key));
                 };
 
-                if let Err(err) = conn.handle_guest_data(packet.data) {
-                    tracelimit::warn_ratelimited!(
-                        error = err.as_ref() as &dyn std::error::Error,
-                        ?key,
-                        "failed to write guest data to host socket"
-                    );
-                    return Some(RxWork::SendReset(key));
-                }
+                match conn.handle_guest_data(packet.data, packet.header.len as usize) {
+                    Ok(future) => {
+                        if conn.last_sent_fwd_count != conn.fwd_cnt.0 {
+                            conn.pending_reply.set_update(true);
+                        }
 
-                None
+                        if let Some(future) = future {
+                            PendingWork::WriteReady(future)
+                        } else {
+                            PendingWork::None
+                        }
+                    }
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            ?key,
+                            "failed to write guest data to host socket"
+                        );
+                        PendingWork::Rx(RxWork::SendReset(key))
+                    }
+                }
                 // if let Some(conn) = self.conns.get(&key) {
                 //     if !data.is_empty() {
                 //         conn.tx.send(data.to_vec());
@@ -263,7 +355,7 @@ impl ConnectionManager {
                 if let Some(conn) = self.conns.remove(&key) {
                     tracing::debug!(?key, "guest reset connection");
                 }
-                None
+                PendingWork::None
             }
             Operation::CREDIT_UPDATE => {
                 // let mut conns = self.conns.lock();
@@ -292,7 +384,7 @@ impl ConnectionManager {
             _ => {
                 tracing::debug!(header = ?packet.header, "unknown vsock operation");
                 // TODO: Send RST for unknown operations?
-                None
+                PendingWork::None
             }
         }
     }
@@ -644,3 +736,5 @@ pub enum RxWork {
     // For port combinations that may not actually exist
     SendReset(ConnKey),
 }
+
+pub struct WriteReady(ConnKey, WriteHalf<UnixStream>);

@@ -19,11 +19,13 @@
 
 mod connection;
 pub mod resolver;
+mod ring;
 mod spec;
 mod unix_relay;
 
 use crate::connection::ConnKey;
 use crate::connection::RxWork;
+use crate::connection::WriteReady;
 use crate::spec::VsockPacket;
 use connection::ConnectionManager;
 use futures::StreamExt;
@@ -35,7 +37,6 @@ use pal_async::wait::PolledWait;
 use spec::VIRTIO_DEVICE_TYPE_VSOCK;
 use spec::VsockConfig;
 use spec::VsockHeader;
-use std::any;
 use std::io::IoSlice;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -55,7 +56,6 @@ use virtio::VirtioQueueCallbackWork;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -192,11 +192,20 @@ struct VsockWorkerState {
     relay: ConnectionManager,
 }
 
-type RxWorkQueue = FuturesUnordered<Pin<Box<dyn Future<Output = RxWork> + Send>>>;
+type RxWorkItem = Pin<Box<dyn Future<Output = RxWork> + Send>>;
+type WriteReadyItem = Pin<Box<dyn Future<Output = WriteReady> + Send>>;
+type RxWorkQueue = FuturesUnordered<RxWorkItem>;
+
+pub enum PendingWork {
+    None,
+    Rx(RxWork),
+    WriteReady(WriteReadyItem),
+}
 
 struct VsockWorker {
     mem: GuestMemory,
     work: RxWorkQueue,
+    write_ready_work: FuturesUnordered<WriteReadyItem>,
 }
 
 impl VsockWorker {
@@ -244,11 +253,10 @@ impl VsockWorker {
         };
 
         // Process through the relay.
-        if let Some(work) = state.relay.handle_guest_tx(VsockPacket::new(
-            header,
-            &locked.get().0,
-            header.len as usize,
-        )) {
+        if let Some(work) = state
+            .relay
+            .handle_guest_tx(VsockPacket::new(header, &locked.get().0))
+        {
             tracing::info!("queueing rx work from relay");
             self.work.push(Box::pin(async move { work }));
         }
