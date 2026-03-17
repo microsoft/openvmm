@@ -164,8 +164,9 @@ impl VirtioMmioDevice {
 
 impl VirtioMmioDevice {
     pub(crate) fn read_u32(&mut self, address: u64) -> u32 {
-        assert!(address & 3 == 0);
-        match VirtioMmioRegister(address) {
+        let offset = address & 0xfff;
+        assert!(offset & 3 == 0);
+        match VirtioMmioRegister(offset) {
             VirtioMmioRegister::MAGIC_VALUE => u32::from_le_bytes(*b"virt"),
             VirtioMmioRegister::VERSION => 2,
             VirtioMmioRegister::DEVICE_ID => self.device_id,
