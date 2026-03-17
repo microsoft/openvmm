@@ -589,6 +589,8 @@ mod saved_state {
             pub interrupt_status: u32,
             #[mesh(7)]
             pub queues: Vec<SavedQueueState>,
+            #[mesh(8)]
+            pub device_feature_select: u32,
         }
     }
 
@@ -622,6 +624,7 @@ mod saved_state {
                 driver_feature_banks: (0..self.device_feature.len())
                     .map(|i| self.driver_feature.bank(i))
                     .collect(),
+                device_feature_select: self.device_feature_select,
                 driver_feature_select: self.driver_feature_select,
                 queue_select: self.queue_select,
                 config_generation: self.config_generation,
@@ -680,10 +683,15 @@ mod saved_state {
             for (i, &bank) in state.driver_feature_banks.iter().enumerate() {
                 self.driver_feature.set_bank(i, bank);
             }
+            self.device_feature_select = state.device_feature_select;
             self.driver_feature_select = state.driver_feature_select;
             self.queue_select = state.queue_select;
             self.config_generation = state.config_generation;
-            self.interrupt_state.lock().status = state.interrupt_status;
+            {
+                let mut is = self.interrupt_state.lock();
+                is.status = state.interrupt_status;
+                is.interrupt.set_level(is.status != 0);
+            }
 
             // Restore per-queue transport parameters.
             for (i, sq) in state.queues.iter().enumerate() {

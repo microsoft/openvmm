@@ -796,6 +796,8 @@ mod saved_state {
             pub msix_config_vector: u16,
             #[mesh(8)]
             pub queues: Vec<SavedQueueState>,
+            #[mesh(9)]
+            pub device_feature_select: u32,
         }
     }
 
@@ -829,6 +831,7 @@ mod saved_state {
                 driver_feature_banks: (0..self.device_feature.len())
                     .map(|i| self.driver_feature.bank(i))
                     .collect(),
+                device_feature_select: self.device_feature_select,
                 driver_feature_select: self.driver_feature_select,
                 queue_select: self.queue_select,
                 config_generation: self.config_generation,
@@ -889,10 +892,14 @@ mod saved_state {
             for (i, &bank) in state.driver_feature_banks.iter().enumerate() {
                 self.driver_feature.set_bank(i, bank);
             }
+            self.device_feature_select = state.device_feature_select;
             self.driver_feature_select = state.driver_feature_select;
             self.queue_select = state.queue_select;
             self.config_generation = state.config_generation;
             *self.interrupt_status.lock() = state.interrupt_status;
+            if let InterruptKind::IntX(line) = &self.interrupt_kind {
+                line.set_level(state.interrupt_status != 0);
+            }
             self.msix_config_vector = state.msix_config_vector;
 
             // Restore per-queue transport parameters.

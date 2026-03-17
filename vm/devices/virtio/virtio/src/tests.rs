@@ -3980,8 +3980,7 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
         .restore(saved)
         .expect("restore should succeed");
 
-    // Stop and clean up — if restore incorrectly started queues we'd see
-    // the stop complete successfully.
+    // Verify stop is a no-op — restore must not start queues.
     dev2.pci_device.stop().await;
 }
 

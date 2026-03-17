@@ -3,8 +3,8 @@
 
 //! [`tracing`] support.
 
+use parking_lot::Mutex;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
@@ -22,11 +22,11 @@ static TRACING_WRITER: Mutex<Option<Arc<TracingWriter>>> = Mutex::new(None);
 pub fn init_tracing() -> mesh::pipe::ReadPipe {
     let (log_read, log_write) = mesh::pipe::pipe();
 
-    let mut global = TRACING_WRITER.lock().unwrap();
+    let mut global = TRACING_WRITER.lock();
     if let Some(writer) = global.as_ref() {
         // Already initialized — swap to the new pipe so logs flow
         // to the new host connection after a save/restore reconnect.
-        *writer.0.lock().unwrap() = log_write;
+        *writer.0.lock() = log_write;
     } else {
         let writer = Arc::new(TracingWriter(Mutex::new(log_write)));
         *global = Some(writer.clone());
@@ -46,8 +46,7 @@ pub fn init_tracing() -> mesh::pipe::ReadPipe {
             .log_internal_errors(true)
             .finish()
             .with(targets)
-            .try_init()
-            .ok();
+            .init();
     }
 
     tracing::info!("tracing initialized");
@@ -60,7 +59,7 @@ impl std::io::Write for &TracingWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // Note that this will fail if the pipe fills up. This is probably fine
         // for this use case.
-        self.0.lock().unwrap().write_nonblocking(buf)
+        self.0.lock().write_nonblocking(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
