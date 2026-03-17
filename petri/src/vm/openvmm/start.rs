@@ -97,6 +97,7 @@ impl PetriVmConfigOpenVmm {
                 mesh,
                 worker,
                 framebuffer_view,
+                cidata_mounted: false,
             },
             halt_notif,
         );

@@ -184,6 +184,10 @@ pub(super) struct PetriVmInner {
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) framebuffer_view: Option<View>,
+    /// Whether CIDATA has already been mounted inside the guest.
+    /// Used to skip re-mounting after save/restore (where guest state is
+    /// preserved) while still mounting after a full reset/reboot.
+    pub(super) cidata_mounted: bool,
 }
 
 struct PetriVmHaltReceiver {
@@ -470,6 +474,8 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
+        // Guest state is lost on reset, so CIDATA needs to be remounted.
+        self.cidata_mounted = false;
         // On linux direct, pipette won't auto-start unless it is the init
         // process. When it isn't, restart it over serial. (When pipette runs
         // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
@@ -511,9 +517,12 @@ impl PetriVmInner {
 
         // When pipette runs as PID 1 init and a CIDATA agent disk is
         // attached, mount it so test files are available at /cidata.
+        // Skip if already mounted (e.g. reconnecting after save/restore
+        // where guest state is preserved).
         if !set_high_vtl
             && self.resources.properties.uses_pipette_as_init
             && self.resources.properties.has_agent_disk
+            && !self.cidata_mounted
         {
             tracing::info!("mounting CIDATA agent disk via pipette");
             client
@@ -532,6 +541,7 @@ impl PetriVmInner {
                 .run()
                 .await
                 .context("failed to mount CIDATA disk")?;
+            self.cidata_mounted = true;
         }
 
         Ok(client)
