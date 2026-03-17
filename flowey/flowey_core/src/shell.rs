@@ -329,7 +329,15 @@ impl CommandWrapperKind {
             #[cfg(test)]
             CommandWrapperKind::ShCmd => sh.cmd("sh").arg("-c").arg(cmd_str),
             #[cfg(test)]
-            CommandWrapperKind::CmdExe => sh.cmd("cmd").arg("/C").arg(cmd_str),
+            CommandWrapperKind::CmdExe => {
+                // Avoid nesting `cmd /C` when the command already targets cmd.
+                // This keeps Windows test wrappers stable across quoting rules.
+                let cmd_body = cmd_str
+                    .strip_prefix("cmd /C ")
+                    .unwrap_or(&cmd_str)
+                    .trim_matches('"');
+                sh.cmd("cmd").arg("/C").arg(cmd_body)
+            }
             #[cfg(test)]
             CommandWrapperKind::Prefix => sh.cmd("echo").arg(format!("WRAPPED: {cmd_str}")),
         }
@@ -352,12 +360,9 @@ mod tests {
     fn print_env_cmd<'a>(sh: &'a FloweyShell, var: &str) -> xshell::Cmd<'a> {
         if cfg!(windows) {
             sh.xshell()
-                .cmd("powershell")
-                .arg("-NoProfile")
-                .arg("-Command")
-                .arg(format!(
-                    "if ($env:{var}) {{ Write-Output $env:{var} }} else {{ exit 1 }}"
-                ))
+                .cmd("cmd")
+                .arg("/C")
+                .arg(format!("if defined {var} (echo %{var}%) else exit /b 1"))
         } else {
             sh.xshell().cmd("printenv").arg(var)
         }
@@ -365,11 +370,7 @@ mod tests {
 
     fn fail_cmd<'a>(sh: &'a FloweyShell) -> xshell::Cmd<'a> {
         if cfg!(windows) {
-            sh.xshell()
-                .cmd("powershell")
-                .arg("-NoProfile")
-                .arg("-Command")
-                .arg("exit 1")
+            sh.xshell().cmd("cmd").arg("/C").arg("exit /b 1")
         } else {
             sh.xshell().cmd("false")
         }
