@@ -87,10 +87,11 @@ PCIe root port. The syntax varies slightly between device types:
 ```
 
 **Filesystems and other virtio devices** (colon-prefixed):
-`--virtio-fs`, `--virtio-9p`, `--virtio-pmem`
+`--virtio-fs`, `--virtio-fs-shmem`, `--virtio-9p`, `--virtio-pmem`
 
 ```sh
 --virtio-fs pcie_port=rp0:myfs,/path/to/share
+--virtio-fs-shmem pcie_port=rp0:myfs,/path/to/share
 --virtio-9p pcie_port=rp0:myfs,/path/to/share
 --virtio-pmem pcie_port=rp0:/path/to/file
 ```

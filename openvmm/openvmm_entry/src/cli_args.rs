@@ -2382,6 +2382,85 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_pcie_port_prefix() {
+        // Successful prefix parsing
+        let (port, rest) = parse_pcie_port_prefix("pcie_port=rp0:tag,path");
+        assert_eq!(port.unwrap(), "rp0");
+        assert_eq!(rest, "tag,path");
+
+        // No prefix
+        let (port, rest) = parse_pcie_port_prefix("tag,path");
+        assert!(port.is_none());
+        assert_eq!(rest, "tag,path");
+
+        // Empty port name — not parsed as a prefix
+        let (port, rest) = parse_pcie_port_prefix("pcie_port=:tag,path");
+        assert!(port.is_none());
+        assert_eq!(rest, "pcie_port=:tag,path");
+
+        // Missing colon — not parsed as a prefix
+        let (port, rest) = parse_pcie_port_prefix("pcie_port=rp0");
+        assert!(port.is_none());
+        assert_eq!(rest, "pcie_port=rp0");
+    }
+
+    #[test]
+    fn test_fs_args_pcie_port() {
+        // Without pcie_port
+        let args = FsArgs::from_str("myfs,/path").unwrap();
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+        assert!(args.pcie_port.is_none());
+
+        // With pcie_port
+        let args = FsArgs::from_str("pcie_port=rp0:myfs,/path").unwrap();
+        assert_eq!(args.pcie_port.unwrap(), "rp0");
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+
+        // Error: wrong number of fields
+        assert!(FsArgs::from_str("myfs").is_err());
+        assert!(FsArgs::from_str("pcie_port=rp0:myfs").is_err());
+    }
+
+    #[test]
+    fn test_fs_args_with_options_pcie_port() {
+        // Without pcie_port
+        let args = FsArgsWithOptions::from_str("myfs,/path,uid=1000").unwrap();
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+        assert_eq!(args.options, "uid=1000");
+        assert!(args.pcie_port.is_none());
+
+        // With pcie_port
+        let args = FsArgsWithOptions::from_str("pcie_port=rp0:myfs,/path,uid=1000").unwrap();
+        assert_eq!(args.pcie_port.unwrap(), "rp0");
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+        assert_eq!(args.options, "uid=1000");
+
+        // Error: missing path
+        assert!(FsArgsWithOptions::from_str("myfs").is_err());
+    }
+
+    #[test]
+    fn test_virtio_pmem_args_pcie_port() {
+        // Without pcie_port
+        let args = VirtioPmemArgs::from_str("/path/to/file").unwrap();
+        assert_eq!(args.path, "/path/to/file");
+        assert!(args.pcie_port.is_none());
+
+        // With pcie_port
+        let args = VirtioPmemArgs::from_str("pcie_port=rp0:/path/to/file").unwrap();
+        assert_eq!(args.pcie_port.unwrap(), "rp0");
+        assert_eq!(args.path, "/path/to/file");
+
+        // Error: empty path
+        assert!(VirtioPmemArgs::from_str("").is_err());
+        assert!(VirtioPmemArgs::from_str("pcie_port=rp0:").is_err());
+    }
+
+    #[test]
     fn test_smt_config_from_str() {
         assert_eq!(SmtConfigCli::from_str("auto").unwrap(), SmtConfigCli::Auto);
         assert_eq!(
