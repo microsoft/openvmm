@@ -51,6 +51,7 @@ use vmcore::vm_task::VmTaskDriver;
 const TX_BUF_SIZE: u32 = 65536;
 
 /// A key that uniquely identifies a vsock connection.
+/// TODO: I think these need a sequence number since some futures could outlive the connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnKey {
     local_port: u32,
@@ -164,22 +165,49 @@ impl Connection {
             );
         }
 
-        let key = self.key;
         buf.write(data, bytes_sent);
         let future = self
             .write_half
             .take()
-            .map(|mut write_half| -> WriteReadyItem {
-                Box::pin(async move {
-                    write_half
-                        .wait_ready(PollEvents::OUT | PollEvents::HUP | PollEvents::ERR)
-                        .await;
-
-                    // Regardless of the event, just let the worker retry the write.
-                    WriteReady(key, write_half)
-                })
-            });
+            .map(|write_half| -> WriteReadyItem { self.create_write_ready_future(write_half) });
         Ok(future)
+    }
+
+    fn write_from_buffer(
+        &mut self,
+        write_half: WriteHalf<UnixStream>,
+    ) -> anyhow::Result<Option<WriteReadyItem>> {
+        let buf = self.recv_buf.as_mut().expect("buffer must exist");
+        match buf.read_to(&mut write_half.get()) {
+            Ok(_) => (),
+            Err(e) => {
+                if e.kind() != io::ErrorKind::WouldBlock {
+                    return Err(e).context("failed to write buffered data to guest socket");
+                }
+            }
+        }
+
+        if buf.is_empty() {
+            assert!(self.write_half.replace(write_half).is_none());
+            Ok(None)
+        } else {
+            Ok(Some(self.create_write_ready_future(write_half)))
+        }
+    }
+
+    fn create_write_ready_future(
+        &mut self,
+        mut write_half: WriteHalf<UnixStream>,
+    ) -> WriteReadyItem {
+        let key = self.key;
+        Box::pin(async move {
+            write_half
+                .wait_ready(PollEvents::OUT | PollEvents::HUP | PollEvents::ERR)
+                .await;
+
+            // Regardless of the event, just let the worker retry the write.
+            WriteReady(key, write_half)
+        })
     }
 }
 
@@ -385,6 +413,28 @@ impl ConnectionManager {
                 tracing::debug!(header = ?packet.header, "unknown vsock operation");
                 // TODO: Send RST for unknown operations?
                 PendingWork::None
+            }
+        }
+    }
+
+    pub fn handle_write_ready(&mut self, write_ready: WriteReady) -> PendingWork {
+        let WriteReady(key, write_half) = write_ready;
+        let Some(conn) = self.conns.get_mut(&key) else {
+            // This is fine if the connection was reset but a write future was still pending.
+            tracing::debug!(?key, "write ready for unknown connection");
+            return PendingWork::None;
+        };
+
+        match conn.write_from_buffer(write_half) {
+            Ok(Some(future)) => PendingWork::WriteReady(future),
+            Ok(None) => PendingWork::None,
+            Err(err) => {
+                tracelimit::warn_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    ?key,
+                    "failed to write buffered data to host socket on write ready"
+                );
+                PendingWork::Rx(RxWork::SendReset(key))
             }
         }
     }

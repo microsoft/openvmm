@@ -103,6 +103,7 @@ impl VirtioVsockDevice {
             worker: TaskControl::new(VsockWorker {
                 mem: memory,
                 work: FuturesUnordered::new(),
+                write_ready_work: FuturesUnordered::new(),
             }),
         }
     }
@@ -253,19 +254,26 @@ impl VsockWorker {
         };
 
         // Process through the relay.
-        if let Some(work) = state
+        match state
             .relay
             .handle_guest_tx(VsockPacket::new(header, &locked.get().0))
         {
-            tracing::info!("queueing rx work from relay");
-            self.work.push(Box::pin(async move { work }));
+            PendingWork::Rx(work) => {
+                tracing::info!("queueing rx work from relay");
+                self.work.push(Box::pin(async move { work }));
+            }
+            PendingWork::WriteReady(work) => {
+                tracing::info!("queueing write-ready work from relay");
+                self.write_ready_work.push(work);
+            }
+            PendingWork::None => (),
         }
 
         Ok(())
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
-    async fn handle_rx_work(&mut self, state: &mut VsockWorkerState, rx_work: RxWork) {
+    fn handle_rx_work(&mut self, state: &mut VsockWorkerState, rx_work: RxWork) {
         // let work = poll_fn(|cx| state.rx_queue.poll_next_unpin(cx))
         //     .await
         //     .expect("vsock rx queue never ends");
@@ -342,6 +350,20 @@ impl VsockWorker {
         //     }
         // }
     }
+
+    fn handle_write_ready(&mut self, state: &mut VsockWorkerState, write_ready: WriteReady) {
+        match state.relay.handle_write_ready(write_ready) {
+            PendingWork::Rx(work) => {
+                tracing::info!("queueing rx work from relay");
+                self.work.push(Box::pin(async move { work }));
+            }
+            PendingWork::WriteReady(work) => {
+                tracing::info!("queueing write-ready work from relay");
+                self.write_ready_work.push(work);
+            }
+            PendingWork::None => (),
+        }
+    }
 }
 
 impl AsyncRun<VsockWorkerState> for VsockWorker {
@@ -356,6 +378,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     enum Event {
                         TxWork(std::io::Result<VirtioQueueCallbackWork>),
                         RxWork(RxWork),
+                        WriteReady(WriteReady),
                     }
 
                     let pending_rx_item = match state.rx_queue.try_peek() {
@@ -371,6 +394,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
 
                     let has_rx_item = pending_rx_item.is_some();
                     let event = std::future::poll_fn(|cx| {
+                        if let Poll::Ready(Some(item)) = self.write_ready_work.poll_next_unpin(cx) {
+                            return Poll::Ready(Event::WriteReady(item));
+                        }
+
                         if let Poll::Ready(item) = state.tx_queue.poll_next_unpin(cx) {
                             let item = item.expect("virtio queue stream never ends");
                             return Poll::Ready(Event::TxWork(item));
@@ -402,7 +429,11 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                         }
                         Event::RxWork(work) => {
                             tracing::info!("got rx work from relay");
-                            self.handle_rx_work(state, work).await;
+                            self.handle_rx_work(state, work);
+                        }
+                        Event::WriteReady(work) => {
+                            tracing::info!("got write-ready work from relay");
+                            self.handle_write_ready(state, work);
                         }
                     }
                 }

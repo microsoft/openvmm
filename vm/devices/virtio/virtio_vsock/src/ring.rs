@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use std::io::IoSlice;
+use std::io::Write;
 
 /// A simple, single-threaded byte ring buffer with a fixed capacity.
 pub struct RingBuffer {
@@ -100,6 +101,31 @@ impl RingBuffer {
         self.head = (self.head + to_read) % self.buf.len();
         self.len -= to_read;
         to_read
+    }
+
+    /// Writes the current contents of the ring buffer to `writer`, using
+    /// `write_vectored` when the data wraps around. Advances the read
+    /// position by the number of bytes written and returns that count.
+    pub fn read_to(&mut self, writer: &mut impl Write) -> std::io::Result<usize> {
+        let mut total_written = 0;
+
+        while !self.is_empty() {
+            let first_end = (self.head + self.len).min(self.buf.len());
+            let first = &self.buf[self.head..first_end];
+            let written = if first.len() < self.len {
+                // Data wraps around — use write_vectored with two slices.
+                let second = &self.buf[..self.len - first.len()];
+                writer.write_vectored(&[IoSlice::new(first), IoSlice::new(second)])?
+            } else {
+                writer.write(first)?
+            };
+
+            self.head = (self.head + written) % self.buf.len();
+            self.len -= written;
+            total_written += written;
+        }
+
+        Ok(total_written)
     }
 
     /// Discards up to `count` bytes from the front. Returns the number of
@@ -247,5 +273,41 @@ mod tests {
         ring.clear();
         assert!(ring.is_empty());
         assert_eq!(ring.available(), 8);
+    }
+
+    #[test]
+    fn read_to_contiguous() {
+        let mut ring = RingBuffer::new(16);
+        write_bytes(&mut ring, b"hello");
+        let mut out = Vec::new();
+        let n = ring.read_to(&mut out).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&out, b"hello");
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn read_to_wrapped() {
+        let mut ring = RingBuffer::new(8);
+        // Fill and partially drain to move head forward.
+        write_bytes(&mut ring, b"abcdef");
+        ring.skip(4); // head=4, data="ef"
+        write_bytes(&mut ring, b"ghij"); // wraps: buf=[i,j,_,_,e,f,g,h]
+        assert_eq!(ring.len(), 6);
+
+        let mut out = Vec::new();
+        let n = ring.read_to(&mut out).unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(&out, b"efghij");
+        assert!(ring.is_empty());
+    }
+
+    #[test]
+    fn read_to_empty() {
+        let mut ring = RingBuffer::new(8);
+        let mut out = Vec::new();
+        let n = ring.read_to(&mut out).unwrap();
+        assert_eq!(n, 0);
+        assert!(out.is_empty());
     }
 }
