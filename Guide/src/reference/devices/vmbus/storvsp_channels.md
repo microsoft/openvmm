@@ -11,7 +11,7 @@ For the storage pipeline architecture, see
 ## Subchannel negotiation
 
 StorVSP and the guest `storvsc` driver negotiate subchannels through
-the StorVSP protocol — a Hyper-V-specific wire format carried over
+the StorVSP protocol, a Hyper-V-specific wire format carried over
 VMBus (for the protocol definition, see the
 [`storvsp_protocol` rustdoc](https://openvmm.dev/rustdoc/linux/storvsp_protocol/index.html)
 and the [StorVSP](storvsp.md) device page). The VMBus protocol handles
@@ -44,7 +44,7 @@ sequenceDiagram
 
     Note over G,S: StorVSP protocol messages
     G->>S: END_INITIALIZATION
-    Note over G,S: Ready — I/O flows on any open channel
+    Note over G,S: Ready: I/O flows on any open channel
 ```
 
 Key points:
@@ -69,7 +69,7 @@ Key points:
 
 StorVSP runs **one async worker per open channel**. That means one
 worker for the primary channel, plus one worker for each open
-subchannel — so a device with 3 subchannels has 4 workers total.
+subchannel. A device with 3 subchannels has 4 workers total.
 Each worker owns:
 
 - A `Queue` wrapping the channel's ring buffer pair.
@@ -99,54 +99,37 @@ The **primary channel** handles protocol negotiation; subchannels wait
 for the protocol to reach the Ready state before processing I/O.
 If a guest sends I/O on a subchannel before protocol initialization
 completes, the subchannel worker blocks (via an async listener) until
-the primary channel finishes negotiation — the I/O is not lost, just
+the primary channel finishes negotiation. The I/O is not lost, just
 delayed. After initialization, all channels process I/O identically.
 
 ### I/O dispatch
 
 There is no host-side steering. The guest chooses which channel to
-write each I/O request into — typically matching the current VP to
+write each I/O request into, typically matching the current VP to
 the subchannel opened with that VP as the target. Each worker reads
 only its own ring.
 
 Outstanding I/O is capped **per channel** (per worker), not per
-controller or per disk. Each worker has its own `max_io_queue_depth`
-— when that many SCSI requests are in flight on a single channel,
+controller or per disk. Each worker has its own `max_io_queue_depth`.
+When that many SCSI requests are in flight on a single channel,
 the worker stops reading new requests from the ring until one
 completes. Requests on other channels are unaffected.
 
 ## CPU affinity
 
 Subchannels exist so the guest can place I/O close to the VP that
-initiated it. This is the most important "why" behind subchannels —
-not just parallelism, but *locality*.
+initiated it. This is the most important "why" behind subchannels.
 
 ### How targeting works
 
 When a channel is opened, StorVSP creates the worker's async driver
-targeted at the VP the guest specified:
-
-```rust
-// storvsp new_worker() — simplified
-let driver = self.driver_source
-    .builder()
-    .target_vp(target_vp)
-    .run_on_target(true)
-    .build("storvsp-worker");
-```
-
-The strength of this targeting depends on the executor backend:
-
-| Backend | `run_on_target` behavior |
-|---------|-------------------------|
-| OpenHCL threadpool | Strong — CPU-affinitized thread, tasks run on the target CPU. In-flight I/Os are not retargeted. |
-| OpenVMM thread backend | Weaker — dedicated worker thread, but no physical CPU affinity. `retarget_vp()` is a no-op. |
-| Single-driver backend | Ignored — everything runs on one thread. |
+targeted at the VP the guest specified. The strength of this targeting
+depends on the executor backend:
 
 ```admonish note title="VP index = CPU number (today)"
 The `target_vp` in the VMBus open request is a hypervisor VP index.
 In OpenHCL, VP index is used directly as the Linux CPU number for
-threadpool targeting — this is a simplifying assumption, not an
+threadpool targeting. This is a simplifying assumption, not an
 architectural guarantee.
 ```
 
@@ -163,7 +146,7 @@ sequenceDiagram
     App->>SV: read() syscall
     SV->>Ring: write SCSI READ(16) packet
     SV->>W: signal host (interrupt → VP 2)
-    Note over App: Guest VP not stalled —<br/>can execute other work
+    Note over App: Guest VP not stalled,<br/>can execute other work
     W->>Ring: poll_read_batch()
     Ring-->>W: SCSI request packet
     W->>Disk: execute_scsi().await
@@ -176,7 +159,7 @@ sequenceDiagram
 
 The guest VP is **not stalled** during this process. Writing to the
 ring and signaling the host are non-blocking operations in guest
-memory and hypercall space — the VP can continue executing guest code
+memory and hypercall space. The VP can continue executing guest code
 immediately after the signal. The guest kernel only blocks the
 *application thread* when it does a synchronous `read()` syscall (the
 kernel puts that thread to sleep until the completion interrupt
@@ -188,7 +171,7 @@ VP itself is never taken out of VTL0 by the I/O submission.
 The guest can retarget a channel to a different VP via `ModifyChannel`.
 This happens when VPs come online/offline (e.g., CPU hot-remove) and
 the guest rebalances channel assignments. StorVSP forwards the
-retarget to its worker's driver — future work moves to the new VP's
+retarget to its worker's driver. Future work moves to the new VP's
 thread, but in-flight I/Os complete on the old one.
 
 ### IDE accelerator comparison
@@ -196,7 +179,7 @@ thread, but in-flight I/Os complete on the old one.
 The IDE accelerator uses StorVSP to back an IDE device via a VMBus
 channel, replacing the slow PCI port-I/O emulation path with VMBus
 ring buffers. However, the IDE accelerator sets
-`max_sub_channel_count = 0` — all I/O is serialized through a single
+`max_sub_channel_count = 0`. All I/O is serialized through a single
 channel. The accelerator exists for throughput (ring buffers are
 faster than port-I/O VM exits), not for parallelism.
 
@@ -217,7 +200,7 @@ resources are wasted.
 
 ### 0 subchannels (default)
 
-All I/O funnels through the primary channel — one ring, one worker.
+All I/O funnels through the primary channel: one ring, one worker.
 
 ```text
   Guest VPs          Channels              StorVSP Workers
@@ -229,8 +212,9 @@ All I/O funnels through the primary channel — one ring, one worker.
   └──────┘
 ```
 
-On a 64-VP VM, this means 64 VPs compete for one ring. The single
-worker's `max_io_queue_depth` limits total concurrency.
+On a 64-VP VM, this means 64 VPs would compete for one ring.
+The single worker's `max_io_queue_depth` limits total
+concurrency.
 
 ### One channel per VP (ideal)
 
@@ -254,10 +238,8 @@ Each channel costs a ring buffer GPADL and a worker task.
 
 ### Over-provisioned (subchannels > VPs)
 
-The guest *could* open more channels than it has VPs — the protocol
-doesn't prevent it. But there's no benefit: each channel needs a
-target VP, and mapping multiple channels to the same VP just
-recreates the contention problem on that VP's ring. In practice,
+The guest *could* open more channels than it has VPs. The protocol
+doesn't prevent it. But there's no benefit. In practice,
 guest drivers open at most one channel per VP. Extra subchannel
 offers go unused.
 
@@ -272,7 +254,7 @@ The StorVSP protocol does not prescribe any assignment.
 - **Windows** `storvsc` also opens subchannels and distributes I/O
   across them, though the exact allocation strategy is not public.
 - **FreeBSD** `hv_storvsc` supports multi-channel since FreeBSD 12.2
-  with similar per-CPU steering.
+  with similar per-CPU steering as Linux.
 
 ## Performance characteristics
 
@@ -329,11 +311,11 @@ Subchannels parallelize across VPs, but they don't isolate LUNs.
   ┌──────────────────────────────────────────────────┐
   │  FuturesUnordered (max_io_queue_depth = 256)     │
   │                                                  │
-  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   │
-  │  │ LUN 0  │ │ LUN 0  │ │ LUN 1  │ │ LUN 0  │   │
-  │  │  Read  │ │ Write  │ │  Read  │ │  Read  │   │
-  │  │ (fast) │ │ (fast) │ │ (slow) │ │ (fast) │   │
-  │  └────────┘ └────────┘ └────────┘ └────────┘   │
+  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐     │
+  │  │ LUN 0  │ │ LUN 0  │ │ LUN 1  │ │ LUN 0  │     │
+  │  │  Read  │ │ Write  │ │  Read  │ │  Read  │     │
+  │  │ (fast) │ │ (fast) │ │ (SLOW) │ │ (fast) │     │
+  │  └────────┘ └────────┘ └────────┘ └────────┘     │
   └──────────────────────────────────────────────────┘
 ```
 
@@ -341,33 +323,6 @@ If a slow LUN fills the queue depth with long-running I/Os, fast LUN
 I/Os on the same channel are blocked behind them. The only mitigation
 is controller separation: put fast and slow disks on different SCSI
 controllers.
-
-### Cooperative executor (OpenHCL)
-
-In OpenHCL, each VP runs on a single thread with a cooperative
-(non-preemptive) async executor. All tasks targeted at VP N share
-that thread — storvsp workers, other device workers, and the VP
-dispatch loop (VTL0 entry/exit). This means VP stalls (VTL0
-residence, kernel syscall blocking, hypervisor intercepts) directly
-impact storvsp worker latency.
-
-Subchannels help with *channel contention* but not with *VP stalls*.
-If a VP spends most of its time in VTL0, its subchannel is
-effectively idle. Spreading subchannels across VPs mitigates this.
-
-On x64 non-isolated VMs, the [sidecar kernel](../../architecture/openhcl/sidecar.md)
-changes the picture: guest VTL0 execution runs on sidecar CPUs while
-device workers run on Linux CPUs. Initially, device work is handled
-by the few Linux CPUs that booted (typically one per NUMA node). As
-sidecar VPs are onlined into Linux — triggered by the first VM exit
-requiring VTL2 processing — the load spreads to more CPUs.
-
-```admonish tip
-For the full executor model, blocking scenarios, mitigations, and
-sidecar tradeoffs, see the OpenHCL CPU Scheduling page under
-Architecture > OpenHCL (tracked in
-[#2975](https://github.com/microsoft/openvmm/pull/2975)).
-```
 
 ## Configuration
 
@@ -413,47 +368,6 @@ maximum subchannel count. The runtime value is clamped to
 |-------|---------|---------|
 | `scsi_sub_channels` | 0 | Maximum subchannel count for all SCSI controllers. Clamped to 256. |
 | `io_ring_size` | 256 | Size of each per-CPU io_uring submission queue in the OpenHCL threadpool. Controls how many async I/O operations (disk reads, writes, network, etc.) can be submitted to the kernel at once per CPU thread. This is **not** the StorVSP per-channel queue depth — that is configured per controller via `io_queue_depth` in the dynamic SCSI controller settings. |
-
-StorVSP's per-channel queue depth (`max_io_queue_depth`) is set from
-`ScsiControllerHandle.io_queue_depth`, which defaults to the
-`default_io_queue_depth` passed at controller creation. This is
-separate from `io_ring_size`.
-
-### Guest-side kernel params
-
-OpenHCL's boot shim sets these Linux kernel parameters for the VTL0
-guest's `storvsc` driver:
-
-```text
-hv_storvsc.storvsc_vcpus_per_sub_channel=2048
-hv_storvsc.storvsc_max_hw_queues=2
-hv_storvsc.storvsc_ringbuffer_size=0x8000
-```
-
-These affect the guest driver's subchannel creation behavior,
-independent of the host-side maximum.
-`storvsc_vcpus_per_sub_channel=2048` means the driver creates one
-subchannel per 2048 VPs — effectively suppressing subchannels for
-typical VM sizes.
-
-## Hyper-V differences
-
-Hyper-V's VMBus server uses the same wire protocol as OpenVMM (the
-same `OfferChannel`, `OpenChannel`, `CREATE_SUB_CHANNELS` messages),
-so guest drivers work identically against both. However, the
-host-side scheduling and targeting behavior differs:
-
-- Hyper-V uses proprietary algorithms for interrupt delivery,
-  channel scheduling, and VP targeting that are not open source.
-- OpenVMM's implementation is simpler: one async worker per channel,
-  guest-controlled VP targeting, no host-side cross-channel balancing.
-
-```admonish warning
-When comparing performance between OpenVMM and Hyper-V, focus on the
-wire protocol (which is shared) rather than assuming host-side
-behavior matches. Differences in throughput or latency are typically
-due to host-side scheduling, not protocol incompatibility.
-```
 
 ## Inspect
 
