@@ -177,6 +177,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     ) -> anyhow::Result<()> {
         todo!("openvmm set vmbus drive")
     }
+
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        Self::add_pcie_device(self, port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        Self::remove_pcie_device(self, port_name).await
+    }
 }
 
 pub(super) struct PetriVmInner {
