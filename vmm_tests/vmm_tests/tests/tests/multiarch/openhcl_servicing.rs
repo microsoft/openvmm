@@ -970,6 +970,156 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     Ok(())
 }
 
+/// Verifies that `save_openhcl` works correctly when a create_io_queue command
+/// is stuck. The `DriverWorkerTask` run loop should still be able to process
+/// save commands in this situation.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_slow_create_io_queue(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+
+    let fault_configuration = FaultConfiguration::new(fault_start_updater.cell())
+        .with_admin_queue_fault(
+            AdminQueueFaultConfig::new().with_submission_queue_fault(
+                CommandMatchBuilder::new()
+                    .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
+                    .build(),
+                AdminQueueFaultBehavior::Drop, // Indefinite delay, keeps the emulator responsive
+            ),
+        );
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
+
+    let vp_count = 4;
+
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
+        .with_processor_topology(ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 10,
+                        max_io_queues: 10,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: KEEPALIVE_VTL2_NSID,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(disk_size),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: fault_configuration,
+                        enable_tdisp_tests: false,
+                    }
+                    .into_resource(),
+                })
+            })
+        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_controller_guid)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(VTL0_NVME_LUN)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
+        .with_custom_vtl2_settings(move |v| {
+            if v.fixed.is_none() {
+                v.fixed = Some(Default::default());
+            }
+
+            // Configure SCSI so there are as many total channels as vCPUs to
+            // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
+            // channel which is always present. so vp_count - 1 yields a total
+            // of vp_count channels.
+            assert!(
+                vp_count >= 1,
+                "vp_count must be at least 1 when configuring SCSI sub-channels"
+            );
+            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
+        })
+        .run()
+        .await?;
+
+    agent.ping().await?;
+
+    let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
+    let target_cpu = (0u32..vp_count)
+        .find(|cpu| !cpus_with_issuers.contains(cpu))
+        .unwrap_or_else(|| {
+            panic!(
+                "all {vp_count} CPUs already have IO issuers after boot — \
+             test cannot exercise create_io_queue. Consider increasing vp_count."
+            )
+        });
+    tracing::info!(
+        target_cpu,
+        existing_issuers = ?cpus_with_issuers,
+        "selected target CPU with no IO issuer"
+    );
+
+    // Resolve the disk path before save. The device might appear as /dev/sda
+    // or /dev/sdb depending on timing.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // Servicing cycle with a stuck create_io_queue. `run_cpu_pinned_io` only
+    // needs to be run for a duration that guarantees the create_io_queue
+    // command getting stuck. 10s should be plenty to ensure non-flaky test.
+    // Even though the dd command will timeout, the command in the admin queue
+    // itself will be stuck indefinitely.
+    fault_start_updater.set(true).await;
+    _ = CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
+        .await;
+
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
+        .expect("Save failed");
+
+    vm.restore_openhcl().await?;
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+    Ok(())
+}
+
 async fn apply_fault_with_keepalive(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
