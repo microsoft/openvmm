@@ -10,6 +10,8 @@
 
 //! Helper for loading an ELF kernel image.
 
+use crate::common::ImportFileRegionError;
+use crate::common::import_file_region;
 use crate::importer::GuestArch;
 use crate::importer::GuestArchKind;
 use crate::importer::ImageLoad;
@@ -59,8 +61,8 @@ pub enum Error {
     },
     #[error("failed to read kernel image")]
     ReadKernelImage,
-    #[error("failed during import pages call")]
-    ImportPages(#[source] anyhow::Error),
+    #[error("failed to import file region")]
+    ImportFileRegion(#[source] ImportFileRegionError),
     #[error("failed to seek to offset of kernel image")]
     SeekKernelImage,
 }
@@ -104,7 +106,7 @@ pub fn load_static_elf<F, R: GuestArch>(
 where
     F: Read + Seek,
 {
-    let reader = ReadCache::new(kernel_image);
+    let reader = ReadCache::new(&mut *kernel_image);
     let ehdr: &elf::FileHeader64<LE> = reader.read_at(0).map_err(|_| Error::ReadFileHeader)?;
 
     // Sanity checks
@@ -175,7 +177,16 @@ where
         });
     }
 
-    // The first pass on the sections provides the layout data
+    // The first pass on the sections provides the layout data and collects
+    // segment info for the import pass.
+    struct SegmentInfo {
+        p_offset: u64,
+        p_paddr: u64,
+        p_filesz: u64,
+        p_memsz: u64,
+    }
+    let mut segments = Vec::new();
+
     let (lowest_addr, last_offset, reloc_bias) = {
         let mut lowest_addr = u64::MAX;
         let mut last_offset = load_offset;
@@ -208,6 +219,13 @@ where
 
             lowest_addr = lowest_addr.min(page_base * HV_PAGE_SIZE);
             last_offset = last_offset.max((page_base + page_count) * HV_PAGE_SIZE);
+
+            segments.push(SegmentInfo {
+                p_offset: phdr.p_offset.get(LE),
+                p_paddr,
+                p_filesz: phdr.p_filesz.get(LE),
+                p_memsz: phdr.p_memsz.get(LE),
+            });
         }
 
         (
@@ -221,25 +239,24 @@ where
         )
     };
 
-    // During the second pass, read in each section pointed to by the program headers,
-    // and import into the guest memory.
-    for phdr in phdrs {
-        if phdr.p_type.get(LE) != elf::PT_LOAD {
-            continue;
-        }
+    // Drop the reader to release the borrow on kernel_image.
+    drop(reader);
 
-        let p_paddr = phdr.p_paddr.get(LE);
-        let mem_offset = p_paddr
+    // During the second pass, import each segment using import_file_region.
+    let mut buf = vec![0u8; 64 * 1024];
+    for seg in &segments {
+        let mem_offset = seg
+            .p_paddr
             .checked_add(load_offset)
             .ok_or(Error::LoadOffsetOverflow {
                 load_offset,
-                p_paddr,
+                p_paddr: seg.p_paddr,
             })?
             .checked_sub(reloc_bias)
             .ok_or(Error::RelocBiasOverflow {
                 load_offset,
                 reloc_bias,
-                p_paddr,
+                p_paddr: seg.p_paddr,
             })?;
 
         if mem_offset < start_address {
@@ -249,27 +266,19 @@ where
             });
         }
 
-        let page_mask = HV_PAGE_SIZE - 1;
-
-        let filesz = phdr.p_filesz.get(LE);
-        let mut v = vec![0; ((mem_offset & page_mask) + filesz) as usize];
-        if filesz != 0 {
-            let v_start_offset = (mem_offset & page_mask) as usize;
-            let read_length = (v.len() - v_start_offset) as u64;
-            v[v_start_offset..].copy_from_slice(
-                reader
-                    .read_bytes_at(phdr.p_offset.get(LE), read_length)
-                    .map_err(|_| Error::ReadKernelImage)?,
-            );
-        }
-
-        let page_base = mem_offset / HV_PAGE_SIZE;
-        let page_count =
-            ((mem_offset & page_mask) + phdr.p_memsz.get(LE) + page_mask) / HV_PAGE_SIZE;
-        if page_count > 0 {
-            importer
-                .import_pages(page_base, page_count, tag, acceptance, &v)
-                .map_err(Error::ImportPages)?;
+        if seg.p_memsz > 0 {
+            import_file_region(
+                importer,
+                kernel_image,
+                seg.p_offset,
+                mem_offset,
+                seg.p_filesz,
+                seg.p_memsz,
+                acceptance,
+                tag,
+                &mut buf,
+            )
+            .map_err(Error::ImportFileRegion)?;
         }
     }
 
