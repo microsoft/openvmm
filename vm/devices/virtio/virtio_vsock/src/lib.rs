@@ -256,7 +256,7 @@ impl VsockWorker {
         let mut header = VsockHeader::new_zeroed();
         work.read(&self.mem, &mut header.as_mut_bytes()[..hdr_size])?;
 
-        tracing::info!(?header, "got tx packet from guest");
+        tracing::trace!(?header, "got tx packet from guest");
         let pending_work = {
             // TODO: Avoid allocating.
             let regions = data_regions(&work.payload, false, hdr_size as u64, header.len as u64);

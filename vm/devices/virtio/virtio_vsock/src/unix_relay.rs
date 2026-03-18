@@ -8,6 +8,7 @@ use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
+use pal_async::socket::AsSockRef;
 use pal_async::socket::PollSocketReady;
 use pal_async::socket::PolledSocket;
 use parking_lot::Mutex;
@@ -53,7 +54,9 @@ pub struct RelaySocket {
 
 impl RelaySocket {
     pub fn new(driver: &VmTaskDriver, stream: UnixStream) -> io::Result<Self> {
-        let poll = driver.new_dyn_socket_ready(stream.as_raw_fd())?;
+        let sock_ref = stream.as_sock_ref();
+        sock_ref.set_nonblocking(true)?;
+        let poll = driver.new_dyn_socket_ready(sock_ref.as_raw_fd())?;
         Ok(Self {
             inner: Arc::new(RelaySocketInner {
                 socket: stream,
@@ -96,13 +99,14 @@ impl RelaySocket {
             .then(|| -> Pin<Box<dyn Future<Output = T> + Send>> {
                 let inner = self.inner.clone();
                 Box::pin(async move {
-                    inner
+                    let events = inner
                         .await_ready(
                             InterestSlot::Write,
                             PollEvents::OUT | PollEvents::RDHUP | PollEvents::HUP | PollEvents::ERR,
                         )
                         .await;
 
+                    tracing::info!("write-ready events: {:?}", events);
                     result
                 })
             })
@@ -127,7 +131,13 @@ struct RelaySocketInner {
 
 impl RelaySocketInner {
     async fn await_ready(self: Arc<Self>, slot: InterestSlot, events: PollEvents) -> PollEvents {
-        let events = poll_fn(|cx| self.poll.lock().poll_socket_ready(cx, slot, events)).await;
+        let events = poll_fn(|cx| {
+            let mut poll = self.poll.lock();
+            poll.clear_socket_ready(slot);
+            poll.poll_socket_ready(cx, slot, events)
+        })
+        .await;
+
         match slot {
             InterestSlot::Read => self.awaiting_read.store(false, Ordering::Release),
             InterestSlot::Write => self.awaiting_write.store(false, Ordering::Release),

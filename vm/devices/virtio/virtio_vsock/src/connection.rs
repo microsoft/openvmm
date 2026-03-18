@@ -160,17 +160,21 @@ impl Connection {
             );
         }
 
+        tracing::info!(remaining, "buffering data from guest");
         buf.write(data, bytes_sent);
         Ok(self.socket.await_write_ready(self.key))
     }
 
     fn write_from_buffer(&mut self) -> anyhow::Result<Option<WriteReadyItem>> {
+        tracing::info!("writing buffered data to host socket");
         let buf = self.recv_buf.as_mut().expect("buffer must exist");
         match buf.read_to(&mut self.socket.get()) {
-            Ok(_) => (),
+            Ok(written) => self.fwd_cnt += written as u32,
             Err(e) => {
                 if e.kind() != io::ErrorKind::WouldBlock {
                     return Err(e).context("failed to write buffered data to guest socket");
+                } else {
+                    tracing::info!("write would block");
                 }
             }
         }
@@ -185,6 +189,10 @@ impl Connection {
 
             Ok(None)
         } else {
+            tracing::info!(
+                buf_len = buf.len(),
+                "write buffer not empty after write, waiting for write ready"
+            );
             Ok(self.socket.await_write_ready(self.key))
         }
     }
