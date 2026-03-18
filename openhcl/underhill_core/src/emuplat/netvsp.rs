@@ -1305,6 +1305,22 @@ pub struct NetworkAdapterIndexSavedState {
     adapter_index: u32,
 }
 
+pub enum NetworkAdapterIndexRestoreState {
+    NotRestoring,
+    RestoringWithoutSavedState,
+    RestoringWithSavedState(Vec<NetworkAdapterIndexSavedState>),
+}
+
+impl From<Option<Option<Vec<NetworkAdapterIndexSavedState>>>> for NetworkAdapterIndexRestoreState {
+    fn from(saved_states: Option<Option<Vec<NetworkAdapterIndexSavedState>>>) -> Self {
+        match saved_states {
+            None => Self::NotRestoring,
+            Some(None) => Self::RestoringWithoutSavedState,
+            Some(Some(states)) => Self::RestoringWithSavedState(states),
+        }
+    }
+}
+
 /// Provides for serializing the network adapter index generation across multiple
 /// network VF managers.
 #[derive(Clone)]
@@ -1399,18 +1415,19 @@ impl NetworkAdapterIndex {
     }
 
     /// Restores the network adapter index mapping from the saved state.
-    pub fn restore(
-        is_restoring: bool,
-        saved_states: Option<Vec<NetworkAdapterIndexSavedState>>,
-    ) -> Self {
+    pub fn restore(saved_states: NetworkAdapterIndexRestoreState) -> Self {
         // When restoring from older saved state that lacks adapter index data,
         // start at index 0 to preserve backward compatibility.
-        let restored_state = if is_restoring && saved_states.is_none() {
+        let restored_state = if matches!(
+            saved_states,
+            NetworkAdapterIndexRestoreState::RestoringWithoutSavedState
+        ) {
             Self::new(Some(0))
         } else {
             Self::new(None)
         };
-        if let Some(saved_states) = saved_states {
+        if let NetworkAdapterIndexRestoreState::RestoringWithSavedState(saved_states) = saved_states
+        {
             let mut state = restored_state.state.lock();
             for saved_state in saved_states {
                 let mac_address = MacAddress::new(saved_state.mac_address);

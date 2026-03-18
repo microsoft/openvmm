@@ -3411,7 +3411,7 @@ async fn new_underhill_vm(
     }
 
     let network_adapter_index =
-        NetworkAdapterIndex::restore(is_restoring, servicing_state.emuplat.network_adapter_index);
+        NetworkAdapterIndex::restore(servicing_state.emuplat.network_adapter_index.into());
 
     // Networking
     let mut uh_network_settings = UhVmNetworkSettings {

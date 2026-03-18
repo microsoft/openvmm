@@ -38,7 +38,8 @@ mod state {
         pub get_backed_adjust_gpa_range: Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>,
         #[mesh(3)]
         pub netvsp_state: Vec<crate::emuplat::netvsp::SavedState>,
-        /// Index of the next network adapter to create.
+        /// Persisted network adapter index assignments (e.g., MAC-to-index mapping)
+        /// used to restore and continue adapter index allocation.
         #[mesh(4)]
         pub network_adapter_index:
             Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
@@ -221,7 +222,7 @@ pub mod transposed {
         pub get_backed_adjust_gpa_range: Option<Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>>,
         pub netvsp_state: Option<Vec<crate::emuplat::netvsp::SavedState>>,
         pub network_adapter_index:
-            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
+            Option<Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>>,
     }
 
     impl From<Option<ServicingInitState>> for OptionServicingInitState {
@@ -254,7 +255,7 @@ pub mod transposed {
                         rtc_local_clock: Some(rtc_local_clock),
                         get_backed_adjust_gpa_range: Some(get_backed_adjust_gpa_range),
                         netvsp_state: Some(netvsp_state),
-                        network_adapter_index,
+                        network_adapter_index: Some(network_adapter_index),
                     },
                     flush_logs_result: Some(flush_logs_result),
                     vmgs,
