@@ -622,7 +622,7 @@ EOF
                     },
                     paths: if paths.is_empty() {
                         if !exclude_paths.is_empty() {
-                            anyhow::bail!("empty paths trigger with non-empty exclude")
+                            anyhow::bail!("exclude_paths specified without paths")
                         }
 
                         None
@@ -664,7 +664,7 @@ EOF
                     },
                     paths: if paths.is_empty() {
                         if !exclude_paths.is_empty() {
-                            anyhow::bail!("empty paths trigger with non-empty exclude")
+                            anyhow::bail!("exclude_paths specified without paths")
                         }
 
                         None
