@@ -327,6 +327,21 @@ impl VirtioPciDevice {
         }
     }
 
+    /// Register doorbells for all queues at BAR0's notification offset.
+    fn install_doorbells(&mut self) {
+        if let Some(bar0_base) = self.config_space.bar_address(0) {
+            let notification_address = bar0_base + BAR0_NOTIFY_OFFSET as u64;
+            for i in 0..self.events.len() {
+                self.doorbells.add(
+                    notification_address,
+                    Some(i as u64),
+                    Some(2),
+                    &self.events[i],
+                );
+            }
+        }
+    }
+
     /// Poll to stop all queues and fully reset transport + device state.
     fn poll_disable_all(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
         while self.disable_index < self.queues.len() {
@@ -455,7 +470,7 @@ impl VirtioPciDevice {
         }
     }
 
-    fn write_u32(&mut self, address: u64, offset: u16, val: u32) {
+    fn write_u32(&mut self, offset: u16, val: u32) {
         assert!(offset & 3 == 0);
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
@@ -519,15 +534,7 @@ impl VirtioPciDevice {
                     if self.disabling {
                         return;
                     }
-                    let notification_address = (address & !0xfff) + BAR0_NOTIFY_OFFSET as u64;
-                    for i in 0..self.events.len() {
-                        self.doorbells.add(
-                            notification_address,
-                            Some(i as u64),
-                            Some(2),
-                            &self.events[i],
-                        );
-                    }
+                    self.install_doorbells();
 
                     if let Some(region) = &self.shared_memory_region {
                         if let Err(err) = self.device.set_shared_memory_region(region) {
@@ -664,9 +671,9 @@ impl VirtioPciDevice {
         }
     }
 
-    fn write_bar_u32(&mut self, address: u64, bar: u8, offset: u64, value: u32) {
+    fn write_bar_u32(&mut self, bar: u8, offset: u64, value: u32) {
         match bar {
-            0 => self.write_u32(address, offset as u16, value),
+            0 => self.write_u32(offset as u16, value),
             2 => {
                 if let InterruptKind::Msix(msix) = &mut self.interrupt_kind {
                     msix.write_u32(offset, value)
@@ -882,7 +889,12 @@ mod saved_state {
             self.disabling = false;
             self.disable_index = 0;
             self.poll_waker = None;
+
+            // Reinstall doorbells for the restored device state.
             self.doorbells.clear();
+            if new_status.driver_ok() {
+                self.install_doorbells();
+            }
 
             Ok(())
         }
@@ -901,7 +913,7 @@ impl MmioIntercept for VirtioPciDevice {
         if let Some((bar, offset)) = self.config_space.find_bar(address) {
             write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
                 ReadWriteRequestType::Write(value) => {
-                    self.write_bar_u32(address, bar, offset, value);
+                    self.write_bar_u32(bar, offset, value);
                     None
                 }
                 ReadWriteRequestType::Read => Some(self.read_bar_u32(bar, offset)),

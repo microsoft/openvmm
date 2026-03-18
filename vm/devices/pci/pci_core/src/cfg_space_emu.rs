@@ -708,6 +708,11 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
         self.active_bars.find(address)
     }
 
+    /// Gets the active base address for a specific BAR index, if mapped.
+    pub fn bar_address(&self, bar: u8) -> Option<u64> {
+        self.active_bars.get(bar)
+    }
+
     /// Check if this device is a PCIe device by looking for the PCI Express capability.
     pub fn is_pcie_device(&self) -> bool {
         self.capabilities
@@ -982,6 +987,11 @@ impl ConfigSpaceType0Emulator {
     /// Finds a BAR + offset by address.
     pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
         self.common.find_bar(address)
+    }
+
+    /// Gets the active base address for a specific BAR index, if mapped.
+    pub fn bar_address(&self, bar: u8) -> Option<u64> {
+        self.common.bar_address(bar)
     }
 
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.

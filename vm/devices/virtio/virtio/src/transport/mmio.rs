@@ -175,6 +175,20 @@ impl VirtioMmioDevice {
         })
     }
 
+    /// Register doorbells for all queues at the device's notification address.
+    fn install_doorbells(&mut self) {
+        let notification_address = (*self.fixed_mmio_region.1.start() & !0xfff)
+            + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
+        for i in 0..self.events.len() {
+            self.doorbells.add(
+                notification_address,
+                Some(i as u64),
+                Some(4),
+                &self.events[i],
+            );
+        }
+    }
+
     /// Poll to stop all queues and fully reset transport + device state.
     fn poll_disable_all(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
         while self.disable_index < self.queues.len() {
@@ -386,16 +400,7 @@ impl VirtioMmioDevice {
                     if self.disabling {
                         return;
                     }
-                    let notification_address =
-                        (address & !0xfff) + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
-                    for i in 0..self.events.len() {
-                        self.doorbells.add(
-                            notification_address,
-                            Some(i as u64),
-                            Some(4),
-                            &self.events[i],
-                        );
-                    }
+                    self.install_doorbells();
 
                     let features = self.driver_feature.clone();
                     let mut failed = false;
@@ -674,7 +679,12 @@ mod saved_state {
             self.disabling = false;
             self.disable_index = 0;
             self.poll_waker = None;
+
+            // Reinstall doorbells for the restored device state.
             self.doorbells.clear();
+            if new_status.driver_ok() {
+                self.install_doorbells();
+            }
 
             Ok(())
         }
