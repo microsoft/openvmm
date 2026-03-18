@@ -41,10 +41,14 @@ impl IntoPipeline for BuildDocsCli {
         let mut pipeline = Pipeline::new();
 
         // The docs pipeline should only run on the main branch, and only when
-        // the Guide directory is modified.
+        // the Guide directory or the docs workflow/pipeline definitions are modified.
         {
             let branches = vec!["main".into()];
-            let paths = vec!["Guide/**".into()];
+            let paths = vec![
+                "Guide/**".into(),
+                ".github/workflows/openvmm-docs-*.yaml".into(),
+                "flowey/flowey_hvlite/src/pipelines/build_docs.rs".into(),
+            ];
             match config {
                 PipelineConfig::Ci => {
                     pipeline
