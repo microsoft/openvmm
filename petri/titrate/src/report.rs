@@ -39,9 +39,14 @@ pub struct MetricStats {
 /// A complete performance test report.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PerfReport {
-    /// Git revision (short SHA) at the time of the test run.
+    /// Git revision (SHA) at the time the binary was built.
     pub git_revision: String,
-    /// Git commit date (ISO 8601).
+    /// Git branch at the time the binary was built.
+    #[serde(default)]
+    pub git_branch: String,
+    /// Git commit date (ISO 8601). Retained for backward compatibility
+    /// with older reports; new reports set this to an empty string.
+    #[serde(default)]
     pub git_commit_date: String,
     /// Timestamp when the test run started (ISO 8601).
     pub date: String,
@@ -50,15 +55,20 @@ pub struct PerfReport {
 }
 
 impl PerfReport {
-    /// Create a new report with the current git info and timestamp.
+    /// Create a new report with compile-time git info and the current timestamp.
     pub fn new(results: Vec<MetricStats>) -> anyhow::Result<Self> {
-        let git_revision = get_git_revision().unwrap_or_else(|| "unknown".to_string());
-        let git_commit_date = get_git_commit_date().unwrap_or_else(|| "unknown".to_string());
+        let git_revision = option_env!("BUILD_GIT_SHA")
+            .unwrap_or("unknown")
+            .to_string();
+        let git_branch = option_env!("BUILD_GIT_BRANCH")
+            .unwrap_or("unknown")
+            .to_string();
         let date = jiff::Timestamp::now().to_string();
 
         Ok(Self {
             git_revision,
-            git_commit_date,
+            git_branch,
+            git_commit_date: String::new(),
             date,
             results,
         })
@@ -78,7 +88,12 @@ impl PerfReport {
     pub fn print_summary(&self) {
         println!("Performance Report");
         println!("  Git revision:    {}", self.git_revision);
-        println!("  Git commit date: {}", self.git_commit_date);
+        if !self.git_branch.is_empty() {
+            println!("  Git branch:      {}", self.git_branch);
+        }
+        if !self.git_commit_date.is_empty() {
+            println!("  Git commit date: {}", self.git_commit_date);
+        }
         println!("  Run date:        {}", self.date);
         println!();
         println!(
@@ -189,34 +204,4 @@ pub struct MetricComparison {
     pub delta: f64,
     /// Relative delta as percentage.
     pub delta_pct: f64,
-}
-
-/// Get the current git short revision, or None if not in a git repo.
-fn get_git_revision() -> Option<String> {
-    std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-}
-
-/// Get the current git commit date, or None if not in a git repo.
-fn get_git_commit_date() -> Option<String> {
-    std::process::Command::new("git")
-        .args(["log", "-1", "--format=%cI"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
 }

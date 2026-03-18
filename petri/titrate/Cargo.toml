@@ -24,5 +24,8 @@ serde_json = { workspace = true, features = ["std"] }
 tempfile.workspace = true
 tracing.workspace = true
 
+[build-dependencies]
+build_rs_git_info.workspace = true
+
 [lints]
 workspace = true
