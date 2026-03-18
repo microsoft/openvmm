@@ -10,16 +10,16 @@
 //!
 //! ```bash
 //! # Run all benchmarks
-//! titrate run -o report.json
+//! burette run -o report.json
 //!
 //! # Run only boot time test
-//! titrate run --test boot_time -o report.json
+//! burette run --test boot_time -o report.json
 //!
 //! # Run with custom iteration count
-//! titrate run --iterations 20 -o report.json
+//! burette run --iterations 20 -o report.json
 //!
 //! # Compare two reports
-//! titrate compare baseline.json candidate.json
+//! burette compare baseline.json candidate.json
 //! ```
 
 mod harness;
@@ -46,7 +46,7 @@ fn log_source() -> petri::PetriLogSource {
 }
 
 #[derive(Parser)]
-#[command(name = "titrate", about = "OpenVMM performance benchmarks")]
+#[command(name = "burette", about = "OpenVMM performance benchmarks")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -70,7 +70,7 @@ struct RunArgs {
     output: PathBuf,
 
     /// Directory for petri logs.
-    #[arg(long, default_value = "vmm_test_results/titrate")]
+    #[arg(long, default_value = "vmm_test_results/burette")]
     log_dir: PathBuf,
 
     /// Run only a specific test (e.g. "boot_time"). Omit to run all.
@@ -113,7 +113,7 @@ struct CompareArgs {
 #[derive(clap::Args)]
 struct PackageArgs {
     /// Output tarball path.
-    #[arg(short, long, default_value = "titrate_bundle.tar.gz")]
+    #[arg(short, long, default_value = "burette_bundle.tar.gz")]
     output: PathBuf,
 }
 
@@ -235,9 +235,9 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
 
     // Resolve artifact paths via the standard resolver infrastructure.
-    let titrate_path =
-        petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("titrate")
-            .context("failed to find titrate binary")?;
+    let burette_path =
+        petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("burette")
+            .context("failed to find burette binary")?;
     let openvmm_path = resolver
         .resolve(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase())
         .context("failed to resolve openvmm binary")?;
@@ -257,11 +257,11 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
 
     // Stage files into a temporary directory.
     let staging = tempfile::tempdir().context("failed to create staging dir")?;
-    let bundle = staging.path().join("titrate_bundle");
+    let bundle = staging.path().join("burette_bundle");
 
     // (source_path, relative destination in bundle)
     let files: &[(&Path, &str)] = &[
-        (&titrate_path, "titrate"),
+        (&burette_path, "burette"),
         (&openvmm_path, "openvmm"),
         (&pipette_path, "pipette"),
         (&kernel_path, "x64/vmlinux"),
@@ -302,7 +302,7 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         .arg(&args.output)
         .arg("-C")
         .arg(staging.path())
-        .arg("titrate_bundle")
+        .arg("burette_bundle")
         .status()
         .context("failed to run tar")?;
 
@@ -317,8 +317,8 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         "  tar xzf {}",
         args.output.file_name().unwrap().to_string_lossy()
     );
-    println!("  cd titrate_bundle");
-    println!("  VMM_TESTS_CONTENT_DIR=$PWD ./titrate run -o report.json");
+    println!("  cd burette_bundle");
+    println!("  VMM_TESTS_CONTENT_DIR=$PWD ./burette run -o report.json");
 
     Ok(())
 }

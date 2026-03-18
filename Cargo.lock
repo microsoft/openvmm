@@ -417,6 +417,27 @@ name = "build_rs_guest_arch"
 version = "0.0.0"
 
 [[package]]
+name = "burette"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "build_rs_git_info",
+ "clap",
+ "jiff",
+ "openvmm_defs",
+ "pal_async",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
+ "petri_artifacts_vmm_test",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7579,26 +7600,6 @@ checksum = "be4d6b5f19ff7664e8c98d03e2139cb510db9b0a60b55f8e8709b689d939b6bc"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "titrate"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "jiff",
- "openvmm_defs",
- "pal_async",
- "petri",
- "petri_artifact_resolver_openvmm_known_paths",
- "petri_artifacts_common",
- "petri_artifacts_core",
- "petri_artifacts_vmm_test",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
 ]
 
 [[package]]

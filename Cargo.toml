@@ -23,7 +23,7 @@ members = [
   "vmm_tests/prep_steps",
   "vmm_tests/vmm_tests",
   # Performance tests
-  "petri/titrate",
+  "petri/burette",
   # hyper-v tooling
   "hyperv/tools/hypestv",
   # fuzzing

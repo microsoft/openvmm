@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "titrate"
+name = "burette"
 edition.workspace = true
 rust-version.workspace = true
 
