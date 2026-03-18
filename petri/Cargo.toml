@@ -73,6 +73,7 @@ async-trait.workspace = true
 blocking.workspace = true
 clap.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
+flate2.workspace = true
 fs-err.workspace = true
 fscommon.workspace = true
 futures.workspace = true

@@ -563,6 +563,12 @@ async fn vm_config_from_command_line(
         "debugcon",
     )?;
 
+    let virtio_console_backend = if let Some(serial_cfg) = opt.virtio_console.clone() {
+        setup_serial("virtio-console", serial_cfg, "hvc0")?
+    } else {
+        None
+    };
+
     let mut resources = VmResources::default();
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
@@ -1107,7 +1113,7 @@ async fn vm_config_from_command_line(
         let mut cmdline = "panic=-1 debug".to_string();
 
         with_hv = opt.hv;
-        if with_hv {
+        if with_hv && opt.pcie_root_complex.is_empty() {
             cmdline += " pci=off";
         }
 
@@ -1510,65 +1516,116 @@ async fn vm_config_from_command_line(
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
-        if cli_cfg.pcie_port.is_some() {
-            anyhow::bail!("use --mana to add PCIe NICs")
-        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::net::VirtioNetHandle {
-                max_queues: vport.max_queues,
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            }
-            .into_resource(),
-        );
+        let resource = virtio_resources::net::VirtioNetHandle {
+            max_queues: vport.max_queues,
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &cli_cfg.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     for args in &opt.virtio_fs {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                    root_path: args.path.clone(),
-                    mount_options: args.options.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                root_path: args.path.clone(),
+                mount_options: args.options.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_fs_shmem {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
-                    root_path: args.path.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
+                root_path: args.path.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_9p {
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::p9::VirtioPlan9Handle {
-                tag: args.tag.clone(),
-                root_path: args.path.clone(),
-                debug: opt.virtio_9p_debug,
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::p9::VirtioPlan9Handle {
+            tag: args.tag.clone(),
+            root_path: args.path.clone(),
+            debug: opt.virtio_9p_debug,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
-    if let Some(path) = &opt.virtio_pmem {
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::pmem::VirtioPmemHandle { path: path.clone() }.into_resource(),
-        );
+    if let Some(pmem_args) = &opt.virtio_pmem {
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
+            path: pmem_args.path.clone(),
+        }
+        .into_resource();
+        if let Some(pcie_port) = &pmem_args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if opt.virtio_rng {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rng::VirtioRngHandle.into_resource();
+        if let Some(pcie_port) = &opt.virtio_rng_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_rng_bus, resource);
+        }
+    }
+
+    if let Some(backend) = virtio_console_backend {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+        if let Some(pcie_port) = &opt.virtio_console_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     let mut cfg = Config {
@@ -1585,6 +1642,7 @@ async fn vm_config_from_command_line(
             mmio_gaps,
             prefetch_memory: opt.prefetch,
             private_memory: opt.private_memory,
+            transparent_hugepages: opt.thp,
             pci_ecam_gaps,
             pci_mmio_gaps,
         },
@@ -1833,7 +1891,10 @@ fn disk_open_inner(
     }
     match disk_cli {
         &DiskCliKind::Memory(len) => {
-            layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: Some(len),
+                sector_size: None,
+            }));
         }
         DiskCliKind::File {
             path,
@@ -1855,7 +1916,10 @@ fn disk_open_inner(
             }))
         }
         DiskCliKind::MemoryDiff(inner) => {
-            layers.push(layer(RamDiskLayerHandle { len: None }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }));
             disk_open_inner(inner, true, layers)?;
         }
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
@@ -2966,7 +3030,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         }
                         Some(size) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                     };
@@ -3133,7 +3200,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                         (None, None) => {

@@ -151,7 +151,7 @@ impl SimpleFlowNode for Node {
             Some(
                 ctx.emit_gh_step(
                     "publish openvmm_hcl for analysis",
-                    "actions/upload-artifact@v4",
+                    "actions/upload-artifact@v7",
                 )
                 .with("name", name)
                 .with("path", dir)

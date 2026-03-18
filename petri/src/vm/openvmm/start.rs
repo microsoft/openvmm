@@ -89,12 +89,15 @@ impl PetriVmConfigOpenVmm {
 
         let worker = Arc::new(worker);
 
+        let is_minimal = resources.properties.minimal_mode;
+
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
                 resources,
                 mesh,
                 worker,
                 framebuffer_view,
+                cidata_mounted: false,
             },
             halt_notif,
         );
@@ -103,7 +106,7 @@ impl PetriVmConfigOpenVmm {
         vm.resume().await?;
 
         // Run basic save/restore test if it is supported
-        if supports_save_restore {
+        if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }
@@ -115,37 +118,35 @@ impl PetriVmConfigOpenVmm {
     /// Run the VM, configuring pipette to automatically start if it is
     /// included in the config
     pub async fn run(mut self) -> anyhow::Result<(PetriVmOpenVmm, PetriVmRuntimeConfig)> {
-        let launch_linux_direct_pipette = if self.resources.properties.using_vtl0_pipette {
-            if matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
-                && !self.resources.properties.is_isolated
-            {
-                // Make a file for the IMC hive. It's not guaranteed to be at a fixed
-                // location at runtime.
-                let mut imc_hive_file =
-                    tempfile::tempfile().context("failed to create temp file")?;
-                imc_hive_file
-                    .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
-                    .context("failed to write imc hive")?;
+        // Set up the IMC hive for Windows guests that use pipette in VTL0.
+        if self.resources.properties.using_vtl0_pipette
+            && matches!(self.resources.properties.os_flavor, OsFlavor::Windows)
+            && !self.resources.properties.is_isolated
+        {
+            let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
+            imc_hive_file
+                .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                .context("failed to write imc hive")?;
 
-                // Add the IMC device.
-                self.config.vmbus_devices.push((
-                    DeviceVtl::Vtl0,
-                    vmbfs_resources::VmbfsImcDeviceHandle {
-                        file: imc_hive_file,
-                    }
-                    .into_resource(),
-                ));
-            }
+            self.config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                vmbfs_resources::VmbfsImcDeviceHandle {
+                    file: imc_hive_file,
+                }
+                .into_resource(),
+            ));
+        }
 
-            self.resources.properties.is_linux_direct
-        } else {
-            false
-        };
+        // On non-pipette-as-init Linux direct, launch pipette via the serial
+        // agent. (When pipette is PID 1, it auto-starts on boot and the
+        // serial agent is not present.)
+        let launch_via_serial = self.resources.linux_direct_serial_agent.is_some()
+            && self.resources.properties.using_vtl0_pipette;
 
         // Start the VM.
         let (mut vm, config) = self.run_core().await?;
 
-        if launch_linux_direct_pipette {
+        if launch_via_serial {
             vm.launch_linux_direct_pipette().await?;
         }
 

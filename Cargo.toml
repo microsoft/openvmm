@@ -51,6 +51,8 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  # support crates consumed by closed-source only
+  "support/debug_output_tracing",
 ]
 exclude = [
   "xsync",
@@ -58,7 +60,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.93"
+rust-version = "1.94"
 edition = "2024"
 
 [workspace.dependencies]
@@ -338,10 +340,12 @@ vga = { path = "vm/devices/vga" }
 vga_proxy = { path = "vm/devices/vga_proxy" }
 virtio = { path = "vm/devices/virtio/virtio" }
 virtio_blk = { path = "vm/devices/virtio/virtio_blk" }
+virtio_console = { path = "vm/devices/virtio/virtio_console" }
 virtio_p9 = { path = "vm/devices/virtio/virtio_p9" }
 virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
+virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
 vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
@@ -450,6 +454,7 @@ event-listener = "5.3"
 expect-test = "1.5"
 fatfs = { version = "0.3.6", default-features = false }
 filepath = "0.2"
+flate2 = "1.1"
 fs-err = "3.1"
 fscommon = "0.1.1"
 futures = "0.3.31"
@@ -544,7 +549,6 @@ syn = "2"
 target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
-time = "0.3.47"
 toml_edit = "0.23"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"

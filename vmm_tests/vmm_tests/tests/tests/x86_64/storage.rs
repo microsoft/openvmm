@@ -55,7 +55,10 @@ pub(crate) fn new_test_vtl2_nvme_device(
     let layer = if let Some(file) = backing_file {
         LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(file).into_resource()))
     } else {
-        LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(size) })
+        LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+            len: Some(size),
+            sector_size: None,
+        })
     };
 
     VpciDeviceConfig {
@@ -216,6 +219,7 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
                             device: SimpleScsiDiskHandle {
                                 disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                     len: Some(SCSI_DISK_SECTORS * SECTOR_SIZE),
+                                    sector_size: None,
                                 })
                                 .into_resource(),
                                 read_only: false,
@@ -544,8 +548,11 @@ async fn openhcl_linux_storvsp_dvd(
         .call_failable(
             SimpleScsiDvdRequest::ChangeMedia,
             Some(
-                LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(len) })
-                    .into_resource(),
+                LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(len),
+                    sector_size: None,
+                })
+                .into_resource(),
             ),
         )
         .await
@@ -721,6 +728,7 @@ async fn storvsp_dynamic_add_disk(
                                 nsid: FIRST_NS + i,
                                 disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                     len: Some(disk_sectors(i) * SECTOR_SIZE),
+                                    sector_size: None,
                                 })
                                 .into_resource(),
                                 read_only: false,

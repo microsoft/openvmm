@@ -10,7 +10,6 @@ rust-version.workspace = true
 flowey.workspace = true
 
 anyhow.workspace = true
-dirs.workspace = true
 fs-err.workspace = true
 home.workspace = true
 log.workspace = true

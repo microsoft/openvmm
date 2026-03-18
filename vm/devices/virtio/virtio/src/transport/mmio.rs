@@ -3,10 +3,10 @@
 
 use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
-use crate::Resources;
 use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
+use crate::queue::QueueState;
 use crate::spec::VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE;
 use crate::spec::VIRTIO_MMIO_INTERRUPT_STATUS_USED_BUFFER;
 use crate::spec::VirtioDeviceFeatures;
@@ -29,10 +29,6 @@ use std::sync::Arc;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
-use vmcore::save_restore::NoSavedState;
-use vmcore::save_restore::RestoreError;
-use vmcore::save_restore::SaveError;
-use vmcore::save_restore::SaveRestore;
 
 /// Run a virtio device over MMIO
 #[derive(InspectMut)]
@@ -65,6 +61,12 @@ pub struct VirtioMmioDevice {
     #[inspect(skip)]
     doorbells: VirtioDoorbells,
     interrupt_state: Arc<Mutex<InterruptState>>,
+    /// Progress through stopping queues during guest-initiated disable.
+    #[inspect(skip)]
+    disable_index: usize,
+    /// Cached queue states from `ChangeDeviceState::stop()` for resume.
+    #[inspect(skip)]
+    saved_queue_states: Vec<Option<QueueState>>,
 }
 
 #[derive(Inspect)]
@@ -114,16 +116,23 @@ impl VirtioMmioDevice {
             status: 0,
         }));
 
-        let mut device_feature = traits.device_features.clone();
-        device_feature.set_bank(
-            0,
-            device_feature
-                .bank0()
-                .with_ring_event_idx(true)
-                .with_ring_indirect_desc(true)
-                .into_bits(),
-        );
-        device_feature.set_bank(1, device_feature.bank1().with_version_1(true).into_bits());
+        let device_feature = traits
+            .device_features
+            .clone()
+            .with_bank0(
+                traits
+                    .device_features
+                    .bank0()
+                    .with_ring_event_idx(true)
+                    .with_ring_indirect_desc(true),
+            )
+            .with_bank1(
+                traits
+                    .device_features
+                    .bank1()
+                    .with_version_1(true)
+                    .with_ring_packed(true),
+            );
         Self {
             fixed_mmio_region: ("virtio-chipset", mmio_gpa..=(mmio_gpa + mmio_len - 1)),
             device,
@@ -142,6 +151,8 @@ impl VirtioMmioDevice {
             config_generation: 0,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             interrupt_state,
+            disable_index: 0,
+            saved_queue_states: vec![None; traits.max_queues as usize],
         }
     }
 
@@ -153,10 +164,50 @@ impl VirtioMmioDevice {
                 .update(true, VIRTIO_MMIO_INTERRUPT_STATUS_CONFIG_CHANGE);
         }
     }
+
+    /// Create an interrupt for a queue.
+    fn create_queue_interrupt(&self) -> Interrupt {
+        let interrupt_state = self.interrupt_state.clone();
+        Interrupt::from_fn(move || {
+            interrupt_state
+                .lock()
+                .update(true, VIRTIO_MMIO_INTERRUPT_STATUS_USED_BUFFER);
+        })
+    }
+
+    /// Register doorbells for all queues at the device's notification address.
+    fn install_doorbells(&mut self) {
+        let notification_address = (*self.fixed_mmio_region.1.start() & !0xfff)
+            + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
+        for i in 0..self.events.len() {
+            self.doorbells.add(
+                notification_address,
+                Some(i as u64),
+                Some(4),
+                &self.events[i],
+            );
+        }
+    }
+
+    /// Poll to stop all queues and fully reset transport + device state.
+    fn poll_disable_all(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        while self.disable_index < self.queues.len() {
+            let idx = self.disable_index as u16;
+            std::task::ready!(self.device.poll_stop_queue(cx, idx));
+            self.disable_index += 1;
+        }
+        self.device.reset();
+        self.disable_index = 0;
+        self.device_status = VirtioDeviceStatus::new();
+        self.disabling = false;
+        self.config_generation = 0;
+        self.interrupt_state.lock().update(false, !0);
+        std::task::Poll::Ready(())
+    }
 }
 
 impl VirtioMmioDevice {
-    pub(crate) fn read_u32(&self, address: u64) -> u32 {
+    pub(crate) fn read_u32(&mut self, address: u64) -> u32 {
         let offset = (address & 0xfff) as u16;
         assert!(offset & 3 == 0);
         match VirtioMmioRegister(offset) {
@@ -313,27 +364,19 @@ impl VirtioMmioDevice {
                     if self.disabling {
                         return;
                     }
-                    let started = self.device_status.driver_ok();
-                    self.config_generation = 0;
-                    if started {
-                        self.doorbells.clear();
-                        // Try the fast path: poll with a noop waker to see if
-                        // the device can disable synchronously.
-                        let waker = std::task::Waker::noop();
-                        let mut cx = std::task::Context::from_waker(waker);
-                        if self.device.poll_disable(&mut cx).is_pending() {
-                            self.disabling = true;
-                            // Wake the real poll waker so that poll_device will
-                            // re-poll with a real waker, replacing the noop one.
-                            if let Some(waker) = self.poll_waker.take() {
-                                waker.wake();
-                            }
-                            return;
+                    self.doorbells.clear();
+                    if self.device_status.driver_ok() {
+                        // Queues are active — need async teardown.
+                        self.disabling = true;
+                        if let Some(waker) = self.poll_waker.take() {
+                            waker.wake();
                         }
+                    } else {
+                        // Never reached DRIVER_OK, reset synchronously.
+                        self.device_status = VirtioDeviceStatus::new();
+                        self.config_generation = 0;
+                        self.interrupt_state.lock().update(false, !0);
                     }
-                    // Fast path: disable completed synchronously.
-                    self.device_status = VirtioDeviceStatus::new();
-                    self.interrupt_state.lock().update(false, !0);
                     return;
                 }
 
@@ -354,55 +397,44 @@ impl VirtioMmioDevice {
                 }
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
-                    let notification_address =
-                        (address & !0xfff) + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
-                    for i in 0..self.events.len() {
-                        self.doorbells.add(
-                            notification_address,
-                            Some(i as u64),
-                            Some(4),
-                            &self.events[i],
-                        );
+                    if self.disabling {
+                        return;
                     }
-                    let queues = self
-                        .queues
-                        .iter()
-                        .zip(self.events.iter().cloned())
-                        .map(|(queue, event)| {
-                            let interrupt_state = self.interrupt_state.clone();
-                            let notify = Interrupt::from_fn(move || {
-                                interrupt_state
-                                    .lock()
-                                    .update(true, VIRTIO_MMIO_INTERRUPT_STATUS_USED_BUFFER);
-                            });
-                            QueueResources {
-                                params: *queue,
-                                notify,
-                                event,
-                            }
-                        })
-                        .collect();
+                    self.install_doorbells();
 
-                    match self.device.enable(Resources {
-                        features: self.driver_feature.clone(),
-                        queues,
-                        shared_memory_region: None,
-                        shared_memory_size: 0,
-                    }) {
-                        Ok(()) => {
-                            self.device_status.set_driver_ok(true);
+                    let features = self.driver_feature.clone();
+                    let mut failed = false;
+                    for (i, queue) in self.queues.iter().enumerate() {
+                        if !queue.enable {
+                            continue;
                         }
-                        Err(err) => {
+                        let idx = i as u16;
+                        let notify = self.create_queue_interrupt();
+                        let resources = QueueResources {
+                            params: *queue,
+                            notify,
+                            event: self.events[i].clone(),
+                        };
+                        if let Err(err) = self.device.start_queue(idx, resources, &features, None) {
                             self.doorbells.clear();
-                            // FUTURE: consider setting DEVICE_NEEDS_RESET and
-                            // delivering a config change interrupt so the guest
-                            // can detect the failure proactively instead of
-                            // waiting for IO timeouts.
                             tracelimit::error_ratelimited!(
                                 error = &*err as &dyn std::error::Error,
-                                "virtio device enable failed"
+                                idx,
+                                "virtio device start_queue failed"
                             );
+                            // Enter the disabling state so poll_device will
+                            // asynchronously stop any already-started queues.
+                            self.disabling = true;
+                            if let Some(waker) = self.poll_waker.take() {
+                                waker.wake();
+                            }
+                            failed = true;
+                            break;
                         }
+                    }
+
+                    if !failed {
+                        self.device_status.set_driver_ok(true);
                     }
                     self.update_config_generation();
                 }
@@ -452,19 +484,54 @@ impl VirtioMmioDevice {
 }
 
 impl ChangeDeviceState for VirtioMmioDevice {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        if self.device_status.driver_ok() {
+            // Restart enabled queues with saved states from a previous stop().
+            let features = self.driver_feature.clone();
+            for (i, queue) in self.queues.iter().enumerate() {
+                if !queue.enable {
+                    continue;
+                }
+                let idx = i as u16;
+                let notify = self.create_queue_interrupt();
+                let resources = QueueResources {
+                    params: *queue,
+                    notify,
+                    event: self.events[i].clone(),
+                };
+                let initial_state = self.saved_queue_states[i].take();
+                if let Err(err) = self
+                    .device
+                    .start_queue(idx, resources, &features, initial_state)
+                {
+                    tracelimit::error_ratelimited!(
+                        error = &*err as &dyn std::error::Error,
+                        idx,
+                        "virtio device start_queue failed on resume"
+                    );
+                }
+            }
+        }
+    }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        if self.disabling {
+            // Complete the in-progress disable.
+            std::future::poll_fn(|cx| self.poll_disable_all(cx)).await;
+        } else if self.device_status.driver_ok() {
+            // Stop all queues and cache their states for resume.
+            for i in 0..self.queues.len() {
+                let idx = i as u16;
+                let state = std::future::poll_fn(|cx| self.device.poll_stop_queue(cx, idx)).await;
+                self.saved_queue_states[i] = state;
+            }
+        }
+    }
 
     async fn reset(&mut self) {
-        if self.device_status.driver_ok() || self.disabling {
-            self.doorbells.clear();
-            std::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
-        }
-        self.device_status = VirtioDeviceStatus::new();
-        self.disabling = false;
-        self.config_generation = 0;
-        self.interrupt_state.lock().update(false, !0);
+        self.doorbells.clear();
+        self.disabling = true;
+        std::future::poll_fn(|cx| self.poll_disable_all(cx)).await;
     }
 }
 
@@ -472,11 +539,7 @@ impl PollDevice for VirtioMmioDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
         self.poll_waker = Some(cx.waker().clone());
         if self.disabling {
-            if self.device.poll_disable(cx).is_ready() {
-                self.device_status = VirtioDeviceStatus::new();
-                self.disabling = false;
-                self.interrupt_state.lock().update(false, !0);
-            }
+            let _ = self.poll_disable_all(cx);
         }
     }
 }
@@ -491,15 +554,140 @@ impl ChipsetDevice for VirtioMmioDevice {
     }
 }
 
-impl SaveRestore for VirtioMmioDevice {
-    type SavedState = NoSavedState; // TODO
+mod saved_state {
+    mod state {
+        use crate::transport::saved_state::state::CommonQueueState;
+        use crate::transport::saved_state::state::CommonSavedState;
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
 
-    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        Ok(NoSavedState)
+        /// MMIO per-queue saved state. Wraps the common queue state so
+        /// MMIO-specific per-queue fields can be added later if needed.
+        #[derive(Protobuf)]
+        #[mesh(package = "virtio.transport.mmio")]
+        pub struct SavedQueueState {
+            #[mesh(1)]
+            pub common: CommonQueueState,
+        }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "virtio.transport.mmio")]
+        pub struct SavedState {
+            #[mesh(1)]
+            pub common: CommonSavedState,
+            #[mesh(2)]
+            pub queues: Vec<SavedQueueState>,
+        }
     }
 
-    fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
-        Ok(())
+    use super::*;
+    use crate::transport::saved_state::state as common_state;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    impl SaveRestore for VirtioMmioDevice {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            if !self.device.supports_save_restore() {
+                return Err(SaveError::NotSupported);
+            }
+
+            Ok(state::SavedState {
+                common: common_state::CommonSavedState {
+                    device_status: self.device_status.into(),
+                    driver_feature_banks: (0..self.device_feature.len())
+                        .map(|i| self.driver_feature.bank(i))
+                        .collect(),
+                    device_feature_select: self.device_feature_select,
+                    driver_feature_select: self.driver_feature_select,
+                    queue_select: self.queue_select,
+                    config_generation: self.config_generation,
+                    interrupt_status: self.interrupt_state.lock().status,
+                },
+                queues: self
+                    .queues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| state::SavedQueueState {
+                        common: common_state::CommonQueueState {
+                            size: q.size,
+                            enable: q.enable,
+                            desc_addr: q.desc_addr,
+                            avail_addr: q.avail_addr,
+                            used_addr: q.used_addr,
+                            queue_state: self.saved_queue_states[i],
+                        },
+                    })
+                    .collect(),
+            })
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if !self.device.supports_save_restore() {
+                return Err(RestoreError::SavedStateNotSupported);
+            }
+
+            let common = &state.common;
+
+            crate::transport::saved_state::validate_restore(
+                common,
+                &self.device_feature,
+                state
+                    .queues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| (i, q.common.size)),
+                self.queues.len(),
+                state.queues.len(),
+                QUEUE_MAX_SIZE,
+            )?;
+
+            let new_status = VirtioDeviceStatus::from(common.device_status);
+
+            // Restore transport fields.
+            self.driver_feature = VirtioDeviceFeatures::new();
+            for (i, &bank) in common.driver_feature_banks.iter().enumerate() {
+                self.driver_feature.set_bank(i, bank);
+            }
+            self.device_feature_select = common.device_feature_select;
+            self.driver_feature_select = common.driver_feature_select;
+            self.queue_select = common.queue_select;
+            self.config_generation = common.config_generation;
+            {
+                let mut is = self.interrupt_state.lock();
+                is.status = common.interrupt_status;
+                is.interrupt.set_level(is.status != 0);
+            }
+
+            // Restore per-queue transport parameters.
+            for (i, sq) in state.queues.iter().enumerate() {
+                self.queues[i] = QueueParams {
+                    size: sq.common.size,
+                    enable: sq.common.enable,
+                    desc_addr: sq.common.desc_addr,
+                    avail_addr: sq.common.avail_addr,
+                    used_addr: sq.common.used_addr,
+                };
+                self.saved_queue_states[i] = sq.common.queue_state;
+            }
+
+            self.device_status = new_status;
+
+            // Reset ephemeral runtime state.
+            self.disabling = false;
+            self.disable_index = 0;
+            self.poll_waker = None;
+
+            // Reinstall doorbells for the restored device state.
+            self.doorbells.clear();
+            if new_status.driver_ok() {
+                self.install_doorbells();
+            }
+
+            Ok(())
+        }
     }
 }
 

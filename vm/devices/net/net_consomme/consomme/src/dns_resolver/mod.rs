@@ -46,7 +46,7 @@ pub struct DnsFlow {
     // Used by the glibc and Windows DNS backends. The musl resolver
     // implementation handles TCP internally, so this field is not
     // used in the musl backend.
-    #[allow(dead_code)]
+    #[cfg_attr(target_env = "musl", expect(dead_code))]
     pub transport: DnsTransport,
 }
 

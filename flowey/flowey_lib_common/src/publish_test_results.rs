@@ -101,7 +101,7 @@ impl FlowNode for Node {
                     // manually upload the artifact now so that it is still
                     // uploaded even if the pipeline fails.
                     use_side_effects.push(
-                        ctx.emit_gh_step(step_name, "actions/upload-artifact@v4")
+                        ctx.emit_gh_step(step_name, "actions/upload-artifact@v7")
                             .condition(has_junit_xml)
                             .with("name", artifact_name)
                             .with("path", junit_xml)
@@ -193,7 +193,7 @@ impl FlowNode for Node {
                     FlowBackend::Github => {
                         // See above comment about manually publishing artifacts
                         use_side_effects.push(
-                            ctx.emit_gh_step(step_name.clone(), "actions/upload-artifact@v4")
+                            ctx.emit_gh_step(step_name.clone(), "actions/upload-artifact@v7")
                                 .condition(attachment_exists)
                                 .with("name", artifact_name)
                                 .with("path", attachment_path_string)

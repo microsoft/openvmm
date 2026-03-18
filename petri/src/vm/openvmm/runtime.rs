@@ -184,6 +184,10 @@ pub(super) struct PetriVmInner {
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) framebuffer_view: Option<View>,
+    /// Whether CIDATA has already been mounted inside the guest.
+    /// Used to skip re-mounting after save/restore (where guest state is
+    /// preserved) while still mounting after a full reset/reboot.
+    pub(super) cidata_mounted: bool,
 }
 
 struct PetriVmHaltReceiver {
@@ -278,7 +282,12 @@ impl PetriVmOpenVmm {
     );
 
     petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
-    petri_vm_fn!(pub(crate) async fn verify_save_restore(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Perform a pulse save/restore cycle: pause the VM, save all state,
+        /// reset, restore, and resume. Useful for verifying that device state
+        /// survives a save/restore round-trip.
+        pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
     /// Wrap the provided future in a race with the worker process's halt
@@ -465,7 +474,12 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
-        // On linux direct pipette won't auto start, start it over serial
+        // Guest state is lost on reset, so CIDATA needs to be remounted.
+        self.cidata_mounted = false;
+        // On linux direct, pipette won't auto-start unless it is the init
+        // process. When it isn't, restart it over serial. (When pipette runs
+        // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
+        // this block is skipped and pipette restarts automatically on reboot.)
         if let Some(agent) = self.resources.linux_direct_serial_agent.as_mut() {
             agent.reset();
 
@@ -498,9 +512,39 @@ impl PetriVmInner {
             &self.resources.output_dir,
         )
         .await
-        .context("failed to connect to pipette");
+        .context("failed to connect to pipette")?;
         tracing::info!(set_high_vtl, "completed pipette handshake");
-        client
+
+        // When pipette runs as PID 1 init and a CIDATA agent disk is
+        // attached, mount it so test files are available at /cidata.
+        // Skip if already mounted (e.g. reconnecting after save/restore
+        // where guest state is preserved).
+        if !set_high_vtl
+            && self.resources.properties.uses_pipette_as_init
+            && self.resources.properties.has_agent_disk
+            && !self.cidata_mounted
+        {
+            tracing::info!("mounting CIDATA agent disk via pipette");
+            client
+                .unix_shell()
+                .cmd("mkdir")
+                .arg("-p")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to create /cidata mount point")?;
+            client
+                .unix_shell()
+                .cmd("mount")
+                .arg("LABEL=cidata")
+                .arg("/cidata")
+                .run()
+                .await
+                .context("failed to mount CIDATA disk")?;
+            self.cidata_mounted = true;
+        }
+
+        Ok(client)
     }
 
     async fn resume(&self) -> anyhow::Result<()> {

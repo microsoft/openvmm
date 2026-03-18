@@ -259,6 +259,7 @@ async fn servicing_shutdown_ic(
                             device: SimpleScsiDiskHandle {
                                 disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                     len: Some(256 * 1024),
+                                    sector_size: None,
                                 })
                                 .into_resource(),
                                 read_only: false,
@@ -855,6 +856,7 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(disk_size),
+                                sector_size: None,
                             })
                             .into_resource(),
                         }],
@@ -1055,6 +1057,7 @@ async fn create_keepalive_test_config(
                             read_only: false,
                             disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                                 len: Some(disk_size),
+                                sector_size: None,
                             })
                             .into_resource(),
                         }],

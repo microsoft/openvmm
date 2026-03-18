@@ -29,7 +29,7 @@ use zerocopy::KnownLayout;
 type U128LE = zerocopy::U128<zerocopy::LE>;
 
 open_enum! {
-    pub enum Register: u16 {
+    pub enum Register: u64 {
         CAP = 0x0,
         VS = 0x8,
         INTMS = 0xc,

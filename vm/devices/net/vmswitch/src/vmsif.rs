@@ -3,7 +3,7 @@
 
 use guid::Guid;
 use std::os::windows::prelude::*;
-use winapi::um::minwinbase::OVERLAPPED;
+use windows_sys::Win32::System::IO::OVERLAPPED;
 
 pal::delayload!("vmsif.dll" {
     pub fn VmsIfNicCreateEmulated(handle: &mut RawHandle, path: *const u16) -> u32;
