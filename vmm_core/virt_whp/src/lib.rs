@@ -1541,7 +1541,8 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         Ok::<(), Infallible>(())
     }
 
-    fn scrub(&mut self, _vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+    fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        debug_assert_eq!(vtl, Vtl::Vtl2);
         let is_bsp = self.inner.vp_info.base.is_bsp();
         self.state.reset(true, is_bsp);
 
