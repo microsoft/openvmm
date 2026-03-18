@@ -122,11 +122,6 @@ impl KvmPartitionInner {
         self.vps.get(vp_index.index() as usize)
     }
 
-    #[cfg(guest_arch = "x86_64")]
-    fn vps(&self) -> impl Iterator<Item = &'_ KvmVpInner> {
-        (0..self.vps.len() as u32).filter_map(|index| self.vp(VpIndex::new(index)))
-    }
-
     fn evaluate_vp(&self, vp_index: VpIndex) {
         let Some(vp) = self.vp(vp_index) else { return };
         vp.set_eval(true, Ordering::Relaxed);

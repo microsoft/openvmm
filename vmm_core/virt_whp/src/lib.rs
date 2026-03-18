@@ -159,10 +159,6 @@ struct WhpVp {
     vtl2_wake: AtomicBool,
     /// Enable VTL2 at the next opportunity.
     vtl2_enable: AtomicBool,
-    /// Force reset of run state at the next run.
-    reset_next: AtomicBool,
-    /// Scrub VTL2 state at the next run.
-    scrub_next: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -178,10 +174,6 @@ struct RunState {
     #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
-    #[inspect(skip)]
-    finish_reset_vtl0: bool,
-    #[inspect(skip)]
-    finish_reset_vtl2: bool,
     crash_msg_address: Option<u64>,
     crash_msg_len: Option<usize>,
     #[inspect(flatten)]
@@ -284,8 +276,6 @@ impl RunState {
             ref mut crash_msg_len,
             ref mut vtls,
             ref mut halted,
-            finish_reset_vtl0: ref mut reset_vtl0,
-            finish_reset_vtl2: ref mut reset_vtl2,
             exits: _,
             vtl2_wakeup_vmtime: _,
             vmtime: _,
@@ -298,11 +288,9 @@ impl RunState {
         *crash_msg_len = None;
         if !vtl2_scrub {
             vtls.vtl0.reset(is_bsp);
-            *reset_vtl0 = true;
         }
         if let Some(vtl) = &mut vtls.vtl2 {
             vtl.reset(is_bsp);
-            *reset_vtl2 = true;
         }
         *halted = false;
     }
@@ -342,8 +330,6 @@ impl WhpVp {
             interrupt: NeedsYield::new(),
             vtl2_wake: false.into(),
             vtl2_enable: vtl2_enabled.into(),
-            reset_next: false.into(),
-            scrub_next: false.into(),
             vp_info: vp,
             waker: Default::default(),
             scan_irr: true.into(),
@@ -437,9 +423,6 @@ impl virt::ResetPartition for WhpPartition {
 
     fn reset(&self) -> Result<(), Error> {
         self.inner.vtl0.reset()?;
-        for vp in self.inner.vps() {
-            vp.vp().reset_next.store(true, Ordering::SeqCst);
-        }
         self.validate_is_reset(Vtl::Vtl0);
 
         if let Some(vtl2) = self.inner.vtl2.as_ref() {
@@ -469,19 +452,10 @@ impl virt::ScrubVtl for WhpPartition {
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
-        // Preserve VTL2 reference time across the scrub to match hypervisor
-        // behavior and so that the guest can determine how much time was lost.
-        // This isn't exactly correct, because the time to reset the partition
-        // is not included, but it's good enough for VTL2 simulation.
         #[cfg(guest_arch = "x86_64")]
         let reference_time = self.access_state(Vtl::Vtl2).reftime()?;
 
-        // NOTE: Mapping state (and therefore VTL protections) is _not_ reset
-        // across scrub. Thus only reset WHP state, but not VtlPartition state.
         vtl2.whp.reset().for_op("reset partition")?;
-        for vp in self.inner.vps() {
-            vp.vp().scrub_next.store(true, Ordering::SeqCst);
-        }
         self.inner.vtl2_emulation.as_ref().unwrap().reset(false);
         self.validate_is_reset(Vtl::Vtl2);
 
@@ -670,6 +644,13 @@ impl virt::BindProcessor for WhpProcessorBinder {
             }
         }
 
+        // Apply initial arch fixups that WHP doesn't handle correctly
+        // (CS register, TSC, APIC ID, x2apic).
+        vp.finish_reset(Vtl::Vtl0);
+        if vp.state.enabled_vtls.is_set(Vtl::Vtl2) {
+            vp.finish_reset(Vtl::Vtl2);
+        }
+
         Ok(vp)
     }
 }
@@ -854,8 +835,6 @@ impl ProtoPartition for WhpProtoPartition<'_> {
                         enabled_vtls,
                         runnable_vtls: enabled_vtls,
                         vtl2_deliverability_notifications: Default::default(),
-                        finish_reset_vtl0: true,
-                        finish_reset_vtl2: partition.inner.vtl2.is_some(),
                         crash_msg_address: None,
                         crash_msg_len: None,
                         halted: false,
@@ -1537,6 +1516,43 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         if self.state.vtls.vtl2.is_some() {
             self.flush_apic(Vtl::Vtl2);
         }
+    }
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        let is_bsp = self.inner.vp_info.base.is_bsp();
+        self.state.reset(false, is_bsp);
+
+        // VTL0 is always present.
+        self.finish_reset(Vtl::Vtl0);
+        self.vplc(Vtl::Vtl0).message_queues.clear();
+        if self.state.vtls.vtl2.is_some() {
+            self.finish_reset(Vtl::Vtl2);
+            self.vplc(Vtl::Vtl2).message_queues.clear();
+        }
+
+        if cfg!(debug_assertions) {
+            let vp_info = &self.inner.vp_info;
+            self.access_state(Vtl::Vtl0).check_reset_all(vp_info);
+            if self.state.enabled_vtls.is_set(Vtl::Vtl2) {
+                self.access_state(Vtl::Vtl2).check_reset_all(vp_info);
+            }
+        }
+        Ok::<(), Infallible>(())
+    }
+
+    fn scrub(&mut self, _vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        let is_bsp = self.inner.vp_info.base.is_bsp();
+        self.state.reset(true, is_bsp);
+
+        // Scrub only resets VTL2.
+        self.finish_reset(Vtl::Vtl2);
+        self.vplc(Vtl::Vtl2).message_queues.clear();
+
+        if cfg!(debug_assertions) {
+            let vp_info = &self.inner.vp_info;
+            self.access_state(Vtl::Vtl2).check_reset_all(vp_info);
+        }
+        Ok::<(), Infallible>(())
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
