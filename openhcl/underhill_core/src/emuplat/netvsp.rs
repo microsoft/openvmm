@@ -1348,6 +1348,10 @@ impl NetworkAdapterIndex {
             return index;
         }
 
+        // The choice to limit the number of adapter index to 1024 is a bit arbitrary here,
+        // but the intent is to prevent unintended use here to support a very large number
+        // of network interfaces, which requires broader rethinking on how the adapters
+        // are managed.
         assert!(
             state.mac_address_to_index.len() < 1024 as usize,
             "network adapter index capacity exhausted; maximum supported network adapters is 1024"
