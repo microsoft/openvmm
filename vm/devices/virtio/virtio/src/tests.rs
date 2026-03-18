@@ -252,15 +252,7 @@ unsafe impl GuestMemoryAccess for VirtioTestMemoryAccess {
     }
 }
 
-struct DoorbellEntry {
-    count: Arc<AtomicUsize>,
-}
-
-impl Drop for DoorbellEntry {
-    fn drop(&mut self) {
-        self.count.fetch_sub(1, Ordering::Relaxed);
-    }
-}
+struct DoorbellEntry;
 
 impl DoorbellRegistration for VirtioTestMemoryAccess {
     fn register_doorbell(
@@ -271,9 +263,7 @@ impl DoorbellRegistration for VirtioTestMemoryAccess {
         _: &Event,
     ) -> io::Result<Box<dyn Send + Sync>> {
         self.doorbell_count.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(DoorbellEntry {
-            count: Arc::new(AtomicUsize::new(0)),
-        }))
+        Ok(Box::new(DoorbellEntry))
     }
 }
 

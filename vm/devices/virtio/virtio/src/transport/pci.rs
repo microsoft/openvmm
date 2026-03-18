@@ -894,6 +894,12 @@ mod saved_state {
             self.doorbells.clear();
             if new_status.driver_ok() {
                 self.install_doorbells();
+
+                if let Some(region) = &self.shared_memory_region {
+                    self.device
+                        .set_shared_memory_region(region)
+                        .map_err(RestoreError::Other)?;
+                }
             }
 
             Ok(())
