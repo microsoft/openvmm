@@ -3,7 +3,9 @@
 
 //! Paravisor specific loader definitions and implementation.
 
-use crate::common::import_file_region;
+use crate::common::ChunkBuf;
+use crate::common::ImportFileRegion;
+use crate::common::ReadSeek;
 use crate::cpuid::HV_PSP_CPUID_PAGE;
 use crate::importer::Aarch64Register;
 use crate::importer::BootPageAcceptance;
@@ -19,7 +21,6 @@ use crate::linux::InitrdAddressType;
 use crate::linux::InitrdConfig;
 use crate::linux::InitrdInfo;
 use crate::linux::KernelInfo;
-use crate::linux::ReadSeek;
 use crate::linux::load_kernel_and_initrd_arm64;
 use aarch64defs::Cpsr64;
 use aarch64defs::IntermPhysAddrSize;
@@ -100,22 +101,6 @@ pub enum Error {
     InitrdRead(#[source] std::io::Error),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
-}
-
-/// Compute the CRC32 of a file, rewinding it afterward.
-fn crc32_from_file(file: &mut dyn ReadSeek, len: u64) -> Result<u32, std::io::Error> {
-    file.seek(std::io::SeekFrom::Start(0))?;
-    let mut hasher = crc32fast::Hasher::new();
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut remaining = len;
-    while remaining > 0 {
-        let to_read = remaining.min(buf.len() as u64) as usize;
-        file.read_exact(&mut buf[..to_read])?;
-        hasher.update(&buf[..to_read]);
-        remaining -= to_read as u64;
-    }
-    file.rewind()?;
-    Ok(hasher.finalize())
 }
 
 /// Kernel Command line type.
@@ -310,8 +295,10 @@ where
     } = load_info;
 
     // Compute initrd CRC before the file reference is consumed by the importer.
+    let mut buf = ChunkBuf::new();
     let initrd_crc = if let Some((ref mut initrd_file, initrd_len)) = initrd {
-        crc32_from_file(*initrd_file, initrd_len).map_err(Error::InitrdRead)?
+        buf.crc32(*initrd_file, initrd_len)
+            .map_err(Error::InitrdRead)?
     } else {
         crc32fast::hash(&[])
     };
@@ -321,17 +308,17 @@ where
         let initrd_base = offset;
         let initrd_size = align_up_to_page_size(initrd_len);
 
-        let mut buf = vec![0u8; 64 * 1024];
-        import_file_region(
+        buf.import_file_region(
             importer,
-            initrd_file,
-            0,
-            initrd_base,
-            initrd_len,
-            initrd_len,
-            kernel_acceptance,
-            "underhill-initrd",
-            &mut buf,
+            ImportFileRegion {
+                file: initrd_file,
+                file_offset: 0,
+                file_length: initrd_len,
+                gpa: initrd_base,
+                memory_length: initrd_len,
+                acceptance: kernel_acceptance,
+                tag: "underhill-initrd",
+            },
         )
         .map_err(Error::ImportInitrd)?;
 
@@ -1019,7 +1006,9 @@ where
 
     // Compute initrd CRC before the file reference is consumed by the loader.
     let initrd_crc = if let Some((ref mut initrd_file, initrd_len)) = initrd {
-        crc32_from_file(*initrd_file, initrd_len).map_err(Error::InitrdRead)?
+        ChunkBuf::new()
+            .crc32(*initrd_file, initrd_len)
+            .map_err(Error::InitrdRead)?
     } else {
         crc32fast::hash(&[])
     };

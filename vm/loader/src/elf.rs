@@ -10,8 +10,9 @@
 
 //! Helper for loading an ELF kernel image.
 
+use crate::common::ChunkBuf;
+use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
-use crate::common::import_file_region;
 use crate::importer::GuestArch;
 use crate::importer::GuestArchKind;
 use crate::importer::ImageLoad;
@@ -242,8 +243,8 @@ where
     // Drop the reader to release the borrow on kernel_image.
     drop(reader);
 
-    // During the second pass, import each segment using import_file_region.
-    let mut buf = vec![0u8; 64 * 1024];
+    // During the second pass, import each segment.
+    let mut buf = ChunkBuf::new();
     for seg in &segments {
         let mem_offset = seg
             .p_paddr
@@ -267,16 +268,17 @@ where
         }
 
         if seg.p_memsz > 0 {
-            import_file_region(
+            buf.import_file_region(
                 importer,
-                kernel_image,
-                seg.p_offset,
-                mem_offset,
-                seg.p_filesz,
-                seg.p_memsz,
-                acceptance,
-                tag,
-                &mut buf,
+                ImportFileRegion {
+                    file: kernel_image,
+                    file_offset: seg.p_offset,
+                    file_length: seg.p_filesz,
+                    gpa: mem_offset,
+                    memory_length: seg.p_memsz,
+                    acceptance,
+                    tag,
+                },
             )
             .map_err(Error::ImportFileRegion)?;
         }

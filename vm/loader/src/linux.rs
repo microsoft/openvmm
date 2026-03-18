@@ -3,9 +3,10 @@
 
 //! Linux specific loader definitions and implementation.
 
+use crate::common::ChunkBuf;
+use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
 use crate::common::import_default_gdt;
-use crate::common::import_file_region;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
 use crate::importer::BootPageAcceptance;
@@ -175,15 +176,13 @@ pub enum InitrdAddressType {
     Address(u64),
 }
 
+pub use crate::common::ReadSeek;
+
 pub struct InitrdConfig<'a> {
     pub initrd_address: InitrdAddressType,
     pub initrd: &'a mut dyn ReadSeek,
     pub size: u64,
 }
-
-/// Trait alias for `Read + Seek`.
-pub trait ReadSeek: Read + Seek {}
-impl<T: Read + Seek> ReadSeek for T {}
 
 /// Information returned about the kernel loaded.
 #[derive(Debug, Default)]
@@ -241,19 +240,20 @@ fn import_initrd<R: GuestArch>(
             tracing::trace!(initrd_address, "loading initrd");
             check_address_alignment(initrd_address)?;
 
-            let mut buf = vec![0u8; 64 * 1024];
-            import_file_region(
-                importer,
-                cfg.initrd,
-                0,
-                initrd_address,
-                cfg.size,
-                cfg.size,
-                BootPageAcceptance::Exclusive,
-                "linux-initrd",
-                &mut buf,
-            )
-            .map_err(Error::ImportInitrd)?;
+            ChunkBuf::new()
+                .import_file_region(
+                    importer,
+                    ImportFileRegion {
+                        file: cfg.initrd,
+                        file_offset: 0,
+                        file_length: cfg.size,
+                        gpa: initrd_address,
+                        memory_length: cfg.size,
+                        acceptance: BootPageAcceptance::Exclusive,
+                        tag: "linux-initrd",
+                    },
+                )
+                .map_err(Error::ImportInitrd)?;
 
             Some(InitrdInfo {
                 gpa: initrd_address,

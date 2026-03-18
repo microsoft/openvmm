@@ -63,11 +63,12 @@ pub fn load_linux_x86(
     let kaddr: u64 = 0x100000;
     let mut kernel_file = cfg.kernel;
 
-    let (mut initrd_reader, initrd_size) = if let Some(initrd_file) = cfg.initrd.as_ref() {
-        let mut f = initrd_file;
-        f.rewind().map_err(Error::InitRd)?;
-        let size = f.seek(std::io::SeekFrom::End(0)).map_err(Error::InitRd)?;
-        (Some(f), size)
+    let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
+        initrd_file.rewind().map_err(Error::InitRd)?;
+        let size = initrd_file
+            .seek(std::io::SeekFrom::End(0))
+            .map_err(Error::InitRd)?;
+        (Some(initrd_file), size)
     } else {
         (None, 0)
     };
@@ -414,11 +415,12 @@ pub fn load_linux_arm64(
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
 
-    let (mut initrd_reader, initrd_size) = if let Some(initrd_file) = cfg.initrd.as_ref() {
-        let mut f = initrd_file;
-        f.rewind().map_err(Error::InitRd)?;
-        let size = f.seek(std::io::SeekFrom::End(0)).map_err(Error::InitRd)?;
-        (Some(f), size)
+    let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
+        initrd_file.rewind().map_err(Error::InitRd)?;
+        let size = initrd_file
+            .seek(std::io::SeekFrom::End(0))
+            .map_err(Error::InitRd)?;
+        (Some(initrd_file), size)
     } else {
         (None, 0)
     };

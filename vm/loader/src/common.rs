@@ -20,6 +20,10 @@ use x86defs::X64_DEFAULT_DATA_SEGMENT_ATTRIBUTES;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+/// Trait alias for `Read + Seek`.
+pub trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
 const DEFAULT_GDT_COUNT: usize = 4;
 /// The size of the default GDT table, in bytes.
 pub const DEFAULT_GDT_SIZE: u64 = HV_PAGE_SIZE;
@@ -199,12 +203,9 @@ fn mtrr_mask(gpa_space_size: u8, maximum_address: u64) -> u64 {
     result
 }
 
-/// Error returned by [`import_file_region`].
+/// Error returned by [`ChunkBuf::import_file_region`].
 #[derive(Debug, Error)]
 pub enum ImportFileRegionError {
-    /// The provided buffer is smaller than one page.
-    #[error("buffer must be at least one page")]
-    BufferTooSmall,
     /// The file length exceeds the memory length.
     #[error("file length {file_length} exceeds memory length {memory_length}")]
     FileLengthExceedsMemoryLength {
@@ -222,108 +223,173 @@ pub enum ImportFileRegionError {
     /// Failed to import pages.
     #[error("failed to import pages")]
     ImportPages(#[source] anyhow::Error),
+    /// Address computation overflowed.
+    #[error("address computation overflowed")]
+    Overflow,
 }
 
-/// Import a region from a file into guest memory.
+/// Parameters for [`ChunkBuf::import_file_region`].
+pub struct ImportFileRegion<'a, F: ?Sized> {
+    /// The file to read from.
+    pub file: &'a mut F,
+    /// The offset within the file to start reading.
+    pub file_offset: u64,
+    /// The number of bytes to read from the file.
+    pub file_length: u64,
+    /// The guest physical address to import into.
+    pub gpa: u64,
+    /// The total memory region length (file data + zero fill).
+    pub memory_length: u64,
+    /// The page acceptance type.
+    pub acceptance: BootPageAcceptance,
+    /// A debug tag for tracing.
+    pub tag: &'a str,
+}
+
+/// A page-aligned chunk buffer for streaming file data into guest memory.
 ///
-/// Reads `file_length` bytes from `file` at `file_offset`, importing them at
-/// guest physical address `gpa`. If `gpa` is not page-aligned, the leading
-/// bytes of that page are zeroed. If `memory_length` exceeds `file_length`, the
-/// remaining bytes are zeroed. Zeroing extends to the end of the last target
-/// page.
-///
-/// File data is read in chunks through `buf`, which must be at least one page
-/// (`HV_PAGE_SIZE`) in size. Only whole pages of `buf` are used.
-pub fn import_file_region<F, R: GuestArch>(
-    importer: &mut dyn ImageLoad<R>,
-    file: &mut F,
-    file_offset: u64,
-    gpa: u64,
-    file_length: u64,
-    memory_length: u64,
-    acceptance: BootPageAcceptance,
-    debug_tag: &str,
-    buf: &mut [u8],
-) -> Result<(), ImportFileRegionError>
-where
-    F: Read + Seek + ?Sized,
-{
-    if memory_length == 0 {
-        return Ok(());
+/// The buffer is guaranteed to hold at least one page (`HV_PAGE_SIZE`) and its
+/// length is always a whole number of pages. Reuse the same `ChunkBuf` across
+/// multiple imports to avoid repeated allocations.
+pub struct ChunkBuf(Vec<u8>);
+
+impl ChunkBuf {
+    /// Default chunk size (64 KiB).
+    const DEFAULT_SIZE: usize = 64 * 1024;
+
+    /// Create a new chunk buffer with the default size.
+    pub fn new() -> Self {
+        Self::with_size(Self::DEFAULT_SIZE)
     }
 
-    let buf_pages = buf.len() as u64 / HV_PAGE_SIZE;
-    if buf_pages == 0 {
-        return Err(ImportFileRegionError::BufferTooSmall);
+    /// Create a new chunk buffer with the given byte size, rounded down to a
+    /// whole number of pages.
+    ///
+    /// Panics if `size` is less than `HV_PAGE_SIZE`.
+    pub fn with_size(size: usize) -> Self {
+        let page_count = size as u64 / HV_PAGE_SIZE;
+        assert!(page_count > 0, "ChunkBuf must be at least one page");
+        Self(vec![0u8; (page_count * HV_PAGE_SIZE) as usize])
     }
-    let buf = &mut buf[..(buf_pages * HV_PAGE_SIZE) as usize];
 
-    if file_length > memory_length {
-        return Err(ImportFileRegionError::FileLengthExceedsMemoryLength {
+    /// Import a region from a file into guest memory.
+    ///
+    /// Reads `file_length` bytes from `file` at `file_offset`, importing them
+    /// at guest physical address `gpa`. If `gpa` is not page-aligned, the
+    /// leading bytes of that page are zeroed. If `memory_length` exceeds
+    /// `file_length`, the remaining bytes are zeroed. Zeroing extends to the
+    /// end of the last target page.
+    pub fn import_file_region<F, R: GuestArch>(
+        &mut self,
+        importer: &mut dyn ImageLoad<R>,
+        params: ImportFileRegion<'_, F>,
+    ) -> Result<(), ImportFileRegionError>
+    where
+        F: Read + Seek + ?Sized,
+    {
+        let ImportFileRegion {
+            file,
+            file_offset,
             file_length,
+            gpa,
             memory_length,
-        });
+            acceptance,
+            tag,
+        } = params;
+
+        if file_length > memory_length {
+            return Err(ImportFileRegionError::FileLengthExceedsMemoryLength {
+                file_length,
+                memory_length,
+            });
+        }
+
+        if memory_length == 0 {
+            return Ok(());
+        }
+
+        let buf = &mut self.0[..];
+        let buf_pages = buf.len() as u64 / HV_PAGE_SIZE;
+
+        let page_mask = HV_PAGE_SIZE - 1;
+        let leading_zero = gpa & page_mask;
+        let page_base = gpa / HV_PAGE_SIZE;
+        let total_page_count = leading_zero
+            .checked_add(memory_length)
+            .and_then(|v| v.checked_add(page_mask))
+            .ok_or(ImportFileRegionError::Overflow)?
+            / HV_PAGE_SIZE;
+
+        file.seek(std::io::SeekFrom::Start(file_offset))
+            .map_err(ImportFileRegionError::Seek)?;
+
+        let mut pages_done: u64 = 0;
+        let mut file_remaining = file_length;
+
+        while file_remaining > 0 {
+            let chunk_pages = (total_page_count - pages_done).min(buf_pages);
+            let chunk_bytes = (chunk_pages * HV_PAGE_SIZE) as usize;
+            let chunk_buf = &mut buf[..chunk_bytes];
+
+            let data_start = if pages_done == 0 {
+                leading_zero as usize
+            } else {
+                0
+            };
+            let data_len = file_remaining.min((chunk_bytes - data_start) as u64) as usize;
+
+            // Zero leading padding on the first chunk.
+            chunk_buf[..data_start].fill(0);
+
+            // Read file data.
+            file.read_exact(&mut chunk_buf[data_start..data_start + data_len])
+                .map_err(ImportFileRegionError::Read)?;
+
+            file_remaining -= data_len as u64;
+
+            // On the last chunk with file data, extend page_count to cover all
+            // remaining pages. import_pages will zero beyond the data.
+            let import_page_count = if file_remaining == 0 {
+                total_page_count - pages_done
+            } else {
+                chunk_pages
+            };
+
+            importer
+                .import_pages(
+                    page_base + pages_done,
+                    import_page_count,
+                    tag,
+                    acceptance,
+                    &chunk_buf[..data_start + data_len],
+                )
+                .map_err(ImportFileRegionError::ImportPages)?;
+
+            pages_done += import_page_count;
+        }
+
+        // No file data at all — just import zero pages.
+        if file_length == 0 {
+            importer
+                .import_pages(page_base, total_page_count, tag, acceptance, &[])
+                .map_err(ImportFileRegionError::ImportPages)?;
+        }
+
+        Ok(())
     }
 
-    let page_mask = HV_PAGE_SIZE - 1;
-    let leading_zero = gpa & page_mask;
-    let page_base = gpa / HV_PAGE_SIZE;
-    let total_page_count = (leading_zero + memory_length + page_mask) / HV_PAGE_SIZE;
-
-    file.seek(std::io::SeekFrom::Start(file_offset))
-        .map_err(ImportFileRegionError::Seek)?;
-
-    let mut pages_done: u64 = 0;
-    let mut file_remaining = file_length;
-
-    while file_remaining > 0 {
-        let chunk_pages = (total_page_count - pages_done).min(buf_pages);
-        let chunk_bytes = (chunk_pages * HV_PAGE_SIZE) as usize;
-        let chunk_buf = &mut buf[..chunk_bytes];
-
-        let data_start = if pages_done == 0 {
-            leading_zero as usize
-        } else {
-            0
-        };
-        let data_len = file_remaining.min((chunk_bytes - data_start) as u64) as usize;
-
-        // Zero leading padding on the first chunk.
-        chunk_buf[..data_start].fill(0);
-
-        // Read file data.
-        file.read_exact(&mut chunk_buf[data_start..data_start + data_len])
-            .map_err(ImportFileRegionError::Read)?;
-
-        file_remaining -= data_len as u64;
-
-        // On the last chunk with file data, extend page_count to cover all
-        // remaining pages. import_pages will zero beyond the data.
-        let import_page_count = if file_remaining == 0 {
-            total_page_count - pages_done
-        } else {
-            chunk_pages
-        };
-
-        importer
-            .import_pages(
-                page_base + pages_done,
-                import_page_count,
-                debug_tag,
-                acceptance,
-                &chunk_buf[..data_start + data_len],
-            )
-            .map_err(ImportFileRegionError::ImportPages)?;
-
-        pages_done += import_page_count;
+    /// Read a file in chunks and compute its CRC32, rewinding it afterward.
+    pub fn crc32(&mut self, file: &mut dyn ReadSeek, len: u64) -> Result<u32, std::io::Error> {
+        file.seek(std::io::SeekFrom::Start(0))?;
+        let mut hasher = crc32fast::Hasher::new();
+        let mut remaining = len;
+        while remaining > 0 {
+            let to_read = remaining.min(self.0.len() as u64) as usize;
+            file.read_exact(&mut self.0[..to_read])?;
+            hasher.update(&self.0[..to_read]);
+            remaining -= to_read as u64;
+        }
+        file.rewind()?;
+        Ok(hasher.finalize())
     }
-
-    // No file data at all — just import zero pages.
-    if file_length == 0 {
-        importer
-            .import_pages(page_base, total_page_count, debug_tag, acceptance, &[])
-            .map_err(ImportFileRegionError::ImportPages)?;
-    }
-
-    Ok(())
 }
