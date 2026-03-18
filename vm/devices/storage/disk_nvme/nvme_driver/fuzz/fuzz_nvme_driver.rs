@@ -174,14 +174,13 @@ impl FuzzNvmeDriver {
     }
 }
 
-/// Returns a Guid with arbitrary bytes.
+/// Returns a Guid with arbitrary bytes. Fails if insufficient fuzz input remains.
 fn arbitrary_guid() -> Result<Guid, arbitrary::Error> {
-    let bytes = arbitrary_data::<[u8; 16]>()?;
     Ok(Guid {
-        data1: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-        data2: u16::from_le_bytes(bytes[4..6].try_into().unwrap()),
-        data3: u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
-        data4: bytes[8..16].try_into().unwrap(),
+        data1: arbitrary_data()?,
+        data2: arbitrary_data()?,
+        data3: arbitrary_data()?,
+        data4: arbitrary_data()?,
     })
 }
 
