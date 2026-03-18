@@ -308,7 +308,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     // config space is on bus 1 (the secondary bus of root port 0), device 0.
     // Then program downstream port 0's bus numbers to enable deep routing.
     if matches!(topology, Topology::WithSwitch) {
-        let switch_ecam = ECAM_BASE + (1u64 * 256 * 4096); // bus 1, dev 0, fn 0
+        let switch_ecam = ECAM_BASE + (256 * 4096); // bus 1, dev 0, fn 0
         rc.mmio_write(switch_ecam + 0x19, &[2u8]).unwrap(); // switch secondary = 2
         rc.mmio_write(switch_ecam + 0x1A, &[END_BUS]).unwrap(); // switch subordinate = END_BUS
 
