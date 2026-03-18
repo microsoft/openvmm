@@ -456,8 +456,8 @@ impl Drop for SparseMapping {
 }
 #[cfg(target_os = "linux")]
 fn new_memfd(name: &str) -> io::Result<File> {
-    let name = std::ffi::CString::new(name)
-        .unwrap_or_else(|_| std::ffi::CString::new("mem").unwrap());
+    let name =
+        std::ffi::CString::new(name).unwrap_or_else(|_| std::ffi::CString::new("mem").unwrap());
     // SAFETY: creating and truncating a new file descriptor according to
     // the documented contract.
     unsafe {
