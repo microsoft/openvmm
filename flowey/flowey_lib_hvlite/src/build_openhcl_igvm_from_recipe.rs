@@ -277,7 +277,6 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::run_igvmfilegen::Node>();
         ctx.import::<crate::run_split_debug_info::Node>();
-        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
