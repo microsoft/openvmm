@@ -200,12 +200,6 @@ impl PciExpressCapability {
 
         state.slot_control = masked_control;
 
-        // Set command_completed after Slot Control write (PCIe spec requirement).
-        // The guest pciehp driver waits for this after writing to Slot Control.
-        if !self.slot_capabilities.no_command_completed_support() {
-            state.slot_status.set_command_completed(true);
-        }
-
         // Slot Status upper 16 bits - handle RW1C and RO bits properly
         let new_slot_status = pci_express::SlotStatus::from_bits((val >> 16) as u16);
         let mut current_slot_status = state.slot_status;
@@ -303,11 +297,25 @@ impl PciExpressCapability {
         // Enable slot implemented in PCIe capabilities when hotplug is enabled
         self.pcie_capabilities = self.pcie_capabilities.with_slot_implemented(true);
 
-        // Enable hotplug capabilities in slot capabilities register
+        // Enable hotplug capabilities in slot capabilities register.
+        //
+        // We advertise no_command_completed_support because our emulation
+        // applies Slot Control changes instantly (no hardware delay). This
+        // tells the guest's pciehp driver to skip waiting for command_completed
+        // after writing Slot Control (PCIe spec §7.5.3.9).
+        //
+        // Without this, a naive command_completed implementation that sets
+        // the bit on every Slot Control write creates an interrupt storm:
+        // the guest clears command_completed via RW1C (which is itself a
+        // Slot Control write), re-triggering command_completed in a loop.
+        // A correct implementation for ports with real delay would need to
+        // diff old vs new Slot Control values and only signal completion
+        // when control bits actually change, not on RW1C status clears.
         self.slot_capabilities = self
             .slot_capabilities
             .with_hot_plug_surprise(true)
             .with_hot_plug_capable(true)
+            .with_no_command_completed_support(true)
             .with_physical_slot_number(slot_number);
 
         // Enable Data Link Layer Link Active Reporting when hotplug is enabled
@@ -338,7 +346,35 @@ impl PciExpressCapability {
                 .slot_status
                 .with_presence_detect_state(if present { 1 } else { 0 });
 
-        // Set the RW1C changed bits so the guest sees the event
+        // Update Data Link Layer Link Active in Link Status to match presence.
+        // The pciehp driver checks this (via DLLLA) when LLActRep is advertised.
+        state.link_status = state
+            .link_status
+            .with_data_link_layer_link_active(present);
+    }
+
+    /// Set the RW1C changed bits in Slot Status to signal a hotplug event.
+    /// Call this only for runtime hotplug events, not build-time device attachment.
+    pub fn set_hotplug_changed_bits(&self) {
+        let mut state = self.state.lock();
+        state.slot_status.set_presence_detect_changed(true);
+        state.slot_status.set_data_link_layer_state_changed(true);
+    }
+
+    /// Atomically update presence detect state, link active state, and
+    /// changed bits for a hotplug event.
+    pub fn set_hotplug_state(&self, present: bool) {
+        if !self.pcie_capabilities.slot_implemented() {
+            return;
+        }
+
+        let mut state = self.state.lock();
+        state.slot_status = state
+            .slot_status
+            .with_presence_detect_state(if present { 1 } else { 0 });
+        state.link_status = state
+            .link_status
+            .with_data_link_layer_link_active(present);
         state.slot_status.set_presence_detect_changed(true);
         state.slot_status.set_data_link_layer_state_changed(true);
     }

@@ -43,14 +43,28 @@ async fn parse_guest_pci_devices(
             for ls_device in ls_devices {
                 let device_sysfs_path = format!("{PCI_SYSFS_PATH}/{ls_device}");
 
-                let vendor_output = cmd!(sh, "cat {device_sysfs_path}/vendor").read().await?;
-                let vendor_id = u16::from_str_radix(vendor_output.strip_prefix("0x").unwrap(), 16)?;
+                // Device may disappear between ls and cat (e.g., during hotplug
+                // removal), so skip devices whose sysfs files can't be read.
+                let Ok(vendor_output) = cmd!(sh, "cat {device_sysfs_path}/vendor").read().await else {
+                    continue;
+                };
+                let Ok(vendor_id) = u16::from_str_radix(vendor_output.strip_prefix("0x").unwrap_or(&vendor_output), 16) else {
+                    continue;
+                };
 
-                let device_output = cmd!(sh, "cat {device_sysfs_path}/device").read().await?;
-                let device_id = u16::from_str_radix(device_output.strip_prefix("0x").unwrap(), 16)?;
+                let Ok(device_output) = cmd!(sh, "cat {device_sysfs_path}/device").read().await else {
+                    continue;
+                };
+                let Ok(device_id) = u16::from_str_radix(device_output.strip_prefix("0x").unwrap_or(&device_output), 16) else {
+                    continue;
+                };
 
-                let class_output = cmd!(sh, "cat {device_sysfs_path}/class").read().await?;
-                let class_code = u32::from_str_radix(class_output.strip_prefix("0x").unwrap(), 16)?;
+                let Ok(class_output) = cmd!(sh, "cat {device_sysfs_path}/class").read().await else {
+                    continue;
+                };
+                let Ok(class_code) = u32::from_str_radix(class_output.strip_prefix("0x").unwrap_or(&class_output), 16) else {
+                    continue;
+                };
 
                 devs.push(ParsedPciDevice {
                     vendor_id,

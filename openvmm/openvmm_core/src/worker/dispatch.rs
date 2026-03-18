@@ -582,6 +582,7 @@ struct LoadedVmInner {
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
     pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
+    pcie_hotplug_devices: Vec<vmotherboard::DynamicDeviceUnit>,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -2317,6 +2318,7 @@ impl InitializedVm {
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
                 pcie_root_complexes,
+                pcie_hotplug_devices: Vec::new(),
             },
         };
 
@@ -2792,7 +2794,7 @@ impl LoadedVm {
                             let msi_conn = pci_core::msi::MsiConnection::new();
                             let signal_msi = self.inner.partition.clone().into_signal_msi(Vtl::Vtl0);
 
-                            let (_unit, device) = self.inner._chipset_devices.add_dyn_device(
+                            let (unit, device) = self.inner._chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
                                 format!("pcie-hotplug:{}", port_name),
@@ -2835,6 +2837,7 @@ impl LoadedVm {
                                 "hotplug-device",
                                 bus_device,
                             )?;
+                            self.inner.pcie_hotplug_devices.push(unit);
                             self.state_units.start_stopped_units().await;
                             anyhow::Ok(())
                         })

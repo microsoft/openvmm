@@ -95,10 +95,11 @@ impl PcieDownstreamPort {
         self.msi_connection.connect(signal);
     }
 
-    /// Fire MSI if hot_plug_interrupt_enable is set and MSI is configured.
+    /// Notify the guest of a hotplug event via MSI.
     ///
-    /// Called after presence detect state changes to notify the guest's
-    /// pciehp driver of hotplug events.
+    /// Fires MSI if the guest has enabled hot_plug_interrupt_enable in
+    /// Slot Control. The caller must have already set the appropriate
+    /// status bits (via set_hotplug_state) before calling this.
     fn fire_hotplug_msi(&self) {
         let hotplug_enabled = self
             .cfg_space
@@ -254,7 +255,6 @@ impl PcieDownstreamPort {
 
             // Set presence detect state to true when a device is connected
             self.cfg_space.set_presence_detect_state(true);
-            self.fire_hotplug_msi();
 
             return Ok(());
         }
@@ -287,7 +287,13 @@ impl PcieDownstreamPort {
         }
 
         self.link = Some((device_name.into(), device));
-        self.cfg_space.set_presence_detect_state(true);
+
+        // Atomically set presence + link active + changed bits, then fire MSI
+        for cap in self.cfg_space.capabilities().iter() {
+            if let Some(pcie) = cap.as_pci_express() {
+                pcie.set_hotplug_state(true);
+            }
+        }
         self.fire_hotplug_msi();
         Ok(())
     }
@@ -299,7 +305,13 @@ impl PcieDownstreamPort {
         }
 
         self.link = None;
-        self.cfg_space.set_presence_detect_state(false);
+
+        // Atomically clear presence + link active + set changed bits, then fire MSI
+        for cap in self.cfg_space.capabilities().iter() {
+            if let Some(pcie) = cap.as_pci_express() {
+                pcie.set_hotplug_state(false);
+            }
+        }
         self.fire_hotplug_msi();
         Ok(())
     }
