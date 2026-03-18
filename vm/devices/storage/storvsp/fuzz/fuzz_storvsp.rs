@@ -88,18 +88,16 @@ async fn send_gpa_direct_packet(
         .ok_or(arbitrary::Error::IncorrectFormat)?;
     let end_page = end_addr.div_ceil(PAGE_SIZE as u64);
     let page_count = (end_page - start_page) as usize;
-    assert!(page_count <= MAX_GPA_PAGES);
+    if page_count > MAX_GPA_PAGES {
+        return Err(arbitrary::Error::IncorrectFormat.into());
+    }
 
     let mut gpns = [0u64; MAX_GPA_PAGES];
     for (i, gpn) in (start_page..end_page).enumerate() {
         gpns[i] = gpn;
     }
-    let pages = PagedRange::new(
-        page_offset,
-        byte_len,
-        &gpns[..page_count],
-    )
-    .ok_or(arbitrary::Error::IncorrectFormat)?;
+    let pages = PagedRange::new(page_offset, byte_len, &gpns[..page_count])
+        .ok_or(arbitrary::Error::IncorrectFormat)?;
 
     guest
         .queue
