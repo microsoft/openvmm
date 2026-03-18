@@ -11,7 +11,6 @@ use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use core::str;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
 use pcie::root::GenericPcieRootComplex;
@@ -141,10 +140,10 @@ impl FuzzRootComplex {
     pub fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> Result<(), IoError> {
         match self.rc.mmio_read(addr, data) {
             IoResult::Defer(t) => {
-                // Poll the deferred read immediately and panic if it doesn't complete. This keeps the
+                // Poll the deferred read and panic if it doesn't complete. This keeps the
                 // fuzzing logic simple by avoiding the need to track pending deferred operations.
                 self.defer_read_now_or_never(t, data)
-                    .expect("deferred read should complete immediately after polling");
+                    .expect("deferred read should complete after polling");
                 Ok(())
             }
             IoResult::Ok => Ok(()),
@@ -155,10 +154,10 @@ impl FuzzRootComplex {
     pub fn mmio_write(&mut self, addr: u64, data: &[u8]) -> Result<(), IoError> {
         match self.rc.mmio_write(addr, data) {
             IoResult::Defer(t) => {
-                // Poll the deferred write immediately and panic if it doesn't complete. This keeps the
+                // Poll the deferred write and panic if it doesn't complete. This keeps the
                 // fuzzing logic simple by avoiding the need to track pending deferred operations.
                 self.defer_write_now_or_never(t)
-                    .expect("deferred write should complete immediately after polling");
+                    .expect("deferred write should complete after polling");
                 Ok(())
             }
             IoResult::Ok => Ok(()),
@@ -181,7 +180,7 @@ impl FuzzRootComplex {
             .rc
             .supports_poll_device()
             .expect("objects returning a DeferredToken support polling");
-        // Some devices (like IDE) will limit the amount of work they perform in a single poll
+        // Some devices might limit the amount of work they perform in a single poll
         // even though forward progress is still possible. We poll the device multiple times
         // to let these actions complete. If the action is still pending after all these polls
         // we know that something is actually wrong.
@@ -193,9 +192,7 @@ impl FuzzRootComplex {
             }
         }
         if MAX_DEFER_POLL_COUNT == 0 {
-            panic!(
-                "Device operation returned a deferred read. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations."
-            );
+            panic!("Device operation returned a deferred read.");
         } else {
             panic!(
                 "Device operation returned a deferred read that didn't complete after {} polls",
@@ -211,7 +208,7 @@ impl FuzzRootComplex {
             .rc
             .supports_poll_device()
             .expect("objects returning a DeferredToken support polling");
-        // Some devices (like IDE) will limit the amount of work they perform in a single poll
+        // Some devices might limit the amount of work they perform in a single poll
         // even though forward progress is still possible. We poll the device multiple times
         // to let these actions complete. If the action is still pending after all these polls
         // we know that something is actually wrong.
@@ -223,9 +220,7 @@ impl FuzzRootComplex {
             }
         }
         if MAX_DEFER_POLL_COUNT == 0 {
-            panic!(
-                "Device operation returned a deferred write. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations."
-            );
+            panic!("Device operation returned a deferred write.");
         } else {
             panic!(
                 "Device operation returned a deferred write that didn't complete after {} polls",
