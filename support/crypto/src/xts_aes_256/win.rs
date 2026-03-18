@@ -37,10 +37,7 @@ unsafe impl Sync for Key {}
 impl Drop for Key {
     fn drop(&mut self) {
         // SAFETY: handle is valid and not aliased
-        unsafe { windows::Win32::Security::Cryptography::BCryptDestroyKey(self.0) }
-            .ok()
-            .map_err(|e| err(e, "destroy key"))
-            .unwrap()
+        let _ = unsafe { windows::Win32::Security::Cryptography::BCryptDestroyKey(self.0) };
     }
 }
 
@@ -147,6 +144,8 @@ impl XtsAes256CtxInner<'_> {
                 .ok()
                 .map_err(|e| err(e, "decrypt"))
             }
-        }
+        }?;
+        assert_eq!(n as usize, data.len());
+        Ok(())
     }
 }
