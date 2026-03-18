@@ -1344,7 +1344,7 @@ impl NetworkAdapterIndex {
     /// Returns the next adapter index and increments the internal counter.
     pub fn next(&self, mac_address: &MacAddress) -> u32 {
         let mut state = self.state.lock();
-        if let Some(&index) = state.mac_address_to_index.get(&mac_address) {
+        if let Some(&index) = state.mac_address_to_index.get(mac_address) {
             return index;
         }
 
@@ -1353,7 +1353,7 @@ impl NetworkAdapterIndex {
         // of network interfaces, which requires broader rethinking on how the adapters
         // are managed.
         assert!(
-            state.mac_address_to_index.len() < 1024 as usize,
+            state.mac_address_to_index.len() < 1024_usize,
             "network adapter index capacity exhausted; maximum supported network adapters is 1024"
         );
 
@@ -1380,7 +1380,7 @@ impl NetworkAdapterIndex {
     /// Returns the saved state of the network adapter index mapping.
     pub fn save(&self) -> Option<Vec<NetworkAdapterIndexSavedState>> {
         let state = self.state.lock();
-        let save_state = if state.mac_address_to_index.is_empty() {
+        if state.mac_address_to_index.is_empty() {
             None
         } else {
             Some(
@@ -1395,9 +1395,7 @@ impl NetworkAdapterIndex {
                     )
                     .collect(),
             )
-        };
-
-        save_state
+        }
     }
 
     /// Restores the network adapter index mapping from the saved state.
