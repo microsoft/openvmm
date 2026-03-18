@@ -286,7 +286,7 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     })
     .into_resource();
 
-    let (vm, agent) = config
+    let (mut vm, agent) = config
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 c.virtio_devices.push((
@@ -334,6 +334,49 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     assert!(
         readback.starts_with("hello_virtio_blk"),
         "read back data mismatch: {readback}"
+    );
+
+    // Pulse save/restore with the device active and data on disk.
+    // Drop the old agent — its vsock connection won't survive the pulse.
+    drop(agent);
+    vm.backend().verify_save_restore().await?;
+
+    // Pipette automatically reconnects after the pulse. Accept the new connection.
+    let agent = vm.backend().wait_for_agent(false).await?;
+    let sh = agent.unix_shell();
+
+    // Verify the device still works after save/restore.
+    // Use iflag=direct to bypass the page cache and force a real device read.
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda iflag=direct bs=512 count=1 2>/dev/null | head -c 16'"
+    )
+    .read()
+    .await
+    .context("read from virtio-blk after save/restore")?;
+    assert!(
+        readback.starts_with("hello_virtio_blk"),
+        "data mismatch after save/restore: {readback}"
+    );
+
+    // Write new data after restore to confirm writes work too.
+    cmd!(
+        sh,
+        "sh -c 'echo post_restore_ok | dd of=/dev/vda oflag=direct bs=512 count=1 conv=sync,notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to virtio-blk after save/restore")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda iflag=direct bs=512 count=1 2>/dev/null | head -c 15'"
+    )
+    .read()
+    .await
+    .context("read new data after save/restore")?;
+    assert!(
+        readback.starts_with("post_restore_ok"),
+        "post-restore write/read mismatch: {readback}"
     );
 
     agent.power_off().await?;

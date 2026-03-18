@@ -23,12 +23,15 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-[target.'cfg(windows)'.dependencies]
-ntapi.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 socket2.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+	"Wdk_System_SystemServices",
+	"Win32_Storage_FileSystem",
+]}
 
 [dev-dependencies]
 event-listener.workspace = true

@@ -31,7 +31,7 @@ For cross-compilation from WSL2 to Windows, see
 Do NOT commit without completing all three steps.**
 
 1. `cargo clippy --all-targets -p <package-name>` — for each modified package.
-2. `cargo doc -p <package-name>` — for each modified package.
+2. `cargo doc --no-deps -p <package-name>` — for each modified package.
 3. `cargo xtask fmt --fix` — fix formatting, headers, naming conventions.
    Run this **last** because fixing clippy/doc issues may introduce
    formatting changes that need to be cleaned up.

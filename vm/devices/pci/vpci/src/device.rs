@@ -2005,28 +2005,28 @@ mod tests {
             }
         }
 
-        fn read_bar_u32(&self, bar: u8, offset: u16) -> u32 {
+        fn read_bar_u32(&self, bar: u8, offset: u64) -> u32 {
             if bar == 0 && offset == 0 {
                 1
             } else if bar == 0 && offset == 4 {
                 2
             } else if bar == 2 && offset == 0 {
                 3
-            } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
+            } else if bar == 2 && offset == HV_PAGE_SIZE {
                 4
             } else {
                 panic!("Unexpected address {}/{:#x}", bar, offset);
             }
         }
 
-        fn write_bar_u32(&mut self, bar: u8, offset: u16, val: u32) {
+        fn write_bar_u32(&mut self, bar: u8, offset: u64, val: u32) {
             if bar == 0 && offset == 0 {
                 assert_eq!(val, 1);
             } else if bar == 0 && offset == 4 {
                 assert_eq!(val, 2);
             } else if bar == 2 && offset == 0 {
                 assert_eq!(val, 3);
-            } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
+            } else if bar == 2 && offset == HV_PAGE_SIZE {
                 assert_eq!(val, 4);
             } else {
                 panic!("Unexpected address {}/{:#x}", bar, offset);

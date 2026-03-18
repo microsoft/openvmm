@@ -170,11 +170,11 @@ impl NvmeController {
     }
 
     /// Reads from the virtual BAR 0.
-    pub fn read_bar0(&mut self, addr: u16, data: &mut [u8]) -> IoResult {
+    pub fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
-        if addr & (data.len() - 1) as u16 != 0 {
+        if addr & (data.len() as u64 - 1) != 0 {
             return IoResult::Err(IoError::UnalignedAccess);
         }
 
@@ -222,7 +222,7 @@ impl NvmeController {
     }
 
     /// Writes to the virtual BAR 0.
-    pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
+    pub fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
@@ -234,6 +234,10 @@ impl NvmeController {
                 return IoResult::Err(IoError::InvalidAccessSize);
             };
             let value = u32::from_ne_bytes(data);
+            let db_id = match u16::try_from(db_id) {
+                Ok(id) => id,
+                Err(_) => return IoResult::Err(InvalidRegister),
+            };
             self.workers.doorbell(db_id, value);
             return IoResult::Ok;
         }
@@ -241,7 +245,7 @@ impl NvmeController {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
-        if addr & (data.len() - 1) as u16 != 0 {
+        if addr & (data.len() as u64 - 1) != 0 {
             return IoResult::Err(IoError::UnalignedAccess);
         }
 
