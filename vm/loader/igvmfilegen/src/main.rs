@@ -410,7 +410,7 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         device_tree_blob: Option<&[u8]>,
     ) -> Result<loader::linux::LoadInfo, loader::linux::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
         Self: GuestArch;
 
     fn load_openhcl<F>(
@@ -425,7 +425,7 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         vtl0_config: Vtl0Config<'_>,
     ) -> Result<(), loader::paravisor::Error>
     where
-        F: std::io::Read + std::io::Seek;
+        F: std::io::Read + Seek;
 }
 
 impl IgvmfilegenRegister for X86Register {
@@ -445,7 +445,7 @@ impl IgvmfilegenRegister for X86Register {
         _device_tree_blob: Option<&[u8]>,
     ) -> Result<loader::linux::LoadInfo, loader::linux::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::linux::load_kernel_and_initrd_x64(
             importer,
@@ -467,7 +467,7 @@ impl IgvmfilegenRegister for X86Register {
         vtl0_config: Vtl0Config<'_>,
     ) -> Result<(), loader::paravisor::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::paravisor::load_openhcl_x64(
             importer,
@@ -500,7 +500,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         device_tree_blob: Option<&[u8]>,
     ) -> Result<loader::linux::LoadInfo, loader::linux::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::linux::load_kernel_and_initrd_arm64(
             importer,
@@ -523,7 +523,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         vtl0_config: Vtl0Config<'_>,
     ) -> Result<(), loader::paravisor::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::paravisor::load_openhcl_arm64(
             importer,
