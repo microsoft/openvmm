@@ -3410,8 +3410,11 @@ async fn new_underhill_vm(
         anyhow::bail!("built without vpci support");
     }
 
-    let network_adapter_index =
-        NetworkAdapterIndex::restore(servicing_state.emuplat.network_adapter_index.into());
+    let network_adapter_index = if is_restoring {
+        NetworkAdapterIndex::restore(servicing_state.emuplat.network_adapter_index)
+    } else {
+        NetworkAdapterIndex::new(None)
+    };
 
     // Networking
     let mut uh_network_settings = UhVmNetworkSettings {

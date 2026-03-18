@@ -222,7 +222,7 @@ pub mod transposed {
         pub get_backed_adjust_gpa_range: Option<Option<<crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange as SaveRestore>::SavedState>>,
         pub netvsp_state: Option<Vec<crate::emuplat::netvsp::SavedState>>,
         pub network_adapter_index:
-            Option<Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>>,
+            Option<Vec<crate::emuplat::netvsp::NetworkAdapterIndexSavedState>>,
     }
 
     impl From<Option<ServicingInitState>> for OptionServicingInitState {
@@ -255,7 +255,7 @@ pub mod transposed {
                         rtc_local_clock: Some(rtc_local_clock),
                         get_backed_adjust_gpa_range: Some(get_backed_adjust_gpa_range),
                         netvsp_state: Some(netvsp_state),
-                        network_adapter_index: Some(network_adapter_index),
+                        network_adapter_index,
                     },
                     flush_logs_result: Some(flush_logs_result),
                     vmgs,
