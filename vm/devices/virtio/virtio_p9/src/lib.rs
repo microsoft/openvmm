@@ -140,6 +140,10 @@ impl VirtioDevice for VirtioPlan9Device {
         let state = self.worker.remove().queue.queue_state();
         Poll::Ready(Some(state))
     }
+
+    fn reset(&mut self) {
+        self.worker.task().fs.reset();
+    }
 }
 
 #[derive(InspectMut)]

@@ -78,4 +78,14 @@ pub trait VirtioDevice: InspectMut + Send {
     /// Called after all queues have been stopped on guest-initiated reset.
     /// Default: no-op.
     fn reset(&mut self) {}
+
+    /// Whether the device supports save/restore.
+    ///
+    /// Devices that return `false` will cause the transport's `save()` to
+    /// fail with `SaveError::NotSupported`. Devices with host-side session
+    /// state that cannot be serialized (e.g., virtio-9p, virtiofs) should
+    /// leave this as `false`.
+    fn supports_save_restore(&self) -> bool {
+        false
+    }
 }

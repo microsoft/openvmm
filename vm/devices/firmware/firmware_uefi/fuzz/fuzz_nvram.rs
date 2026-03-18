@@ -189,7 +189,7 @@ fn test_signature_list_from_x509(signcert: &X509Ref) -> Vec<u8> {
 }
 
 fn test_pkey() -> PKey<Private> {
-    let rsa = Rsa::generate(2048).unwrap();
+    let rsa = Rsa::generate(1024).unwrap();
     PKey::from_rsa(rsa).unwrap()
 }
 

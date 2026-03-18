@@ -29,6 +29,13 @@ tracing.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
+windows-sys = { workspace = true, features = [
+	"Wdk_Storage_FileSystem",
+	"Wdk_System_Memory",
+	"Wdk_System_SystemServices",
+	"Win32_Foundation",
+	"Win32_System_Memory",
+] }
 
 [lints]
 workspace = true

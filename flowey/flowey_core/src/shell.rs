@@ -302,6 +302,9 @@ pub enum CommandWrapperKind {
     /// Wrap commands with `sh -c "..."` (test-only).
     #[cfg(test)]
     ShCmd,
+    /// Wrap commands with `cmd /C "..."` (test-only, Windows).
+    #[cfg(test)]
+    CmdExe,
     /// Replace the command with `echo WRAPPED: <cmd>` (test-only).
     #[cfg(test)]
     Prefix,
@@ -326,6 +329,16 @@ impl CommandWrapperKind {
             #[cfg(test)]
             CommandWrapperKind::ShCmd => sh.cmd("sh").arg("-c").arg(cmd_str),
             #[cfg(test)]
+            CommandWrapperKind::CmdExe => {
+                // Avoid nesting `cmd /C` when the command already targets cmd.
+                // This keeps Windows test wrappers stable across quoting rules.
+                let cmd_body = cmd_str
+                    .strip_prefix("cmd /C ")
+                    .unwrap_or(&cmd_str)
+                    .trim_matches('"');
+                sh.cmd("cmd").arg("/C").arg(cmd_body)
+            }
+            #[cfg(test)]
             CommandWrapperKind::Prefix => sh.cmd("echo").arg(format!("WRAPPED: {cmd_str}")),
         }
     }
@@ -335,6 +348,33 @@ impl CommandWrapperKind {
 #[expect(clippy::disallowed_macros, reason = "test module")]
 mod tests {
     use super::*;
+
+    fn env_test_wrapper() -> CommandWrapperKind {
+        if cfg!(windows) {
+            CommandWrapperKind::CmdExe
+        } else {
+            CommandWrapperKind::ShCmd
+        }
+    }
+
+    fn print_env_cmd<'a>(sh: &'a FloweyShell, var: &str) -> xshell::Cmd<'a> {
+        if cfg!(windows) {
+            sh.xshell()
+                .cmd("cmd")
+                .arg("/C")
+                .arg(format!("if defined {var} (echo %{var}%) else exit /b 1"))
+        } else {
+            sh.xshell().cmd("printenv").arg(var)
+        }
+    }
+
+    fn fail_cmd<'a>(sh: &'a FloweyShell) -> xshell::Cmd<'a> {
+        if cfg!(windows) {
+            sh.xshell().cmd("cmd").arg("/C").arg("exit /b 1")
+        } else {
+            sh.xshell().cmd("false")
+        }
+    }
 
     #[test]
     fn no_wrapper_runs_command_directly() {
@@ -356,10 +396,10 @@ mod tests {
     #[test]
     fn env_vars_survive_with_wrapper() {
         let mut sh = FloweyShell::new().unwrap();
-        sh.set_wrapper(Some(CommandWrapperKind::ShCmd));
+        sh.set_wrapper(Some(env_test_wrapper()));
 
         let cmd = sh
-            .wrap(xshell::cmd!(sh.xshell(), "printenv MY_FLOWEY_WRAP_TEST"))
+            .wrap(print_env_cmd(&sh, "MY_FLOWEY_WRAP_TEST"))
             .env("MY_FLOWEY_WRAP_TEST", "survived_wrapping");
         let output = cmd.read().unwrap();
         assert_eq!(output, "survived_wrapping");
@@ -390,10 +430,10 @@ mod tests {
     #[test]
     fn ignore_status_survives_wrapping() {
         let mut sh = FloweyShell::new().unwrap();
-        sh.set_wrapper(Some(CommandWrapperKind::ShCmd));
+        sh.set_wrapper(Some(env_test_wrapper()));
 
         // `false` exits with status 1 — without ignore_status this would error.
-        let cmd = sh.wrap(xshell::cmd!(sh.xshell(), "false")).ignore_status();
+        let cmd = sh.wrap(fail_cmd(&sh)).ignore_status();
         assert!(cmd.run().is_ok());
     }
 
@@ -492,13 +532,13 @@ mod tests {
     #[test]
     fn env_remove_survives_wrapping() {
         let mut sh = FloweyShell::new().unwrap();
-        sh.set_wrapper(Some(CommandWrapperKind::ShCmd));
+        sh.set_wrapper(Some(env_test_wrapper()));
 
         // Set a var via the shell, then remove it on the command.
         // printenv should fail (exit 1) because the var is removed.
         sh.set_var("FLOWEY_REMOVE_TEST", "present");
         let cmd = sh
-            .wrap(xshell::cmd!(sh.xshell(), "printenv FLOWEY_REMOVE_TEST"))
+            .wrap(print_env_cmd(&sh, "FLOWEY_REMOVE_TEST"))
             .env_remove("FLOWEY_REMOVE_TEST")
             .ignore_status();
         let output = cmd.output().unwrap();
@@ -508,14 +548,14 @@ mod tests {
     #[test]
     fn env_clear_survives_wrapping() {
         let mut sh = FloweyShell::new().unwrap();
-        sh.set_wrapper(Some(CommandWrapperKind::ShCmd));
+        sh.set_wrapper(Some(env_test_wrapper()));
 
         // After env_clear, even PATH is gone. The wrapped command
         // should still run (sh is resolved before env_clear applies),
         // but the inner command won't find the var.
         sh.set_var("FLOWEY_CLEAR_TEST", "present");
         let cmd = sh
-            .wrap(xshell::cmd!(sh.xshell(), "printenv FLOWEY_CLEAR_TEST"))
+            .wrap(print_env_cmd(&sh, "FLOWEY_CLEAR_TEST"))
             .env_clear()
             .ignore_status();
         let output = cmd.output().unwrap();
@@ -525,11 +565,11 @@ mod tests {
     #[test]
     fn env_ordering_preserved_through_wrapping() {
         let mut sh = FloweyShell::new().unwrap();
-        sh.set_wrapper(Some(CommandWrapperKind::ShCmd));
+        sh.set_wrapper(Some(env_test_wrapper()));
 
         // Set, clear, then set again — only the final value should survive.
         let cmd = sh
-            .wrap(xshell::cmd!(sh.xshell(), "printenv FLOWEY_ORDER_TEST"))
+            .wrap(print_env_cmd(&sh, "FLOWEY_ORDER_TEST"))
             .env("FLOWEY_ORDER_TEST", "first")
             .env_clear()
             .env("FLOWEY_ORDER_TEST", "second");

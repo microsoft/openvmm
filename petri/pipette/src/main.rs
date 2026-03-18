@@ -46,8 +46,11 @@ fn main() -> anyhow::Result<()> {
     }
 
     pal_async::DefaultPool::run_with(async |driver| {
-        let agent = agent::Agent::new(driver).await?;
-        agent.run().await
+        loop {
+            let agent = agent::Agent::new(driver.clone()).await?;
+            agent.run().await?;
+            eprintln!("Pipette disconnected, reconnecting...");
+        }
     })
 }
 

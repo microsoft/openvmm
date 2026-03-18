@@ -26,7 +26,7 @@ jobs:
       }}
     runs-on: ubuntu-latest
     env:
-      BASE_URL: https://openvmmghtestresults.blob.core.windows.net/results
+      BASE_URL: https://openvmmghtestresults.blob.core.windows.net
 
     steps:
       - name: Free Disk Space (Ubuntu)
@@ -81,7 +81,7 @@ jobs:
       - name: Upload to Azure Blob Storage
         run: |
           az storage blob upload-batch \
-            --destination "$BASE_URL" \
+            --destination "$BASE_URL/results" \
             --destination-path "$run_id" \
             --source results \
             --auth-mode login
@@ -89,13 +89,25 @@ jobs:
           # Store a metadata blob in a separate portion of the hierarchy so that
           # it can be cheaply queried.
           az storage blob upload \
-            --blob-url "$BASE_URL/runs/$run_id" \
+            --blob-url "$BASE_URL/results/runs/$run_id" \
             --file /dev/null \
             --metadata \
               "petrifailed=$FAIL_COUNT" \
               "petripassed=$PASS_COUNT" \
               "ghbranch=$SOURCE_BRANCH" \
               "ghpr=$SOURCE_PR" \
+            --auth-mode login
+        env:
+          run_id: ${{ github.event.workflow_run.id }}
+
+      - name: Upload to memory validation results to Azure Blob Storage
+        if: ${{ github.event.workflow_run.event == 'push' }}
+        run: |
+          az storage blob upload-batch \
+            --destination "$BASE_URL/memoryvalidation" \
+            --destination-path "$run_id" \
+            --source results \
+            --pattern '*/*memory_validation*/petri.jsonl' \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
