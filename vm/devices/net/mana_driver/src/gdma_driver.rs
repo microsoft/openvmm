@@ -17,7 +17,9 @@ use futures::FutureExt;
 use gdma_defs::Cqe;
 use gdma_defs::DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE;
 use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
+use gdma_defs::DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION;
 use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
+use gdma_defs::DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE;
 use gdma_defs::EqeDataReconfig;
 use gdma_defs::EstablishHwc;
 use gdma_defs::GDMA_EQE_COMPLETION;
@@ -1079,7 +1081,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
                 * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
             .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
-            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
+            .min(
+                self.hwc_timeout_in_ms
+                    .saturating_sub(eqe_wait_result.elapsed as u32),
+            );
             let before_wait = std::time::Instant::now();
             eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
@@ -1232,7 +1237,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     protocol_ver_max: 1,
                     gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
                         | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
-                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG,
+                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
+                        | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
+                        | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
                     ..FromZeros::new_zeroed()
                 },
             )
@@ -1241,6 +1248,16 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         if resp.gdma_protocol_ver != 1 {
             anyhow::bail!("invalid protocol version");
         }
+
+        tracing::info!(
+            gdma_protocol_ver = resp.gdma_protocol_ver,
+            pf_cap_flags1 = format_args!("{:#x}", resp.pf_cap_flags1),
+            pf_cap_flags2 = format_args!("{:#x}", resp.pf_cap_flags2),
+            pf_cap_flags3 = format_args!("{:#x}", resp.pf_cap_flags3),
+            pf_cap_flags4 = format_args!("{:#x}", resp.pf_cap_flags4),
+            "GDMA PF capability flags",
+        );
+
         Ok(())
     }
 
