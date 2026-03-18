@@ -70,6 +70,9 @@ const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
 /// The MAC address used by the NIC assigned with [`PetriVmConfigOpenVmm::with_nic`].
 pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
+/// The NVM Subsystem ID used by the NVMe controller assigned with [`PetriVmConfigOpenVmm::with_pcie_nvme`].
+pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
+
 /// OpenVMM Petri Backend
 #[derive(Debug)]
 pub struct OpenVmmPetriBackend {

@@ -15,13 +15,21 @@ use chipset_resources::battery::HostBatteryUpdate;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
+use memory_range::MemoryRange;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
+use nvme_resources::NamespaceDefinition;
+use nvme_resources::NvmeControllerHandle;
+use disk_backend_resources::LayeredDiskHandle;
 
 impl PetriVmConfigOpenVmm {
     /// Enable the VTL0 alias map.
@@ -115,6 +123,43 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    pub fn with_pcie_nic(mut self, port_name: &str) -> Self {
+        let endpoint =
+            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: GdmaDeviceHandle {
+                vports: vec![VportDefinition {
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                }],
+            }
+            .into_resource(),
+        });
+
+        self
+    }
+
+    pub fn with_pcie_nvme(mut self, port_name: &str) -> Self {
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: NvmeControllerHandle {
+                subsystem_id: guid::Guid::new_random(),
+                max_io_queues: 64,
+                msix_count: 64,
+                namespaces: vec![NamespaceDefinition {
+                    nsid: 1,
+                    disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(1024 * 1024) }).into_resource(),
+                    read_only: false,
+                }],
+                requests: None,
+            }
+            .into_resource()
+        });
+
+        self
+    }
+
     /// Load with the specified VTL2 relocation mode.
     pub fn with_vtl2_relocation_mode(mut self, mode: Vtl2BaseAddressType) -> Self {
         let LoadMode::Igvm {
@@ -134,6 +179,71 @@ impl PetriVmConfigOpenVmm {
     /// this file, which persists across snapshot save/restore.
     pub fn with_memory_backing_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.memory_backing_file = Some(path.into());
+
+        Self
+    }
+
+    /// Add a symmetric PCIe topology to the VM based on some basic scale factors
+    pub fn with_pcie_topology(mut self, segment_count: u64, root_complex_per_segment: u64, root_ports_per_root_complex: u64) -> Self {
+        const SINGLE_BUS_NUMBER_ECAM_SIZE: u64 = 1024 * 1024; // 1 MB
+        const FULL_SEGMENT_ECAM_SIZE: u64 = 256 * SINGLE_BUS_NUMBER_ECAM_SIZE; // 256 MB
+        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
+        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
+
+        // Allocate and configure the address space gaps
+        let ecam_size = segment_count * FULL_SEGMENT_ECAM_SIZE;
+        let low_mmio_size = segment_count * root_complex_per_segment * LOW_MMIO_SIZE;
+        let high_mmio_size = segment_count * root_complex_per_segment * HIGH_MMIO_SIZE;
+
+        let low_mmio_start = self.config.memory.mmio_gaps[0].start();
+        let high_mmio_end = self.config.memory.mmio_gaps[1].end();
+
+        let ecam_gap = MemoryRange::new(low_mmio_start - ecam_size..low_mmio_start);
+        let low_gap = MemoryRange::new(ecam_gap.start() - low_mmio_size..ecam_gap.start());
+        let high_gap = MemoryRange::new(high_mmio_end..high_mmio_end + high_mmio_size);
+
+        self.config.memory.pci_ecam_gaps.push(ecam_gap);
+        self.config.memory.pci_mmio_gaps.push(low_gap);
+        self.config.memory.pci_mmio_gaps.push(high_gap);
+
+        // Add the root complexes to the VM
+        for segment in 0..segment_count {
+            let bus_count_per_rc = 256 / root_complex_per_segment;
+            for rc_index_in_segment in 0..root_complex_per_segment {
+                let index = segment * root_complex_per_segment + rc_index_in_segment;
+                let name = format!("s{}rc{}", segment, rc_index_in_segment);
+
+                let start_bus = rc_index_in_segment * bus_count_per_rc;
+                let end_bus = start_bus + bus_count_per_rc - 1;
+
+                let ecam_range_start = ecam_gap.start() + segment * FULL_SEGMENT_ECAM_SIZE + start_bus * SINGLE_BUS_NUMBER_ECAM_SIZE;
+                let ecam_range_end = ecam_range_start + bus_count_per_rc * SINGLE_BUS_NUMBER_ECAM_SIZE;
+
+                let low_mmio_start = low_gap.start() + index * LOW_MMIO_SIZE;
+                let low_mmio_end = low_gap.start() + (index + 1) * LOW_MMIO_SIZE;
+                let high_mmio_start = high_gap.start() + index * HIGH_MMIO_SIZE;
+                let high_mmio_end = high_gap.start() + (index + 1) * HIGH_MMIO_SIZE;
+
+                let ports = (0..root_ports_per_root_complex)
+                    .map(|i| PcieRootPortConfig {
+                        name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
+                        hotplug: true,
+                    }).collect();
+
+                self.config.pcie_root_complexes.push(PcieRootComplexConfig {
+                    index: index.try_into().unwrap(),
+                    name,
+                    segment: segment.try_into().unwrap(),
+                    start_bus: start_bus.try_into().unwrap(),
+                    end_bus: end_bus.try_into().unwrap(),
+                    ecam_range: MemoryRange::new(ecam_range_start..ecam_range_end),
+                    low_mmio: MemoryRange::new(low_mmio_start..low_mmio_end),
+                    high_mmio: MemoryRange::new(high_mmio_start..high_mmio_end),
+                    ports,
+                });
+            }
+        }
+
         self
     }
 

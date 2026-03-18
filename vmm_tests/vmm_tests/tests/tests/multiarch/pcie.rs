@@ -3,9 +3,6 @@
 
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
-use memory_range::MemoryRange;
-use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::PipetteClient;
@@ -113,53 +110,10 @@ async fn parse_guest_pci_devices(
     uefi_aarch64(vhd(windows_11_enterprise_aarch64))
     // uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
-async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    const ECAM_SIZE: u64 = 256 * 1024 * 1024; // 256 MB
-    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
-    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024; // 1 GB
-
+async fn pcie_root_emulation_single_segment(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
-        .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                let low_mmio_start = c.memory.mmio_gaps[0].start();
-                let high_mmio_end = c.memory.mmio_gaps[1].end();
-                let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
-                let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
-                let ecam_range = MemoryRange::new(pcie_low.start() - ECAM_SIZE..pcie_low.start());
-                c.memory.pci_ecam_gaps.push(ecam_range);
-                c.memory.pci_mmio_gaps.push(pcie_low);
-                c.memory.pci_mmio_gaps.push(pcie_high);
-                c.pcie_root_complexes.push(PcieRootComplexConfig {
-                    index: 0,
-                    name: "rc0".into(),
-                    segment: 0,
-                    start_bus: 0,
-                    end_bus: 255,
-                    ecam_range,
-                    low_mmio: pcie_low,
-                    high_mmio: pcie_high,
-                    ports: vec![
-                        PcieRootPortConfig {
-                            name: "rp0".into(),
-                            hotplug: false,
-                        },
-                        PcieRootPortConfig {
-                            name: "rp1".into(),
-                            hotplug: false,
-                        },
-                        PcieRootPortConfig {
-                            name: "rp2".into(),
-                            hotplug: false,
-                        },
-                        PcieRootPortConfig {
-                            name: "rp3".into(),
-                            hotplug: false,
-                        },
-                    ],
-                })
-            })
-        })
+        .modify_backend(|b| b.with_pcie_topology(1, 4, 4))
         .run()
         .await?;
 
@@ -171,7 +125,76 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
         .count();
 
-    assert_eq!(root_port_count, 4);
+    assert_eq!(root_port_count, 1 * 4 * 4);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+#[openvmm_test(
+    linux_direct_x64,
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    // uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn pcie_root_emulation_multi_segment(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (vm, agent) = config
+        .modify_backend(|b| b.with_pcie_topology(4, 1, 8))
+        .run()
+        .await?;
+
+    let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?guest_devices, "guest devices");
+
+    let root_port_count = guest_devices
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
+        .count();
+
+    assert_eq!(root_port_count, 4 * 1 * 8);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+#[openvmm_test(
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    // uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+)]
+async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (vm, agent) = config
+        .modify_backend(|b| b.with_pcie_topology(1, 1, 8).with_pcie_nvme("s0rc0rp0").with_pcie_nic("s0rc0rp1"))
+        .run()
+        .await?;
+
+    let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?guest_devices, "guest devices");
+
+    let root_port_count = guest_devices
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
+        .count();
+
+    assert_eq!(root_port_count, 8);
+
+    let nvme_count = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    assert_eq!(nvme_count, 1);
+
+    let nic_count = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x020000)
+        .count();
+    assert_eq!(nic_count, 1);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
