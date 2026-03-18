@@ -24,7 +24,6 @@ use tracing_helpers::ErrorValueExt;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Default, Inspect)]

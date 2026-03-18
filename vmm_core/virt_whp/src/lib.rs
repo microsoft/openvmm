@@ -62,6 +62,7 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::vm::AccessVmState;
+use virt::vp::AccessVpState;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
@@ -594,7 +595,7 @@ impl virt::BindProcessor for WhpProcessorBinder {
     type Error = Error;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
-        let vp = WhpProcessor {
+        let mut vp = WhpProcessor {
             vp: WhpVpRef {
                 partition: &self.partition,
                 index: self.index,
@@ -1492,7 +1493,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as virt::vp::AccessVpState>::Error> {
+    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as AccessVpState>::Error> {
         Err(Error::GuestDebuggingNotSupported)
     }
 
