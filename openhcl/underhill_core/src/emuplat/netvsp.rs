@@ -1318,6 +1318,16 @@ struct NetworkAdapterIndexState {
     mac_address_to_index: HashMap<MacAddress, u32>,
 }
 
+impl NetworkAdapterIndexState {
+    fn increment_index(&mut self) {
+        self.index = self.index.wrapping_add(1);
+        if self.index == 0 {
+            // Skip 0 as it's treated as invalid by various guest code.
+            self.index = 1;
+        }
+    }
+}
+
 impl NetworkAdapterIndex {
     pub fn new(initial_value: Option<u32>) -> Self {
         Self {
@@ -1349,11 +1359,11 @@ impl NetworkAdapterIndex {
             .values()
             .any(|&v| v == state.index)
         {
-            state.index += 1;
+            state.increment_index();
         }
 
         let assigned = state.index;
-        state.index += 1;
+        state.increment_index();
         state.mac_address_to_index.insert(*mac_address, assigned);
         assigned
     }
@@ -1406,7 +1416,8 @@ impl NetworkAdapterIndex {
                     .mac_address_to_index
                     .insert(mac_address, saved_state.adapter_index);
                 if saved_state.adapter_index >= state.index {
-                    state.index = saved_state.adapter_index + 1;
+                    state.index = saved_state.adapter_index;
+                    state.increment_index();
                 }
             }
         }
