@@ -133,12 +133,18 @@ impl FlowNode for Node {
             // required due to ambient dependencies in openvmm_hcl's source code
             pre_build_deps.push(openhcl_deps_path.clone().into_side_effect());
 
-            pre_build_deps.push(ctx.reqv(|v| {
-                flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["build-essential".into()],
-                    done: v,
-                }
-            }));
+            // TODO: install build tools for other platforms
+            if matches!(
+                ctx.platform(),
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+            ) {
+                pre_build_deps.push(ctx.reqv(|v| {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: vec!["build-essential".into()],
+                        done: v,
+                    }
+                }));
+            }
 
             let mut features = features
                 .into_iter()

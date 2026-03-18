@@ -73,11 +73,20 @@ impl FlowNode for Node {
                 SidecarBuildProfile::Release => BuildProfile::BootRelease,
             };
 
-            let installed_apt_deps =
-                ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec!["build-essential".into()],
-                    done: v,
-                });
+            let mut pre_build_deps = Vec::new();
+
+            // TODO: install build tools for other platforms
+            if matches!(
+                ctx.platform(),
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+            ) {
+                pre_build_deps.push(ctx.reqv(|v| {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: vec!["build-essential".into()],
+                        done: v,
+                    }
+                }));
+            }
 
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "sidecar".into(),
@@ -92,7 +101,7 @@ impl FlowNode for Node {
                         .into_iter()
                         .collect(),
                 )),
-                pre_build_deps: vec![installed_apt_deps],
+                pre_build_deps,
                 output: v,
             });
 
