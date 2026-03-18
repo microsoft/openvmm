@@ -6,6 +6,9 @@ name = "vpci_relay"
 rust-version.workspace = true
 edition.workspace = true
 
+[features]
+dev_snp_ohcl_tio_support = ["vpci_client/dev_snp_ohcl_tio_support"]
+
 [dependencies]
 chipset_device.workspace = true
 memory_range.workspace = true

@@ -6,6 +6,10 @@ name = "vpci_client"
 rust-version.workspace = true
 edition.workspace = true
 
+[features]
+# Enables support for TDISP for AMD SEV-TIO
+dev_snp_ohcl_tio_support = []
+
 [dependencies]
 chipset_device.workspace = true
 openhcl_tdisp.workspace = true
