@@ -332,7 +332,7 @@ async fn servicing_keepalive_with_namespace_update(
                 ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -410,7 +410,7 @@ async fn _servicing_keepalive_with_missed_get_log_page(
                 ),
         );
 
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -533,7 +533,7 @@ async fn servicing_test_keepalive_disable_through_inspect(
     // which includes NVMe regions and restore verification will fail ("unrestored allocations found"),
     // since NVMe KA is off and we don't save anything).
     flags.enable_mana_keepalive = false;
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -672,7 +672,7 @@ async fn servicing_keepalive_with_io_queue_full(
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 100 * 1024 * 1024; // 100 MiB
 
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -741,7 +741,7 @@ async fn servicing_keepalive_with_unresponsive_io(
     );
 
     let scsi_controller_guid = Guid::new_random();
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -832,75 +832,17 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
 
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
-
     let vp_count = 4;
 
-    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
-        .with_processor_topology(ProcessorTopology {
-            vp_count,
-            vps_per_socket: Some(1),
-            ..Default::default()
-        })
-        .modify_backend(move |b| {
-            b.with_custom_config(|c| {
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: NVME_INSTANCE,
-                    resource: NvmeFaultControllerHandle {
-                        subsystem_id: Guid::new_random(),
-                        msix_count: 10,
-                        max_io_queues: 10,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: KEEPALIVE_VTL2_NSID,
-                            read_only: false,
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(disk_size),
-                                sector_size: None,
-                            })
-                            .into_resource(),
-                        }],
-                        fault_config: fault_configuration,
-                        enable_tdisp_tests: false,
-                    }
-                    .into_resource(),
-                })
-            })
-        })
-        .add_vtl2_storage_controller(
-            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                .with_instance_id(scsi_controller_guid)
-                .add_lun(
-                    Vtl2LunBuilder::disk()
-                        .with_location(VTL0_NVME_LUN)
-                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                            ControllerType::Nvme,
-                            NVME_INSTANCE,
-                            KEEPALIVE_VTL2_NSID,
-                        )),
-                )
-                .build(),
-        )
-        .with_custom_vtl2_settings(move |v| {
-            if v.fixed.is_none() {
-                v.fixed = Some(Default::default());
-            }
-
-            // Configure SCSI so there are as many total channels as vCPUs to
-            // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
-            // channel which is always present. so vp_count - 1 yields a total
-            // of vp_count channels.
-            assert!(
-                vp_count >= 1,
-                "vp_count must be at least 1 when configuring SCSI sub-channels"
-            );
-            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
-        })
-        .run()
-        .await?;
+    let (mut vm, agent) = create_keepalive_test_config_custom_vps(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        vp_count,
+    )
+    .await?;
 
     agent.ping().await?;
 
@@ -994,76 +936,17 @@ async fn servicing_keepalive_slow_create_io_queue(
 
     let scsi_controller_guid = Guid::new_random();
     let disk_size = 4 * 1024 * 1024; // 4 MiB — enough for dd reads
-
     let vp_count = 4;
 
-    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-
-    let (mut vm, agent) = config
-        .with_vmbus_redirect(true)
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
-        .with_processor_topology(ProcessorTopology {
-            vp_count,
-            vps_per_socket: Some(1),
-            ..Default::default()
-        })
-        .modify_backend(move |b| {
-            b.with_custom_config(|c| {
-                c.vpci_devices.push(VpciDeviceConfig {
-                    vtl: DeviceVtl::Vtl2,
-                    instance_id: NVME_INSTANCE,
-                    resource: NvmeFaultControllerHandle {
-                        subsystem_id: Guid::new_random(),
-                        msix_count: 10,
-                        max_io_queues: 10,
-                        namespaces: vec![NamespaceDefinition {
-                            nsid: KEEPALIVE_VTL2_NSID,
-                            read_only: false,
-                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                len: Some(disk_size),
-                                sector_size: None,
-                            })
-                            .into_resource(),
-                        }],
-                        fault_config: fault_configuration,
-                        enable_tdisp_tests: false,
-                    }
-                    .into_resource(),
-                })
-            })
-        })
-        .add_vtl2_storage_controller(
-            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
-                .with_instance_id(scsi_controller_guid)
-                .add_lun(
-                    Vtl2LunBuilder::disk()
-                        .with_location(VTL0_NVME_LUN)
-                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
-                            ControllerType::Nvme,
-                            NVME_INSTANCE,
-                            KEEPALIVE_VTL2_NSID,
-                        )),
-                )
-                .build(),
-        )
-        .with_custom_vtl2_settings(move |v| {
-            if v.fixed.is_none() {
-                v.fixed = Some(Default::default());
-            }
-
-            // Configure SCSI so there are as many total channels as vCPUs to
-            // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
-            // channel which is always present. so vp_count - 1 yields a total
-            // of vp_count channels.
-            assert!(
-                vp_count >= 1,
-                "vp_count must be at least 1 when configuring SCSI sub-channels"
-            );
-            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
-        })
-        .run()
-        .await?;
-
+    let (mut vm, agent) = create_keepalive_test_config_custom_vps(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        scsi_controller_guid,
+        disk_size,
+        vp_count,
+    )
+    .await?;
     agent.ping().await?;
 
     let cpus_with_issuers = find_cpus_with_io_issuers(&vm).await?;
@@ -1129,7 +1012,7 @@ async fn apply_fault_with_keepalive(
 ) -> Result<PetriVm<OpenVmmPetriBackend>, anyhow::Error> {
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
-    let (mut vm, agent) = create_keepalive_test_config(
+    let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
@@ -1159,7 +1042,7 @@ async fn apply_fault_with_keepalive(
     Ok(vm)
 }
 
-async fn create_keepalive_test_config(
+async fn create_keepalive_test_config_default(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
     vtl0_nvme_lun: u32,
@@ -1212,6 +1095,82 @@ async fn create_keepalive_test_config(
                 )
                 .build(),
         )
+        .run()
+        .await
+}
+
+async fn create_keepalive_test_config_custom_vps(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    fault_configuration: FaultConfiguration,
+    vtl0_nvme_lun: u32,
+    scsi_instance: Guid,
+    disk_size: u64,
+    vp_count: u32,
+) -> Result<(PetriVm<OpenVmmPetriBackend>, PipetteClient), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+
+    config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
+        .with_processor_topology(ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(1),
+            ..Default::default()
+        })
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 10,
+                        max_io_queues: 10,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: KEEPALIVE_VTL2_NSID,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(disk_size),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: fault_configuration,
+                        enable_tdisp_tests: false,
+                    }
+                    .into_resource(),
+                })
+            })
+        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_nvme_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
+        .with_custom_vtl2_settings(move |v| {
+            if v.fixed.is_none() {
+                v.fixed = Some(Default::default());
+            }
+
+            // Configure SCSI so there are as many total channels as vCPUs to
+            // allow IO on all CPUs. The scsi_sub_channels counts beyond the first
+            // channel which is always present. so vp_count - 1 yields a total
+            // of vp_count channels.
+            assert!(
+                vp_count >= 1,
+                "vp_count must be at least 1 when configuring SCSI sub-channels"
+            );
+            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
+        })
         .run()
         .await
 }
