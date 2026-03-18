@@ -21,6 +21,8 @@ pub use errorcode::*;
 
 use crate::guest_to_host_command::Command;
 use crate::guest_to_host_response::Response;
+use inspect::Inspect;
+use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/tdisp.rs"));
 
@@ -110,6 +112,12 @@ pub trait GuestToHostResponseExt {
     /// let bind = resp.response::<TdispCommandResponseBind>()?;
     /// ```
     fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError>;
+
+    /// Returns the TDI state of the device before the command was processed, if available.
+    fn tdi_state_before_enum(&self) -> Option<TdispTdiState>;
+
+    /// Returns the TDI state of the device after the command was processed, if available.
+    fn tdi_state_after_enum(&self) -> Option<TdispTdiState>;
 }
 
 impl GuestToHostResponseExt for GuestToHostResponse {
@@ -128,6 +136,14 @@ impl GuestToHostResponseExt for GuestToHostResponse {
         }
     }
 
+    fn tdi_state_before_enum(&self) -> Option<TdispTdiState> {
+        TdispTdiState::from_i32(self.tdi_state_before)
+    }
+
+    fn tdi_state_after_enum(&self) -> Option<TdispTdiState> {
+        TdispTdiState::from_i32(self.tdi_state_after)
+    }
+
     fn response<T: GuestToHostResponseVariant>(self) -> Result<T, TdispGuestOperationError> {
         match self.error_code() {
             Some(TdispGuestOperationErrorCode::Success) => {
@@ -139,5 +155,23 @@ impl GuestToHostResponseExt for GuestToHostResponse {
             Some(err) => Err(err.into()),
             None => Err(TdispGuestOperationErrorCode::Unknown.into()),
         }
+    }
+}
+
+impl Display for TdispTdiState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state_str = match self {
+            TdispTdiState::Uninitialized => "Uninitialized",
+            TdispTdiState::Unlocked => "Unlocked",
+            TdispTdiState::Locked => "Locked",
+            TdispTdiState::Run => "Run",
+        };
+        write!(f, "{}", state_str)
+    }
+}
+
+impl Inspect for TdispTdiState {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.value(format!("{}", self));
     }
 }
