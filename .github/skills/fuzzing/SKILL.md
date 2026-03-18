@@ -75,8 +75,7 @@ RUST_BACKTRACE=full ./target/<triple>/release/fuzz_ide path/to/crash-artifact
 4. **Drop `XTASK_FUZZ_REPRO`** when using lldb — the tracing output from
    repeated polls produces megabytes of spam that buries the debugger output.
 5. **Release builds have limited variable info** — `frame variable` may show
-   nothing. For richer inspection, build with less optimization (not yet
-   supported by the fuzz infra).
+   nothing. For richer inspection, build with `--dev` (see below).
 
 ### Command file template
 
@@ -382,27 +381,16 @@ Read the source at those lines. Classify each uncovered region:
 
 | Classification | Action |
 |---------------|--------|
-| **Reachable via fuzzer input** — the fuzzer *could* reach this code but hasn't found the right input sequence | Investigate why. Is the path gated by specific byte patterns the fuzzer struggles to generate? Consider adding seed corpus entries that exercise the path manually. |
+| **Reachable via fuzzer input** — the fuzzer *could* reach this code but hasn't found the right input sequence | Investigate why. Is the path gated by specific byte patterns the fuzzer struggles to generate? |
 | **Structurally unreachable** — the fuzzer harness doesn't wire up the code path (e.g., save/restore, PCI config reads the harness skips) | Extend the harness: add new `FuzzAction` variants, expose more device interfaces to the fuzzer. |
 | **Error-handling / defensive code** — `unreachable!()`, error paths for invalid hardware states | Low priority. These are worth testing but don't indicate a fuzzer deficiency. |
 | **Inspect / debug only** — `InspectMut`, `Display`, `Debug` impls | Skip entirely. Not attack surface. |
 
 ### Step 3: Improve the fuzzer
 
-Improvements fall into three categories, in priority order:
+Improvements fall into two categories, in priority order:
 
-**A. Add seed corpus entries for hard-to-reach paths**
-
-If coverage shows a specific protocol command or state transition is
-never reached, craft a targeted input. Build a minimal corpus entry that
-exercises the uncovered path:
-
-```bash
-# Run the fuzzer in repro mode with tracing to verify the seed exercises the path
-XTASK_FUZZ_REPRO=1 ./target/<triple>/release/<target> path/to/seed-input
-```
-
-**B. Extend the fuzz harness**
+**A. Extend the fuzz harness**
 
 If an entire code path is structurally unreachable, the harness needs changes.
 Examples:
@@ -412,7 +400,7 @@ Examples:
 - fuzz_storvsp doesn't test sub-channel operations → add corresponding VMBus
   channel actions
 
-**C. Improve `Arbitrary` implementations**
+**B. Improve `Arbitrary` implementations**
 
 If the fuzzer generates mostly one type of operation, check the `Arbitrary`
 impl. Common issues:
