@@ -79,24 +79,23 @@ async fn send_gpa_direct_packet(
     transaction_id: u64,
 ) -> Result<(), anyhow::Error> {
     let start_page: u64 = gpa_start / PAGE_SIZE as u64;
-    let end_page = start_page
-        .checked_add(byte_len.try_into()?)
-        .map(|v| v.div_ceil(PAGE_SIZE as u64))
-        .ok_or(arbitrary::Error::IncorrectFormat)?;
+    let page_offset = gpa_start as usize % PAGE_SIZE;
+    // Clamp byte_len so the GPA range fits in MAX_GPA_PAGES.
+    let byte_len = byte_len.min(MAX_GPA_PAGES * PAGE_SIZE - page_offset);
 
-    if end_page < start_page {
-        return Err(arbitrary::Error::IncorrectFormat.into());
-    }
+    let end_addr = gpa_start
+        .checked_add(byte_len as u64)
+        .ok_or(arbitrary::Error::IncorrectFormat)?;
+    let end_page = end_addr.div_ceil(PAGE_SIZE as u64);
     let page_count = (end_page - start_page) as usize;
-    if page_count > MAX_GPA_PAGES {
-        return Err(arbitrary::Error::IncorrectFormat.into());
-    }
+    assert!(page_count <= MAX_GPA_PAGES);
+
     let mut gpns = [0u64; MAX_GPA_PAGES];
     for (i, gpn) in (start_page..end_page).enumerate() {
         gpns[i] = gpn;
     }
     let pages = PagedRange::new(
-        gpa_start as usize % PAGE_SIZE,
+        page_offset,
         byte_len,
         &gpns[..page_count],
     )
@@ -305,7 +304,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
                 disklayer_ram::ram_disk(64 * 512, false).unwrap(),
                 Default::default(),
             );
-            // Ignore duplicate path errors — just try the next one.
+            // Ignore errors (e.g., duplicate paths) — fewer disks is fine.
             let _ = controller.attach(u.arbitrary()?, ScsiControllerDisk::new(Arc::new(disk)));
         }
 
