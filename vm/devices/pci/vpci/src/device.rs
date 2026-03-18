@@ -1576,6 +1576,7 @@ mod tests {
     use tdisp::GuestToHostResponseExt;
     use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
     use tdisp::TdispHostDeviceTargetEmulator;
+    use tdisp::TdispTdiState;
     use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
     use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
     use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
@@ -2498,9 +2499,11 @@ mod tests {
             TDISP_MOCK_GUEST_PROTOCOL,
         );
         let response = guest_driver.send_tdisp_command(command).await;
+        let tdi_state_before = response.tdi_state_before_enum();
+        let tdi_state_after = response.tdi_state_after_enum();
 
-        let response = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
-        match response {
+        let response_unpacked = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
+        match response_unpacked {
             Ok(info_resp) => {
                 let interface_info = info_resp
                     .interface_info
@@ -2515,10 +2518,12 @@ mod tests {
                     TDISP_MOCK_SUPPORTED_FEATURES
                 );
                 assert_eq!(interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
+                assert_eq!(tdi_state_before, Some(TdispTdiState::Unlocked));
+                assert_eq!(tdi_state_after, Some(TdispTdiState::Unlocked));
             }
             _ => panic!(
                 "expected GetDeviceInterfaceInfo response, got {:?}",
-                response
+                response_unpacked
             ),
         }
     }

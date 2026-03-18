@@ -50,6 +50,7 @@ use vpci_client::MemoryAccess;
 use vpci_client::VpciClient;
 use vpci_client::VpciDevice;
 use vpci_client::VpciDeviceEject;
+use vpci_client::tdisp::TdispVpciAttestationInterface;
 
 /// TODO TDISP: Required for the tdisp crate to be built in the meantime.
 #[expect(unused_imports)]
@@ -318,10 +319,45 @@ impl VpciRelay {
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
 
+        // If testing the mock TDISP flow...
         if self.options.test_tdisp_flow {
             Self::tdisp_test_mock_flow(vpci_device.clone())
                 .await
                 .expect("failed to exercise TDISP flow test");
+        } else {
+            // Otherwise, try to perform real TDISP attestation
+            let tdisp_capabilities = vpci_device.tdisp_query_capabilities().await;
+            match tdisp_capabilities {
+                Ok(interface_info) => {
+                    // Take device through attestation flow before relaying it to the guest. This is prior to any resource validation, so the
+                    // device resources will still not be functional until resource assignment takes place in the guest.
+                    let attestation_result = vpci_device
+                        .tdisp_attest_device(interface_info)
+                        .await
+                        .context("TDISP attestation failed");
+
+                    match attestation_result {
+                        Ok(()) => {
+                            tracing::info!(%instance_id, "TDISP attestation succeeded for device");
+
+                            // If attestation succeeds, we will relay the device as normal. When calls are made to assign resources,
+                            // we will call to the platform to validate the resources for private access knowing that attestation succeeded.
+                            // The device is now in the Run state.
+                        }
+                        Err(e) => {
+                            tracing::info!(%instance_id, failure_reason = ?e, "TDISP attestation failed for device");
+
+                            // TDISP TODO: Implement policy decisisons about how TDISP devices will choose to appear or not
+                            // depending on attestation results. For now, we'll still allow the device to be relayed but
+                            // without any locked resources.
+                            // The device is still in the Unlocked state.
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::info!(%instance_id, failure_reason = ?e, "TDISP not supported or failed to query capabilities");
+                }
+            }
         }
 
         let device_name = format!("assigned_device:vpci-{instance_id}");
