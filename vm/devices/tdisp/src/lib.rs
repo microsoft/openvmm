@@ -524,7 +524,9 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         &mut self,
         requested_guest_protocol: TdispGuestProtocolType,
     ) -> Result<TdispDeviceInterfaceInfo, TdispGuestOperationError> {
-        if self.guest_protocol_type != TdispGuestProtocolType::Invalid {
+        if self.guest_protocol_type != TdispGuestProtocolType::Invalid
+            && self.guest_protocol_type != requested_guest_protocol
+        {
             tracing::error!(
                 "Guest tried to negotiate a protocol with the host while a protocol was already negotiated!"
             );
