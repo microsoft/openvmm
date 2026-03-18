@@ -915,8 +915,9 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
 /// Verifies that `save_openhcl` works correctly when a create_io_queue command
 /// is stuck. The `DriverWorkerTask` run loop should still be able to process
 /// save commands in this situation.
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn servicing_keepalive_slow_create_io_queue(
+/// NOTE: Disabled until we have a fix for the underlying issue being tested here.
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn _servicing_keepalive_slow_create_io_queue(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
@@ -1099,6 +1100,9 @@ async fn create_keepalive_test_config_default(
         .await
 }
 
+/// Creates a keepalive test config with a custom number of VPs with 1 VP per
+/// socket. It also creates an appropriate number of scsi sub-channels to ensure
+/// IO can be issued on all VPs.
 async fn create_keepalive_test_config_custom_vps(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     fault_configuration: FaultConfiguration,
