@@ -12,7 +12,7 @@ rustup install nightly
 cargo install cargo-fuzz
 ```
 
-For debugging crashes, install `lldb`:
+For debugging crashes, a debugger such as `lldb` is useful:
 
 ```bash
 sudo apt-get install -y lldb
@@ -41,7 +41,7 @@ atomics errors. This is not needed on x86_64.
 
 ## Running
 
-While its entirely possible to run the various fuzzers in the OpenVMM repo using
+While it's entirely possible to run the various fuzzers in the OpenVMM repo using
 `cargo fuzz` directly, the OpenVMM repo includes additional tooling to streamline
 working with fuzzers at "OpenVMM scale": `cargo xtask fuzz`
 
@@ -182,7 +182,7 @@ apt install lcov
 To generate a report with "sane defaults", you can simply run:
 
 ```bash
-cargo xtask fuzz coverage fuzz_ide --with-html-report
+cargo +nightly xtask fuzz coverage fuzz_ide --with-html-report
 ```
 
 Simply navigate to the `html/report/dir/index.html` on your machine and inspect the coverage!

@@ -183,9 +183,9 @@ use futures::{select, FutureExt};
 use std::pin::pin;
 
 fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
-    DefaultPool::run_with(async |driver| {
+    DefaultPool::run_with(|driver| async move {
         let (host, guest_channel) = connected_async_channels(4 * 1024);
-        let guest_queue = Queue::new(guest_channel).unwrap();
+        let guest_queue = Queue::new(guest_channel)?;
 
         // Set up the device under test
         let controller = ScsiController::new();
