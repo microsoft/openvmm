@@ -6,6 +6,7 @@
 mod mmio;
 mod pci;
 pub(crate) mod saved_state;
+mod task;
 
 pub use mmio::VirtioMmioDevice;
 pub use pci::PciInterruptModel;

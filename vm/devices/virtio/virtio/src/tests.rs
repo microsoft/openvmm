@@ -100,6 +100,30 @@ async fn assert_no_recv_in_timeout<T: 'static + Send>(
     }
 }
 
+/// Yield execution to the async executor, allowing spawned tasks to run.
+async fn yield_now() {
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if !yielded {
+            cx.waker().wake_by_ref();
+            yielded = true;
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await
+}
+
+/// Yield to the executor then poll the device, allowing a spawned device
+/// task to process commands and the transport to observe the result.
+async fn yield_and_poll_device(dev: &mut impl PollDevice) {
+    yield_now().await;
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    dev.poll_device(&mut cx);
+}
+
 #[derive(Default)]
 struct VirtioTestMemoryAccess {
     memory_map: Mutex<MemoryMap>,
@@ -461,7 +485,7 @@ impl VirtioTestGuest {
         self.get_queue_base_address(index) + 0x4000
     }
 
-    fn setup_chipset_device(
+    async fn setup_chipset_device(
         &self,
         dev: &mut VirtioMmioDevice,
         driver_features: VirtioDeviceFeatures,
@@ -490,10 +514,11 @@ impl VirtioTestGuest {
             dev.write_u32(68, 1);
         }
         dev.write_u32(112, VIRTIO_DRIVER_OK);
+        yield_and_poll_device(dev).await;
         assert_eq!(dev.read_u32(0xfc), 2);
     }
 
-    fn setup_pci_device(
+    async fn setup_pci_device(
         &self,
         dev: &mut VirtioPciTestDevice,
         driver_features: VirtioDeviceFeatures,
@@ -597,6 +622,7 @@ impl VirtioTestGuest {
         dev.pci_device
             .mmio_write(bar_address1 + 20, &device_status.to_le_bytes())
             .unwrap();
+        yield_and_poll_device(&mut dev.pci_device).await;
         let mut config_generation: [u8; 1] = [0];
         dev.pci_device
             .mmio_read(bar_address1 + 21, &mut config_generation)
@@ -1392,6 +1418,7 @@ impl VirtioPciTestDevice {
                 queue_work,
                 &mem,
             )),
+            driver,
             PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
@@ -1442,6 +1469,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
             None,
             &mem,
         )),
+        &driver_source.simple(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2529,13 +2557,14 @@ async fn verify_device_queue_simple_inner(
             Some(queue_work),
             &mem,
         )),
+        &driver_source.simple(),
         interrupt,
         Some(doorbell_registration),
         0,
         1,
     );
 
-    guest.setup_chipset_device(&mut dev, features);
+    guest.setup_chipset_device(&mut dev, features).await;
     expect_mmio_interrupt(
         &mut dev,
         &target,
@@ -2614,12 +2643,13 @@ async fn verify_device_multi_queue_inner(
             Some(queue_work),
             &mem,
         )),
+        &driver_source.simple(),
         interrupt,
         Some(doorbell_registration),
         0,
         1,
     );
-    guest.setup_chipset_device(&mut dev, features);
+    guest.setup_chipset_device(&mut dev, features).await;
     expect_mmio_interrupt(
         &mut dev,
         &target,
@@ -2701,7 +2731,7 @@ async fn verify_device_multi_queue_pci_inner(
         })),
     );
 
-    guest.setup_pci_device(&mut dev, features);
+    guest.setup_pci_device(&mut dev, features).await;
 
     let mut timer = PolledTimer::new(&driver);
 
@@ -2777,6 +2807,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
                 ..Default::default()
             },
         }),
+        &_driver,
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2799,6 +2830,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
 
     // Attempt DRIVER_OK — enable() will fail
     dev.write_u32(112, VIRTIO_DRIVER_OK);
+    yield_and_poll_device(&mut dev).await;
 
     // Device status should NOT have DRIVER_OK set
     let status = dev.read_u32(112);
@@ -2825,6 +2857,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
                 ..Default::default()
             },
         }),
+        &_driver,
         PciInterruptModel::Msix(msi_conn.target()),
         Some(doorbell_registration),
         &mut ExternallyManagedMmioIntercepts,
@@ -2897,6 +2930,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     // Attempt DRIVER_OK — enable() will fail
     buf[0] = VIRTIO_DRIVER_OK as u8;
     dev.mmio_write(bar_address1 + 20, &buf).unwrap();
+    yield_and_poll_device(&mut dev).await;
 
     // Read back device status
     let mut status_buf = [0u8; 1];
@@ -3558,17 +3592,31 @@ trait TestTransport {
     fn stop(&mut self) -> impl Future<Output = ()>;
 }
 
+/// Yield to the executor and poll the transport once. This ensures the device
+/// task has a chance to process any commands and the transport picks up the
+/// result.
+async fn yield_and_poll(transport: &mut impl TestTransport) {
+    yield_now().await;
+    transport.poll_once();
+}
+
 struct MmioTestTransport {
     dev: VirtioMmioDevice,
 }
 
 impl MmioTestTransport {
-    fn new(device: Box<dyn VirtioDevice>, num_queues: u16) -> Self {
+    fn new(device: Box<dyn VirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let interrupt = LineInterrupt::detached();
-        let mut dev =
-            VirtioMmioDevice::new(device, interrupt, Some(doorbell_registration), 0, 0x1000);
+        let mut dev = VirtioMmioDevice::new(
+            device,
+            driver,
+            interrupt,
+            Some(doorbell_registration),
+            0,
+            0x1000,
+        );
 
         // Drive through ACKNOWLEDGE -> DRIVER -> features -> FEATURES_OK
         dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
@@ -3613,13 +3661,14 @@ struct PciTestTransport {
 }
 
 impl PciTestTransport {
-    fn new(device: Box<dyn VirtioDevice>, num_queues: u16) -> Self {
+    fn new(device: Box<dyn VirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let msi_conn = MsiConnection::new();
 
         let mut dev = VirtioPciDevice::new(
             device,
+            driver,
             PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
@@ -3716,9 +3765,12 @@ impl TestTransport for PciTestTransport {
 
 // -- Shared test logic, parameterized over transport --
 
-fn verify_partial_failure_enters_disabling(transport: &mut impl TestTransport) {
+async fn verify_partial_failure_enters_disabling(transport: &mut impl TestTransport) {
     // Attempt DRIVER_OK — queue 1 will fail, queue 0 succeeded.
     transport.write_driver_ok();
+
+    // Yield to let device task process the Enable command.
+    yield_and_poll(transport).await;
 
     // DRIVER_OK must NOT be set.
     let status = transport.read_status();
@@ -3728,39 +3780,39 @@ fn verify_partial_failure_enters_disabling(transport: &mut impl TestTransport) {
         "DRIVER_OK must not be set when a queue fails to start"
     );
 
-    // poll_device should complete the async disable (our test device
-    // returns Ready immediately from poll_stop_queue).
-    transport.poll_once();
-
-    // After poll_device completes the disable, status should be fully reset.
+    // After poll_device completes the enable failure, status should be fully reset.
     let status = transport.read_status();
     assert_eq!(status, 0, "status should be reset after disable completes");
 }
 
-fn verify_driver_ok_rejected_while_disabling(transport: &mut impl TestTransport) {
-    // Trigger failure → enters disabling state.
+async fn verify_driver_ok_rejected_while_disabling(transport: &mut impl TestTransport) {
+    // Trigger failure — the enable is now in-flight (Enabling state).
     transport.write_driver_ok();
-    assert_eq!(transport.read_status() & VIRTIO_DRIVER_OK, 0);
 
-    // Before poll_device runs, try DRIVER_OK again — should be rejected.
+    // Before yielding, the transport is in the Enabling state. A second
+    // DRIVER_OK write should be rejected because the state is busy.
     transport.write_driver_ok();
     assert_eq!(
         transport.read_status() & VIRTIO_DRIVER_OK,
         0,
-        "DRIVER_OK must be rejected while disabling"
+        "DRIVER_OK must be rejected while enable is in flight"
     );
 
-    // Clean up: let poll_device finish.
-    transport.poll_once();
+    // Now yield to let the device task process the enable (which will fail)
+    // and poll the transport to observe the result.
+    yield_and_poll(transport).await;
+
+    // After the enable failure completes, status should be fully reset.
     assert_eq!(transport.read_status(), 0);
 }
 
 async fn verify_stop_completes_pending_disable(transport: &mut impl TestTransport) {
     // Trigger failure → enters disabling state.
     transport.write_driver_ok();
+    yield_and_poll(transport).await;
     assert_eq!(transport.read_status() & VIRTIO_DRIVER_OK, 0);
 
-    // Call stop() without poll_device — stop() should complete the disable.
+    // Call stop() — should be a no-op since enable failure already cleaned up.
     transport.stop().await;
 
     // Status should be fully reset.
@@ -3772,19 +3824,22 @@ async fn verify_stop_completes_pending_disable(transport: &mut impl TestTranspor
 
 #[async_test]
 async fn partial_queue_failure_enters_disabling_mmio(_driver: DefaultDriver) {
-    let mut transport = MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
-    verify_partial_failure_enters_disabling(&mut transport);
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
+    verify_partial_failure_enters_disabling(&mut transport).await;
 }
 
 #[async_test]
 async fn driver_ok_rejected_while_disabling_mmio(_driver: DefaultDriver) {
-    let mut transport = MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
-    verify_driver_ok_rejected_while_disabling(&mut transport);
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
+    verify_driver_ok_rejected_while_disabling(&mut transport).await;
 }
 
 #[async_test]
 async fn stop_completes_pending_disable_mmio(_driver: DefaultDriver) {
-    let mut transport = MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
     verify_stop_completes_pending_disable(&mut transport).await;
 }
 
@@ -3792,19 +3847,22 @@ async fn stop_completes_pending_disable_mmio(_driver: DefaultDriver) {
 
 #[async_test]
 async fn partial_queue_failure_enters_disabling_pci(_driver: DefaultDriver) {
-    let mut transport = PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
-    verify_partial_failure_enters_disabling(&mut transport);
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
+    verify_partial_failure_enters_disabling(&mut transport).await;
 }
 
 #[async_test]
 async fn driver_ok_rejected_while_disabling_pci(_driver: DefaultDriver) {
-    let mut transport = PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
-    verify_driver_ok_rejected_while_disabling(&mut transport);
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
+    verify_driver_ok_rejected_while_disabling(&mut transport).await;
 }
 
 #[async_test]
 async fn stop_completes_pending_disable_pci(_driver: DefaultDriver) {
-    let mut transport = PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), 2);
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
     verify_stop_completes_pending_disable(&mut transport).await;
 }
 
@@ -3840,6 +3898,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             })),
             &mem,
         )),
+        &driver,
         PciInterruptModel::IntX(pci_core::PciInterruptPin::IntA, line),
         Some(doorbell_registration),
         &mut ExternallyManagedMmioIntercepts,
@@ -3909,6 +3968,8 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
     dev.mmio_write(bar_address + 20, &[VIRTIO_DRIVER_OK as u8])
         .unwrap();
 
+    yield_and_poll_device(&mut dev).await;
+
     // Add a buffer to the avail ring and notify the device to process it.
     guest.add_to_avail_queue(0);
     dev.mmio_write(bar_address + 0x38, &0u32.to_le_bytes())
@@ -3953,7 +4014,9 @@ async fn pci_save_restore_round_trip(driver: DefaultDriver) {
     let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
 
     let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
-    guest.setup_pci_device(&mut dev, guest.queue_features());
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
 
     // Stop the device (save path).
     dev.pci_device.stop().await;
@@ -4012,13 +4075,16 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             None,
             &mem,
         )),
+        &driver_source.simple(),
         interrupt,
         Some(doorbell_registration.clone()),
         0,
         1,
     );
 
-    guest.setup_chipset_device(&mut dev, guest.queue_features());
+    guest
+        .setup_chipset_device(&mut dev, guest.queue_features())
+        .await;
 
     // Stop the device (save path).
     dev.stop().await;
@@ -4043,6 +4109,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             None,
             &mem,
         )),
+        &driver_source.simple(),
         interrupt2,
         Some(doorbell_registration),
         0,
@@ -4075,7 +4142,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
     // Negotiate features including the device-specific bit (bank 0, bit 1).
     let mut driver_features = guest.queue_features();
     driver_features.set_bank(0, driver_features.bank(0) | 2);
-    guest.setup_pci_device(&mut dev, driver_features);
+    guest.setup_pci_device(&mut dev, driver_features).await;
 
     dev.pci_device.stop().await;
     let saved = dev.pci_device.save().expect("save should succeed");
@@ -4097,6 +4164,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
             None,
             &mem,
         )),
+        &driver,
         PciInterruptModel::Msix(msi_conn.target()),
         None,
         &mut ExternallyManagedMmioIntercepts,
@@ -4128,6 +4196,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
                 ..Default::default()
             },
         }),
+        &_driver,
         PciInterruptModel::Msix(msi_conn.target()),
         None,
         &mut ExternallyManagedMmioIntercepts,
@@ -4155,6 +4224,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
                 ..Default::default()
             },
         }),
+        &_driver,
         interrupt,
         None,
         0,
@@ -4174,7 +4244,9 @@ async fn pci_restore_reinstalls_doorbells(driver: DefaultDriver) {
     let guest = VirtioTestGuest::new_split(&driver, &test_mem, 1, 4, true);
 
     let mut dev = VirtioPciTestDevice::new(&driver, 1, &test_mem, None);
-    guest.setup_pci_device(&mut dev, guest.queue_features());
+    guest
+        .setup_pci_device(&mut dev, guest.queue_features())
+        .await;
 
     // After setup, doorbells should be registered.
     let doorbells_after_setup = test_mem.doorbell_count.load(Ordering::Relaxed);
@@ -4245,13 +4317,16 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             None,
             &mem,
         )),
+        &driver,
         interrupt,
         Some(doorbell_registration.clone()),
         0,
         1,
     );
 
-    guest.setup_chipset_device(&mut dev, guest.queue_features());
+    guest
+        .setup_chipset_device(&mut dev, guest.queue_features())
+        .await;
 
     // After setup, doorbells should be registered.
     let doorbells_after_setup = test_mem.doorbell_count.load(Ordering::Relaxed);
@@ -4278,6 +4353,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             None,
             &mem,
         )),
+        &driver,
         interrupt2,
         Some(doorbell_registration),
         0,
