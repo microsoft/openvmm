@@ -8735,6 +8735,7 @@ dependencies = [
  "pal",
  "pal_event",
  "parking_lot",
+ "pci_core",
  "signal-hook",
  "static_assertions",
  "thiserror 2.0.16",

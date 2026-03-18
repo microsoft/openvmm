@@ -65,6 +65,7 @@ use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use pci_core::msi::SignalMsi;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::x86::max_physical_address_size_from_cpuid;
@@ -327,6 +328,10 @@ impl virt::Partition for MshvPartition {
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
         self.inner.request_msi(request)
+    }
+
+    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        Some(self.inner.clone())
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -1120,6 +1125,12 @@ impl MshvPartitionInner {
                 "failed to request msi"
             );
         }
+    }
+}
+
+impl SignalMsi for MshvPartitionInner {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.request_msi(MsiRequest { address, data });
     }
 }
 
