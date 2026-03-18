@@ -67,8 +67,6 @@ use openvmm_defs::config::X2ApicConfig;
 use openvmm_defs::config::X86TopologyConfig;
 use openvmm_defs::rpc::PulseSaveRestoreError;
 use openvmm_defs::rpc::VmRpc;
-use openvmm_defs::rpc::PcieHotplugAdd;
-use openvmm_defs::rpc::PcieHotplugRemove;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
 use openvmm_pcat_locator::RomFileLocation;
@@ -2790,24 +2788,24 @@ impl LoadedVm {
                         })
                     }
                     VmRpc::AddPcieDevice(rpc) => {
-                        rpc.handle_failable(async |add: PcieHotplugAdd| {
+                        rpc.handle_failable(async |(port_name, resource)| {
                             let msi_conn = pci_core::msi::MsiConnection::new();
-                            let signal_msi = self.inner.partition.clone().into_signal_msi(hvdef::Vtl::Vtl0);
+                            let signal_msi = self.inner.partition.clone().into_signal_msi(Vtl::Vtl0);
 
                             let (_unit, device) = self.inner._chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
                                 &self.state_units,
-                                format!("pcie-hotplug:{}", add.port_name),
+                                format!("pcie-hotplug:{}", port_name),
                                 async |register_mmio| {
                                     self.inner.resolver
                                         .resolve(
-                                            add.resource,
+                                            resource,
                                             pci_resources::ResolvePciDeviceHandleParams {
                                                 msi_target: msi_conn.target(),
                                                 register_mmio,
                                                 driver_source: &self.inner.driver_source,
                                                 guest_memory: &self.inner.gm,
-                                                doorbell_registration: self.inner.partition.clone().into_doorbell_registration(hvdef::Vtl::Vtl0),
+                                                doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
                                                 shared_mem_mapper: None,
                                             },
                                         )
@@ -2828,12 +2826,12 @@ impl LoadedVm {
                             // Find the root complex containing the target port
                             let rc = self.inner.pcie_root_complexes.iter()
                                 .find(|rc| {
-                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == add.port_name)
+                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
                                 })
-                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", add.port_name))?;
+                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
                             rc.lock().hotplug_add_device(
-                                &add.port_name,
+                                &port_name,
                                 "hotplug-device",
                                 bus_device,
                             )?;
@@ -2843,14 +2841,14 @@ impl LoadedVm {
                         .await
                     }
                     VmRpc::RemovePcieDevice(rpc) => {
-                        rpc.handle_failable(async |remove: PcieHotplugRemove| {
+                        rpc.handle_failable(async |port_name: String| {
                             for rc in &self.inner.pcie_root_complexes {
                                 let mut rc_guard = rc.lock();
-                                if rc_guard.hotplug_remove_device(&remove.port_name).is_ok() {
+                                if rc_guard.hotplug_remove_device(&port_name).is_ok() {
                                     return anyhow::Ok(());
                                 }
                             }
-                            anyhow::bail!("port '{}' not found in any root complex", remove.port_name);
+                            anyhow::bail!("port '{}' not found in any root complex", port_name);
                         })
                         .await
                     }
@@ -3183,10 +3181,16 @@ mesh_worker::register_workers! {
 
 /// Wrapper around `Weak<CloseableMutex<dyn ChipsetDevice>>` that implements
 /// [`GenericPciBusDevice`] for PCIe hotplug devices.
-struct WeakMutexPciBusDevice(std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>);
+struct WeakMutexPciBusDevice(
+    std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>,
+);
 
 impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
-    fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<chipset_device::io::IoResult> {
+    fn pci_cfg_read(
+        &mut self,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<chipset_device::io::IoResult> {
         Some(
             self.0
                 .upgrade()?

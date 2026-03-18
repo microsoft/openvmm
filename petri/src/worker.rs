@@ -96,23 +96,14 @@ impl Worker {
         resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
     ) -> anyhow::Result<()> {
         self.rpc
-            .call_failable(
-                VmRpc::AddPcieDevice,
-                openvmm_defs::rpc::PcieHotplugAdd {
-                    port_name,
-                    resource,
-                },
-            )
+            .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
             .await?;
         Ok(())
     }
 
     pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
         self.rpc
-            .call_failable(
-                VmRpc::RemovePcieDevice,
-                openvmm_defs::rpc::PcieHotplugRemove { port_name },
-            )
+            .call_failable(VmRpc::RemovePcieDevice, port_name)
             .await?;
         Ok(())
     }

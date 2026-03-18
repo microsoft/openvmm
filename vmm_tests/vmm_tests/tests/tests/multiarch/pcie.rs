@@ -189,7 +189,7 @@ async fn pcie_hotplug(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
     const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
 
     let os_flavor = config.os_flavor();
-    let (vm, agent) = config
+    let (mut vm, agent) = config
         .modify_backend(|b| {
             b.with_custom_config(|c| {
                 let low_mmio_start = c.memory.mmio_gaps[0].start();

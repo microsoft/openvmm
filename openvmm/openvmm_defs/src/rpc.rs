@@ -36,25 +36,10 @@ pub enum VmRpc {
     /// on the *next* VM load. This will replace the existing command line parameters.
     UpdateCliParams(FailableRpc<String, ()>),
     /// Hot-add a PCIe device to a named port at runtime.
-    AddPcieDevice(FailableRpc<PcieHotplugAdd, ()>),
+    /// Tuple is (port_name, device_resource).
+    AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
     /// Hot-remove a PCIe device from a named port at runtime.
-    RemovePcieDevice(FailableRpc<PcieHotplugRemove, ()>),
-}
-
-/// Parameters for hot-adding a PCIe device.
-#[derive(MeshPayload)]
-pub struct PcieHotplugAdd {
-    /// The name of the target port (e.g., "rp0").
-    pub port_name: String,
-    /// The device resource to resolve and attach.
-    pub resource: Resource<PciDeviceHandleKind>,
-}
-
-/// Parameters for hot-removing a PCIe device.
-#[derive(MeshPayload)]
-pub struct PcieHotplugRemove {
-    /// The name of the target port (e.g., "rp0").
-    pub port_name: String,
+    RemovePcieDevice(FailableRpc<String, ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]

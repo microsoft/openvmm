@@ -133,16 +133,24 @@ impl Ssdt {
 
         // _OSC method: grant native PCIe control to the OS.
         //
+        // Per ACPI spec §6.2.11 (_OSC, Operating System Capabilities), the OS
+        // calls _OSC to negotiate platform feature control. For PCIe root
+        // complexes, the UUID and capability definitions are specified in the
+        // PCI Firmware Specification §4.5.1 (_OSC Implementation for PCI Host
+        // Bridge Devices).
+        //
+        // UUID: 33DB4D5B-1FF7-401C-9657-7441C03DD766
+        //   (PCI Firmware Spec §4.5.1, Table 4-3)
+        //
+        // Status DWORD[0] bit 2: "Unrecognized UUID"
+        //   (ACPI spec §6.2.11.1, Table 6.15)
+        //
         // Method(_OSC, 4) {
-        //   // Arg0=UUID, Arg1=Rev, Arg2=Count, Arg3=Capabilities buffer
-        //   // Create a field over the first DWORD (status) of the capabilities buffer
         //   CreateDWordField(Arg3, 0, STS0)
-        //   // Check UUID matches PCIe Host Bridge UUID
         //   If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766"))) {
         //     // Grant everything — return Arg3 unchanged (status = 0 = success)
         //   } Else {
-        //     // Unrecognized UUID — set bit 2 of status DWORD
-        //     Or(STS0, 0x04, STS0)
+        //     Or(STS0, 0x04, STS0)  // unrecognized UUID
         //   }
         //   Return(Arg3)
         // }
