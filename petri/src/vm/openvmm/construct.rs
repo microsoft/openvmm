@@ -964,7 +964,8 @@ impl PetriVmConfigSetupCore<'_> {
         };
 
         Ok(if let Some(vdev) = video_dev {
-            let vram = alloc_shared_memory(FRAMEBUFFER_SIZE).context("allocating framebuffer")?;
+            let vram =
+                alloc_shared_memory(FRAMEBUFFER_SIZE, "vram").context("allocating framebuffer")?;
             let (fb, fba) = framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0)
                 .context("creating framebuffer")?;
             Some((vdev, fb, fba))

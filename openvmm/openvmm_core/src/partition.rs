@@ -326,6 +326,14 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
         self.0.flush_async_requests()
     }
 
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.reset()
+    }
+
+    fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.scrub(vtl)
+    }
+
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         self.0.access_state(vtl)
     }

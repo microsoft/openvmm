@@ -24,7 +24,6 @@ use tracing_helpers::ErrorValueExt;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Default, Inspect)]
@@ -231,8 +230,6 @@ impl<'a> WhpProcessor<'a> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason> {
-        self.reset_if_requested();
-
         tracing::trace!(vtl = ?self.state.active_vtl, "current vtl");
         let mut last_waker = None;
         loop {
@@ -461,34 +458,9 @@ impl<'a> WhpProcessor<'a> {
         self.flush_messages(vtl, sints);
     }
 
-    /// Flushes pending register changes.
-    pub(crate) fn reset_if_requested(&mut self) {
-        if self.inner.reset_next.swap(false, Ordering::SeqCst) {
-            self.state.reset(false, self.inner.vp_info.base.is_bsp());
-        }
-
-        if self.inner.scrub_next.swap(false, Ordering::SeqCst) {
-            self.state.reset(true, self.inner.vp_info.base.is_bsp());
-        }
-
-        if self.state.finish_reset_vtl0 {
-            self.state.finish_reset_vtl0 = false;
-            self.finish_reset(Vtl::Vtl0);
-        }
-
-        if self.state.finish_reset_vtl2 {
-            self.state.finish_reset_vtl2 = false;
-            self.finish_reset(Vtl::Vtl2);
-        }
-    }
-
-    fn finish_reset(&mut self, vtl: Vtl) {
+    pub(crate) fn finish_reset(&mut self, vtl: Vtl) {
         self.finish_reset_arch(vtl);
         *self.vplc(vtl).start_vp_context.lock() = None;
-        if cfg!(debug_assertions) {
-            let vp_info = &self.inner.vp_info;
-            self.access_state(vtl).check_reset_all(vp_info);
-        }
     }
 
     fn request_sint_notifications(&mut self, vtl: Vtl, sints: u16) {

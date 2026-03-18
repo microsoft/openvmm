@@ -375,6 +375,39 @@ impl SparseMapping {
         Ok(())
     }
 
+    /// Names an anonymous mapping range so it appears as `[anon:name]` in
+    /// `/proc/{pid}/smaps` and related tools.
+    ///
+    /// Uses `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)`. If the prctl fails
+    /// (e.g. on older kernels), the error is silently ignored. No-op on
+    /// non-Linux platforms.
+    #[cfg(target_os = "linux")]
+    pub fn set_name(&self, offset: usize, len: usize, name: &str) {
+        if len == 0 {
+            return;
+        }
+        if self.validate_offset_len(offset, len).is_err() {
+            return;
+        }
+        let Ok(name) = std::ffi::CString::new(name) else {
+            return;
+        };
+        // SAFETY: address and length are validated, name is a valid CString.
+        unsafe {
+            libc::prctl(
+                libc::PR_SET_VMA,
+                libc::PR_SET_VMA_ANON_NAME,
+                self.address.add(offset),
+                len,
+                name.as_ptr(),
+            );
+        }
+    }
+
+    /// Names a mapping range for debugging. No-op on non-Linux Unix platforms.
+    #[cfg(not(target_os = "linux"))]
+    pub fn set_name(&self, _offset: usize, _len: usize, _name: &str) {}
+
     /// Commits a range of memory, making it accessible.
     ///
     /// On Linux, this is a no-op because the kernel handles page faults
@@ -422,20 +455,25 @@ impl Drop for SparseMapping {
     }
 }
 #[cfg(target_os = "linux")]
-fn new_memfd() -> io::Result<File> {
+fn new_memfd(name: &str) -> io::Result<File> {
+    let name =
+        std::ffi::CString::new(name).map_err(|e| Error::new(io::ErrorKind::InvalidInput, e))?;
     // SAFETY: creating and truncating a new file descriptor according to
     // the documented contract.
     unsafe {
-        let fd = libc::memfd_create(c"mem".as_ptr(), libc::MFD_CLOEXEC).syscall_result()?;
+        let fd = libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC).syscall_result()?;
         Ok(File::from_raw_fd(fd))
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn new_memfd() -> io::Result<File> {
-    let mut name = [0; 16];
-    getrandom::fill(&mut name).unwrap();
-    let mut name = format!("{:x}", u128::from_ne_bytes(name));
+fn new_memfd(_name: &str) -> io::Result<File> {
+    // Use a random name because shm_open creates objects in a global namespace.
+    // A predictable name would allow other processes to collide with or squat
+    // on the name. There is not enough room to include the user-provided name.
+    let mut rand = [0; 16];
+    getrandom::fill(&mut rand).unwrap();
+    let mut name = format!("{:x}", u128::from_ne_bytes(rand));
     // macOS limits the name length to 31 bytes, which is sufficient to ensure uniqueness.
     name.truncate(31);
     let name = std::ffi::CString::new(name).unwrap();
@@ -450,8 +488,11 @@ fn new_memfd() -> io::Result<File> {
 }
 
 /// Allocates a mappable shared memory object of `size` bytes.
-pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedFd> {
-    let fd = new_memfd()?;
+///
+/// `name` labels the memfd so it appears as `/memfd:<name>` in
+/// `/proc/{pid}/smaps` on Linux.
+pub fn alloc_shared_memory(size: usize, name: &str) -> io::Result<OwnedFd> {
+    let fd = new_memfd(name)?;
     fd.set_len(size as u64)?;
     Ok(fd.into())
 }

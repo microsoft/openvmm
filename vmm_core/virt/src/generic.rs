@@ -344,6 +344,10 @@ pub trait ResetPartition {
     ///
     /// The caller must ensure that no VPs are running when this is called.
     ///
+    /// This resets partition-level (VM-wide) state. After this completes,
+    /// the caller dispatches [`Processor::reset`] to each VP's thread to
+    /// reset per-VP state (registers, APIC, synic message queues, etc.).
+    ///
     /// If this fails, the partition is in a bad state and cannot be resumed
     /// until a subsequent reset call succeeds.
     fn reset(&self) -> Result<(), Self::Error>;
@@ -358,6 +362,10 @@ pub trait ScrubVtl {
     /// and restarting a higher VTL without touching the lower VTL.
     ///
     /// The caller must ensure that no VPs are running when this is called.
+    ///
+    /// This scrubs partition-level state. After this completes, the caller
+    /// dispatches [`Processor::scrub`] to each VP's thread to scrub per-VP
+    /// state for the specified VTL.
     ///
     /// Note that this does not reset page protections. This is necessary
     /// because there may be devices assigned to lower VTLs, and they should not
@@ -431,6 +439,34 @@ pub trait Processor: InspectMut {
     /// VTL0 is always inspectable.
     fn vtl_inspectable(&self, vtl: Vtl) -> bool {
         vtl == Vtl::Vtl0
+    }
+
+    /// Resets per-VP state after a partition-level reset.
+    ///
+    /// Called on each VP's thread while VPs are stopped, after
+    /// [`ResetPartition::reset`] has completed.
+    ///
+    /// The default implementation panics. Backends that support
+    /// [`ResetPartition`] must override this.
+    #[allow(unreachable_code)]
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        Ok::<(), Infallible>(unimplemented!(
+            "Processor::reset not implemented for this backend"
+        ))
+    }
+
+    /// Scrubs per-VP state for a specific VTL.
+    ///
+    /// Called on each VP's thread while VPs are stopped, after
+    /// [`ScrubVtl::scrub`] has completed.
+    ///
+    /// The default implementation panics. Backends that support
+    /// [`ScrubVtl`] must override this.
+    #[allow(unreachable_code)]
+    fn scrub(&mut self, _vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        Ok::<(), Infallible>(unimplemented!(
+            "Processor::scrub not implemented for this backend"
+        ))
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_>;
