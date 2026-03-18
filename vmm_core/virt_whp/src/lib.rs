@@ -453,9 +453,15 @@ impl virt::ScrubVtl for WhpPartition {
 
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
+        // Preserve VTL2 reference time across the scrub to match hypervisor
+        // behavior and so that the guest can determine how much time was lost.
+        // This isn't exactly correct, because the time to reset the partition
+        // is not included, but it's good enough for VTL2 simulation.
         #[cfg(guest_arch = "x86_64")]
         let reference_time = self.access_state(Vtl::Vtl2).reftime()?;
 
+        // NOTE: Mapping state (and therefore VTL protections) is _not_ reset
+        // across scrub. Thus only reset WHP state, but not VtlPartition state.
         vtl2.whp.reset().for_op("reset partition")?;
         self.inner.vtl2_emulation.as_ref().unwrap().reset(false);
         self.validate_is_reset(Vtl::Vtl2);
