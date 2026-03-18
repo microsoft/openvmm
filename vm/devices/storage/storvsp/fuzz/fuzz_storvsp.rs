@@ -135,26 +135,25 @@ async fn send_scsi_packet(
     };
 
     let mut cdb_buf = [0u8; 16];
-    let cdb_len = match cdb_type {
+    let (cdb_len, is_read) = match cdb_type {
         FuzzCdbType::ReadWrite => {
             let block: u32 = u.arbitrary()?;
             let ops = [ScsiOp::READ, ScsiOp::WRITE];
+            let op = *u.choose(&ops)?;
             let cdb = Cdb10 {
-                operation_code: *u.choose(&ops)?,
+                operation_code: op,
                 logical_block: block.into(),
                 transfer_blocks: ((byte_len / 512) as u16).into(),
                 ..FromZeros::new_zeroed()
             };
             cdb_buf[..10].copy_from_slice(cdb.as_bytes());
-            size_of::<Cdb10>()
+            (size_of::<Cdb10>(), op == ScsiOp::READ)
         }
         FuzzCdbType::ReportLuns => {
-            let cdb = Cdb10 {
-                operation_code: ScsiOp::REPORT_LUNS,
-                ..FromZeros::new_zeroed()
-            };
-            cdb_buf[..10].copy_from_slice(cdb.as_bytes());
-            size_of::<Cdb10>()
+            // REPORT_LUNS is a 12-byte CDB. Only the opcode byte matters
+            // for storvsp dispatch, but set the length correctly.
+            cdb_buf[0] = ScsiOp::REPORT_LUNS.0;
+            (12, true)
         }
         FuzzCdbType::Inquiry => {
             let cdb = CdbInquiry {
@@ -165,7 +164,7 @@ async fn send_scsi_packet(
             };
             let bytes = cdb.as_bytes();
             cdb_buf[..bytes.len()].copy_from_slice(bytes);
-            bytes.len()
+            (bytes.len(), true)
         }
     };
 
@@ -176,7 +175,7 @@ async fn send_scsi_packet(
         length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
         cdb_length: cdb_len as u8,
         data_transfer_length: byte_len.try_into()?,
-        data_in: 1,
+        data_in: if is_read { 1 } else { 0 },
         ..FromZeros::new_zeroed()
     };
 
