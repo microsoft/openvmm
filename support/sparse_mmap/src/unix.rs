@@ -457,7 +457,7 @@ impl Drop for SparseMapping {
 #[cfg(target_os = "linux")]
 fn new_memfd(name: &str) -> io::Result<File> {
     let name =
-        std::ffi::CString::new(name).unwrap_or_else(|_| std::ffi::CString::new("mem").unwrap());
+        std::ffi::CString::new(name).map_err(|e| Error::new(io::ErrorKind::InvalidInput, e))?;
     // SAFETY: creating and truncating a new file descriptor according to
     // the documented contract.
     unsafe {
@@ -468,6 +468,9 @@ fn new_memfd(name: &str) -> io::Result<File> {
 
 #[cfg(not(target_os = "linux"))]
 fn new_memfd(_name: &str) -> io::Result<File> {
+    // Use a random name because shm_open creates objects in a global namespace.
+    // A predictable name would allow other processes to collide with or squat
+    // on the name. There is not enough room to include the user-provided name.
     let mut rand = [0; 16];
     getrandom::fill(&mut rand).unwrap();
     let mut name = format!("{:x}", u128::from_ne_bytes(rand));
