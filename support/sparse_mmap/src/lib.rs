@@ -217,7 +217,7 @@ mod tests {
         mapping.alloc(0x6 * page_size, 0x1 * page_size).unwrap();
         mapping.alloc(0x4 * page_size, 0x3 * page_size).unwrap();
 
-        let shmem = alloc_shared_memory(0x4 * page_size).unwrap();
+        let shmem = alloc_shared_memory(0x4 * page_size, "test").unwrap();
         mapping
             .map_file(0x5 * page_size, 0x4 * page_size, &shmem, 0, true)
             .unwrap();
