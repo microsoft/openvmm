@@ -9,8 +9,8 @@ pub(crate) mod port;
 pub mod root;
 pub mod switch;
 
-#[cfg(any(test, fuzzing))]
-#[allow(missing_docs)]
+#[cfg(any(test, feature = "fuzz"))]
+#[expect(missing_docs)]
 pub mod test_helpers;
 
 const PAGE_SIZE: usize = 4096;

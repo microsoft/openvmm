@@ -7,7 +7,6 @@
 use arbitrary::Unstructured;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
-use chipset_device::pci::PciConfigSpace;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
 use pcie::root::GenericPcieRootComplex;
@@ -143,7 +142,8 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
                 read_value,
                 offline,
             };
-            let _ = rc.add_pcie_device(port0_key, "ep0", Box::new(ep));
+            rc.add_pcie_device(port0_key, "ep0", Box::new(ep))
+                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
         }
         Topology::WithSwitch => {
             let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
@@ -151,14 +151,16 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
                 downstream_port_count: 2,
                 hotplug: false,
             });
-            let _ = rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)));
+            rc.add_pcie_device(port0_key, "sw0", Box::new(SwitchAdapter(switch)))
+                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
         }
         Topology::Hotplug { read_value } => {
             let ep = FuzzEndpoint {
                 read_value,
                 offline: false,
             };
-            let _ = rc.add_pcie_device(port0_key, "hp-ep0", Box::new(ep));
+            rc.add_pcie_device(port0_key, "hp-ep0", Box::new(ep))
+                .map_err(|_| arbitrary::Error::IncorrectFormat)?;
         }
     }
 
@@ -171,8 +173,8 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     // Subordinate bus number register is at config space offset 0x1A.
     // We assign secondary=1, subordinate=3 so buses 1-3 route through port 0.
     let rp0_ecam_base = ECAM_BASE; // bus 0, device 0, function 0
-    let _ = rc.mmio_write(rp0_ecam_base + 0x19, &[1u8]); // secondary = 1
-    let _ = rc.mmio_write(rp0_ecam_base + 0x1A, &[END_BUS]); // subordinate = END_BUS
+    rc.mmio_write(rp0_ecam_base + 0x19, &[1u8]); // secondary = 1
+    rc.mmio_write(rp0_ecam_base + 0x1A, &[END_BUS]); // subordinate = END_BUS
 
     // For the switch topology, also program the switch's upstream port bus
     // numbers so its routing logic is reachable. The switch's upstream port
@@ -180,13 +182,13 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     // Then program downstream port 0's bus numbers to enable deep routing.
     if matches!(topology, Topology::WithSwitch) {
         let switch_ecam = ECAM_BASE + (1u64 * 256 * 4096); // bus 1, dev 0, fn 0
-        let _ = rc.mmio_write(switch_ecam + 0x19, &[2u8]); // switch secondary = 2
-        let _ = rc.mmio_write(switch_ecam + 0x1A, &[END_BUS]); // switch subordinate = END_BUS
+        rc.mmio_write(switch_ecam + 0x19, &[2u8]); // switch secondary = 2
+        rc.mmio_write(switch_ecam + 0x1A, &[END_BUS]); // switch subordinate = END_BUS
 
         // Program downstream port 0 (bus 2, device 0) with secondary=3
         let ds_port0_ecam = ECAM_BASE + (2u64 * 256 * 4096); // bus 2, dev 0, fn 0
-        let _ = rc.mmio_write(ds_port0_ecam + 0x19, &[3u8]); // ds port secondary = 3
-        let _ = rc.mmio_write(ds_port0_ecam + 0x1A, &[END_BUS]); // ds port subordinate = END_BUS
+        rc.mmio_write(ds_port0_ecam + 0x19, &[3u8]); // ds port secondary = 3
+        rc.mmio_write(ds_port0_ecam + 0x1A, &[END_BUS]); // ds port subordinate = END_BUS
     }
 
     // Drive MMIO reads and writes directly on the root complex.
@@ -220,16 +222,17 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     Ok(())
 }
 
-/// Access sizes the fuzzer can select, including invalid ones to exercise
-/// rejection paths.
+/// Access sizes the fuzzer can select. Sizes 1, 2, and 4 are the valid ECAM
+/// config access sizes. The rest exercise rejection paths — they are real
+/// MMIO access sizes on some platforms but are always rejected by ECAM.
 #[derive(arbitrary::Arbitrary, Debug)]
 enum AccessSize {
     One,
     Two,
-    Three, // invalid — tests InvalidAccessSize rejection
+    Three, // always rejected by ECAM
     Four,
-    Eight,   // real on both x86 and aarch64
-    Sixteen, // real on aarch64 (LDR Q)
+    Eight,   // valid MMIO size on x86/aarch64, but rejected by ECAM
+    Sixteen, // valid MMIO size on aarch64 (LDR Q), but rejected by ECAM
 }
 
 impl AccessSize {

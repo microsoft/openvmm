@@ -10,7 +10,7 @@ rust-version.workspace = true
 [dependencies]
 xtask_fuzz.workspace = true
 
-pcie.workspace = true
+pcie = { workspace = true, features = ["fuzz"] }
 pci_bus.workspace = true
 chipset_device.workspace = true
 memory_range.workspace = true
@@ -26,7 +26,7 @@ libfuzzer-sys.workspace = true
 cargo-fuzz = true
 
 [package.metadata.xtask.fuzz.onefuzz-allowlist]
-fuzz_pcie = ["fuzz_pcie.rs", "../src/root.rs", "../src/switch.rs", "../src/port.rs"]
+fuzz_pcie = ["fuzz_pcie.rs", "../src/*.rs"]
 
 [[bin]]
 name = "fuzz_pcie"
