@@ -315,7 +315,8 @@ impl VpciClientTdispState {
     }
 
     #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
-    pub async fn query_capabilities(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
+    /// See: [`TdispVpciAttestationInterface::tdisp_attest_device`]
+    pub async fn query_capabilities(&mut self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         anyhow::bail!("TDISP feature not enabled during compile time")
     }
 
@@ -337,6 +338,11 @@ impl VpciClientTdispState {
         // Device is now in the Run state without resource validation being performed.
         // Platform specific validation methods should be called to unblock resources.
         Ok(())
+    }
+
+    /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
+    pub fn tdisp_get_tdi_state(&self) -> TdispTdiState {
+        self.tdi_state()
     }
 }
 
@@ -416,6 +422,9 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// isolation level, then returns the interface info. Otherwise, returns an
     /// error representing why the device is not suitable for TDISP.
     async fn tdisp_query_capabilities(&self) -> anyhow::Result<TdispDeviceInterfaceInfo>;
+
+    /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
+    async fn tdisp_tdi_state(&self) -> TdispTdiState;
 }
 
 impl TdispVpciAttestationInterface for VpciDevice {
@@ -430,5 +439,10 @@ impl TdispVpciAttestationInterface for VpciDevice {
     async fn tdisp_query_capabilities(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         let mut guard = self.tdisp.0.lock().await;
         guard.query_capabilities().await
+    }
+
+    async fn tdisp_tdi_state(&self) -> TdispTdiState {
+        let guard = self.tdisp.0.lock().await;
+        guard.tdi_state()
     }
 }

@@ -24,7 +24,7 @@ gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 disable_secure_avic = ["virt_mshv_vtl/disable_secure_avic"]
 
 # Enable TIO support for SEV-SNP
-dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
+dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support", "vpci_relay/dev_snp_ohcl_tio_support"]
 
 # Enable VPCI device support
 vpci = []

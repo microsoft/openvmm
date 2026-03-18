@@ -55,6 +55,7 @@ use vpci_client::tdisp::TdispVpciAttestationInterface;
 /// TODO TDISP: Required for the tdisp crate to be built in the meantime.
 #[expect(unused_imports)]
 use tdisp::TdispHostDeviceInterface;
+use tdisp::TdispTdiState;
 use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
 use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
@@ -419,6 +420,8 @@ impl VpciRelay {
             "tdisp_test_mock_flow: exercising TDISP flow because OPENHCL_TEST_CONFIG=TDISP_VPCI_FLOW_TEST was set"
         );
 
+        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Uninitialized);
+
         let device_interface_info = device
             .tdisp_get_device_interface_info()
             .await
@@ -438,8 +441,54 @@ impl VpciRelay {
             device_interface_info.supported_features,
             TDISP_MOCK_SUPPORTED_FEATURES
         );
+        assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
+
+        Self::tdisp_test_mock_attest_flow(device.clone())
+            .await
+            .context("tdisp_test_mock_flow: failed to exercise TDISP attestation flow")?;
 
         Ok(())
+    }
+
+    async fn tdisp_test_mock_attest_flow(device: Arc<VpciDevice>) -> anyhow::Result<()> {
+        #[cfg(feature = "dev_snp_ohcl_tio_support")]
+        let tdisp_tio_flow_enabled = true;
+        #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+        let tdisp_tio_flow_enabled = false;
+
+        if tdisp_tio_flow_enabled {
+            // Ensure the device appears to be tdisp capable
+            let tdisp_capabilities = device
+                .tdisp_query_capabilities()
+                .await
+                .context("tdisp_test_mock_flow: failed to query TDISP capabilities over vpci")?;
+
+            assert_eq!(
+                tdisp_capabilities.guest_protocol_type,
+                TDISP_MOCK_GUEST_PROTOCOL as i32
+            );
+            assert_eq!(tdisp_capabilities.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
+            assert_eq!(
+                tdisp_capabilities.supported_features,
+                TDISP_MOCK_SUPPORTED_FEATURES
+            );
+            assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Unlocked);
+
+            // If the above interface works, try to attest the device through the TDISP flow and ensure that it succeeds.
+            device
+                .tdisp_attest_device(tdisp_capabilities)
+                .await
+                .context("tdisp_test_mock_flow: failed to attest device over vpci")?;
+
+            assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Run);
+
+            Ok(())
+        } else {
+            tracing::warn!(
+                "tdisp_test_mock_attest_flow: skipping attestation flow because dev_snp_ohcl_tio_support feature is not enabled"
+            );
+            Ok(())
+        }
     }
 }
 
