@@ -194,9 +194,10 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
 
 /// Test PCIe hotplug: hot-add a device to a hotplug-capable port, verify the
 /// guest sees it, then hot-remove it and verify it's gone.
-///
-/// Requires `CONFIG_HOTPLUG_PCI_PCIE=y` in the test kernel.
-#[openvmm_test(linux_direct_x64)]
+#[openvmm_test(
+    linux_direct_x64,
+    uefi_x64(vhd(windows_datacenter_core_2022_x64))
+)]
 async fn pcie_hotplug(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     const ECAM_SIZE: u64 = 256 * 1024 * 1024;
     const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
@@ -258,7 +259,7 @@ async fn pcie_hotplug(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
     });
     vm.add_pcie_device("rp0".into(), nvme_resource).await?;
 
-    // Wait for Linux to enumerate the device (poll with retries)
+    // Wait for the guest to enumerate the device (poll with retries)
     let mut found = false;
     for attempt in 0..30 {
         let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
@@ -271,32 +272,49 @@ async fn pcie_hotplug(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
             found = true;
             break;
         }
-        // Use guest-side sleep to avoid needing tokio on the host
-        let sh = agent.unix_shell();
-        cmd!(sh, "sleep 0.5").run().await?;
+        // Guest-side sleep between polls
+        match os_flavor {
+            OsFlavor::Linux => {
+                let sh = agent.unix_shell();
+                cmd!(sh, "sleep 0.5").run().await?;
+            }
+            OsFlavor::Windows => {
+                let sh = agent.windows_shell();
+                cmd!(sh, "ping -n 2 127.0.0.1").run().await?;
+            }
+            _ => unreachable!(),
+        }
     }
     assert!(found, "expected NVMe endpoint to appear after hot-add");
 
     // Hot-remove the device
     vm.remove_pcie_device("rp0".into()).await?;
 
-    // Wait for Linux to de-enumerate the device
-    let mut removed = false;
-    for attempt in 0..30 {
-        let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
-        let endpoints = devices
-            .iter()
-            .filter(|d| d.class_code != 0x060400)
-            .count();
-        if endpoints == 0 {
-            tracing::info!(attempt, "device removed after hot-remove");
-            removed = true;
-            break;
+    // Verify the device is gone (Linux only).
+    //
+    // Windows PnP does not automatically remove surprise-removed devices
+    // from its device tree — pnputil /enum-devices /connected still lists
+    // them. A full Windows hot-remove requires an Eject or Safe Removal
+    // flow that is not yet implemented. For now, we verify that the remove
+    // RPC succeeds and skip the device-gone check on Windows.
+    if matches!(os_flavor, OsFlavor::Linux) {
+        let mut removed = false;
+        for attempt in 0..30 {
+            let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+            let endpoints = devices
+                .iter()
+                .filter(|d| d.class_code != 0x060400)
+                .count();
+            if endpoints == 0 {
+                tracing::info!(attempt, "device removed after hot-remove");
+                removed = true;
+                break;
+            }
+            let sh = agent.unix_shell();
+            cmd!(sh, "sleep 0.5").run().await?;
         }
-        let sh = agent.unix_shell();
-        cmd!(sh, "sleep 0.5").run().await?;
+        assert!(removed, "expected endpoint to disappear after hot-remove");
     }
-    assert!(removed, "expected endpoint to disappear after hot-remove");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
