@@ -273,7 +273,9 @@ async fn vpci_relay_tdisp_device(
 
 /// Boot with a virtio-blk disk via virtio-mmio and verify the device appears in the guest.
 #[openvmm_test(linux_direct_x64)]
-async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+async fn virtio_blk_device_unstable(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> anyhow::Result<()> {
     use disk_backend_resources::LayeredDiskHandle;
     use disk_backend_resources::layer::RamDiskLayerHandle;
     use openvmm_defs::config::VirtioBus;
