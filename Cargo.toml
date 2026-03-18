@@ -30,6 +30,7 @@ members = [
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
+  "vm/devices/pci/pcie/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
@@ -656,7 +657,7 @@ unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "forbid"
 
 # TODO: Needed for xshell compatibility, fixed in v0.2.7
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)', 'cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

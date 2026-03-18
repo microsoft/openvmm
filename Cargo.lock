@@ -2399,6 +2399,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuzz_pcie"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "chipset_device",
+ "libfuzzer-sys",
+ "memory_range",
+ "pal_async",
+ "pci_bus",
+ "pcie",
+ "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
 name = "fuzz_scsi_buffers"
 version = "0.0.0"
 dependencies = [
