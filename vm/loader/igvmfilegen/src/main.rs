@@ -419,7 +419,7 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         shim: &mut F,
         sidecar: Option<&mut F>,
         command_line: CommandLineType<'_>,
-        initrd: Option<(&mut dyn loader::linux::ReadSeek, u64)>,
+        initrd: Option<(&mut dyn loader::common::ReadSeek, u64)>,
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
@@ -461,7 +461,7 @@ impl IgvmfilegenRegister for X86Register {
         shim: &mut F,
         sidecar: Option<&mut F>,
         command_line: CommandLineType<'_>,
-        initrd: Option<(&mut dyn loader::linux::ReadSeek, u64)>,
+        initrd: Option<(&mut dyn loader::common::ReadSeek, u64)>,
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
@@ -517,7 +517,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         shim: &mut F,
         _sidecar: Option<&mut F>,
         command_line: CommandLineType<'_>,
-        initrd: Option<(&mut dyn loader::linux::ReadSeek, u64)>,
+        initrd: Option<(&mut dyn loader::common::ReadSeek, u64)>,
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
@@ -602,7 +602,7 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
             let initrd_info = if let Some(ref mut f) = initrd {
                 let size = f.seek(std::io::SeekFrom::End(0))?;
                 f.rewind()?;
-                Some((f as &mut dyn loader::linux::ReadSeek, size))
+                Some((f as &mut dyn loader::common::ReadSeek, size))
             } else {
                 None
             };

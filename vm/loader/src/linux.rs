@@ -6,6 +6,7 @@
 use crate::common::ChunkBuf;
 use crate::common::ImportFileRegion;
 use crate::common::ImportFileRegionError;
+use crate::common::ReadSeek;
 use crate::common::import_default_gdt;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
@@ -175,8 +176,6 @@ pub enum InitrdAddressType {
     /// Load the initrd at the specified address.
     Address(u64),
 }
-
-pub use crate::common::ReadSeek;
 
 pub struct InitrdConfig<'a> {
     pub initrd_address: InitrdAddressType,

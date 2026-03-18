@@ -285,7 +285,7 @@ impl ChunkBuf {
         params: ImportFileRegion<'_, F>,
     ) -> Result<(), ImportFileRegionError>
     where
-        F: Read + Seek + ?Sized,
+        F: ReadSeek + ?Sized,
     {
         let ImportFileRegion {
             file,
