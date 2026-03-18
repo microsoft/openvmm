@@ -1228,7 +1228,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
-        let ver = build_info::openhcl_version();
+        let ver = &build_info::OPENHCL_VERSION;
 
         let mut req = GdmaVerifyVerReq {
             protocol_ver_min: 1,

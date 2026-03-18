@@ -76,41 +76,52 @@ impl BuildInfo {
     }
 }
 
-// Parse `bytes[start..end]` as a u32. Returns 0 if the segment is empty
-// or contains any non-digit character.
-const fn const_parse_u32_segment(bytes: &[u8], start: usize, end: usize) -> u32 {
-    if start >= end {
+// Parse a `&str` segment as a u32. Returns 0 if the segment is empty,
+// contains any non-digit character, or overflows.
+const fn const_parse_u32_segment(s: &str) -> u32 {
+    if s.is_empty() {
         return 0;
     }
-    let mut acc = 0u32;
-    let mut i = start;
-    while i < end {
-        let b = bytes[i];
-        if b < b'0' || b > b'9' {
-            return 0;
+    match u32::from_str_radix(s, 10) {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}
+
+// Const-compatible equivalent of `s.split_once('.')`.
+const fn const_split_once_dot(s: &str) -> Option<(&str, &str)> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'.' {
+            let (left, dot_right) = s.split_at(i);
+            let (_, right) = dot_right.split_at(1);
+            return Some((left, right));
         }
-        acc = acc.saturating_mul(10).saturating_add((b - b'0') as u32);
         i += 1;
     }
-    acc
+    None
 }
 
 // Parse the `OPENHCL_VERSION` env var (format "major.minor.build.platform")
 // into four u32 components. Missing or invalid components default to 0.
 const fn const_parse_version(s: &str) -> (u32, u32, u32, u32) {
-    let bytes = s.as_bytes();
-    let len = bytes.len();
     let mut components = [0u32; 4];
     let mut comp = 0;
-    let mut seg_start = 0;
-    let mut i = 0;
-    while i <= len && comp < 4 {
-        if i == len || bytes[i] == b'.' {
-            components[comp] = const_parse_u32_segment(bytes, seg_start, i);
-            comp += 1;
-            seg_start = i + 1;
+    let mut remaining = s;
+
+    while comp < 4 && !remaining.is_empty() {
+        match const_split_once_dot(remaining) {
+            Some((segment, rest)) => {
+                components[comp] = const_parse_u32_segment(segment);
+                remaining = rest;
+            }
+            None => {
+                components[comp] = const_parse_u32_segment(remaining);
+                break;
+            }
         }
-        i += 1;
+        comp += 1;
     }
     (components[0], components[1], components[2], components[3])
 }
@@ -127,44 +138,39 @@ pub struct OpenHclVersion {
 }
 
 impl OpenHclVersion {
-    const VERSION: (u32, u32, u32, u32) = const_parse_version(BuildInfo::new().openhcl_version);
-
     pub const fn new() -> Self {
+        let (major, minor, build, platform) = const_parse_version(BuildInfo::new().openhcl_version);
         Self {
             product_name: "OpenHCL",
-            major: Self::VERSION.0,
-            minor: Self::VERSION.1,
-            build: Self::VERSION.2,
-            platform: Self::VERSION.3,
+            major,
+            minor,
+            build,
+            platform,
         }
     }
 
-    pub fn product_name(&self) -> &'static str {
+    pub const fn product_name(&self) -> &'static str {
         self.product_name
     }
 
-    pub fn major(&self) -> u32 {
+    pub const fn major(&self) -> u32 {
         self.major
     }
 
-    pub fn minor(&self) -> u32 {
+    pub const fn minor(&self) -> u32 {
         self.minor
     }
 
-    pub fn build(&self) -> u32 {
+    pub const fn build(&self) -> u32 {
         self.build
     }
 
-    pub fn platform(&self) -> u32 {
+    pub const fn platform(&self) -> u32 {
         self.platform
     }
 }
 
-static OPENHCL_VERSION: OpenHclVersion = OpenHclVersion::new();
-
-pub fn openhcl_version() -> &'static OpenHclVersion {
-    &OPENHCL_VERSION
-}
+pub static OPENHCL_VERSION: OpenHclVersion = OpenHclVersion::new();
 
 // Placing into a separate section to make easier to discover
 // the build information even without a debugger.
@@ -228,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn overflow_saturates() {
-        assert_eq!(const_parse_version("9999999999.0.0.0"), (u32::MAX, 0, 0, 0));
+    fn overflow_returns_zero() {
+        assert_eq!(const_parse_version("9999999999.0.0.0"), (0, 0, 0, 0));
     }
 }
