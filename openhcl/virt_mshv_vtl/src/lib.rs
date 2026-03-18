@@ -649,6 +649,11 @@ impl UhProcessorBox {
         self.vp_info.base.vp_index
     }
 
+    /// Returns whether sidecar support is enabled.
+    pub fn sidecar_enabled(&self) -> bool {
+        self.partition.hcl.sidecar_enabled()
+    }
+
     /// Returns the base CPU that manages this processor, when it is a sidecar
     /// VP.
     pub fn sidecar_base_cpu(&self) -> Option<u32> {

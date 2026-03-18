@@ -4193,7 +4193,6 @@ dependencies = [
  "mesh_channel",
  "mesh_node",
  "mesh_protobuf",
- "ntapi",
  "open_enum",
  "pal",
  "pal_async",
@@ -4206,6 +4205,7 @@ dependencies = [
  "tracing_helpers",
  "unicycle",
  "unix_socket",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 
@@ -4654,9 +4654,9 @@ dependencies = [
 
 [[package]]
 name = "ntapi"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
 dependencies = [
  "winapi",
 ]
@@ -5560,7 +5560,7 @@ dependencies = [
  "tempfile",
  "unicycle",
  "unix_socket",
- "winapi",
+ "windows-result 0.4.0",
  "windows-sys 0.61.0",
  "zerocopy",
 ]
@@ -5978,6 +5978,7 @@ dependencies = [
  "mesh",
  "mesh_remote",
  "pal_async",
+ "parking_lot",
  "pipette_protocol",
  "socket2",
  "tracing",
@@ -8749,6 +8750,7 @@ dependencies = [
  "pal",
  "pal_event",
  "parking_lot",
+ "pci_core",
  "signal-hook",
  "static_assertions",
  "thiserror 2.0.16",
@@ -9119,6 +9121,7 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 
@@ -9870,7 +9873,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "widestring",
- "winapi",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 

@@ -497,13 +497,6 @@ impl<T: Client> Sender<'_, T> {
         let mut eth_packet = EthernetFrame::new_unchecked(&mut buffer[..]);
         eth_packet.set_dst_addr(self.state.params.client_mac);
         eth_packet.set_src_addr(self.state.params.gateway_mac);
-        let copy_payload_into_buffer = |buf: &mut [u8], payload: Option<ring::View<'_>>| {
-            if let Some(payload) = payload {
-                for (b, c) in buf.iter_mut().zip(payload.iter()) {
-                    *b = *c;
-                }
-            }
-        };
         let ip = IpRepr::new(
             self.ft.dst.ip().into(),
             self.ft.src.ip().into(),
@@ -547,7 +540,9 @@ impl<T: Client> Sender<'_, T> {
         );
 
         // Copy payload into TCP packet
-        copy_payload_into_buffer(tcp_packet.payload_mut(), payload);
+        if let Some(payload) = &payload {
+            payload.copy_to_slice(tcp_packet.payload_mut());
+        }
         tcp_packet.fill_checksum(&self.ft.dst.ip().into(), &self.ft.src.ip().into());
         let n = ETHERNET_HEADER_LEN + ip_total_len;
         let checksum_state = match self.ft.dst {

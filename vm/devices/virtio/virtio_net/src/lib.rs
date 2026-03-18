@@ -422,6 +422,10 @@ impl VirtioDevice for Device {
     fn reset(&mut self) {
         self.pairs.fill_with(|| QueuePairState::Empty);
     }
+
+    fn supports_save_restore(&self) -> bool {
+        true
+    }
 }
 
 #[derive(InspectMut)]

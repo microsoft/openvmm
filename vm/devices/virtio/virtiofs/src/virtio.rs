@@ -206,7 +206,16 @@ impl VirtioDevice for VirtioFsDevice {
 
     fn reset(&mut self) {
         self.workers.clear();
+        if let Some(region) = &self.shared_memory_region {
+            if let Err(e) = region.unmap(0, self.shmem_size as usize) {
+                tracing::error!(
+                    error = &e as &dyn std::error::Error,
+                    "failed to unmap DAX region on reset"
+                );
+            }
+        }
         self.shared_memory_region = None;
+        self.fs.destroy();
     }
 }
 

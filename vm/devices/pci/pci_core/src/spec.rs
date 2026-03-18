@@ -465,7 +465,7 @@ pub mod caps {
 
         open_enum::open_enum! {
             /// Offsets into a single MSI-X Table Entry
-            pub enum MsixTableEntryIdx: u16 {
+            pub enum MsixTableEntryIdx: u64 {
                 MSG_ADDR_LO = 0x00,
                 MSG_ADDR_HI = 0x04,
                 MSG_DATA    = 0x08,
