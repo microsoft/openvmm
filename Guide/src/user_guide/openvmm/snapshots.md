@@ -18,7 +18,7 @@ These are stored as three files in a snapshot directory:
 |-----------------|---------------------------------------------|
 | `manifest.bin`  | Protobuf-encoded snapshot metadata          |
 | `state.bin`     | Serialized device state                     |
-| `memory.bin`    | Hard link to the memory backing file        |
+| `memory.bin`    | Memory backing file                         |
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ filesystem boundaries.
 
 ## Saving a snapshot
 
-Start a VM with file-backed memory, then use the interactive console to save:
+Start a VM with file-backed memory:
 
 ```bash
 cargo run -- \
@@ -56,9 +56,9 @@ OpenVMM writes `manifest.bin`, `state.bin`, and a hard link to `memory.bin`
 into the specified directory.
 
 ```admonish warning
-After saving, the VM remains **paused**. Do **not** resume the VM — resuming
-would mutate guest RAM through the hard-linked `memory.bin`, corrupting the
-snapshot. Use `shutdown` to exit OpenVMM after saving.
+After saving, the VM remains **paused** and resume is blocked. Resuming
+would mutate guest RAM through `memory.bin`, corrupting the snapshot.
+Use `shutdown` to exit OpenVMM after saving.
 ```
 
 ## Restoring a snapshot
@@ -106,3 +106,6 @@ If any check fails, OpenVMM exits with a descriptive error message.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
 - PCAT firmware does not support save/restore
+- `--memory` and `--processors` must be specified on restore and match the
+  snapshot manifest values. A future version may read these from the snapshot
+  automatically.

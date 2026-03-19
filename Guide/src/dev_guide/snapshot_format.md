@@ -18,31 +18,15 @@ snapshot-dir/
 
 The manifest is a protobuf message defined as
 [`SnapshotManifest`](https://openvmm.dev/rustdoc/linux/openvmm_helpers/snapshot/struct.SnapshotManifest.html)
-in `openvmm/openvmm_helpers/src/snapshot.rs` (re-exported by
-`openvmm/openvmm_entry/src/snapshot.rs`). It uses the `mesh` crate's
-protobuf encoding.
-
-| Field              | Type        | Mesh tag | Description                      |
-|--------------------|-------------|----------|----------------------------------|
-| `version`          | `u32`       | 1        | Manifest format version (currently 1)|
-| `created_at`       | `Timestamp` | 2        | When the snapshot was created     |
-| `openvmm_version`  | `String`    | 3        | OpenVMM version that created it   |
-| `memory_size_bytes`| `u64`       | 4        | Guest RAM size in bytes           |
-| `vp_count`         | `u32`       | 5        | Number of virtual processors      |
-| `page_size`        | `u32`       | 6        | System page size in bytes         |
-| `architecture`     | `String`    | 7        | `"x86_64"` or `"aarch64"`         |
+in `openvmm/openvmm_helpers/src/snapshot.rs`, encoded using the `mesh`
+crate's protobuf encoding.
 
 ## Device state (`state.bin`)
 
-The device state is a `mesh::payload::message::ProtobufMessage` that has been
-encoded with `mesh::payload::encode()`. On restore, it is decoded back to a
-`ProtobufMessage` and passed to the VM worker to reconstruct device state.
-
-The internal structure depends on the set of devices configured in the VM and
-their individual save/restore implementations. Each device saves its own
-state using the `SaveRestore` trait. The [Save State](contrib/save-state.md)
-rules (forward/backward compatibility, mesh tag stability, default values)
-apply to all device state in snapshots.
+The device state contains every device's saved state, collected via the
+`SaveRestore` trait and encoded as a `mesh` protobuf message. The
+[Save State](contrib/save-state.md) compatibility rules (mesh tag stability,
+default values, forward/backward compatibility) apply.
 
 ## Memory (`memory.bin`)
 
@@ -79,7 +63,6 @@ expected file size.
 ## Code references
 
 - Manifest type and I/O: `openvmm/openvmm_helpers/src/snapshot.rs`
-  (re-exported by `openvmm/openvmm_entry/src/snapshot.rs`)
 - Restore entry point: `prepare_snapshot_restore()` in
   `openvmm/openvmm_entry/src/lib.rs`
 - File-backed memory: `SharedMemoryFd` type alias in

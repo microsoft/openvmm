@@ -12,7 +12,6 @@ mod crash_dump;
 mod kvp;
 mod meshworker;
 mod serial_io;
-mod snapshot;
 mod storage_builder;
 mod tracing_init;
 mod ttrpc;
@@ -2048,10 +2047,10 @@ fn prepare_snapshot_restore(
     openvmm_defs::worker::SharedMemoryFd,
     mesh::payload::message::ProtobufMessage,
 )> {
-    let (manifest, state_bytes) = snapshot::read_snapshot(snapshot_dir)?;
+    let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
 
     // Validate manifest against current VM config.
-    snapshot::validate_manifest(
+    openvmm_helpers::snapshot::validate_manifest(
         &manifest,
         GUEST_ARCH,
         opt.memory,
@@ -2123,8 +2122,8 @@ async fn save_snapshot(
         .context("failed to fsync memory backing file")?;
 
     // Build manifest.
-    let manifest = snapshot::SnapshotManifest {
-        version: snapshot::MANIFEST_VERSION,
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
         created_at: std::time::SystemTime::now().into(),
         openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
         memory_size_bytes: opt.memory,
@@ -2134,7 +2133,12 @@ async fn save_snapshot(
     };
 
     // Write snapshot directory.
-    snapshot::write_snapshot(dir, &manifest, &saved_state_bytes, memory_file_path)?;
+    openvmm_helpers::snapshot::write_snapshot(
+        dir,
+        &manifest,
+        &saved_state_bytes,
+        memory_file_path,
+    )?;
 
     // VM stays paused. Do NOT resume.
     Ok(())
@@ -2796,6 +2800,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
     let mut pending_shutdown = None;
+    let mut snapshot_saved = false;
 
     enum StateChange {
         Pause(bool),
@@ -3091,13 +3096,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 );
             }
             InteractiveCommand::Resume => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Resume,
-                    StateChange::Resume,
-                );
+                if snapshot_saved {
+                    eprintln!(
+                        "error: cannot resume after snapshot save — resuming would corrupt the snapshot. Use 'shutdown' to exit."
+                    );
+                } else {
+                    state_change(
+                        driver,
+                        &vm_rpc,
+                        &mut state_change_task,
+                        VmRpc::Resume,
+                        StateChange::Resume,
+                    );
+                }
             }
             InteractiveCommand::Reset => {
                 state_change(
@@ -3111,10 +3122,11 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             InteractiveCommand::SaveSnapshot { dir } => {
                 match save_snapshot(&vm_rpc, &opt, &dir).await {
                     Ok(()) => {
+                        snapshot_saved = true;
                         tracing::info!(
                             dir = %dir.display(),
-                            "snapshot saved; VM is paused \
-                             (do not resume \u{2014} it would corrupt the snapshot). \
+                            "snapshot saved; VM is paused. \
+                             Resume is blocked to prevent snapshot corruption. \
                              Use 'shutdown' to exit."
                         );
                     }
