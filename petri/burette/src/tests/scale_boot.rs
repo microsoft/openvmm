@@ -82,7 +82,11 @@ pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
 /// Compute the N values for the sweep.
 fn sweep_values(vms: &Option<Vec<u32>>, max_vms: u32) -> Vec<u32> {
     match vms {
-        Some(explicit) => explicit.iter().copied().filter(|&n| n <= max_vms).collect(),
+        Some(explicit) => explicit
+            .iter()
+            .copied()
+            .filter(|&n| n > 0 && n <= max_vms)
+            .collect(),
         None => {
             let mut vals = Vec::new();
             let mut n = 1u32;
@@ -120,7 +124,10 @@ pub async fn run_scale_test(
 
     for &n in &n_values {
         // Check if we have enough memory.
-        let required_bytes = n as u64 * test.mem_mb * 1024 * 1024;
+        let required_bytes = (n as u64)
+            .checked_mul(test.mem_mb)
+            .and_then(|v| v.checked_mul(1024 * 1024))
+            .context("VM count * mem_mb overflows u64")?;
         match platform::available_memory_bytes() {
             Ok(avail) => {
                 let limit = avail * 90 / 100;
