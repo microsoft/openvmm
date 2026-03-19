@@ -5,13 +5,9 @@ page explains how VP threads split time between guest execution and
 device work, what happens when things block, and how the
 [sidecar kernel](sidecar.md) changes the picture.
 
-For how CPU affinity interacts with storage I/O, see the StorVSP
-Channels & Subchannels page (under Devices > VMBus > storvsp,
-tracked in [#2976](https://github.com/microsoft/openvmm/pull/2976)).
-
 ## Scope
 
-This page covers the **underhill worker process** — the main OpenHCL
+This page covers the **VM worker process** — the main OpenHCL
 process that runs device emulation and VP dispatch. OpenHCL also runs
 other processes (see [Processes and Components](processes.md)), but
 the cooperative executor model described here applies specifically to
@@ -33,13 +29,13 @@ Each thread is CPU-affinitized — thread N is pinned to Linux CPU N
 ```text
   VP 0 thread (CPU 0)    VP 1 thread (CPU 1)    VP 2 thread (CPU 2)
   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-  │ cooperative       │   │ cooperative       │   │ cooperative       │
-  │ async executor    │   │ async executor    │   │ async executor    │
-  │                   │   │                   │   │                   │
-  │ • device workers  │   │ • device workers  │   │ • device workers  │
-  │ • VMBus relay     │   │ • VMBus relay     │   │ • VMBus relay     │
-  │ • when idle:      │   │ • when idle:      │   │ • when idle:      │
-  │   enter VTL0      │   │   enter VTL0      │   │   enter VTL0      │
+  │ cooperative      │   │ cooperative      │   │ cooperative      │
+  │ async executor   │   │ async executor   │   │ async executor   │
+  │                  │   │                  │   │                  │
+  │ • device workers │   │ • device workers │   │ • device workers │
+  │ • VMBus relay    │   │ • VMBus relay    │   │ • VMBus relay    │
+  │ • when idle:     │   │ • when idle:     │   │ • when idle:     │
+  │   enter VTL0     │   │   enter VTL0     │   │   enter VTL0     │
   └──────────────────┘   └──────────────────┘   └──────────────────┘
 ```
 
@@ -109,6 +105,11 @@ stateDiagram-v2
 
 Because the executor is cooperative and single-threaded per VP,
 several situations can stall all tasks on a VP.
+
+```admonish note
+In OpenVMM (not OpenHCL), device workers and VP execution run
+on separate threads, so there is no VTL0 blocking problem.
+```
 
 ### VTL0 guest execution
 
@@ -187,13 +188,12 @@ guest, or kernel work can run at any instant on a given VP thread.
 ## No work stealing
 
 The OpenHCL threadpool does **not** implement work stealing.
-Targeted tasks always run on their target VP's thread. If VP 2's
-thread is blocked in VTL0, a StorVSP worker targeted at VP 2 cannot
+Targeted tasks always run on their target VP's thread. For example:
+If VP 2's thread is blocked in VTL0, a StorVSP worker targeted at VP 2 cannot
 be picked up by VP 3's thread.
 
 Untargeted tasks (those without `run_on_target`) run on the thread
-that wakes them — which is not the same as stealing. It's
-"wake-site placement."
+that wakes them — which is not the same as stealing.
 
 ## Sidecar changes
 
@@ -222,12 +222,12 @@ problem from the cooperative model disappears for sidecar VPs.
   Non-sidecar:                Sidecar:
   ┌────────────────────┐      ┌──────────────────────┐
   │ CPU 3: VTL0 │ VTL2 │      │ CPU 3 (sidecar):     │
-  │  CANNOT OVERLAP    │      │  VTL0 runs            │
+  │  CANNOT OVERLAP    │      │  VTL0 runs           │
   └────────────────────┘      └──────────────────────┘
                               ┌──────────────────────┐
-                              │ CPU 0 (Linux):        │
-                              │  VP 3 device workers  │
-                              │  (runs concurrently)  │
+                              │ CPU 0 (Linux):       │
+                              │  VP 3 device workers │
+                              │  (runs concurrently) │
                               └──────────────────────┘
 ```
 
@@ -261,28 +261,9 @@ progressively spreading the device work load. The steady state
 depends on the I/O pattern — VPs that never trigger VTL2 intercepts
 stay in sidecar indefinitely.
 
-## OpenVMM comparison
-
-In standalone OpenVMM (without OpenHCL), the executor model is
-simpler:
-
-| Aspect | OpenHCL | OpenVMM |
-|--------|---------|---------|
-| Thread model | One affinitized thread per VP | Thread pool; dedicated thread per device worker when `target_vp` is set |
-| `target_vp` | Strong — CPU affinity enforced | Weak — dedicated thread, no CPU pinning |
-| `run_on_target` | Enforced | Ignored by thread backend; `target_vp` controls dedicated thread |
-| `retarget_vp` | Changes target CPU for future work | No-op in thread backend |
-| VTL0 blocking | Yes — same thread runs guest | N/A — VP threads are separate from device threads |
-| Work stealing | No | No |
-
-The key difference: in OpenVMM, device workers and VP execution run
-on separate threads, so there is no VTL0 blocking problem. The
-tradeoff is weaker CPU locality — device work doesn't necessarily
-run near the VP that initiated it.
-
 ## Impact on device design
 
-When writing VMBus device backends, keep these rules in mind:
+When writing device backends, keep these rules in mind:
 
 1. **Never block synchronously** in a device worker on a VP thread.
    Use async I/O (io_uring) or spawn a helper thread for blocking
@@ -290,23 +271,15 @@ When writing VMBus device backends, keep these rules in mind:
    — instead, subsystems that need blocking (GET, VMGS) run on their
    own dedicated threads outside the VP threadpool.
 
-2. **Yield frequently.** Long-running synchronous computation in a
-   `.poll()` implementation blocks all other tasks on that VP. Break
-   work into smaller chunks with `.await` yield points.
-
-3. **Subchannel count ≠ parallelism guarantee.** Even with many
-   subchannels, VP stalls (VTL0 residence, kernel blocks) limit how
-   much work each channel can actually process.
-
-4. **Sidecar VPs run remotely first.** If a device worker is targeted
+2. **Sidecar VPs run remotely first.** Beware doing work on a targeted
+   VP early in boot. If a device worker is targeted
    at a sidecar VP, it initially runs on the base CPU, not the target
-   CPU. The `is_target_vp_ready()` and `wait_target_vp_ready()` APIs
-   on `VmTaskDriver` can be used to detect this.
+   CPU. This can cause contention.
 
-5. **Use `TaskControl` for worker lifecycle.** Device workers should
+3. **Use `TaskControl` for worker lifecycle.** Device workers should
    implement
    [`AsyncRun`](https://openvmm.dev/rustdoc/linux/task_control/trait.AsyncRun.html)
    and be managed via
    [`TaskControl`](https://openvmm.dev/rustdoc/linux/task_control/struct.TaskControl.html),
-   which provides start/stop/inspect integration. StorVSP and NetVSP
-   both follow this pattern.
+   which provides start/stop/inspect integration. (This doesn't really apply to the CPU
+   scheduling model, but is general good advice for writing device backends).
