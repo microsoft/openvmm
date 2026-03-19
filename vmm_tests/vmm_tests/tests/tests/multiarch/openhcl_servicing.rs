@@ -912,15 +912,19 @@ async fn servicing_keepalive_create_io_queue_on_new_cpu(
     Ok(())
 }
 
-/// Verifies that `save_openhcl` works correctly when a create_io_queue command
+/// Verifies that save works correctly when a create_io_queue command
 /// is stuck. The `DriverWorkerTask` run loop should still be able to process
-/// save commands in this situation.
-/// NOTE: Disabled until we have a fix for the underlying issue being tested here.
-// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn _servicing_keepalive_slow_create_io_queue(
+/// save commands when the stuck create_io_queue command completes, even when
+/// that happens after save has been issued.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_slow_create_io_queue(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(20);
+    const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
+    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(60);
+
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
     let mut fault_start_updater = CellUpdater::new(false);
@@ -931,7 +935,7 @@ async fn _servicing_keepalive_slow_create_io_queue(
                 CommandMatchBuilder::new()
                     .match_cdw0_opcode(nvme_spec::AdminOpcode::CREATE_IO_COMPLETION_QUEUE.0)
                     .build(),
-                AdminQueueFaultBehavior::Drop, // Indefinite delay, keeps the emulator responsive
+                AdminQueueFaultBehavior::Delay(QUEUE_CREATION_DELAY),
             ),
         );
 
@@ -980,19 +984,20 @@ async fn _servicing_keepalive_slow_create_io_queue(
     assert!(device_paths.len() == 1);
     let disk_path = &device_paths[0];
 
-    // Servicing cycle with a stuck create_io_queue. `run_cpu_pinned_io` only
-    // needs to be run for a duration that guarantees the create_io_queue
-    // command getting stuck. 10s should be plenty to ensure non-flaky test.
-    // Even though the dd command will timeout, the command in the admin queue
-    // itself will be stuck indefinitely.
+    // DEV NOTE: `run_cpu_pinned_io` only needs to be run for a duration that
+    // guarantees the create_io_queue command getting stuck. Ideally this should
+    // be event driven instead of time driven, but the infrastructure for that
+    // is not in place yet.
+    // Even though the dd command will timeout, the run loop will be stuck until
+    // the create_io_queue command completes.
     fault_start_updater.set(true).await;
     _ = CancelContext::new()
-        .with_timeout(Duration::from_secs(10))
+        .with_timeout(TRIGGER_CREATE_IO_QUEUE_TIMEOUT)
         .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
         .await;
 
     CancelContext::new()
-        .with_timeout(Duration::from_secs(60))
+        .with_timeout(TOTAL_SAVE_TIMEOUT)
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
         .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
