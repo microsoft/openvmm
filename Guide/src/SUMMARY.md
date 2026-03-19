@@ -131,6 +131,8 @@
     - [IGVM](./reference/architecture/openhcl/igvm.md)
   - [Device Architecture](./reference/architecture/devices.md)
     - [Storage Pipeline](./reference/architecture/devices/storage.md)
+  - [Core Concepts]()
+    - [Virtualized Processors](./reference/architecture/concepts/procs.md)
   - [VMBus Architecture]()
     - [Channels](./reference/architecture/vmbus/channels.md)
 
