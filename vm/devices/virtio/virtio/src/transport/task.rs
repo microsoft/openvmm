@@ -19,9 +19,7 @@ use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use futures::StreamExt;
 use inspect::Inspect;
-use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
-use mesh::rpc::PendingFailableRpc;
 use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -33,7 +31,9 @@ use std::task::Poll;
 /// Commands sent from the transport to the device task.
 pub enum DeviceCommand {
     /// Guest writes DRIVER_OK — start all enabled queues.
-    Enable(FailableRpc<EnableParams, ()>),
+    /// Returns true on success, false on failure (errors are logged
+    /// inside the device task).
+    Enable(Rpc<EnableParams, bool>),
     /// Guest writes status=0 — stop all queues, reset device.
     Disable(Rpc<(), ()>),
     /// ChangeDeviceState::stop() — stop queues, return states for resume.
@@ -72,42 +72,99 @@ pub struct StartParams {
 }
 
 /// Transport-side state machine tracking in-flight device operations.
+///
+/// In the old (synchronous) design, the guest's DRIVER_OK write called
+/// `enable()` inline and set DRIVER_OK before the MMIO/PCI write returned,
+/// so there was no window between "enable started" and "DRIVER_OK visible".
+///
+/// Now that enable is an async RPC to the device task, there is a window
+/// where the enable is in flight but DRIVER_OK has not been set yet. If
+/// the guest writes STATUS=0 during this window, we cannot start an async
+/// disable (the transport is already busy with the enable). Instead we
+/// record `pending_reset` and leave STATUS unchanged — the guest sees the
+/// pre-DRIVER_OK init bits (ACKNOWLEDGE|DRIVER|FEATURES_OK) and polls.
+///
+/// Per virtio spec v1.2 §2.1: "The driver MUST wait for a read of
+/// device_status to return 0 before reinitializing the device." The spec
+/// explicitly allows the device to complete reset asynchronously — STATUS
+/// does not need to read back as 0 immediately after a STATUS=0 write.
+///
+/// When the enable completes, `poll()` sees `pending_reset`, sends Disable
+/// to the device task, and transitions to Disabling. When Disable completes,
+/// the transport clears STATUS to 0, and the guest's polling loop observes
+/// the reset.
 #[derive(Inspect)]
 #[inspect(tag = "state")]
 pub enum TransportState {
     Ready,
     Enabling {
         #[inspect(skip)]
-        recv: PendingFailableRpc<(), RemoteError>,
-        /// Guest wrote STATUS/DEVICE_STATUS=0 while the enable was in
-        /// flight. When the enable completes, reset instead of setting
+        rpc: PendingRpc<bool>,
+        /// Guest wrote STATUS=0 while the enable was in flight.
+        /// When the enable completes, send Disable instead of setting
         /// DRIVER_OK.
         pending_reset: bool,
     },
     Disabling {
         #[inspect(skip)]
-        recv: PendingRpc<()>,
+        rpc: PendingRpc<()>,
     },
 }
 
 /// Result from polling the transport state machine.
 pub enum TransportStateResult {
-    EnableComplete(Result<(), ()>),
+    EnableComplete(bool),
     DisableComplete,
 }
 
 impl TransportState {
-    /// Record a guest reset while an enable is in flight.
-    pub fn set_pending_reset(&mut self) {
-        if let TransportState::Enabling { pending_reset, .. } = self {
-            *pending_reset = true;
+    /// Try to record a guest reset. Returns true if the transport is
+    /// busy (enable or disable in flight) and the reset will be handled
+    /// when the in-flight operation completes. Returns false if the
+    /// transport is idle and the caller should handle the reset directly.
+    pub fn try_pending_reset(&mut self) -> bool {
+        match self {
+            TransportState::Enabling { pending_reset, .. } => {
+                *pending_reset = true;
+                true
+            }
+            TransportState::Disabling { .. } => {
+                // Already tearing down — the reset will complete
+                // when the disable finishes.
+                true
+            }
+            TransportState::Ready => false,
         }
     }
-}
 
-impl TransportState {
     pub fn is_busy(&self) -> bool {
         !matches!(self, TransportState::Ready)
+    }
+
+    /// Send Enable to the device task and transition to `Enabling`.
+    ///
+    /// Panics if the transport is not `Ready`.
+    pub fn start_enable(
+        &mut self,
+        sender: &mesh::Sender<DeviceCommand>,
+        queues: Vec<(u16, QueueResources)>,
+        features: VirtioDeviceFeatures,
+    ) {
+        assert!(!self.is_busy());
+        let rpc = sender.call(DeviceCommand::Enable, EnableParams { queues, features });
+        *self = TransportState::Enabling {
+            rpc,
+            pending_reset: false,
+        };
+    }
+
+    /// Send Disable to the device task and transition to `Disabling`.
+    ///
+    /// Panics if the transport is not `Ready`.
+    pub fn start_disable(&mut self, sender: &mesh::Sender<DeviceCommand>) {
+        assert!(!self.is_busy());
+        let rpc = sender.call(DeviceCommand::Disable, ());
+        *self = TransportState::Disabling { rpc };
     }
 
     pub fn poll(
@@ -117,28 +174,27 @@ impl TransportState {
     ) -> Poll<TransportStateResult> {
         match self {
             TransportState::Ready => Poll::Pending,
-            TransportState::Enabling {
-                recv,
-                pending_reset,
-            } => {
-                let result = std::task::ready!(Pin::new(recv).poll(cx));
+            TransportState::Enabling { rpc, pending_reset } => {
+                let result = std::task::ready!(Pin::new(rpc).poll(cx));
                 let pending_reset = *pending_reset;
                 if pending_reset {
                     // Guest wrote STATUS=0 while enable was in flight.
                     // Send Disable to stop any running queues, then
                     // transition to Disabling so the next poll
                     // completes the reset.
-                    let recv = send_disable(sender);
-                    *self = TransportState::Disabling { recv };
+                    *self = TransportState::Ready;
+                    self.start_disable(sender);
                     cx.waker().wake_by_ref();
                     Poll::Pending
                 } else {
                     *self = TransportState::Ready;
-                    Poll::Ready(TransportStateResult::EnableComplete(result.map_err(|_| ())))
+                    Poll::Ready(TransportStateResult::EnableComplete(
+                        result.unwrap_or(false),
+                    ))
                 }
             }
-            TransportState::Disabling { recv } => {
-                let _ = std::task::ready!(Pin::new(recv).poll(cx));
+            TransportState::Disabling { rpc } => {
+                let _ = std::task::ready!(Pin::new(rpc).poll(cx));
                 *self = TransportState::Ready;
                 Poll::Ready(TransportStateResult::DisableComplete)
             }
@@ -149,11 +205,11 @@ impl TransportState {
     /// whether a disable was in progress.
     pub async fn drain(&mut self) -> bool {
         match std::mem::replace(self, TransportState::Ready) {
-            TransportState::Enabling { recv, .. } => {
+            TransportState::Enabling { rpc: recv, .. } => {
                 let _ = recv.await;
                 false
             }
-            TransportState::Disabling { recv } => {
+            TransportState::Disabling { rpc: recv } => {
                 let _ = recv.await;
                 true
             }
@@ -169,7 +225,7 @@ struct DeviceTask {
 }
 
 impl DeviceTask {
-    async fn enable(&mut self, params: EnableParams) -> anyhow::Result<()> {
+    async fn enable(&mut self, params: EnableParams) -> bool {
         for (idx, resources) in params.queues {
             if let Err(err) = self
                 .device
@@ -182,10 +238,10 @@ impl DeviceTask {
                 );
                 self.stop_all_queues().await;
                 self.device.reset();
-                return Err(err);
+                return false;
             }
         }
-        Ok(())
+        true
     }
 
     async fn disable(&mut self) {
@@ -242,8 +298,7 @@ pub async fn run_device_task(
     while let Some(cmd) = recv.next().await {
         match cmd {
             DeviceCommand::Enable(rpc) => {
-                rpc.handle_failable(async |params| task.enable(params).await)
-                    .await;
+                rpc.handle(async |params| task.enable(params).await).await;
             }
             DeviceCommand::Disable(rpc) => {
                 rpc.handle(async |()| task.disable().await).await;
@@ -313,20 +368,6 @@ pub async fn run_device_task(
             }
         }
     }
-}
-
-/// Send Enable command, return pending result to poll.
-pub fn send_enable(
-    sender: &mesh::Sender<DeviceCommand>,
-    queues: Vec<(u16, QueueResources)>,
-    features: VirtioDeviceFeatures,
-) -> PendingFailableRpc<(), RemoteError> {
-    sender.call_failable(DeviceCommand::Enable, EnableParams { queues, features })
-}
-
-/// Send Disable command, return pending result to poll.
-pub fn send_disable(sender: &mesh::Sender<DeviceCommand>) -> PendingRpc<()> {
-    sender.call(DeviceCommand::Disable, ())
 }
 
 /// Send a config read to the device task, returning a deferred IO token.

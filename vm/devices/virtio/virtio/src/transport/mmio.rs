@@ -8,8 +8,7 @@ use super::task::TransportStateResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
-use super::task::send_disable;
-use super::task::send_enable;
+
 use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
 use crate::VirtioDevice;
@@ -390,10 +389,11 @@ impl VirtioMmioDevice {
             }
             VirtioMmioRegister::STATUS => {
                 if val == 0 {
-                    if self.state.is_busy() {
-                        // An enable is in flight. Record the reset so
-                        // poll_device() resets instead of setting DRIVER_OK.
-                        self.state.set_pending_reset();
+                    if self.state.try_pending_reset() {
+                        // An enable or disable is in flight — the
+                        // reset will complete asynchronously. STATUS
+                        // stays non-zero until then; the guest polls
+                        // per virtio spec v1.2 §2.1.
                         return;
                     }
 
@@ -405,8 +405,7 @@ impl VirtioMmioDevice {
                     } else {
                         // Queues are active — send async teardown to task.
                         self.doorbells.clear();
-                        let recv = send_disable(&self.device_sender);
-                        self.state = TransportState::Disabling { recv };
+                        self.state.start_disable(&self.device_sender);
                         if let Some(waker) = self.poll_waker.take() {
                             waker.wake();
                         }
@@ -455,11 +454,8 @@ impl VirtioMmioDevice {
                         })
                         .collect();
 
-                    let recv = send_enable(&self.device_sender, queues, features);
-                    self.state = TransportState::Enabling {
-                        recv,
-                        pending_reset: false,
-                    };
+                    self.state
+                        .start_enable(&self.device_sender, queues, features);
 
                     if let Some(waker) = self.poll_waker.take() {
                         waker.wake();
@@ -565,11 +561,11 @@ impl PollDevice for VirtioMmioDevice {
 
         if let Poll::Ready(result) = self.state.poll(cx, &self.device_sender) {
             match result {
-                TransportStateResult::EnableComplete(Ok(())) => {
+                TransportStateResult::EnableComplete(true) => {
                     self.device_status.set_driver_ok(true);
                     self.update_config_generation();
                 }
-                TransportStateResult::EnableComplete(Err(()))
+                TransportStateResult::EnableComplete(false)
                 | TransportStateResult::DisableComplete => {
                     self.reset_status();
                 }
@@ -709,8 +705,8 @@ mod saved_state {
 
             self.device_status = new_status;
 
-            // Reset ephemeral runtime state.
-            self.state = TransportState::Ready;
+            // Verify ephemeral runtime state.
+            assert!(!self.state.is_busy());
             self.poll_waker = None;
 
             // Reinstall doorbells for the restored device state.
