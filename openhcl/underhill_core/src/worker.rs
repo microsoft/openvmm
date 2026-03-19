@@ -3376,7 +3376,25 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                use openhcl_tdisp::TdispResourceValidationInterface;
+                #[cfg(feature = "dev_snp_ohcl_tio_support")]
+                use openhcl_tdisp::TdispSevTioResourceValidator;
+
+                #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+                use openhcl_tdisp::mocks::TdispMockResourceValidator;
                 use vpci_relay::*;
+
+                #[cfg(feature = "dev_snp_ohcl_tio_support")]
+                let resource_validator: Option<
+                    Arc<dyn TdispResourceValidationInterface>,
+                > = Some(Arc::new(TdispSevTioResourceValidator::new(
+                    vtom.unwrap_or(0),
+                )?));
+
+                #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
+                let resource_validator: Option<
+                    Arc<dyn TdispResourceValidationInterface>,
+                > = Some(Arc::new(TdispMockResourceValidator::new()));
 
                 let mut relay = VpciRelay::new(
                     driver_source.clone(),
@@ -3404,6 +3422,7 @@ async fn new_underhill_vm(
                                 .context("failed to create direct mmio accessor")?,
                         )
                     },
+                    resource_validator,
                     isolation,
                     vtom,
                     VpciRelayOptions {

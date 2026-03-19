@@ -5593,6 +5593,7 @@ dependencies = [
  "hcl",
  "hvdef",
  "memory_range",
+ "parking_lot",
  "sev_guest_device",
  "tdisp",
  "tdisp_proto",

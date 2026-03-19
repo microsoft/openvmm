@@ -11,6 +11,8 @@
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 mod sevtio;
 
+pub mod mocks;
+
 // Re-export the TDISP protocol types necessary for OpenHCL from top level tdisp crates
 // to avoid a direct dependency on tdisp_proto and tdisp.
 pub use tdisp::TdispGuestOperationError;
@@ -34,6 +36,9 @@ pub use tdisp_proto::TdispGuestOperationErrorCode;
 pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
 pub use tdisp_proto::TdispReportType;
+
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
+pub use sevtio::TdispSevTioResourceValidator;
 
 use hvdef::Vtl;
 use tdisp_proto::TdispCommandRequestBind;

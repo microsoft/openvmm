@@ -27,6 +27,7 @@ use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 use openhcl_tdisp::GuestToHostResponse;
+use openhcl_tdisp::TdispResourceValidationInterface;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -353,6 +354,7 @@ impl VpciDeviceDescription {
     /// when the device is ejected or surprise removed.
     pub async fn init(
         self,
+        resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
         isolation_type: IsolationType,
         vtom: u64,
     ) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
@@ -379,6 +381,7 @@ impl VpciDeviceDescription {
         let tdisp = VpciClientTdispState::new(
             req.clone(),
             id.slot.into_bits() as u64,
+            resource_validator,
             isolation_type,
             vtom,
         );

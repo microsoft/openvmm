@@ -15,6 +15,7 @@ use closeable_mutex::CloseableMutex;
 use guestmem::GuestMemory;
 use guid::Guid;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
+use openhcl_tdisp::mocks::TdispMockResourceValidator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::task::Spawn;
@@ -126,7 +127,11 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .into_iter()
         .next()
         .unwrap()
-        .init(IsolationType::None, 0)
+        .init(
+            Some(Arc::new(TdispMockResourceValidator::new())),
+            IsolationType::None,
+            0,
+        )
         .await
         .unwrap();
     let MsiAddressData { address, data } = device
@@ -193,7 +198,11 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
         .into_iter()
         .next()
         .unwrap()
-        .init(IsolationType::None, 0)
+        .init(
+            Some(Arc::new(TdispMockResourceValidator::new())),
+            IsolationType::None,
+            0,
+        )
         .await
         .unwrap();
     let interface = device

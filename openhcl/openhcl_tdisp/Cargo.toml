@@ -13,6 +13,7 @@ dev_snp_ohcl_tio_support = []
 hcl.workspace = true
 hvdef.workspace = true
 memory_range.workspace = true
+parking_lot.workspace = true
 sev_guest_device.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true

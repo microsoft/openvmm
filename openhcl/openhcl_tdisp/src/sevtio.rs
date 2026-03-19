@@ -21,15 +21,14 @@ use x86defs::snp::SevRmpAdjust;
 /// After a device has been attested and placed in the Run state, this struct
 /// communicates with the SEV firmware via `/dev/sev-guest` and issues
 /// hypercalls to make device resources (MMIO, DMA) accessible to the guest.
-pub struct TdispSevTioResourceValidation {
+pub struct TdispSevTioResourceValidator {
     sev_guest: SevGuestDevice,
     mshv: MshvHvcall,
     mshv_vtl: MshvVtl,
-    target_vtl: Vtl,
     vtom: u64,
 }
 
-impl TdispSevTioResourceValidation {
+impl TdispSevTioResourceValidator {
     /// Open handles to the `/dev/sev-guest` device and the hypervisor call
     /// interface required for SEV-TIO operations.
     ///
@@ -55,7 +54,6 @@ impl TdispSevTioResourceValidation {
             sev_guest,
             mshv,
             mshv_vtl,
-            target_vtl: Vtl::Vtl0,
             vtom,
         })
     }
@@ -69,7 +67,7 @@ impl TdispSevTioResourceValidation {
     }
 }
 
-impl TdispResourceValidationInterface for TdispSevTioResourceValidation {
+impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     #[tracing::instrument(skip(self), fields(device_id, range_id, base_offset, length_in_bytes))]
     fn tdisp_unblock_mmio(
         &self,

@@ -28,6 +28,7 @@ use futures::StreamExt as _;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use openhcl_tdisp::TdispResourceValidationInterface;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
 use pci_core::spec::hwid::HardwareIds;
 use state_unit::StateUnits;
@@ -101,6 +102,8 @@ pub struct VpciRelay {
     vtom: Option<u64>,
     isolation_type: IsolationType,
     options: VpciRelayOptions,
+    #[inspect(skip)]
+    resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
 }
 
 #[derive(Inspect)]
@@ -184,6 +187,7 @@ impl VpciRelay {
         dma_client: Arc<dyn DmaClient>,
         mmio_range: MemoryRange,
         mmio_access: Box<dyn CreateMemoryAccess>,
+        resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
         isolation_type: IsolationType,
         vtom: Option<u64>,
         options: VpciRelayOptions,
@@ -213,6 +217,7 @@ impl VpciRelay {
             allowed_devices: Vec::new(),
             vtom: target_vtom,
             isolation_type: target_isolation_type,
+            resource_validator,
             options,
         }
     }
@@ -332,7 +337,11 @@ impl VpciRelay {
         tracing::info!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "vpci relay device arrived");
 
         let (vpci_device, removed) = vpci_device
-            .init(self.isolation_type, self.vtom.unwrap_or(0))
+            .init(
+                self.resource_validator.clone(),
+                self.isolation_type,
+                self.vtom.unwrap_or(0),
+            )
             .await
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);

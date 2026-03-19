@@ -29,6 +29,8 @@ use vpci_protocol::SlotNumber;
 
 use super::VpciDevice;
 use super::WorkerRequest;
+use openhcl_tdisp::TdispResourceValidationInterface;
+use std::sync::Arc;
 
 #[derive(Inspect)]
 struct VpciClientTdispMutableState {
@@ -55,6 +57,8 @@ pub struct VpciClientTdispState {
     isolation_type: IsolationType,
     vtom: u64,
     mutable_state: VpciClientTdispMutableState,
+    #[inspect(skip)]
+    resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
 }
 
 /// Manages the TDISP protocol for a TDISP-capable VPCI device.
@@ -62,6 +66,7 @@ impl VpciClientTdispState {
     pub(super) fn new(
         worker_req: mesh::Sender<WorkerRequest>,
         device_id: u64,
+        resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
         isolation_type: IsolationType,
         vtom: u64,
     ) -> Self {
@@ -73,6 +78,7 @@ impl VpciClientTdispState {
             },
             isolation_type,
             vtom,
+            resource_validator,
         }
     }
 
