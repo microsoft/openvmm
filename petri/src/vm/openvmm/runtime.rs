@@ -188,6 +188,7 @@ pub(super) struct PetriVmInner {
     /// Used to skip re-mounting after save/restore (where guest state is
     /// preserved) while still mounting after a full reset/reboot.
     pub(super) cidata_mounted: bool,
+    pub(super) pid: i32,
 }
 
 struct PetriVmHaltReceiver {
@@ -226,6 +227,11 @@ impl PetriVmOpenVmm {
             .vtl2_vsock_path
             .as_deref()
             .context("VM is not configured with OpenHCL")
+    }
+
+    /// Get the PID of the openvmm child process.
+    pub fn pid(&self) -> i32 {
+        self.inner.pid
     }
 
     petri_vm_fn!(

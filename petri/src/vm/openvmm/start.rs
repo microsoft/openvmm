@@ -80,7 +80,7 @@ impl PetriVmConfigOpenVmm {
                 .collect::<BTreeMap<OsString, OsString>>(),
         };
 
-        let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
+        let (host, pid) = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
             .await
             .context("failed to create host process")?;
         let (worker, halt_notif) = Worker::launch(&host, config)
@@ -98,6 +98,7 @@ impl PetriVmConfigOpenVmm {
                 worker,
                 framebuffer_view,
                 cidata_mounted: false,
+                pid,
             },
             halt_notif,
         );
@@ -158,7 +159,7 @@ impl PetriVmConfigOpenVmm {
         mesh: &Mesh,
         log_file: PetriLogFile,
         vmm_env: BTreeMap<OsString, OsString>,
-    ) -> anyhow::Result<WorkerHost> {
+    ) -> anyhow::Result<(WorkerHost, i32)> {
         // Copy the child's stderr to this process's, since internally this is
         // wrapped by the test harness.
         let (stderr_read, stderr_write) = pal::pipe_pair()?;
@@ -174,14 +175,15 @@ impl PetriVmConfigOpenVmm {
         resources.log_stream_tasks.push(task);
 
         let (host, runner) = mesh_worker::worker_host();
-        mesh.launch_host(
-            ProcessConfig::new("vmm")
-                .process_name(&resources.openvmm_path)
-                .stderr(Some(stderr_write))
-                .env(vmm_env.into_iter()),
-            openvmm_defs::entrypoint::MeshHostParams { runner },
-        )
-        .await?;
-        Ok(host)
+        let pid = mesh
+            .launch_host(
+                ProcessConfig::new("vmm")
+                    .process_name(&resources.openvmm_path)
+                    .stderr(Some(stderr_write))
+                    .env(vmm_env.into_iter()),
+                openvmm_defs::entrypoint::MeshHostParams { runner },
+            )
+            .await?;
+        Ok((host, pid))
     }
 }

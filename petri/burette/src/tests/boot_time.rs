@@ -54,7 +54,7 @@ impl BootProfile {
     }
 
     /// Whether this profile uses private memory.
-    fn uses_private_memory(&self) -> bool {
+    pub fn uses_private_memory(&self) -> bool {
         matches!(self, Self::MinimalPrivate)
     }
 
