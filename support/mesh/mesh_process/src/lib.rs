@@ -442,7 +442,7 @@ impl Mesh {
     ///
     /// The initial message will be provided to the closure passed to
     /// [`try_run_mesh_host()`].
-    /// 
+    ///
     /// Returns the process ID of the launched host.
     pub async fn launch_host<T: 'static + MeshField + Send>(
         &self,

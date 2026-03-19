@@ -5,6 +5,8 @@
 
 #[cfg(target_os = "linux")]
 pub use self::linux::*;
+#[cfg(not(any(target_os = "linux", windows)))]
+pub use self::stub::*;
 #[cfg(windows)]
 pub use self::windows::*;
 use anyhow::Context as _;
@@ -338,6 +340,8 @@ mod windows {
 
     /// Collect all PIDs in the process tree rooted at `root_pid`.
     pub fn collect_process_tree(root_pid: i32) -> Vec<i32> {
+        use std::os::windows::io::FromRawHandle;
+        use std::os::windows::io::OwnedHandle;
         use windows::Win32::System::Diagnostics::ToolHelp::CreateToolhelp32Snapshot;
         use windows::Win32::System::Diagnostics::ToolHelp::PROCESSENTRY32;
         use windows::Win32::System::Diagnostics::ToolHelp::Process32First;
@@ -347,10 +351,12 @@ mod windows {
         let root = root_pid as u32;
 
         // SAFETY: Taking a snapshot of the process list; no mutable state.
-        let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+        let raw_snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
             Ok(h) => h,
             Err(_) => return vec![root_pid],
         };
+        // SAFETY: CreateToolhelp32Snapshot returns an owned handle.
+        let _snapshot = unsafe { OwnedHandle::from_raw_handle(raw_snapshot.0 as _) };
 
         // Build parent -> children map.
         let mut children_map: std::collections::HashMap<u32, Vec<u32>> =
@@ -361,7 +367,7 @@ mod windows {
         };
 
         // SAFETY: entry.dwSize is set correctly; snapshot is valid.
-        if unsafe { Process32First(snapshot, &mut entry) }.is_ok() {
+        if unsafe { Process32First(raw_snapshot, &mut entry) }.is_ok() {
             loop {
                 children_map
                     .entry(entry.th32ParentProcessID)
@@ -373,7 +379,7 @@ mod windows {
                     ..Default::default()
                 };
                 // SAFETY: entry.dwSize is set correctly; snapshot is valid.
-                if unsafe { Process32Next(snapshot, &mut entry) }.is_err() {
+                if unsafe { Process32Next(raw_snapshot, &mut entry) }.is_err() {
                     break;
                 }
             }
@@ -402,6 +408,8 @@ mod windows {
     /// Measure memory for all processes in the given PID list.
     #[expect(unsafe_code)] // FFI calls to Win32 API
     pub fn measure_tree_memory(pids: &[i32]) -> anyhow::Result<TreeMemory> {
+        use std::os::windows::io::FromRawHandle;
+        use std::os::windows::io::OwnedHandle;
         use windows::Win32::System::ProcessStatus::GetProcessMemoryInfo;
         use windows::Win32::System::ProcessStatus::PROCESS_MEMORY_COUNTERS;
         use windows::Win32::System::Threading::OpenProcess;
@@ -411,12 +419,14 @@ mod windows {
         let mut count: u32 = 0;
 
         for &pid in pids {
-            let handle =
+            let raw_handle =
             // SAFETY: Opening process handle with limited query rights.
             match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid as u32) } {
                 Ok(h) => h,
                 Err(_) => continue, // process exited or access denied
             };
+            // SAFETY: OpenProcess returns an owned handle.
+            let _handle = unsafe { OwnedHandle::from_raw_handle(raw_handle.0 as _) };
 
             let mut counters = PROCESS_MEMORY_COUNTERS {
                 cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
@@ -425,7 +435,7 @@ mod windows {
             // SAFETY: handle is valid, counters.cb is set correctly.
             if unsafe {
                 GetProcessMemoryInfo(
-                    handle,
+                    raw_handle,
                     &mut counters,
                     size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
                 )
@@ -444,5 +454,30 @@ mod windows {
             pss_kib: None,
             process_count: count,
         })
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+mod stub {
+    use super::*;
+
+    /// Get available host memory in bytes (unsupported on this platform).
+    pub fn available_memory_bytes() -> anyhow::Result<u64> {
+        anyhow::bail!("available_memory_bytes not implemented on this platform")
+    }
+
+    /// Collect all PIDs in the process tree (stub: returns only the root).
+    pub fn collect_process_tree(root_pid: i32) -> Vec<i32> {
+        vec![root_pid]
+    }
+
+    /// Measure memory for a process tree (unsupported on this platform).
+    pub fn measure_tree_memory(_pids: &[i32]) -> anyhow::Result<TreeMemory> {
+        anyhow::bail!("measure_tree_memory not implemented on this platform")
+    }
+
+    /// Read detailed smaps breakdown (unsupported on this platform).
+    pub fn read_smaps_detail(_pid: i32, _guest_mem_size: u64) -> anyhow::Result<SmapsBreakdown> {
+        anyhow::bail!("smaps detail not available on this platform")
     }
 }
