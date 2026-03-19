@@ -1,8 +1,9 @@
 # Processors in the VMM
+This page describes how virtual and physical processor identifiers are mapped.
 
 ## VP index, CPU number, and APIC ID
 
-Much code in the OpenVMM repo rely on a numeric identifier for a virtual
+Much code in the OpenVMM repo relies on a numeric identifier for a virtual
 processor (VP). This is a VMM-specific VP index, which is the hypervisor-level
 identifier assigned to each virtual processor, starting at 0. Three identifiers
 are often confused:
@@ -14,7 +15,7 @@ are often confused:
 | **APIC ID** (x86) | Hardware interrupt target | May differ — depends on topology |
 | **MPIDR** (aarch64) | ARM processor affinity register | Not the VP index — topology-dependent |
 
-Each platform has its own architectural way of describing cpus, with x86 APIC
+Each platform has its own architectural way of describing CPUs, with x86 APIC
 IDs and MPIDR on AArch64. Note that these values cannot be assumed to map
 directly to VP index, as the physical or virtual topology of a system determines
 the values for these architectural identifiers.
@@ -22,7 +23,7 @@ the values for these architectural identifiers.
 These can be different even than the **VTL0 guest's** perspective. The guest may
 have its own CPU numbering (which may or may not match the VP index). Guests are
 required to translate the guest VP number to a hypervisor VP number, which is
-then passed to the VMM. For example, The VMBus protocol allows guest drivers to
+then passed to the VMM. For example, the VMBus protocol allows guest drivers to
 specify a VP index for a channel.
 
 ```text
