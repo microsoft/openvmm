@@ -1305,6 +1305,23 @@ impl<A: AerHandler> QueueHandler<A> {
 
     /// Save queue data for servicing.
     pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
+        // Log pending admin command wait durations at save time.
+        if self.qid == 0 {
+            let _ = &self.commands.commands.iter().map(|(_index, cmd)| {
+                cmd.issued_at.map(|issued_at| {
+                    tracing::info!(
+                        pci_id = ?self.device_id,
+                        qid = self.qid,
+                        cid = cmd.command.cdw0.cid(),
+                        opcode = cmd.command.cdw0.opcode(),
+                        elapsed_ms = issued_at.elapsed().as_millis() as u64,
+                        "pending admin command at save time",
+                    );
+                    Some(issued_at)
+                });
+            });
+        }
+
         // The data is collected from both QueuePair and QueueHandler.
         Ok(QueueHandlerSavedState {
             sq_state: self.sq.save(),
