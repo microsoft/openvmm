@@ -110,7 +110,11 @@ impl TransportState {
         !matches!(self, TransportState::Ready)
     }
 
-    pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<TransportStateResult> {
+    pub fn poll(
+        &mut self,
+        cx: &mut Context<'_>,
+        sender: &mesh::Sender<DeviceCommand>,
+    ) -> Poll<TransportStateResult> {
         match self {
             TransportState::Ready => Poll::Pending,
             TransportState::Enabling {
@@ -119,10 +123,17 @@ impl TransportState {
             } => {
                 let result = std::task::ready!(Pin::new(recv).poll(cx));
                 let pending_reset = *pending_reset;
-                *self = TransportState::Ready;
                 if pending_reset {
-                    Poll::Ready(TransportStateResult::EnableComplete(Err(())))
+                    // Guest wrote STATUS=0 while enable was in flight.
+                    // Send Disable to stop any running queues, then
+                    // transition to Disabling so the next poll
+                    // completes the reset.
+                    let recv = send_disable(sender);
+                    *self = TransportState::Disabling { recv };
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
                 } else {
+                    *self = TransportState::Ready;
                     Poll::Ready(TransportStateResult::EnableComplete(result.map_err(|_| ())))
                 }
             }

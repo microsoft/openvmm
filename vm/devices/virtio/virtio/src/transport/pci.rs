@@ -741,7 +741,7 @@ impl PollDevice for VirtioPciDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
         self.poll_waker = Some(cx.waker().clone());
 
-        if let Poll::Ready(result) = self.state.poll(cx) {
+        if let Poll::Ready(result) = self.state.poll(cx, &self.device_sender) {
             match result {
                 TransportStateResult::EnableComplete(Ok(())) => {
                     self.device_status.set_driver_ok(true);

@@ -3584,6 +3584,8 @@ impl VirtioDevice for PartialFailTestDevice {
 trait TestTransport {
     /// Write DRIVER_OK after setup (queues already configured + enabled).
     fn write_driver_ok(&mut self);
+    /// Write STATUS=0 (guest reset).
+    fn write_status_zero(&mut self);
     /// Read the device status register.
     fn read_status(&mut self) -> u32;
     /// Drive poll_device once with a noop waker.
@@ -3641,6 +3643,9 @@ impl MmioTestTransport {
 impl TestTransport for MmioTestTransport {
     fn write_driver_ok(&mut self) {
         self.dev.write_u32(112, VIRTIO_DRIVER_OK);
+    }
+    fn write_status_zero(&mut self) {
+        self.dev.write_u32(112, 0);
     }
     fn read_status(&mut self) -> u32 {
         self.dev.read_u32(112)
@@ -3747,6 +3752,9 @@ impl TestTransport for PciTestTransport {
         self.dev
             .mmio_write(self.bar_address + 20, &[VIRTIO_DRIVER_OK as u8])
             .unwrap();
+    }
+    fn write_status_zero(&mut self) {
+        self.dev.mmio_write(self.bar_address + 20, &[0u8]).unwrap();
     }
     fn read_status(&mut self) -> u32 {
         let mut buf = [0u8; 1];
@@ -3864,6 +3872,57 @@ async fn stop_completes_pending_disable_pci(_driver: DefaultDriver) {
     let mut transport =
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
     verify_stop_completes_pending_disable(&mut transport).await;
+}
+
+async fn verify_reset_during_enable_disables_queues(transport: &mut impl TestTransport) {
+    // Write DRIVER_OK — starts an async Enable.
+    transport.write_driver_ok();
+
+    // Before yielding, the enable is in-flight. Write STATUS=0 to
+    // trigger a guest reset while the enable is pending.
+    transport.write_status_zero();
+
+    // Yield so the device task processes the Enable (which succeeds).
+    yield_now().await;
+
+    // Poll once — TransportState::poll sees pending_reset, sends Disable
+    // to the device task, and transitions to Disabling.
+    transport.poll_once();
+
+    // DRIVER_OK must NOT be set — the pending reset prevented it.
+    assert_eq!(
+        transport.read_status() & VIRTIO_DRIVER_OK,
+        0,
+        "DRIVER_OK must not be set after reset during enable"
+    );
+
+    // Yield again so the device task processes the Disable (stops queues).
+    yield_now().await;
+
+    // Poll to observe DisableComplete.
+    transport.poll_once();
+
+    // Status must be fully reset.
+    assert_eq!(
+        transport.read_status(),
+        0,
+        "status must be 0 after enable-then-reset completes"
+    );
+}
+
+#[async_test]
+async fn reset_during_enable_disables_queues_mmio(_driver: DefaultDriver) {
+    // Use PartialFailTestDevice with fail_at > max_queues so all queues succeed.
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
+    verify_reset_during_enable_disables_queues(&mut transport).await;
+}
+
+#[async_test]
+async fn reset_during_enable_disables_queues_pci(_driver: DefaultDriver) {
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
+    verify_reset_during_enable_disables_queues(&mut transport).await;
 }
 
 /// Verify that resetting a PCI device using IntX interrupts deasserts the IRQ line.
