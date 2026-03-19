@@ -308,3 +308,114 @@ pub struct hcl_kick_cpus {
     pub cpu_mask: *const u8,
     pub flags: hcl_kick_cpus_flags,
 }
+
+pub const RSI_PLANE_NR_GPRS: usize = 31;
+pub const RSI_PLANE_GIC_NUM_LRS: usize = 16;
+pub const RSI_PLANE_ENTER_FLAGS_TRAP_SIMD: u64 = 1 << 4;
+
+//----------------------------------------
+// realm_config  (size == 0x1000)
+//----------------------------------------
+#[repr(C, align(0x1000))]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct cca_realm_config {
+    pub ipa_width: u64,
+    pub algorithm: u64,
+    pub num_aux_planes: u64,
+    pub gicv3_vtr: u64,
+    /// 0x1000 − (4 × 8) = 0x1000 − 32 = 0xFE0
+    pub pad1: [u8; 0x1000 - 4 * 8],
+}
+
+impl cca_realm_config {
+    pub fn empty() -> Self {
+        cca_realm_config {
+            ipa_width: 0,
+            algorithm: 0,
+            num_aux_planes: 0,
+            gicv3_vtr: 0,
+            pad1: [0; 0xFE0],
+        }
+    }
+}
+
+//----------------------------------------
+// rsi_plane_entry  (3 × 0x100 = 0x300 total)
+//----------------------------------------
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct cca_rsi_plane_entry {
+    // — block 0 (0x000–0x100): flags + pc + pstate (24 bytes)
+    pub flags: u64,
+    pub pc: u64,
+    pub pstate: u64,
+    /// pad0 = 0x100 − 3 * 8 = 248
+    pub pad0: [u8; 0x100 - 3 * 8],
+
+    // — block 1 (0x100–0x200): gprs[]
+    pub gprs: [u64; RSI_PLANE_NR_GPRS],
+    /// pad2 = 0x100 − 8 * RSI_PLANE_NR_GPRS
+    pub pad2: [u8; 0x100 - RSI_PLANE_NR_GPRS * 8],
+
+    // — block 2 (0x200–0x300): gicv3_hcr + lrs[]
+    pub gicv3_hcr: u64,
+    pub gicv3_lrs: [u64; RSI_PLANE_GIC_NUM_LRS],
+    /// pad3 = 0x100 − 8 * (1 + RSI_PLANE_GIC_NUM_LRS)
+    pub pad3: [u8; 0x100 - (1 + RSI_PLANE_GIC_NUM_LRS) * 8],
+}
+
+//----------------------------------------
+// rsi_plane_exit  (4 × 0x100 = 0x400 total)
+//----------------------------------------
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+pub struct cca_rsi_plane_exit {
+    // — block 0 (0x000–0x100): exit_reason
+    pub exit_reason: u64,
+    /// pad1 = 0x100 − 8 = 248
+    pub pad1: [u8; 0x100 - 8],
+
+    // — block 1 (0x100–0x200): ELR/ESR/FAR/HPFAR/PSTATE (40 bytes)
+    pub elr_el2: u64,
+    pub esr_el2: u64,
+    pub far_el2: u64,
+    pub hpfar_el2: u64,
+    pub pstate: u64,
+    /// pad2 = 0x100 − 5 * 8 = 224
+    pub pad2: [u8; 0x100 - 5 * 8],
+
+    // — block 2 (0x200–0x300): gprs[]
+    pub gprs: [u64; RSI_PLANE_NR_GPRS],
+    /// pad3 = 0x100 − 8 * RSI_PLANE_NR_GPRS
+    pub pad3: [u8; 0x100 - RSI_PLANE_NR_GPRS * 8],
+
+    // — block 3 (0x300–0x400): GICv3 + timers
+    pub gicv3_hcr: u64,
+    pub gicv3_lrs: [u64; RSI_PLANE_GIC_NUM_LRS],
+    pub gicv3_misr: u64,
+    pub gicv3_vmcr: u64,
+    pub cntp_ctl_el0: u64,
+    pub cntp_cval_el0: u64,
+    pub cntv_ctl_el0: u64,
+    pub cntv_cval_el0: u64,
+    /// pad4 = 0x100 − 8 * (7 + RSI_PLANE_GIC_NUM_LRS)
+    pub pad4: [u8; 0x100 - (7 + RSI_PLANE_GIC_NUM_LRS) * 8],
+}
+
+//----------------------------------------
+// rsi_plane_run  (2 × 0x800 = 0x1000 total)
+//----------------------------------------
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct cca_rsi_plane_run {
+    // — entry union (0x000–0x800)
+    pub entry: cca_rsi_plane_entry,
+    /// pad4 = 0x800 − 0x300 = 2048 − 768 = 1280
+    pub pad4: [u8; 0x800 - size_of::<cca_rsi_plane_entry>()],
+
+    // — exit union (0x800–0x1000), flattened exactly as in cca_rsi_plane_exit + padding
+    pub exit: cca_rsi_plane_exit,
+    /// pad9 = 0x800 − 0x400 = 2048 − 1024 = 1024
+    pub pad9: [u8; 0x800 - size_of::<cca_rsi_plane_exit>()],
+}
+const _: () = assert!(size_of::<cca_rsi_plane_run>() == 0x1000);
