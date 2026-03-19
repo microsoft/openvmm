@@ -998,7 +998,7 @@ async fn servicing_keepalive_slow_create_io_queue(
 
     assert!(
         io_result.is_err(),
-        "IO command should have timed out while waiting for create_io_queue to complete, but it succeeded. This likely means the create_io_queue command did not get injected correctly."
+        "IO command should have timed out. This likely means the create_io_queue command did not get injected correctly."
     );
 
     CancelContext::new()
