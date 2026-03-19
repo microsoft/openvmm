@@ -93,12 +93,18 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        pre_build_deps.push(
-            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into(), "build-essential".into()],
-                done: v,
-            }),
-        );
+        // TODO: install build tools for other platforms
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            pre_build_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into(), "build-essential".into()],
+                    done: v,
+                }
+            }));
+        }
 
         pre_build_deps.push(ctx.reqv(crate::install_openvmm_rust_build_essential::Request));
 
