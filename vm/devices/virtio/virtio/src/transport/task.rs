@@ -42,12 +42,17 @@ pub enum DeviceCommand {
     Start(FailableRpc<StartParams, ()>),
     /// ChangeDeviceState::reset() — stop queues, reset device.
     Reset(Rpc<(), ()>),
-    /// Config register read (u32 at offset). Completed via DeferredRead.
-    ReadConfig { offset: u16, deferred: DeferredRead },
-    /// Config register write (u32 at offset). Completed via DeferredWrite.
+    /// Config register read at byte offset with byte length.
+    ReadConfig {
+        offset: u16,
+        len: u8,
+        deferred: DeferredRead,
+    },
+    /// Config register write at byte offset with raw data.
     WriteConfig {
         offset: u16,
-        val: u32,
+        len: u8,
+        data: [u8; 8],
         deferred: DeferredWrite,
     },
     /// Inspect the device state.
@@ -74,6 +79,10 @@ pub enum TransportState {
     Enabling {
         #[inspect(skip)]
         recv: PendingFailableRpc<(), RemoteError>,
+        /// Guest wrote STATUS/DEVICE_STATUS=0 while the enable was in
+        /// flight. When the enable completes, reset instead of setting
+        /// DRIVER_OK.
+        pending_reset: bool,
     },
     Disabling {
         #[inspect(skip)]
@@ -88,6 +97,15 @@ pub enum TransportStateResult {
 }
 
 impl TransportState {
+    /// Record a guest reset while an enable is in flight.
+    pub fn set_pending_reset(&mut self) {
+        if let TransportState::Enabling { pending_reset, .. } = self {
+            *pending_reset = true;
+        }
+    }
+}
+
+impl TransportState {
     pub fn is_busy(&self) -> bool {
         !matches!(self, TransportState::Ready)
     }
@@ -95,10 +113,18 @@ impl TransportState {
     pub fn poll(&mut self, cx: &mut Context<'_>) -> Poll<TransportStateResult> {
         match self {
             TransportState::Ready => Poll::Pending,
-            TransportState::Enabling { recv } => {
+            TransportState::Enabling {
+                recv,
+                pending_reset,
+            } => {
                 let result = std::task::ready!(Pin::new(recv).poll(cx));
+                let pending_reset = *pending_reset;
                 *self = TransportState::Ready;
-                Poll::Ready(TransportStateResult::EnableComplete(result.map_err(|_| ())))
+                if pending_reset {
+                    Poll::Ready(TransportStateResult::EnableComplete(Err(())))
+                } else {
+                    Poll::Ready(TransportStateResult::EnableComplete(result.map_err(|_| ())))
+                }
             }
             TransportState::Disabling { recv } => {
                 let _ = std::task::ready!(Pin::new(recv).poll(cx));
@@ -112,7 +138,7 @@ impl TransportState {
     /// whether a disable was in progress.
     pub async fn drain(&mut self) -> bool {
         match std::mem::replace(self, TransportState::Ready) {
-            TransportState::Enabling { recv } => {
+            TransportState::Enabling { recv, .. } => {
                 let _ = recv.await;
                 false
             }
@@ -239,16 +265,50 @@ pub async fn run_device_task(
             DeviceCommand::Reset(rpc) => {
                 rpc.handle(async |()| task.reset().await).await;
             }
-            DeviceCommand::ReadConfig { offset, deferred } => {
-                let val = task.device.read_registers_u32(offset);
-                deferred.complete(&val.to_ne_bytes());
+            DeviceCommand::ReadConfig {
+                offset,
+                len,
+                deferred,
+            } => {
+                let start_word = offset & !3;
+                let end = offset as usize + len as usize;
+                let mut buf = [0u8; 12];
+                for word_off in (start_word as usize..end).step_by(4) {
+                    let val = task.device.read_registers_u32(word_off as u16);
+                    let i = word_off - start_word as usize;
+                    buf[i..i + 4].copy_from_slice(&val.to_ne_bytes());
+                }
+                let byte_off = (offset - start_word) as usize;
+                deferred.complete(&buf[byte_off..byte_off + len as usize]);
             }
             DeviceCommand::WriteConfig {
                 offset,
-                val,
+                len,
+                data,
                 deferred,
             } => {
-                task.device.write_registers_u32(offset, val);
+                if len == 4 && offset & 3 == 0 {
+                    task.device.write_registers_u32(
+                        offset,
+                        u32::from_ne_bytes(data[..4].try_into().unwrap()),
+                    );
+                } else {
+                    let start_word = offset & !3;
+                    let end = offset as usize + len as usize;
+                    let byte_off = (offset - start_word) as usize;
+                    let mut buf = [0u8; 12];
+                    for word_off in (start_word as usize..end).step_by(4) {
+                        let val = task.device.read_registers_u32(word_off as u16);
+                        let i = word_off - start_word as usize;
+                        buf[i..i + 4].copy_from_slice(&val.to_ne_bytes());
+                    }
+                    buf[byte_off..byte_off + len as usize].copy_from_slice(&data[..len as usize]);
+                    for word_off in (start_word as usize..end).step_by(4) {
+                        let i = word_off - start_word as usize;
+                        let val = u32::from_ne_bytes(buf[i..i + 4].try_into().unwrap());
+                        task.device.write_registers_u32(word_off as u16, val);
+                    }
+                }
                 deferred.complete();
             }
             DeviceCommand::Inspect(deferred) => {
@@ -264,13 +324,7 @@ pub fn send_enable(
     queues: Vec<(u16, QueueResources)>,
     features: VirtioDeviceFeatures,
 ) -> PendingFailableRpc<(), RemoteError> {
-    sender.call_failable(
-        DeviceCommand::Enable,
-        EnableParams {
-            queues,
-            features,
-        },
-    )
+    sender.call_failable(DeviceCommand::Enable, EnableParams { queues, features })
 }
 
 /// Send Disable command, return pending result to poll.
@@ -279,18 +333,29 @@ pub fn send_disable(sender: &mesh::Sender<DeviceCommand>) -> PendingRpc<()> {
 }
 
 /// Send a config read to the device task, returning a deferred IO token.
-pub fn defer_config_read(sender: &mesh::Sender<DeviceCommand>, offset: u16) -> IoResult {
+pub fn defer_config_read(sender: &mesh::Sender<DeviceCommand>, offset: u16, len: u8) -> IoResult {
     let (deferred, token) = defer_read();
-    sender.send(DeviceCommand::ReadConfig { offset, deferred });
+    sender.send(DeviceCommand::ReadConfig {
+        offset,
+        len,
+        deferred,
+    });
     IoResult::Defer(token)
 }
 
 /// Send a config write to the device task, returning a deferred IO token.
-pub fn defer_config_write(sender: &mesh::Sender<DeviceCommand>, offset: u16, val: u32) -> IoResult {
+pub fn defer_config_write(
+    sender: &mesh::Sender<DeviceCommand>,
+    offset: u16,
+    bytes: &[u8],
+) -> IoResult {
     let (deferred, token) = defer_write();
+    let mut data = [0u8; 8];
+    data[..bytes.len()].copy_from_slice(bytes);
     sender.send(DeviceCommand::WriteConfig {
         offset,
-        val,
+        len: bytes.len() as u8,
+        data,
         deferred,
     });
     IoResult::Defer(token)

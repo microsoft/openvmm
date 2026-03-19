@@ -479,6 +479,7 @@ impl VirtioPciDevice {
                 return ReadResult::Defer(defer_config_read(
                     &self.device_sender,
                     offset - BAR0_DEVICE_CFG_OFFSET,
+                    4,
                 ));
             }
             _ => {
@@ -512,6 +513,9 @@ impl VirtioPciDevice {
                 let val = val & 0xff;
                 if val == 0 {
                     if self.state.is_busy() {
+                        // An enable is in flight. Record the reset so
+                        // poll_device() resets instead of setting DRIVER_OK.
+                        self.state.set_pending_reset();
                         return WriteResult::Ok;
                     }
 
@@ -576,12 +580,11 @@ impl VirtioPciDevice {
                         })
                         .collect();
 
-                    let recv = send_enable(
-                        &self.device_sender,
-                        queues,
-                        features,
-                    );
-                    self.state = TransportState::Enabling { recv };
+                    let recv = send_enable(&self.device_sender, queues, features);
+                    self.state = TransportState::Enabling {
+                        recv,
+                        pending_reset: false,
+                    };
 
                     if let Some(waker) = self.poll_waker.take() {
                         waker.wake();
@@ -653,7 +656,7 @@ impl VirtioPciDevice {
                 return WriteResult::Defer(defer_config_write(
                     &self.device_sender,
                     offset - BAR0_DEVICE_CFG_OFFSET,
-                    val,
+                    &val.to_ne_bytes(),
                 ));
             }
             _ => {
@@ -718,10 +721,7 @@ impl ChangeDeviceState for VirtioPciDevice {
                 ));
             }
 
-            let params = StartParams {
-                queues,
-                features,
-            };
+            let params = StartParams { queues, features };
 
             // Fire and forget — start() is sync, can't await.
             self.device_sender
@@ -730,20 +730,16 @@ impl ChangeDeviceState for VirtioPciDevice {
     }
 
     async fn stop(&mut self) {
-        if self.state.drain().await {
-            // Guest reset already in flight — device is already reset,
-            // no queues to save.
-            return;
-        }
-        if self.device_status.driver_ok() {
-            let states = self
-                .device_sender
-                .call(DeviceCommand::Stop, ())
-                .await
-                .expect("device task is gone");
-            for (i, state) in states.into_iter().enumerate() {
-                self.saved_queue_states[i] = state;
-            }
+        self.state.drain().await;
+        // Always send Stop to the device task; it safely handles
+        // the case where no queues are running (returns None for each).
+        let states = self
+            .device_sender
+            .call(DeviceCommand::Stop, ())
+            .await
+            .expect("device task is gone");
+        for (i, state) in states.into_iter().enumerate() {
+            self.saved_queue_states[i] = state;
         }
     }
 
@@ -945,17 +941,17 @@ impl MmioIntercept for VirtioPciDevice {
                     ReadResult::Defer(io_result) => return io_result,
                 }
             }
-            // For non-device-config reads, or non-aligned reads, use the
-            // chunked helper which always gets u32 values synchronously.
-            read_as_u32_chunks(offset, data, |offset| {
-                match self.read_bar(bar, offset) {
-                    ReadResult::Value(val) => val,
-                    // For chunked reads hitting device config, we can't
-                    // easily defer. Return 0 as a fallback (this path is
-                    // only hit for sub-word reads of device config, which
-                    // is unusual).
-                    ReadResult::Defer(_) => 0,
-                }
+            // For sub-word config reads, defer to the device task.
+            if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
+                return defer_config_read(
+                    &self.device_sender,
+                    offset - BAR0_DEVICE_CFG_OFFSET,
+                    data.len() as u8,
+                );
+            }
+            read_as_u32_chunks(offset, data, |offset| match self.read_bar(bar, offset) {
+                ReadResult::Value(val) => val,
+                ReadResult::Defer(_) => 0,
             });
         }
         IoResult::Ok
@@ -971,6 +967,14 @@ impl MmioIntercept for VirtioPciDevice {
                     WriteResult::Ok => return IoResult::Ok,
                     WriteResult::Defer(io_result) => return io_result,
                 }
+            }
+            // For sub-word config writes, defer to the device task.
+            if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
+                return defer_config_write(
+                    &self.device_sender,
+                    offset - BAR0_DEVICE_CFG_OFFSET,
+                    data,
+                );
             }
             write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
                 ReadWriteRequestType::Write(value) => {
