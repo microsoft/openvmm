@@ -102,7 +102,7 @@ const fn const_split_once_dot(s: &str) -> Option<(&str, &str)> {
 
 // Parse the `OPENHCL_VERSION` environment variable into four u32 components.
 // Strictly enforces the format to be "major.minor.build.platform",
-// where each is a valid u32 and non-zero (except for platform).
+// where each is a valid u32.
 // Empty string is permitted to not panic on builds which omit the
 // `OPENHCL_VERSION` environment variable like `cargo test`.
 const fn const_parse_version(s: &str) -> [u32; 4] {
@@ -130,10 +130,6 @@ const fn const_parse_version(s: &str) -> [u32; 4] {
     let minor = const_parse_u32_segment(minor);
     let build = const_parse_u32_segment(build);
     let platform = const_parse_u32_segment(platform);
-    assert!(major != 0, "major version must be non-zero");
-    assert!(minor != 0, "minor version must be non-zero");
-    assert!(build != 0, "build version must be non-zero");
-    // Platform is allowed to be zero.
     [major, minor, build, platform]
 }
 
@@ -231,21 +227,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "major version must be non-zero")]
-    fn zero_major_panics() {
-        const_parse_version("0.1.1.0");
+    fn zero_major_allowed() {
+        assert_eq!(const_parse_version("0.1.1.0"), [0, 1, 1, 0]);
     }
 
     #[test]
-    #[should_panic(expected = "minor version must be non-zero")]
-    fn zero_minor_panics() {
-        const_parse_version("1.0.1.0");
+    fn zero_minor_allowed() {
+        assert_eq!(const_parse_version("1.0.1.0"), [1, 0, 1, 0]);
     }
 
     #[test]
-    #[should_panic(expected = "build version must be non-zero")]
-    fn zero_build_panics() {
-        const_parse_version("1.1.0.0");
+    fn zero_build_allowed() {
+        assert_eq!(const_parse_version("1.1.0.0"), [1, 1, 0, 0]);
     }
 
     #[test]
