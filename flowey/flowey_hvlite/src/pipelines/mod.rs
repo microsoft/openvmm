@@ -4,6 +4,7 @@
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
 use vmm_tests::VmmTestsCli;
+use cca_fvp::CcaFvpCli;
 
 pub mod build_docs;
 pub mod build_igvm;
@@ -12,6 +13,7 @@ pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
 pub mod vmm_tests;
+pub mod cca_fvp;
 
 #[derive(clap::Subcommand)]
 #[expect(clippy::large_enum_variant)]
@@ -36,6 +38,9 @@ pub enum OpenvmmPipelines {
 
     /// Build and run VMM tests
     VmmTests(VmmTestsCli),
+
+    /// Build and run CCA FVP via Shrinkwrap
+    CcaFvp(CcaFvpCli),
 }
 
 #[derive(clap::Subcommand)]
@@ -64,6 +69,7 @@ impl IntoPipeline for OpenvmmPipelines {
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTests(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::CcaFvp(cmd) => cmd.into_pipeline(pipeline_hint),
         }
     }
 }

@@ -223,7 +223,9 @@ where
 
     // During the second pass, read in each section pointed to by the program headers,
     // and import into the guest memory.
+    let mut count: i64 = 0;
     for phdr in phdrs {
+        count += 1;
         if phdr.p_type.get(LE) != elf::PT_LOAD {
             continue;
         }
@@ -266,11 +268,13 @@ where
         let page_base = mem_offset / HV_PAGE_SIZE;
         let page_count =
             ((mem_offset & page_mask) + phdr.p_memsz.get(LE) + page_mask) / HV_PAGE_SIZE;
+        
         if page_count > 0 {
             importer
                 .import_pages(page_base, page_count, tag, acceptance, &v)
                 .map_err(Error::ImportPages)?;
         }
+
     }
 
     Ok(LoadInfo {

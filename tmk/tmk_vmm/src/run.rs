@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! Support for running a VM's VPs.
-
+// use std::{io, os::unix::io::AsRawFd, ptr};
 use crate::Options;
 use crate::load;
 use anyhow::Context as _;
@@ -25,14 +25,41 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use zerocopy::TryFromBytes as _;
+use std::fs::OpenOptions;
+use vm_topology::memory::MemoryRangeWithNode;
+use memory_range::MemoryRange;
+use core::ops::Range;
+use std::num::NonZeroUsize;
+use nix::{
+    sys::{
+        mman::{MapFlags, ProtFlags, mmap},
+        // statfs::statfs,
+    },
+    // unistd::{ftruncate, mkstemp, unlink},
+};
+
+//temp
+// use crate::mapped_page::MappedPage;
 
 pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
+
+pub struct Mmemory {
+    pub startpa: u64,
+    pub endpa: u64,
+}
 
 pub struct CommonState {
     pub driver: DefaultDriver,
     pub opts: Options,
     pub processor_topology: ProcessorTopology,
     pub memory_layout: MemoryLayout,
+    pub shared_memory_layout: MemoryLayout,
+    pub offset_memory: Option<u64>,
+    pub mmemory: Option<Mmemory>,
+    pub shared_address_start: u64,
+    pub shared_virtual_address_start: u64,
+    pub shared_address_start_command: u64,
+    pub shared_virtual_address_start_command: u64,
 }
 
 pub struct RunContext<'a> {
@@ -71,14 +98,123 @@ impl CommonState {
         .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
-        let memory_layout =
-            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
+
+        #[cfg(guest_arch = "x86_64")]
+        let memory_layout = MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+
+        #[cfg(guest_arch = "aarch64")]
+        let mut memory_layout =
+            MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+
+        #[cfg(guest_arch = "aarch64")]
+        let mut shared_memory_layout =
+            MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+        
+        let map_size = ram_size;
+        let non_zero_size =NonZeroUsize::new(map_size as usize).expect("Size was already checked to be non-zero");
+        let file = OpenOptions::new().read(true).write(true).open("/dev/zero")?;
+        #[allow(unsafe_code)]
+        let addr = unsafe {
+            mmap(
+                None,
+                non_zero_size,
+                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                MapFlags::MAP_SHARED,
+                &file,
+                0,
+            )
+        }
+        .context("Failed to memory-map bytes")?;
+
+        #[allow(unsafe_code)]
+        unsafe {
+                std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
+            }
+
+        #[allow(unsafe_code)]
+        let pa = unsafe { load::virt_to_phys(addr.as_ptr() as u64) }
+                .map_err(anyhow::Error::msg)
+                .context("failed to get page physical address")?;
+
+        const PAGE: u64 = 4096;
+        const ALIGN: u64 = PAGE * 8;
+
+        let raw_start = pa;
+        let raw_end = pa + map_size/2;
+
+        let start = (raw_start + ALIGN - 1) & !(ALIGN - 1);
+        let end   = raw_end & !(ALIGN - 1);
+
+        memory_layout = MemoryLayout::new_from_ranges(
+                &[MemoryRangeWithNode {
+                    range: MemoryRange::new(Range {
+                        start,
+                        end,
+                    }),
+                    vnode: 0,
+                }],
+                &[],
+            )
+            .context("bad memory layout")?;
+
+        // let command_addr: u64 = 0xffff_0000u64;
+        // let region_start = command_addr & !(ALIGN - 1);
+        // let region_end_exclusive = region_start + ALIGN;
+
+        // let region_range = Range {
+        //     start: region_start,
+        //     end: region_end_exclusive,
+        // };
+
+        shared_memory_layout = MemoryLayout::new_from_ranges(
+                &[MemoryRangeWithNode {
+                    range: MemoryRange::new(Range {
+                        start: start + map_size/2,
+                        end: start + map_size,
+                    }),
+                    vnode: 0,
+                },
+                //  MemoryRangeWithNode {
+                //     range: MemoryRange::new(region_range),
+                //     vnode: 0,
+                // },
+                ],
+                &[],
+            )
+            .context("bad memory layout")?;
+
+        let offset_memory = Some(start);
+
+        let mmemory = Some(Mmemory {
+                startpa: start,
+                endpa: end,
+            });
+        
+        let aligned = ((addr.as_ptr() as u64) + ALIGN - 1) & !(ALIGN - 1);
+        let shared_virtual_address_start = aligned + map_size / 2;
+        let shared_virtual_address_start_command = aligned + map_size / 2 + 8;
+
+        #[allow(unsafe_code)]
+        let shared_address_start = unsafe { load::virt_to_phys(shared_virtual_address_start) }
+                .map_err(anyhow::Error::msg)
+                .context("failed to get page physical address")?;
+
+        let shared_address_start_command = start;
+
+        // let shared_address_start = pa_temp;
 
         Ok(Self {
             driver,
             opts,
             processor_topology,
             memory_layout,
+            shared_memory_layout,
+            offset_memory,
+            mmemory,
+            shared_address_start,
+            shared_virtual_address_start,
+            shared_address_start_command,
+            shared_virtual_address_start_command,
         })
     }
 
@@ -166,6 +302,7 @@ impl RunContext<'_> {
 
         // Load the TMK.
         let tmk = fs_err::File::open(&self.state.opts.tmk).context("failed to open tmk")?;
+
         let regs = {
             #[cfg(guest_arch = "x86_64")]
             {
@@ -181,6 +318,7 @@ impl RunContext<'_> {
             #[cfg(guest_arch = "aarch64")]
             {
                 load::load_aarch64(
+                    self.state.offset_memory,
                     &self.state.memory_layout,
                     guest_memory,
                     &self.state.processor_topology,

@@ -112,6 +112,7 @@ open_enum! {
         VBS = 1,
         SNP = 2,
         TDX = 3,
+        CCA = 4,
     }
 }
 
@@ -2520,6 +2521,18 @@ pub struct HvX64SegmentRegister {
     pub limit: u32,
     pub selector: u16,
     pub attributes: u16,
+}
+
+/// Place holder to default for arm64
+impl HvX64SegmentRegister {
+    pub fn defaultArm64() -> Self{
+        Self {
+            base: 0,
+            limit: 0,
+            selector: 0,
+            attributes: 0,
+        }
+    }
 }
 
 impl From<HvX64SegmentRegister> for HvRegisterValue {

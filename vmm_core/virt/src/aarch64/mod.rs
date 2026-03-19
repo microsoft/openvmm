@@ -5,6 +5,7 @@ pub mod gic_software_device;
 pub mod vm;
 pub mod vp;
 
+use aarch64defs::Vendor;
 use crate::state::StateElement;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
@@ -30,7 +31,10 @@ impl Aarch64InitialRegs {
 }
 
 #[derive(Debug, Inspect)]
-pub struct Aarch64PartitionCapabilities {}
+pub struct Aarch64PartitionCapabilities {
+    #[inspect(display)]
+    pub vendor: Vendor,
+}
 
 #[derive(Error, Debug)]
 pub enum Aarch64PartitionCapabilitiesError {}
