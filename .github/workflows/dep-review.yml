@@ -34,7 +34,6 @@ jobs:
       - name: Checkout base branch (safe — our own code)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
           sparse-checkout: |
             .github/scripts
             .github/dep-policy.json
