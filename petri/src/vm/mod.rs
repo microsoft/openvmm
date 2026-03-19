@@ -2028,7 +2028,7 @@ pub struct MemoryConfig {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            startup_bytes: 0x1_0000_0000,
+            startup_bytes: 4 * 1024 * 1024 * 1024, // 4 GiB
             dynamic_memory_range: None,
             mmio_gaps: MmioConfig::Platform,
         }

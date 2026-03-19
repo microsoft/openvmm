@@ -1,0 +1,38 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Backend-agnostic cryptographic primitives.
+//!
+//! This crate abstracts over platform-specific crypto libraries (OpenSSL on
+//! Unix, BCrypt on Windows) so that callers never interact with the underlying
+//! backend directly.
+
+// TODO: Symcrypt somehow
+// TODO: Rustcrypto backend for ease of use
+
+// pub mod aes_256_cbc;
+// pub mod aes_256_gcm;
+// pub mod aes_key_wrap;
+// pub mod hmac_sha_256;
+// pub mod kdf;
+// pub mod pkcs7;
+// pub mod rsa;
+// pub mod sha_256;
+// pub mod x509;
+pub mod xts_aes_256;
+
+use thiserror::Error;
+
+/// An error that occurred in the crypto backend, with a description of the
+/// operation being performed when the error occurred.
+#[cfg(unix)]
+#[derive(Clone, Debug, Error)]
+#[error("openssl error during {1}")]
+pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
+
+/// An error that occurred in the crypto backend, with a description of the
+/// operation being performed when the error occurred.
+#[cfg(windows)]
+#[derive(Clone, Debug, Error)]
+#[error("bcrypt error during {1}")]
+pub struct BackendError(#[source] windows_result::Error, &'static str);

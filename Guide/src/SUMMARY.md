@@ -95,6 +95,7 @@
       - [virtio-pmem]()
   - [VMBus]()
       - [storvsp](./reference/devices/vmbus/storvsp.md)
+        - [Channels & Subchannels](./reference/devices/vmbus/storvsp_channels.md)
       - [netvsp]()
       - [vpci]()
       - [serial]()

@@ -99,17 +99,16 @@ pipette_protocol = { path = "petri/pipette_protocol" }
 
 # support crates
 address_filter = { path = "support/address_filter" }
-build_rs_git_info = { path = "support/build_rs_git_info" }
 arc_cyclic_builder = { path = "support/arc_cyclic_builder" }
 atomic_ringbuf = { path = "support/atomic_ringbuf" }
+build_rs_git_info = { path = "support/build_rs_git_info" }
 cache_topology = { path = "support/cache_topology" }
-closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
+closeable_mutex = { path = "support/closeable_mutex" }
 console_relay = { path = "support/console_relay" }
-safe_intrinsics = { path = "support/safe_intrinsics" }
+crypto = { path = "support/crypto" }
 debug_ptr = { path = "support/debug_ptr" }
-user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
 fast_memcpy = { path = "support/fast_memcpy" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
@@ -135,13 +134,13 @@ mesh_process = { path = "support/mesh/mesh_process" }
 mesh_protobuf = { path = "support/mesh/mesh_protobuf" }
 mesh_remote = { path = "support/mesh/mesh_remote" }
 mesh_rpc = { path = "support/mesh/mesh_rpc" }
-mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
+mesh_worker = { path = "support/mesh/mesh_worker" }
 minircu = { path = "support/minircu" }
 nostd_spin_channel = { path = "support/nostd_spin_channel"}
 open_enum = { path = "support/open_enum" }
-openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
+openssl_kdf = { path = "support/openssl_kdf" }
 oversized_box = { path = "support/oversized_box" }
 pal = { path = "support/pal" }
 pal_async = { path = "support/pal/pal_async" }
@@ -150,6 +149,7 @@ pal_event = { path = "support/pal/pal_event" }
 pal_uring = { path = "support/pal/pal_uring" }
 powershell_builder = { path = "support/powershell_builder" }
 resource_dll_parser = { path = "support/resource_dll_parser" }
+safe_intrinsics = { path = "support/safe_intrinsics" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
@@ -167,6 +167,7 @@ trycopy = { path = "support/trycopy" }
 ucs2 = { path = "support/ucs2" }
 uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
+user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
 vmsocket = { path = "support/vmsocket" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
@@ -211,7 +212,6 @@ aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
-block_crypto = { path = "vm/devices/storage/block_crypto" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }

@@ -351,15 +351,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block_crypto"
-version = "0.0.0"
-dependencies = [
- "openssl",
- "thiserror 2.0.16",
- "windows 0.62.0",
-]
-
-[[package]]
 name = "blocking"
 version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -998,6 +989,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "crypto"
+version = "0.0.0"
+dependencies = [
+ "openssl",
+ "thiserror 2.0.16",
+ "windows 0.62.0",
+ "windows-result 0.4.0",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1365,7 +1366,7 @@ name = "disk_crypt"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "block_crypto",
+ "crypto",
  "disk_backend",
  "disk_crypt_resources",
  "disklayer_ram",
@@ -3970,6 +3971,7 @@ name = "mana_driver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "build_info",
  "chipset_device",
  "futures",
  "gdma",

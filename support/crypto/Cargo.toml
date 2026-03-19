@@ -2,18 +2,22 @@
 # Licensed under the MIT License.
 
 [package]
-name = "block_crypto"
+name = "crypto"
 edition.workspace = true
 rust-version.workspace = true
+
+[features]
+ossl_vendored = ["openssl/vendored"]
 
 [dependencies]
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-openssl.workspace = true
+openssl.workspace = true 
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Security_Cryptography"] }
+windows = { workspace = true, features = ["Win32_Foundation","Win32_Security_Cryptography"] }
+windows-result.workspace = true
 
 [lints]
 workspace = true

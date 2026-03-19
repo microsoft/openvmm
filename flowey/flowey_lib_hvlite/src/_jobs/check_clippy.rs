@@ -185,7 +185,7 @@ impl SimpleFlowNode for Node {
                     target_lexicon::OperatingSystem::Darwin(_)
                 ) {
                     exclude.extend(
-                        ["openssl_kdf", "vmgs_lib", "block_crypto", "disk_crypt"].map(|x| x.into()),
+                        ["openssl_kdf", "vmgs_lib", "disk_crypt", "crypto"].map(|x| x.into()),
                     );
                 }
 
