@@ -30,7 +30,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -386,7 +386,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -628,7 +628,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -841,7 +841,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -1308,7 +1308,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu-ARM64
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64
     permissions:
       contents: read
       id-token: write
@@ -1566,7 +1566,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu-ARM64
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64
     permissions:
       contents: read
       id-token: write
@@ -1835,7 +1835,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -2370,7 +2370,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -2905,7 +2905,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -3121,7 +3121,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -3746,7 +3746,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -4065,7 +4065,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -4285,7 +4285,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
     permissions:
       contents: read
       id-token: write
@@ -4612,7 +4612,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -4889,7 +4889,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -5222,7 +5222,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write
@@ -5504,7 +5504,7 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
     permissions:
       contents: read
       id-token: write

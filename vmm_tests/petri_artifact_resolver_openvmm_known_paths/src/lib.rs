@@ -12,6 +12,24 @@ use std::path::Path;
 use std::path::PathBuf;
 use vmm_test_images::KnownTestArtifacts;
 
+/// Returns the Cargo build profile directory name for cross-compiled
+/// artifacts (e.g., pipette).
+///
+/// Infers the profile from the currently running binary's path (looking
+/// for a `release` component in the executable path). Defaults to `"debug"`.
+// DEVNOTE: `pub` in order to re-use in perf_tests and other crates.
+pub fn cargo_build_profile() -> &'static str {
+    static PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PROFILE.get_or_init(|| {
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.components().any(|c| c.as_os_str() == "release") {
+                return "release".to_string();
+            }
+        }
+        "debug".to_string()
+    })
+}
+
 /// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
 /// that resolves artifacts to various "known paths" within the context of
 /// the OpenVMM repository.
@@ -216,7 +234,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     for (index, target_suffix) in target_suffixes.iter().enumerate() {
         let target = format!("{}-{}", target_arch_path(arch), target_suffix);
         match get_path(
-            format!("target/{target}/debug"),
+            format!("target/{target}/{}", cargo_build_profile()),
             binary,
             MissingCommand::Build {
                 package: "pipette",

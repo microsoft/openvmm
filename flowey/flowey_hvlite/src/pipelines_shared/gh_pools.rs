@@ -12,7 +12,7 @@ pub fn windows_amd_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3".to_string(),
-        "1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease".to_string(),
     ])
 }
 
@@ -23,7 +23,7 @@ pub fn windows_intel_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3".to_string(),
-        "1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease".to_string(),
     ])
 }
 
@@ -39,7 +39,7 @@ pub fn linux_arm_self_hosted() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2".to_string(),
-        "1ES.ImageOverride=OpenVMM-CI-Ubuntu-ARM64".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64".to_string(),
     ])
 }
 
@@ -47,7 +47,7 @@ pub fn linux_self_hosted_largedisk() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
         "1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3".to_string(),
-        "1ES.ImageOverride=MMSUbuntu22.04-256GB".to_string(),
+        "1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64".to_string(),
     ])
 }
 
