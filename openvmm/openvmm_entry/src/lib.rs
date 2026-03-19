@@ -980,7 +980,7 @@ async fn vm_config_from_command_line(
     };
 
     let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc || opt.pcat {
-        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE)?;
+        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vram")?;
         let (fb, fba) =
             framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).context("creating framebuffer")?;
         resources.framebuffer_access = Some(fba);

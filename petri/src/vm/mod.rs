@@ -639,7 +639,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             .add_agent_disk_inner(Vtl::Vtl2)
     }
 
-    fn add_agent_disk_inner(self, target_vtl: Vtl) -> Self {
+    fn add_agent_disk_inner(mut self, target_vtl: Vtl) -> Self {
         let (agent_image, controller_id) = match target_vtl {
             Vtl::Vtl0 => (self.agent_image.as_ref(), PETRI_SCSI_VTL0_CONTROLLER),
             Vtl::Vtl1 => panic!("no VTL1 agent disk"),
@@ -649,21 +649,44 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             ),
         };
 
-        if let Some(agent_disk) = agent_image.and_then(|i| {
+        // When using pipette-as-init, the VTL0 agent disk is only needed
+        // if it carries extra files (pipette itself is in the initrd).
+        if target_vtl == Vtl::Vtl0
+            && self.uses_pipette_as_init()
+            && !agent_image.is_some_and(|i| i.has_extras())
+        {
+            return self;
+        }
+
+        let Some(agent_disk) = agent_image.and_then(|i| {
             i.build(crate::disk_image::ImageType::Vhd)
                 .expect("failed to build agent image")
-        }) {
-            self.add_vmbus_drive(
-                Drive::new(
-                    Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
-                    false,
-                ),
+        }) else {
+            return self;
+        };
+
+        // Ensure the storage controller exists (minimal mode doesn't
+        // add controllers upfront).
+        if !self
+            .config
+            .vmbus_storage_controllers
+            .contains_key(&controller_id)
+        {
+            self = self.add_vmbus_storage_controller(
                 &controller_id,
-                Some(PETRI_SCSI_PIPETTE_LUN),
-            )
-        } else {
-            self
+                target_vtl,
+                VmbusStorageType::Scsi,
+            );
         }
+
+        self.add_vmbus_drive(
+            Drive::new(
+                Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
+                false,
+            ),
+            &controller_id,
+            Some(PETRI_SCSI_PIPETTE_LUN),
+        )
     }
 
     fn add_boot_disk(mut self) -> Self {
@@ -778,6 +801,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
     }
 
+    /// Whether the VTL0 agent disk will actually be added.
+    ///
+    /// False when using pipette-as-init with no extra files (pipette is
+    /// in the initrd, so the CIDATA disk isn't needed).
+    fn has_agent_disk(&self) -> bool {
+        if self.uses_pipette_as_init() {
+            self.agent_image.as_ref().is_some_and(|i| i.has_extras())
+        } else {
+            self.agent_image.is_some()
+        }
+    }
+
     /// Get properties about the vm for convenience
     pub fn properties(&self) -> PetriVmProperties {
         PetriVmProperties {
@@ -792,7 +827,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             uses_pipette_as_init: self.uses_pipette_as_init(),
             enable_serial: self.enable_serial,
             prebuilt_initrd: self.prebuilt_initrd.clone(),
-            has_agent_disk: self.agent_image.is_some(),
+            has_agent_disk: self.has_agent_disk(),
         }
     }
 

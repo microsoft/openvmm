@@ -40,6 +40,7 @@ impl FlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -72,6 +73,21 @@ impl FlowNode for Node {
                 OpenhclBootBuildProfile::Release => BuildProfile::BootRelease,
             };
 
+            let mut pre_build_deps = Vec::new();
+
+            // TODO: install build tools for other platforms
+            if matches!(
+                ctx.platform(),
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+            ) {
+                pre_build_deps.push(ctx.reqv(|v| {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: vec!["build-essential".into()],
+                        done: v,
+                    }
+                }));
+            }
+
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openhcl_boot".into(),
                 out_name: "openhcl_boot".into(),
@@ -85,7 +101,7 @@ impl FlowNode for Node {
                         .into_iter()
                         .collect(),
                 )),
-                pre_build_deps: Vec::new(),
+                pre_build_deps,
                 output: v,
             });
 

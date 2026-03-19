@@ -215,6 +215,9 @@ impl VaMapper {
         }
         .map_err(VaMapperError::Reserve)?;
 
+        // Name the VA reservation so it's identifiable in /proc/{pid}/smaps.
+        mapping.set_name(0, mapping.len(), "guest-memory");
+
         let (send, req_recv) = mesh::channel();
         let id = req_send
             .call(MappingRequest::AddMapper, send)
@@ -272,6 +275,11 @@ impl VaMapper {
     pub fn alloc_range(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         assert!(self.private_ram, "alloc_range requires private RAM mode");
         self.inner.mapping.alloc(offset, len)
+    }
+
+    /// Names a range within the mapping for debugging (visible in smaps).
+    pub fn set_range_name(&self, offset: usize, len: usize, name: &str) {
+        self.inner.mapping.set_name(offset, len, name);
     }
 
     /// Marks a range as eligible for Transparent Huge Pages.

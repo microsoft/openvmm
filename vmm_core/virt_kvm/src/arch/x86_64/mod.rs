@@ -491,12 +491,6 @@ impl ResetPartition for KvmPartition {
     type Error = KvmError;
 
     fn reset(&self) -> Result<(), Self::Error> {
-        for vp in self.inner.vps() {
-            self.inner
-                .vp_state_access(vp.vp_info.base.vp_index)
-                .reset_all(&vp.vp_info)
-                .map_err(Box::new)?;
-        }
         let mut this = self;
         this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
@@ -1242,6 +1236,12 @@ impl Processor for KvmProcessor<'_> {
     }
 
     fn flush_async_requests(&mut self) {}
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.partition
+            .vp_state_access(self.vpindex)
+            .reset_all(&self.inner.vp_info)
+    }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);

@@ -60,11 +60,20 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let installed_apt_deps =
-            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into(), "build-essential".into()],
-                done: v,
-            });
+        let mut pre_build_deps = Vec::new();
+
+        // TODO: install build tools for other platforms
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            pre_build_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into(), "build-essential".into()],
+                    done: v,
+                }
+            }));
+        }
 
         for Request {
             params:
@@ -76,26 +85,6 @@ impl FlowNode for Node {
             openvmm: openvmm_bin,
         } in requests
         {
-            let mut pre_build_deps = vec![installed_apt_deps.clone()];
-
-            // TODO: also need to take into account any default features in
-            // openvmm's Cargo.toml?
-            //
-            // maybe we can do something clever and parse the openvmm Cargo.toml
-            // file to discover these defaults?
-            for feat in &features {
-                match feat {
-                    OpenvmmFeature::Gdb => {}
-                    OpenvmmFeature::Tpm => pre_build_deps.push(ctx.reqv(|v| {
-                        flowey_lib_common::install_dist_pkg::Request::Install {
-                            package_names: vec!["build-essential".into()],
-                            done: v,
-                        }
-                    })),
-                    OpenvmmFeature::UnstableWhp => {}
-                }
-            }
-
             let output = ctx.reqv(|v| crate::run_cargo_build::Request {
                 crate_name: "openvmm".into(),
                 out_name: "openvmm".into(),
@@ -117,7 +106,7 @@ impl FlowNode for Node {
                 target: target.as_triple(),
                 no_split_dbg_info: false,
                 extra_env: None,
-                pre_build_deps,
+                pre_build_deps: pre_build_deps.clone(),
                 output: v,
             });
 
