@@ -421,7 +421,7 @@ impl SevGuestDevice {
         &self,
         guest_device_id: u16,
         vtom: u32,
-        vmpl: u64,
+        vmpl: u8,
     ) -> Result<TioMsgSdteWriteRsp, Error> {
         use sev_guest_device_tio::Sdte;
         use sev_guest_device_tio::SdtePart1;
@@ -435,7 +435,7 @@ impl SevGuestDevice {
             part1: SdtePart1::new().with_v(true).with_ir(true).with_iw(true),
             _reserved0: 0,
             _reserved1: 0,
-            part2: SdtePart2::new().with_vmpl(vmpl),
+            part2: SdtePart2::new().with_vmpl(vmpl as u64),
             _reserved2: 0,
             // 2MB PFN
             // TDISP TODO: Update with proper VTOM

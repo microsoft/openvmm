@@ -7,10 +7,16 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+hcl.workspace = true
+hvdef.workspace = true
+memory_range.workspace = true
+sev_guest_device.workspace = true
 tdisp.workspace = true
 tdisp_proto.workspace = true
+x86defs.workspace = true
 
 anyhow.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

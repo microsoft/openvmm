@@ -8,7 +8,7 @@
 //!
 //! See: `vm/devices/tdisp` for more information.
 
-use std::future::Future;
+mod sevtio;
 
 // Re-export the TDISP protocol types necessary for OpenHCL from top level tdisp crates
 // to avoid a direct dependency on tdisp_proto and tdisp.
@@ -34,6 +34,7 @@ pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
 pub use tdisp_proto::TdispReportType;
 
+use hvdef::Vtl;
 use tdisp_proto::TdispCommandRequestBind;
 use tdisp_proto::TdispCommandRequestGetTdiReport;
 use tdisp_proto::TdispCommandRequestStartTdi;
@@ -84,6 +85,39 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
         &self,
         reason: TdispGuestUnbindReason,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+}
+
+/// Provides platform-specific methods for unblocking device resources after
+/// TDISP attestation.
+///
+/// After a device has been attested and placed in the Run state via
+/// [`TdispVirtualDeviceInterface`], platform-specific operations are required
+/// to make device resources (MMIO, DMA) accessible to the guest. This trait
+/// abstracts those operations.
+pub trait TdispResourceValidationInterface: Send + Sync {
+    /// Unblock MMIO access for a specific resource on the device.
+    ///
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    /// * `range_id` - Identifies which MMIO range to unblock.
+    /// * `base_gpa` - The base guest physical address of the MMIO range to unblock.
+    /// * `base_offset` - The offset within the range specified by `range_id` to start
+    ///   unblocking from. Necessary for cases where the host splits the MMIO range
+    ///   into multiple subranges for unblocking.
+    /// * `length_in_bytes` - The length in bytes of the MMIO range to unblock starting from `base_offset`.
+    fn tdisp_unblock_mmio(
+        &self,
+        target_vtl: Vtl,
+        device_id: u64,
+        range_id: u64,
+        base_gpa: u64,
+        base_offset: u64,
+        length_in_bytes: u64,
+    ) -> anyhow::Result<()>;
+
+    /// Unblock DMA access for the device's IOMMU domain.
+    ///
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u64) -> anyhow::Result<()>;
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
