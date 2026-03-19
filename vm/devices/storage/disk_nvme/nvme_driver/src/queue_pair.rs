@@ -949,7 +949,7 @@ struct PendingCommand {
     command: spec::Command,
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
-    /// When the command was submitted to the queue.
+    /// When the command was submitted to the queue. Used only for the admin queue
     #[inspect(skip)]
     issued_at: Option<Instant>,
 }
