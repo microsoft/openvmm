@@ -10,7 +10,7 @@ use super::boot_time::BootProfile;
 use super::platform;
 use crate::report::MetricStats;
 use anyhow::Context as _;
-use std::sync::OnceLock;
+use std::path::PathBuf;
 
 const ARCH: petri_artifacts_common::tags::MachineArch =
     petri_artifacts_common::tags::MachineArch::X86_64;
@@ -25,8 +25,50 @@ pub struct ScaleBootTest {
     pub vms: Option<Vec<u32>>,
     /// Maximum number of concurrent VMs (default: 64).
     pub max_vms: u32,
-    /// Cached pre-built initrd (built once, reused across iterations).
-    pub prebuilt_initrd: OnceLock<tempfile::TempPath>,
+    /// Pre-built initrd.
+    initrd: tempfile::TempPath,
+}
+
+impl ScaleBootTest {
+    /// Create a new scale boot test, building the initrd up front.
+    pub fn new(
+        profile: BootProfile,
+        mem_mb: u64,
+        vms: Option<Vec<u32>>,
+        max_vms: u32,
+        resolver: &petri::ArtifactResolver<'_>,
+    ) -> anyhow::Result<Self> {
+        let firmware = petri::Firmware::linux_direct(resolver, ARCH);
+        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+            resolver, firmware, ARCH, true,
+        )
+        .context("firmware/arch not compatible with OpenVMM backend")?;
+
+        let mut post_test_hooks = Vec::new();
+        let log_source = crate::log_source();
+        let params = petri::PetriTestParams {
+            test_name: "scale_boot_initrd_prep",
+            logger: &log_source,
+            post_test_hooks: &mut post_test_hooks,
+        };
+
+        let initrd = pal_async::DefaultPool::run_with(async |driver| {
+            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            builder.prepare_initrd().context("failed to prepare initrd")
+        })?;
+
+        Ok(Self {
+            profile,
+            mem_mb,
+            vms,
+            max_vms,
+            initrd,
+        })
+    }
+
+    fn initrd_path(&self) -> PathBuf {
+        self.initrd.to_path_buf()
+    }
 }
 
 /// Register artifacts needed by the scale boot test.
@@ -102,7 +144,7 @@ pub async fn run_scale_test(
         tracing::info!(n, "launching {n} VMs concurrently");
 
         let futs: Vec<_> = (0..n)
-            .map(|vm_idx| boot_one_vm(test, resolver, driver, n, vm_idx))
+            .map(|vm_idx| boot_one_vm(test, test.initrd_path(), resolver, driver, n, vm_idx))
             .collect();
 
         let results = futures::future::join_all(futs).await;
@@ -217,20 +259,13 @@ fn stat(prefix: &str, name: &str, unit: &str, value: f64) -> MetricStats {
     }
 }
 
-/// Boot a single VM and return (vm, agent, boot_time_ms).
-async fn boot_one_vm(
+/// Create a VM builder with the standard scale-boot configuration.
+fn make_builder(
     test: &ScaleBootTest,
+    test_name: &str,
     resolver: &petri::ArtifactResolver<'_>,
     driver: &pal_async::DefaultDriver,
-    n: u32,
-    vm_idx: u32,
-) -> anyhow::Result<(
-    petri::PetriVm<petri::openvmm::OpenVmmPetriBackend>,
-    petri::pipette::PipetteClient,
-    f64,
-)> {
-    let test_name_group = format!("scale_boot_{n}_vm_{vm_idx}");
-
+) -> anyhow::Result<petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend>> {
     let firmware = petri::Firmware::linux_direct(resolver, ARCH);
     let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
         resolver, firmware, ARCH, true,
@@ -240,7 +275,7 @@ async fn boot_one_vm(
     let mut post_test_hooks = Vec::new();
     let log_source = crate::log_source();
     let params = petri::PetriTestParams {
-        test_name: &test_name_group,
+        test_name,
         logger: &log_source,
         post_test_hooks: &mut post_test_hooks,
     };
@@ -263,17 +298,24 @@ async fn boot_one_vm(
         });
     }
 
-    // Reuse pre-built initrd.
-    let initrd_path = match test.prebuilt_initrd.get() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let path = builder
-                .prepare_initrd()
-                .context("failed to prepare initrd")?;
-            test.prebuilt_initrd.set(path).ok();
-            test.prebuilt_initrd.get().unwrap().to_path_buf()
-        }
-    };
+    Ok(builder)
+}
+
+/// Boot a single VM and return (vm, agent, boot_time_ms).
+async fn boot_one_vm(
+    test: &ScaleBootTest,
+    initrd_path: PathBuf,
+    resolver: &petri::ArtifactResolver<'_>,
+    driver: &pal_async::DefaultDriver,
+    n: u32,
+    vm_idx: u32,
+) -> anyhow::Result<(
+    petri::PetriVm<petri::openvmm::OpenVmmPetriBackend>,
+    petri::pipette::PipetteClient,
+    f64,
+)> {
+    let test_name = format!("scale_boot_{n}_vm_{vm_idx}");
+    let mut builder = make_builder(test, &test_name, resolver, driver)?;
     builder = builder.with_prebuilt_initrd(initrd_path);
 
     let start = std::time::Instant::now();

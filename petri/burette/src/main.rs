@@ -28,7 +28,6 @@ mod tests;
 
 use anyhow::Context as _;
 use clap::Parser;
-use harness::ColdPerfTest as _;
 use report::MetricStats;
 use std::path::Path;
 use std::path::PathBuf;
@@ -202,18 +201,13 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                         )
                     })?;
 
-                let test = tests::boot_time::BootTimeTest {
-                    profile,
-                    diag: args.diag,
-                    mem_mb: args.mem_mb,
-                    prebuilt_initrd: OnceLock::new(),
-                };
-
-                // Phase 1+2: resolve artifacts.
-                let artifacts = resolve_artifacts(|resolver| test.register_artifacts(resolver))?;
+                let artifacts = resolve_artifacts(tests::boot_time::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
-                // Phase 3: run the test.
+                let test =
+                    tests::boot_time::BootTimeTest::new(profile, args.diag, args.mem_mb, &resolver)
+                        .context("boot_time prep")?;
+
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
                     harness::run_cold_test(&test, &resolver, &driver, args.iterations).await
                 })
@@ -230,16 +224,17 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                         )
                     })?;
 
-                let test = tests::scale_boot::ScaleBootTest {
-                    profile,
-                    mem_mb: args.mem_mb,
-                    vms: args.vms.clone(),
-                    max_vms: args.max_vms,
-                    prebuilt_initrd: OnceLock::new(),
-                };
-
                 let artifacts = resolve_artifacts(tests::scale_boot::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let test = tests::scale_boot::ScaleBootTest::new(
+                    profile,
+                    args.mem_mb,
+                    args.vms.clone(),
+                    args.max_vms,
+                    &resolver,
+                )
+                .context("scale_boot prep")?;
 
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
                     tests::scale_boot::run_scale_test(&test, &resolver, &driver).await
@@ -257,14 +252,11 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                         )
                     })?;
 
-                let test = tests::memory::MemoryTest {
-                    profile,
-                    mem_mb: args.mem_mb,
-                    prebuilt_initrd: OnceLock::new(),
-                };
-
-                let artifacts = resolve_artifacts(|resolver| test.register_artifacts(resolver))?;
+                let artifacts = resolve_artifacts(tests::memory::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let test = tests::memory::MemoryTest::new(profile, args.mem_mb, &resolver)
+                    .context("memory prep")?;
 
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
                     harness::run_cold_test(&test, &resolver, &driver, args.iterations).await

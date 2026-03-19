@@ -10,7 +10,6 @@ use super::boot_time::BootProfile;
 use super::platform;
 use crate::report::MetricResult;
 use anyhow::Context as _;
-use std::sync::OnceLock;
 
 const ARCH: petri_artifacts_common::tags::MachineArch =
     petri_artifacts_common::tags::MachineArch::X86_64;
@@ -21,8 +20,50 @@ pub struct MemoryTest {
     pub profile: BootProfile,
     /// Guest RAM in MiB.
     pub mem_mb: u64,
-    /// Cached pre-built initrd.
-    pub prebuilt_initrd: OnceLock<tempfile::TempPath>,
+    /// Pre-built initrd.
+    initrd: tempfile::TempPath,
+}
+
+impl MemoryTest {
+    /// Create a new memory test, building the initrd up front.
+    pub fn new(
+        profile: BootProfile,
+        mem_mb: u64,
+        resolver: &petri::ArtifactResolver<'_>,
+    ) -> anyhow::Result<Self> {
+        let firmware = petri::Firmware::linux_direct(resolver, ARCH);
+        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+            resolver, firmware, ARCH, true,
+        )
+        .context("firmware/arch not compatible with OpenVMM backend")?;
+
+        let mut post_test_hooks = Vec::new();
+        let log_source = crate::log_source();
+        let params = petri::PetriTestParams {
+            test_name: "memory_initrd_prep",
+            logger: &log_source,
+            post_test_hooks: &mut post_test_hooks,
+        };
+
+        let initrd = pal_async::DefaultPool::run_with(async |driver| {
+            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            builder.prepare_initrd().context("failed to prepare initrd")
+        })?;
+
+        Ok(Self {
+            profile,
+            mem_mb,
+            initrd,
+        })
+    }
+}
+
+/// Register artifacts needed by the memory test.
+pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
+    let firmware = petri::Firmware::linux_direct(resolver, ARCH);
+    petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+        resolver, firmware, ARCH, true,
+    );
 }
 
 impl crate::harness::ColdPerfTest for MemoryTest {
@@ -38,11 +79,8 @@ impl crate::harness::ColdPerfTest for MemoryTest {
         1
     }
 
-    fn register_artifacts(&self, resolver: &petri::ArtifactResolver<'_>) {
-        let firmware = petri::Firmware::linux_direct(resolver, ARCH);
-        petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
-        );
+    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
+        register_artifacts(resolver);
     }
 
     async fn run_once(
@@ -83,18 +121,7 @@ impl crate::harness::ColdPerfTest for MemoryTest {
             });
         }
 
-        // Reuse pre-built initrd.
-        let initrd_path = match self.prebuilt_initrd.get() {
-            Some(p) => p.to_path_buf(),
-            None => {
-                let path = builder
-                    .prepare_initrd()
-                    .context("failed to prepare initrd")?;
-                self.prebuilt_initrd.set(path).ok();
-                self.prebuilt_initrd.get().unwrap().to_path_buf()
-            }
-        };
-        builder = builder.with_prebuilt_initrd(initrd_path);
+        builder = builder.with_prebuilt_initrd(self.initrd.to_path_buf());
 
         let (mut vm, agent) = builder.run().await.context("failed to boot VM")?;
 

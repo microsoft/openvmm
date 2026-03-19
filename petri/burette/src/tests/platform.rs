@@ -42,11 +42,11 @@ pub struct SmapsMapping {
 pub struct SmapsBreakdown {
     /// Mappings with RSS > 0, sorted by private_kib descending.
     pub mappings: Vec<SmapsMapping>,
-    /// Sum of RssFile from smaps_rollup (file-backed pages).
+    /// RssFile from `/proc/{pid}/status` (file-backed pages).
     pub rss_file_kib: u64,
-    /// Sum of RssAnon from smaps_rollup (anonymous pages).
+    /// RssAnon from `/proc/{pid}/status` (anonymous pages).
     pub rss_anon_kib: u64,
-    /// Sum of RssShmem from smaps_rollup (shared memory pages, e.g. guest RAM).
+    /// RssShmem from `/proc/{pid}/status` (shared memory pages, e.g. guest RAM).
     pub rss_shmem_kib: u64,
     /// Private bytes in named guest RAM mappings (`[anon:guest-ram-*]`).
     /// Subtract from total private to get VMM-only overhead.
@@ -86,7 +86,11 @@ mod linux {
         let mut queue = vec![root_pid];
 
         while let Some(pid) = queue.pop() {
-            // Read all thread IDs for this process.
+            // We must enumerate all threads, not just the main thread,
+            // because fork()/clone() sets the child's parent to the
+            // specific thread that called it. Each child appears in
+            // exactly one thread's `children` file, so there are no
+            // duplicates.
             let task_dir = format!("/proc/{pid}/task");
             let tids: Vec<i32> = match std::fs::read_dir(&task_dir) {
                 Ok(entries) => entries
@@ -248,6 +252,9 @@ mod linux {
                     cur_rss,
                     cur_private,
                 );
+                // Parse the smaps header. The format is:
+                //   addr perms offset dev inode    pathname
+                // with variable whitespace padding before pathname.
                 let mut parts = line.split_whitespace();
                 cur_range = parts.next().unwrap_or("").to_string();
                 cur_perms = parts.next().unwrap_or("").to_string();
@@ -255,7 +262,8 @@ mod linux {
                 let _ = parts.next();
                 let _ = parts.next();
                 let _ = parts.next();
-                cur_name = parts.next().unwrap_or("").to_string();
+                // Collect remaining tokens as the pathname.
+                cur_name = parts.collect::<Vec<_>>().join(" ");
                 cur_rss = 0;
                 cur_private = 0;
             } else if let Some(rest) = line.strip_prefix("Rss:") {

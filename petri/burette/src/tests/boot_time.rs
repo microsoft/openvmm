@@ -10,7 +10,6 @@
 
 use crate::report::MetricResult;
 use anyhow::Context as _;
-use std::sync::OnceLock;
 
 const ARCH: petri_artifacts_common::tags::MachineArch =
     petri_artifacts_common::tags::MachineArch::X86_64;
@@ -77,12 +76,56 @@ pub struct BootTimeTest {
     pub diag: bool,
     /// RAM size in MiB (default: 2048).
     pub mem_mb: u64,
-    /// Cached pre-built initrd (built once, reused across iterations).
-    pub prebuilt_initrd: OnceLock<tempfile::TempPath>,
+    /// Pre-built initrd (kept alive for the duration of the test).
+    initrd: tempfile::TempPath,
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
     petri::Firmware::linux_direct(resolver, ARCH)
+}
+
+/// Register artifacts needed by the boot time test.
+pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
+    let firmware = build_firmware(resolver);
+    petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+        resolver, firmware, ARCH, true,
+    );
+}
+
+impl BootTimeTest {
+    /// Create a new boot time test, building the initrd up front.
+    pub fn new(
+        profile: BootProfile,
+        diag: bool,
+        mem_mb: u64,
+        resolver: &petri::ArtifactResolver<'_>,
+    ) -> anyhow::Result<Self> {
+        let firmware = build_firmware(resolver);
+        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+            resolver, firmware, ARCH, true,
+        )
+        .context("firmware/arch not compatible with OpenVMM backend")?;
+
+        let mut post_test_hooks = Vec::new();
+        let log_source = crate::log_source();
+        let params = petri::PetriTestParams {
+            test_name: "boot_time_initrd_prep",
+            logger: &log_source,
+            post_test_hooks: &mut post_test_hooks,
+        };
+
+        let initrd = pal_async::DefaultPool::run_with(async |driver| {
+            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            builder.prepare_initrd().context("failed to prepare initrd")
+        })?;
+
+        Ok(Self {
+            profile,
+            diag,
+            mem_mb,
+            initrd,
+        })
+    }
 }
 
 impl crate::harness::ColdPerfTest for BootTimeTest {
@@ -98,11 +141,8 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
         1
     }
 
-    fn register_artifacts(&self, resolver: &petri::ArtifactResolver<'_>) {
-        let firmware = build_firmware(resolver);
-        petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
-        );
+    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
+        register_artifacts(resolver);
     }
 
     async fn run_once(
@@ -146,21 +186,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
                 });
             }
 
-            // Pre-build the modified initrd on first iteration (gzip
-            // decompress + CPIO inject + recompress). Cached and reused
-            // for subsequent iterations so this cost is outside the
-            // measurement window.
-            let initrd_path = match self.prebuilt_initrd.get() {
-                Some(p) => p.to_path_buf(),
-                None => {
-                    let path = builder
-                        .prepare_initrd()
-                        .context("failed to prepare initrd")?;
-                    self.prebuilt_initrd.set(path).ok();
-                    self.prebuilt_initrd.get().unwrap().to_path_buf()
-                }
-            };
-            builder = builder.with_prebuilt_initrd(initrd_path);
+            builder = builder.with_prebuilt_initrd(self.initrd.to_path_buf());
             builder
         } else {
             // Standard path: full device set, serial agent, CIDATA disk.
