@@ -162,10 +162,6 @@ pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
 
 impl Manifest {
     fn from_config(config: Config) -> Self {
-        let with_pit = config
-            .chipset_devices
-            .iter()
-            .any(|d| d.resource.id() == "pit");
         Self {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
@@ -178,7 +174,7 @@ impl Manifest {
             memory: config.memory,
             processor_topology: config.processor_topology,
             chipset: config.chipset,
-            with_pit,
+            with_pit: config.with_pit,
             #[cfg(windows)]
             kernel_vmnics: config.kernel_vmnics,
             input: config.input,
@@ -206,6 +202,67 @@ impl Manifest {
                 EfiDiagnosticsLogLevelType::Full => LogLevel::make_full(),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_uses_typed_with_pit_from_config() {
+        let cfg = Config {
+            load_mode: LoadMode::None,
+            floppy_disks: Vec::new(),
+            ide_disks: Vec::new(),
+            pcie_root_complexes: Vec::new(),
+            pcie_devices: Vec::new(),
+            pcie_switches: Vec::new(),
+            vpci_devices: Vec::new(),
+            memory: MemoryConfig {
+                mem_size: 0,
+                prefetch_memory: false,
+                private_memory: false,
+                transparent_hugepages: false,
+                mmio_gaps: Vec::new(),
+                pci_ecam_gaps: Vec::new(),
+                pci_mmio_gaps: Vec::new(),
+            },
+            processor_topology: ProcessorTopologyConfig {
+                proc_count: 1,
+                vps_per_socket: None,
+                enable_smt: None,
+                arch: None,
+            },
+            hypervisor: HypervisorConfig::default(),
+            chipset: BaseChipsetManifest::empty(),
+            with_pit: true,
+            vmbus: None,
+            vtl2_vmbus: None,
+            #[cfg(windows)]
+            kernel_vmnics: Vec::new(),
+            input: mesh::Receiver::new(),
+            framebuffer: None,
+            vga_firmware: None,
+            vtl2_gfx: false,
+            virtio_devices: Vec::new(),
+            #[cfg(windows)]
+            vpci_resources: Vec::new(),
+            vmgs: None,
+            secure_boot_enabled: false,
+            custom_uefi_vars: Default::default(),
+            firmware_event_send: None,
+            debugger_rpc: None,
+            vmbus_devices: Vec::new(),
+            chipset_devices: Vec::new(),
+            generation_id_recv: None,
+            rtc_delta_milliseconds: 0,
+            automatic_guest_reset: true,
+            efi_diagnostics_log_level: Default::default(),
+        };
+
+        let manifest = Manifest::from_config(cfg);
+        assert!(manifest.with_pit);
     }
 }
 

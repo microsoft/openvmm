@@ -1040,6 +1040,7 @@ async fn vm_config_from_command_line(
 
     let VmChipsetResult {
         chipset,
+        with_pit,
         mut chipset_devices,
     } = chipset
         .build()
@@ -1630,6 +1631,7 @@ async fn vm_config_from_command_line(
 
     let mut cfg = Config {
         chipset,
+        with_pit,
         load_mode,
         floppy_disks,
         pcie_root_complexes,

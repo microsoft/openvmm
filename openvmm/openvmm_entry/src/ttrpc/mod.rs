@@ -480,6 +480,7 @@ impl VmService {
                 transparent_hugepages: false,
             },
             chipset: chipset.chipset,
+            with_pit: chipset.with_pit,
             processor_topology: ProcessorTopologyConfig {
                 proc_count: req_config
                     .processor_config

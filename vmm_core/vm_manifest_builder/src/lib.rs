@@ -83,6 +83,8 @@ pub enum MachineArch {
 pub struct VmChipsetResult {
     /// The base chipset manifest for the VM.
     pub chipset: BaseChipsetManifest,
+    /// Whether a PIT device is present in the VM's chipset device list.
+    pub with_pit: bool,
     /// The list of chipset devices present in the VM.
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
 }
@@ -211,6 +213,7 @@ impl VmManifestBuilder {
         let mut result = VmChipsetResult {
             chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
+            with_pit: false,
         };
 
         if let Some((backend, port)) = self.debugcon {
@@ -377,11 +380,7 @@ impl VmChipsetResult {
     }
 
     fn attach_pit(&mut self) -> &mut Self {
-        if self
-            .chipset_devices
-            .iter()
-            .any(|device| device.resource.id() == "pit")
-        {
+        if self.with_pit {
             return self;
         }
 
@@ -389,6 +388,7 @@ impl VmChipsetResult {
             name: "pit".to_owned(),
             resource: PitDeviceHandle.into_resource(),
         });
+        self.with_pit = true;
         self
     }
 
@@ -583,5 +583,72 @@ impl VmChipsetResult {
             ]);
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_pit_matrix_matches_chipset_type() {
+        let hyperv_gen1 = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .build()
+            .expect("hyperv gen1 manifest should build");
+        assert!(hyperv_gen1.with_pit);
+
+        let unenlightened_x64 = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .build()
+        .expect("unenlightened x64 manifest should build");
+        assert!(unenlightened_x64.with_pit);
+
+        let unenlightened_aarch64 = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::Aarch64,
+        )
+        .build()
+        .expect("unenlightened aarch64 manifest should build");
+        assert!(!unenlightened_aarch64.with_pit);
+
+        let hyperv_gen2_uefi =
+            VmManifestBuilder::new(BaseChipsetType::HypervGen2Uefi, MachineArch::X86_64)
+                .build()
+                .expect("hyperv gen2 uefi manifest should build");
+        assert!(!hyperv_gen2_uefi.with_pit);
+
+        let hyperv_gen2_linux =
+            VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
+                .build()
+                .expect("hyperv gen2 linux manifest should build");
+        assert!(!hyperv_gen2_linux.with_pit);
+
+        let hcl_host = VmManifestBuilder::new(BaseChipsetType::HclHost, MachineArch::X86_64)
+            .build()
+            .expect("hcl host manifest should build");
+        assert!(!hcl_host.with_pit);
+    }
+
+    #[test]
+    fn attach_pit_is_idempotent() {
+        let mut result = VmChipsetResult {
+            chipset: BaseChipsetManifest::empty(),
+            with_pit: false,
+            chipset_devices: Vec::new(),
+        };
+
+        result.attach_pit();
+        result.attach_pit();
+
+        let pit_count = result
+            .chipset_devices
+            .iter()
+            .filter(|d| d.resource.id() == "pit")
+            .count();
+
+        assert_eq!(pit_count, 1, "PIT handle should only be attached once");
+        assert!(result.with_pit);
     }
 }
