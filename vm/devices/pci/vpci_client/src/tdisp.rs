@@ -21,13 +21,14 @@ use openhcl_tdisp::TdispGuestProtocolType;
 use openhcl_tdisp::TdispGuestUnbindReason;
 use openhcl_tdisp::TdispReportType;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
+use tdisp::TdispTdiState;
 use tdisp::devicereport::TdiReportStruct;
+use virt::IsolationType;
 use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
 use vpci_protocol::SlotNumber;
 
 use super::VpciDevice;
 use super::WorkerRequest;
-use tdisp::TdispTdiState;
 
 #[derive(Inspect)]
 struct VpciClientTdispMutableState {
@@ -51,18 +52,27 @@ pub struct VpciClientTdispState {
     #[inspect(skip)]
     worker_req: mesh::Sender<WorkerRequest>,
     device_id: u64,
+    isolation_type: IsolationType,
+    vtom: u64,
     mutable_state: VpciClientTdispMutableState,
 }
 
 /// Manages the TDISP protocol for a TDISP-capable VPCI device.
 impl VpciClientTdispState {
-    pub(super) fn new(worker_req: mesh::Sender<WorkerRequest>, device_id: u64) -> Self {
+    pub(super) fn new(
+        worker_req: mesh::Sender<WorkerRequest>,
+        device_id: u64,
+        isolation_type: IsolationType,
+        vtom: u64,
+    ) -> Self {
         Self {
             worker_req,
             device_id,
             mutable_state: VpciClientTdispMutableState {
                 tdi_state: TdispTdiState::Uninitialized,
             },
+            isolation_type,
+            vtom,
         }
     }
 
@@ -136,14 +146,12 @@ impl VpciClientTdispState {
     /// See: [`TdispVirtualDeviceInterface::tdisp_get_device_interface_info`]
     pub async fn tdisp_get_device_interface_info(
         &mut self,
+        target_protocol: TdispGuestProtocolType,
     ) -> anyhow::Result<TdispDeviceInterfaceInfo> {
-        // TDISP TODO: Configure the correct guest protocol type when TDX support is added.
-        let target_protocol_type = TdispGuestProtocolType::AmdSevTioV1;
-
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_get_device_interface_info_command(
                 self.device_id,
-                target_protocol_type,
+                target_protocol,
             ))
             .await?;
 
@@ -284,8 +292,33 @@ impl VpciClientTdispState {
     /// error representing why the device is not suitable for TDISP.
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     pub async fn query_capabilities(&mut self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
+        tracing::info!(
+            ?self.isolation_type,
+            "querying TDISP capabilities for device given VM isolation type"
+        );
+
+        let target_protocol = match self.isolation_type {
+            IsolationType::Snp => TdispGuestProtocolType::AmdSevTioV1,
+            IsolationType::Tdx => {
+                tracing::warn!(
+                    "query_capabilities: VM is running with TDX isolation (NOT SUPPORTED)"
+                );
+                anyhow::bail!("TDX isolation is not currently supported for TDISP")
+            }
+            IsolationType::Vbs => {
+                tracing::warn!(
+                    "query_capabilities: VM is running with VBS isolation (NOT SUPPORTED)"
+                );
+                anyhow::bail!("VBS isolation is not currently supported for TDISP")
+            }
+            IsolationType::None => {
+                tracing::warn!("query_capabilities: VM is running with no isolation (no TDISP)");
+                anyhow::bail!("TDISP is not supported without isolation")
+            }
+        };
+
         let device_interface_info = self
-            .tdisp_get_device_interface_info()
+            .tdisp_get_device_interface_info(target_protocol)
             .await
             .context("tdisp_query_capabilities: failed to get device interface info")?;
 
@@ -355,9 +388,12 @@ impl TdispVirtualDeviceInterface for VpciDevice {
         guard.send_tdisp_command(payload).await
     }
 
-    async fn tdisp_get_device_interface_info(&self) -> anyhow::Result<TdispDeviceInterfaceInfo> {
+    async fn tdisp_get_device_interface_info(
+        &self,
+        target_protocol: TdispGuestProtocolType,
+    ) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         let mut guard = self.tdisp.0.lock().await;
-        guard.tdisp_get_device_interface_info().await
+        guard.tdisp_get_device_interface_info(target_protocol).await
     }
 
     async fn tdisp_bind_interface(&self) -> anyhow::Result<()> {

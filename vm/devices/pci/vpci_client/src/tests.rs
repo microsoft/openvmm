@@ -26,6 +26,7 @@ use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
 use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
 use tdisp::test_helpers::new_null_tdisp_interface;
 use test_with_tracing::test;
+use virt::IsolationType;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
@@ -121,7 +122,13 @@ async fn test_negotiate_version(driver: DefaultDriver) {
             .await
             .unwrap();
 
-    let (device, _removed) = devices.into_iter().next().unwrap().init().await.unwrap();
+    let (device, _removed) = devices
+        .into_iter()
+        .next()
+        .unwrap()
+        .init(IsolationType::None, 0)
+        .await
+        .unwrap();
     let MsiAddressData { address, data } = device
         .register_interrupt(
             1,
@@ -182,8 +189,16 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
             .await
             .unwrap();
 
-    let (device, _removed) = devices.into_iter().next().unwrap().init().await.unwrap();
-    let interface = device.tdisp_get_device_interface_info().await;
+    let (device, _removed) = devices
+        .into_iter()
+        .next()
+        .unwrap()
+        .init(IsolationType::None, 0)
+        .await
+        .unwrap();
+    let interface = device
+        .tdisp_get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
+        .await;
 
     match interface {
         Ok(interface) => {

@@ -6,6 +6,9 @@ name = "openhcl_tdisp"
 rust-version.workspace = true
 edition.workspace = true
 
+[features]
+dev_snp_ohcl_tio_support = []
+
 [dependencies]
 hcl.workspace = true
 hvdef.workspace = true

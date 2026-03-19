@@ -35,6 +35,7 @@ use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Poll;
 use user_driver::DmaClient;
+use virt::IsolationType;
 use vmbus_client::driver::OpenParams;
 use vmbus_server::Guid;
 use vmcore::device_state::ChangeDeviceState;
@@ -98,6 +99,7 @@ pub struct VpciRelay {
     allowed_devices: Vec<AllowedDevice>,
     #[inspect(hex)]
     vtom: Option<u64>,
+    isolation_type: IsolationType,
     options: VpciRelayOptions,
 }
 
@@ -182,9 +184,23 @@ impl VpciRelay {
         dma_client: Arc<dyn DmaClient>,
         mmio_range: MemoryRange,
         mmio_access: Box<dyn CreateMemoryAccess>,
+        isolation_type: IsolationType,
         vtom: Option<u64>,
         options: VpciRelayOptions,
     ) -> Self {
+        // Setup test-specific values since TDISP tests don't necessarily take place inside a CVM runner.
+        let target_isolation_type = if options.test_tdisp_flow {
+            IsolationType::Snp
+        } else {
+            isolation_type
+        };
+
+        let target_vtom = if options.test_tdisp_flow {
+            Some(0x400000000000) // For testing, we can just use VTOM value we expect from most SNP platforms.
+        } else {
+            vtom
+        };
+
         Self {
             driver_source,
             dma_client,
@@ -195,7 +211,8 @@ impl VpciRelay {
             mmio_range,
             mmio_access,
             allowed_devices: Vec::new(),
-            vtom,
+            vtom: target_vtom,
+            isolation_type: target_isolation_type,
             options,
         }
     }
@@ -315,7 +332,7 @@ impl VpciRelay {
         tracing::info!(%instance_id, vendor_id = hw_ids.vendor_id, device_id = hw_ids.device_id, "vpci relay device arrived");
 
         let (vpci_device, removed) = vpci_device
-            .init()
+            .init(self.isolation_type, self.vtom.unwrap_or(0))
             .await
             .context("failed to initialize vpci device")?;
         let vpci_device = Arc::new(vpci_device);
@@ -423,7 +440,7 @@ impl VpciRelay {
         assert_eq!(device.tdisp_tdi_state().await, TdispTdiState::Uninitialized);
 
         let device_interface_info = device
-            .tdisp_get_device_interface_info()
+            .tdisp_get_device_interface_info(TDISP_MOCK_GUEST_PROTOCOL)
             .await
             .context("tdisp_test_mock_flow: failed to get device interface info over vpci")?;
 

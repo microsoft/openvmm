@@ -8,6 +8,7 @@
 //!
 //! See: `vm/devices/tdisp` for more information.
 
+#[cfg(feature = "dev_snp_ohcl_tio_support")]
 mod sevtio;
 
 // Re-export the TDISP protocol types necessary for OpenHCL from top level tdisp crates
@@ -55,6 +56,7 @@ pub trait TdispVirtualDeviceInterface: Send + Sync {
     /// Get the TDISP interface info for the device.
     fn tdisp_get_device_interface_info(
         &self,
+        target_protocol: TdispGuestProtocolType,
     ) -> impl Future<Output = anyhow::Result<TdispDeviceInterfaceInfo>> + Send;
 
     /// Bind the device to the current partition and transition to Locked.

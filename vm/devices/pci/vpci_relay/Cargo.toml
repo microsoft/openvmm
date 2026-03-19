@@ -19,6 +19,7 @@ openhcl_tdisp.workspace = true
 user_driver.workspace = true
 vpci_client.workspace = true
 vpci.workspace = true
+virt.workspace = true
 vmbus_client.workspace = true
 vmbus_server.workspace = true
 vmcore.workspace = true
