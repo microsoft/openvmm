@@ -5,14 +5,15 @@ how VP threads split time between guest execution and device work, what happens
 when things block, and how the [sidecar kernel](sidecar.md) changes the picture.
 
 ```admonish tip
-This document uses "lower VTL" and "VTL0" to refer to what are similar things.
-VTLs increase in privilege as the number gets higher. VTL2 is a higher privliege
-level than VTL1, which is yet higher than VTL0.
+This document uses "lower VTL" and "VTL0" to refer to what are similar
+things. VTLs increase in privilege as the number gets higher. VTL2 is a
+higher privilege level than VTL1, which is yet higher than VTL0.
 
-Engineers focused on IO often think about the "guest" as "VTL0", since that's the
-VTL that issues IO to storage and networking devices. When this document discusses
-entering VTL0, though, it's more precise to say that control returns to any VTL that
-is less privileged than VTL2. It might be VTL0 or it might be VTL1.
+Engineers focused on IO often think about the "guest" as "VTL0", since
+that's the VTL that issues IO to storage and networking devices. When
+this document discusses entering VTL0, though, it's more precise to say
+that control returns to any VTL that is less privileged than VTL2. It
+might be VTL0 or it might be VTL1.
 ```
 
 ## Scope
