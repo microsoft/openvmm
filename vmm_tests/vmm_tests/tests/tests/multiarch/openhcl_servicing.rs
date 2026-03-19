@@ -921,9 +921,9 @@ async fn servicing_keepalive_slow_create_io_queue(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
-    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(20);
-    const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
-    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(60);
+    const QUEUE_CREATION_DELAY: Duration = Duration::from_secs(10);
+    const TRIGGER_CREATE_IO_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+    const TOTAL_SAVE_TIMEOUT: Duration = Duration::from_secs(30);
 
     let mut flags = config.default_servicing_flags();
     flags.enable_nvme_keepalive = true;
@@ -991,10 +991,15 @@ async fn servicing_keepalive_slow_create_io_queue(
     // Even though the dd command will timeout, the run loop will be stuck until
     // the create_io_queue command completes.
     fault_start_updater.set(true).await;
-    _ = CancelContext::new()
+    let io_result = CancelContext::new()
         .with_timeout(TRIGGER_CREATE_IO_QUEUE_TIMEOUT)
         .until_cancelled(run_cpu_pinned_io(&agent, disk_path, target_cpu))
         .await;
+
+    assert!(
+        io_result.is_err(),
+        "IO command should have timed out while waiting for create_io_queue to complete, but it succeeded. This likely means the create_io_queue command did not get injected correctly."
+    );
 
     CancelContext::new()
         .with_timeout(TOTAL_SAVE_TIMEOUT)
@@ -1003,8 +1008,8 @@ async fn servicing_keepalive_slow_create_io_queue(
         .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
         .expect("Save failed");
 
-    vm.restore_openhcl().await?;
     fault_start_updater.set(false).await;
+    vm.restore_openhcl().await?;
     agent.ping().await?;
     Ok(())
 }
