@@ -361,7 +361,7 @@ mod win_impl {
             Err(_) => return vec![root_pid],
         };
         // SAFETY: CreateToolhelp32Snapshot returns an owned handle.
-        let _snapshot = unsafe { OwnedHandle::from_raw_handle(raw_snapshot.0 as _) };
+        let _snapshot = unsafe { OwnedHandle::from_raw_handle(raw_snapshot.0.cast()) };
 
         // Build parent -> children map.
         let mut children_map: std::collections::HashMap<u32, Vec<u32>> =
@@ -430,7 +430,7 @@ mod win_impl {
                 Err(_) => continue, // process exited or access denied
             };
             // SAFETY: OpenProcess returns an owned handle.
-            let _handle = unsafe { OwnedHandle::from_raw_handle(raw_handle.0 as _) };
+            let _handle = unsafe { OwnedHandle::from_raw_handle(raw_handle.0.cast()) };
 
             let mut counters = PROCESS_MEMORY_COUNTERS {
                 cb: size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
