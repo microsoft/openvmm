@@ -5,11 +5,9 @@
 
 use self::capabilities::*;
 use super::task::DeviceCommand;
-use super::task::ReadResult;
 use super::task::StartParams;
 use super::task::TransportState;
 use super::task::TransportStateResult;
-use super::task::WriteResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
@@ -376,10 +374,12 @@ impl VirtioPciDevice {
         }
     }
 
-    fn read_u32(&mut self, offset: u16) -> ReadResult {
+    /// Read a transport register as a u32. Does not handle device-config
+    /// registers — those are dispatched to the device task by `mmio_read`.
+    fn read_u32_local(&mut self, offset: u16) -> u32 {
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
-        let val = match VirtioPciCommonCfg(offset) {
+        match VirtioPciCommonCfg(offset) {
             VirtioPciCommonCfg::DEVICE_FEATURE_SELECT => self.device_feature_select,
             VirtioPciCommonCfg::DEVICE_FEATURE => {
                 let feature_select = self.device_feature_select as usize;
@@ -475,22 +475,16 @@ impl VirtioPciDevice {
                 }
                 status
             }
-            VirtioPciCommonCfg(offset) if offset >= BAR0_DEVICE_CFG_OFFSET => {
-                return ReadResult::Defer(defer_config_read(
-                    &self.device_sender,
-                    offset - BAR0_DEVICE_CFG_OFFSET,
-                    4,
-                ));
-            }
             _ => {
                 tracing::warn!(offset, "unknown bar read");
                 0xffffffff
             }
-        };
-        ReadResult::Value(val)
+        }
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) -> WriteResult {
+    /// Write a transport register as a u32. Does not handle device-config
+    /// registers — those are dispatched to the device task by `mmio_write`.
+    fn write_u32_local(&mut self, offset: u16, val: u32) {
         assert!(offset & 3 == 0);
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
@@ -516,7 +510,7 @@ impl VirtioPciDevice {
                         // An enable is in flight. Record the reset so
                         // poll_device() resets instead of setting DRIVER_OK.
                         self.state.set_pending_reset();
-                        return WriteResult::Ok;
+                        return;
                     }
 
                     if !self.device_status.driver_ok() {
@@ -536,7 +530,7 @@ impl VirtioPciDevice {
                             waker.wake();
                         }
                     }
-                    return WriteResult::Ok;
+                    return;
                 }
 
                 let new_status = VirtioDeviceStatus::from(val as u8);
@@ -557,7 +551,7 @@ impl VirtioPciDevice {
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
                     if self.state.is_busy() {
-                        return WriteResult::Ok;
+                        return;
                     }
                     self.install_doorbells();
 
@@ -652,48 +646,40 @@ impl VirtioPciDevice {
                     self.events[val as usize].signal();
                 }
             }
-            VirtioPciCommonCfg(offset) if offset >= BAR0_DEVICE_CFG_OFFSET => {
-                return WriteResult::Defer(defer_config_write(
-                    &self.device_sender,
-                    offset - BAR0_DEVICE_CFG_OFFSET,
-                    &val.to_ne_bytes(),
-                ));
-            }
             _ => {
                 tracing::warn!(offset, "unknown bar write at offset");
             }
         }
-        WriteResult::Ok
     }
 }
 
 impl VirtioPciDevice {
-    fn read_bar(&mut self, bar: u8, offset: u16) -> ReadResult {
+    /// Read a BAR register as a u32 (transport registers only, not config).
+    fn read_bar_local(&mut self, bar: u8, offset: u16) -> u32 {
         match bar {
-            0 => self.read_u32(offset),
+            0 => self.read_u32_local(offset),
             2 => {
                 if let InterruptKind::Msix(msix) = &self.interrupt_kind {
-                    ReadResult::Value(msix.read_u32(offset as u64))
+                    msix.read_u32(offset as u64)
                 } else {
-                    ReadResult::Value(!0)
+                    !0
                 }
             }
-            _ => ReadResult::Value(!0),
+            _ => !0,
         }
     }
 
-    fn write_bar(&mut self, bar: u8, offset: u16, value: u32) -> WriteResult {
+    /// Write a BAR register as a u32 (transport registers only, not config).
+    fn write_bar_local(&mut self, bar: u8, offset: u16, value: u32) {
         match bar {
-            0 => self.write_u32(offset, value),
+            0 => self.write_u32_local(offset, value),
             2 => {
                 if let InterruptKind::Msix(msix) = &mut self.interrupt_kind {
                     msix.write_u32(offset as u64, value)
                 }
-                WriteResult::Ok
             }
             _ => {
                 tracing::warn!(bar, offset, "Unknown write");
-                WriteResult::Ok
             }
         }
     }
@@ -929,19 +915,7 @@ impl MmioIntercept for VirtioPciDevice {
     fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
         if let Some((bar, offset)) = self.config_space.find_bar(address) {
             let offset = offset as u16;
-            // For device config bar reads, we may need to defer.
-            // Check if the read is aligned on a 4-byte boundary and
-            // falls entirely within the device config region.
-            if bar == 0 && data.len() == 4 && (offset & 3) == 0 {
-                match self.read_bar(bar, offset) {
-                    ReadResult::Value(val) => {
-                        data.copy_from_slice(&val.to_ne_bytes());
-                        return IoResult::Ok;
-                    }
-                    ReadResult::Defer(io_result) => return io_result,
-                }
-            }
-            // For sub-word config reads, defer to the device task.
+            // Device config — defer the entire access to the device task.
             if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
                 return defer_config_read(
                     &self.device_sender,
@@ -949,10 +923,8 @@ impl MmioIntercept for VirtioPciDevice {
                     data.len() as u8,
                 );
             }
-            read_as_u32_chunks(offset, data, |offset| match self.read_bar(bar, offset) {
-                ReadResult::Value(val) => val,
-                ReadResult::Defer(_) => 0,
-            });
+            // Transport/MSI-X registers — handle locally.
+            read_as_u32_chunks(offset, data, |offset| self.read_bar_local(bar, offset));
         }
         IoResult::Ok
     }
@@ -960,15 +932,7 @@ impl MmioIntercept for VirtioPciDevice {
     fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
         if let Some((bar, offset)) = self.config_space.find_bar(address) {
             let offset = offset as u16;
-            // For device config bar writes, we may need to defer.
-            if bar == 0 && data.len() == 4 && (offset & 3) == 0 {
-                let value = u32::from_ne_bytes(data.try_into().unwrap());
-                match self.write_bar(bar, offset, value) {
-                    WriteResult::Ok => return IoResult::Ok,
-                    WriteResult::Defer(io_result) => return io_result,
-                }
-            }
-            // For sub-word config writes, defer to the device task.
+            // Device config — defer the entire access to the device task.
             if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
                 return defer_config_write(
                     &self.device_sender,
@@ -976,15 +940,13 @@ impl MmioIntercept for VirtioPciDevice {
                     data,
                 );
             }
+            // Transport/MSI-X registers — handle locally.
             write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
                 ReadWriteRequestType::Write(value) => {
-                    self.write_bar(bar, offset, value);
+                    self.write_bar_local(bar, offset, value);
                     None
                 }
-                ReadWriteRequestType::Read => match self.read_bar(bar, offset) {
-                    ReadResult::Value(val) => Some(val),
-                    ReadResult::Defer(_) => Some(0),
-                },
+                ReadWriteRequestType::Read => Some(self.read_bar_local(bar, offset)),
             });
         }
         IoResult::Ok

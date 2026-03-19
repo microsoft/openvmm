@@ -151,20 +151,6 @@ impl TransportState {
     }
 }
 
-/// Result of a register read, which may be synchronous or deferred to the
-/// device task (for device-config registers).
-pub enum ReadResult {
-    Value(u32),
-    Defer(IoResult),
-}
-
-/// Result of a register write, which may be synchronous or deferred to the
-/// device task (for device-config registers).
-pub enum WriteResult {
-    Ok,
-    Defer(IoResult),
-}
-
 /// Owns the virtio device and processes commands from the transport.
 struct DeviceTask {
     device: Box<dyn VirtioDevice>,

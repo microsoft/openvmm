@@ -2,11 +2,9 @@
 // Licensed under the MIT License.
 
 use super::task::DeviceCommand;
-use super::task::ReadResult;
 use super::task::StartParams;
 use super::task::TransportState;
 use super::task::TransportStateResult;
-use super::task::WriteResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
@@ -223,28 +221,27 @@ impl VirtioMmioDevice {
         self.interrupt_state.lock().update(false, !0);
     }
 
-    /// Synchronous register read for tests. Panics on deferred results
-    /// (device-config reads), which must go through `mmio_read` instead.
+    /// Synchronous transport register read for tests. Only handles
+    /// transport registers — not device config.
     #[cfg(test)]
     pub(crate) fn read_u32(&mut self, address: u64) -> u32 {
-        let mut data = [0u8; 4];
-        MmioIntercept::mmio_read(self, address, &mut data).unwrap();
-        u32::from_ne_bytes(data)
+        self.read_u32_local((address & 0xfff) as u16)
     }
 
-    /// Synchronous register write for tests. Panics on deferred results
-    /// (device-config writes), which must go through `mmio_write` instead.
+    /// Synchronous transport register write for tests. Only handles
+    /// transport registers — not device config.
     #[cfg(test)]
     pub(crate) fn write_u32(&mut self, address: u64, val: u32) {
-        MmioIntercept::mmio_write(self, address, &val.to_ne_bytes()).unwrap();
+        self.write_u32_local((address & 0xfff) as u16, val);
     }
 }
 
 impl VirtioMmioDevice {
-    fn read_u32_inner(&mut self, address: u64) -> ReadResult {
-        let offset = (address & 0xfff) as u16;
+    /// Read a transport register as a u32. Does not handle device-config
+    /// registers — those are dispatched to the device task by `mmio_read`.
+    fn read_u32_local(&mut self, offset: u16) -> u32 {
         assert!(offset & 3 == 0);
-        let val = match VirtioMmioRegister(offset) {
+        match VirtioMmioRegister(offset) {
             VirtioMmioRegister::MAGIC_VALUE => u32::from_le_bytes(*b"virt"),
             VirtioMmioRegister::VERSION => 2,
             VirtioMmioRegister::DEVICE_ID => self.device_id,
@@ -342,20 +339,13 @@ impl VirtioMmioDevice {
                 }
             }
             VirtioMmioRegister::CONFIG_GENERATION => self.config_generation,
-            VirtioMmioRegister(offset) if offset >= VirtioMmioRegister::CONFIG.0 => {
-                return ReadResult::Defer(defer_config_read(
-                    &self.device_sender,
-                    offset - VirtioMmioRegister::CONFIG.0,
-                    4,
-                ));
-            }
             _ => 0xffffffff,
-        };
-        ReadResult::Value(val)
+        }
     }
 
-    fn write_u32_inner(&mut self, address: u64, val: u32) -> WriteResult {
-        let offset = (address & 0xfff) as u16;
+    /// Write a transport register as a u32. Does not handle device-config
+    /// registers — those are dispatched to the device task by `mmio_write`.
+    fn write_u32_local(&mut self, offset: u16, val: u32) {
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
         let queues_locked = self.device_status.driver_ok();
@@ -404,7 +394,7 @@ impl VirtioMmioDevice {
                         // An enable is in flight. Record the reset so
                         // poll_device() resets instead of setting DRIVER_OK.
                         self.state.set_pending_reset();
-                        return WriteResult::Ok;
+                        return;
                     }
 
                     if !self.device_status.driver_ok() {
@@ -421,7 +411,7 @@ impl VirtioMmioDevice {
                             waker.wake();
                         }
                     }
-                    return WriteResult::Ok;
+                    return;
                 }
 
                 let new_status = VirtioDeviceStatus::from(val as u8);
@@ -442,7 +432,7 @@ impl VirtioMmioDevice {
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
                     if self.state.is_busy() {
-                        return WriteResult::Ok;
+                        return;
                     }
                     self.install_doorbells();
 
@@ -512,16 +502,8 @@ impl VirtioMmioDevice {
                     queue.used_addr = (val as u64) << 32 | queue.used_addr & 0xffffffff;
                 }
             }
-            VirtioMmioRegister(offset) if offset >= VirtioMmioRegister::CONFIG.0 => {
-                return WriteResult::Defer(defer_config_write(
-                    &self.device_sender,
-                    offset - VirtioMmioRegister::CONFIG.0,
-                    &val.to_ne_bytes(),
-                ));
-            }
             _ => (),
         }
-        WriteResult::Ok
     }
 }
 
@@ -744,18 +726,8 @@ mod saved_state {
 
 impl MmioIntercept for VirtioMmioDevice {
     fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
-        // For aligned 4-byte reads, handle deferred results from device config.
-        if data.len() == 4 && (address & 3) == 0 {
-            match self.read_u32_inner(address) {
-                ReadResult::Value(val) => {
-                    data.copy_from_slice(&val.to_ne_bytes());
-                    return IoResult::Ok;
-                }
-                ReadResult::Defer(io_result) => return io_result,
-            }
-        }
-        // For sub-word config reads, defer to the device task.
         let offset = (address & 0xfff) as u16;
+        // Device config — defer the entire access to the device task.
         if offset >= VirtioMmioRegister::CONFIG.0 {
             return defer_config_read(
                 &self.device_sender,
@@ -763,26 +735,16 @@ impl MmioIntercept for VirtioMmioDevice {
                 data.len() as u8,
             );
         }
+        // Transport registers — handle locally.
         read_as_u32_chunks(address, data, |address| {
-            match self.read_u32_inner(address) {
-                ReadResult::Value(val) => val,
-                ReadResult::Defer(_) => 0,
-            }
+            self.read_u32_local((address & 0xfff) as u16)
         });
         IoResult::Ok
     }
 
     fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
-        // For aligned 4-byte writes, handle deferred results from device config.
-        if data.len() == 4 && (address & 3) == 0 {
-            let value = u32::from_ne_bytes(data.try_into().unwrap());
-            match self.write_u32_inner(address, value) {
-                WriteResult::Ok => return IoResult::Ok,
-                WriteResult::Defer(io_result) => return io_result,
-            }
-        }
-        // For sub-word config writes, defer to the device task.
         let offset = (address & 0xfff) as u16;
+        // Device config — defer the entire access to the device task.
         if offset >= VirtioMmioRegister::CONFIG.0 {
             return defer_config_write(
                 &self.device_sender,
@@ -790,15 +752,13 @@ impl MmioIntercept for VirtioMmioDevice {
                 data,
             );
         }
+        // Transport registers — handle locally.
         write_as_u32_chunks(address, data, |address, request_type| match request_type {
             ReadWriteRequestType::Write(value) => {
-                self.write_u32_inner(address, value);
+                self.write_u32_local((address & 0xfff) as u16, value);
                 None
             }
-            ReadWriteRequestType::Read => match self.read_u32_inner(address) {
-                ReadResult::Value(val) => Some(val),
-                ReadResult::Defer(_) => Some(0),
-            },
+            ReadWriteRequestType::Read => Some(self.read_u32_local((address & 0xfff) as u16)),
         });
         IoResult::Ok
     }
