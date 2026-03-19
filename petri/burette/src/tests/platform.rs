@@ -406,7 +406,6 @@ mod windows {
     }
 
     /// Measure memory for all processes in the given PID list.
-    #[expect(unsafe_code)] // FFI calls to Win32 API
     pub fn measure_tree_memory(pids: &[i32]) -> anyhow::Result<TreeMemory> {
         use std::os::windows::io::FromRawHandle;
         use std::os::windows::io::OwnedHandle;
