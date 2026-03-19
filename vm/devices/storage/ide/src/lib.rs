@@ -3005,29 +3005,15 @@ mod tests {
         device_select(&mut ide_device, &dev_path).await;
         prep_ide_channel(&mut ide_device, DriveType::Hard, &dev_path);
 
-        let r = ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes());
-        match r {
-            IoResult::Ok => {
-                // After fix: non-DMA commands are rejected early
-            }
-            IoResult::Defer(mut deferred) => {
-                // Poll a bounded number of times. With the bug present,
-                // this never completes (DRQ stays set after IO finishes).
-                const MAX_POLLS: usize = 1024;
-                for _ in 0..MAX_POLLS {
-                    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-                    ide_device.poll_device(&mut cx);
-                    if let Poll::Ready(result) = deferred.poll_write(&mut cx) {
-                        result.unwrap();
-                        return;
-                    }
-                }
-                panic!(
-                    "non-DMA command (READ_SECTORS) via enlightened path \
-                     didn't complete after {MAX_POLLS} polls -- deferred write stuck"
-                );
-            }
-            IoResult::Err(e) => panic!("unexpected error: {e:?}"),
-        }
+        // After fix: non-DMA commands through the enlightened path are
+        // rejected early and return Ok (not Defer). Before the fix,
+        // this would return Defer and hang forever.
+        assert!(
+            matches!(
+                ide_device.io_write(IdeIoPort::PRI_ENLIGHTENED.0, 0_u32.as_bytes()),
+                IoResult::Ok
+            ),
+            "non-DMA command (READ_SECTORS) via enlightened path should return Ok, not Defer"
+        );
     }
 }
