@@ -152,7 +152,7 @@ impl VmTaskDriverBuilder<'_> {
     /// Some devices will want to override the default to reduce jitter or
     /// ensure that IO is issued from the correct processor. For example,
     /// StorVSP sets this to true for its channel workers, so that all of a
-    /// channel's IO and tasks run on the same VP's thread.
+    /// channel's IO and tasks ideally run on the same VP's thread.
     pub fn run_on_target(&mut self, run_on_target: bool) -> &mut Self {
         self.run_on_target = run_on_target;
         self
