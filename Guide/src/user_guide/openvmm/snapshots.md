@@ -86,6 +86,11 @@ validation error and refuse to start.
 
 ## Device configuration on restore
 
+The snapshot only stores device *state*, not device *configuration*. All
+device flags (e.g. `--disk`, `--nic`, `--serial`, `--virtio-blk`, etc.)
+must be specified on the restore command line exactly as they were when
+the snapshot was saved — they are not read from the snapshot.
+
 The snapshot manifest validates that `--memory`, `--processors`,
 architecture, and page size match the values recorded at save time. However,
 it does **not** record the list of CLI device flags. Instead, device
