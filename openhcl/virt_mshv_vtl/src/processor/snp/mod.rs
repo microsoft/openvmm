@@ -97,7 +97,6 @@ enum SnpGhcbError {
 }
 
 #[derive(Debug, Error)]
-#[error("failed to run")]
 enum SnpRunVpError {
     #[error("Guest AVIC backing page is not validated or cannot be accessed.")]
     VpNotRestartableError,
@@ -1316,14 +1315,14 @@ impl UhProcessor<'_, SnpBacked> {
                     _ => Some(exit_int_info),
                 };
 
+                if let Some(inject) = inject {
+                    vmsa.set_event_inject(inject);
+                }
+
                 // Since the exit interrupt information was processed, it must be
                 // cleared so that it is not examined again on a subsequent reentry to
                 // the HCL.
                 vmsa.set_exit_int_info(0);
-
-                if let Some(inject) = inject {
-                    vmsa.set_event_inject(inject);
-                }
             } else {
                 // Any previously injected event has been consumed.
             }
