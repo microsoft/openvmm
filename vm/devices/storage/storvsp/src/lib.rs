@@ -1108,7 +1108,7 @@ impl<T: RingMem> Worker<T> {
                                     )?;
                                     // Reset the rescan notification event now, before the guest has a
                                     // chance to send any SCSI requests to scan the bus.
-                                    self.rescan_notification.try_next().ok();
+                                    self.rescan_notification.try_recv().ok();
                                     *self.inner.protocol.state.write() = ProtocolState::Ready {
                                         version,
                                         subchannel_count: subchannel_count.unwrap_or(0),

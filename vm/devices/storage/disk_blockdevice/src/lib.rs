@@ -31,7 +31,6 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use io_uring::opcode;
 use io_uring::types;
-use io_uring::types::RwFlags;
 use mesh::MeshPayload;
 use nvme::check_nvme_status;
 use nvme_spec::nvm;
@@ -635,7 +634,7 @@ impl DiskIo for BlockDevice {
 
         // Documented in Linux manual page: https://man7.org/linux/man-pages/man2/readv.2.html
         // It's only defined in linux_gnu but not in linux_musl. So we have to define it.
-        const RWF_DSYNC: RwFlags = 0x00000002;
+        const RWF_DSYNC: i32 = 0x00000002;
 
         // SAFETY: the buffers for the IO are this stack, and they will be
         // kept alive for the duration of the IO since we immediately call
