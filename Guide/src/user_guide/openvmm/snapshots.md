@@ -84,17 +84,6 @@ the snapshot manifest. If they do not match, OpenVMM will report a
 validation error and refuse to start.
 ```
 
-## Validation
-
-On restore, OpenVMM validates that:
-
-1. The snapshot architecture matches the guest architecture
-2. The `--memory` size matches `memory_size_bytes` in the manifest
-3. The `--processors` count matches `vp_count` in the manifest
-4. The `memory.bin` file size matches the manifest
-
-If any check fails, OpenVMM exits with a descriptive error message.
-
 ## Limitations
 
 - Snapshots are **not portable** across architectures (e.g., you cannot
@@ -105,7 +94,7 @@ If any check fails, OpenVMM exits with a descriptive error message.
   each restore.
 - VMs using VPCI or PCIe devices do not currently support save/restore
 - OpenHCL-based VMs do not currently support this snapshot mechanism
-- PCAT firmware does not support save/restore
+- VMs using PCAT firmware do not support save/restore
 - `--memory` and `--processors` must be specified on restore and match the
   snapshot manifest values. A future version may read these from the snapshot
   automatically.

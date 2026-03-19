@@ -47,19 +47,6 @@ source and target of the hard link are the same file. The code detects this
 by canonicalizing both paths and comparing them. When they match, the
 hard-link step is skipped.
 
-## Validation on restore
-
-The `validate_manifest()` function in `snapshot.rs` checks four fields
-against the current VM configuration:
-
-1. **Version** — must match the current `MANIFEST_VERSION` constant
-2. **Architecture** — must match the guest architecture (from `guest_arch` cfg)
-3. **Memory size** — must match the `--memory` CLI option
-4. **VP count** — must match the `--processors` CLI option
-
-After manifest validation, the code also verifies that `memory.bin` has the
-expected file size.
-
 ## Code references
 
 - Manifest type and I/O: `openvmm/openvmm_helpers/src/snapshot.rs`

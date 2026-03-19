@@ -68,12 +68,12 @@ pub struct Options {
     pub memory_backing_file: Option<PathBuf>,
 
     /// Restore VM from a snapshot directory (implies file-backed memory from
-    /// the snapshot's memory.bin). Do not combine with --memory-backing-file.
+    /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
     #[clap(long, value_name = "DIR", conflicts_with = "memory_backing_file")]
     pub restore_snapshot: Option<PathBuf>,
 
     /// use private anonymous memory for guest RAM
-    #[clap(long, conflicts_with = "memory_backing_file")]
+    #[clap(long, conflicts_with_all = ["memory_backing_file", "restore_snapshot"])]
     pub private_memory: bool,
 
     /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
