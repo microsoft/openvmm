@@ -149,22 +149,10 @@ impl VmTaskDriverBuilder<'_> {
     /// run on any executor (such as the current one). If `true`, the backend
     /// will run them on the same thread that would drive async IO.
     ///
-    /// The strength of this guarantee depends on the backend:
-    ///
-    /// - **OpenHCL threadpool backend:** strong — tasks run on a
-    ///   CPU-affinitized thread for the target VP, once the VP is
-    ///   online. Before that (e.g., sidecar VPs not yet onlined),
-    ///   work may run on a different CPU. Use
-    ///   [`VmTaskDriver::is_target_vp_ready`] /
-    ///   [`VmTaskDriver::wait_target_vp_ready`] to check.
-    /// - **Thread backend (OpenVMM):** ignored — the thread backend does
-    ///   not use `run_on_target`. Whether a dedicated thread is created
-    ///   depends solely on whether [`target_vp`](Self::target_vp) is set.
-    /// - **Single-driver backend:** ignored — everything runs on one thread.
-    ///
-    /// StorVSP uses `run_on_target(true)` together with [`target_vp`](Self::target_vp)
-    /// so that each VMBus channel's worker runs on the VP the guest chose,
-    /// keeping ring buffer processing and disk backend calls local to that VP.
+    /// Some devices will want to override the default to reduce jitter or
+    /// ensure that IO is issued from the correct processor. For example,
+    /// StorVSP sets this to true for its channel workers, so that all of a
+    /// channel's IO and tasks run on the same VP's thread.
     pub fn run_on_target(&mut self, run_on_target: bool) -> &mut Self {
         self.run_on_target = run_on_target;
         self
@@ -172,11 +160,6 @@ impl VmTaskDriverBuilder<'_> {
 
     /// A hint to the backend specifying the guest VP associated with spawned
     /// tasks and IO.
-    ///
-    /// `target_vp` is a **VP index** (hypervisor-level identifier, 0-based,
-    /// contiguous) — not an APIC ID or Linux CPU number. In OpenHCL, VP
-    /// index is currently used directly as the Linux CPU number for
-    /// threadpool targeting.
     ///
     /// Backends use this to ensure that spawned tasks and async IO will run
     /// near or on the target VP. For example, StorVSP sets this to the VP
@@ -215,11 +198,10 @@ pub struct VmTaskDriver {
 impl VmTaskDriver {
     /// Updates the target VP for the task.
     ///
-    /// In backends that support retargeting (e.g., the OpenHCL threadpool),
-    /// newly scheduled work and IO will target `target_vp` after this call.
-    /// In-flight IO is **not** retargeted — it completes on the original
-    /// VP's thread. In backends that don't support retargeting (e.g., the
-    /// OpenVMM thread backend), this is a no-op.
+    /// The effectiveness of this call, and when it would take effect,
+    /// depends on the backend. For example, in the OpenHCL threadpool backend,
+    /// this will cause new IO to target the new VP's thread, but
+    /// existing IO will continue to run on the original VP's thread.
     pub fn retarget_vp(&self, target_vp: u32) {
         self.inner.retarget_vp(target_vp)
     }
