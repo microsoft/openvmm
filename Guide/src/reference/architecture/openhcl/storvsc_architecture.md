@@ -14,7 +14,8 @@ OpenHCL currently uses the Linux kernel's `hv_storvsc` driver for synthetic
 SCSI storage. This causes:
 
 - Expensive VTL0-to-kernel address mapping (especially on arm64)
-- Unwanted IO during boot/servicing (kernel storage stack discovers block devices)
+- Unwanted IO during boot/servicing (kernel storage stack
+  discovers block devices)
 - Double-buffering for non-page-aligned guest IOs
 - Limited instrumentation (can't easily modify kernel driver)
 
@@ -43,12 +44,11 @@ running inside OpenHCL's VTL2.
 ### Trust boundaries
 
 The VMBus channel carries data from the Windows host into VTL2. However,
-storvsp is a trusted Windows component, and the protocol parsing in
-`storvsc_driver` follows the same patterns as other VMBus device drivers
-in OpenVMM (e.g., the NVMe driver). No untrusted data crosses this boundary.
-Protocol parsing uses zerocopy safe deserialisation (`FromBytes`, `IntoBytes`)
-and returns typed errors (`PacketError`) on malformed packets rather than
-panicking. Both `disk_storvsc` (`#![forbid(unsafe_code)]`) and
+storvsp is a trusted Windows component, so the host endpoint is
+assumed trusted. Protocol parsing still validates all packets
+defensively -- it uses zerocopy safe deserialisation (`FromBytes`,
+`IntoBytes`) and returns typed errors (`PacketError`) on malformed
+packets rather than panicking. Both `disk_storvsc` (`#![forbid(unsafe_code)]`) and
 `storvsc_driver` (0 unsafe blocks) are entirely safe Rust.
 
 The VTL0-to-VTL2 boundary is handled by the existing OpenHCL disk subsystem
@@ -76,7 +76,7 @@ disk operations (read, write, sync, unmap) into SCSI CDBs via
 to pre-fetch disk metadata, avoiding `block_on` deadlocks when called
 from within the async runtime.
 
-Crate path: `vm/devices/storage/disk_storvsc/`
+Crate path (planned): `vm/devices/storage/disk_storvsc/`
 
 ### Layer 3: `StorvscManager` -- Resolver
 
@@ -106,15 +106,16 @@ recreates drivers from these entries and resumes the worker task.
     |<-- Arc<StorvscDriver> -------- |
 ```
 
-File path: `openhcl/underhill_core/src/storvsc_manager.rs`
+File path (planned): `openhcl/underhill_core/src/storvsc_manager.rs`
 
 ### Supporting changes
 
 The integration touches settings, dispatch, servicing, UIO, and VMBus layers
 across several OpenHCL files. Key changes:
 
-- `options.rs` -- `OPENHCL_STORVSC_USERMODE` env var parsing
-- `worker.rs` -- manager creation + resolver registration (adjacent to NvmeManager code)
+- `options.rs` -- `OPENHCL_STORVSC_USERMODE` env var parsing (planned)
+- `worker.rs` -- manager creation + resolver registration
+  (adjacent to NvmeManager code)
 - `vtl2_settings_worker.rs` -- VScsi device routing to `StorvscDiskConfig`
 - `dispatch/mod.rs` -- inspect, shutdown, save integration
 - `servicing.rs` -- `StorvscSavedState` at mesh(10004)
