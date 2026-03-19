@@ -377,6 +377,14 @@ impl VmChipsetResult {
     }
 
     fn attach_pit(&mut self) -> &mut Self {
+        if self
+            .chipset_devices
+            .iter()
+            .any(|device| device.resource.id() == "pit")
+        {
+            return self;
+        }
+
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "pit".to_owned(),
             resource: PitDeviceHandle.into_resource(),

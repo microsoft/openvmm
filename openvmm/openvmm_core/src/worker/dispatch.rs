@@ -162,7 +162,10 @@ pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
 
 impl Manifest {
     fn from_config(config: Config) -> Self {
-        let with_pit = config.chipset_devices.iter().any(|d| d.name == "pit");
+        let with_pit = config
+            .chipset_devices
+            .iter()
+            .any(|d| d.resource.id() == "pit");
         Self {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
