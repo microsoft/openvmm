@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use std::time::Instant;
 use task_control::AsyncRun;
 use task_control::TaskControl;
 use thiserror::Error;
@@ -123,6 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
+            issued_at: (self.qid == 0).then_some(Instant::now()),
         });
     }
 
@@ -179,6 +181,7 @@ impl PendingCommands {
                         PendingCommand {
                             command: state.command,
                             respond: Rpc::detached(()),
+                            issued_at: None,
                         },
                     )
                 })
@@ -946,6 +949,9 @@ struct PendingCommand {
     command: spec::Command,
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
+    /// When the command was submitted to the queue.
+    #[inspect(skip)]
+    issued_at: Option<Instant>,
 }
 
 /// Diagnostic information about the completion queue state.
