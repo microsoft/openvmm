@@ -32,7 +32,7 @@ section).
 ## Thread model
 
 OpenHCL's worker process runs one thread per VP in its
-[threadpool](https://github.com/microsoft/openvmm/blob/main/openhcl/underhill_threadpool/src/lib.rs).
+[threadpool](https://openvmm.dev/rustdoc/linux/underhill_threadpool/index.html).
 Each thread is CPU-affinitized — thread N is pinned to Linux CPU N (which today
 equals VP index N).
 
@@ -81,13 +81,15 @@ running on the same VP thread. It won't.
 All tasks with `target_vp = N` and `run_on_target = true` run on VP N's thread,
 once the target VP is ready (i.e., the CPU is online and affinity is set).
 
-All tasks with `target_vp = N` and `run_on_target = false` run on an abitrary
+All tasks with `target_vp = N` and `run_on_target = false` run on an arbitrary
 VP's thread. IOs issued by the task will use the target VP's io-uring. When the
 IO completes, the task will be woken up on the target VP. It will likely run
 there, even if `run_on_target` is false.
 
-If no target VP is set, then the task will use the current VP's io-uring,
-wherever the task executes.
+All tasks without a specific `target_vp` will fall into the thread pool's untargeted
+path. These could run on any arbitrary VP. See the current
+[backend implementation](https://github.com/microsoft/openvmm/blob/main/openhcl/underhill_core/src/threadpool_vm_task_backend.rs)
+for default behavior. 
 
 ## Blocking scenarios
 
@@ -175,7 +177,7 @@ The OpenHCL threadpool does not implement work stealing. Targeted tasks always
 run on their target VP's thread. For example: If VP 2's thread is blocked in
 VTL0, a StorVSP worker targeted at VP 2 cannot be picked up by VP 3's thread.
 
-Untargeted tasks (those without `run_on_target`) run on the thread that wakes
+Untargeted tasks (those with `run_on_target = false`) run on the thread that wakes
 them — which is not the same as stealing.
 
 ## Sidecar changes
@@ -200,7 +202,7 @@ When writing device backends, keep these rules in mind:
 
 1. **Never block synchronously** in a device worker on a VP thread. Use async
    I/O (io_uring) or spawn a helper thread for blocking work. No VMBus devices
-   in the repo currently spawn helper threads — instead, subsystems that need
+   used in OpenHCL currently spawn helper threads. Instead, subsystems that need
    blocking (GET, VMGS) run on their own dedicated threads outside the VP
    threadpool.
 

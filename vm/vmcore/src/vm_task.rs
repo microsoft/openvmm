@@ -147,7 +147,7 @@ impl VmTaskDriverBuilder<'_> {
     ///
     /// If `false` (the default), then when spawned tasks are awoken, they may
     /// run on any executor (such as the current one). If `true`, the backend
-    /// will run them on the same thread that would drive async IO.
+    /// will endeavor to run them on the same thread that would drive async IO.
     ///
     /// Some devices will want to override the default to reduce jitter or
     /// ensure that IO is issued from the correct processor. For example,
@@ -161,7 +161,7 @@ impl VmTaskDriverBuilder<'_> {
     /// A hint to the backend specifying the guest VP associated with spawned
     /// tasks and IO.
     ///
-    /// Backends use this to ensure that spawned tasks and async IO will run
+    /// Backends can use this to ensure that spawned tasks and async IO will run
     /// near or on the target VP. For example, StorVSP sets this to the VP
     /// from the VMBus channel open request's `target_vp` field, so that
     /// each channel's worker runs on the VP the guest specified.
