@@ -457,6 +457,8 @@ pub const DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE: u64 = 0x40;
 pub const DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION: u64 = 0x4000;
 pub const DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE: u64 = 0x10000;
 
+pub const OS_TYPE_OHCL: u32 = 0x60;
+
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GdmaVerifyVerReq {

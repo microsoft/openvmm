@@ -70,7 +70,118 @@ impl BuildInfo {
     pub fn scm_branch(&self) -> &'static str {
         self.branch
     }
+
+    pub fn openhcl_version(&self) -> &'static str {
+        self.openhcl_version
+    }
 }
+
+// Parse a `&str` segment as a u32. Panics if the segment is empty or not a valid u32.
+const fn const_parse_u32_segment(s: &str) -> u32 {
+    assert!(!s.is_empty(), "version segment must not be empty");
+    match u32::from_str_radix(s, 10) {
+        Ok(v) => v,
+        Err(_) => panic!("version segment is not a valid u32"),
+    }
+}
+
+// Const-compatible equivalent of `s.split_once('.')`.
+const fn const_split_once_dot(s: &str) -> Option<(&str, &str)> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'.' {
+            let (left, dot_right) = s.split_at(i);
+            let (_, right) = dot_right.split_at(1);
+            return Some((left, right));
+        }
+        i += 1;
+    }
+    None
+}
+
+// Parse the `OPENHCL_VERSION` environment variable into four u32 components.
+// Strictly enforces the format to be "major.minor.build.platform",
+// where each is a valid u32 and non-zero (except for platform).
+// Empty string is permitted to not panic on builds which omit the
+// `OPENHCL_VERSION` environment variable like `cargo test`.
+const fn const_parse_version(s: &str) -> [u32; 4] {
+    if s.is_empty() {
+        return [0, 0, 0, 0];
+    }
+    let (major, rest) = match const_split_once_dot(s) {
+        Some(pair) => pair,
+        None => panic!("expected 4 dot-separated components in version string"),
+    };
+    let (minor, rest) = match const_split_once_dot(rest) {
+        Some(pair) => pair,
+        None => panic!("expected 4 dot-separated components in version string"),
+    };
+    let (build, platform) = match const_split_once_dot(rest) {
+        Some(pair) => pair,
+        None => panic!("expected 4 dot-separated components in version string"),
+    };
+    // The fourth segment must not contain additional dots.
+    assert!(
+        const_split_once_dot(platform).is_none(),
+        "expected exactly 4 dot-separated components in version string"
+    );
+    let major = const_parse_u32_segment(major);
+    let minor = const_parse_u32_segment(minor);
+    let build = const_parse_u32_segment(build);
+    let platform = const_parse_u32_segment(platform);
+    assert!(major != 0, "major version must be non-zero");
+    assert!(minor != 0, "minor version must be non-zero");
+    assert!(build != 0, "build version must be non-zero");
+    // Platform is allowed to be zero.
+    [major, minor, build, platform]
+}
+
+/// Parsed components of the OPENHCL_VERSION env var (major.minor.build.platform).
+/// All parsing happens at compile time — components are stored as u32.
+#[derive(Debug)]
+pub struct OpenHclVersion {
+    product_name: &'static str,
+    major: u32,
+    minor: u32,
+    build: u32,
+    platform: u32,
+}
+
+impl OpenHclVersion {
+    pub const fn new() -> Self {
+        let [major, minor, build, platform] = const_parse_version(BuildInfo::new().openhcl_version);
+        Self {
+            product_name: "OpenHCL",
+            major,
+            minor,
+            build,
+            platform,
+        }
+    }
+
+    pub const fn product_name(&self) -> &'static str {
+        self.product_name
+    }
+
+    pub const fn major(&self) -> u32 {
+        self.major
+    }
+
+    pub const fn minor(&self) -> u32 {
+        self.minor
+    }
+
+    pub const fn build(&self) -> u32 {
+        self.build
+    }
+
+    pub const fn platform(&self) -> u32 {
+        self.platform
+    }
+}
+
+pub static OPENHCL_VERSION: OpenHclVersion = OpenHclVersion::new();
 
 // Placing into a separate section to make easier to discover
 // the build information even without a debugger.
@@ -97,4 +208,79 @@ pub fn get() -> &'static BuildInfo {
     // Without `black_box`, BUILD_INFO is optimized away
     // in the release builds with `fat` LTO.
     std::hint::black_box(&BUILD_INFO)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::const_parse_version;
+
+    #[test]
+    fn empty_string() {
+        // Ensure running `cargo test` doesn't panic.
+        assert_eq!(const_parse_version(""), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn full_version() {
+        assert_eq!(const_parse_version("1.6.499.2"), [1, 6, 499, 2]);
+    }
+
+    #[test]
+    fn zero_platform() {
+        assert_eq!(const_parse_version("1.1.1.0"), [1, 1, 1, 0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "major version must be non-zero")]
+    fn zero_major_panics() {
+        const_parse_version("0.1.1.0");
+    }
+
+    #[test]
+    #[should_panic(expected = "minor version must be non-zero")]
+    fn zero_minor_panics() {
+        const_parse_version("1.0.1.0");
+    }
+
+    #[test]
+    #[should_panic(expected = "build version must be non-zero")]
+    fn zero_build_panics() {
+        const_parse_version("1.1.0.0");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected 4 dot-separated components")]
+    fn partial_version_panics() {
+        const_parse_version("1.2");
+    }
+
+    #[test]
+    #[should_panic(expected = "version segment is not a valid u32")]
+    fn non_digit_segment_panics() {
+        const_parse_version("1.2.3A.4");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected exactly 4 dot-separated components")]
+    fn extra_segments_panics() {
+        const_parse_version("1.2.3.4.5");
+    }
+
+    #[test]
+    #[should_panic(expected = "expected 4 dot-separated components")]
+    fn single_component_panics() {
+        const_parse_version("42");
+    }
+
+    #[test]
+    #[should_panic(expected = "version segment is not a valid u32")]
+    fn overflow_panics() {
+        const_parse_version("9999999999.0.0.0");
+    }
+
+    #[test]
+    #[should_panic(expected = "version segment must not be empty")]
+    fn empty_segment_panics() {
+        const_parse_version("1..3.4");
+    }
 }
