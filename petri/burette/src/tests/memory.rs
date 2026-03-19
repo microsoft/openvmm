@@ -122,7 +122,7 @@ impl crate::harness::ColdPerfTest for MemoryTest {
                         rss_kib = m.rss_kib,
                         perms = m.perms,
                         name = m.name,
-                        range = m.range,
+                        range = format!("{:x}-{:x}", m.addr_range.start, m.addr_range.end),
                         "mapping"
                     );
                 }

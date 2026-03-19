@@ -8,8 +8,7 @@ pub use self::linux::*;
 #[cfg(not(any(target_os = "linux", windows)))]
 pub use self::stub::*;
 #[cfg(windows)]
-pub use self::windows::*;
-use anyhow::Context as _;
+pub use self::win_impl::*;
 
 /// Memory statistics for a process tree.
 pub struct TreeMemory {
@@ -27,10 +26,8 @@ pub struct TreeMemory {
 
 /// A single large memory mapping from smaps.
 pub struct SmapsMapping {
-    /// Address range (e.g. "7f1234000000-7f1234100000").
-    pub range: String,
-    /// Virtual address span in KiB.
-    pub va_size_kib: u64,
+    /// Parsed virtual address range.
+    pub addr_range: std::ops::Range<u64>,
     /// Permissions (e.g. "rw-p").
     pub perms: String,
     /// Mapping name/path (e.g. `\[heap\]`, "/usr/bin/openvmm", "").
@@ -59,6 +56,7 @@ pub struct SmapsBreakdown {
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
+    use anyhow::Context as _;
 
     /// Get available host memory in bytes.
     pub fn available_memory_bytes() -> anyhow::Result<u64> {
@@ -176,14 +174,14 @@ mod linux {
         s.trim().strip_suffix("kB")?.trim().parse().ok()
     }
 
-    /// Parse a smaps address range like "7f1234000000-7f1234100000" into a size in KiB.
-    fn parse_range_size_kib(range: &str) -> u64 {
+    /// Parse a smaps address range like "7f1234000000-7f1234100000" into a `Range<u64>`.
+    fn parse_addr_range(range: &str) -> std::ops::Range<u64> {
         let Some((start_s, end_s)) = range.split_once('-') else {
-            return 0;
+            return 0..0;
         };
         let start = u64::from_str_radix(start_s, 16).unwrap_or(0);
         let end = u64::from_str_radix(end_s, 16).unwrap_or(0);
-        end.saturating_sub(start) / 1024
+        start..end
     }
 
     /// Read detailed smaps breakdown for a process, including per-mapping RSS.
@@ -230,8 +228,7 @@ mod linux {
                      private: u64| {
             if rss > 0 {
                 mappings.push(SmapsMapping {
-                    range: range.to_string(),
-                    va_size_kib: parse_range_size_kib(range),
+                    addr_range: parse_addr_range(range),
                     perms: perms.to_string(),
                     name: name.to_string(),
                     rss_kib: rss,
@@ -292,14 +289,13 @@ mod linux {
         // CONFIG_ANON_VMA_NAME): identify guest RAM by looking for unnamed
         // anonymous rw-p mappings whose VA span covers the guest memory.
         if guest_ram_private_kib == 0 && guest_mem_size > 0 {
-            let guest_mem_kib = guest_mem_size / 1024;
             guest_ram_private_kib = mappings
                 .iter()
                 .filter(|m| {
                     m.name.is_empty()
                         && m.perms.contains('w')
                         && m.perms.ends_with('p')
-                        && m.va_size_kib >= guest_mem_kib
+                        && m.addr_range.end - m.addr_range.start >= guest_mem_size
                 })
                 .map(|m| m.private_kib)
                 .sum();
@@ -316,11 +312,12 @@ mod linux {
 }
 
 #[cfg(target_os = "windows")]
-mod windows {
+mod win_impl {
     // UNSAFETY: FFI calls to Win32 API.
     #![expect(unsafe_code)]
 
     use super::*;
+    use anyhow::Context as _;
 
     /// Get available host memory in bytes.
     pub fn available_memory_bytes() -> anyhow::Result<u64> {
