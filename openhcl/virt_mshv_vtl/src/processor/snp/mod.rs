@@ -1264,6 +1264,7 @@ impl UhProcessor<'_, SnpBacked> {
 
         let entered_from_vtl = next_vtl;
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let exit_int_info_trace = SevEventInjectInfo::from(vmsa.exit_int_info());
 
         if vmsa.sev_features().alternate_injection() {
             let was_busy = vmsa.guest_busy_bit_test_and_set();
@@ -1648,7 +1649,7 @@ impl UhProcessor<'_, SnpBacked> {
                 tracing::error!(
                     CVM_CONFIDENTIAL,
                     "SEV exit code {sev_error_code:x?} sev features {:x?} v_intr_control {:x?} event inject {:x?} \
-                    vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?} virtual_tom {:x?} \
+                    vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?}  virtual_tom {:x?} \
                     efer {:x?} cr4 {:x?} cr3 {:x?} cr0 {:x?} rflag {:x?} rip {:x?} next rip {:x?}",
                     vmsa.sev_features(),
                     vmsa.v_intr_cntrl(),
@@ -1657,7 +1658,7 @@ impl UhProcessor<'_, SnpBacked> {
                     vmsa.cpl(),
                     vmsa.exit_info1(),
                     vmsa.exit_info2(),
-                    vmsa.exit_int_info(),
+                    exit_int_info_trace,
                     vmsa.virtual_tom(),
                     vmsa.efer(),
                     vmsa.cr4(),
