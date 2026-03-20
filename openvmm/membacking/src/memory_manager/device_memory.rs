@@ -158,6 +158,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     MemoryRange::try_from(gpa..gpa.wrapping_add(self.0.len as u64))
                         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?,
                     DEVICE_PRIORITY,
+                    false, // device memory cannot currently be a DMA target
                 )
                 .await
                 .map_err(io::Error::other)?;
