@@ -7,6 +7,10 @@
 
 use crate::local_only::LocalOnly;
 use mesh::MeshPayload;
+use pal_async::driver::SpawnDriver;
+use pal_async::task::Task;
+use pal_async::wait::PolledWait;
+use pal_event::Event;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -96,6 +100,25 @@ impl Interrupt {
             _ => None,
         }
     }
+
+    /// Returns an event that, when signaled, will deliver this interrupt.
+    ///
+    /// If the interrupt is already event-backed, returns a clone of the
+    /// existing event and no proxy is needed. Otherwise, creates an
+    /// [`EventProxy`] that spawns an async task to bridge a new event to
+    /// [`Interrupt::deliver`]. The caller must keep the returned
+    /// `Option<EventProxy>` alive for as long as the event is in use.
+    pub fn event_or_proxy(
+        &self,
+        driver: &impl SpawnDriver,
+    ) -> std::io::Result<(Event, Option<EventProxy>)> {
+        if let Some(event) = self.event() {
+            Ok((event.clone(), None))
+        } else {
+            let (proxy, event) = EventProxy::new(driver, self.clone())?;
+            Ok((event, Some(proxy)))
+        }
+    }
 }
 
 #[derive(Clone, MeshPayload)]
@@ -111,6 +134,36 @@ impl Debug for InterruptInner {
             InterruptInner::Event(_) => f.pad("Event"),
             InterruptInner::Cell(_) => f.pad("Cell"),
             InterruptInner::Fn(_) => f.pad("Fn"),
+        }
+    }
+}
+
+/// An async task that bridges an [`Event`] to an [`Interrupt`].
+///
+/// When the interrupt is not directly backed by an OS event (e.g., it uses
+/// a function callback for MSI-X), this wrapper creates a new event and
+/// spawns a task that waits on it and calls [`Interrupt::deliver`]. When
+/// the `EventProxy` is dropped, the task is cancelled.
+pub struct EventProxy {
+    _task: Task<()>,
+}
+
+impl EventProxy {
+    /// Create a new proxy: returns the proxy (which owns the async task)
+    /// and the [`Event`] that the caller should pass to the consumer.
+    pub fn new(driver: &impl SpawnDriver, interrupt: Interrupt) -> std::io::Result<(Self, Event)> {
+        let event = Event::new();
+        let wait = PolledWait::new(driver, event.clone())?;
+        let task = driver.spawn("interrupt-event-proxy", async move {
+            Self::run(wait, interrupt).await;
+        });
+        Ok((Self { _task: task }, event))
+    }
+
+    async fn run(mut wait: PolledWait<Event>, interrupt: Interrupt) {
+        loop {
+            wait.wait().await.expect("wait should not fail");
+            interrupt.deliver();
         }
     }
 }
