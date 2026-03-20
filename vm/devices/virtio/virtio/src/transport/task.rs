@@ -112,6 +112,7 @@ pub enum TransportState {
 }
 
 /// Result from polling the transport state machine.
+#[must_use]
 pub enum TransportStateResult {
     EnableComplete(bool),
     DisableComplete,
@@ -202,18 +203,31 @@ impl TransportState {
     }
 
     /// Wait for any in-flight enable or disable to complete, returning
-    /// whether a disable was in progress.
-    pub async fn drain(&mut self) -> bool {
+    /// the result so the caller can apply the same side-effects as
+    /// `poll_device`.  If an enable had a pending guest reset, this
+    /// chains the disable automatically (mirroring `poll`).
+    pub async fn drain(
+        &mut self,
+        sender: &mesh::Sender<DeviceCommand>,
+    ) -> Option<TransportStateResult> {
         match std::mem::replace(self, TransportState::Ready) {
-            TransportState::Enabling { rpc: recv, .. } => {
-                let _ = recv.await;
-                false
+            TransportState::Enabling { rpc, pending_reset } => {
+                let result = rpc.await.unwrap_or(false);
+                if pending_reset {
+                    // Guest wrote STATUS=0 while enable was in flight.
+                    // Chain the disable, just like poll() does.
+                    let rpc = sender.call(DeviceCommand::Disable, ());
+                    let _ = rpc.await;
+                    Some(TransportStateResult::DisableComplete)
+                } else {
+                    Some(TransportStateResult::EnableComplete(result))
+                }
             }
-            TransportState::Disabling { rpc: recv } => {
-                let _ = recv.await;
-                true
+            TransportState::Disabling { rpc } => {
+                let _ = rpc.await;
+                Some(TransportStateResult::DisableComplete)
             }
-            TransportState::Ready => false,
+            TransportState::Ready => None,
         }
     }
 }

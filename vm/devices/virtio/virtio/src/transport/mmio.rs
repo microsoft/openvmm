@@ -220,6 +220,21 @@ impl VirtioMmioDevice {
         self.interrupt_state.lock().update(false, !0);
     }
 
+    /// Apply the result of a completed transport state transition.
+    /// Used by both `poll_device` and `stop` to avoid duplicating
+    /// the side-effect logic.
+    fn apply_transport_result(&mut self, result: TransportStateResult) {
+        match result {
+            TransportStateResult::EnableComplete(true) => {
+                self.device_status.set_driver_ok(true);
+                self.update_config_generation();
+            }
+            TransportStateResult::EnableComplete(false) | TransportStateResult::DisableComplete => {
+                self.reset_status();
+            }
+        }
+    }
+
     /// Synchronous transport register read for tests. Only handles
     /// transport registers — not device config.
     #[cfg(test)]
@@ -399,9 +414,7 @@ impl VirtioMmioDevice {
 
                     if !self.device_status.driver_ok() {
                         // Never reached DRIVER_OK, reset synchronously.
-                        self.device_status = VirtioDeviceStatus::new();
-                        self.config_generation = 0;
-                        self.interrupt_state.lock().update(false, !0);
+                        self.reset_status();
                     } else {
                         // Queues are active — send async teardown to task.
                         self.doorbells.clear();
@@ -534,7 +547,9 @@ impl ChangeDeviceState for VirtioMmioDevice {
     }
 
     async fn stop(&mut self) {
-        self.state.drain().await;
+        if let Some(result) = self.state.drain(&self.device_sender).await {
+            self.apply_transport_result(result);
+        }
         // Always send Stop to the device task; it safely handles
         // the case where no queues are running (returns None for each).
         let states = self
@@ -548,10 +563,10 @@ impl ChangeDeviceState for VirtioMmioDevice {
     }
 
     async fn reset(&mut self) {
-        self.doorbells.clear();
-        self.state.drain().await;
+        // Drain ignoring result — reset_status() below clears everything.
+        let _ = self.state.drain(&self.device_sender).await;
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
-        self.device_status = VirtioDeviceStatus::new();
+        self.reset_status();
     }
 }
 
@@ -560,16 +575,7 @@ impl PollDevice for VirtioMmioDevice {
         self.poll_waker = Some(cx.waker().clone());
 
         if let Poll::Ready(result) = self.state.poll(cx, &self.device_sender) {
-            match result {
-                TransportStateResult::EnableComplete(true) => {
-                    self.device_status.set_driver_ok(true);
-                    self.update_config_generation();
-                }
-                TransportStateResult::EnableComplete(false)
-                | TransportStateResult::DisableComplete => {
-                    self.reset_status();
-                }
-            }
+            self.apply_transport_result(result);
         }
     }
 }

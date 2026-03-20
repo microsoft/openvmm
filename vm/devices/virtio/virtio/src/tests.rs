@@ -3588,10 +3588,14 @@ trait TestTransport {
     fn write_status_zero(&mut self);
     /// Read the device status register.
     fn read_status(&mut self) -> u32;
+    /// Read the config generation counter.
+    fn read_config_generation(&mut self) -> u32;
     /// Drive poll_device once with a noop waker.
     fn poll_once(&mut self);
     /// Drive ChangeDeviceState::stop().
     fn stop(&mut self) -> impl Future<Output = ()>;
+    /// Drive ChangeDeviceState::start().
+    fn start(&mut self);
 }
 
 /// Yield to the executor and poll the transport once. This ensures the device
@@ -3650,6 +3654,9 @@ impl TestTransport for MmioTestTransport {
     fn read_status(&mut self) -> u32 {
         self.dev.read_u32(112)
     }
+    fn read_config_generation(&mut self) -> u32 {
+        self.dev.read_u32(0xfc)
+    }
     fn poll_once(&mut self) {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
@@ -3657,6 +3664,9 @@ impl TestTransport for MmioTestTransport {
     }
     async fn stop(&mut self) {
         ChangeDeviceState::stop(&mut self.dev).await;
+    }
+    fn start(&mut self) {
+        ChangeDeviceState::start(&mut self.dev);
     }
 }
 
@@ -3761,6 +3771,12 @@ impl TestTransport for PciTestTransport {
         self.dev.mmio_read(self.bar_address + 20, &mut buf).unwrap();
         buf[0] as u32
     }
+    fn read_config_generation(&mut self) -> u32 {
+        let mut buf = [0u8; 4];
+        self.dev.mmio_read(self.bar_address + 20, &mut buf).unwrap();
+        let val = u32::from_le_bytes(buf);
+        (val >> 8) & 0xff
+    }
     fn poll_once(&mut self) {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
@@ -3768,6 +3784,9 @@ impl TestTransport for PciTestTransport {
     }
     async fn stop(&mut self) {
         ChangeDeviceState::stop(&mut self.dev).await;
+    }
+    fn start(&mut self) {
+        ChangeDeviceState::start(&mut self.dev);
     }
 }
 
@@ -4431,4 +4450,119 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
     );
 
     dev2.stop().await;
+}
+
+// -- Tests for drain / stop / reset side-effects --
+
+/// Verify that stop() during an in-flight enable applies the enable result
+/// so that start() correctly re-enables queues afterward. Without applying
+/// the EnableComplete side-effects in stop(), device_status would lack
+/// DRIVER_OK and start() would skip queue re-activation.
+async fn verify_stop_during_enable_preserves_driver_ok(transport: &mut impl TestTransport) {
+    // Write DRIVER_OK — starts an async Enable.
+    transport.write_driver_ok();
+
+    // Don't yield — the enable is still in flight. Call stop() which
+    // must drain the in-flight enable and apply the EnableComplete result.
+    transport.stop().await;
+
+    // device_status must have DRIVER_OK set now.
+    assert_ne!(
+        transport.read_status() & VIRTIO_DRIVER_OK,
+        0,
+        "stop() must apply EnableComplete so DRIVER_OK is set"
+    );
+
+    // start() should re-enable queues (only happens when driver_ok is set).
+    transport.start();
+    yield_now().await;
+}
+
+#[async_test]
+async fn stop_during_enable_preserves_driver_ok_mmio(_driver: DefaultDriver) {
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
+    verify_stop_during_enable_preserves_driver_ok(&mut transport).await;
+}
+
+#[async_test]
+async fn stop_during_enable_preserves_driver_ok_pci(_driver: DefaultDriver) {
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
+    verify_stop_during_enable_preserves_driver_ok(&mut transport).await;
+}
+
+/// Verify that stop() during an in-flight enable that has a pending guest
+/// reset (STATUS=0 written while enable was in-flight) fully resets status,
+/// including config_generation.
+async fn verify_stop_drains_pending_reset(transport: &mut impl TestTransport) {
+    // Write DRIVER_OK — starts an async Enable.
+    transport.write_driver_ok();
+
+    // Write STATUS=0 while the enable is in-flight — records pending_reset.
+    transport.write_status_zero();
+
+    // stop() must drain the enable, chain the disable (due to pending_reset),
+    // and apply DisableComplete which calls reset_status().
+    transport.stop().await;
+
+    assert_eq!(
+        transport.read_status(),
+        0,
+        "status must be fully reset after stop() drains a pending reset"
+    );
+    assert_eq!(
+        transport.read_config_generation(),
+        0,
+        "config_generation must be 0 after stop() drains a pending reset"
+    );
+}
+
+#[async_test]
+async fn stop_drains_pending_reset_mmio(_driver: DefaultDriver) {
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
+    verify_stop_drains_pending_reset(&mut transport).await;
+}
+
+#[async_test]
+async fn stop_drains_pending_reset_pci(_driver: DefaultDriver) {
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
+    verify_stop_drains_pending_reset(&mut transport).await;
+}
+
+/// Verify that stop() during an in-flight failed enable resets
+/// config_generation (the full reset_status path).
+async fn verify_stop_during_failed_enable_resets_config(transport: &mut impl TestTransport) {
+    // Write DRIVER_OK — starts an async Enable that will fail.
+    transport.write_driver_ok();
+
+    // stop() drains the failed enable and must call reset_status().
+    transport.stop().await;
+
+    assert_eq!(
+        transport.read_status(),
+        0,
+        "status must be 0 after stop() completes a failed enable"
+    );
+    assert_eq!(
+        transport.read_config_generation(),
+        0,
+        "config_generation must be 0 after stop() completes a failed enable"
+    );
+}
+
+#[async_test]
+async fn stop_during_failed_enable_resets_config_mmio(_driver: DefaultDriver) {
+    let mut transport =
+        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(1, 0)), &_driver, 1);
+    verify_stop_during_failed_enable_resets_config(&mut transport).await;
+}
+
+#[async_test]
+async fn stop_during_failed_enable_resets_config_pci(_driver: DefaultDriver) {
+    let mut transport =
+        PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 0)), &_driver, 1);
+    verify_stop_during_failed_enable_resets_config(&mut transport).await;
 }
