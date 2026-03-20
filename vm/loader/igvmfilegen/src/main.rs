@@ -24,7 +24,6 @@ use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
 use igvm_defs::IGVM_FIXED_HEADER;
 use igvm_defs::IGVM_VHS_CORIM_DOCUMENT;
-use igvm_defs::IGVM_VHS_CORIM_SIGNATURE;
 use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
 use igvm_defs::IgvmPlatformType;
 use igvm_defs::IgvmVariableHeaderType;
@@ -456,8 +455,8 @@ fn dump_corim_headers(
 
     // Iterate through variable headers looking for CoRIM headers
     let mut offset = 0;
-    let mut document_count = 0;
-    let mut signature_count = 0;
+    let mut document_count: u32 = 0;
+    let mut signature_count: u32 = 0;
 
     while offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
         let header = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[offset..])
@@ -471,92 +470,47 @@ fn dump_corim_headers(
         let aligned_len = (header_data_len + 7) & !7;
         let next_offset = header_data_offset + aligned_len;
 
-        // Check for CoRIM document header (0x104)
-        if header.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT {
+        // Determine if this is a CoRIM header and which kind
+        let corim_kind = match header.typ {
+            IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT => {
+                Some((CorimHeaderType::Document, "Document", "cbor"))
+            }
+            IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE => {
+                Some((CorimHeaderType::Signature, "Signature", "cose"))
+            }
+            _ => None,
+        };
+
+        if let Some((kind, label, extension)) = corim_kind {
+            // Both IGVM_VHS_CORIM_DOCUMENT and IGVM_VHS_CORIM_SIGNATURE have
+            // identical binary layouts, so we can parse either as IGVM_VHS_CORIM_DOCUMENT.
             if header_data_offset + size_of::<IGVM_VHS_CORIM_DOCUMENT>() <= var_headers.len() {
                 let corim_header =
                     IGVM_VHS_CORIM_DOCUMENT::read_from_prefix(&var_headers[header_data_offset..])
-                        .map_err(|_| anyhow::anyhow!("Failed to read CoRIM document header"))?
+                        .map_err(|_| anyhow::anyhow!("Failed to read CoRIM {label} header"))?
                         .0;
 
-                // Apply filters
-                let show_type = header_type_filter.is_none_or(|t| t == CorimHeaderType::Document);
+                let show_type = header_type_filter.is_none_or(|t| t == kind);
                 let show_platform = platform_mask_filter
                     .is_none_or(|mask| corim_header.compatibility_mask & mask != 0);
 
                 if show_type && show_platform {
-                    document_count += 1;
-                    println!("CoRIM Document Header #{}:", document_count);
-                    println!(
-                        "  Header Type: 0x{:X} (IGVM_VHT_CORIM_DOCUMENT)",
-                        header.typ.0
-                    );
-                    println!(
-                        "  Compatibility Mask: 0x{:X} ({})",
-                        corim_header.compatibility_mask,
-                        format_platform_mask(corim_header.compatibility_mask)
-                    );
-                    println!(
-                        "  File Offset: 0x{:X} ({} bytes)",
-                        corim_header.file_offset, corim_header.file_offset
-                    );
-                    println!("  Size: {} bytes", corim_header.size_bytes);
-                    println!("  Reserved: 0x{:X}", corim_header.reserved);
-                    println!(
-                        "  Raw Header (hex): {}",
-                        corim_header
-                            .as_bytes()
-                            .iter()
-                            .map(|b| format!("{:02X}", b))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    );
-
-                    // Extract payload data if output directory is specified
-                    if let Some(ref dir) = output_dir {
-                        // file_offset is an absolute offset from the start of the file
-                        let payload_start = corim_header.file_offset as usize;
-                        let payload_end = payload_start + corim_header.size_bytes as usize;
-
-                        if payload_end <= image.len() {
-                            let payload = &image[payload_start..payload_end];
-                            let output_file =
-                                dir.join(format!("corim_document_{}.cbor", document_count));
-                            fs_err::write(&output_file, payload).context(format!(
-                                "writing document payload to {}",
-                                output_file.display()
-                            ))?;
-                            println!("  Output: {}", output_file.display());
-                        } else {
-                            println!(
-                                "  Warning: Payload extends beyond file bounds, skipping extraction"
-                            );
+                    let count = match kind {
+                        CorimHeaderType::Document => {
+                            document_count += 1;
+                            document_count
                         }
-                    }
-                    println!();
-                }
-            }
-        }
+                        CorimHeaderType::Signature => {
+                            signature_count += 1;
+                            signature_count
+                        }
+                    };
 
-        // Check for CoRIM signature header (0x105)
-        if header.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE {
-            if header_data_offset + size_of::<IGVM_VHS_CORIM_SIGNATURE>() <= var_headers.len() {
-                let corim_header =
-                    IGVM_VHS_CORIM_SIGNATURE::read_from_prefix(&var_headers[header_data_offset..])
-                        .map_err(|_| anyhow::anyhow!("Failed to read CoRIM signature header"))?
-                        .0;
-
-                // Apply filters
-                let show_type = header_type_filter.is_none_or(|t| t == CorimHeaderType::Signature);
-                let show_platform = platform_mask_filter
-                    .is_none_or(|mask| corim_header.compatibility_mask & mask != 0);
-
-                if show_type && show_platform {
-                    signature_count += 1;
-                    println!("CoRIM Signature Header #{}:", signature_count);
+                    println!("CoRIM {label} Header #{count}:");
                     println!(
-                        "  Header Type: 0x{:X} (IGVM_VHT_CORIM_SIGNATURE)",
-                        header.typ.0
+                        "  Header Type: 0x{:X} (IGVM_VHT_CORIM_{label})",
+                        header.typ.0,
+                        label = label.to_uppercase()
                     );
                     println!(
                         "  Compatibility Mask: 0x{:X} ({})",
@@ -579,18 +533,17 @@ fn dump_corim_headers(
                             .join(" ")
                     );
 
-                    // Extract payload data if output directory is specified
                     if let Some(ref dir) = output_dir {
-                        // file_offset is an absolute offset from the start of the file
                         let payload_start = corim_header.file_offset as usize;
                         let payload_end = payload_start + corim_header.size_bytes as usize;
 
                         if payload_end <= image.len() {
                             let payload = &image[payload_start..payload_end];
+                            let file_prefix = label.to_lowercase();
                             let output_file =
-                                dir.join(format!("corim_signature_{}.cose", signature_count));
+                                dir.join(format!("corim_{file_prefix}_{count}.{extension}"));
                             fs_err::write(&output_file, payload).context(format!(
-                                "writing signature payload to {}",
+                                "writing {label} payload to {}",
                                 output_file.display()
                             ))?;
                             println!("  Output: {}", output_file.display());

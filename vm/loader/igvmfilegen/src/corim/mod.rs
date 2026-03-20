@@ -53,6 +53,7 @@ fn igvm_revision_from_binary(data: &[u8]) -> anyhow::Result<IgvmRevision> {
     let (header, _) = IGVM_FIXED_HEADER::read_from_prefix(data)
         .map_err(|_| anyhow::anyhow!("Invalid IGVM file: cannot read fixed header"))?;
 
+    // TODO: Support V2 when CoRIM is required for AArch64.
     match header.format_version {
         1 => Ok(IgvmRevision::V1),
         other => anyhow::bail!(
