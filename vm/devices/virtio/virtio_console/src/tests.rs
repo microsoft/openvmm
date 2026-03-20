@@ -723,7 +723,7 @@ async fn traits_are_correct(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     let traits = device.traits();
-    assert_eq!(traits.device_id, 3); // VIRTIO_DEVICE_ID_CONSOLE
+    assert_eq!(traits.device_id, virtio::spec::VirtioDeviceType::CONSOLE);
     assert_eq!(traits.max_queues, 2); // receiveq + transmitq
 }
 

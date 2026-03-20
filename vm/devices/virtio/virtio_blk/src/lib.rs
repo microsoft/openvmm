@@ -307,7 +307,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
 
         DeviceTraits {
-            device_id: VIRTIO_BLK_DEVICE_ID,
+            device_id: virtio::spec::VirtioDeviceType::BLK,
             device_features: VirtioDeviceFeatures::new()
                 .with_bank0(VirtioDeviceFeaturesBank0::new().with_device_specific(features)),
             max_queues: 1,

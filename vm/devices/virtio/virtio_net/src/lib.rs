@@ -269,7 +269,7 @@ impl VirtioDevice for Device {
             .with_host_tso6(host_tso6);
 
         DeviceTraits {
-            device_id: 1,
+            device_id: virtio::spec::VirtioDeviceType::NET,
             device_features: VirtioDeviceFeatures::new().with_bank(0, features_bank0.into_bits()),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,

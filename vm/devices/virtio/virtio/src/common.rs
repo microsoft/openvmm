@@ -10,6 +10,7 @@ use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
 use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
+use crate::spec::VirtioDeviceType;
 use futures::FutureExt;
 use futures::Stream;
 use guestmem::DoorbellRegistration;
@@ -446,13 +447,25 @@ pub struct DeviceTraitsSharedMemory {
     pub size: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DeviceTraits {
-    pub device_id: u16,
+    pub device_id: VirtioDeviceType,
     pub device_features: VirtioDeviceFeatures,
     pub max_queues: u16,
     pub device_register_length: u32,
     pub shared_memory: DeviceTraitsSharedMemory,
+}
+
+impl Default for DeviceTraits {
+    fn default() -> Self {
+        Self {
+            device_id: VirtioDeviceType(0),
+            device_features: Default::default(),
+            max_queues: 0,
+            device_register_length: 0,
+            shared_memory: Default::default(),
+        }
+    }
 }
 
 pub struct QueueResources {

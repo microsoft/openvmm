@@ -35,8 +35,6 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-const VIRTIO_RNG_DEVICE_ID: u16 = 4;
-
 #[derive(InspectMut)]
 pub struct VirtioRngDevice {
     driver: VmTaskDriver,
@@ -56,7 +54,7 @@ impl VirtioRngDevice {
 impl VirtioDevice for VirtioRngDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
-            device_id: VIRTIO_RNG_DEVICE_ID,
+            device_id: virtio::spec::VirtioDeviceType::RNG,
             device_features: VirtioDeviceFeatures::new(),
             max_queues: 1,
             device_register_length: 0,
@@ -410,7 +408,7 @@ mod tests {
     async fn rng_reports_correct_traits(driver: DefaultDriver) {
         let harness = TestHarness::new(&driver);
         let traits = harness.device.traits();
-        assert_eq!(traits.device_id, 4);
+        assert_eq!(traits.device_id, virtio::spec::VirtioDeviceType::RNG);
         assert_eq!(traits.max_queues, 1);
         assert_eq!(traits.device_register_length, 0);
     }

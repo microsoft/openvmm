@@ -162,7 +162,7 @@ impl VirtioMmioDevice {
             device_sender: sender,
             _device_task,
             state: TransportState::Ready,
-            device_id: traits.device_id as u32,
+            device_id: traits.device_id.0 as u32,
             vendor_id: 0x1af4,
             device_feature,
             device_feature_select: 0,

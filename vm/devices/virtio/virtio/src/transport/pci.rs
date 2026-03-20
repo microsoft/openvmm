@@ -151,7 +151,7 @@ impl VirtioPciDevice {
 
         let hardware_ids = HardwareIds {
             vendor_id: VIRTIO_VENDOR_ID,
-            device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id,
+            device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id.0,
             revision_id: 1,
             prog_if: ProgrammingInterface::NONE,
             base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,

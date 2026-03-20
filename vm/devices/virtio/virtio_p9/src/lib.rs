@@ -28,8 +28,6 @@ use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
-const VIRTIO_DEVICE_TYPE_9P_TRANSPORT: u16 = 9;
-
 const VIRTIO_9P_F_MOUNT_TAG: u32 = 1;
 
 #[derive(InspectMut)]
@@ -72,7 +70,7 @@ impl VirtioPlan9Device {
 impl VirtioDevice for VirtioPlan9Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
-            device_id: VIRTIO_DEVICE_TYPE_9P_TRANSPORT,
+            device_id: virtio::spec::VirtioDeviceType::P9,
             device_features: VirtioDeviceFeatures::new().with_bank(0, VIRTIO_9P_F_MOUNT_TAG),
             max_queues: 1,
             device_register_length: self.tag.len() as u32,

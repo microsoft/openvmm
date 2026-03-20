@@ -44,7 +44,6 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use serial_core::SerialIo;
 use spec::VIRTIO_CONSOLE_F_SIZE;
-use spec::VIRTIO_DEVICE_ID_CONSOLE;
 use spec::VirtioConsoleConfig;
 use std::future::poll_fn;
 use std::pin::Pin;
@@ -88,7 +87,7 @@ impl VirtioDevice for VirtioConsoleDevice {
         let mut features = VirtioDeviceFeatures::new();
         features.set_bank(0, 1 << VIRTIO_CONSOLE_F_SIZE);
         DeviceTraits {
-            device_id: VIRTIO_DEVICE_ID_CONSOLE,
+            device_id: virtio::spec::VirtioDeviceType::CONSOLE,
             device_features: features,
             max_queues: 2, // receiveq (0) + transmitq (1)
             device_register_length: size_of::<VirtioConsoleConfig>() as u32,
