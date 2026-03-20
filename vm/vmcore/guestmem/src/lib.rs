@@ -351,9 +351,13 @@ impl LinearGuestMemory for AlignedHeapMemory {}
 /// A shareable region of guest memory backed by a file (Unix) or
 /// section handle (Windows).
 ///
-/// The backing file must be fully populated for the region — the consumer
-/// will map it directly and no page faults are permitted. This is
-/// incompatible with bitmap-gated access or lazy fault-in schemes.
+/// The backing file must already contain committed data for the region —
+/// the consumer will map it directly, without any guestmem-managed lazy
+/// commitment or fault handling. All bytes in the range must be accessible
+/// without triggering SIGSEGV or SIGBUS due to missing backing. Normal OS
+/// demand paging and minor faults on first access are still expected; this
+/// requirement is specifically incompatible with bitmap-gated access or
+/// lazy fault-in schemes.
 pub struct ShareableRegion {
     /// Guest physical address of this region.
     pub guest_address: u64,
@@ -365,21 +369,24 @@ pub struct ShareableRegion {
     pub file_offset: u64,
 }
 
+/// Error type for [`ProvideShareableRegions::get_regions`].
+pub type ShareableRegionError = Box<dyn std::error::Error + Send + Sync>;
+
 /// Opaque control object for accessing the shareable backing of guest
 /// memory. Not all `GuestMemory` instances support this — those backed
 /// by private memory or heap allocations return `None`.
 ///
 /// # Contract
 ///
-/// * The regions returned by [`get_regions`](Self::get_regions) must be
-///   fully populated — the consumer will map them directly and no page
-///   faults are permitted.
+/// * The regions returned by [`get_regions`](Self::get_regions) must have
+///   fully committed backing — the consumer will map them directly,
+///   without guestmem-managed fault handling.
 /// * The set of regions is currently static for the lifetime of the VM.
 ///   Hotplug and hot-remove of shareable regions are not yet supported;
 ///   once they are, additional methods will be added here to notify
 ///   consumers of changes.
 pub struct GuestMemorySharing {
-    inner: Box<dyn ProvideShareableRegions>,
+    inner: Box<dyn DynProvideShareableRegions>,
 }
 
 impl GuestMemorySharing {
@@ -392,17 +399,17 @@ impl GuestMemorySharing {
     }
 
     /// Return the current set of shareable backing regions.
-    pub async fn get_regions(&self) -> Vec<ShareableRegion> {
+    pub async fn get_regions(&self) -> Result<Vec<ShareableRegion>, ShareableRegionError> {
         self.inner.get_regions().await
     }
 }
 
 /// Trait for providing shareable region information.
 ///
-/// Implementors must return regions whose backing files are fully
-/// populated — consumers will map them directly without fault handling.
-/// The region set is currently static; dynamic updates (hotplug /
-/// hot-remove) are not yet supported.
+/// Implementors must return regions whose backing files have fully
+/// committed data — consumers will map them directly without
+/// guestmem-managed fault handling. The region set is currently static;
+/// dynamic updates (hotplug / hot-remove) are not yet supported.
 ///
 /// This trait must be public so that crates like `membacking` can
 /// implement it, but callers should interact with
@@ -411,7 +418,26 @@ pub trait ProvideShareableRegions: Send + Sync {
     /// Return the current set of shareable backing regions.
     fn get_regions(
         &self,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Vec<ShareableRegion>> + Send + '_>>;
+    ) -> impl Future<Output = Result<Vec<ShareableRegion>, ShareableRegionError>> + Send + '_;
+}
+
+/// Dyn-compatible version of [`ProvideShareableRegions`].
+trait DynProvideShareableRegions: Send + Sync {
+    fn get_regions(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Vec<ShareableRegion>, ShareableRegionError>> + Send + '_>,
+    >;
+}
+
+impl<T: ProvideShareableRegions> DynProvideShareableRegions for T {
+    fn get_regions(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = Result<Vec<ShareableRegion>, ShareableRegionError>> + Send + '_>,
+    > {
+        Box::pin(ProvideShareableRegions::get_regions(self))
+    }
 }
 
 /// A trait for a guest memory backing.

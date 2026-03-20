@@ -394,6 +394,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
 
 #[cfg(test)]
 mod tests {
+
     use sparse_mmap::SparseMapping;
 
     /// Tests that private RAM pages can be allocated, written to, and read from.

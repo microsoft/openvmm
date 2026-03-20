@@ -23,8 +23,6 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use slab::Slab;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 /// The mapping manager.
@@ -380,23 +378,97 @@ pub(crate) struct DmaRegionProvider {
 }
 
 impl ProvideShareableRegions for DmaRegionProvider {
-    fn get_regions(&self) -> Pin<Box<dyn Future<Output = Vec<ShareableRegion>> + Send + '_>> {
-        Box::pin(async {
-            let mappings = self
-                .req_send
-                .call(MappingRequest::GetDmaTargetMappings, ())
-                .await
-                .expect("mapping manager gone");
+    async fn get_regions(&self) -> Result<Vec<ShareableRegion>, guestmem::ShareableRegionError> {
+        let mappings = self
+            .req_send
+            .call(MappingRequest::GetDmaTargetMappings, ())
+            .await?;
 
-            mappings
-                .into_iter()
-                .map(|m| ShareableRegion {
-                    guest_address: m.range.start(),
-                    size: m.range.len(),
-                    file: m.mappable.inner_arc(),
-                    file_offset: m.file_offset,
-                })
-                .collect()
-        })
+        Ok(mappings
+            .into_iter()
+            .map(|m| ShareableRegion {
+                guest_address: m.range.start(),
+                size: m.range.len(),
+                file: m.mappable.inner_arc(),
+                file_offset: m.file_offset,
+            })
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guestmem::ProvideShareableRegions;
+    use memory_range::MemoryRange;
+
+    #[pal_async::async_test]
+    async fn test_dma_target_regions_returned(spawn: impl Spawn) {
+        let mm = MappingManager::new(&spawn, 0x200000, false);
+        let client = mm.client().clone();
+
+        let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
+            .unwrap()
+            .into();
+        let device: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test-dev")
+            .unwrap()
+            .into();
+
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x100000),
+                mappable: ram,
+                file_offset: 0,
+                writable: true,
+                dma_target: true,
+            })
+            .await;
+
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0x100000..0x101000),
+                mappable: device,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+            })
+            .await;
+
+        let provider = DmaRegionProvider {
+            req_send: client.req_send.clone(),
+        };
+        let regions = provider.get_regions().await.unwrap();
+
+        // Only the DMA-target mapping should appear.
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].guest_address, 0);
+        assert_eq!(regions[0].size, 0x100000);
+        assert_eq!(regions[0].file_offset, 0);
+    }
+
+    #[pal_async::async_test]
+    async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
+        let mm = MappingManager::new(&spawn, 0x100000, false);
+        let client = mm.client().clone();
+
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x1000),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+            })
+            .await;
+
+        let provider = DmaRegionProvider {
+            req_send: client.req_send.clone(),
+        };
+        let regions = provider.get_regions().await.unwrap();
+        assert!(regions.is_empty());
     }
 }
