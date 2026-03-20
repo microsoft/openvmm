@@ -124,7 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
-            elapsed: (self.qid == 0).then(|| Instant::now()),
+            elapsed: (self.qid == 0).then(Instant::now),
         });
     }
 
