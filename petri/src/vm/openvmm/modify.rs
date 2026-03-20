@@ -12,24 +12,26 @@ use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
+use guid::Guid;
 use memory_range::MemoryRange;
+use net_backend_resources::mac_address::MacAddress;
+use nvme_resources::NamespaceDefinition;
+use nvme_resources::NvmeControllerHandle;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
-use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
 use vmotherboard::ChipsetDeviceHandle;
-use disk_backend_resources::layer::RamDiskLayerHandle;
-use nvme_resources::NamespaceDefinition;
-use nvme_resources::NvmeControllerHandle;
-use disk_backend_resources::LayeredDiskHandle;
 
 impl PetriVmConfigOpenVmm {
     /// Enable the VTL0 alias map.
@@ -107,7 +109,7 @@ impl PetriVmConfigOpenVmm {
                 },
             );
         } else {
-            const NETVSP_INSTANCE: guid::Guid = guid::guid!("c6c46cc3-9302-4344-b206-aef65e5bd0a2");
+            const NETVSP_INSTANCE: Guid = guid::guid!("c6c46cc3-9302-4344-b206-aef65e5bd0a2");
             self.config.vmbus_devices.push((
                 DeviceVtl::Vtl0,
                 netvsp_resources::NetvspHandle {
@@ -123,14 +125,15 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    pub fn with_pcie_nic(mut self, port_name: &str) -> Self {
+    /// Add a PCIe NIC to the VM using the MANA emulator.
+    pub fn with_pcie_nic(mut self, port_name: &str, mac_address: MacAddress) -> Self {
         let endpoint =
             net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),
             resource: GdmaDeviceHandle {
                 vports: vec![VportDefinition {
-                    mac_address: NIC_MAC_ADDRESS,
+                    mac_address,
                     endpoint,
                 }],
             }
@@ -140,21 +143,26 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    pub fn with_pcie_nvme(mut self, port_name: &str) -> Self {
+    /// Add a PCIe NVMe device to the using the NVMe emulator.
+    pub fn with_pcie_nvme(mut self, port_name: &str, subsystem_id: Guid) -> Self {
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),
             resource: NvmeControllerHandle {
-                subsystem_id: guid::Guid::new_random(),
+                subsystem_id,
                 max_io_queues: 64,
                 msix_count: 64,
                 namespaces: vec![NamespaceDefinition {
                     nsid: 1,
-                    disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(1024 * 1024) }).into_resource(),
+                    disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                        len: Some(1024 * 1024),
+                        sector_size: None,
+                    })
+                    .into_resource(),
                     read_only: false,
                 }],
                 requests: None,
             }
-            .into_resource()
+            .into_resource(),
         });
 
         self
@@ -179,12 +187,20 @@ impl PetriVmConfigOpenVmm {
     /// this file, which persists across snapshot save/restore.
     pub fn with_memory_backing_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.memory_backing_file = Some(path.into());
-
-        Self
+        self
     }
 
     /// Add a symmetric PCIe topology to the VM based on some basic scale factors
-    pub fn with_pcie_topology(mut self, segment_count: u64, root_complex_per_segment: u64, root_ports_per_root_complex: u64) -> Self {
+    ///
+    /// All root ports are named according to their index within their parent
+    /// using the naming scheme `sXrcYrpZ`. For example, the third root port on
+    /// the fourth root complex in segment 0 would be named `s0rc3rp2`.
+    pub fn with_pcie_topology(
+        mut self,
+        segment_count: u64,
+        root_complex_per_segment: u64,
+        root_ports_per_root_complex: u64,
+    ) -> Self {
         const SINGLE_BUS_NUMBER_ECAM_SIZE: u64 = 1024 * 1024; // 1 MB
         const FULL_SEGMENT_ECAM_SIZE: u64 = 256 * SINGLE_BUS_NUMBER_ECAM_SIZE; // 256 MB
         const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024; // 64 MB
@@ -216,8 +232,11 @@ impl PetriVmConfigOpenVmm {
                 let start_bus = rc_index_in_segment * bus_count_per_rc;
                 let end_bus = start_bus + bus_count_per_rc - 1;
 
-                let ecam_range_start = ecam_gap.start() + segment * FULL_SEGMENT_ECAM_SIZE + start_bus * SINGLE_BUS_NUMBER_ECAM_SIZE;
-                let ecam_range_end = ecam_range_start + bus_count_per_rc * SINGLE_BUS_NUMBER_ECAM_SIZE;
+                let ecam_range_start = ecam_gap.start()
+                    + segment * FULL_SEGMENT_ECAM_SIZE
+                    + start_bus * SINGLE_BUS_NUMBER_ECAM_SIZE;
+                let ecam_range_end =
+                    ecam_range_start + bus_count_per_rc * SINGLE_BUS_NUMBER_ECAM_SIZE;
 
                 let low_mmio_start = low_gap.start() + index * LOW_MMIO_SIZE;
                 let low_mmio_end = low_gap.start() + (index + 1) * LOW_MMIO_SIZE;
@@ -228,7 +247,8 @@ impl PetriVmConfigOpenVmm {
                     .map(|i| PcieRootPortConfig {
                         name: format!("s{}rc{}rp{}", segment, rc_index_in_segment, i),
                         hotplug: true,
-                    }).collect();
+                    })
+                    .collect();
 
                 self.config.pcie_root_complexes.push(PcieRootComplexConfig {
                     index: index.try_into().unwrap(),
