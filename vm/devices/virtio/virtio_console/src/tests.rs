@@ -362,7 +362,7 @@ impl TestHarness {
         let (io, handle) = new_mock_serial();
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioConsoleDevice::new(&driver_source, mem.clone(), Box::new(io));
+        let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
 
         let rx_event = Event::new();
         let rx_interrupt_event = Event::new();
@@ -404,6 +404,7 @@ impl TestHarness {
                     },
                     notify: Interrupt::from_event(self.rx_interrupt_event.clone()),
                     event: self.rx_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &features,
                 None,
@@ -425,6 +426,7 @@ impl TestHarness {
                     },
                     notify: Interrupt::from_event(self.tx_interrupt_event.clone()),
                     event: self.tx_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &features,
                 None,
@@ -717,10 +719,9 @@ async fn disable_and_reenable(driver: DefaultDriver) {
 /// Traits report correct device ID, queue count, and feature bits.
 #[async_test]
 async fn traits_are_correct(driver: DefaultDriver) {
-    let mem = GuestMemory::allocate(64);
     let (io, _handle) = new_mock_serial();
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let device = VirtioConsoleDevice::new(&driver_source, mem, Box::new(io));
+    let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     let traits = device.traits();
     assert_eq!(traits.device_id, 3); // VIRTIO_DEVICE_ID_CONSOLE
     assert_eq!(traits.max_queues, 2); // receiveq + transmitq
@@ -848,10 +849,9 @@ async fn rx_zero_length_buffer_no_disconnect(driver: DefaultDriver) {
 /// Config space read returns cols | (rows << 16) at offset 0.
 #[async_test]
 async fn config_read(driver: DefaultDriver) {
-    let mem = GuestMemory::allocate(64);
     let (io, _handle) = new_mock_serial();
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut device = VirtioConsoleDevice::new(&driver_source, mem, Box::new(io));
+    let mut device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     // Default config: cols=0, rows=0
     let val = device.read_registers_u32(0).await;
     assert_eq!(val, 0);
@@ -878,6 +878,7 @@ async fn tx_only_single_queue(driver: DefaultDriver) {
                 },
                 notify: Interrupt::from_event(harness.tx_interrupt_event.clone()),
                 event: harness.tx_event.clone(),
+                guest_memory: harness.mem.clone(),
             },
             &features,
             None,
@@ -914,6 +915,7 @@ async fn rx_only_single_queue(driver: DefaultDriver) {
                 },
                 notify: Interrupt::from_event(harness.rx_interrupt_event.clone()),
                 event: harness.rx_event.clone(),
+                guest_memory: harness.mem.clone(),
             },
             &features,
             None,

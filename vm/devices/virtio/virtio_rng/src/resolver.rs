@@ -28,7 +28,7 @@ impl ResolveResource<VirtioDeviceHandle, VirtioRngHandle> for VirtioRngResolver 
         _resource: VirtioRngHandle,
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let device = VirtioRngDevice::new(input.driver_source, input.guest_memory.clone());
+        let device = VirtioRngDevice::new(input.driver_source);
         Ok(device.into())
     }
 }

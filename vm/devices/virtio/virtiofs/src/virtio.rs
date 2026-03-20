@@ -47,7 +47,6 @@ pub struct VirtioFsDevice {
     driver: VmTaskDriver,
     #[inspect(skip)]
     config: VirtioFsDeviceConfig,
-    mem: GuestMemory,
     #[inspect(skip)]
     fs: Arc<fuse::Session>,
     #[inspect(skip)]
@@ -65,7 +64,6 @@ impl VirtioFsDevice {
         driver_source: &VmTaskDriverSource,
         tag: &str,
         fs: Fs,
-        memory: GuestMemory,
         shmem_size: u64,
         notify_corruption: Option<Arc<dyn Fn() + Sync + Send>>,
     ) -> Self
@@ -91,7 +89,6 @@ impl VirtioFsDevice {
             task_name: format!("virtiofs-{}", tag).into(),
             driver: driver_source.simple(),
             config,
-            mem: memory,
             fs: Arc::new(fuse::Session::new(fs)),
             workers: Vec::new(),
             shmem_size,
@@ -150,7 +147,6 @@ impl VirtioDevice for VirtioFsDevice {
     ) -> anyhow::Result<()> {
         let mut tc = TaskControl::new(VirtioFsWorker {
             fs: self.fs.clone(),
-            mem: self.mem.clone(),
             shared_memory_region: self.shared_memory_region.clone(),
             shared_memory_size: self.shmem_size,
             notify_corruption: self.notify_corruption.clone(),
@@ -161,7 +157,7 @@ impl VirtioDevice for VirtioFsDevice {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.mem.clone(),
+            resources.guest_memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
@@ -171,7 +167,10 @@ impl VirtioDevice for VirtioFsDevice {
         tc.insert(
             self.driver.clone(),
             &*self.task_name,
-            VirtioFsQueue { queue },
+            VirtioFsQueue {
+                queue,
+                mem: resources.guest_memory,
+            },
         );
         tc.start();
 
@@ -180,7 +179,6 @@ impl VirtioDevice for VirtioFsDevice {
             self.workers.resize_with(idx + 1, || {
                 TaskControl::new(VirtioFsWorker {
                     fs: self.fs.clone(),
-                    mem: self.mem.clone(),
                     shared_memory_region: None,
                     shared_memory_size: 0,
                     notify_corruption: self.notify_corruption.clone(),
@@ -218,7 +216,6 @@ impl VirtioDevice for VirtioFsDevice {
 
 struct VirtioFsWorker {
     fs: Arc<fuse::Session>,
-    mem: GuestMemory,
     shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     shared_memory_size: u64,
     notify_corruption: Arc<dyn Fn() + Sync + Send>,
@@ -226,6 +223,7 @@ struct VirtioFsWorker {
 
 struct VirtioFsQueue {
     queue: VirtioQueue,
+    mem: GuestMemory,
 }
 
 impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
@@ -239,7 +237,7 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_virtiofs_request(self, work);
+                    process_virtiofs_request(self, &state.mem, work);
                 }
                 Err(err) => {
                     tracing::error!(
@@ -254,9 +252,13 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
     }
 }
 
-fn process_virtiofs_request(worker: &VirtioFsWorker, mut work: VirtioQueueCallbackWork) {
+fn process_virtiofs_request(
+    worker: &VirtioFsWorker,
+    mem: &GuestMemory,
+    mut work: VirtioQueueCallbackWork,
+) {
     // Parse the request.
-    let reader = VirtioPayloadReader::new(&worker.mem, &work);
+    let reader = VirtioPayloadReader::new(mem, &work);
     let request = match fuse::Request::new(reader) {
         Ok(request) => request,
         Err(e) => {
@@ -274,10 +276,7 @@ fn process_virtiofs_request(worker: &VirtioFsWorker, mut work: VirtioQueueCallba
     };
 
     // Dispatch to the file system.
-    let mut sender = VirtioReplySender {
-        work,
-        mem: &worker.mem,
-    };
+    let mut sender = VirtioReplySender { work, mem };
     let mapper = worker
         .shared_memory_region
         .as_ref()

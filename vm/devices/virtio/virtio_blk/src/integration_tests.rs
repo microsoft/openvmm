@@ -183,7 +183,7 @@ impl TestHarness {
         init_used_ring(&mem, USED_ADDR);
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioBlkDevice::new(&driver_source, mem.clone(), disk, read_only);
+        let device = VirtioBlkDevice::new(&driver_source, disk, read_only);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -217,6 +217,7 @@ impl TestHarness {
                     },
                     notify: interrupt,
                     event: self.queue_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &VirtioDeviceFeatures::new(),
                 None,

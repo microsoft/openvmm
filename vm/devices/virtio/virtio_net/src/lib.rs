@@ -227,7 +227,6 @@ struct Adapter {
 
 pub struct Device {
     registers: NetConfig,
-    memory: GuestMemory,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
@@ -306,13 +305,14 @@ impl VirtioDevice for Device {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        let guest_memory = resources.guest_memory.clone();
         let queue_size = resources.params.size;
         let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
             .context("failed creating queue event")?;
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.memory.clone(),
+            resources.guest_memory,
             resources.notify,
             queue_event,
             initial_state,
@@ -375,7 +375,7 @@ impl VirtioDevice for Device {
                     tx_queue,
                     tx_queue_size,
                 };
-                self.insert_worker(virtio_state, pair_idx, negotiated_features);
+                self.insert_worker(virtio_state, pair_idx, &guest_memory, negotiated_features);
 
                 if first_pair {
                     self.coordinator.start();
@@ -519,7 +519,6 @@ impl NicBuilder {
     pub fn build(
         self,
         driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
         endpoint: Box<dyn Endpoint>,
         mac_address: MacAddress,
     ) -> Device {
@@ -557,7 +556,6 @@ impl NicBuilder {
 
         Device {
             registers,
-            memory,
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
@@ -604,6 +602,7 @@ impl Device {
         &mut self,
         virtio_state: VirtioState,
         idx: usize,
+        guest_memory: &GuestMemory,
         negotiated_features: NetworkFeaturesBank0,
     ) {
         let mut builder = self.driver_source.builder();
@@ -617,7 +616,7 @@ impl Device {
         let driver = builder.build("virtio-net");
 
         let active_state = ActiveState::new(
-            self.memory.clone(),
+            guest_memory.clone(),
             virtio_state.rx_queue_size,
             virtio_state.tx_queue_size,
         );

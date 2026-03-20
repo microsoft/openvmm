@@ -62,7 +62,7 @@ pub struct VirtioBlkDevice {
 
 /// Persistent worker state. Survives across enable/disable cycles.
 ///
-/// Holds the disk backend, guest memory, stats counters, and the
+/// Holds the disk backend, stats counters, and the
 /// `FuturesUnordered` that tracks in-flight IOs. The IO futures
 /// live here (not in `BlkQueueState`) so they survive when the
 /// task is stopped — they're drained in `poll_disable()` before
@@ -70,8 +70,6 @@ pub struct VirtioBlkDevice {
 #[derive(Inspect)]
 struct BlkWorker {
     disk: Disk,
-    #[inspect(skip)]
-    memory: GuestMemory,
     read_only: bool,
     #[inspect(flatten)]
     stats: WorkerStats,
@@ -82,6 +80,7 @@ struct BlkWorker {
 /// Transient queue state, created in `enable()` and removed in `poll_disable()`.
 struct BlkQueueState {
     queue: VirtioQueue,
+    memory: GuestMemory,
 }
 
 #[derive(Inspect, Default)]
@@ -185,7 +184,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                 match event {
                     Event::NewWork(Ok(work)) => {
                         let disk = self.disk.clone();
-                        let mem = self.memory.clone();
+                        let mem = state.memory.clone();
                         let read_only = self.read_only;
                         self.ios.push(Box::pin(async move {
                             process_request(&disk, &mem, read_only, work).await
@@ -209,12 +208,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
 
 impl VirtioBlkDevice {
     /// Creates a new virtio-blk device backed by the given disk.
-    pub fn new(
-        driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
-        disk: Disk,
-        read_only: bool,
-    ) -> Self {
+    pub fn new(driver_source: &VmTaskDriverSource, disk: Disk, read_only: bool) -> Self {
         let sector_count = disk.sector_count();
         let sector_size = disk.sector_size();
         let physical_sector_size = disk.physical_sector_size();
@@ -283,7 +277,6 @@ impl VirtioBlkDevice {
         Self {
             worker: TaskControl::new(BlkWorker {
                 disk,
-                memory,
                 read_only,
                 stats: WorkerStats::default(),
                 ios: FuturesUnordered::new(),
@@ -365,7 +358,7 @@ impl VirtioDevice for VirtioBlkDevice {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.worker.task().memory.clone(),
+            resources.guest_memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
@@ -375,7 +368,10 @@ impl VirtioDevice for VirtioBlkDevice {
         self.worker.insert(
             self.driver.clone(),
             "virtio-blk-worker",
-            BlkQueueState { queue },
+            BlkQueueState {
+                queue,
+                memory: resources.guest_memory,
+            },
         );
         self.worker.start();
         Ok(())

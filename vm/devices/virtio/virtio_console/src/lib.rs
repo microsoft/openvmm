@@ -70,21 +70,15 @@ pub struct VirtioConsoleDevice {
     config: VirtioConsoleConfig,
     #[inspect(skip)]
     worker: TaskControl<ConsoleWorker, ConsoleWorkerState>,
-    memory: GuestMemory,
 }
 
 impl VirtioConsoleDevice {
     /// Create a new virtio console device backed by the given serial I/O.
-    pub fn new(
-        driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
-        io: Box<dyn SerialIo>,
-    ) -> Self {
+    pub fn new(driver_source: &VmTaskDriverSource, io: Box<dyn SerialIo>) -> Self {
         Self {
             driver: driver_source.simple(),
             config: VirtioConsoleConfig::default(),
             worker: TaskControl::new(ConsoleWorker { io }),
-            memory,
         }
     }
 }
@@ -117,10 +111,11 @@ impl VirtioDevice for VirtioConsoleDevice {
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        let guest_memory = resources.guest_memory.clone();
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.memory.clone(),
+            resources.guest_memory,
             resources.notify,
             pal_async::wait::PolledWait::new(&self.driver, resources.event)?,
             initial_state,
@@ -154,7 +149,7 @@ impl VirtioDevice for VirtioConsoleDevice {
                 ConsoleWorkerState {
                     receiveq,
                     transmitq,
-                    mem: self.memory.clone(),
+                    mem: guest_memory,
                     partial_transmit: 0,
                 },
             );
