@@ -460,3 +460,88 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Boot an OS entirely from an NVMe device on an emulated PCIe root port.
+/// Validates the full PciHostBridgeDxe → PciBusDxe → NvmExpressDxe → OS boot chain.
+///
+/// Requires a mu_msvm firmware build with ePCI support (PciHostBridgeDxe,
+/// PciBusDxe, CpuIo2Dxe, PciHostBridgeLib, PciSegmentInfoLib).
+/// Pass `--custom-uefi-firmware <path>` to use a locally-built firmware.
+///
+/// Currently ignored: PciBusDxe finds the root port and NVMe device via ECAM,
+/// but NvmExpressDxe doesn't bind — likely a BAR resource allocation issue in
+/// PciHostBridgeDxe that needs further investigation.
+
+#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)), uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const ECAM_SIZE: u64 = 256 * 1024 * 1024;
+    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+
+    let os_flavor = config.os_flavor();
+    let (vm, agent) = config
+        .with_boot_device_type(petri::BootDeviceType::PcieNvme)
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                // Enable verbose firmware logging for debugging.
+                c.efi_diagnostics_log_level =
+                    openvmm_defs::config::EfiDiagnosticsLogLevelType::Full;
+                // Always attempt default boot so ConnectAll runs and
+                // PciBusDxe enumerates before the boot manager searches.
+                if let openvmm_defs::config::LoadMode::Uefi {
+                    ref mut default_boot_always_attempt,
+                    ref mut enable_vpci_boot,
+                    ..
+                } = c.load_mode
+                {
+                    *default_boot_always_attempt = true;
+                    *enable_vpci_boot = true;
+                }
+                let low_mmio_start = c.memory.mmio_gaps[0].start();
+                let high_mmio_end = c.memory.mmio_gaps[1].end();
+                let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
+                let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
+                let ecam_range = MemoryRange::new(pcie_low.start() - ECAM_SIZE..pcie_low.start());
+                c.memory.pci_ecam_gaps.push(ecam_range);
+                c.memory.pci_mmio_gaps.push(pcie_low);
+                c.memory.pci_mmio_gaps.push(pcie_high);
+                c.pcie_root_complexes.push(PcieRootComplexConfig {
+                    index: 0,
+                    name: "rc0".into(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: 255,
+                    ecam_range,
+                    low_mmio: pcie_low,
+                    high_mmio: pcie_high,
+                    ports: vec![PcieRootPortConfig {
+                        name: "rp0".into(),
+                        hotplug: false,
+                    }],
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    // If we get here, the firmware successfully:
+    //   1. Enumerated the PCIe root complex via ECAM
+    //   2. PciBusDxe found the NVMe device
+    //   3. NvmExpressDxe bound to the ePCI NVMe
+    //   4. UEFI boot manager booted the OS from ePCI NVMe
+    //   5. Pipette agent started in guest
+
+    // Verify the NVMe device is visible from guest
+    let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?guest_devices, "guest devices");
+
+    let nvme_count = guest_devices
+        .iter()
+        .filter(|d| d.class_code == 0x010802)
+        .count();
+    assert!(nvme_count >= 1, "NVMe controller not visible in guest");
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}

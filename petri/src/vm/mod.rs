@@ -226,6 +226,8 @@ pub struct PetriVmConfig {
     pub tpm: Option<TpmConfig>,
     /// Storage controllers and associated disks
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    /// PCIe NVMe drives, keyed by PCIe root port name. Each entry is (port_name, nsid, drive).
+    pub pcie_nvme_drives: Vec<(String, u32, Drive)>,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -398,6 +400,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
+                pcie_nvme_drives: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -820,6 +823,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     ),
                 BootDeviceType::NvmeViaScsi => todo!(),
                 BootDeviceType::NvmeViaNvme => todo!(),
+                BootDeviceType::PcieNvme => {
+                    self.config
+                        .pcie_nvme_drives
+                        .push(("rp0".into(), 1, boot_drive));
+                    self
+                }
             }
         } else {
             self
@@ -2347,6 +2356,8 @@ pub enum BootDeviceType {
     NvmeViaScsi,
     /// Boot from NVMe via NVMe to VTL2.
     NvmeViaNvme,
+    /// Boot from NVMe attached to a PCIe root port (ePCI).
+    PcieNvme,
 }
 
 impl BootDeviceType {
@@ -2355,7 +2366,8 @@ impl BootDeviceType {
             BootDeviceType::None
             | BootDeviceType::Ide
             | BootDeviceType::Scsi
-            | BootDeviceType::Nvme => false,
+            | BootDeviceType::Nvme
+            | BootDeviceType::PcieNvme => false,
             BootDeviceType::IdeViaScsi
             | BootDeviceType::IdeViaNvme
             | BootDeviceType::ScsiViaScsi

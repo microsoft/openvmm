@@ -54,6 +54,7 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LateMapVtl0MemoryPolicy;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::SerialInformation;
 use openvmm_defs::config::VmbusConfig;
@@ -118,6 +119,7 @@ impl PetriVmConfigOpenVmm {
             vmgs,
             tpm: tpm_config,
             vmbus_storage_controllers,
+            pcie_nvme_drives,
         } = petri_vm_config;
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
@@ -205,6 +207,30 @@ impl PetriVmConfigOpenVmm {
         let ide_disks = ide_controllers_to_openvmm(firmware.ide_controllers())?;
         let (mut vmbus_devices, vpci_devices) =
             vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers)?;
+
+        let pcie_devices = pcie_nvme_drives
+            .into_iter()
+            .filter_map(|(port_name, nsid, Drive { disk, .. })| {
+                let disk = disk?;
+                Some(petri_disk_to_openvmm(&disk).map(|disk| {
+                    PcieDeviceConfig {
+                        port_name,
+                        resource: NvmeControllerHandle {
+                            subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
+                            max_io_queues: 64,
+                            msix_count: 64,
+                            namespaces: vec![NamespaceDefinition {
+                                nsid,
+                                read_only: false,
+                                disk,
+                            }],
+                            requests: None,
+                        }
+                        .into_resource(),
+                    }
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
@@ -479,7 +505,7 @@ impl PetriVmConfigOpenVmm {
             floppy_disks: vec![],
             ide_disks,
             pcie_root_complexes: vec![],
-            pcie_devices: vec![],
+            pcie_devices,
             pcie_switches: vec![],
             vpci_devices,
             vmbus_devices,
