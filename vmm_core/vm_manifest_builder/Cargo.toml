@@ -21,5 +21,8 @@ mesh.workspace = true
 
 thiserror.workspace = true
 
+[dev-dependencies]
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true

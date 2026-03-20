@@ -85,6 +85,9 @@ pub trait ConfigureChipsetDevice: Send {
         target_start: u32,
     );
 
+    /// Registers this device at a static PCI BDF on the named PCI bus.
+    fn register_static_pci(&mut self, bus_name: &str, bdf: (u8, u8, u8));
+
     /// Tags this device so that its save/restore routines will not be called.
     fn omit_saved_state(&mut self);
 }

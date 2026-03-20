@@ -92,3 +92,22 @@ pub mod battery {
         }
     }
 }
+
+pub mod piix4_uhci {
+    //! Resource definitions for the PIIX4 USB UHCI stub device.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to the PIIX4 USB UHCI stub controller.
+    #[derive(MeshPayload)]
+    pub struct Piix4PciUsbUhciStubDeviceHandle {
+        /// Name of the PCI bus this device should attach to.
+        pub pci_bus_name: String,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4PciUsbUhciStubDeviceHandle {
+        const ID: &'static str = "piix4PciUsbUhciStub";
+    }
+}

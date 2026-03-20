@@ -20,6 +20,7 @@ use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
+use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -226,6 +227,7 @@ impl VmManifestBuilder {
                     return Err(Error(ErrorInner::UnsupportedArch));
                 }
                 result.attach_i8042();
+                result.attach_piix4_pci_usb_uhci_stub();
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
@@ -251,7 +253,6 @@ impl VmManifestBuilder {
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
                     with_piix4_pci_isa_bridge: true,
-                    with_piix4_pci_usb_uhci_stub: true,
                     with_piix4_power_management: true,
                     with_underhill_vga_proxy: self.proxy_vga,
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
@@ -284,7 +285,6 @@ impl VmManifestBuilder {
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_piix4_pci_isa_bridge: false,
-                    with_piix4_pci_usb_uhci_stub: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
@@ -324,7 +324,6 @@ impl VmManifestBuilder {
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_piix4_pci_isa_bridge: false,
-                    with_piix4_pci_usb_uhci_stub: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
@@ -393,6 +392,17 @@ impl VmChipsetResult {
             },
         });
 
+        self
+    }
+
+    fn attach_piix4_pci_usb_uhci_stub(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "piix4-usb-uhci-stub".to_owned(),
+            resource: Piix4PciUsbUhciStubDeviceHandle {
+                pci_bus_name: "i440bx".to_owned(),
+            }
+            .into_resource(),
+        });
         self
     }
 
@@ -565,5 +575,49 @@ impl VmChipsetResult {
             ]);
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_with_tracing::test;
+    use vm_resource::ResourceId;
+
+    #[test]
+    fn hyperv_gen1_includes_piix4_uhci_stub_handle() {
+        let result = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
+            .build()
+            .expect("Hyper-V Gen1 x86_64 manifest should build");
+
+        let device = result
+            .chipset_devices
+            .iter()
+            .find(|d| d.name == "piix4-usb-uhci-stub")
+            .expect("piix4-usb-uhci-stub should be present");
+
+        assert_eq!(
+            device.resource.id(),
+            Piix4PciUsbUhciStubDeviceHandle::ID,
+            "UHCI stub should use the Piix4PciUsbUhciStubDeviceHandle resource"
+        );
+    }
+
+    #[test]
+    fn unenlightened_linux_does_not_include_piix4_uhci_stub_handle() {
+        let result = VmManifestBuilder::new(
+            BaseChipsetType::UnenlightenedLinuxDirect,
+            MachineArch::X86_64,
+        )
+        .build()
+        .expect("Unenlightened Linux x86_64 manifest should build");
+
+        assert!(
+            result
+                .chipset_devices
+                .iter()
+                .all(|d| d.name != "piix4-usb-uhci-stub"),
+            "piix4-usb-uhci-stub should not be present for unenlightened Linux"
+        );
     }
 }

@@ -28,6 +28,10 @@ impl ConfigureChipsetDevice for RemoteConfigureChipsetDevice {
         todo!()
     }
 
+    fn register_static_pci(&mut self, _bus_name: &str, _bdf: (u8, u8, u8)) {
+        todo!()
+    }
+
     fn omit_saved_state(&mut self) {
         todo!()
     }

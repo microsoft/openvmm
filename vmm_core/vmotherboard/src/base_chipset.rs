@@ -4,6 +4,7 @@
 //! A flexible chipset builder that pre-populates a [`Chipset`](super::Chipset)
 //! with a customizable configuration of semi-standardized device.
 
+use crate::BusId;
 use crate::ChipsetDeviceHandle;
 use crate::PowerEvent;
 use crate::chipset::ChipsetBuilder;
@@ -221,7 +222,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_piix4_pci_isa_bridge,
-            deps_piix4_pci_usb_uhci_stub,
             deps_piix4_power_management,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
@@ -334,15 +334,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         set_a20_signal,
                     )
                 })?;
-        }
-
-        if let Some(options::dev::Piix4PciUsbUhciStubDeps { attached_to }) =
-            deps_piix4_pci_usb_uhci_stub
-        {
-            builder
-                .arc_mutex_device("piix4-usb-uhci-stub")
-                .on_pci_bus(attached_to)
-                .add(|_| chipset_legacy::piix4_uhci::Piix4UsbUhciStub::new())?;
         }
 
         if let Some(options::dev::GenericPitDeps {}) = deps_generic_pit {
@@ -741,6 +732,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         for device in device_handles {
             builder
                 .arc_mutex_device(device.name.as_ref())
+                .with_external_pci()
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
@@ -787,6 +779,10 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
         target_start: u32,
     ) {
         self.add_line_target(id, source_range, target_start)
+    }
+
+    fn register_static_pci(&mut self, bus_name: &str, bdf: (u8, u8, u8)) {
+        self.register_static_pci(BusId::new(bus_name), bdf)
     }
 
     fn omit_saved_state(&mut self) {
@@ -1141,7 +1137,6 @@ pub mod options {
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
             piix4_pci_isa_bridge:        dev::Piix4PciIsaBridgeDeps,
-            piix4_pci_usb_uhci_stub:     dev::Piix4PciUsbUhciStubDeps,
             piix4_power_management:      dev::Piix4PowerManagementDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
@@ -1192,15 +1187,6 @@ pub mod options {
             pub primary_channel_drives: [Option<ide::DriveMedia>; 2],
             /// Drives attached to the secondary IDE channel
             pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
-        }
-
-        /// PIIX4 USB UHCI controller (fixed pci address: 0:7.2)
-        ///
-        /// NOTE: current implementation is a minimal stub, implementing just
-        /// enough to keep the PCAT BIOS happy.
-        pub struct Piix4PciUsbUhciStubDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
         }
 
         /// PIIX4 power management device (fixed pci address: 0:7.3)

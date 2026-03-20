@@ -9,6 +9,8 @@ use chipset_device::pci::PciConfigSpace;
 use inspect::InspectMut;
 use vmcore::device_state::ChangeDeviceState;
 
+pub mod resolver;
+
 /// PIIX4 (PCI device function 2) - USB configuration (stub)
 ///
 /// See section 3.3 in the PIIX4 data sheet.
