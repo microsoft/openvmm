@@ -570,6 +570,44 @@ async fn servicing_test_keepalive_disable_through_inspect(
     Ok(())
 }
 
+/// Test that servicing works for all combinations of NVMe and MANA keepalives,
+/// verifying that the two keepalive mechanisms are independent. that all
+/// resources are correctly freed when keepalive is disabled even if the other
+/// keepalive is enabled (e.g. DMA allocations).
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_test_nvme_and_mana_keepalive_combinations(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let mut flags = config.default_servicing_flags();
+
+    let (mut vm, agent) = config.run().await?;
+
+    for (nvme_ka_enabled, mana_ka_enabled) in
+        [(false, false), (false, true), (true, false), (true, true)]
+    {
+        flags.enable_nvme_keepalive = nvme_ka_enabled;
+        flags.enable_mana_keepalive = mana_ka_enabled;
+
+        agent.ping().await?;
+
+        // Test that inspect serialization works with the old version.
+        vm.test_inspect_openhcl().await?;
+
+        vm.restart_openhcl(igvm_file.clone(), flags).await?;
+
+        agent.ping().await?;
+
+        // Test that inspect serialization works with the new version.
+        vm.test_inspect_openhcl().await?;
+    }
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
 /// Verifies that the driver awaits an existing AER instead of issuing a new one after servicing.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn servicing_keepalive_verify_no_duplicate_aers(

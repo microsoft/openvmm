@@ -1197,9 +1197,9 @@ impl<D: DeviceBacking> Drop for NvmeDriver<D> {
 }
 
 impl IoIssuers {
-    pub async fn get(&self, cpu: u32) -> Result<&Issuer, RequestError> {
+    pub async fn get(&self, cpu: u32) -> Result<Arc<Issuer>, RequestError> {
         if let Some(v) = self.per_cpu[cpu as usize].get() {
-            return Ok(&v.issuer);
+            return Ok(v.issuer.clone());
         }
 
         self.send
@@ -1207,10 +1207,11 @@ impl IoIssuers {
             .await
             .map_err(RequestError::Gone)?;
 
-        Ok(&self.per_cpu[cpu as usize]
+        Ok(self.per_cpu[cpu as usize]
             .get()
             .expect("issuer was set by rpc")
-            .issuer)
+            .issuer
+            .clone())
     }
 }
 
