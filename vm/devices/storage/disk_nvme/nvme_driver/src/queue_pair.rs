@@ -124,7 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
-            issued_at: (self.qid == 0).then_some(Instant::now()),
+            elapsed: (self.qid == 0).then(|| Instant::now()),
         });
     }
 
@@ -181,7 +181,7 @@ impl PendingCommands {
                         PendingCommand {
                             command: state.command,
                             respond: Rpc::detached(()),
-                            issued_at: None,
+                            elapsed: None,
                         },
                     )
                 })
@@ -950,8 +950,8 @@ struct PendingCommand {
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
     /// When the command was submitted to the queue. Used only for the admin queue
-    #[inspect(skip)]
-    issued_at: Option<Instant>,
+    #[inspect(with = "|x| x.map(|elapsed| elapsed.elapsed().as_secs_f64())")]
+    elapsed: Option<Instant>,
 }
 
 /// Diagnostic information about the completion queue state.
@@ -1308,13 +1308,15 @@ impl<A: AerHandler> QueueHandler<A> {
         // Log pending admin command wait durations at save time.
         if self.qid == 0 {
             for (_index, cmd) in self.commands.commands.iter() {
-                if let Some(issued_at) = cmd.issued_at {
+                if let Some(elapsed) = cmd.elapsed {
                     tracing::info!(
                         pci_id = ?self.device_id,
-                        qid = self.qid,
                         cid = cmd.command.cdw0.cid(),
                         opcode = cmd.command.cdw0.opcode(),
-                        elapsed_ms = issued_at.elapsed().as_millis() as u64,
+                        nsid = cmd.command.nsid,
+                        cdw10 = cmd.command.cdw10,
+                        cdw11 = cmd.command.cdw11,
+                        elapsed = elapsed.elapsed().as_secs_f64() as u64,
                         "pending admin command at save time",
                     );
                 }
