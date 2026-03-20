@@ -41,8 +41,7 @@ engineers' local machines and in CI. Put these special words in your test to opt
 
 ### "unstable" tests
 
-If a test is not yet reliable enough to gate PRs, add `unstable` to the
-the macro.
+If a test is not yet reliable enough to gate PRs, add `unstable` to the macro.
 
 For individual variants:
 
@@ -55,7 +54,7 @@ For individual variants:
     // ...
 )]
 async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    /// ...
+    // ...
 }
 ```
 
@@ -68,12 +67,12 @@ For all variants of the test:
     // ...
 ))]
 async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    /// ...
+    // ...
 }
 ```
 
 Unstable tests run in the same CI job as stable tests. When an unstable test fails
-the CI pass will pass with a warning
+the CI run will pass with a warning
 
 To promote an unstable test to stable, remove `unstable` from the macro. This is
 a single-place change — no CI or configuration updates are required.
