@@ -182,7 +182,12 @@ impl Test {
     ) -> libtest_mimic::Trial {
         libtest_mimic::Trial::test(self.name(), move || match self.run(resolve) {
             Ok(()) => Ok(()),
-            Err(err) if self.test.0.unstable() => {
+            Err(err)
+                if self.test.0.unstable()
+                    && std::env::var("PETRI_REPORT_UNSTABLE_FAIL")
+                        .ok()
+                        .is_none_or(|v| v.is_empty() || v == "0") =>
+            {
                 tracing::warn!("ignoring unstable test failure: {err:#}");
                 Ok(())
             }
