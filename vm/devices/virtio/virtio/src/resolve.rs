@@ -3,6 +3,7 @@
 
 //! Resource resolver definitions for virtio devices.
 
+use crate::DynVirtioDevice;
 use crate::VirtioDevice;
 use guestmem::GuestMemory;
 use vm_resource::CanResolveTo;
@@ -14,7 +15,7 @@ impl CanResolveTo<ResolvedVirtioDevice> for VirtioDeviceHandle {
 }
 
 /// A resolved virtio device.
-pub struct ResolvedVirtioDevice(pub Box<dyn VirtioDevice>);
+pub struct ResolvedVirtioDevice(pub Box<dyn DynVirtioDevice>);
 
 impl<T: 'static + VirtioDevice> From<T> for ResolvedVirtioDevice {
     fn from(value: T) -> Self {

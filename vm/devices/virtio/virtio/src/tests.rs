@@ -7,6 +7,7 @@
 #![cfg(test)]
 
 use crate::DeviceTraits;
+use crate::DynVirtioDevice;
 use crate::PciInterruptModel;
 use crate::QueueResources;
 use crate::VirtioDevice;
@@ -1228,13 +1229,13 @@ impl VirtioDevice for FailingTestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         _idx: u16,
         _resources: QueueResources,
@@ -1244,12 +1245,8 @@ impl VirtioDevice for FailingTestDevice {
         anyhow::bail!("intentional enable failure for testing")
     }
 
-    fn poll_stop_queue(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-        _idx: u16,
-    ) -> std::task::Poll<Option<QueueState>> {
-        std::task::Poll::Ready(None)
+    async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
+        None
     }
 }
 
@@ -1285,13 +1282,13 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -1334,21 +1331,17 @@ impl VirtioDevice for TestDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-        idx: u16,
-    ) -> std::task::Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         let idx = idx as usize;
         if idx >= self.workers.len() || !self.workers[idx].has_state() {
-            return std::task::Poll::Ready(None);
+            return None;
         }
-        std::task::ready!(self.workers[idx].poll_stop(cx));
+        self.workers[idx].stop().await;
         let state = self.workers[idx].remove().queue.queue_state();
-        std::task::Poll::Ready(Some(state))
+        Some(state)
     }
 
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         self.workers.clear();
     }
 
@@ -3549,11 +3542,11 @@ impl VirtioDevice for PartialFailTestDevice {
     fn traits(&self) -> DeviceTraits {
         self.traits.clone()
     }
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
-    fn start_queue(
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn start_queue(
         &mut self,
         idx: u16,
         _resources: QueueResources,
@@ -3566,15 +3559,11 @@ impl VirtioDevice for PartialFailTestDevice {
         self.started.push(idx);
         Ok(())
     }
-    fn poll_stop_queue(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-        idx: u16,
-    ) -> std::task::Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         self.stopped.push(idx);
-        std::task::Poll::Ready(None)
+        None
     }
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         self.reset_count += 1;
     }
 }
@@ -3611,7 +3600,7 @@ struct MmioTestTransport {
 }
 
 impl MmioTestTransport {
-    fn new(device: Box<dyn VirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
+    fn new(device: Box<dyn DynVirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let interrupt = LineInterrupt::detached();
@@ -3676,7 +3665,7 @@ struct PciTestTransport {
 }
 
 impl PciTestTransport {
-    fn new(device: Box<dyn VirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
+    fn new(device: Box<dyn DynVirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let msi_conn = MsiConnection::new();

@@ -19,9 +19,6 @@ use futures::StreamExt;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
-use std::task::Context;
-use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -67,13 +64,13 @@ impl VirtioDevice for VirtioRngDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -100,14 +97,14 @@ impl VirtioDevice for VirtioRngDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         assert_eq!(idx, 0);
         if !self.worker.has_state() {
-            return Poll::Ready(None);
+            return None;
         }
-        ready!(self.worker.poll_stop(cx));
+        self.worker.stop().await;
         let state = self.worker.remove().queue.queue_state();
-        Poll::Ready(Some(state))
+        Some(state)
     }
 
     fn supports_save_restore(&self) -> bool {
@@ -317,7 +314,7 @@ mod tests {
             }
         }
 
-        fn enable(&mut self) {
+        async fn enable(&mut self) {
             let interrupt = Interrupt::from_event(self.interrupt_event.clone());
 
             self.device
@@ -337,6 +334,7 @@ mod tests {
                     &VirtioDeviceFeatures::new(),
                     None,
                 )
+                .await
                 .unwrap();
         }
 
@@ -371,7 +369,7 @@ mod tests {
     #[async_test]
     async fn rng_fills_buffer_with_random_bytes(driver: DefaultDriver) {
         let mut harness = TestHarness::new(&driver);
-        harness.enable();
+        harness.enable().await;
 
         let buf_len = 64u32;
         let data_gpa = DATA_BASE;
@@ -393,7 +391,7 @@ mod tests {
     #[async_test]
     async fn rng_handles_zero_length_buffer(driver: DefaultDriver) {
         let mut harness = TestHarness::new(&driver);
-        harness.enable();
+        harness.enable().await;
 
         let (_id, written) = harness.submit_and_wait(DATA_BASE, 0).await;
         assert_eq!(

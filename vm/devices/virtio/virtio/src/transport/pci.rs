@@ -11,10 +11,9 @@ use super::task::TransportStateResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
-
+use crate::DynVirtioDevice;
 use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
-use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
@@ -127,7 +126,7 @@ pub struct VirtioPciDevice {
 
 impl VirtioPciDevice {
     pub fn new(
-        mut device: Box<dyn VirtioDevice>,
+        mut device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
         interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,

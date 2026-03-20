@@ -586,6 +586,7 @@ impl TestHarness {
                 &features,
                 None,
             )
+            .await
             .unwrap();
 
         // Queue 1: TX
@@ -606,6 +607,7 @@ impl TestHarness {
                 &features,
                 None,
             )
+            .await
             .unwrap();
 
         // Wait for the mock endpoint to provide a queue handle
@@ -715,9 +717,9 @@ impl TestHarness {
 
     /// Disable the device (stops all queues).
     async fn disable(&mut self) {
-        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 1)).await;
-        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 0)).await;
-        self.device.reset();
+        self.device.stop_queue(1).await;
+        self.device.stop_queue(0).await;
+        self.device.reset().await;
     }
 
     /// Reset memory layout tracking for a fresh enable cycle.

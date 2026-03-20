@@ -8,10 +8,9 @@ use super::task::TransportStateResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
-
+use crate::DynVirtioDevice;
 use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
-use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
@@ -108,7 +107,7 @@ impl fmt::Debug for VirtioMmioDevice {
 
 impl VirtioMmioDevice {
     pub fn new(
-        device: Box<dyn VirtioDevice>,
+        device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
         interrupt: LineInterrupt,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
