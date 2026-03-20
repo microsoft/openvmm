@@ -23,6 +23,7 @@
 // low level memory manipulation functions.
 #![expect(unsafe_code)]
 
+use super::manager::DmaRegionProvider;
 use super::manager::MapperId;
 use super::manager::MapperRequest;
 use super::manager::MappingParams;
@@ -30,6 +31,7 @@ use super::manager::MappingRequest;
 use crate::RemoteProcess;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
+use guestmem::GuestMemorySharing;
 use guestmem::PageFaultAction;
 use guestmem::PageFaultError;
 use memory_range::MemoryRange;
@@ -111,6 +113,7 @@ impl MapperTask {
                     mappable,
                     writable,
                     file_offset,
+                    ..
                 }) => {
                     tracing::debug!(%range, "mapping received for range");
 
@@ -377,6 +380,15 @@ unsafe impl GuestMemoryAccess for VaMapper {
             ));
         }
         PageFaultAction::Retry
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        if self.private_ram {
+            return None;
+        }
+        Some(GuestMemorySharing::new(DmaRegionProvider {
+            req_send: self.inner.req_send.clone(),
+        }))
     }
 }
 

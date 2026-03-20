@@ -15,6 +15,7 @@ use pal_event::Event;
 use sparse_mmap::AsMappableRef;
 use std::any::Any;
 use std::fmt::Debug;
+use std::future::Future;
 use std::io;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -347,6 +348,72 @@ unsafe impl GuestMemoryAccess for AlignedHeapMemory {
 
 impl LinearGuestMemory for AlignedHeapMemory {}
 
+/// A shareable region of guest memory backed by a file (Unix) or
+/// section handle (Windows).
+///
+/// The backing file must be fully populated for the region — the consumer
+/// will map it directly and no page faults are permitted. This is
+/// incompatible with bitmap-gated access or lazy fault-in schemes.
+pub struct ShareableRegion {
+    /// Guest physical address of this region.
+    pub guest_address: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Backing file/handle, shared via `Arc` to avoid OS-level `dup()`.
+    pub file: Arc<sparse_mmap::Mappable>,
+    /// Offset into `file` where this region starts.
+    pub file_offset: u64,
+}
+
+/// Opaque control object for accessing the shareable backing of guest
+/// memory. Not all `GuestMemory` instances support this — those backed
+/// by private memory or heap allocations return `None`.
+///
+/// # Contract
+///
+/// * The regions returned by [`get_regions`](Self::get_regions) must be
+///   fully populated — the consumer will map them directly and no page
+///   faults are permitted.
+/// * The set of regions is currently static for the lifetime of the VM.
+///   Hotplug and hot-remove of shareable regions are not yet supported;
+///   once they are, additional methods will be added here to notify
+///   consumers of changes.
+pub struct GuestMemorySharing {
+    inner: Box<dyn ProvideShareableRegions>,
+}
+
+impl GuestMemorySharing {
+    /// Construct from a trait implementation. Called by `GuestMemoryAccess`
+    /// implementations (e.g., `VaMapper` in membacking).
+    pub fn new(inner: impl ProvideShareableRegions + 'static) -> Self {
+        Self {
+            inner: Box::new(inner),
+        }
+    }
+
+    /// Return the current set of shareable backing regions.
+    pub async fn get_regions(&self) -> Vec<ShareableRegion> {
+        self.inner.get_regions().await
+    }
+}
+
+/// Trait for providing shareable region information.
+///
+/// Implementors must return regions whose backing files are fully
+/// populated — consumers will map them directly without fault handling.
+/// The region set is currently static; dynamic updates (hotplug /
+/// hot-remove) are not yet supported.
+///
+/// This trait must be public so that crates like `membacking` can
+/// implement it, but callers should interact with
+/// [`GuestMemorySharing`]'s methods rather than this trait directly.
+pub trait ProvideShareableRegions: Send + Sync {
+    /// Return the current set of shareable backing regions.
+    fn get_regions(
+        &self,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Vec<ShareableRegion>> + Send + '_>>;
+}
+
 /// A trait for a guest memory backing.
 ///
 /// Guest memory may be backed by a virtual memory mapping, in which case this
@@ -536,6 +603,15 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     fn unlock_gpns(&self, gpns: &[u64]) {
         let _ = gpns;
     }
+
+    /// Return a sharing control object if this memory backing supports
+    /// file-based sharing (e.g., memfd on Linux, section on Windows).
+    ///
+    /// Returns `None` for private memory, heap-backed test memory, or
+    /// other non-shareable backings.
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        None
+    }
 }
 
 trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
@@ -586,6 +662,8 @@ trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
     fn lock_gpns(&self, gpns: &[u64]) -> Result<bool, GuestMemoryBackingError>;
 
     fn unlock_gpns(&self, gpns: &[u64]);
+
+    fn sharing(&self) -> Option<GuestMemorySharing>;
 }
 
 impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
@@ -651,6 +729,10 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
 
     fn unlock_gpns(&self, gpns: &[u64]) {
         self.unlock_gpns(gpns)
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        self.sharing()
     }
 }
 
@@ -753,6 +835,10 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
 
     fn base_iova(&self) -> Option<u64> {
         self.as_ref().base_iova()
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        self.as_ref().sharing()
     }
 }
 
@@ -1039,6 +1125,15 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess
             let (region, offset_in_region) = self.region(gpn * PAGE_SIZE64, PAGE_SIZE64).unwrap();
             region.unlock_gpns(&[offset_in_region / PAGE_SIZE64]);
         }
+    }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        // FUTURE: multi-region setups could aggregate shareable regions from
+        // their sub-regions. For now, sharing is only supported for
+        // single-region guest memory (the common case). If a VM uses
+        // MultiRegionGuestMemoryAccess with vhost-user, this will return
+        // None and the vhost-user backend will fail to initialize.
+        None
     }
 }
 
@@ -1475,6 +1570,12 @@ impl GuestMemory {
     pub fn iova(&self, gpa: u64) -> Option<u64> {
         let (region, offset, _) = self.inner.region(gpa, 1).ok()?;
         Some(region.base_iova? + offset)
+    }
+
+    /// Returns a sharing object if this memory supports
+    /// file-based sharing. See [`GuestMemorySharing`].
+    pub fn sharing(&self) -> Option<GuestMemorySharing> {
+        self.inner.imp.sharing()
     }
 
     /// Gets a pointer to the VA range for `gpa..gpa+len`.
