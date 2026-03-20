@@ -31,6 +31,7 @@ use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
@@ -380,12 +381,14 @@ impl VmChipsetResult {
     }
 
     fn attach_pit(&mut self) -> &mut Self {
+        const PIT_ID: &str = PitDeviceHandle::ID;
+
         if self.with_pit {
             return self;
         }
 
         self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "pit".to_owned(),
+            name: PIT_ID.to_owned(),
             resource: PitDeviceHandle.into_resource(),
         });
         self.with_pit = true;
@@ -645,7 +648,7 @@ mod tests {
         let pit_count = result
             .chipset_devices
             .iter()
-            .filter(|d| d.resource.id() == "pit")
+            .filter(|d| d.resource.id() == PitDeviceHandle::ID)
             .count();
 
         assert_eq!(pit_count, 1, "PIT handle should only be attached once");
