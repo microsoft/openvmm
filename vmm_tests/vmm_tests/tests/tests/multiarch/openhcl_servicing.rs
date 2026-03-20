@@ -581,12 +581,13 @@ async fn servicing_test_nvme_and_mana_keepalive_combinations(
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
 
+    let scsi_controller_guid = Guid::new_random();
     let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
     let (mut vm, agent) = create_keepalive_test_config_default(
         config,
         fault_configuration,
         VTL0_NVME_LUN,
-        Guid::new_random(),
+        scsi_controller_guid,
         DEFAULT_DISK_SIZE,
     )
     .await?;
@@ -600,6 +601,25 @@ async fn servicing_test_nvme_and_mana_keepalive_combinations(
         tracing::info!(nvme_ka_enabled, mana_ka_enabled, "Testing servicing");
 
         agent.ping().await?;
+
+        // Fetch the correct disk path for the VTL0 NVMe disk. Petri may assign it
+        // to /dev/sda or /dev/sdb depending on timing.
+        let device_paths = get_device_paths(
+            &agent,
+            scsi_controller_guid,
+            vec![ExpectedGuestDevice {
+                lun: VTL0_NVME_LUN,
+                disk_size_sectors: (DEFAULT_DISK_SIZE / SCSI_SECTOR_SIZE) as usize,
+                friendly_name: "nvme_disk".to_string(),
+            }],
+        )
+        .await?;
+        assert!(device_paths.len() == 1);
+        let disk_path = &device_paths[0];
+
+        // Make sure the disk showed up.
+        let sh = agent.unix_shell();
+        cmd!(sh, "ls {disk_path}").run().await?;
 
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
