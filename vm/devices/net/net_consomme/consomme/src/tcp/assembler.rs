@@ -71,6 +71,7 @@ impl Assembler {
         }
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -166,6 +167,7 @@ impl Assembler {
         }
     }
 
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.count = 0;
         self.fin_offset = None;

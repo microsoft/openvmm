@@ -1308,7 +1308,7 @@ impl TcpConnectionInner {
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
                 if !payload.is_empty() || fin {
                     // Stage 1: Compute the byte offset from the contiguous
-                    // frontier and write the payload into the ring.
+                    // frontier.
                     //
                     // Safety of ring_offset: the sequence acceptance check above
                     // bounds the segment to rx_window_end = rx_seq + (rx_window_cap
@@ -1320,21 +1320,26 @@ impl TcpConnectionInner {
                         0
                     };
                     let ring_offset = self.rx_buffer.len() + seq_offset;
-                    if !payload.is_empty() {
-                        self.rx_buffer.write_at(ring_offset, payload);
-                    }
 
-                    // Stage 2: Record the range in the assembler.
-                    let (rx_consumed, assembler_fin) =
+                    // Stage 2: Record the range in the assembler. Do this
+                    // *before* writing to the ring so that rejected segments
+                    // (TooManyGaps) don't leave stale bytes in unwritten
+                    // ring space.
+                    let (rx_consumed, assembler_fin, accepted) =
                         match self
                             .rx_assembler
                             .add(seq_offset as u32, payload.len() as u32, fin)
                         {
-                            Ok(result) => (result.consumed as usize, result.fin),
-                            Err(assembler::TooManyGaps) => (0, false),
+                            Ok(result) => (result.consumed as usize, result.fin, true),
+                            Err(assembler::TooManyGaps) => (0, false, false),
                         };
 
-                    // Stage 3: Advance the contiguous frontier.
+                    // Stage 3: Write payload into the ring and advance the
+                    // contiguous frontier. Only write when the assembler
+                    // accepted the segment.
+                    if accepted && !payload.is_empty() {
+                        self.rx_buffer.write_at(ring_offset, payload);
+                    }
                     self.rx_buffer.extend_by(rx_consumed);
                     self.rx_seq += rx_consumed;
                     rx_fin = assembler_fin;
