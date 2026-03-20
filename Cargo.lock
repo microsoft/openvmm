@@ -3384,7 +3384,7 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "git+https://github.com/mingweishih/igvm?branch=corim-header#571d37b3ce579f48e5ca536076999b2a341f3f99"
+source = "git+https://github.com/chris-oo/igvm?branch=corim-header#eadb2cc6e0c56a7f1aa2b24038f4f0667ac79fc1"
 dependencies = [
  "bitfield-struct 0.10.1",
  "crc32fast",
@@ -3401,7 +3401,7 @@ dependencies = [
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "git+https://github.com/mingweishih/igvm?branch=corim-header#571d37b3ce579f48e5ca536076999b2a341f3f99"
+source = "git+https://github.com/chris-oo/igvm?branch=corim-header#eadb2cc6e0c56a7f1aa2b24038f4f0667ac79fc1"
 dependencies = [
  "bitfield-struct 0.10.1",
  "open-enum",
@@ -3424,6 +3424,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "open_enum",
  "range_map_vec",
  "serde",
  "serde_json",

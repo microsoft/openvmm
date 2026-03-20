@@ -11,9 +11,8 @@ mod identity_mapping;
 mod signed_measurement;
 mod vp_context_builder;
 
-use crate::corim::CorimDocumentHeader;
-use crate::corim::CorimSignatureHeader;
 use crate::corim::platform_to_compatibility_mask;
+use crate::corim::split_cose_sign1;
 use crate::file_loader::IgvmLoader;
 use crate::file_loader::LoaderIsolationType;
 use anyhow::Context;
@@ -24,6 +23,8 @@ use file_loader::IgvmLoaderRegister;
 use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
 use igvm_defs::IGVM_FIXED_HEADER;
+use igvm_defs::IGVM_VHS_CORIM_DOCUMENT;
+use igvm_defs::IGVM_VHS_CORIM_SIGNATURE;
 use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
 use igvm_defs::IgvmPlatformType;
 use igvm_defs::IgvmVariableHeaderType;
@@ -96,7 +97,10 @@ enum Options {
         debug_validation: bool,
     },
     /// Patch CoRIM (Concise Reference Integrity Manifest) headers into an existing IGVM file.
-    /// At least one of --corim-document or --corim-signature must be specified.
+    ///
+    /// Either provide a single bundled/signed CoRIM file via --corim-signed, or
+    /// provide the document and detached signature separately via --corim-document
+    /// and --corim-signature.
     PatchCorim {
         /// Input IGVM file path
         #[clap(short, long)]
@@ -104,10 +108,18 @@ enum Options {
         /// Output IGVM file path (can be the same as input to modify in place)
         #[clap(short, long)]
         output: PathBuf,
-        /// Path to the CoRIM document CBOR payload file (optional, but at least one of document or signature must be provided)
+        /// Path to a bundled/signed CoRIM file (COSE_Sign1 with embedded payload).
+        /// The tool will internally split it into the document payload and a
+        /// detached signature, then write both to the IGVM file.
+        /// Mutually exclusive with --corim-document and --corim-signature.
+        #[clap(long, conflicts_with_all = ["corim_document", "corim_signature"])]
+        corim_signed: Option<PathBuf>,
+        /// Path to the CoRIM document CBOR payload file (optional, but at least one of
+        /// document/signature/signed must be provided)
         #[clap(long)]
         corim_document: Option<PathBuf>,
-        /// Path to the CoRIM signature (COSE_Sign1) file (optional, but at least one of document or signature must be provided)
+        /// Path to the CoRIM signature (COSE_Sign1 with nil payload) file (optional, but
+        /// at least one of document/signature/signed must be provided)
         #[clap(long)]
         corim_signature: Option<PathBuf>,
         /// Platform type for the CoRIM headers
@@ -220,14 +232,24 @@ fn main() -> anyhow::Result<()> {
         Options::PatchCorim {
             input,
             output,
+            corim_signed,
             corim_document,
             corim_signature,
             platform,
         } => {
-            if corim_document.is_none() && corim_signature.is_none() {
-                bail!("At least one of --corim-document or --corim-signature must be specified");
+            if corim_signed.is_none() && corim_document.is_none() && corim_signature.is_none() {
+                bail!(
+                    "At least one of --corim-signed, --corim-document, or --corim-signature must be specified"
+                );
             }
-            patch_corim_headers(input, output, corim_document, corim_signature, platform)
+            patch_corim_headers(
+                input,
+                output,
+                corim_signed,
+                corim_document,
+                corim_signature,
+                platform,
+            )
         }
     }
 }
@@ -442,11 +464,11 @@ fn dump_corim_headers(
         let aligned_len = (header_data_len + 7) & !7;
         let next_offset = header_data_offset + aligned_len;
 
-        // Check for CoRIM document header (0x314)
+        // Check for CoRIM document header (0x104)
         if header.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT {
-            if header_data_offset + size_of::<CorimDocumentHeader>() <= var_headers.len() {
+            if header_data_offset + size_of::<IGVM_VHS_CORIM_DOCUMENT>() <= var_headers.len() {
                 let corim_header =
-                    CorimDocumentHeader::read_from_prefix(&var_headers[header_data_offset..])
+                    IGVM_VHS_CORIM_DOCUMENT::read_from_prefix(&var_headers[header_data_offset..])
                         .map_err(|_| anyhow::anyhow!("Failed to read CoRIM document header"))?
                         .0;
 
@@ -459,6 +481,10 @@ fn dump_corim_headers(
                     document_count += 1;
                     println!("CoRIM Document Header #{}:", document_count);
                     println!(
+                        "  Header Type: 0x{:X} (IGVM_VHT_CORIM_DOCUMENT)",
+                        header.typ.0
+                    );
+                    println!(
                         "  Compatibility Mask: 0x{:X} ({})",
                         corim_header.compatibility_mask,
                         format_platform_mask(corim_header.compatibility_mask)
@@ -468,6 +494,16 @@ fn dump_corim_headers(
                         corim_header.file_offset, corim_header.file_offset
                     );
                     println!("  Size: {} bytes", corim_header.size_bytes);
+                    println!("  Reserved: 0x{:X}", corim_header.reserved);
+                    println!(
+                        "  Raw Header (hex): {}",
+                        corim_header
+                            .as_bytes()
+                            .iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
 
                     // Extract payload data if output directory is specified
                     if let Some(ref dir) = output_dir {
@@ -495,11 +531,11 @@ fn dump_corim_headers(
             }
         }
 
-        // Check for CoRIM signature header (0x315)
+        // Check for CoRIM signature header (0x105)
         if header.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE {
-            if header_data_offset + size_of::<CorimSignatureHeader>() <= var_headers.len() {
+            if header_data_offset + size_of::<IGVM_VHS_CORIM_SIGNATURE>() <= var_headers.len() {
                 let corim_header =
-                    CorimSignatureHeader::read_from_prefix(&var_headers[header_data_offset..])
+                    IGVM_VHS_CORIM_SIGNATURE::read_from_prefix(&var_headers[header_data_offset..])
                         .map_err(|_| anyhow::anyhow!("Failed to read CoRIM signature header"))?
                         .0;
 
@@ -513,6 +549,10 @@ fn dump_corim_headers(
                     signature_count += 1;
                     println!("CoRIM Signature Header #{}:", signature_count);
                     println!(
+                        "  Header Type: 0x{:X} (IGVM_VHT_CORIM_SIGNATURE)",
+                        header.typ.0
+                    );
+                    println!(
                         "  Compatibility Mask: 0x{:X} ({})",
                         corim_header.compatibility_mask,
                         format_platform_mask(corim_header.compatibility_mask)
@@ -522,6 +562,16 @@ fn dump_corim_headers(
                         corim_header.file_offset, corim_header.file_offset
                     );
                     println!("  Size: {} bytes", corim_header.size_bytes);
+                    println!("  Reserved: 0x{:X}", corim_header.reserved);
+                    println!(
+                        "  Raw Header (hex): {}",
+                        corim_header
+                            .as_bytes()
+                            .iter()
+                            .map(|b| format!("{:02X}", b))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
 
                     // Extract payload data if output directory is specified
                     if let Some(ref dir) = output_dir {
@@ -587,6 +637,7 @@ fn format_platform_mask(mask: u32) -> String {
 fn patch_corim_headers(
     input: PathBuf,
     output: PathBuf,
+    corim_signed: Option<PathBuf>,
     corim_document: Option<PathBuf>,
     corim_signature: Option<PathBuf>,
     platform: CorimPlatform,
@@ -595,20 +646,47 @@ fn patch_corim_headers(
     let igvm_data =
         fs_err::read(&input).context(format!("reading input IGVM file at {}", input.display()))?;
 
-    let document_data = match &corim_document {
-        Some(path) => Some(
-            fs_err::read(path)
-                .context(format!("reading CoRIM document file at {}", path.display()))?,
-        ),
-        None => None,
-    };
+    // If --corim-signed is provided, split the bundled COSE_Sign1 into
+    // document (payload) and detached signature (COSE_Sign1 with nil payload).
+    let (document_data, signature_data) = if let Some(signed_path) = &corim_signed {
+        let signed_data = fs_err::read(signed_path).context(format!(
+            "reading signed CoRIM file at {}",
+            signed_path.display()
+        ))?;
 
-    let signature_data = match &corim_signature {
-        Some(path) => Some(fs_err::read(path).context(format!(
-            "reading CoRIM signature file at {}",
-            path.display()
-        ))?),
-        None => None,
+        tracing::info!(
+            path = %signed_path.display(),
+            size = signed_data.len(),
+            "Splitting bundled signed CoRIM into document and detached signature"
+        );
+
+        let (doc, sig) = split_cose_sign1(&signed_data).context("splitting signed CoRIM")?;
+
+        tracing::info!(
+            document_size = doc.len(),
+            detached_signature_size = sig.len(),
+            "Successfully split signed CoRIM"
+        );
+
+        (Some(doc), Some(sig))
+    } else {
+        let doc = match &corim_document {
+            Some(path) => Some(
+                fs_err::read(path)
+                    .context(format!("reading CoRIM document file at {}", path.display()))?,
+            ),
+            None => None,
+        };
+
+        let sig = match &corim_signature {
+            Some(path) => Some(fs_err::read(path).context(format!(
+                "reading CoRIM signature file at {}",
+                path.display()
+            ))?),
+            None => None,
+        };
+
+        (doc, sig)
     };
 
     // Convert platform enum to IgvmPlatformType
@@ -621,6 +699,7 @@ fn patch_corim_headers(
     tracing::info!(
         input = %input.display(),
         output = %output.display(),
+        signed = corim_signed.as_ref().map(|p| p.display().to_string()),
         document = corim_document.as_ref().map(|p| p.display().to_string()),
         signature = corim_signature.as_ref().map(|p| p.display().to_string()),
         platform = ?platform,
