@@ -1316,7 +1316,7 @@ impl<A: AerHandler> QueueHandler<A> {
                         nsid = cmd.command.nsid,
                         cdw10 = cmd.command.cdw10,
                         cdw11 = cmd.command.cdw11,
-                        elapsed = elapsed.elapsed().as_secs_f64() as u64,
+                        elapsed = elapsed.elapsed().as_secs_f64(),
                         "pending admin command at save time",
                     );
                 }
