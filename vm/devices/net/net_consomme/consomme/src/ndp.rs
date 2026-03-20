@@ -276,9 +276,9 @@ impl<T: Client> Access<'_, T> {
         // If source is unspecified (::), this is DAD - we should NOT respond
         // to avoid interfering with the client's address configuration
         if ipv6_src_addr.is_unspecified() {
-            tracelimit::warn_ratelimited!(
+            tracing::trace!(
                 target_addr = %target_addr,
-                "received DAD Neighbor Solicitation, silently ignoring per RFC 4862"
+                "received DAD Neighbor Solicitation, silently ignoring"
             );
             return Ok(());
         }
