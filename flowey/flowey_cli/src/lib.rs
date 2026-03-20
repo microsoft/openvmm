@@ -50,6 +50,10 @@ pub fn running_in_wsl() -> bool {
 ///
 /// Returns `false` if not running in WSL or if the check fails.
 pub fn is_wsl_windows_path(path: &Path) -> bool {
+    if !running_in_wsl() {
+        return false;
+    }
+
     let path = match std::path::absolute(path) {
         Ok(p) => p,
         Err(_) => return false,

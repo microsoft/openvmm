@@ -137,7 +137,7 @@ impl IntoPipeline for VmmTestsCli {
         };
 
         // When running Windows binaries under WSL, the output directory must be
-        // a Windows  path (e.g., /mnt/c/..., /mnt/d/...) because Windows
+        // a Windows path (e.g., /mnt/c/..., /mnt/d/...) because Windows
         // requires the VHDs to live in a Windows directory.
         if flowey_cli::running_in_wsl()
             && matches!(target_os, target_lexicon::OperatingSystem::Windows)
