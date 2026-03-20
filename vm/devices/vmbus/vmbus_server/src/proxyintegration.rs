@@ -18,7 +18,6 @@ use crate::SavedStateRequest;
 use crate::channels::SavedState;
 use crate::channels::SavedStateData;
 use crate::channels::saved_state::GpadlState;
-use vmcore::interrupt::EventProxy;
 use anyhow::Context;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -62,6 +61,7 @@ use vmbus_proxy::Gpadl;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
+use vmcore::interrupt::EventProxy;
 use vmcore::interrupt::Interrupt;
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
@@ -339,8 +339,7 @@ impl ProxyTask {
     }
 
     async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
-        let (call_event, event_proxy) =
-            open_request.interrupt.event_or_proxy(&TpPool::system())?;
+        let (call_event, event_proxy) = open_request.interrupt.event_or_proxy(&TpPool::system())?;
 
         self.proxy
             .open(
