@@ -466,10 +466,56 @@ fn dump_corim_headers(
         let header_data_offset = offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
         let header_data_len = header.length as usize;
 
-        // Align to 8 bytes for next header
-        let aligned_len = (header_data_len + 7) & !7;
-        let next_offset = header_data_offset + aligned_len;
+        // Validate that the declared header data length fits within the variable-header section.
+        if header_data_offset > var_headers.len() {
+            anyhow::bail!(
+                "Variable header data offset {} at offset {} exceeds variable header section of length {}",
+                header_data_offset,
+                offset,
+                var_headers.len()
+            );
+        }
 
+        if header_data_len > var_headers.len() - header_data_offset {
+            anyhow::bail!(
+                "Variable header data length {} at offset {} exceeds remaining variable header section ({} bytes left)",
+                header_data_len,
+                offset,
+                var_headers.len() - header_data_offset
+            );
+        }
+
+        // Align to 8 bytes for next header, guarding against overflow.
+        let aligned_len = header_data_len
+            .checked_add(7)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Variable header data length {} at offset {} is too large to align",
+                    header_data_len,
+                    offset
+                )
+            })?
+            & !7;
+
+        let next_offset = header_data_offset
+            .checked_add(aligned_len)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Next variable header offset would overflow for length {} at offset {}",
+                    header_data_len,
+                    offset
+                )
+            })?;
+
+        if next_offset > var_headers.len() {
+            anyhow::bail!(
+                "Variable header at offset {} with length {} extends past variable header section (next_offset={}, len={})",
+                offset,
+                header_data_len,
+                next_offset,
+                var_headers.len()
+            );
+        }
         // Determine if this is a CoRIM header and which kind
         let corim_kind = match header.typ {
             IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT => {
