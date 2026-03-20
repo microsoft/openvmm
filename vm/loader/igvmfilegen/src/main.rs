@@ -75,7 +75,7 @@ enum Options {
         #[clap(long, value_enum)]
         platform: Option<Platform>,
         /// Output directory to extract CoRIM payload data. Files will be named
-        /// `corim_document_<N>.bin` and `corim_signature_<N>.bin`
+        /// `corim_document_<N>.cbor` and `corim_signature_<N>.cose`
         #[clap(short, long)]
         output: Option<PathBuf>,
     },
