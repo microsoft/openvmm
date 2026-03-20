@@ -11,7 +11,7 @@
 use crate::report::MetricResult;
 use anyhow::Context as _;
 
-const ARCH: petri_artifacts_common::tags::MachineArch =
+pub const ARCH: petri_artifacts_common::tags::MachineArch =
     petri_artifacts_common::tags::MachineArch::X86_64;
 
 /// Boot time configuration profile.
@@ -58,13 +58,85 @@ impl BootProfile {
     }
 
     /// Whether this profile uses the minimal device set.
-    fn uses_minimal_builder(&self) -> bool {
+    pub fn uses_minimal_builder(&self) -> bool {
         matches!(self, Self::Minimal | Self::MinimalPrivate)
     }
 
     /// Whether this profile suppresses kernel console output.
-    fn uses_quiet_serial(&self) -> bool {
+    pub fn uses_quiet_serial(&self) -> bool {
         matches!(self, Self::QuietSerial)
+    }
+
+    /// Create a VM builder configured for this profile.
+    ///
+    /// Uses `PetriVmBuilder::minimal()` for minimal profiles and
+    /// `PetriVmBuilder::new()` for standard profiles, applying
+    /// profile-specific configuration (private memory, quiet serial).
+    ///
+    /// The caller is responsible for setting topology, memory size,
+    /// and attaching an initrd (for minimal profiles).
+    pub fn create_builder(
+        &self,
+        params: petri::PetriTestParams<'_>,
+        artifacts: petri::PetriVmArtifacts<petri::openvmm::OpenVmmPetriBackend>,
+        driver: &pal_async::DefaultDriver,
+    ) -> anyhow::Result<petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend>> {
+        let mut builder = if self.uses_minimal_builder() {
+            petri::PetriVmBuilder::minimal(params, artifacts, driver)?
+        } else {
+            petri::PetriVmBuilder::new(params, artifacts, driver)?
+        };
+
+        if self.uses_private_memory() {
+            builder = builder.modify_backend(|c| {
+                c.with_custom_config(|c| {
+                    c.memory.private_memory = true;
+                })
+            });
+        }
+
+        if self.uses_quiet_serial() {
+            builder = builder.modify_backend(|c| {
+                c.with_custom_config(|c| {
+                    if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } = &mut c.load_mode
+                    {
+                        *cmdline = cmdline.replace(" debug ", " quiet loglevel=0 ");
+                    }
+                })
+            });
+        }
+
+        Ok(builder)
+    }
+
+    /// Prepare an initrd for minimal profiles.
+    ///
+    /// Returns `Some(path)` for minimal profiles, `None` for standard profiles
+    /// (which use the full agent image instead).
+    pub fn prepare_initrd(
+        &self,
+        resolver: &petri::ArtifactResolver<'_>,
+    ) -> anyhow::Result<Option<tempfile::TempPath>> {
+        if !self.uses_minimal_builder() {
+            return Ok(None);
+        }
+
+        let artifacts = build_artifacts(resolver)?;
+
+        let mut post_test_hooks = Vec::new();
+        let log_source = crate::log_source();
+        let params = petri::PetriTestParams {
+            test_name: "initrd_prep",
+            logger: &log_source,
+            post_test_hooks: &mut post_test_hooks,
+        };
+
+        let initrd = pal_async::DefaultPool::run_with(async |driver| {
+            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
+            builder.prepare_initrd().context("failed to prepare initrd")
+        })?;
+
+        Ok(Some(initrd))
     }
 }
 
@@ -80,11 +152,23 @@ pub struct BootTimeTest {
     initrd: tempfile::TempPath,
 }
 
-fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
+/// Build the firmware configuration for Linux direct boot.
+pub fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
     petri::Firmware::linux_direct(resolver, ARCH)
 }
 
-/// Register artifacts needed by the boot time test.
+/// Build artifacts for the OpenVMM backend.
+pub fn build_artifacts(
+    resolver: &petri::ArtifactResolver<'_>,
+) -> anyhow::Result<petri::PetriVmArtifacts<petri::openvmm::OpenVmmPetriBackend>> {
+    let firmware = build_firmware(resolver);
+    petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
+        resolver, firmware, ARCH, true,
+    )
+    .context("firmware/arch not compatible with OpenVMM backend")
+}
+
+/// Register artifacts needed by burette tests.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
@@ -100,11 +184,10 @@ impl BootTimeTest {
         mem_mb: u64,
         resolver: &petri::ArtifactResolver<'_>,
     ) -> anyhow::Result<Self> {
-        let firmware = build_firmware(resolver);
-        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
-        )
-        .context("firmware/arch not compatible with OpenVMM backend")?;
+        // Boot time always uses the initrd (even for standard profiles,
+        // the initrd is pre-built here for consistency). Prepare via the
+        // minimal builder which knows how to build it.
+        let artifacts = build_artifacts(resolver)?;
 
         let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
@@ -150,12 +233,7 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
         resolver: &petri::ArtifactResolver<'_>,
         driver: &pal_async::DefaultDriver,
     ) -> anyhow::Result<Vec<MetricResult>> {
-        let firmware = build_firmware(resolver);
-
-        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
-        )
-        .context("firmware/arch not compatible with OpenVMM backend")?;
+        let artifacts = build_artifacts(resolver)?;
 
         let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
@@ -165,54 +243,21 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
             post_test_hooks: &mut post_test_hooks,
         };
 
-        let config = if self.profile.uses_minimal_builder() {
-            // Minimal path: pipette-as-init, stripped device set.
-            let uses_private = self.profile.uses_private_memory();
-            let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
-                .with_processor_topology(petri::ProcessorTopology {
-                    vp_count: 1,
-                    ..Default::default()
-                })
-                .with_memory(petri::MemoryConfig {
-                    startup_bytes: self.mem_mb * 1024 * 1024,
-                    ..Default::default()
-                });
+        let mut config = self
+            .profile
+            .create_builder(params, artifacts, driver)?
+            .with_processor_topology(petri::ProcessorTopology {
+                vp_count: 1,
+                ..Default::default()
+            })
+            .with_memory(petri::MemoryConfig {
+                startup_bytes: self.mem_mb * 1024 * 1024,
+                ..Default::default()
+            });
 
-            if uses_private {
-                builder = builder.modify_backend(|c| {
-                    c.with_custom_config(|c| {
-                        c.memory.private_memory = true;
-                    })
-                });
-            }
-
-            builder = builder.with_prebuilt_initrd(self.initrd.to_path_buf());
-            builder
-        } else {
-            // Standard path: full device set, serial agent, CIDATA disk.
-            let mut config = petri::PetriVmBuilder::new(params, artifacts, driver)?
-                .with_processor_topology(petri::ProcessorTopology {
-                    vp_count: 1,
-                    ..Default::default()
-                })
-                .with_memory(petri::MemoryConfig {
-                    startup_bytes: self.mem_mb * 1024 * 1024,
-                    ..Default::default()
-                });
-
-            if self.profile.uses_quiet_serial() {
-                config = config.modify_backend(|c| {
-                    c.with_custom_config(|c| {
-                        if let openvmm_defs::config::LoadMode::Linux { cmdline, .. } =
-                            &mut c.load_mode
-                        {
-                            *cmdline = cmdline.replace(" debug ", " quiet loglevel=0 ");
-                        }
-                    })
-                });
-            }
-            config
-        };
+        if self.profile.uses_minimal_builder() {
+            config = config.with_prebuilt_initrd(self.initrd.to_path_buf());
+        }
 
         // Measure: start timing right before run(), stop when pipette connects.
         let start = std::time::Instant::now();

@@ -6,13 +6,11 @@
 //! Boots a single minimal VM and measures host-side memory consumption
 //! for the entire openvmm process tree (RSS, PSS, and derived VMM overhead).
 
+use super::boot_time;
 use super::boot_time::BootProfile;
 use super::platform;
 use crate::report::MetricResult;
 use anyhow::Context as _;
-
-const ARCH: petri_artifacts_common::tags::MachineArch =
-    petri_artifacts_common::tags::MachineArch::X86_64;
 
 /// Single-VM memory overhead test.
 pub struct MemoryTest {
@@ -20,36 +18,18 @@ pub struct MemoryTest {
     pub profile: BootProfile,
     /// Guest RAM in MiB.
     pub mem_mb: u64,
-    /// Pre-built initrd.
-    initrd: tempfile::TempPath,
+    /// Pre-built initrd (only used for minimal profiles).
+    initrd: Option<tempfile::TempPath>,
 }
 
 impl MemoryTest {
-    /// Create a new memory test, building the initrd up front.
+    /// Create a new memory test, building the initrd up front for minimal profiles.
     pub fn new(
         profile: BootProfile,
         mem_mb: u64,
         resolver: &petri::ArtifactResolver<'_>,
     ) -> anyhow::Result<Self> {
-        let firmware = petri::Firmware::linux_direct(resolver, ARCH);
-        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
-        )
-        .context("firmware/arch not compatible with OpenVMM backend")?;
-
-        let mut post_test_hooks = Vec::new();
-        let log_source = crate::log_source();
-        let params = petri::PetriTestParams {
-            test_name: "memory_initrd_prep",
-            logger: &log_source,
-            post_test_hooks: &mut post_test_hooks,
-        };
-
-        let initrd = pal_async::DefaultPool::run_with(async |driver| {
-            let builder = petri::PetriVmBuilder::minimal(params, artifacts, &driver)?;
-            builder.prepare_initrd().context("failed to prepare initrd")
-        })?;
-
+        let initrd = profile.prepare_initrd(resolver)?;
         Ok(Self {
             profile,
             mem_mb,
@@ -60,10 +40,7 @@ impl MemoryTest {
 
 /// Register artifacts needed by the memory test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-    let firmware = petri::Firmware::linux_direct(resolver, ARCH);
-    petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
-    );
+    boot_time::register_artifacts(resolver);
 }
 
 impl crate::harness::ColdPerfTest for MemoryTest {
@@ -88,12 +65,7 @@ impl crate::harness::ColdPerfTest for MemoryTest {
         resolver: &petri::ArtifactResolver<'_>,
         driver: &pal_async::DefaultDriver,
     ) -> anyhow::Result<Vec<MetricResult>> {
-        let firmware = petri::Firmware::linux_direct(resolver, ARCH);
-
-        let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
-        )
-        .context("firmware/arch not compatible with OpenVMM backend")?;
+        let artifacts = boot_time::build_artifacts(resolver)?;
 
         let mut post_test_hooks = Vec::new();
         let log_source = crate::log_source();
@@ -103,7 +75,9 @@ impl crate::harness::ColdPerfTest for MemoryTest {
             post_test_hooks: &mut post_test_hooks,
         };
 
-        let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
+        let mut builder = self
+            .profile
+            .create_builder(params, artifacts, driver)?
             .with_processor_topology(petri::ProcessorTopology {
                 vp_count: 1,
                 ..Default::default()
@@ -113,15 +87,9 @@ impl crate::harness::ColdPerfTest for MemoryTest {
                 ..Default::default()
             });
 
-        if self.profile.uses_private_memory() {
-            builder = builder.modify_backend(|c| {
-                c.with_custom_config(|c| {
-                    c.memory.private_memory = true;
-                })
-            });
+        if let Some(ref initrd) = self.initrd {
+            builder = builder.with_prebuilt_initrd(initrd.to_path_buf());
         }
-
-        builder = builder.with_prebuilt_initrd(self.initrd.to_path_buf());
 
         let (mut vm, agent) = builder.run().await.context("failed to boot VM")?;
 
