@@ -323,7 +323,7 @@ impl ArgsWithOverrides {
                 firmware: config.firmware,
                 arch: config.arch,
                 extra_deps: config.extra_deps,
-                unstable: config.unstable | unstable,
+                unstable: config.unstable || unstable,
             });
         }
 

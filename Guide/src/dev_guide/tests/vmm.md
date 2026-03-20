@@ -77,6 +77,9 @@ the CI run will pass with a warning
 To promote an unstable test to stable, remove `unstable` from the macro. This is
 a single-place change — no CI or configuration updates are required.
 
+To ignore these `unstable` tags and report failures for all tests when running
+locally, set the following environment variable: `PETRI_REPORT_UNSTABLE_FAIL=1`
+
 ## Running VMM Tests (Flowey)
 
 The easiest way to run the VMM tests locally is using the
