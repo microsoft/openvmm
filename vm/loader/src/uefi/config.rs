@@ -184,6 +184,7 @@ pub enum BlobStructureType {
     Ssdt = 0x25,
     Hmat = 0x26,
     Iort = 0x27,
+    PcieBarApertures = 0x28,
 }
 
 //
@@ -413,6 +414,22 @@ pub struct VpciInstanceFilter {
 pub struct Gic {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
+}
+
+/// Per-root-bridge MMIO aperture descriptor for the config blob.
+/// One entry per PCIe root bridge / host bridge segment.
+/// Matches by Segment number with the MCFG table entries.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct PcieBarApertureEntry {
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub reserved: u32,
+    pub low_mmio_base: u64,
+    pub low_mmio_length: u64,
+    pub high_mmio_base: u64,
+    pub high_mmio_length: u64,
 }
 
 #[cfg(test)]
