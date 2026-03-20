@@ -45,7 +45,6 @@ impl VirtioPlan9Device {
         driver_source: &VmTaskDriverSource,
         tag: &str,
         fs: Plan9FileSystem,
-        memory: GuestMemory,
     ) -> VirtioPlan9Device {
         // The tag uses the same format as 9p protocol strings (2 byte length followed by string).
         let length = tag.len() + size_of::<u16>();
@@ -65,7 +64,7 @@ impl VirtioPlan9Device {
         VirtioPlan9Device {
             tag: tag_buffer,
             driver: driver_source.simple(),
-            worker: TaskControl::new(Plan9Worker { mem: memory, fs }),
+            worker: TaskControl::new(Plan9Worker { fs }),
         }
     }
 }
@@ -115,15 +114,21 @@ impl VirtioDevice for VirtioPlan9Device {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.worker.task().mem.clone(),
+            resources.guest_memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
         )
         .context("failed to create virtio queue")?;
 
-        self.worker
-            .insert(self.driver.clone(), "virtio-9p-queue", Plan9Queue { queue });
+        self.worker.insert(
+            self.driver.clone(),
+            "virtio-9p-queue",
+            Plan9Queue {
+                queue,
+                mem: resources.guest_memory,
+            },
+        );
         self.worker.start();
         Ok(())
     }
@@ -145,7 +150,6 @@ impl VirtioDevice for VirtioPlan9Device {
 
 #[derive(InspectMut)]
 struct Plan9Worker {
-    mem: GuestMemory,
     #[inspect(skip)]
     fs: Plan9FileSystem,
 }
@@ -153,6 +157,7 @@ struct Plan9Worker {
 #[derive(InspectMut)]
 struct Plan9Queue {
     queue: VirtioQueue,
+    mem: GuestMemory,
 }
 
 impl InspectTaskMut<Plan9Queue> for Plan9Worker {
@@ -172,7 +177,7 @@ impl AsyncRun<Plan9Queue> for Plan9Worker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_9p_request(self, work);
+                    process_9p_request(&state.mem, &self.fs, work);
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");
@@ -184,10 +189,10 @@ impl AsyncRun<Plan9Queue> for Plan9Worker {
     }
 }
 
-fn process_9p_request(worker: &Plan9Worker, mut work: VirtioQueueCallbackWork) {
+fn process_9p_request(mem: &GuestMemory, fs: &Plan9FileSystem, mut work: VirtioQueueCallbackWork) {
     // Make a copy of the incoming message.
     let mut message = vec![0; work.get_payload_length(false) as usize];
-    if let Err(e) = work.read(&worker.mem, &mut message) {
+    if let Err(e) = work.read(mem, &mut message) {
         tracing::error!(
             error = &e as &dyn std::error::Error,
             "[VIRTIO 9P] Failed to read guest memory"
@@ -197,9 +202,9 @@ fn process_9p_request(worker: &Plan9Worker, mut work: VirtioQueueCallbackWork) {
 
     // Allocate a temporary buffer for the response.
     let mut response = vec![9; work.get_payload_length(true) as usize];
-    if let Ok(size) = worker.fs.process_message(&message, &mut response) {
+    if let Ok(size) = fs.process_message(&message, &mut response) {
         // Write out the response.
-        if let Err(e) = work.write(&worker.mem, &response[0..size]) {
+        if let Err(e) = work.write(mem, &response[0..size]) {
             tracing::error!(
                 error = &e as &dyn std::error::Error,
                 "[VIRTIO 9P] Failed to write guest memory"

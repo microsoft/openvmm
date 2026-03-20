@@ -459,4 +459,5 @@ pub struct QueueResources {
     pub params: QueueParams,
     pub notify: Interrupt,
     pub event: Event,
+    pub guest_memory: GuestMemory,
 }

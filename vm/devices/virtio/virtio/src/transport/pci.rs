@@ -33,6 +33,7 @@ use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
 use guestmem::DoorbellRegistration;
+use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
@@ -122,12 +123,15 @@ pub struct VirtioPciDevice {
     #[inspect(skip)]
     saved_queue_states: Vec<Option<QueueState>>,
     supports_save_restore: bool,
+    #[inspect(skip)]
+    guest_memory: GuestMemory,
 }
 
 impl VirtioPciDevice {
     pub fn new(
         mut device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
+        guest_memory: GuestMemory,
         interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
@@ -304,6 +308,7 @@ impl VirtioPciDevice {
             shared_memory_size,
             saved_queue_states: vec![None; traits.max_queues as usize],
             supports_save_restore,
+            guest_memory,
         })
     }
 
@@ -577,6 +582,7 @@ impl VirtioPciDevice {
                                     params: *q,
                                     notify,
                                     event: self.events[i].clone(),
+                                    guest_memory: self.guest_memory.clone(),
                                 },
                             )
                         })
@@ -707,6 +713,7 @@ impl ChangeDeviceState for VirtioPciDevice {
                         params: *q,
                         notify,
                         event: self.events[i].clone(),
+                        guest_memory: self.guest_memory.clone(),
                     },
                     initial_state,
                 ));

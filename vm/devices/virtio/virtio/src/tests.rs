@@ -1256,7 +1256,6 @@ struct TestDevice {
     traits: DeviceTraits,
     queue_work: Option<TestDeviceQueueWorkFn>,
     driver: vmcore::vm_task::VmTaskDriver,
-    mem: GuestMemory,
     workers: Vec<TaskControl<TestDeviceTask, TestDeviceQueue>>,
 }
 
@@ -1265,13 +1264,11 @@ impl TestDevice {
         driver_source: &VmTaskDriverSource,
         traits: DeviceTraits,
         queue_work: Option<TestDeviceQueueWorkFn>,
-        mem: &GuestMemory,
     ) -> Self {
         Self {
             traits,
             queue_work,
             driver: driver_source.simple(),
-            mem: mem.clone(),
             workers: Vec::new(),
         }
     }
@@ -1304,7 +1301,7 @@ impl VirtioDevice for TestDevice {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.mem.clone(),
+            resources.guest_memory,
             resources.notify,
             queue_event,
             initial_state,
@@ -1409,9 +1406,9 @@ impl VirtioPciTestDevice {
                     ..Default::default()
                 },
                 queue_work,
-                &mem,
             )),
             driver,
+            mem.clone(),
             PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
@@ -1460,9 +1457,9 @@ async fn verify_chipset_config(driver: DefaultDriver) {
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2548,9 +2545,9 @@ async fn verify_device_queue_simple_inner(
                 ..Default::default()
             },
             Some(queue_work),
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2634,9 +2631,9 @@ async fn verify_device_multi_queue_inner(
                 ..Default::default()
             },
             Some(queue_work),
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2801,6 +2798,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2851,6 +2849,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         PciInterruptModel::Msix(msi_conn.target()),
         Some(doorbell_registration),
         &mut ExternallyManagedMmioIntercepts,
@@ -3607,6 +3606,7 @@ impl MmioTestTransport {
         let mut dev = VirtioMmioDevice::new(
             device,
             driver,
+            GuestMemory::empty(),
             interrupt,
             Some(doorbell_registration),
             0,
@@ -3673,6 +3673,7 @@ impl PciTestTransport {
         let mut dev = VirtioPciDevice::new(
             device,
             driver,
+            GuestMemory::empty(),
             PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
@@ -3963,9 +3964,9 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             Some(Arc::new(|_i, mut work: VirtioQueueCallbackWork| {
                 work.complete(42);
             })),
-            &mem,
         )),
         &driver,
+        mem,
         PciInterruptModel::IntX(pci_core::PciInterruptPin::IntA, line),
         Some(doorbell_registration),
         &mut ExternallyManagedMmioIntercepts,
@@ -4140,9 +4141,9 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration.clone()),
         0,
@@ -4174,9 +4175,9 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt2,
         Some(doorbell_registration),
         0,
@@ -4229,9 +4230,9 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver,
+        mem,
         PciInterruptModel::Msix(msi_conn.target()),
         None,
         &mut ExternallyManagedMmioIntercepts,
@@ -4264,6 +4265,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         PciInterruptModel::Msix(msi_conn.target()),
         None,
         &mut ExternallyManagedMmioIntercepts,
@@ -4292,6 +4294,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         interrupt,
         None,
         0,
@@ -4382,9 +4385,9 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver,
+        mem.clone(),
         interrupt,
         Some(doorbell_registration.clone()),
         0,
@@ -4418,9 +4421,9 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver,
+        mem.clone(),
         interrupt2,
         Some(doorbell_registration),
         0,

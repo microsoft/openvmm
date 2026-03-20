@@ -45,10 +45,10 @@ pub struct VirtioRngDevice {
 }
 
 impl VirtioRngDevice {
-    pub fn new(driver_source: &VmTaskDriverSource, memory: GuestMemory) -> Self {
+    pub fn new(driver_source: &VmTaskDriverSource) -> Self {
         Self {
             driver: driver_source.simple(),
-            worker: TaskControl::new(RngWorker { mem: memory }),
+            worker: TaskControl::new(RngWorker),
         }
     }
 }
@@ -84,15 +84,21 @@ impl VirtioDevice for VirtioRngDevice {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.worker.task().mem.clone(),
+            resources.guest_memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
         )
         .context("failed to create virtio queue")?;
 
-        self.worker
-            .insert(self.driver.clone(), "virtio-rng-queue", RngQueue { queue });
+        self.worker.insert(
+            self.driver.clone(),
+            "virtio-rng-queue",
+            RngQueue {
+                queue,
+                mem: resources.guest_memory,
+            },
+        );
         self.worker.start();
         Ok(())
     }
@@ -113,13 +119,12 @@ impl VirtioDevice for VirtioRngDevice {
 }
 
 #[derive(InspectMut)]
-struct RngWorker {
-    mem: GuestMemory,
-}
+struct RngWorker;
 
 #[derive(InspectMut)]
 struct RngQueue {
     queue: VirtioQueue,
+    mem: GuestMemory,
 }
 
 impl InspectTaskMut<RngQueue> for RngWorker {
@@ -143,7 +148,7 @@ impl AsyncRun<RngQueue> for RngWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_rng_request(&self.mem, work);
+                    process_rng_request(&state.mem, work);
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -299,7 +304,7 @@ mod tests {
             init_rings(&mem);
 
             let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-            let device = VirtioRngDevice::new(&driver_source, mem.clone());
+            let device = VirtioRngDevice::new(&driver_source);
             let queue_event = Event::new();
             let interrupt_event = Event::new();
 
@@ -330,6 +335,7 @@ mod tests {
                         },
                         notify: interrupt,
                         event: self.queue_event.clone(),
+                        guest_memory: self.mem.clone(),
                     },
                     &VirtioDeviceFeatures::new(),
                     None,
