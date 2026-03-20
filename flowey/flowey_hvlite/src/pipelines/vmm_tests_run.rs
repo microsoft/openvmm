@@ -76,6 +76,10 @@ pub struct VmmTestsRunCli {
     /// Optional: custom kernel image
     #[clap(long)]
     custom_kernel: Option<PathBuf>,
+    /// Optional: custom UEFI firmware (MSVM.fd) to use instead of the
+    /// downloaded release. Path to a locally-built MSVM.fd file.
+    #[clap(long)]
+    custom_uefi_firmware: Option<PathBuf>,
 }
 
 impl IntoPipeline for VmmTestsRunCli {
@@ -94,9 +98,10 @@ impl IntoPipeline for VmmTestsRunCli {
             release,
             build_only,
             copy_extras,
+            skip_vhd_prompt,
             custom_kernel_modules,
             custom_kernel,
-            skip_vhd_prompt,
+            custom_uefi_firmware,
         } = self;
 
         // 1. Resolve target
@@ -155,6 +160,7 @@ impl IntoPipeline for VmmTestsRunCli {
                 skip_vhd_prompt,
                 custom_kernel_modules,
                 custom_kernel,
+                custom_uefi_firmware,
             },
         )
     }
@@ -437,6 +443,7 @@ struct VmmTestsPipelineOptions {
     skip_vhd_prompt: bool,
     custom_kernel_modules: Option<PathBuf>,
     custom_kernel: Option<PathBuf>,
+    custom_uefi_firmware: Option<PathBuf>,
 }
 
 /// Construct the pipeline job for building and running VMM tests.
@@ -479,6 +486,16 @@ fn build_vmm_tests_pipeline(
                 modules: ReadVar::from_static(modules_path),
             },
         );
+    }
+
+    // Override UEFI firmware with a local MSVM.fd path
+    if let Some(fw_path) = opts.custom_uefi_firmware {
+        job = job.dep_on(move |_| {
+            flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
+                recipe_arch,
+                ReadVar::from_static(fw_path),
+            )
+        });
     }
 
     job = job
