@@ -17,9 +17,6 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-/// Virtio block device ID (spec §5.2.1).
-pub const VIRTIO_BLK_DEVICE_ID: u16 = 2;
-
 // Feature bits (spec §5.2.3). These are device-specific bits in bank 0 (bits 0..23).
 /// Maximum size of any single segment is in `size_max`.
 pub const VIRTIO_BLK_F_SIZE_MAX: u32 = 1 << 1;

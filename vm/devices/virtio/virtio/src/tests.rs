@@ -1402,7 +1402,7 @@ impl VirtioPciTestDevice {
             Box::new(TestDevice::new(
                 &driver_source,
                 DeviceTraits {
-                    device_id: 3,
+                    device_id: VirtioDeviceType::CONSOLE,
                     device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                     max_queues: num_queues,
                     device_register_length: 12,
@@ -1453,7 +1453,7 @@ async fn verify_chipset_config(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
@@ -2541,7 +2541,7 @@ async fn verify_device_queue_simple_inner(
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: features.clone(),
                 max_queues: 1,
                 device_register_length: 0,
@@ -2627,7 +2627,7 @@ async fn verify_device_multi_queue_inner(
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: features.clone(),
                 max_queues: num_queues + 1,
                 device_register_length: 0,
@@ -2793,7 +2793,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
     let mut dev = VirtioMmioDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
@@ -2843,7 +2843,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 12,
@@ -3524,7 +3524,7 @@ impl PartialFailTestDevice {
     fn new(max_queues: u16, fail_at: u16) -> Self {
         Self {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues,
                 device_register_length: 0,
@@ -3954,7 +3954,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 12,
@@ -4133,7 +4133,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4167,7 +4167,7 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4222,7 +4222,7 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new(), // no device-specific features
                 max_queues: 1,
                 device_register_length: 12,
@@ -4256,7 +4256,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new(),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4284,7 +4284,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
     let mut dev = VirtioMmioDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new(),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4375,7 +4375,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4411,7 +4411,7 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,

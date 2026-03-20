@@ -8953,14 +8953,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "chipset_device",
  "device_emulators",
  "futures",
  "guestmem",
  "inspect",
  "mesh",
- "open_enum",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -8972,6 +8970,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "virtio_resources",
+ "virtio_spec",
  "vm_resource",
  "vmcore",
  "zerocopy",
@@ -9126,6 +9125,16 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "virtio_spec"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "zerocopy",
 ]
 
 [[package]]
