@@ -72,7 +72,7 @@ The implementation must:
 3. **Construct a `PCI_ROOT_BRIDGE` struct** per segment with:
    - `Segment` = MCFG segment
    - `Bus` aperture = `{start_bus, end_bus}`
-   - `Mem`/`MemAbove4G` apertures from MMIO ranges (derived from ACPI `_CRS` or config blob MMIO gap PCDs)
+   - `Mem`/`MemAbove4G` apertures from config blob `PcieBarApertures` entry (per-bridge low/high MMIO)
    - `PMem`/`PMemAbove4G` = same as Mem ranges (no prefetchable distinction needed initially)
    - `Io` = `{0, 0xFFFF}` or restricted range
    - `Translation` = 0 (identity mapping)
@@ -82,13 +82,174 @@ The implementation must:
 **MMIO Range Discovery Strategy:** The MCFG table tells us where config space is, but
 we also need the MMIO apertures for BAR allocation.  Three options:
 
-- **Option A (Recommended):** Parse the SSDT `_CRS` from the ACPI table blob to extract
+- **Option A:** Parse the SSDT `_CRS` from the ACPI table blob to extract
   `QWordMemory` descriptors per root bridge.  The openvmm SSDT already encodes low
-  and high MMIO ranges.
-- **Option B:** Add new UEFI config blob entries for per-root-bridge MMIO apertures
-  (requires openvmm changes to the config blob protocol).
+  and high MMIO ranges.  Rejected — parsing AML in UEFI PEI/DXE is complex, fragile,
+  and unnecessary when we control both sides of the protocol.
+- **Option B (Recommended):** Add a new config blob entry type (`PcieBarApertures`,
+  e.g. type `0x28`) that carries per-root-bridge MMIO apertures in a simple packed
+  struct.  This requires a small openvmm change to emit the new entry alongside the
+  existing MCFG entry, plus a matching parser in PlatformPei.  Clean, explicit, and
+  trivial to parse.  See details below.
 - **Option C:** Use the existing `PcdLowMmioGap*`/`PcdHighMmioGap*` PCDs as a single
-  large aperture and let `PciBusDxe` handle sub-allocation.  Simpler but less precise.
+  large aperture and let `PciBusDxe` handle sub-allocation.  Simpler but less precise —
+  breaks with multiple root complexes.
+
+#### Option B Details: `PcieBarApertures` Config Blob Entry
+
+**New blob structure type:** `PcieBarApertures = 0x28` (next available after `Iort = 0x27`)
+
+The entry follows the standard config blob convention: an 8-byte `UEFI_CONFIG_HEADER`
+followed by a flat array of fixed-size per-bridge entries.  The entry count is derived
+from the header length (same pattern as `UefiConfigMmioRanges`).  All fields are
+naturally aligned to avoid packing issues.
+
+**Wire format (little-endian, all fields naturally aligned):**
+
+```
+Config blob entry layout:
+
+  ┌──────────────────────────────────────────┐
+  │  UEFI_CONFIG_HEADER  (8 bytes)           │
+  │    Type   = 0x28 (PcieBarApertures)      │
+  │    Length = 8 + N * 48                    │
+  ├──────────────────────────────────────────┤
+  │  PCIE_BAR_APERTURE_ENTRY[0]  (48 bytes)  │
+  ├──────────────────────────────────────────┤
+  │  PCIE_BAR_APERTURE_ENTRY[1]  (48 bytes)  │
+  ├──────────────────────────────────────────┤
+  │  ...                                     │
+  └──────────────────────────────────────────┘
+```
+
+**C struct definitions** (for `MsvmPkg/Include/BiosInterface.h`):
+
+```c
+//
+// Per-root-bridge MMIO aperture descriptor.
+// One entry per PCIe root bridge / host bridge segment.
+// Matches by Segment number with the MCFG table entries.
+//
+// 48 bytes, all fields naturally aligned (no #pragma pack needed).
+//
+typedef struct _PCIE_BAR_APERTURE_ENTRY {
+    UINT16  Segment;            // PCI segment number (matches MCFG)
+    UINT8   StartBus;           // Lowest valid bus number
+    UINT8   EndBus;             // Highest valid bus number
+    UINT32  Reserved;           // Padding to 8-byte boundary; must be 0
+    UINT64  LowMmioBase;        // Low MMIO window base address (below 4 GB)
+    UINT64  LowMmioLength;      // Low MMIO window length in bytes
+    UINT64  HighMmioBase;        // High MMIO window base address (above 4 GB)
+    UINT64  HighMmioLength;      // High MMIO window length in bytes
+} PCIE_BAR_APERTURE_ENTRY;      // sizeof = 48
+
+typedef struct _UEFI_CONFIG_PCIE_BAR_APERTURES {
+    UEFI_CONFIG_HEADER          Header;
+    PCIE_BAR_APERTURE_ENTRY     Entries[];   // Variable-length array
+} UEFI_CONFIG_PCIE_BAR_APERTURES;
+```
+
+Entry count is derived: `N = (Header.Length - sizeof(UEFI_CONFIG_HEADER)) / sizeof(PCIE_BAR_APERTURE_ENTRY)`
+
+**Rust struct** (for `vm/loader/src/uefi/config.rs`):
+
+```rust
+/// Per-root-bridge MMIO aperture descriptor for the config blob.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct PcieBarApertureEntry {
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+    pub reserved: u32,
+    pub low_mmio_base: u64,
+    pub low_mmio_length: u64,
+    pub high_mmio_base: u64,
+    pub high_mmio_length: u64,
+}
+```
+
+**Serialization** (in `openvmm_core/src/worker/vm_loaders/uefi.rs`, after the MCFG entry):
+
+```rust
+if !pcie_host_bridges.is_empty() {
+    let entries: Vec<u8> = pcie_host_bridges
+        .iter()
+        .flat_map(|b| {
+            config::PcieBarApertureEntry {
+                segment: b.segment,
+                start_bus: b.start_bus,
+                end_bus: b.end_bus,
+                reserved: 0,
+                low_mmio_base: b.low_mmio.start(),
+                low_mmio_length: b.low_mmio.len(),
+                high_mmio_base: b.high_mmio.start(),
+                high_mmio_length: b.high_mmio.len(),
+            }
+            .as_bytes()
+            .to_vec()
+        })
+        .collect();
+    cfg.add_raw(config::BlobStructureType::PcieBarApertures, &entries);
+}
+```
+
+**Parsing** (in `MsvmPkg/PlatformPei/Config.c`):
+
+```c
+case UefiConfigPcieBarApertures:
+{
+    UEFI_CONFIG_PCIE_BAR_APERTURES *apertures =
+        (UEFI_CONFIG_PCIE_BAR_APERTURES *) header;
+    UINT32 dataSize = header->Length - sizeof(UEFI_CONFIG_HEADER);
+
+    //
+    // Validate: data size must be a whole multiple of entry size,
+    // and at least one entry must be present.
+    //
+    if (dataSize == 0 ||
+        (dataSize % sizeof(PCIE_BAR_APERTURE_ENTRY)) != 0)
+    {
+        DEBUG((DEBUG_ERROR, "*** Malformed PcieBarApertures\n"));
+        FAIL_FAST_UNEXPECTED_HOST_BEHAVIOR();
+    }
+
+    PEI_FAIL_FAST_IF_FAILED(
+        PcdSet64S(PcdPcieBarAperturesPtr, (UINT64) apertures->Entries));
+    PEI_FAIL_FAST_IF_FAILED(
+        PcdSet32S(PcdPcieBarAperturesSize, dataSize));
+    break;
+}
+```
+
+**Consumption** (in `PciHostBridgeLib`):
+
+```c
+//
+// Build PCI_ROOT_BRIDGE array by joining MCFG (bus/ECAM) with
+// PcieBarApertures (MMIO windows), matched by Segment number.
+//
+PCIE_BAR_APERTURE_ENTRY *Apertures =
+    (PCIE_BAR_APERTURE_ENTRY *)(UINTN) PcdGet64(PcdPcieBarAperturesPtr);
+UINT32 ApertureCount =
+    PcdGet32(PcdPcieBarAperturesSize) / sizeof(PCIE_BAR_APERTURE_ENTRY);
+
+// For each MCFG segment, find matching aperture entry by Segment number
+// and populate Mem / MemAbove4G from LowMmio / HighMmio fields.
+```
+
+**Design rationale:**
+
+- **Flat array, no separate count field** — matches `UefiConfigMmioRanges` precedent;
+  count derived from `Header.Length`.
+- **48-byte entry with explicit `Reserved` padding** — keeps all `UINT64` fields at
+  natural 8-byte alignment without `#pragma pack`.  Entry size is itself a multiple
+  of 8, so entries are naturally aligned in the array.
+- **Matched by `Segment`** — the `PciHostBridgeLib` correlates aperture entries with
+  MCFG entries by segment number.  `StartBus`/`EndBus` are included for cross-validation
+  but the primary key is `Segment`.
+- **Length not offset** — `LowMmioLength` / `HighMmioLength` instead of base + limit,
+  consistent with the `MmioSizeInPages` pattern in `UefiConfigMmioRanges`.
 
 **New file: `MsvmPkg/Library/PciHostBridgeLib/PciHostBridgeLib.inf`**
 
@@ -117,10 +278,8 @@ we also need the MMIO apertures for BAR allocation.  Three options:
 [Pcd]
   gMsvmPkgTokenSpaceGuid.PcdMcfgPtr
   gMsvmPkgTokenSpaceGuid.PcdMcfgSize
-  gMsvmPkgTokenSpaceGuid.PcdLowMmioGapBasePageNumber
-  gMsvmPkgTokenSpaceGuid.PcdLowMmioGapSizeInPages
-  gMsvmPkgTokenSpaceGuid.PcdHighMmioGapBasePageNumber
-  gMsvmPkgTokenSpaceGuid.PcdHighMmioGapSizeInPages
+  gMsvmPkgTokenSpaceGuid.PcdPcieBarAperturesPtr
+  gMsvmPkgTokenSpaceGuid.PcdPcieBarAperturesSize
 ```
 
 ### Phase 2: DSC/FDF Wiring
@@ -130,7 +289,8 @@ we also need the MMIO apertures for BAR allocation.  Three options:
 ```ini
 # In [LibraryClasses] section:
   PciHostBridgeLib|MsvmPkg/Library/PciHostBridgeLib/PciHostBridgeLib.inf
-  PciSegmentLib|MdePkg/Library/BasePciSegmentLibPci/BasePciSegmentLibPci.inf
+  PciSegmentLib|MdePkg/Library/PciSegmentLibSegmentInfo/BasePciSegmentLibSegmentInfo.inf
+  PciSegmentInfoLib|MsvmPkg/Library/PciSegmentInfoLib/PciSegmentInfoLib.inf
 
 # In [Components] section, add:
   MdeModulePkg/Bus/Pci/PciHostBridgeDxe/PciHostBridgeDxe.inf
@@ -147,26 +307,163 @@ we also need the MMIO apertures for BAR allocation.  Three options:
 
 Same changes for `MsvmPkgAARCH64.dsc` / `MsvmPkgAARCH64.fdf`.
 
-### Phase 3: PCI Segment and Express Library Support
+### Phase 3: Multi-Segment PciSegmentLib
 
-The existing `BasePciLibCf8` only supports legacy port I/O config access (0xCF8/0xCFC).
-For PCIe ECAM, we need:
+The existing mu_msvm uses `BasePciLibCf8` (legacy port I/O via 0xCF8/0xCFC) and has no
+`PciSegmentLib` override (defaults to `BasePciSegmentLibPci`, which silently drops the
+segment number and delegates to `PciLib`).  Neither supports ECAM or multiple segments.
 
-**Option A (Best):** Use `MdePkg/Library/BasePciExpressLib/BasePciExpressLib.inf` and set:
-```ini
-  gEfiMdePkgTokenSpaceGuid.PcdPciExpressBaseAddress|<ecam_base_from_mcfg>
+`PciHostBridgeDxe` links against `PciSegmentLib` for config space access, so we need a
+proper multi-segment ECAM implementation.
+
+#### Approach: `BasePciSegmentLibSegmentInfo` + Custom `PciSegmentInfoLib`
+
+MU_BASECORE ships `BasePciSegmentLibSegmentInfo` — a ready-made multi-segment
+`PciSegmentLib` that resolves `Segment:Bus:Dev:Func:Reg` to an ECAM MMIO address.
+It delegates segment-to-ECAM-base lookup to a separate `PciSegmentInfoLib` that
+the platform provides.
+
+**How it works internally:**
+
+1. Caller invokes e.g. `PciSegmentRead32(PCI_SEGMENT_LIB_ADDRESS(Seg, Bus, Dev, Fn, Reg))`
+2. `BasePciSegmentLibSegmentInfo` calls `GetPciSegmentInfo(&Count)` to get the
+   segment table
+3. Searches for the matching `SegmentNumber`, validates `Bus` is in range
+4. Computes `MmioAddr = SegmentInfo->BaseAddress + PCI_ECAM_ADDRESS(Bus, Dev, Fn, Reg)`
+5. Does `MmioRead32(MmioAddr)` — direct MMIO access to ECAM
+
+The platform's job is implementing one function:
+
+```c
+/**
+  Return an array of PCI_SEGMENT_INFO describing each PCIe segment.
+
+  @param[out]  Count   Number of entries returned.
+  @return  Pointer to a static/allocated array of PCI_SEGMENT_INFO.
+**/
+PCI_SEGMENT_INFO *
+EFIAPI
+GetPciSegmentInfo (
+  OUT UINTN  *Count
+  );
 ```
-This works if there's a single PCI segment.  For multi-segment support, use
-`PciSegmentLib` which routes to the correct ECAM base per segment.
 
-**Option B (Multi-segment):** Use `BasePciSegmentLibPci` which is segment-aware and
-routes through `PciLib`.  This requires a PciLib that understands ECAM, or a custom
-`PciSegmentLib` that maps segments to ECAM base addresses from MCFG.
+Where `PCI_SEGMENT_INFO` is:
 
-**Recommendation:** Start with single-segment support using `BasePciExpressLib` +
-a PCD for the base address.  The `PciHostBridgeDxe` + `PciBusDxe` stack uses
-`EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL` internally (not `PciLib`), so the library choice
-mostly affects other consumers.
+```c
+typedef struct {
+    UINT16  SegmentNumber;     // PCIe segment (matches MCFG)
+    UINT64  BaseAddress;       // ECAM base MMIO address for this segment
+    UINT8   StartBusNumber;    // Lowest valid bus
+    UINT8   EndBusNumber;      // Highest valid bus
+} PCI_SEGMENT_INFO;
+```
+
+#### New file: `MsvmPkg/Library/PciSegmentInfoLib/PciSegmentInfoLib.c`
+
+This library reads the same `PcdMcfgPtr` / `PcdMcfgSize` PCDs already populated by
+PlatformPei and translates each MCFG `McfgSegmentBusRange` entry into a
+`PCI_SEGMENT_INFO`.  The data is cached on first call.
+
+```c
+STATIC PCI_SEGMENT_INFO  *mSegmentInfo = NULL;
+STATIC UINTN              mSegmentCount = 0;
+
+PCI_SEGMENT_INFO *
+EFIAPI
+GetPciSegmentInfo (
+  OUT UINTN  *Count
+  )
+{
+    if (mSegmentInfo != NULL) {
+        *Count = mSegmentCount;
+        return mSegmentInfo;
+    }
+
+    //
+    // Parse MCFG table from PCD (same data PlatformPei extracted from config blob)
+    //
+    UINT64  McfgPtr  = PcdGet64 (PcdMcfgPtr);
+    UINT32  McfgSize = PcdGet32 (PcdMcfgSize);
+
+    if (McfgPtr == 0 || McfgSize < sizeof(EFI_ACPI_DESCRIPTION_HEADER)) {
+        *Count = 0;
+        return NULL;
+    }
+
+    EFI_ACPI_DESCRIPTION_HEADER *McfgHdr = (EFI_ACPI_DESCRIPTION_HEADER *)(UINTN) McfgPtr;
+    UINT32 DataLen = McfgHdr->Length - sizeof(EFI_ACPI_DESCRIPTION_HEADER) - 8; // 8 = MCFG reserved
+    UINT32 EntryCount = DataLen / sizeof(MCFG_SEGMENT_BUS_RANGE);
+
+    mSegmentInfo = AllocateZeroPool (EntryCount * sizeof(PCI_SEGMENT_INFO));
+    ASSERT (mSegmentInfo != NULL);
+
+    MCFG_SEGMENT_BUS_RANGE *Entries =
+        (MCFG_SEGMENT_BUS_RANGE *)((UINT8 *)McfgHdr
+            + sizeof(EFI_ACPI_DESCRIPTION_HEADER) + 8);
+
+    for (UINT32 i = 0; i < EntryCount; i++) {
+        mSegmentInfo[i].SegmentNumber  = Entries[i].PciSegmentGroupNumber;
+        mSegmentInfo[i].BaseAddress    = Entries[i].BaseAddress;
+        mSegmentInfo[i].StartBusNumber = Entries[i].StartBusNumber;
+        mSegmentInfo[i].EndBusNumber   = Entries[i].EndBusNumber;
+    }
+
+    mSegmentCount = EntryCount;
+    *Count = mSegmentCount;
+    return mSegmentInfo;
+}
+```
+
+#### New file: `MsvmPkg/Library/PciSegmentInfoLib/PciSegmentInfoLib.inf`
+
+```ini
+[Defines]
+  INF_VERSION    = 0x00010005
+  BASE_NAME      = PciSegmentInfoLib
+  MODULE_TYPE    = BASE
+  LIBRARY_CLASS  = PciSegmentInfoLib
+
+[Sources]
+  PciSegmentInfoLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MsvmPkg/MsvmPkg.dec
+
+[LibraryClasses]
+  BaseMemoryLib
+  DebugLib
+  PcdLib
+  MemoryAllocationLib
+
+[Pcd]
+  gMsvmPkgTokenSpaceGuid.PcdMcfgPtr
+  gMsvmPkgTokenSpaceGuid.PcdMcfgSize
+```
+
+#### DSC wiring
+
+```ini
+# In [LibraryClasses]:
+  PciSegmentLib|MdePkg/Library/PciSegmentLibSegmentInfo/BasePciSegmentLibSegmentInfo.inf
+  PciSegmentInfoLib|MsvmPkg/Library/PciSegmentInfoLib/PciSegmentInfoLib.inf
+
+# PciLib still needed by some legacy consumers — keep BasePciLibCf8 for now,
+# but it won't be used by the ECAM path (PciSegmentLib bypasses PciLib entirely).
+  PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf
+```
+
+**Why this is the right approach:**
+
+- **Multi-segment from day one** — no single-segment PCD hack to rip out later.
+- **Zero custom config space access code** — `BasePciSegmentLibSegmentInfo` handles
+  all the MMIO read/write logic.  Our platform code only maps segment→ECAM base.
+- **Data reuse** — reads the same MCFG PCD already populated by PlatformPei, no new
+  config blob entries needed (segment info is in MCFG, MMIO apertures in
+  `PcieBarApertures`).
+- **No `PcdPciExpressBaseAddress` needed** — the per-segment base address comes from
+  MCFG, not a global PCD.  We can remove work item 6 from the table.
 
 ### Phase 4: Memory Map Coordination
 
@@ -207,24 +504,25 @@ a device is offered through exactly one path (VPCI or ePCI), never both.
 | 2 | **Register ECAM MMIO in PlatformPei** | Modify: `MsvmPkg/PlatformPei/Config.c` | Low |
 | 3 | **Add PCI drivers to DSC** | Modify: `MsvmPkg/MsvmPkgX64.dsc`, `MsvmPkgAARCH64.dsc` | Low |
 | 4 | **Add PCI drivers to FDF** | Modify: `MsvmPkg/MsvmPkgX64.fdf`, `MsvmPkgAARCH64.fdf` | Low |
-| 5 | **Add PCI library instances to DSC** | Modify: DSC files (PciExpressLib, PciSegmentLib) | Low |
-| 6 | **Set `PcdPciExpressBaseAddress` PCD** | Modify: DSC files or dynamic PCD in PlatformPei | Low |
+| 5 | **Add PCI library instances to DSC** | Modify: DSC files (PciSegmentLib, PciSegmentInfoLib) | Low |
+| 6 | **Implement `PciSegmentInfoLib`** | New: `MsvmPkg/Library/PciSegmentInfoLib/` | Low |
 | 7 | **Verify firmware volume size** | Check FDF — adding two DXE drivers increases image size | Low |
-| 8 | **Test with NVMe on ePCI** | Integration test with openvmm | Medium |
+| 8 | **VMM test: ePCI NVMe boot** | New: `vmm_tests/.../multiarch/pcie.rs` | Medium |
 
-### openvmm Changes (Likely None Required)
+### openvmm Changes (Config Blob Extension Required)
 
-OpenVMM already provides everything needed:
-- MCFG table in the config blob (consumed by PlatformPei)
-- SSDT with `_CRS` for bus/MMIO ranges (consumed by AcpiPlatformDxe → OS)
-- ECAM MMIO region properly configured
-- PCIe root complex with hot-plug support
+OpenVMM already provides MCFG + SSDT + ECAM + PCIe root complex support.  The one
+required change is emitting a new `PcieBarApertures` config blob entry (type `0x28`)
+so mu_msvm can discover per-root-bridge MMIO apertures without parsing AML:
 
-**One potential change:** If the SSDT with PCI root bridge info is generated by openvmm
-but mu_msvm's `PciHostBridgeLib` needs MMIO apertures at DXE time (before OS-level ACPI
-parsing), the config blob may need to carry per-root-bridge MMIO apertures explicitly.
-Check whether the existing MMIO gap PCDs are sufficient, or whether the SSDT `_CRS`
-data should be extractable from the config blob directly.
+| # | Work Item | Files | Complexity |
+|---|-----------|-------|------------|
+| 1 | **Add `PcieBarApertures` blob type** | `vm/loader/src/uefi/config.rs` | Low |
+| 2 | **Emit entry in UEFI loader** | `openvmm/openvmm_core/src/worker/vm_loaders/uefi.rs` | Low |
+
+The data comes directly from `PcieHostBridge::low_mmio` and `PcieHostBridge::high_mmio`
+which are already available at config blob construction time — the same fields used to
+build the SSDT `_CRS` descriptors.
 
 ---
 
@@ -235,14 +533,16 @@ PEI Phase:
   PlatformPei
     → Config.c parses config blob
     → Extracts MCFG → PcdMcfgPtr / PcdMcfgSize
+    → NEW: Extracts PcieBarApertures → PcdPcieBarAperturesPtr / PcdPcieBarAperturesSize
     → Extracts MMIO ranges → PcdLowMmioGap* / PcdHighMmioGap*
     → NEW: Creates MMIO HOBs for ECAM ranges from MCFG
-    → NEW: Sets PcdPciExpressBaseAddress from MCFG base
+    → NEW: Sets PcdPciExpressBaseAddress from MCFG base (only needed if legacy PciLib consumers remain)
 
 DXE Phase:
   PciHostBridgeDxe starts
     → Calls PciHostBridgeGetRootBridges()  [our new PciHostBridgeLib]
     → Library reads PcdMcfgPtr, parses MCFG entries
+    → Library reads PcdPcieBarAperturesPtr for per-bridge MMIO apertures
     → Returns PCI_ROOT_BRIDGE array with segment/bus/MMIO apertures
     → PciHostBridgeDxe registers EFI_PCI_HOST_BRIDGE_RESOURCE_ALLOCATION_PROTOCOL
 
@@ -294,20 +594,201 @@ DXE Phase:
 
 ---
 
-## Testing Strategy
+## Phase 6: VMM Integration Test — Alpine Boot over ePCI NVMe
 
-1. **Unit Test**: Build mu_msvm with the new drivers, boot in openvmm with an NVMe
-   device on a PCIe root complex (not VPCI).  Verify NVMe driver binds and disk
-   is accessible in UEFI shell.
+After Phases 1–5 are implemented in mu_msvm, add a VMM test that validates end-to-end
+ePCI NVMe boot through UEFI.  This follows the existing petri test patterns in
+`vmm_tests/vmm_tests/tests/tests/multiarch/pcie.rs`.
 
-2. **Coexistence Test**: Boot with both VPCI NVMe and ePCI NVMe.  Verify both
-   disks are visible.
+### What the test validates
+
+- mu_msvm UEFI enumerates the PCIe root complex via ECAM (PciHostBridgeDxe + PciBusDxe)
+- NvmExpressDxe binds to the ePCI NVMe device (not VPCI)
+- UEFI boots Alpine Linux from the ePCI NVMe disk
+- Guest OS sees the NVMe device and completes boot to userspace
+
+### Test location
+
+`vmm_tests/vmm_tests/tests/tests/multiarch/pcie.rs` — alongside the existing
+`pcie_root_emulation` test.
+
+### Petri framework changes needed
+
+The current `BootDeviceType::Nvme` path routes through VMBus (VPCI NVMe).  Booting
+from an NVMe attached to a PCIe root port requires a **new boot device flow**:
+
+1. **New `BootDeviceType` variant** (or manual config via `modify_backend`):
+   The boot disk must be attached as a `PcieDeviceConfig` with an `NvmeControllerHandle`
+   resource, targeting a named root port — **not** as a `VpciDeviceConfig`.
+
+2. **UEFI boot order**: mu_msvm's `NvmExpressDxe` already binds to any
+   `EFI_PCI_IO_PROTOCOL` handle.  The UEFI boot manager should pick up the ePCI NVMe
+   disk automatically, but the `enable_vpci_boot` config flag may need to be set (or
+   a parallel `enable_pcie_boot` flag added) to ensure the UEFI boot manager includes
+   ePCI NVMe in the boot order.
+
+### Sketch of the test
+
+```rust
+/// Boot Alpine Linux from an NVMe device on an emulated PCIe root port,
+/// validated through mu_msvm UEFI firmware (not VPCI).
+#[openvmm_test(
+    uefi_x64(vhd(alpine_3_23_x64)),
+    uefi_aarch64(vhd(alpine_3_23_aarch64))
+)]
+async fn pcie_nvme_uefi_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    const ECAM_SIZE: u64 = 256 * 1024 * 1024;      // 256 MB
+    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;    // 64 MB
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;  // 1 GB
+
+    let (vm, agent) = config
+        // Override boot device to None — we'll attach the boot disk
+        // manually as an ePCI NVMe device instead of using the default
+        // VPCI/VMBus path.
+        .with_boot_device_type(petri::BootDeviceType::None)
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                // Carve out PCIe address space from the MMIO gaps
+                let low_mmio_start = c.memory.mmio_gaps[0].start();
+                let high_mmio_end = c.memory.mmio_gaps[1].end();
+                let pcie_low = MemoryRange::new(
+                    low_mmio_start - LOW_MMIO_SIZE..low_mmio_start,
+                );
+                let pcie_high = MemoryRange::new(
+                    high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE,
+                );
+                let ecam_range = MemoryRange::new(
+                    pcie_low.start() - ECAM_SIZE..pcie_low.start(),
+                );
+
+                c.memory.pci_ecam_gaps.push(ecam_range);
+                c.memory.pci_mmio_gaps.push(pcie_low);
+                c.memory.pci_mmio_gaps.push(pcie_high);
+
+                // Single root complex with one port for the NVMe device
+                c.pcie_root_complexes.push(PcieRootComplexConfig {
+                    index: 0,
+                    name: "rc0".into(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: 255,
+                    ecam_range,
+                    low_mmio: pcie_low,
+                    high_mmio: pcie_high,
+                    ports: vec![PcieRootPortConfig {
+                        name: "rp0".into(),
+                        hotplug: false,
+                    }],
+                });
+
+                // Attach NVMe controller with the boot disk to root port rp0.
+                // The boot VHD must be wired in here — this requires the petri
+                // framework to expose the resolved boot disk artifact so it can
+                // be used as the NVMe namespace backing.
+                c.pcie_devices.push(PcieDeviceConfig {
+                    port_name: "rp0".into(),
+                    resource: NvmeControllerHandle {
+                        subsystem_id: guid::guid!("a0b1c2d3-e4f5-6789-abcd-ef0123456789"),
+                        max_io_queues: 64,
+                        msix_count: 64,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: 1,
+                            disk: boot_disk_handle,  // resolved from test artifact
+                            read_only: false,
+                        }],
+                        requests: None,
+                    }
+                    .into_resource(),
+                });
+            })
+        })
+        .run()
+        .await?;
+
+    // If we get here, UEFI successfully:
+    //   1. Enumerated the PCIe root complex via ECAM
+    //   2. Found the NVMe device via PciBusDxe
+    //   3. Loaded NvmExpressDxe which bound to the ePCI NVMe
+    //   4. Booted Alpine from the NVMe disk
+    //   5. Pipette agent started in the guest
+
+    // Verify the NVMe device is visible from guest userspace
+    let sh = agent.unix_shell();
+    let lspci = cmd!(sh, "lspci").read().await?;
+    assert!(
+        lspci.contains("Non-Volatile memory controller"),
+        "NVMe device not visible in guest: {lspci}"
+    );
+
+    // Verify the NVMe block device exists
+    let nvme_devices = cmd!(sh, "ls /dev/nvme*").read().await?;
+    assert!(
+        nvme_devices.contains("nvme0"),
+        "NVMe block device not found: {nvme_devices}"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+```
+
+### Implementation notes
+
+- **Boot disk plumbing**: The main challenge is getting the test's boot VHD artifact
+  wired into the `NvmeControllerHandle` as a namespace disk.  Today, petri's
+  `add_boot_disk()` handles this internally for VMBus paths.  For ePCI boot we need
+  either:
+  - A new `BootDeviceType::PcieNvme` variant that petri handles natively, or
+  - Manual disk wiring in `modify_backend` (which requires access to the resolved
+    boot disk `File` handle — may need a small petri API addition).
+- **UEFI boot order**: mu_msvm needs to include ePCI NVMe devices in the UEFI boot
+  manager's device list.  If `NvmExpressDxe` binds to the `EFI_PCI_IO_PROTOCOL`
+  produced by `PciBusDxe`, the `EFI_BLOCK_IO_PROTOCOL` chain should cause the boot
+  manager to pick it up automatically.  Verify this works without needing an explicit
+  boot variable.
+- **`enable_vpci_boot`**: This config flag currently tells mu_msvm to include VPCI
+  NVMe in the boot order.  For ePCI NVMe boot, either this flag covers both paths
+  (since both produce `EFI_PCI_IO_PROTOCOL`) or a separate flag is needed.
+
+### Running the test
+
+```bash
+# Run just the ePCI NVMe boot test
+cargo xflowey vmm-tests-run \
+    --filter "test(pcie_nvme_uefi_boot)" \
+    --dir /tmp/vmm-tests-epci
+
+# Run all PCIe tests (includes existing root_emulation + new boot test)
+cargo xflowey vmm-tests-run \
+    --filter "test(pcie)" \
+    --dir /tmp/vmm-tests-epci
+```
+
+### Additional test cases (post-initial validation)
+
+| Test | Description |
+|------|-------------|
+| **`pcie_nvme_uefi_boot`** | Core: Alpine boot from ePCI NVMe through UEFI (above) |
+| **`pcie_vpci_coexistence`** | Boot from VPCI SCSI, verify ePCI NVMe also visible as secondary disk |
+| **`pcie_multi_segment_enumeration`** | Multiple root complexes with different segments, verify all enumerated |
+| **`pcie_nvme_windows_boot`** | Windows boot from ePCI NVMe (heavier, but validates full driver stack) |
+
+---
+
+## Testing Strategy (Summary)
+
+1. **VMM Test — ePCI NVMe Boot** (Phase 6): Automated petri test that boots Alpine
+   over ePCI NVMe through mu_msvm UEFI.  This is the primary validation gate.
+
+2. **Coexistence Test**: Boot with VPCI SCSI (default) + ePCI NVMe as secondary.
+   Verify both disks are visible in UEFI shell and guest.
 
 3. **Multi-Segment Test**: Configure openvmm with multiple PCIe root complexes
-   (different segments).  Verify all are enumerated.
+   (different segments).  Verify all are enumerated by mu_msvm.
 
-4. **OS Boot Test**: Install and boot a guest OS (Windows/Linux) from an ePCI NVMe
-   disk through mu_msvm.
+4. **OS Boot Test**: Windows Server boot from ePCI NVMe — validates full EFI driver
+   stack including MSI/MSI-X and DMA.
 
 ---
 
@@ -317,3 +798,8 @@ The core work is a single new library (`PciHostBridgeLib`) in mu_msvm plus DSC/F
 wiring changes.  All other components — the generic PCI bus drivers, the VMM-side ECAM
 emulation, the ACPI tables, and the consumer drivers — already exist and work.  This is
 a well-scoped, medium-complexity change with high confidence of success.
+
+Validation is via a VMM integration test (Phase 6) using the existing petri framework —
+boot Alpine Linux from an NVMe device attached to an emulated PCIe root port through
+mu_msvm UEFI.  The test follows the same patterns as the existing `pcie_root_emulation`
+test in `vmm_tests/vmm_tests/tests/tests/multiarch/pcie.rs`.
