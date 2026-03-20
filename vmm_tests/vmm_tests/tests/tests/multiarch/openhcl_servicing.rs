@@ -571,7 +571,7 @@ async fn servicing_test_keepalive_disable_through_inspect(
 }
 
 /// Test that servicing works for all combinations of NVMe and MANA keepalives,
-/// verifying that the two keepalive mechanisms are independent. that all
+/// verifying that the two keepalive mechanisms are independent, and that all
 /// resources are correctly freed when keepalive is disabled even if the other
 /// keepalive is enabled (e.g. DMA allocations).
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
@@ -581,13 +581,23 @@ async fn servicing_test_nvme_and_mana_keepalive_combinations(
 ) -> Result<(), anyhow::Error> {
     let mut flags = config.default_servicing_flags();
 
-    let (mut vm, agent) = config.run().await?;
+    let fault_configuration = FaultConfiguration::new(CellUpdater::new(false).cell());
+    let (mut vm, agent) = create_keepalive_test_config_default(
+        config,
+        fault_configuration,
+        VTL0_NVME_LUN,
+        Guid::new_random(),
+        DEFAULT_DISK_SIZE,
+    )
+    .await?;
 
     for (nvme_ka_enabled, mana_ka_enabled) in
         [(false, false), (false, true), (true, false), (true, true)]
     {
         flags.enable_nvme_keepalive = nvme_ka_enabled;
         flags.enable_mana_keepalive = mana_ka_enabled;
+
+        tracing::info!(nvme_ka_enabled, mana_ka_enabled, "Testing servicing");
 
         agent.ping().await?;
 

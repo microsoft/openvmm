@@ -701,7 +701,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            async fn shutdown_nvme(
+            async fn shutdown_nvme_manager(
                 nvme_manager: &mut Option<NvmeManager>,
                 nvme_keepalive_enabled: bool,
                 correlation_id: Guid,
@@ -724,7 +724,7 @@ impl LoadedVm {
             // If keepalive is disabled, reset all user-mode NVMe devices before
             // save to free all resources, including DMA allocations.
             if !nvme_keepalive_enabled {
-                shutdown_nvme(
+                shutdown_nvme_manager(
                     &mut self.nvme_manager,
                     nvme_keepalive_enabled,
                     correlation_id,
@@ -756,7 +756,7 @@ impl LoadedVm {
             // If keepalive is enabled, partially reset all user-mode NVMe devices after save.
             let shutdown_nvme = async {
                 if nvme_keepalive_enabled {
-                    shutdown_nvme(
+                    shutdown_nvme_manager(
                         &mut self.nvme_manager,
                         nvme_keepalive_enabled,
                         correlation_id,
