@@ -74,9 +74,9 @@ enum Options {
         header_type: Option<CorimHeaderType>,
         /// Filter by platform type. If not specified, dumps all platforms.
         #[clap(long, value_enum)]
-        platform: Option<CorimPlatform>,
+        platform: Option<Platform>,
         /// Output directory to extract CoRIM payload data. Files will be named
-        /// corim_document_<N>.bin and corim_signature_<N>.bin
+        /// `corim_document_<N>.bin` and `corim_signature_<N>.bin`
         #[clap(short, long)]
         output: Option<PathBuf>,
     },
@@ -124,19 +124,32 @@ enum Options {
         corim_signature: Option<PathBuf>,
         /// Platform type for the CoRIM headers
         #[clap(long, value_enum)]
-        platform: CorimPlatform,
+        platform: Platform,
     },
 }
 
-/// Platform types supported for CoRIM headers
+/// IGVM platform types for CLI selection.
+///
+/// This is a CLI-friendly adapter for [`IgvmPlatformType`], which is an
+/// `open_enum` and cannot derive clap's `ValueEnum` directly.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum CorimPlatform {
+enum Platform {
     /// AMD SEV-SNP
     Snp,
     /// Intel TDX
     Tdx,
     /// VBS (Virtual-Based Security)
     Vbs,
+}
+
+impl From<Platform> for IgvmPlatformType {
+    fn from(platform: Platform) -> Self {
+        match platform {
+            Platform::Snp => IgvmPlatformType::SEV_SNP,
+            Platform::Tdx => IgvmPlatformType::TDX,
+            Platform::Vbs => IgvmPlatformType::VSM_ISOLATION,
+        }
+    }
 }
 
 /// CoRIM header types for filtering
@@ -403,9 +416,9 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 
 /// Dump CoRIM headers from an IGVM file.
 fn dump_corim_headers(
-    file_path: &PathBuf,
+    file_path: &std::path::Path,
     header_type_filter: Option<CorimHeaderType>,
-    platform_filter: Option<CorimPlatform>,
+    platform_filter: Option<Platform>,
     output_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     use std::mem::size_of;
@@ -427,14 +440,8 @@ fn dump_corim_headers(
     }
 
     // Convert platform filter to compatibility mask if specified
-    let platform_mask_filter = platform_filter.map(|p| {
-        let platform_type = match p {
-            CorimPlatform::Snp => IgvmPlatformType::SEV_SNP,
-            CorimPlatform::Tdx => IgvmPlatformType::TDX,
-            CorimPlatform::Vbs => IgvmPlatformType::VSM_ISOLATION,
-        };
-        platform_to_compatibility_mask(platform_type)
-    });
+    let platform_mask_filter =
+        platform_filter.map(|p| platform_to_compatibility_mask(IgvmPlatformType::from(p)));
 
     // Calculate the variable header section location
     let var_header_offset = fixed_header.variable_header_offset as usize;
@@ -473,9 +480,9 @@ fn dump_corim_headers(
                         .0;
 
                 // Apply filters
-                let show_type = header_type_filter.map_or(true, |t| t == CorimHeaderType::Document);
+                let show_type = header_type_filter.is_none_or(|t| t == CorimHeaderType::Document);
                 let show_platform = platform_mask_filter
-                    .map_or(true, |mask| corim_header.compatibility_mask & mask != 0);
+                    .is_none_or(|mask| corim_header.compatibility_mask & mask != 0);
 
                 if show_type && show_platform {
                     document_count += 1;
@@ -540,10 +547,9 @@ fn dump_corim_headers(
                         .0;
 
                 // Apply filters
-                let show_type =
-                    header_type_filter.map_or(true, |t| t == CorimHeaderType::Signature);
+                let show_type = header_type_filter.is_none_or(|t| t == CorimHeaderType::Signature);
                 let show_platform = platform_mask_filter
-                    .map_or(true, |mask| corim_header.compatibility_mask & mask != 0);
+                    .is_none_or(|mask| corim_header.compatibility_mask & mask != 0);
 
                 if show_type && show_platform {
                     signature_count += 1;
@@ -617,13 +623,13 @@ fn dump_corim_headers(
 /// Format a compatibility mask as a human-readable platform list.
 fn format_platform_mask(mask: u32) -> String {
     let mut platforms = Vec::new();
-    if mask & 0x1 != 0 {
+    if mask & platform_to_compatibility_mask(IgvmPlatformType::SEV_SNP) != 0 {
         platforms.push("SNP");
     }
-    if mask & 0x2 != 0 {
+    if mask & platform_to_compatibility_mask(IgvmPlatformType::TDX) != 0 {
         platforms.push("TDX");
     }
-    if mask & 0x4 != 0 {
+    if mask & platform_to_compatibility_mask(IgvmPlatformType::VSM_ISOLATION) != 0 {
         platforms.push("VBS");
     }
     if platforms.is_empty() {
@@ -640,7 +646,7 @@ fn patch_corim_headers(
     corim_signed: Option<PathBuf>,
     corim_document: Option<PathBuf>,
     corim_signature: Option<PathBuf>,
-    platform: CorimPlatform,
+    platform: Platform,
 ) -> anyhow::Result<()> {
     // Read input files
     let igvm_data =
@@ -689,12 +695,7 @@ fn patch_corim_headers(
         (doc, sig)
     };
 
-    // Convert platform enum to IgvmPlatformType
-    let platform_type = match platform {
-        CorimPlatform::Snp => IgvmPlatformType::SEV_SNP,
-        CorimPlatform::Tdx => IgvmPlatformType::TDX,
-        CorimPlatform::Vbs => IgvmPlatformType::VSM_ISOLATION,
-    };
+    let platform_type = IgvmPlatformType::from(platform);
 
     tracing::info!(
         input = %input.display(),

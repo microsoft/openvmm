@@ -84,6 +84,10 @@ const CBOR_TAG_ONE_BYTE_PREFIX: u8 = 0xD8;
 /// Number of elements in a COSE_Sign1 array.
 const COSE_SIGN1_ARRAY_LEN: u32 = 4;
 
+/// Mask to extract the additional info field (low 5 bits) from a CBOR
+/// initial byte.
+const CBOR_ADDITIONAL_INFO_MASK: u8 = 0x1F;
+
 /// Decode a CBOR additional info field to get the argument value and advance
 /// past any extra length bytes.
 ///
@@ -142,7 +146,7 @@ pub(crate) fn cbor_skip_item(data: &[u8], offset: usize) -> anyhow::Result<usize
 
     let initial = data[offset];
     let major = CborMajorType(initial >> 5);
-    let additional_info = initial & 0x1F;
+    let additional_info = initial & CBOR_ADDITIONAL_INFO_MASK;
     let (arg, mut off) = cbor_decode_argument(data, offset + 1, additional_info)?;
 
     match major {
@@ -227,7 +231,7 @@ pub fn split_cose_sign1(data: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     if major != CborMajorType::ARRAY {
         anyhow::bail!("Signed CoRIM: expected CBOR array (major type 4), got major type {major:?}",);
     }
-    let additional_info = initial & 0x1F;
+    let additional_info = initial & CBOR_ADDITIONAL_INFO_MASK;
     let (array_len, arr_off) = cbor_decode_argument(data, off + 1, additional_info)?;
     if array_len != COSE_SIGN1_ARRAY_LEN {
         anyhow::bail!("Signed CoRIM: COSE_Sign1 array must have 4 elements, got {array_len}");
@@ -278,7 +282,7 @@ pub fn split_cose_sign1(data: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     }
 
     // Decode the bstr header to find the payload content
-    let payload_additional = data[payload_start] & 0x1F;
+    let payload_additional = data[payload_start] & CBOR_ADDITIONAL_INFO_MASK;
     let (payload_len, payload_content_start) =
         cbor_decode_argument(data, payload_start + 1, payload_additional)?;
     let payload_content_end = payload_content_start + payload_len as usize;
@@ -354,7 +358,7 @@ pub fn validate_cose_sign1_nil_payload(data: &[u8]) -> anyhow::Result<()> {
             "CoRIM signature: expected CBOR array (major type 4), got major type {major:?}",
         );
     }
-    let additional_info = initial & 0x1F;
+    let additional_info = initial & CBOR_ADDITIONAL_INFO_MASK;
     let (array_len, mut off) = cbor_decode_argument(data, off + 1, additional_info)?;
     if array_len != COSE_SIGN1_ARRAY_LEN {
         anyhow::bail!("CoRIM signature: COSE_Sign1 array must have 4 elements, got {array_len}");

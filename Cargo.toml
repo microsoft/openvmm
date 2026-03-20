@@ -484,9 +484,7 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_d3now",
 ] }
 ignore = "0.4"
-#igvm = "0.4.0"
 igvm = { git = "https://github.com/chris-oo/igvm", branch = "corim-header" }
-#igvm_defs = { version = "0.4.0", default-features = false }
 igvm_defs = { git = "https://github.com/chris-oo/igvm", branch = "corim-header", default-features = false }
 image = { version = "0.25.1", default-features = false }
 io-uring = "0.7.4"
