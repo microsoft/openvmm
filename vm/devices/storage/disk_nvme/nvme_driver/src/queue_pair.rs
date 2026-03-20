@@ -124,7 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
-            elapsed: (self.qid == 0).then(Instant::now),
+            submitted_at: (self.qid == 0).then(Instant::now),
         });
     }
 
@@ -181,7 +181,7 @@ impl PendingCommands {
                         PendingCommand {
                             command: state.command,
                             respond: Rpc::detached(()),
-                            elapsed: None,
+                            submitted_at: None,
                         },
                     )
                 })
@@ -950,8 +950,8 @@ struct PendingCommand {
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
     /// When the command was submitted to the queue. Used only for the admin queue
-    #[inspect(with = "|x| x.map(|elapsed| elapsed.elapsed().as_secs_f64())")]
-    elapsed: Option<Instant>,
+    #[inspect(with = "|x| x.map(|submitted_at| submitted_at.elapsed().as_millis() as u64)")]
+    submitted_at: Option<Instant>,
 }
 
 /// Diagnostic information about the completion queue state.
@@ -1308,7 +1308,7 @@ impl<A: AerHandler> QueueHandler<A> {
         // Log pending admin command wait durations at save time.
         if self.qid == 0 {
             for (_index, cmd) in self.commands.commands.iter() {
-                if let Some(elapsed) = cmd.elapsed {
+                if let Some(elapsed) = cmd.submitted_at {
                     tracing::info!(
                         pci_id = ?self.device_id,
                         cid = cmd.command.cdw0.cid(),
@@ -1316,7 +1316,7 @@ impl<A: AerHandler> QueueHandler<A> {
                         nsid = cmd.command.nsid,
                         cdw10 = cmd.command.cdw10,
                         cdw11 = cmd.command.cdw11,
-                        elapsed = elapsed.elapsed().as_secs_f64(),
+                        elapsed = elapsed.elapsed().as_millis() as u64,
                         "pending admin command at save time",
                     );
                 }
