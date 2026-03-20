@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod assembler;
 mod ring;
 
 use super::Access;
@@ -39,7 +40,6 @@ use socket2::SockAddr;
 use socket2::Socket;
 use socket2::Type;
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::collections::hash_map;
 use std::io;
 use std::io::ErrorKind;
@@ -93,8 +93,6 @@ pub enum TcpError {
     StillConnecting,
     #[error("unacceptable segment number")]
     Unacceptable,
-    #[error("received out of order packet")]
-    OutOfOrder,
     #[error("missing ack bit")]
     MissingAck,
     #[error("ack newer than sequence")]
@@ -149,12 +147,14 @@ struct TcpConnectionInner {
     state: TcpState,
 
     #[inspect(with = "|x| x.len()")]
-    rx_buffer: VecDeque<u8>,
+    rx_buffer: ring::Ring,
     #[inspect(hex)]
     rx_window_cap: usize,
     rx_window_scale: u8,
     #[inspect(with = "inspect_seq")]
     rx_seq: TcpSeqNumber,
+    #[inspect(flatten)]
+    rx_assembler: assembler::Assembler,
     needs_ack: bool,
     is_shutdown: bool,
     enable_window_scaling: bool,
@@ -598,10 +598,11 @@ impl TcpConnection {
         TcpConnectionInner {
             loopback_port: LoopbackPortInfo::None,
             state: TcpState::Connecting,
-            rx_buffer: VecDeque::new(),
+            rx_buffer: ring::Ring::new(0),
             rx_window_cap: rx_buffer_size,
             rx_window_scale,
             rx_seq,
+            rx_assembler: assembler::Assembler::new(),
             needs_ack: false,
             is_shutdown: false,
             enable_window_scaling: false,
@@ -744,11 +745,11 @@ impl TcpConnectionInner {
             // Disable rx window scale. Cap the buffer and window to u16::MAX
             // since without window scaling, the window field is only 16 bits.
             self.enable_window_scaling = false;
-            self.rx_buffer.truncate(u16::MAX as usize);
             self.rx_window_cap = self.rx_window_cap.min(u16::MAX as usize);
             self.rx_window_scale = 0;
         }
 
+        self.rx_buffer = ring::Ring::new(self.rx_window_cap.next_power_of_two());
         self.rx_seq = tcp.seq_number + 1;
         self.tx_window_rx_seq = tcp.seq_number + 1;
         self.tx_mss = tx_mss;
@@ -796,10 +797,11 @@ impl TcpConnectionInner {
         }
 
         // rx path: feed guest data into the DNS handler for query extraction.
-        let (a, b) = self.rx_buffer.as_slices();
+        let view = self.rx_buffer.view(0..self.rx_buffer.len());
+        let (a, b) = view.as_slices();
         match dns_handler.ingest(&[a, b], dns) {
             Ok(consumed) if consumed > 0 => {
-                self.rx_buffer.drain(..consumed);
+                self.rx_buffer.consume(consumed);
             }
             Ok(_) => {}
             Err(_) => {
@@ -902,11 +904,12 @@ impl TcpConnectionInner {
         // Handle the rx path.
         if let Some(socket) = opt_socket.as_mut() {
             while !self.rx_buffer.is_empty() {
-                let (a, b) = self.rx_buffer.as_slices();
+                let view = self.rx_buffer.view(0..self.rx_buffer.len());
+                let (a, b) = view.as_slices();
                 let bufs = [IoSlice::new(a), IoSlice::new(b)];
                 match Pin::new(&mut *socket).poll_write_vectored(cx, &bufs) {
                     Poll::Ready(Ok(n)) => {
-                        self.rx_buffer.drain(..n);
+                        self.rx_buffer.consume(n);
                     }
                     Poll::Ready(Err(err)) => {
                         match err.kind() {
@@ -1220,13 +1223,6 @@ impl TcpConnectionInner {
             return Err(TcpError::Unacceptable.into());
         }
 
-        // Also ack+drop for out-of-order non-empty segments rather than queueing
-        // them. Our environment makes out-of-order segments unlikely.
-        if tcp.seq_number > self.rx_seq && tcp.segment_len() > 0 {
-            self.ack(sender);
-            return Err(TcpError::OutOfOrder.into());
-        }
-
         // SYN should not be set for in-window segments.
         if tcp.control == TcpControl::Syn {
             if self.state == TcpState::SynReceived {
@@ -1304,12 +1300,53 @@ impl TcpConnectionInner {
         };
         let payload = &tcp.payload[segment_skip..segment_end - tcp.seq_number - fin as usize];
 
+        let mut rx_fin = false;
+
         // Process the payload.
         match self.state {
             TcpState::Connecting | TcpState::SynReceived | TcpState::SynSent => unreachable!(),
             TcpState::Established | TcpState::FinWait1 | TcpState::FinWait2 => {
-                self.rx_buffer.extend(payload);
-                self.rx_seq = segment_end;
+                if !payload.is_empty() || fin {
+                    // Stage 1: Compute the byte offset from the contiguous
+                    // frontier.
+                    //
+                    // Safety of ring_offset: the sequence acceptance check above
+                    // bounds the segment to rx_window_end = rx_seq + (rx_window_cap
+                    // - rx_buffer.len()), so seq_offset + payload.len() <=
+                    // rx_window_cap <= ring capacity.
+                    let seq_offset = if tcp.seq_number >= self.rx_seq {
+                        tcp.seq_number - self.rx_seq
+                    } else {
+                        0
+                    };
+                    let ring_offset = self.rx_buffer.len() + seq_offset;
+
+                    // Stage 2: Record the range in the assembler. Do this
+                    // *before* writing to the ring so that rejected segments
+                    // (TooManyGaps) don't leave stale bytes in unwritten
+                    // ring space.
+                    let (rx_consumed, assembler_fin, accepted) =
+                        match self
+                            .rx_assembler
+                            .add(seq_offset as u32, payload.len() as u32, fin)
+                        {
+                            Ok(result) => (result.consumed as usize, result.fin, true),
+                            Err(assembler::TooManyGaps) => (0, false, false),
+                        };
+
+                    // Stage 3: Write payload into the ring and advance the
+                    // contiguous frontier. Only write when the assembler
+                    // accepted the segment.
+                    if accepted && !payload.is_empty() {
+                        self.rx_buffer.write_at(ring_offset, payload);
+                    }
+                    self.rx_buffer.extend_by(rx_consumed);
+                    self.rx_seq += rx_consumed;
+                    rx_fin = assembler_fin;
+                    if rx_fin {
+                        self.rx_seq += 1;
+                    }
+                }
                 if tcp.segment_len() > 0 {
                     self.needs_ack = true;
                 }
@@ -1322,7 +1359,7 @@ impl TcpConnectionInner {
         }
 
         // Process FIN.
-        if fin {
+        if rx_fin {
             match self.state {
                 TcpState::Connecting | TcpState::SynReceived | TcpState::SynSent => unreachable!(),
                 TcpState::Established => {
@@ -1465,3 +1502,6 @@ fn is_gateway_dns_tcp(ft: &FourTuple, params: &crate::ConsommeParams, dns_availa
         IpAddr::V6(ip) => params.gateway_link_local_ipv6 == ip,
     }
 }
+
+#[cfg(test)]
+mod tests;
