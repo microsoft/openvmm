@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Per-queue virtio device trait (`VirtioDevice`).
+//! Per-queue virtio device trait (`VirtioDevice`) and object-safe wrapper
+//! (`DynVirtioDevice`).
 
 use crate::DeviceTraits;
 use crate::QueueResources;
@@ -9,21 +10,23 @@ use crate::queue::QueueState;
 use crate::spec::VirtioDeviceFeatures;
 use guestmem::MappedMemoryRegion;
 use inspect::InspectMut;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::task::Context;
-use std::task::Poll;
 
-/// Per-queue virtio device trait. Replaces the device-level
-/// `VirtioDevice::enable()` / `poll_disable()` with per-queue start/stop.
+/// Per-queue virtio device trait. Ergonomic async fn — not object-safe.
+///
+/// Devices implement this trait. The blanket impl converts any
+/// `VirtioDevice` into a `DynVirtioDevice` for use behind `Box<dyn>`.
 pub trait VirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
 
     /// Read device-specific config registers.
-    fn read_registers_u32(&mut self, offset: u16) -> u32;
+    fn read_registers_u32(&mut self, offset: u16) -> impl Future<Output = u32> + Send;
 
     /// Write device-specific config registers.
-    fn write_registers_u32(&mut self, offset: u16, val: u32);
+    fn write_registers_u32(&mut self, offset: u16, val: u32) -> impl Future<Output = ()> + Send;
 
     /// Provide the shared memory region to the device.
     ///
@@ -57,7 +60,7 @@ pub trait VirtioDevice: InspectMut + Send {
         resources: QueueResources,
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
-    ) -> anyhow::Result<()>;
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Stop a single queue and return its state.
     ///
@@ -68,16 +71,18 @@ pub trait VirtioDevice: InspectMut + Send {
     /// queue was not active.
     ///
     /// This must be idempotent: calling it on a queue that was never
-    /// started (or has already been stopped) must return
-    /// `Poll::Ready(None)` immediately. Transports rely on this during
-    /// reset/disable by iterating all queue indices, not just active ones.
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>>;
+    /// started (or has already been stopped) must return `None`
+    /// immediately. Transports rely on this during reset/disable by
+    /// iterating all queue indices, not just active ones.
+    fn stop_queue(&mut self, idx: u16) -> impl Future<Output = Option<QueueState>> + Send;
 
     /// Reset device-internal state to initial values.
     ///
     /// Called after all queues have been stopped on guest-initiated reset.
     /// Default: no-op.
-    fn reset(&mut self) {}
+    fn reset(&mut self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// Whether the device supports save/restore.
     ///
@@ -87,5 +92,113 @@ pub trait VirtioDevice: InspectMut + Send {
     /// leave this as `false`.
     fn supports_save_restore(&self) -> bool {
         false
+    }
+}
+
+/// Object-safe wrapper for [`VirtioDevice`].
+///
+/// Uses boxed futures instead of `async fn` for object safety. The blanket
+/// impl converts any `T: VirtioDevice` into a `DynVirtioDevice`.
+///
+/// The device task, backend server, and resolver hold `Box<dyn DynVirtioDevice>`.
+pub trait DynVirtioDevice: InspectMut + Send {
+    /// Device identity and capabilities.
+    fn traits(&self) -> DeviceTraits;
+
+    /// Read device-specific config registers.
+    fn read_registers_u32(&mut self, offset: u16)
+    -> Pin<Box<dyn Future<Output = u32> + Send + '_>>;
+
+    /// Write device-specific config registers.
+    fn write_registers_u32(
+        &mut self,
+        offset: u16,
+        val: u32,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Provide the shared memory region to the device.
+    fn set_shared_memory_region(
+        &mut self,
+        region: &Arc<dyn MappedMemoryRegion>,
+    ) -> anyhow::Result<()>;
+
+    /// Start a single queue.
+    fn start_queue<'a>(
+        &'a mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &'a VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    /// Stop a single queue and return its state.
+    fn stop_queue(
+        &mut self,
+        idx: u16,
+    ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>>;
+
+    /// Reset device-internal state.
+    fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Whether the device supports save/restore.
+    fn supports_save_restore(&self) -> bool;
+}
+
+impl<T: VirtioDevice> DynVirtioDevice for T {
+    fn traits(&self) -> DeviceTraits {
+        VirtioDevice::traits(self)
+    }
+
+    fn read_registers_u32(
+        &mut self,
+        offset: u16,
+    ) -> Pin<Box<dyn Future<Output = u32> + Send + '_>> {
+        Box::pin(VirtioDevice::read_registers_u32(self, offset))
+    }
+
+    fn write_registers_u32(
+        &mut self,
+        offset: u16,
+        val: u32,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::write_registers_u32(self, offset, val))
+    }
+
+    fn set_shared_memory_region(
+        &mut self,
+        region: &Arc<dyn MappedMemoryRegion>,
+    ) -> anyhow::Result<()> {
+        VirtioDevice::set_shared_memory_region(self, region)
+    }
+
+    fn start_queue<'a>(
+        &'a mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &'a VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(VirtioDevice::start_queue(
+            self,
+            idx,
+            resources,
+            features,
+            initial_state,
+        ))
+    }
+
+    fn stop_queue(
+        &mut self,
+        idx: u16,
+    ) -> Pin<Box<dyn Future<Output = Option<QueueState>> + Send + '_>> {
+        Box::pin(VirtioDevice::stop_queue(self, idx))
+    }
+
+    fn reset(&mut self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(VirtioDevice::reset(self))
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        VirtioDevice::supports_save_restore(self)
     }
 }

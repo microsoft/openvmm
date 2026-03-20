@@ -414,6 +414,7 @@ dependencies = [
  "anyhow",
  "build_rs_git_info",
  "clap",
+ "futures",
  "jiff",
  "openvmm_defs",
  "pal_async",
@@ -426,6 +427,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "windows 0.62.0",
 ]
 
 [[package]]
@@ -2416,6 +2418,21 @@ dependencies = [
  "scsi_buffers",
  "user_driver",
  "user_driver_emulated_mock",
+ "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
+name = "fuzz_pcie"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "chipset_device",
+ "libfuzzer-sys",
+ "memory_range",
+ "pal_async",
+ "pci_bus",
+ "pcie",
  "vmcore",
  "xtask_fuzz",
 ]
@@ -5397,9 +5414,12 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "fs-err",
  "get_resources",
  "mesh",
  "openvmm_defs",
+ "sparse_mmap",
+ "tempfile",
  "tracing",
  "vm_resource",
 ]
@@ -9782,6 +9802,7 @@ dependencies = [
  "nvme_spec",
  "nvme_test",
  "openvmm_defs",
+ "openvmm_helpers",
  "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",

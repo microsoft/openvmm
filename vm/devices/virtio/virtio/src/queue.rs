@@ -102,12 +102,15 @@ enum QueueCompleteWorkInner {
     Packed(PackedQueueCompleteWork),
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone, Default, inspect::Inspect)]
 pub struct QueueParams {
     pub size: u16,
     pub enable: bool,
+    #[inspect(hex)]
     pub desc_addr: u64,
+    #[inspect(hex)]
     pub avail_addr: u64,
+    #[inspect(hex)]
     pub used_addr: u64,
 }
 

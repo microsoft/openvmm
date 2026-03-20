@@ -15,6 +15,7 @@ mod tests;
 pub mod transport;
 
 pub use common::*;
+pub use device::DynVirtioDevice;
 pub use device::VirtioDevice;
 pub use transport::*;
 

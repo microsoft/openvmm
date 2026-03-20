@@ -19,5 +19,8 @@ tracelimit.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
 
+[features]
+fuzz = []
+
 [lints]
 workspace = true

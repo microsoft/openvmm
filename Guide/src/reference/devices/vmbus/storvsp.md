@@ -32,7 +32,9 @@ calls (read, write, flush, unmap).
 - **Protocol.** Hyper-V SCSI (SRB-based), with version negotiation
   (Win6 through Blue).
 - **Sub-channels.** StorVSP supports multiple VMBus sub-channels
-  for parallel I/O, one worker per channel.
+  for parallel I/O, one worker per channel. See
+  [Channels & Subchannels](storvsp_channels.md) for the full
+  model, configuration, and performance characteristics.
 - **Hot-add / hot-remove.** SCSI devices can be attached and
   detached at runtime via `ScsiControllerRequest`.
 - **Performance.** Poll-mode optimization — when pending I/O count

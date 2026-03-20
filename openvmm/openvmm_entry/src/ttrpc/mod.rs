@@ -592,6 +592,7 @@ impl VmService {
                     hypervisor: None,
                     cfg: config,
                     saved_state: None,
+                    shared_memory: None,
                     rpc: recv,
                     notify: notify_send,
                 },

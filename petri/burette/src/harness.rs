@@ -21,10 +21,6 @@ use std::future::Future;
 ///
 /// Used for measurements like boot time where each iteration needs
 /// an independent VM lifecycle.
-///
-/// The two-phase design separates artifact registration (which must run
-/// in both collector and resolver passes) from test execution (resolver
-/// pass only).
 pub trait ColdPerfTest {
     /// Human-readable name for this test.
     fn name(&self) -> &str;
@@ -41,10 +37,12 @@ pub trait ColdPerfTest {
 
     /// Register required artifacts with the resolver.
     ///
-    /// This is called in both the collector and resolver passes.
-    /// In collector mode, only record what artifacts are needed.
-    /// In resolver mode, build the actual firmware/artifact objects.
-    fn register_artifacts(&self, resolver: &petri::ArtifactResolver<'_>);
+    /// Called during artifact resolution (both collector and resolver
+    /// passes). Does not require `&self` — implementors should define
+    /// a module-level function and delegate.
+    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>)
+    where
+        Self: Sized;
 
     /// Run a single iteration. Returns one or more metric results.
     fn run_once(
@@ -72,7 +70,9 @@ pub trait WarmPerfTest {
     }
 
     /// Register required artifacts with the resolver.
-    fn register_artifacts(&self, resolver: &petri::ArtifactResolver<'_>);
+    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>)
+    where
+        Self: Sized;
 
     /// Boot the VM and prepare the workload environment.
     fn setup(

@@ -28,7 +28,6 @@ mod tests;
 
 use anyhow::Context as _;
 use clap::Parser;
-use harness::ColdPerfTest as _;
 use report::MetricStats;
 use std::path::Path;
 use std::path::PathBuf;
@@ -95,6 +94,15 @@ struct RunArgs {
     /// diagnostics. Does not affect measurements.
     #[arg(long)]
     diag: bool,
+
+    /// Number of concurrent VMs for scale_boot (e.g. "32" for single point,
+    /// or "1,2,4,8,16" for explicit sweep). Omit for default geometric sweep.
+    #[arg(long, value_delimiter = ',')]
+    vms: Option<Vec<u32>>,
+
+    /// Maximum number of concurrent VMs for scale_boot sweep.
+    #[arg(long, default_value = "64")]
+    max_vms: u32,
 }
 
 #[derive(clap::Args)]
@@ -166,7 +174,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         .context("log source already initialized")?;
 
     // Determine which tests to run.
-    let available_tests = ["boot_time"];
+    let available_tests = ["boot_time", "scale_boot", "memory"];
     let tests_to_run: Vec<&str> = if let Some(ref name) = args.test {
         if !available_tests.contains(&name.as_str()) {
             anyhow::bail!(
@@ -193,22 +201,67 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                         )
                     })?;
 
-                let test = tests::boot_time::BootTimeTest {
-                    profile,
-                    diag: args.diag,
-                    mem_mb: args.mem_mb,
-                    prebuilt_initrd: OnceLock::new(),
-                };
-
-                // Phase 1+2: resolve artifacts.
-                let artifacts = resolve_artifacts(|resolver| test.register_artifacts(resolver))?;
+                let artifacts = resolve_artifacts(tests::boot_time::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
-                // Phase 3: run the test.
+                let test =
+                    tests::boot_time::BootTimeTest::new(profile, args.diag, args.mem_mb, &resolver)
+                        .context("boot_time prep")?;
+
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
                     harness::run_cold_test(&test, &resolver, &driver, args.iterations).await
                 })
                 .context("boot_time test failed")?;
+                all_stats.extend(stats);
+            }
+            "scale_boot" => {
+                let profile =
+                    tests::boot_time::BootProfile::from_name(&args.profile).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown profile '{}'. Available: {}",
+                            args.profile,
+                            tests::boot_time::BootProfile::all_names().join(", ")
+                        )
+                    })?;
+
+                let artifacts = resolve_artifacts(tests::scale_boot::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let test = tests::scale_boot::ScaleBootTest::new(
+                    profile,
+                    args.mem_mb,
+                    args.vms.clone(),
+                    args.max_vms,
+                    &resolver,
+                )
+                .context("scale_boot prep")?;
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    tests::scale_boot::run_scale_test(&test, &resolver, &driver).await
+                })
+                .context("scale_boot test failed")?;
+                all_stats.extend(stats);
+            }
+            "memory" => {
+                let profile =
+                    tests::boot_time::BootProfile::from_name(&args.profile).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "unknown profile '{}'. Available: {}",
+                            args.profile,
+                            tests::boot_time::BootProfile::all_names().join(", ")
+                        )
+                    })?;
+
+                let artifacts = resolve_artifacts(tests::memory::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let test = tests::memory::MemoryTest::new(profile, args.mem_mb, &resolver)
+                    .context("memory prep")?;
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_cold_test(&test, &resolver, &driver, args.iterations).await
+                })
+                .context("memory test failed")?;
                 all_stats.extend(stats);
             }
             _ => unreachable!(),

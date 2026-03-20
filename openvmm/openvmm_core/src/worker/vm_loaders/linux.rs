@@ -12,7 +12,6 @@ use loader::linux::RegisterConfig;
 use loader::linux::ZeroPageConfig;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use std::ffi::CString;
-use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
 use vm_loader::Loader;
@@ -64,18 +63,20 @@ pub fn load_linux_x86(
     let kaddr: u64 = 0x100000;
     let mut kernel_file = cfg.kernel;
 
-    let mut initrd = Vec::new();
-    if let Some(mut initrd_file) = cfg.initrd.as_ref() {
+    let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
         initrd_file.rewind().map_err(Error::InitRd)?;
-        initrd_file
-            .read_to_end(&mut initrd)
+        let size = initrd_file
+            .seek(std::io::SeekFrom::End(0))
             .map_err(Error::InitRd)?;
-    }
-
-    let initrd_config = InitrdConfig {
-        initrd_address: InitrdAddressType::AfterKernel,
-        initrd: &initrd,
+        (Some(initrd_file), size)
+    } else {
+        (None, 0)
     };
+    let initrd_config = initrd_reader.as_mut().map(|r| InitrdConfig {
+        initrd_address: InitrdAddressType::AfterKernel,
+        initrd: r,
+        size: initrd_size,
+    });
 
     let cmdline = CString::new(cfg.cmdline).unwrap();
     let cmdline_config = CommandLineConfig {
@@ -112,11 +113,7 @@ pub fn load_linux_x86(
         &mut loader,
         &mut kernel_file,
         kaddr,
-        if !initrd.is_empty() {
-            Some(initrd_config)
-        } else {
-            None
-        },
+        initrd_config,
         cmdline_config,
         zero_page_config,
         acpi_config,
@@ -417,13 +414,16 @@ pub fn load_linux_arm64(
 ) -> Result<Vec<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
-    let mut initrd = Vec::new();
-    if let Some(mut initrd_file) = cfg.initrd.as_ref() {
+
+    let (mut initrd_reader, initrd_size) = if let Some(mut initrd_file) = cfg.initrd.as_ref() {
         initrd_file.rewind().map_err(Error::InitRd)?;
-        initrd_file
-            .read_to_end(&mut initrd)
+        let size = initrd_file
+            .seek(std::io::SeekFrom::End(0))
             .map_err(Error::InitRd)?;
-    }
+        (Some(initrd_file), size)
+    } else {
+        (None, 0)
+    };
 
     // Data dependencies:
     // - DeviceTree carries the start address of the initrd.
@@ -435,7 +435,7 @@ pub fn load_linux_arm64(
 
     let load_bottom_addr: u64 = 16 << 20;
     let initrd_start: u64 = load_bottom_addr;
-    let initrd_end: u64 = initrd_start + initrd.len() as u64;
+    let initrd_end: u64 = initrd_start + initrd_size;
     // Align the kernel to 2MB
     let kernel_minimum_start_address: u64 = (initrd_end + 0x1fffff) & !0x1fffff;
 
@@ -448,18 +448,18 @@ pub fn load_linux_arm64(
         initrd_end,
     )
     .map_err(|e| Error::Dt(DtError(e)))?;
+
+    let initrd_config = initrd_reader.as_mut().map(|r| InitrdConfig {
+        initrd_address: InitrdAddressType::Address(initrd_start),
+        initrd: r,
+        size: initrd_size,
+    });
+
     let load_info = loader::linux::load_kernel_and_initrd_arm64(
         &mut loader,
         &mut kernel_file,
         kernel_minimum_start_address,
-        if !initrd.is_empty() {
-            Some(InitrdConfig {
-                initrd_address: InitrdAddressType::Address(initrd_start),
-                initrd: &initrd,
-            })
-        } else {
-            None
-        },
+        initrd_config,
         Some(&device_tree),
     )
     .map_err(Error::Loader)?;
