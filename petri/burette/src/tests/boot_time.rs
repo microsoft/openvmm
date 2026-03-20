@@ -19,39 +19,25 @@ pub const ARCH: petri_artifacts_common::tags::MachineArch =
 /// Each profile defines a specific combination of VM features to measure.
 /// This lets us track boot time across different configurations and
 /// detect regressions in specific code paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BootProfile {
     /// Full device set, serial agent, CIDATA disk, shared memory.
     /// The "standard" configuration that vmm_tests use.
     Standard,
     /// Like Standard but with kernel console output suppressed
     /// (`quiet loglevel=0`). Isolates serial emulation overhead.
+    #[value(name = "quiet-serial")]
     QuietSerial,
     /// Pipette-as-init, minimal devices, no serial, shared memory.
     /// Measures VMM + kernel boot without serial overhead.
     Minimal,
     /// Pipette-as-init, minimal devices, no serial, private memory.
     /// Fastest configuration — eliminates mmap overhead for guest RAM.
+    #[value(name = "minimal-private")]
     MinimalPrivate,
 }
 
 impl BootProfile {
-    /// Parse a profile name from a string.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "standard" => Some(Self::Standard),
-            "quiet-serial" => Some(Self::QuietSerial),
-            "minimal" => Some(Self::Minimal),
-            "minimal-private" => Some(Self::MinimalPrivate),
-            _ => None,
-        }
-    }
-
-    /// List all available profile names.
-    pub fn all_names() -> &'static [&'static str] {
-        &["standard", "quiet-serial", "minimal", "minimal-private"]
-    }
-
     /// Whether this profile uses private memory.
     pub fn uses_private_memory(&self) -> bool {
         matches!(self, Self::MinimalPrivate)
@@ -222,10 +208,6 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
 
     fn warmup_iterations(&self) -> u32 {
         1
-    }
-
-    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-        register_artifacts(resolver);
     }
 
     async fn run_once(

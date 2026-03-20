@@ -416,6 +416,7 @@ dependencies = [
  "clap",
  "futures",
  "jiff",
+ "libc",
  "openvmm_defs",
  "pal_async",
  "petri",

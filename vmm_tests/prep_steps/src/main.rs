@@ -68,7 +68,7 @@ fn build(
     })?;
 
     let output_dir = output_dir.get();
-    let logger = petri::try_init_tracing(output_dir)?;
+    let logger = petri::try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)?;
     Ok((logger, artifacts, source_disk.erase()))
 }
 
