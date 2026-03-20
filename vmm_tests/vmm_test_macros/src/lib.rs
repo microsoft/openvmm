@@ -30,6 +30,14 @@ struct Config {
     unstable: bool,
 }
 
+struct ResolvedConfig {
+    vmm: Vmm,
+    firmware: Firmware,
+    arch: MachineArch,
+    extra_deps: Vec<Path>,
+    unstable: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Vmm {
     OpenVmm,
@@ -85,7 +93,7 @@ struct ArgsWithOverrides {
 }
 
 struct ResolvedArgs {
-    configs: Vec<Config>,
+    configs: Vec<ResolvedConfig>,
     with_vtl0_pipette: bool,
 }
 
@@ -103,11 +111,11 @@ fn arch_to_tokens(arch: MachineArch) -> TokenStream {
     }
 }
 
-impl Config {
-    fn name_prefix(&self, resolved_vmm: Vmm) -> String {
+impl ResolvedConfig {
+    fn name_prefix(&self) -> String {
         let arch_prefix = arch_to_str(self.arch);
 
-        let vmm_prefix = match resolved_vmm {
+        let vmm_prefix = match self.vmm {
             Vmm::OpenVmm => "openvmm",
             Vmm::HyperV => "hyperv",
         };
@@ -241,30 +249,31 @@ impl Parse for ArgsWithOverrides {
         let mut with_vtl0_pipette = None;
         let mut vmm = None;
 
-        let word_string = input.parse::<Ident>()?.to_string();
-        for word in word_string.split('_') {
-            match &*word.to_string() {
+        let word = input.parse::<Ident>()?;
+        let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
+        for subword in word.to_string().split('_') {
+            match subword {
                 "unstable" => {
                     if unstable.is_some() {
-                        return Err(Error::new(word.span(), "conflicting override"));
+                        return conflict_err();
                     }
                     unstable = Some(true);
                 }
                 "noagent" => {
                     if with_vtl0_pipette.is_some() {
-                        return Err(Error::new(word.span(), "conflicting override"));
+                        return conflict_err();
                     }
                     with_vtl0_pipette = Some(false);
                 }
                 "hyperv" => {
                     if vmm.is_some() {
-                        return Err(Error::new(word.span(), "conflicting override"));
+                        return conflict_err();
                     }
                     vmm = Some(Vmm::HyperV);
                 }
                 "openvmm" => {
                     if vmm.is_some() {
-                        return Err(Error::new(word.span(), "conflicting override"));
+                        return conflict_err();
                     }
                     vmm = Some(Vmm::OpenVmm);
                 }
@@ -291,28 +300,35 @@ impl Parse for ArgsWithOverrides {
 impl ArgsWithOverrides {
     fn resolve(self) -> syn::Result<ResolvedArgs> {
         let ArgsWithOverrides {
-            args: Args { mut configs },
+            args: Args { configs },
             vmm,
             unstable,
             with_vtl0_pipette,
         } = self;
 
-        for config in configs.iter_mut() {
-            config.unstable |= unstable;
-            config.vmm = Some(match (vmm, config.vmm) {
-                (Some(Vmm::HyperV), Some(Vmm::HyperV))
-                | (Some(Vmm::HyperV), None)
-                | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
-                (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
-                | (Some(Vmm::OpenVmm), None)
-                | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
-                (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
-                _ => return Err(Error::new(config.span, "vmm mismatch")),
+        let mut resolved_configs = Vec::new();
+
+        for config in configs.into_iter() {
+            resolved_configs.push(ResolvedConfig {
+                vmm: match (vmm, config.vmm) {
+                    (Some(Vmm::HyperV), Some(Vmm::HyperV))
+                    | (Some(Vmm::HyperV), None)
+                    | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
+                    (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
+                    | (Some(Vmm::OpenVmm), None)
+                    | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+                    (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
+                    _ => return Err(Error::new(config.span, "vmm mismatch")),
+                },
+                firmware: config.firmware,
+                arch: config.arch,
+                extra_deps: config.extra_deps,
+                unstable: config.unstable | unstable,
             });
         }
 
         Ok(ResolvedArgs {
-            configs,
+            configs: resolved_configs,
             with_vtl0_pipette,
         })
     }
@@ -648,7 +664,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
-/// All options can be prefixed with "unstable_" to denote that this this should
+/// All options can be prefixed with "unstable_" to denote that this should
 /// not block PRs if it fails.
 ///
 /// Valid configuration options are:
@@ -740,7 +756,7 @@ pub fn vmm_test_with(
 }
 
 /// Same options as `vmm_test`, but only for OpenVMM tests
-// TODO: remove this and replace occurances with `vmm_test_with`
+// TODO: remove this and replace occurrences with `vmm_test_with`
 #[proc_macro_attribute]
 pub fn openvmm_test(
     attr: proc_macro::TokenStream,
@@ -759,7 +775,7 @@ pub fn openvmm_test(
 }
 
 /// Same options as `vmm_test`, but only for OpenVMM tests and without using pipette in VTL0.
-// TODO: remove this and replace occurances with `vmm_test_with`
+// TODO: remove this and replace occurrences with `vmm_test_with`
 #[proc_macro_attribute]
 pub fn openvmm_test_no_agent(
     attr: proc_macro::TokenStream,
@@ -798,14 +814,10 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
     let mut tests = TokenStream::new();
     // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
-        let resolved_vmm = config
-            .vmm
-            .expect("The VMM backend should have already been resolved");
-
-        let name = format!("{}_{original_name}", config.name_prefix(resolved_vmm));
+        let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, &name, resolved_vmm);
+        let requirements = build_requirements(&config.firmware, &name, config.vmm);
         let requirements = if let Some(req) = requirements {
             quote! { Some(#req) }
         } else {
@@ -821,7 +833,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         };
         let arch = arch_to_tokens(config.arch);
 
-        let (cfg_conditions, artifacts, petri_vm_config) = match resolved_vmm {
+        let (cfg_conditions, artifacts, petri_vm_config) = match config.vmm {
             Vmm::HyperV => (
                 quote!(#[cfg(windows)]),
                 quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
