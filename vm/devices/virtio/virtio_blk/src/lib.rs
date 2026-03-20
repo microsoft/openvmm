@@ -23,10 +23,10 @@ use inspect_counters::Counter;
 use pal_async::wait::PolledWait;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::StopTask;
@@ -166,7 +166,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                     Completed(IoCompletion),
                 }
 
-                let event = std::future::poll_fn(|cx| {
+                let event = poll_fn(|cx| {
                     // Poll for completed IOs first to free up slots.
                     if let Poll::Ready(Some(completion)) = self.ios.poll_next_unpin(cx) {
                         return Poll::Ready(Event::Completed(completion));
@@ -324,7 +324,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         // The transport reads the device config space as a sequence of u32s.
         // We serialize VirtioBlkConfig to bytes and return the requested
         // 4-byte window. Three cases:
@@ -346,11 +346,11 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
         // Config space is read-only for virtio-blk.
     }
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -381,20 +381,20 @@ impl VirtioDevice for VirtioBlkDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         assert_eq!(idx, 0);
         if !self.worker.has_state() {
-            return Poll::Ready(None);
+            return None;
         }
         // Stop the worker task (cancels the run loop via until_stopped).
-        ready!(self.worker.poll_stop(cx));
+        self.worker.stop().await;
         // Drain in-flight IOs to completion. The FuturesUnordered lives in
         // BlkWorker and survives the stop — its pending disk IO futures are
         // polled here until all descriptors are completed in the used ring.
-        ready!(self.worker.task_mut().poll_drain(cx));
+        poll_fn(|cx| self.worker.task_mut().poll_drain(cx)).await;
         // Remove the queue state (drops VirtioQueue).
         let state = self.worker.remove().queue.queue_state();
-        Poll::Ready(Some(state))
+        Some(state)
     }
 
     fn supports_save_restore(&self) -> bool {

@@ -451,3 +451,114 @@ async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Boot Linux with guest memory backed by a file instead of anonymous RAM.
+///
+/// This validates that the file-backed memory plumbing through petri works
+/// end-to-end: the VM should boot normally, and the backing file should
+/// exist and be non-empty after boot.
+#[openvmm_test(linux_direct_x64)]
+async fn file_backed_memory_boot(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let mem_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let mem_path: std::path::PathBuf = mem_dir.path().join("memory.bin");
+
+    let (vm, agent) = config
+        .modify_backend({
+            let mem_path = mem_path.clone();
+            move |b| b.with_memory_backing_file(mem_path)
+        })
+        .run()
+        .await?;
+
+    // Verify the backing file was created and is non-empty.
+    let metadata = std::fs::metadata(&mem_path).expect("memory backing file should exist");
+    assert!(
+        metadata.len() > 0,
+        "memory backing file should be non-empty"
+    );
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Boot with file-backed memory, pause + save VM state, write the snapshot
+/// artifacts to disk, read them back to verify the roundtrip, then resume
+/// the VM and confirm it is still functional.
+///
+/// This exercises the full save-to-disk path with real VM state and validates
+/// that the serialized state bytes survive a disk roundtrip unchanged.
+#[openvmm_test(linux_direct_x64)]
+async fn snapshot_save_to_disk(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let work_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let mem_path: std::path::PathBuf = work_dir.path().join("memory.bin");
+    let snap_dir = work_dir.path().join("snapshot");
+
+    let (mut vm, agent) = config
+        .modify_backend({
+            let mem_path = mem_path.clone();
+            move |b| b.with_memory_backing_file(mem_path)
+        })
+        .run()
+        .await?;
+
+    // Verify the guest is functional before saving.
+    agent.ping().await?;
+
+    // Pause the VM.
+    vm.backend().pause().await?;
+
+    // Save device + processor state.
+    let saved_state_bytes = vm.backend().save_state().await?;
+    assert!(
+        !saved_state_bytes.is_empty(),
+        "saved state should be non-empty"
+    );
+
+    // Get the size of the memory backing file. The VM is paused so dirty
+    // pages have already been flushed by the hypervisor.
+    let mem_size = std::fs::metadata(&mem_path)?.len();
+    assert!(mem_size > 0, "memory file should be non-empty");
+
+    // Build manifest and write snapshot to disk.
+    //
+    // vp_count and page_size are hardcoded to match the petri test defaults.
+    // If those defaults change, update these values accordingly.
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
+        created_at: std::time::SystemTime::now().into(),
+        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_size_bytes: mem_size,
+        vp_count: 2,
+        page_size: 4096,
+        architecture: "x86_64".to_string(),
+    };
+    openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
+
+    // Verify all snapshot files exist and the saved state roundtrips.
+    assert!(snap_dir.join("manifest.bin").exists());
+    assert!(snap_dir.join("state.bin").exists());
+    assert!(snap_dir.join("memory.bin").exists());
+    let (read_manifest, read_state) = openvmm_helpers::snapshot::read_snapshot(&snap_dir)?;
+    assert_eq!(
+        read_state, saved_state_bytes,
+        "state roundtrip through disk should match"
+    );
+    assert_eq!(read_manifest.memory_size_bytes, mem_size);
+
+    // Resume the VM and verify it is still functional.
+    vm.backend().resume().await?;
+    agent.ping().await?;
+
+    // Clean shutdown.
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}

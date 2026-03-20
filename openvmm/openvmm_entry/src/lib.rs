@@ -1045,7 +1045,12 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
-    if let Some(path) = &opt.igvm {
+    if opt.restore_snapshot.is_some() {
+        // Snapshot restore: skip firmware loading entirely. Device state and
+        // memory come from the snapshot directory.
+        load_mode = LoadMode::None;
+        with_hv = true;
+    } else if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -2021,6 +2026,124 @@ fn disk_open_inner(
     Ok(())
 }
 
+/// Get the system page size.
+fn system_page_size() -> u32 {
+    sparse_mmap::SparseMapping::page_size() as u32
+}
+
+/// The guest architecture string, derived from the compile-time `guest_arch` cfg.
+const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
+    "x86_64"
+} else {
+    "aarch64"
+};
+
+/// Open a snapshot directory and validate it against the current VM config.
+/// Returns the shared memory fd (from memory.bin) and the saved device state.
+fn prepare_snapshot_restore(
+    snapshot_dir: &Path,
+    opt: &Options,
+) -> anyhow::Result<(
+    openvmm_defs::worker::SharedMemoryFd,
+    mesh::payload::message::ProtobufMessage,
+)> {
+    let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
+
+    // Validate manifest against current VM config.
+    openvmm_helpers::snapshot::validate_manifest(
+        &manifest,
+        GUEST_ARCH,
+        opt.memory,
+        opt.processors,
+        system_page_size(),
+    )?;
+
+    // Open memory.bin (existing file, no create, no resize).
+    let memory_file = fs_err::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(snapshot_dir.join("memory.bin"))?;
+
+    // Validate file size matches expected memory size.
+    let file_size = memory_file.metadata()?.len();
+    if file_size != manifest.memory_size_bytes {
+        anyhow::bail!(
+            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
+            manifest.memory_size_bytes,
+        );
+    }
+
+    let shared_memory_fd =
+        openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
+
+    // Reconstruct ProtobufMessage from the saved state bytes.
+    // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
+    // back to ProtobufMessage.
+    let state_msg: mesh::payload::message::ProtobufMessage = mesh::payload::decode(&state_bytes)
+        .context("failed to decode saved state from snapshot")?;
+
+    Ok((shared_memory_fd, state_msg))
+}
+
+/// Save a VM snapshot to the given directory.
+///
+/// Pauses the VM, saves device state, fsyncs the memory backing file,
+/// and writes the snapshot directory. The VM remains paused after this
+/// call — resuming would corrupt the snapshot.
+async fn save_snapshot(
+    vm_rpc: &mesh::Sender<VmRpc>,
+    opt: &Options,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let memory_file_path = opt
+        .memory_backing_file
+        .as_ref()
+        .context("save-snapshot requires --memory-backing-file")?;
+
+    // Pause the VM.
+    vm_rpc
+        .call(VmRpc::Pause, ())
+        .await
+        .context("failed to pause VM")?;
+
+    // Get device state via existing VmRpc::Save.
+    let saved_state_msg = vm_rpc
+        .call_failable(VmRpc::Save, ())
+        .await
+        .context("failed to save state")?;
+
+    // Serialize the ProtobufMessage to bytes for writing to disk.
+    let saved_state_bytes = mesh::payload::encode(saved_state_msg);
+
+    // Fsync the memory backing file.
+    let memory_file = fs_err::File::open(memory_file_path)?;
+    memory_file
+        .sync_all()
+        .context("failed to fsync memory backing file")?;
+
+    // Build manifest.
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
+        created_at: std::time::SystemTime::now().into(),
+        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_size_bytes: opt.memory,
+        vp_count: opt.processors,
+        page_size: system_page_size(),
+        architecture: GUEST_ARCH.to_string(),
+    };
+
+    // Write snapshot directory.
+    openvmm_helpers::snapshot::write_snapshot(
+        dir,
+        &manifest,
+        &saved_state_bytes,
+        memory_file_path,
+    )?;
+
+    // VM stays paused. Do NOT resume.
+    Ok(())
+}
+
 fn do_main() -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
@@ -2125,6 +2248,13 @@ enum InteractiveCommand {
     /// Resume the VM.
     #[clap(visible_alias = "r")]
     Resume,
+
+    /// Save a snapshot to a directory (requires --memory-backing-file).
+    #[clap(visible_alias = "snap")]
+    SaveSnapshot {
+        /// Directory to write the snapshot to.
+        dir: PathBuf,
+    },
 
     /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
     #[clap(visible_alias = "psr")]
@@ -2476,10 +2606,25 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
+        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
+            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+            (Some(fd), Some(state_msg))
+        } else {
+            let shared_memory = opt
+                .memory_backing_file
+                .as_ref()
+                .map(|path| {
+                    openvmm_helpers::shared_memory::open_memory_backing_file(path, opt.memory)
+                })
+                .transpose()?;
+            (shared_memory, None)
+        };
+
         let params = VmWorkerParameters {
             hypervisor: opt.hypervisor,
             cfg: vm_config,
-            saved_state: None,
+            saved_state,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -2488,6 +2633,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .await
             .context("failed to launch vm worker")?
     };
+
+    if opt.restore_snapshot.is_some() {
+        tracing::info!("restoring VM from snapshot");
+    }
 
     if !opt.paused {
         vm_rpc.call(VmRpc::Resume, ()).await?;
@@ -2651,6 +2800,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
     let mut pending_shutdown = None;
+    let mut snapshot_saved = false;
 
     enum StateChange {
         Pause(bool),
@@ -2946,13 +3096,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 );
             }
             InteractiveCommand::Resume => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Resume,
-                    StateChange::Resume,
-                );
+                if snapshot_saved {
+                    eprintln!(
+                        "error: cannot resume after snapshot save — resuming would corrupt the snapshot. Use 'shutdown' to exit."
+                    );
+                } else {
+                    state_change(
+                        driver,
+                        &vm_rpc,
+                        &mut state_change_task,
+                        VmRpc::Resume,
+                        StateChange::Resume,
+                    );
+                }
             }
             InteractiveCommand::Reset => {
                 state_change(
@@ -2962,6 +3118,22 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     VmRpc::Reset,
                     StateChange::Reset,
                 );
+            }
+            InteractiveCommand::SaveSnapshot { dir } => {
+                match save_snapshot(&vm_rpc, &opt, &dir).await {
+                    Ok(()) => {
+                        snapshot_saved = true;
+                        tracing::info!(
+                            dir = %dir.display(),
+                            "snapshot saved; VM is paused. \
+                             Resume is blocked to prevent snapshot corruption. \
+                             Use 'shutdown' to exit."
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("error: save-snapshot failed: {err:#}");
+                    }
+                }
             }
             InteractiveCommand::PulseSaveRestore => {
                 state_change(

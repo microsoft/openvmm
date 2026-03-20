@@ -12,8 +12,6 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
 use std::fs;
-use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -86,13 +84,13 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         // The PmemConfig type is not used--instead, the memory region is
         // reported via the shared memory capability.
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
     fn set_shared_memory_region(
         &mut self,
@@ -105,7 +103,7 @@ impl VirtioDevice for Device {
         Ok(())
     }
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -135,18 +133,14 @@ impl VirtioDevice for Device {
         Ok(())
     }
 
-    fn poll_stop_queue(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-        idx: u16,
-    ) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         assert_eq!(idx, 0);
         if !self.worker.has_state() {
-            return Poll::Ready(None);
+            return None;
         }
-        ready!(self.worker.poll_stop(cx));
+        self.worker.stop().await;
         let state = self.worker.remove().queue.queue_state();
-        Poll::Ready(Some(state))
+        Some(state)
     }
 
     fn supports_save_restore(&self) -> bool {

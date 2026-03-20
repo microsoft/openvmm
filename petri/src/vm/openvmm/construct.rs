@@ -551,6 +551,8 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_log_file: log_source.log_file("openvmm")?,
 
+            memory_backing_file: None,
+
             ged,
             framebuffer_view,
         })

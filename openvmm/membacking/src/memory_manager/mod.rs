@@ -408,6 +408,13 @@ pub struct SharedMemoryBacking {
     guest_ram: Mappable,
 }
 
+impl SharedMemoryBacking {
+    /// Create a SharedMemoryBacking from a mappable handle/fd.
+    pub fn from_mappable(guest_ram: Mappable) -> Self {
+        Self { guest_ram }
+    }
+}
+
 /// A mesh-serializable object for providing access to guest memory.
 #[derive(Debug, MeshPayload)]
 pub struct GuestMemoryClient {

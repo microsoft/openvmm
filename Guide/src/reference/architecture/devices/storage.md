@@ -81,7 +81,16 @@ but they all produce `DiskIo` calls on the backend side.
 
 **NVMe** is the simplest path. The NVMe controller's namespace directly holds a `Disk`. NVM opcodes (READ, WRITE, FLUSH, DSM) map nearly 1:1 to `DiskIo` methods. The FUA bit from the NVMe write command is forwarded directly.
 
-**StorVSP / SCSI** has a two-layer design. StorVSP handles the VMBus transport — negotiation, ring buffer management, sub-channel allocation. It dispatches each SCSI request to an [`AsyncScsiDisk`](https://openvmm.dev/rustdoc/linux/scsi_core/trait.AsyncScsiDisk.html) implementation. For hard drives, that's [`SimpleScsiDisk`](https://openvmm.dev/rustdoc/linux/scsidisk/struct.SimpleScsiDisk.html), which parses the SCSI CDB and translates it to `DiskIo` calls. For optical drives, it's [`SimpleScsiDvd`](https://openvmm.dev/rustdoc/linux/scsidisk/scsidvd/struct.SimpleScsiDvd.html).
+**StorVSP / SCSI** has a two-layer design. StorVSP handles the VMBus
+transport — negotiation, ring buffer management,
+[sub-channel allocation](../../devices/vmbus/storvsp_channels.md). It
+dispatches each SCSI request to an
+[`AsyncScsiDisk`](https://openvmm.dev/rustdoc/linux/scsi_core/trait.AsyncScsiDisk.html)
+implementation. For hard drives, that's
+[`SimpleScsiDisk`](https://openvmm.dev/rustdoc/linux/scsidisk/struct.SimpleScsiDisk.html),
+which parses the SCSI CDB and translates it to `DiskIo` calls. For
+optical drives, it's
+[`SimpleScsiDvd`](https://openvmm.dev/rustdoc/linux/scsidisk/scsidvd/struct.SimpleScsiDvd.html).
 
 **IDE** is the legacy path. ATA commands for hard drives call `DiskIo` directly. ATAPI commands for optical drives delegate to `SimpleScsiDvd` through an ATAPI-to-SCSI translation layer — the same DVD implementation that StorVSP uses. IDE also supports [enlightened INT13 commands](../../emulated/legacy_x86/ide.md#enlightened-io), a Microsoft-specific optimization that collapses the multi-exit register-programming sequence into a single VM exit.
 

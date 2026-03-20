@@ -49,9 +49,6 @@ use spec::VirtioConsoleConfig;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
-use std::task::Context;
-use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -105,15 +102,15 @@ impl VirtioDevice for VirtioConsoleDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         self.config.read_u32(offset)
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
         // Console config is read-only from the guest perspective.
     }
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -166,14 +163,14 @@ impl VirtioDevice for VirtioConsoleDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         if !self.worker.has_state() {
-            return Poll::Ready(None);
+            return None;
         }
 
         // Stop the worker (shared by both queues). Once stopped, we can
         // reach into the state to take the requested queue.
-        ready!(self.worker.poll_stop(cx));
+        self.worker.stop().await;
 
         let state = self.worker.state_mut().unwrap();
         let queue = match idx {
@@ -190,10 +187,10 @@ impl VirtioDevice for VirtioConsoleDevice {
             self.worker.start();
         }
 
-        Poll::Ready(queue.map(|q| q.queue_state()))
+        queue.map(|q| q.queue_state())
     }
 
-    fn reset(&mut self) {}
+    async fn reset(&mut self) {}
 }
 
 #[derive(InspectMut)]

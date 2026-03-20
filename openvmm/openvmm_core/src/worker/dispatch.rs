@@ -309,11 +309,15 @@ impl Worker for VmWorker {
             choose_hypervisor()?
         };
 
+        let shared_memory = parameters
+            .shared_memory
+            .map(|fd| SharedMemoryBacking::from_mappable(fd.into()));
+
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
             hypervisor,
             manifest,
-            None,
+            shared_memory,
         ))?;
         let saved_state = parameters
             .saved_state
@@ -2157,6 +2161,7 @@ impl InitializedVm {
                     chipset_builder.arc_mutex_device(id).add(|services| {
                         VirtioMmioDevice::new(
                             device.0,
+                            &driver_source.simple(),
                             services.new_line(IRQ_LINE_SET, "interrupt", virtio_mmio_irq),
                             partition.clone().into_doorbell_registration(Vtl::Vtl0),
                             mmio_start,
@@ -2185,6 +2190,7 @@ impl InitializedVm {
                         .try_add(|services| {
                             VirtioPciDevice::new(
                                 device.0,
+                                &driver_source.simple(),
                                 PciInterruptModel::IntX(
                                     PciInterruptPin::IntA,
                                     services.new_line(IRQ_LINE_SET, "interrupt", pci_inta_line),

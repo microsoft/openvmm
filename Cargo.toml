@@ -32,6 +32,7 @@ members = [
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
+  "vm/devices/pci/pcie/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",

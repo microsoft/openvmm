@@ -12,9 +12,6 @@ use pal_async::wait::PolledWait;
 use std::io;
 use std::io::Write;
 use std::sync::Arc;
-use std::task::Context;
-use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::StopTask;
@@ -118,7 +115,7 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         let offset = offset as usize;
         let config = self.config.as_bytes();
         if offset < config.len() {
@@ -132,7 +129,7 @@ impl VirtioDevice for VirtioFsDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, offset: u16, val: u32) {
+    async fn write_registers_u32(&mut self, offset: u16, val: u32) {
         tracing::warn!(offset, val, "[virtiofs] Unknown write",);
     }
 
@@ -144,7 +141,7 @@ impl VirtioDevice for VirtioFsDevice {
         Ok(())
     }
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -194,17 +191,17 @@ impl VirtioDevice for VirtioFsDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         let idx = idx as usize;
         if idx >= self.workers.len() || !self.workers[idx].has_state() {
-            return Poll::Ready(None);
+            return None;
         }
-        ready!(self.workers[idx].poll_stop(cx));
+        self.workers[idx].stop().await;
         let state = self.workers[idx].remove().queue.queue_state();
-        Poll::Ready(Some(state))
+        Some(state)
     }
 
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         self.workers.clear();
         if let Some(region) = &self.shared_memory_region {
             if let Err(e) = region.unmap(0, self.shmem_size as usize) {
