@@ -57,7 +57,7 @@ pub(crate) enum Error {
     Vmgs(#[from] VmgsError),
     #[error("VMGS file already exists")]
     FileExists,
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[error("Adding encryption key")]
     EncryptionKey(#[source] VmgsError),
     #[error("Data file / STDOUT IO")]
@@ -605,15 +605,15 @@ async fn vmgs_file_update_key(
     vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key.as_ref()).await
 }
 
-#[cfg_attr(not(with_encryption), expect(unused_variables))]
+#[cfg_attr(not(feature = "encryption"), expect(unused_variables))]
 async fn vmgs_update_key(
     vmgs: &mut Vmgs,
     encryption_alg: EncryptionAlgorithm,
     new_encryption_key: &[u8],
 ) -> Result<(), Error> {
-    #[cfg(not(with_encryption))]
+    #[cfg(not(feature = "encryption"))]
     unreachable!("encryption requires the encryption feature");
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     {
         tracing::info!("Updating encryption key");
         vmgs.update_encryption_key(new_encryption_key, encryption_alg)
@@ -747,7 +747,11 @@ fn vhdfiledisk_create(
     Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
-#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
+#[cfg_attr(
+    not(feature = "encryption"),
+    expect(unused_mut),
+    expect(unused_variables)
+)]
 async fn vmgs_create(
     disk: Disk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
@@ -757,11 +761,11 @@ async fn vmgs_create(
 
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
         tracing::info!("Adding encryption key");
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         vmgs.update_encryption_key(encryption_key, algorithm)
             .await
             .map_err(Error::EncryptionKey)?;
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
     }
 
@@ -814,9 +818,9 @@ async fn vmgs_write(
     }
 
     if encrypt {
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         vmgs.write_file_encrypted(file_id, data).await?;
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
     } else {
         vmgs.write_file_allow_overwrite_encrypted(file_id, data)
@@ -1207,7 +1211,11 @@ async fn vmgs_file_open(
     res
 }
 
-#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
+#[cfg_attr(
+    not(feature = "encryption"),
+    expect(unused_mut),
+    expect(unused_variables)
+)]
 async fn vmgs_open(
     disk: Disk,
     encryption_key: Option<&[u8]>,
@@ -1216,9 +1224,9 @@ async fn vmgs_open(
     let mut vmgs: Vmgs = Vmgs::open(disk, None).await?;
 
     if let Some(encryption_key) = encryption_key {
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         vmgs.unlock_with_encryption_key(encryption_key).await?;
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
     } else if vmgs.encrypted() {
         match open_mode {
@@ -1380,7 +1388,7 @@ mod tests {
         vmgs_query_file_size(&vmgs, file_id)
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     async fn test_vmgs_query_encryption(
         file_path: impl AsRef<Path>,
     ) -> Result<EncryptionAlgorithm, Error> {
@@ -1390,7 +1398,7 @@ mod tests {
         Ok(vmgs.get_encryption_algorithm())
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     async fn test_vmgs_update_key(
         file_path: impl AsRef<Path>,
         encryption_alg: EncryptionAlgorithm,
@@ -1494,7 +1502,7 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn read_write_encrypted_file() {
         let (_dir, path) = new_path();
@@ -1534,7 +1542,7 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn encrypted_read_write_plain_file() {
         // You shouldn't be able to use encryption if you create the VMGS
@@ -1549,7 +1557,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn plain_read_write_encrypted_file() {
         let (_dir, path) = new_path();
@@ -1602,7 +1610,7 @@ mod tests {
         assert_eq!(file_size, buf.len() as u64);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn query_encrypted_file() {
         let (_dir, path) = new_path();
@@ -1717,7 +1725,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_update_encryption_key() {
         let (_dir, path) = new_path();
@@ -1769,7 +1777,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_add_encryption_key() {
         let (_dir, path) = new_path();
@@ -1797,7 +1805,7 @@ mod tests {
         assert!(read_buf == buf_1);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_query_encryption_update() {
         let (_dir, path) = new_path();
@@ -1816,7 +1824,7 @@ mod tests {
         assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_query_encryption_new() {
         let (_dir, path) = new_path();
@@ -1877,7 +1885,7 @@ mod tests {
             .unwrap_err();
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn move_delete_file_encrypted() {
         let (_dir, path) = new_path();
