@@ -53,3 +53,4 @@ node_modules/
 # Build output directories for logview_new
 **/logview_new/dist*
 
+!MSVM-epci-debug-x64.fd

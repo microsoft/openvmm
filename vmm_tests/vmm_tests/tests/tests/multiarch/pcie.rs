@@ -495,7 +495,9 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
                 } = c.load_mode
                 {
                     *default_boot_always_attempt = true;
-                    *enable_vpci_boot = true;
+                    // Disable VPCI boot to avoid VPCI PCI_IO handles
+                    // interfering with ePCI enumeration.
+                    *enable_vpci_boot = false;
                 }
                 let low_mmio_start = c.memory.mmio_gaps[0].start();
                 let high_mmio_end = c.memory.mmio_gaps[1].end();
