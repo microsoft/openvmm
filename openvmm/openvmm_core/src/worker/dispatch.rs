@@ -112,6 +112,7 @@ use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::aarch64::GicInfo;
+use vm_topology::processor::aarch64::GicV2mInfo;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
@@ -491,11 +492,21 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             GicInfo {
                 gic_distributor_base: gic_config.gic_distributor_base,
                 gic_redistributors_base: gic_config.gic_redistributors_base,
+                gic_v2m: Some(GicV2mInfo {
+                    frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+                    spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
+                    spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
+                }),
             }
         } else {
             GicInfo {
                 gic_distributor_base: openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
                 gic_redistributors_base: openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
+                gic_v2m: Some(GicV2mInfo {
+                    frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+                    spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
+                    spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
+                }),
             }
         };
         let pmu_gsiv = match arch.pmu_gsiv {
@@ -2425,6 +2436,7 @@ impl LoadedVmInner {
                     &self.gm,
                     enable_serial,
                     &self.processor_topology,
+                    &self.pcie_host_bridges,
                 )?;
 
                 (regs, Vec::new())
