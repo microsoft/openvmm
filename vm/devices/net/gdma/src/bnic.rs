@@ -490,14 +490,16 @@ impl TxRxTask {
 
         loop {
             let event = poll_fn(|cx| {
-                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
-                    return Poll::Ready(Event::Sqe(wqe));
-                }
+                // Fill rx before transmitting to avoid rx buffer starvation
+                // (particularly in tests, but seems reasonable in general).
                 if self.rx_buf_count < max_rx_buf {
                     if let Poll::Ready((wqe_offset, wqe)) = self.queues.poll_rq(self.rq_id, cx) {
                         self.rx_buf_count += 1;
                         return Poll::Ready(Event::Rqe(wqe_offset, wqe));
                     }
+                }
+                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
+                    return Poll::Ready(Event::Sqe(wqe));
                 }
                 if self.epqueue.poll_ready(cx, &mut self.pool).is_ready() {
                     return Poll::Ready(Event::Ready);
