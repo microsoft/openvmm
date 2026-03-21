@@ -1,4 +1,4 @@
-# ePCI NVMe UEFI Boot Investigation
+# PCIe NVMe UEFI Boot Investigation
 
 ## Status: RESOLVED — PCIe NVMe boot works with ECAM reservation fix
 
@@ -34,7 +34,7 @@ openvmm side and firmware diagnostics buffer captures.
 - Command register enabled (0x27), then disabled to 0x10.
 
 ### PCI_IO protocol installation
-- After the first ConnectAll, 2 ePCI PCI_IO handles exist:
+- After the first ConnectAll, 2 PCIe PCI_IO handles exist:
   - `[0]` Seg=0 Bus=0 Dev=0 Func=0  `PcieRoot(0x0)/Pci(0x0,0x0)` (root port)
   - `[1]` Seg=0 Bus=1 Dev=0 Func=0  `PcieRoot(0x0)/Pci(0x0,0x0)/Pci(0x0,0x0)` (NVMe)
 - Confirmed via `LocateHandleBuffer(ByProtocol, gEfiPciIoProtocolGuid)`
@@ -123,7 +123,7 @@ range after initial boot.
   space at offset 0x100` only affects optional capabilities (ARI, SR-IOV).
   `RegisterPciDevice()` installs PCI_IO unconditionally.
 
-- **PCI_IO not installed.**  PCI_IO IS installed (2 ePCI handles confirmed
+- **PCI_IO not installed.**  PCI_IO IS installed (2 PCIe handles confirmed
   after ConnectAll: root port + NVMe, with correct device paths and BDF).
 
 - **DevicePath Access Denied on NVMe handle.**  Earlier analysis found

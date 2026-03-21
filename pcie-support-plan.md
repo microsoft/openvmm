@@ -1,9 +1,9 @@
-# Plan: ePCI (Emulated PCI) Support in mu_msvm
+# Plan: PCIe (Emulated PCI) Support in mu_msvm
 
 ## Executive Summary
 
 Today mu_msvm discovers PCI devices exclusively through **VPCI** (Virtual PCI over VMBus).
-OpenVMM already has full ePCI support — Gen2 VMs expose PCIe devices via ECAM
+OpenVMM already has full PCIe support — Gen2 VMs expose PCIe devices via ECAM
 (memory-mapped config space) with ACPI MCFG + SSDT tables.  The mu_msvm UEFI firmware
 needs to be taught how to consume standard PCI config space (ECAM) in addition to the
 existing VPCI path.  The good news: MU_BASECORE ships production-ready `PciHostBridgeDxe`
@@ -40,7 +40,7 @@ For Gen2 VMs, openvmm generates:
 | **PciBusDxe** | **Not included** in DSC/FDF | Available in MU_BASECORE |
 | **PciHostBridgeLib** | **No platform implementation** | Null stub exists in MU_BASECORE |
 | **PciLib** | `BasePciLibCf8` (legacy port I/O only) | Need ECAM-aware library |
-| **NvmExpressDxe** | Binds to `EFI_PCI_IO_PROTOCOL` | Works with any provider — VPCI or ePCI |
+| **NvmExpressDxe** | Binds to `EFI_PCI_IO_PROTOCOL` | Works with any provider — VPCI or PCIe |
 
 ---
 
@@ -80,7 +80,7 @@ The implementation must:
    - `Mem` aperture from `PcieBarApertures` entry `LowMmio` (per-bridge low MMIO)
    - `MemAbove4G` aperture from `PcieBarApertures` entry `HighMmio` (per-bridge high MMIO)
    - `PMem`/`PMemAbove4G` = empty (`{MAX_UINT64, 0}`) — no prefetchable distinction needed
-   - `Io` = empty (`{MAX_UINT64, 0}`) — Gen2 VMs have no legacy I/O port space for ePCI
+   - `Io` = empty (`{MAX_UINT64, 0}`) — Gen2 VMs have no legacy I/O port space for PCIe
    - All `Translation` fields = 0 (identity mapping)
    - `AllocationAttributes` = `EFI_PCI_HOST_BRIDGE_COMBINE_MEM_PMEM` | `EFI_PCI_HOST_BRIDGE_MEM64_DECODE`
    - `DevicePath` = ACPI device path with HID `EISA_PNP_ID(0x0A08)`, UID = segment
@@ -590,7 +590,7 @@ GetPciSegmentInfo (
 # On X64, keep BasePciLibCf8 — it uses legacy I/O ports 0xCF8/0xCFC.
 # On AARCH64, use BasePciExpressLib or a null stub instead — CF8/CFC I/O ports
 # don't exist on ARM64 and BasePciLibCf8 would access non-existent I/O space.
-# Audit all PciLib callers in mu_msvm to verify none are in the ePCI path.
+# Audit all PciLib callers in mu_msvm to verify none are in the PCIe path.
   PciLib|MdePkg/Library/BasePciLibCf8/BasePciLibCf8.inf    # X64 only
 ```
 
@@ -608,7 +608,7 @@ GetPciSegmentInfo (
 ### Phase 4: Memory Map Coordination
 
 PlatformPei already registers MMIO gaps as `EfiMemoryMappedIO` via `HobAddMmioRange()`.
-For ePCI we need to ensure:
+For PCIe we need to ensure:
 
 1. **ECAM range is mapped as UC (uncacheable) MMIO** in the GCD.
    - PlatformPei should add the ECAM range from MCFG as an MMIO HOB.
@@ -660,18 +660,18 @@ For ePCI we need to ensure:
    is fine because `PciHostBridgeDxe` registers the BAR apertures in the GCD at DXE
    time — they don't need to be in the PEI memory map.
 
-### Phase 5: VPCI + ePCI Coexistence
+### Phase 5: VPCI + PCIe Coexistence
 
 Both paths must coexist.  A VM may have some devices on VPCI (e.g., passed-through
-devices) and others on ePCI (e.g., emulated NVMe).  This works naturally because:
+devices) and others on PCIe (e.g., emulated NVMe).  This works naturally because:
 
 - `VpcivscDxe` binds to VMBus channels → produces `EFI_PCI_IO_PROTOCOL` for VPCI devices
-- `PciBusDxe` scans ECAM config space → produces `EFI_PCI_IO_PROTOCOL` for ePCI devices
+- `PciBusDxe` scans ECAM config space → produces `EFI_PCI_IO_PROTOCOL` for PCIe devices
 - Consumer drivers (`NvmExpressDxe`, etc.) bind to `EFI_PCI_IO_PROTOCOL` regardless of source
 - No changes needed to VpcivscDxe or consumer drivers
 
 **Potential conflict:** Both paths could expose the same device.  The VMM should ensure
-a device is offered through exactly one path (VPCI or ePCI), never both.
+a device is offered through exactly one path (VPCI or PCIe), never both.
 
 ---
 
@@ -691,7 +691,7 @@ a device is offered through exactly one path (VPCI or ePCI), never both.
 | 8 | **Add `PcieBarApertures` structs to BiosInterface.h** | Modify: `MsvmPkg/Include/BiosInterface.h` | Low |
 | 9 | **Add `PcieBarApertures` PCDs to MsvmPkg.dec** | Modify: `MsvmPkg/MsvmPkg.dec` | Low |
 | 10 | **Parse `PcieBarApertures` in PlatformPei** | Modify: `MsvmPkg/PlatformPei/Config.c` | Low |
-| 11 | **VMM test: ePCI NVMe boot** | See Phase 6 | Medium |
+| 11 | **VMM test: PCIe NVMe boot** | See Phase 6 | Medium |
 
 ### openvmm Changes (Config Blob Extension Required)
 
@@ -710,7 +710,7 @@ build the SSDT `_CRS` descriptors.
 
 ---
 
-## Boot Flow with ePCI
+## Boot Flow with PCIe
 
 ```
 PEI Phase:
@@ -737,7 +737,7 @@ DXE Phase:
 
   NvmExpressDxe (and other consumer drivers)
     → Binds to EFI_PCI_IO_PROTOCOL handles (from PciBusDxe OR VpcivscDxe)
-    → Works identically regardless of ePCI or VPCI source
+    → Works identically regardless of PCIe or VPCI source
 
   VpcivscDxe (unchanged)
     → Continues to discover VPCI devices over VMBus
@@ -748,7 +748,7 @@ DXE Phase:
 
 ## Risks and Considerations
 
-1. **MSI/MSI-X Interrupt Routing**: In ePCI, MSI address/data are programmed directly
+1. **MSI/MSI-X Interrupt Routing**: In PCIe, MSI address/data are programmed directly
    into the device config space by PciBusDxe.  OpenVMM's PCIe root complex already
    handles this.  However, UEFI drivers typically run in polling mode during boot, so
    MSI setup is primarily needed for OS handoff.  Verify that `PciBusDxe` correctly
@@ -773,7 +773,7 @@ DXE Phase:
 
 6. **No I/O Port Space**: Gen2 VMs may not have legacy I/O port space.  `PciBusDxe`
    should handle this gracefully if `Io` aperture is empty.  The `BasePciLibCf8` library
-   should NOT be used for ePCI config access — ensure it's only used by legacy code paths.
+   should NOT be used for PCIe config access — ensure it's only used by legacy code paths.
 
 ---
 
@@ -819,7 +819,7 @@ What's **new and untested** is mu_msvm's firmware-level PCI enumeration: the
 PciHostBridgeDxe → PciBusDxe → NvmExpressDxe chain running inside UEFI.
 
 The right approach is a single, high-value integration test: **boot an OS entirely
-from an ePCI NVMe device**.  If the OS boots, it proves the full chain:
+from an PCIe NVMe device**.  If the OS boots, it proves the full chain:
 `PciHostBridgeDxe` → `PciBusDxe` → `NvmExpressDxe` → UEFI boot manager → OS boot.
 This validates every layer of the mu_msvm changes in one shot.
 
@@ -829,10 +829,10 @@ This validates every layer of the mu_msvm changes in one shot.
 > `EFI_PCI_ROOT_BRIDGE_IO_PROTOCOL` handles would be a good addition for
 > faster iteration during development.
 
-### ePCI NVMe boot test
+### PCIe NVMe boot test
 
 This test validates the full chain: `PciHostBridgeDxe` → `PciBusDxe` → `NvmExpressDxe`
-→ UEFI boot manager → OS boot.  If the OS boots from an ePCI NVMe device, every
+→ UEFI boot manager → OS boot.  If the OS boots from an PCIe NVMe device, every
 layer of the mu_msvm PCI enumeration code is proven correct.
 
 This requires routing the boot disk through `PcieDeviceConfig` instead of
@@ -849,7 +849,7 @@ This requires routing the boot disk through `PcieDeviceConfig` instead of
 
 ```rust
 /// Boot an OS entirely from an NVMe device on an emulated PCIe root port.
-/// No VPCI boot device — mu_msvm must enumerate the ePCI NVMe via ECAM,
+/// No VPCI boot device — mu_msvm must enumerate the PCIe NVMe via ECAM,
 /// bind NvmExpressDxe, and boot from it.
 #[openvmm_test(
     uefi_x64(vhd(ubuntu_2404_server_x64)),
@@ -903,8 +903,8 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
     // If we get here, mu_msvm successfully:
     //   1. Enumerated the PCIe root complex via ECAM
     //   2. PciBusDxe found the NVMe device
-    //   3. NvmExpressDxe bound to the ePCI NVMe
-    //   4. UEFI boot manager booted the OS from ePCI NVMe
+    //   3. NvmExpressDxe bound to the PCIe NVMe
+    //   4. UEFI boot manager booted the OS from PCIe NVMe
     //   5. Pipette agent started in guest
 
     // Verify the NVMe device is visible from guest
@@ -959,15 +959,15 @@ BootDeviceType::PcieNvme => {
 ### Running the tests
 
 ```bash
-# Run the ePCI NVMe boot test
+# Run the PCIe NVMe boot test
 cargo xflowey vmm-tests-run \
     --filter "test(pcie_nvme_boot)" \
-    --dir /tmp/vmm-tests-epci
+    --dir /tmp/vmm-tests-pcie
 
 # Run all PCIe tests
 cargo xflowey vmm-tests-run \
     --filter "test(pcie)" \
-    --dir /tmp/vmm-tests-epci
+    --dir /tmp/vmm-tests-pcie
 ```
 
 ### Test progression
@@ -976,13 +976,13 @@ cargo xflowey vmm-tests-run \
 |-------|------|---------------|----------|
 | 1 | **`pcie_nvme_boot`** | Full boot chain: ECAM → PciBusDxe → NvmExpressDxe → OS boot | `BootDeviceType::PcieNvme` in petri |
 | 2 | **`pcie_multi_segment`** (future) | Multiple root complexes with different segments | No new infra |
-| 3 | **`pcie_nvme_windows_boot`** (future) | Windows boot from ePCI NVMe | Windows VHD artifact |
+| 3 | **`pcie_nvme_windows_boot`** (future) | Windows boot from PCIe NVMe | Windows VHD artifact |
 
 ---
 
 ## Testing Strategy (Summary)
 
-1. **ePCI NVMe boot** (`pcie_nvme_boot`): Boot an OS from an NVMe device on a PCIe
+1. **PCIe NVMe boot** (`pcie_nvme_boot`): Boot an OS from an NVMe device on a PCIe
    root port.  Validates the full chain: `PciHostBridgeDxe` → `PciBusDxe` →
    `NvmExpressDxe` → OS boot.  Requires adding `BootDeviceType::PcieNvme`
    to petri (small change — the `StorageBuilder` already has the PCIe NVMe routing).
@@ -990,7 +990,7 @@ cargo xflowey vmm-tests-run \
 
 2. **Multi-segment** (future): Multiple root complexes, different segments.
 
-3. **Windows boot** (future): Windows from ePCI NVMe — validates full driver stack.
+3. **Windows boot** (future): Windows from PCIe NVMe — validates full driver stack.
 
 > **Future:** A `guest_test_uefi` PCI root bridge check would be valuable for fast
 > iteration during development, once `guest_test_uefi` supports runtime test selection.
@@ -1005,7 +1005,7 @@ other components — the generic PCI bus drivers, the VMM-side ECAM emulation, t
 tables, and the consumer drivers — already exist and work.  This is a well-scoped,
 medium-complexity change with high confidence of success.
 
-Validation uses a single high-value integration test: an ePCI NVMe boot test that
+Validation uses a single high-value integration test: an PCIe NVMe boot test that
 proves the full firmware → OS boot chain (`PciHostBridgeDxe` → `PciBusDxe` →
 `NvmExpressDxe` → OS boot).  The VMM-side ECAM emulation is already proven by the
 existing `pcie_root_emulation` test.

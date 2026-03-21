@@ -2356,7 +2356,7 @@ pub enum BootDeviceType {
     NvmeViaScsi,
     /// Boot from NVMe via NVMe to VTL2.
     NvmeViaNvme,
-    /// Boot from NVMe attached to a PCIe root port (ePCI).
+    /// Boot from NVMe attached to a PCIe root port.
     PcieNvme,
 }
 
