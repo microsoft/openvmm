@@ -595,7 +595,7 @@ pub struct ManaQueue<T: DeviceBacking> {
 
     force_tx_header_bounce: bool,
 
-    /// Scratch buffer for guest_addresses calls, reused across push_rqe invocations.
+    /// Scratch buffer for push_guest_addresses calls, reused across push_rqe invocations.
     rx_buffer_segments: Vec<RxBufferSegment>,
 
     stats: QueueStats,
@@ -703,7 +703,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     bounced_len_with_padding: pool_tx.commit(),
                 }
             } else {
-                pool.guest_addresses(id, &mut self.rx_buffer_segments);
+                self.rx_buffer_segments.clear();
+                pool.push_guest_addresses(id, &mut self.rx_buffer_segments);
                 let gm = pool.guest_memory();
                 let sgl = self.rx_buffer_segments.iter().map(|seg| Sge {
                     address: gm.iova(seg.gpa).unwrap(),

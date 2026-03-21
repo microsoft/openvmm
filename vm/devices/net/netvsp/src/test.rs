@@ -397,7 +397,8 @@ impl NetQueue for TestNicQueue {
             let rx_id = self.rx_ids.pop_front().unwrap();
             tracing::info!(rx_id = rx_id.0, ?packet, "returning packet on receive path");
             let mut packet = &packet[..];
-            pool.guest_addresses(rx_id, &mut self.scratch_segments);
+            self.scratch_segments.clear();
+            pool.push_guest_addresses(rx_id, &mut self.scratch_segments);
             let guest_memory = pool.guest_memory();
             for seg in &self.scratch_segments {
                 // N.B. The packet data is written after the implicit header,

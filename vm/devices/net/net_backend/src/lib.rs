@@ -260,8 +260,11 @@ pub trait BufferAccess {
     /// Writes data to the specified buffer.
     fn write_data(&mut self, id: RxId, data: &[u8]);
 
-    /// The guest addresses of the specified buffer.
-    fn guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>);
+    /// Appends the guest address segments for the specified buffer to `buf`.
+    ///
+    /// Callers must clear `buf` before calling if they do not want segments
+    /// from a previous call to be retained.
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>);
 
     /// The capacity of the specified buffer in bytes.
     fn capacity(&self, id: RxId) -> u32;

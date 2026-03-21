@@ -104,8 +104,8 @@ impl BufferAccess for GuestBuffers {
         }
     }
 
-    fn guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
-        buf.clone_from(&self.rx_packets.lock()[id.0 as usize].segments);
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
+        buf.extend_from_slice(&self.rx_packets.lock()[id.0 as usize].segments);
     }
 
     fn capacity(&self, id: RxId) -> u32 {

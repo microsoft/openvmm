@@ -101,7 +101,6 @@ pub const fn sub_allocation_size_for_mtu(mtu: u32) -> u32 {
 
 /// Computes the buffer segments for accessing a range of the receive buffer.
 fn compute_buffer_segments(v: &mut Vec<RxBufferSegment>, gpns: &[u64], mut range: Range<u32>) {
-    v.clear();
     while !range.is_empty() {
         let start_page = range.start / PAGE_SIZE32;
         let start_offset = range.start % PAGE_SIZE32;
@@ -128,7 +127,7 @@ impl BufferAccess for BufferPool {
         &self.buffers.mem
     }
 
-    fn guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let offset = self.offset(id);
         compute_buffer_segments(
             buf,

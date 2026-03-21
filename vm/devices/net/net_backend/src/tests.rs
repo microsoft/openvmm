@@ -55,9 +55,8 @@ impl BufferAccess for Bufs {
         &self.inner.guest_memory
     }
 
-    fn guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let gpa = id.0 as u64 * 2048;
-        buf.clear();
         buf.push(RxBufferSegment { gpa, len: 2048 });
     }
 

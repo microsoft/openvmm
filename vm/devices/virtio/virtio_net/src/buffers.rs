@@ -107,10 +107,9 @@ impl BufferAccess for VirtioWorkPool {
         locked_packet.len = (header_size() + data.len()) as u32;
     }
 
-    fn guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let locked_packet = self.rx_packets[id.0 as usize].lock();
         let work = locked_packet.work.as_ref().expect("invalid buffer index");
-        buf.clear();
         buf.extend(
             work.payload
                 .iter()

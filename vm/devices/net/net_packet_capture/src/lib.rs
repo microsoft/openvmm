@@ -481,7 +481,8 @@ impl Queue for PacketCaptureQueue {
                 let mut buf = vec![0; snaplen];
                 let mut len = 0;
                 let mut pkt_len = 0;
-                pool.guest_addresses(*id, &mut self.scratch_segments);
+                self.scratch_segments.clear();
+                pool.push_guest_addresses(*id, &mut self.scratch_segments);
                 for segment in &self.scratch_segments {
                     pkt_len += segment.len;
                     if len == buf.len() {

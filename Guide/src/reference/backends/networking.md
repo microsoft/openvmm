@@ -88,7 +88,7 @@ netvsp, `GuestBuffers` for gdma). The frontend owns this and passes
 ```rust
 trait BufferAccess {
     fn guest_memory(&self) -> &GuestMemory;
-    fn guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>);
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>);
     fn capacity(&self, id: RxId) -> u32;
     fn write_data(&mut self, id: RxId, data: &[u8]);
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata);
@@ -152,7 +152,7 @@ call. This is possible because:
 - `Queue` methods are called from a single async task per queue.
 - The backend never stores a reference to `BufferAccess` — it uses
   the reference only for the duration of the method call.
-- `guest_addresses` takes `&self` (not `&mut self`) and writes into
+- `push_guest_addresses` takes `&self` (not `&mut self`) and appends to
   a caller-provided `Vec`, so it can be called alongside
   `guest_memory()` without borrow conflicts.
 
