@@ -316,14 +316,26 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
     // Each entry: (artifact ID, resolved path, bundle-relative destination).
     // Bundle destinations come from resolve_bundle_name, which returns the
     // same file_name that get_path uses — so VMM_TESTS_CONTENT_DIR finds them.
-    let artifact_ids = [
-        petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
-        petri_artifacts_common::artifacts::PIPETTE_LINUX_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64.erase(),
-        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64.erase(),
-    ];
+    use petri_artifacts_common::tags::MachineArch;
+    let arch = MachineArch::host();
+    let artifact_ids = match arch {
+        MachineArch::X86_64 => vec![
+            petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
+            petri_artifacts_common::artifacts::PIPETTE_LINUX_X64.erase(),
+            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase(),
+            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
+            petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64.erase(),
+            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64.erase(),
+        ],
+        MachineArch::Aarch64 => vec![
+            petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
+            petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64.erase(),
+            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase(),
+            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64.erase(),
+            petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_AARCH64.erase(),
+            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64.erase(),
+        ],
+    };
 
     let mut files: Vec<(PathBuf, String)> = Vec::new();
 
