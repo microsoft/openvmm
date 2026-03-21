@@ -47,9 +47,12 @@ pub struct Aes256GcmInner {
     key: KeyHandle,
 }
 
-pub struct Aes256GcmCtxInner<'a> {
+pub struct Aes256GcmEncCtxInner<'a> {
     key: &'a KeyHandle,
-    enc: bool,
+}
+
+pub struct Aes256GcmDecCtxInner<'a> {
+    key: &'a KeyHandle,
 }
 
 impl Aes256GcmInner {
@@ -74,15 +77,16 @@ impl Aes256GcmInner {
         Ok(Aes256GcmInner { key })
     }
 
-    pub fn ctx(&self, enc: bool) -> Result<Aes256GcmCtxInner<'_>, Aes256GcmError> {
-        Ok(Aes256GcmCtxInner {
-            key: &self.key,
-            enc,
-        })
+    pub fn enc_ctx(&self) -> Result<Aes256GcmEncCtxInner<'_>, Aes256GcmError> {
+        Ok(Aes256GcmEncCtxInner { key: &self.key })
+    }
+
+    pub fn dec_ctx(&self) -> Result<Aes256GcmDecCtxInner<'_>, Aes256GcmError> {
+        Ok(Aes256GcmDecCtxInner { key: &self.key })
     }
 }
 
-impl Aes256GcmCtxInner<'_> {
+impl Aes256GcmEncCtxInner<'_> {
     pub fn cipher(
         &mut self,
         iv: &[u8],
@@ -104,33 +108,61 @@ impl Aes256GcmCtxInner<'_> {
             ..Default::default()
         };
 
-        // SAFETY: key and buffers are valid for the duration of the calls
+        // SAFETY: key and buffers are valid for the duration of the call
         unsafe {
-            if self.enc {
-                windows::Win32::Security::Cryptography::BCryptEncrypt(
-                    self.key.0,
-                    Some(data),
-                    Some(std::ptr::from_mut(&mut auth_mode).cast()),
-                    Some(&mut iv_buffer),
-                    Some(&mut crypted_data),
-                    &mut crypted_len,
-                    windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
-                )
-                .ok()
-                .map_err(|e| err(e, "encrypt"))
-            } else {
-                windows::Win32::Security::Cryptography::BCryptDecrypt(
-                    self.key.0,
-                    Some(data),
-                    Some(std::ptr::from_mut(&mut auth_mode).cast()),
-                    Some(&mut iv_buffer),
-                    Some(&mut crypted_data),
-                    &mut crypted_len,
-                    windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
-                )
-                .ok()
-                .map_err(|e| err(e, "decrypt"))
-            }
+            windows::Win32::Security::Cryptography::BCryptEncrypt(
+                self.key.0,
+                Some(data),
+                Some(std::ptr::from_mut(&mut auth_mode).cast()),
+                Some(&mut iv_buffer),
+                Some(&mut crypted_data),
+                &mut crypted_len,
+                windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
+            )
+            .ok()
+            .map_err(|e| err(e, "encrypt"))
+        }?;
+        assert_eq!(crypted_len as usize, data.len());
+        Ok(crypted_data)
+    }
+}
+
+impl Aes256GcmDecCtxInner<'_> {
+    pub fn cipher(
+        &mut self,
+        iv: &[u8],
+        data: &[u8],
+        tag: &[u8],
+    ) -> Result<Vec<u8>, Aes256GcmError> {
+        let mut crypted_len = 0;
+        let mut iv_buffer = iv.to_vec();
+        let mut nonce_buffer = iv.to_vec();
+        let mut crypted_data = vec![0; data.len()];
+        let mut tag_buffer = tag.to_vec();
+
+        let mut auth_mode = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+            cbSize: size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+            dwInfoVersion: windows::Win32::Security::Cryptography::BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION,
+            pbNonce: nonce_buffer.as_mut_ptr(),
+            cbNonce: nonce_buffer.len() as u32,
+            pbTag: tag_buffer.as_mut_ptr(),
+            cbTag: tag_buffer.len() as u32,
+            ..Default::default()
+        };
+
+        // SAFETY: key and buffers are valid for the duration of the call
+        unsafe {
+            windows::Win32::Security::Cryptography::BCryptDecrypt(
+                self.key.0,
+                Some(data),
+                Some(std::ptr::from_mut(&mut auth_mode).cast()),
+                Some(&mut iv_buffer),
+                Some(&mut crypted_data),
+                &mut crypted_len,
+                windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
+            )
+            .ok()
+            .map_err(|e| err(e, "decrypt"))
         }?;
         assert_eq!(crypted_len as usize, data.len());
         Ok(crypted_data)

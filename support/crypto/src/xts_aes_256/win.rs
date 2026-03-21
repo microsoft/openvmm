@@ -34,9 +34,12 @@ pub struct XtsAes256Inner {
     key: KeyHandle,
 }
 
-pub struct XtsAes256CtxInner<'a> {
+pub struct XtsAes256EncCtxInner<'a> {
     key: &'a KeyHandle,
-    enc: bool,
+}
+
+pub struct XtsAes256DecCtxInner<'a> {
+    key: &'a KeyHandle,
 }
 
 impl XtsAes256Inner {
@@ -71,15 +74,16 @@ impl XtsAes256Inner {
         Ok(XtsAes256Inner { key })
     }
 
-    pub fn ctx(&self, enc: bool) -> Result<XtsAes256CtxInner<'_>, XtsAes256Error> {
-        Ok(XtsAes256CtxInner {
-            key: &self.key,
-            enc,
-        })
+    pub fn enc_ctx(&self) -> Result<XtsAes256EncCtxInner<'_>, XtsAes256Error> {
+        Ok(XtsAes256EncCtxInner { key: &self.key })
+    }
+
+    pub fn dec_ctx(&self) -> Result<XtsAes256DecCtxInner<'_>, XtsAes256Error> {
+        Ok(XtsAes256DecCtxInner { key: &self.key })
     }
 }
 
-impl XtsAes256CtxInner<'_> {
+impl XtsAes256EncCtxInner<'_> {
     pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
         // BCrypt only supports 64-bit tweaks, internally padding out the high 8
         // bytes with zeroes. (Why?) This is fine for our purposes but it's a
@@ -93,33 +97,52 @@ impl XtsAes256CtxInner<'_> {
         let input = data.to_vec();
         let mut n = 0;
 
-        // SAFETY: key and buffers are valid for the duration of the calls
+        // SAFETY: key and buffers are valid for the duration of the call
         unsafe {
-            if self.enc {
-                windows::Win32::Security::Cryptography::BCryptEncrypt(
-                    self.key.0,
-                    Some(&input),
-                    None,
-                    Some(&mut iv),
-                    Some(data),
-                    &mut n,
-                    windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
-                )
-                .ok()
-                .map_err(|e| err(e, "encrypt"))
-            } else {
-                windows::Win32::Security::Cryptography::BCryptDecrypt(
-                    self.key.0,
-                    Some(&input),
-                    None,
-                    Some(&mut iv),
-                    Some(data),
-                    &mut n,
-                    windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
-                )
-                .ok()
-                .map_err(|e| err(e, "decrypt"))
-            }
+            windows::Win32::Security::Cryptography::BCryptEncrypt(
+                self.key.0,
+                Some(&input),
+                None,
+                Some(&mut iv),
+                Some(data),
+                &mut n,
+                windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
+            )
+            .ok()
+            .map_err(|e| err(e, "encrypt"))
+        }?;
+        assert_eq!(n as usize, data.len());
+        Ok(())
+    }
+}
+
+impl XtsAes256DecCtxInner<'_> {
+    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+        // BCrypt only supports 64-bit tweaks, internally padding out the high 8
+        // bytes with zeroes. (Why?) This is fine for our purposes but it's a
+        // bit annoying.
+        let mut iv = u64::try_from(tweak)
+            .map_err(|_| XtsAes256Error(crate::BackendError(E_INVALIDARG.into(), "convert tweak")))?
+            .to_le_bytes();
+
+        // TODO: fix windows crate to allow aliased input and output, as
+        // allowed by the API.
+        let input = data.to_vec();
+        let mut n = 0;
+
+        // SAFETY: key and buffers are valid for the duration of the call
+        unsafe {
+            windows::Win32::Security::Cryptography::BCryptDecrypt(
+                self.key.0,
+                Some(&input),
+                None,
+                Some(&mut iv),
+                Some(data),
+                &mut n,
+                windows::Win32::Security::Cryptography::BCRYPT_FLAGS(0),
+            )
+            .ok()
+            .map_err(|e| err(e, "decrypt"))
         }?;
         assert_eq!(n as usize, data.len());
         Ok(())

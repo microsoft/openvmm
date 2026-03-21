@@ -35,27 +35,43 @@ impl Aes256Gcm {
     }
 
     /// Returns a context for encrypting data.
-    pub fn encrypt(&self) -> Result<Aes256GcmCtx<'_>, Aes256GcmError> {
-        Ok(Aes256GcmCtx(self.0.ctx(true)?))
+    pub fn encrypt(&self) -> Result<Aes256GcmEncCtx<'_>, Aes256GcmError> {
+        Ok(Aes256GcmEncCtx(self.0.enc_ctx()?))
     }
 
     /// Returns a context for decrypting data.
-    pub fn decrypt(&self) -> Result<Aes256GcmCtx<'_>, Aes256GcmError> {
-        Ok(Aes256GcmCtx(self.0.ctx(false)?))
+    pub fn decrypt(&self) -> Result<Aes256GcmDecCtx<'_>, Aes256GcmError> {
+        Ok(Aes256GcmDecCtx(self.0.dec_ctx()?))
     }
 }
 
-/// Context for AES-256-GCM encryption/decryption.
-pub struct Aes256GcmCtx<'a>(sys::Aes256GcmCtxInner<'a>);
+/// Context for AES-256-GCM encryption.
+pub struct Aes256GcmEncCtx<'a>(sys::Aes256GcmEncCtxInner<'a>);
 
-impl Aes256GcmCtx<'_> {
-    /// Encrypts or decrypts `data` using the provided `iv` and produces or
-    /// verifies the authentication tag in `tag`.
+impl Aes256GcmEncCtx<'_> {
+    /// Encrypts `data` using the provided `iv` and produces the
+    /// authentication tag in `tag`.
     pub fn cipher(
         &mut self,
         iv: &[u8],
         data: &[u8],
         tag: &mut [u8],
+    ) -> Result<Vec<u8>, Aes256GcmError> {
+        self.0.cipher(iv, data, tag)
+    }
+}
+
+/// Context for AES-256-GCM decryption.
+pub struct Aes256GcmDecCtx<'a>(sys::Aes256GcmDecCtxInner<'a>);
+
+impl Aes256GcmDecCtx<'_> {
+    /// Decrypts `data` using the provided `iv` and verifies the
+    /// authentication `tag`.
+    pub fn cipher(
+        &mut self,
+        iv: &[u8],
+        data: &[u8],
+        tag: &[u8],
     ) -> Result<Vec<u8>, Aes256GcmError> {
         self.0.cipher(iv, data, tag)
     }
