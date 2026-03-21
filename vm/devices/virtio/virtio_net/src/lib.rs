@@ -483,7 +483,6 @@ struct QueueStats {
 
 #[derive(Inspect)]
 struct ActiveState {
-    mem: GuestMemory,
     #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
     pending_rx_packets: VirtioWorkPool,
@@ -495,10 +494,9 @@ impl ActiveState {
     fn new(mem: GuestMemory, rx_queue_size: u16, tx_queue_size: u16) -> Self {
         Self {
             pending_tx_packets: (0..tx_queue_size).map(|_| None).collect(),
-            pending_rx_packets: VirtioWorkPool::new(mem.clone(), rx_queue_size),
+            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size),
             data: ProcessingData::new(rx_queue_size, tx_queue_size),
             stats: Default::default(),
-            mem,
         }
     }
 }
@@ -726,28 +724,11 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
-        let (rx_pools, ready_packets): (Vec<_>, Vec<_>) = self
-            .workers
-            .iter()
-            .map(|worker| {
-                let pool = worker
-                    .state()
-                    .unwrap()
-                    .active_state
-                    .pending_rx_packets
-                    .clone();
-                let ready = pool.ready();
-                (pool, ready)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .unzip();
-        let mut queue_config = Vec::with_capacity(rx_pools.len());
-        for _pool in &rx_pools {
-            queue_config.push(QueueConfig {
+        let queue_config = (0..self.workers.len())
+            .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
-            });
-        }
+            })
+            .collect::<Vec<_>>();
 
         let mut queues = Vec::new();
         c_state
@@ -758,10 +739,12 @@ impl Coordinator {
 
         assert_eq!(queues.len(), self.workers.len());
 
-        for ((worker, mut queue), ready) in self.workers.iter_mut().zip(queues).zip(&ready_packets)
-        {
-            let pool = &mut worker.state_mut().unwrap().active_state.pending_rx_packets;
-            queue.rx_avail(pool, ready);
+        for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
+            let state = &mut worker.state_mut().unwrap().active_state;
+            let n = state
+                .pending_rx_packets
+                .fill_ready(&mut state.data.rx_ready);
+            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -974,7 +957,7 @@ impl Worker {
         let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
         let bytes_read = work
             .read(
-                &self.active_state.mem,
+                self.active_state.pending_rx_packets.mem(),
                 &mut peek_buf[..header_size() + ETH_PEEK],
             )
             .map_err(TxPacketError::ReadHeader)?;
