@@ -189,7 +189,11 @@ async fn vmgs_file_two_keys(
     expect(unreachable_code),
     expect(unused_variables)
 )]
-async fn vmgs_two_keys(disk: Disk, first_key: &[u8], second_key: &[u8]) -> Result<Vmgs, Error> {
+async fn vmgs_two_keys(
+    disk: Disk,
+    first_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
+    second_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
+) -> Result<Vmgs, Error> {
     let mut vmgs = vmgs_create(disk, Some((EncryptionAlgorithm::AES_GCM, first_key))).await?;
 
     #[cfg(feature = "encryption")]
