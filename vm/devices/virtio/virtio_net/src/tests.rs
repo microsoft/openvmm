@@ -346,11 +346,10 @@ impl Endpoint for MockEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig>,
+        _config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
-        let _ = config.into_iter().next().unwrap();
         let (queue, handle) = new_mock_queue();
         self.queue_tx.send(handle);
         queues.push(Box::new(queue));
