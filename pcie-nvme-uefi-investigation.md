@@ -107,6 +107,17 @@ range after initial boot.
 
 ## What is NOT the cause
 
+- **Double ConnectAll.**  Early investigation hypothesized that a second
+  `EfiBootManagerConnectAll()` was needed.  Testing confirmed that
+  `ConnectController` with `recursive=TRUE` connects NvmExpressDxe to the
+  NVMe handle during a single ConnectAll pass.  No firmware changes to
+  DeviceBootManagerLib are needed.
+
+- **NvmExpressDxe DevicePath leak.**  NvmExpressDxe Start() has an error
+  path that doesn't close DevicePath.  This bug exists but was never
+  triggered — Start() is never called when the real problem (framebuffer
+  overlap) prevents Supported() from seeing correct class codes.
+
 - **Extended config space (offset 0x100).**  The warning
   `LocatePciExpressCapabilityRegBlock: [00|00|00] failed to access config
   space at offset 0x100` only affects optional capabilities (ARI, SR-IOV).
