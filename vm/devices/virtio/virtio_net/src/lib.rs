@@ -262,13 +262,16 @@ impl VirtioDevice for Device {
         // must compute per-segment IPv4 header checksums.
         let host_tso4 = offloads.tso && offloads.tcp && offloads.ipv4_header;
         let host_tso6 = offloads.tso && offloads.tcp;
+        // VIRTIO_NET_F_HOST_UFO: we can handle UDP segmentation from the guest.
+        let host_ufo = offloads.ufo && offloads.udp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
             .with_csum(csum)
             .with_guest_csum(true)
             .with_host_tso4(host_tso4)
-            .with_host_tso6(host_tso6);
+            .with_host_tso6(host_tso6)
+            .with_host_ufo(host_ufo);
 
         DeviceTraits {
             device_id: 1,
@@ -1055,6 +1058,7 @@ impl Worker {
         let mut l3_len: u16 = 0;
         let mut l4_len: u8 = 0;
         let mut max_tcp_segment_size: u16 = 0;
+        let mut max_udp_segment_size: u16 = 0;
 
         // Determine IP version from GSO type when available.
         let is_ipv4_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV4;
@@ -1118,10 +1122,11 @@ impl Worker {
         }
 
         // GSO (segmentation offload) — only honor if the corresponding
-        // HOST_TSO feature was negotiated.
+        // HOST_TSO/HOST_UFO feature was negotiated.
         let gso_enabled = match gso_protocol {
             VirtioNetHeaderGsoProtocol::TCPV4 => features.host_tso4(),
             VirtioNetHeaderGsoProtocol::TCPV6 => features.host_tso6(),
+            VirtioNetHeaderGsoProtocol::UDP => features.host_ufo(),
             _ => false,
         };
         if gso_enabled {
@@ -1136,6 +1141,8 @@ impl Worker {
                     l3_len = header.csum_start - l2_len as u16;
                 }
 
+                let is_udp = gso_protocol == VirtioNetHeaderGsoProtocol::UDP;
+
                 // Derive l4_len from hdr_len if available:
                 //   hdr_len = l2_len + l3_len + l4_len (total header length)
                 let total_hdr = header.hdr_len as u32;
@@ -1147,16 +1154,33 @@ impl Worker {
                     }
                 }
 
-                // Only enable segmentation if we derived valid header lengths.
-                if l3_len > 0 && l4_len > 0 {
-                    flags.set_offload_tcp_segmentation(true);
-                    flags.set_offload_tcp_checksum(true);
-                    flags.set_offload_udp_checksum(false);
-                    max_tcp_segment_size = header.gso_size;
+                // For UDP GSO, hdr_len==0 is acceptable (fixed 8-byte header).
+                // For TCP GSO, we need a valid l4_len to proceed.
+                let valid_lengths =
+                    l3_len > 0 && (l4_len > 0 || (is_udp && header.hdr_len == 0));
 
-                    flags.set_is_ipv4(is_ipv4_from_gso);
-                    flags.set_is_ipv6(is_ipv6_from_gso);
-                    if is_ipv4_from_gso {
+                if valid_lengths {
+                    if is_udp {
+                        flags.set_offload_udp_segmentation(true);
+                        // Guest omits the UDP checksum for GSO packets; ask
+                        // the backend to fill it in.
+                        flags.set_offload_udp_checksum(true);
+                        flags.set_offload_tcp_checksum(false);
+                        max_udp_segment_size = header.gso_size;
+                    } else {
+                        flags.set_offload_tcp_segmentation(true);
+                        flags.set_offload_tcp_checksum(true);
+                        flags.set_offload_udp_checksum(false);
+                        max_tcp_segment_size = header.gso_size;
+                    }
+
+                    // UDP GSO has no separate TCPV4/TCPV6 variants,
+                    // so derive IP version from EtherType; TCP uses GSO type.
+                    let is_ipv4 = if is_udp { is_ipv4_from_eth } else { is_ipv4_from_gso };
+                    let is_ipv6 = if is_udp { is_ipv6_from_eth } else { is_ipv6_from_gso };
+                    flags.set_is_ipv4(is_ipv4);
+                    flags.set_is_ipv6(is_ipv6);
+                    if is_ipv4 {
                         flags.set_offload_ip_header_checksum(true);
                     }
                 }
@@ -1169,6 +1193,7 @@ impl Worker {
             l3_len,
             l4_len,
             max_tcp_segment_size,
+            max_udp_segment_size,
             ..Default::default()
         }
     }

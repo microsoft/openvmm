@@ -55,6 +55,11 @@ use std::time::Instant;
 
 use crate::DNS_PORT;
 
+#[cfg(unix)]
+use crate::unix as platform;
+#[cfg(windows)]
+use crate::windows as platform;
+
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
     timeout: Duration,
@@ -299,13 +304,13 @@ impl<T: Client> Access<'_, T> {
         };
 
         let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
-        match conn
-            .socket
-            .as_mut()
-            .unwrap()
-            .get()
-            .send_to(udp_packet.payload(), dst_sock_addr)
-        {
+        let socket = conn.socket.as_mut().unwrap().get();
+        let result = if let Some(seg_size) = checksum.gso {
+            platform::send_udp_with_gso(socket, udp_packet.payload(), &dst_sock_addr, seg_size)
+        } else {
+            socket.send_to(udp_packet.payload(), dst_sock_addr)
+        };
+        match result {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
                 conn.last_activity = Instant::now();

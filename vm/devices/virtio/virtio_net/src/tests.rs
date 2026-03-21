@@ -1127,6 +1127,13 @@ fn features_tso() -> NetworkFeaturesBank0 {
         .with_host_tso6(true)
 }
 
+/// Features with CSUM + HOST_UFO enabled (for UFO tests).
+fn features_ufo() -> NetworkFeaturesBank0 {
+    NetworkFeaturesBank0::new()
+        .with_csum(true)
+        .with_host_ufo(true)
+}
+
 /// Build a minimal Ethernet header (14 bytes) with the given EtherType.
 fn make_eth_header(ethertype: u16) -> [u8; 14] {
     let mut h = [0u8; 14];
@@ -1354,6 +1361,76 @@ fn tx_offload_tso_without_needs_csum() {
     assert!(meta.flags.offload_tcp_segmentation());
     assert!(meta.flags.is_ipv4());
     assert_eq!(meta.max_tcp_segment_size, 1460);
+}
+
+/// UFO4: gso_type=UDP with IPv4 EtherType.
+#[test]
+fn tx_offload_ufo4() {
+    // IPv4 UFO: 14 (L2) + 20 (L3) + 8 (UDP) = 42 byte header
+    let header = make_virtio_header(
+        true,
+        VirtioNetHeaderGsoProtocol::UDP,
+        42,   // hdr_len
+        1472, // gso_size (UDP payload per segment)
+        34,   // csum_start (14 + 20)
+        6,    // UDP csum offset
+    );
+    let meta = Worker::parse_tx_offloads(
+        Some(&header),
+        &make_eth_header(ETHERTYPE_IPV4),
+        65000,
+        features_ufo(),
+    );
+    assert!(
+        meta.flags.offload_udp_segmentation(),
+        "UFO should be set"
+    );
+    assert!(
+        meta.flags.offload_udp_checksum(),
+        "UDP csum should be set for UFO"
+    );
+    assert!(
+        meta.flags.offload_ip_header_checksum(),
+        "IPv4 header csum should be set"
+    );
+    assert!(meta.flags.is_ipv4());
+    assert!(!meta.flags.is_ipv6());
+    assert_eq!(meta.l2_len, 14);
+    assert_eq!(meta.l3_len, 20);
+    assert_eq!(meta.max_udp_segment_size, 1472);
+    assert!(!meta.flags.offload_tcp_segmentation());
+}
+
+/// UFO6: gso_type=UDP with IPv6 EtherType.
+#[test]
+fn tx_offload_ufo6() {
+    // IPv6 UFO: 14 (L2) + 40 (L3) + 8 (UDP) = 62 byte header
+    let header = make_virtio_header(
+        true,
+        VirtioNetHeaderGsoProtocol::UDP,
+        62,   // hdr_len
+        1452, // gso_size
+        54,   // csum_start (14 + 40)
+        6,    // UDP csum offset
+    );
+    let meta = Worker::parse_tx_offloads(
+        Some(&header),
+        &make_eth_header(ETHERTYPE_IPV6),
+        65000,
+        features_ufo(),
+    );
+    assert!(meta.flags.offload_udp_segmentation(), "UFO should be set");
+    assert!(meta.flags.offload_udp_checksum());
+    assert!(
+        !meta.flags.offload_ip_header_checksum(),
+        "no IPv4 header csum for IPv6"
+    );
+    assert!(!meta.flags.is_ipv4());
+    assert!(meta.flags.is_ipv6());
+    assert_eq!(meta.l2_len, 14);
+    assert_eq!(meta.l3_len, 40);
+    assert_eq!(meta.max_udp_segment_size, 1452);
+    assert!(!meta.flags.offload_tcp_segmentation());
 }
 
 /// VLAN-tagged frame: 802.1Q tag (EtherType 0x8100) wrapping IPv4.
@@ -1635,6 +1712,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
             tcp: true,
             udp: true,
             tso: true,
+            ufo: false,
         },
     };
 

@@ -295,6 +295,9 @@ pub struct ChecksumState {
     ///
     /// The IP header's length field may be invalid and should be ignored.
     pub tso: Option<u16>,
+    /// The data is a large UDP payload that should be sent with OS-level UDP
+    /// GSO, splitting into UDP datagrams of this segment size.
+    pub gso: Option<u16>,
 }
 
 impl ChecksumState {
@@ -303,30 +306,35 @@ impl ChecksumState {
         tcp: false,
         udp: false,
         tso: None,
+        gso: None,
     };
     const IPV4_ONLY: Self = Self {
         ipv4: true,
         tcp: false,
         udp: false,
         tso: None,
+        gso: None,
     };
     const TCP4: Self = Self {
         ipv4: true,
         tcp: true,
         udp: false,
         tso: None,
+        gso: None,
     };
     const UDP4: Self = Self {
         ipv4: true,
         tcp: false,
         udp: true,
         tso: None,
+        gso: None,
     };
     const TCP6: Self = Self {
         ipv4: false,
         tcp: true,
         udp: false,
         tso: None,
+        gso: None,
     };
 
     fn caps(&self) -> ChecksumCapabilities {
