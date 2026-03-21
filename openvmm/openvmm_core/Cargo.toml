@@ -36,7 +36,7 @@ page_table.workspace = true
 virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
-vmgs_broker.workspace = true
+vmgs_broker = { workspace = true, features = ["encryption"] }
 vmm_core.workspace = true
 vmm_core_defs.workspace = true
 state_unit.workspace = true
@@ -97,10 +97,10 @@ getrandom.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
-vmgs_broker = { workspace = true, features = ["encryption_win"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 virt_hvf = { workspace = true, optional = true }
@@ -108,7 +108,6 @@ virt_hvf = { workspace = true, optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 virt_kvm = { workspace = true, optional = true }
 virt_mshv = { workspace = true, optional = true }
-vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

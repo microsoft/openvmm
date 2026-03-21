@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! XTS-AES-256 encryption and decryption for disk-level crypto.
+//! XTS-AES-256 encryption and decryption.
 
 #[cfg(unix)]
 mod ossl;
@@ -15,6 +15,11 @@ use win as sys;
 
 use thiserror::Error;
 
+/// The required key length for the algorithm.
+///
+/// An XTS-AES-256 key contains two AES keys, each of which is 256 bits.
+pub const KEY_LEN: usize = 64;
+
 /// XTS-AES-256 encryption/decryption.
 pub struct XtsAes256(sys::XtsAes256Inner);
 
@@ -24,13 +29,8 @@ pub struct XtsAes256(sys::XtsAes256Inner);
 pub struct XtsAes256Error(#[source] super::BackendError);
 
 impl XtsAes256 {
-    /// The required key length for the algorithm.
-    ///
-    /// An XTS-AES-256 key contains two AES keys, each of which is 256 bits.
-    pub const KEY_LEN: usize = 64;
-
     /// Creates a new XTS-AES-256 encryption/decryption context.
-    pub fn new(key: &[u8; Self::KEY_LEN], data_unit_size: u32) -> Result<Self, XtsAes256Error> {
+    pub fn new(key: &[u8; KEY_LEN], data_unit_size: u32) -> Result<Self, XtsAes256Error> {
         sys::XtsAes256Inner::new(key, data_unit_size).map(Self)
     }
 

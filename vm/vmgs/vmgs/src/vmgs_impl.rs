@@ -19,6 +19,7 @@ use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
 use vmgs_format::VMGS_BYTES_PER_BLOCK;
+use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
 use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
 use vmgs_format::VMGS_SIGNATURE;
@@ -181,17 +182,17 @@ impl ResolvedFileControlBlock {
         }
     }
 
-    #[cfg_attr(not(with_encryption), expect(dead_code))]
+    #[cfg_attr(not(feature = "encryption"), expect(dead_code))]
     fn update_extended_data(&mut self, extended_file_entry: &VmgsExtendedFileEntry) {
         self.attributes = extended_file_entry.attributes;
         self.encryption_key = extended_file_entry.encryption_key;
     }
 
-    #[cfg_attr(not(with_encryption), expect(unused_variables))]
+    #[cfg_attr(not(feature = "encryption"), expect(unused_variables))]
     fn encrypt(&mut self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         {
             let encrypted = crate::encrypt::vmgs_encrypt(
                 &self.encryption_key,
@@ -212,11 +213,11 @@ impl ResolvedFileControlBlock {
         }
     }
 
-    #[cfg_attr(not(with_encryption), expect(unused_variables))]
+    #[cfg_attr(not(feature = "encryption"), expect(unused_variables))]
     fn decrypt(&self, data: &[u8]) -> Result<Vec<u8>, Error> {
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         {
             // sanity check: encrypted data should never be all zeros. if we
             // find that it is all-zeroes, then that's indicative of some kind
@@ -962,7 +963,7 @@ impl Vmgs {
 
     /// Encrypts `buf` and writes the encrypted payload to a file_id if the VMGS file has encryption configured.
     /// If the VMGS doesn't have encryption configured, will do a plaintext write instead.
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     pub async fn write_file_encrypted(&mut self, file_id: FileId, buf: &[u8]) -> Result<(), Error> {
         self.write_file_inner(file_id, buf, true, true).await
     }
@@ -1030,8 +1031,11 @@ impl Vmgs {
 
     /// Decrypts the extended file table by the encryption_key and
     /// updates the related metadata in memory.
-    #[cfg(with_encryption)]
-    pub async fn unlock_with_encryption_key(&mut self, encryption_key: &[u8]) -> Result<(), Error> {
+    #[cfg(feature = "encryption")]
+    pub async fn unlock_with_encryption_key(
+        &mut self,
+        encryption_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
+    ) -> Result<(), Error> {
         if self.state.version < VMGS_VERSION_3_0 {
             return Err(Error::EncryptionNotSupported);
         }
@@ -1118,7 +1122,7 @@ impl Vmgs {
     /// Associates a new root key with the data store and removes the old
     /// encryption key, if it exists. If two keys already exist, the
     /// inactive key is removed first.
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     pub async fn update_encryption_key(
         &mut self,
         encryption_key: &[u8],
@@ -1154,7 +1158,7 @@ impl Vmgs {
     }
 
     /// Associates a new root key with the data store.
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     async fn add_new_encryption_key(
         &mut self,
         encryption_key: &[u8],
@@ -1213,7 +1217,7 @@ impl Vmgs {
     }
 
     /// Disassociates the root key at the specified index from the data store.
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     async fn remove_encryption_key(&mut self, key_index: usize) -> Result<(), Error> {
         if self.state.version < VMGS_VERSION_3_0 {
             return Err(Error::EncryptionNotSupported);
@@ -1504,7 +1508,7 @@ mod test_helpers {
         }
 
         /// Associates a new root key with the data store.
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         pub async fn test_add_new_encryption_key(
             &mut self,
             encryption_key: &[u8],
@@ -1733,16 +1737,16 @@ fn is_empty_key(encryption_key: &[u8]) -> bool {
 }
 
 /// Encrypts MetadataKey. Returns encrypted_metadata_key.
-#[cfg_attr(not(with_encryption), expect(unused_variables))]
+#[cfg_attr(not(feature = "encryption"), expect(unused_variables))]
 fn encrypt_metadata_key(
-    encryption_key: &[u8],
+    encryption_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
     nonce: &[u8],
     metadata_key: &[u8],
     authentication_tag: &mut [u8],
 ) -> Result<Vec<u8>, Error> {
-    #[cfg(not(with_encryption))]
+    #[cfg(not(feature = "encryption"))]
     unreachable!("Encryption requires the encryption feature");
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     {
         let encrypted_metadata_key =
             crate::encrypt::vmgs_encrypt(encryption_key, nonce, metadata_key, authentication_tag)?;
@@ -1759,16 +1763,20 @@ fn encrypt_metadata_key(
 }
 
 /// Decrypts metadata_key. Returns decrypted_metadata_key.
-#[cfg_attr(not(with_encryption), expect(unused_variables), expect(dead_code))]
+#[cfg_attr(
+    not(feature = "encryption"),
+    expect(unused_variables),
+    expect(dead_code)
+)]
 fn decrypt_metadata_key(
-    datastore_key: &[u8],
+    datastore_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
     nonce: &[u8],
     metadata_key: &[u8],
     authentication_tag: &[u8],
 ) -> Result<Vec<u8>, Error> {
-    #[cfg(not(with_encryption))]
+    #[cfg(not(feature = "encryption"))]
     unreachable!("Encryption requires the encryption feature");
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     {
         let decrypted_metadata_key =
             crate::encrypt::vmgs_decrypt(datastore_key, nonce, metadata_key, authentication_tag)?;
@@ -2106,7 +2114,7 @@ mod tests {
     use pal_async::async_test;
     use parking_lot::Mutex;
     use std::sync::Arc;
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
     use vmgs_format::VmgsProvisioner;
 
@@ -2515,7 +2523,7 @@ mod tests {
         assert_eq!(new_header.sequence, 0);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn write_file_v3() {
         let disk = new_test_file();
@@ -2561,7 +2569,7 @@ mod tests {
         assert_eq!(buf_1, &*read_buf);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn overwrite_file_v3() {
         let disk = new_test_file();
@@ -2591,7 +2599,7 @@ mod tests {
         assert_eq!(buf_1, read_buf);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn file_encryption() {
         let buf: Vec<u8> = (0..255).collect();
@@ -2643,7 +2651,7 @@ mod tests {
         assert_eq!(buf, read_buf);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn add_new_encryption_key() {
         let buf: Vec<u8> = (0..255).collect();
@@ -2717,7 +2725,7 @@ mod tests {
         assert_ne!(read_buf.unwrap(), buf);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_write_file_encrypted() {
         // Call write_file_encrypted on an unencrypted VMGS and check that plaintext was written
@@ -2747,7 +2755,7 @@ mod tests {
         assert_eq!(buf, &*read_buf);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_logger() {
         let disk = new_test_file();
@@ -2783,7 +2791,7 @@ mod tests {
         assert_eq!(*result, "test logger");
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn update_key() {
         let buf: Vec<u8> = (0..255).collect();
@@ -2849,7 +2857,7 @@ mod tests {
         assert_eq!(buf, read_buf);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn update_key_no_space() {
         let buf: Vec<u8> = (0..255).collect();

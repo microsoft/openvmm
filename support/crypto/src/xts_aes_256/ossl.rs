@@ -19,7 +19,7 @@ fn err(err: openssl::error::ErrorStack, op: &'static str) -> XtsAes256Error {
 }
 
 impl XtsAes256Inner {
-    pub fn new(key: &[u8], _data_unit_size: u32) -> Result<Self, XtsAes256Error> {
+    pub fn new(key: &[u8; KEY_LEN], _data_unit_size: u32) -> Result<Self, XtsAes256Error> {
         let mut enc = openssl::cipher_ctx::CipherCtx::new()
             .map_err(|e| err(e, "creating encrypt context"))?;
         enc.encrypt_init(

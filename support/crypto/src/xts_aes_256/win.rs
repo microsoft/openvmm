@@ -1,45 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-// UNSAFETY: calling bcrypt APIs
-#![expect(unsafe_code)]
-
 use super::*;
+use crate::win::*;
 use std::sync::LazyLock;
 use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
 use windows::Win32::Security::Cryptography::BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS;
-
-#[derive(Clone)]
-struct AlgHandle(BCRYPT_ALG_HANDLE);
-// SAFETY: the handle can be sent across threads.
-unsafe impl Send for AlgHandle {}
-// SAFETY: the handle can be shared across threads.
-unsafe impl Sync for AlgHandle {}
-
-pub struct XtsAes256Inner {
-    key: Key,
-}
-
-pub struct XtsAes256CtxInner<'a> {
-    key: &'a Key,
-    enc: bool,
-}
-
-struct Key(BCRYPT_KEY_HANDLE);
-// SAFETY: the handle can be sent across threads.
-unsafe impl Send for Key {}
-// SAFETY: the handle can be shared across threads.
-unsafe impl Sync for Key {}
-
-impl Drop for Key {
-    fn drop(&mut self) {
-        // SAFETY: handle is valid and not aliased
-        let _ = unsafe { windows::Win32::Security::Cryptography::BCryptDestroyKey(self.0) };
-    }
-}
 
 static XTS_AES_256: LazyLock<Result<AlgHandle, XtsAes256Error>> = LazyLock::new(|| {
     let mut handle = BCRYPT_ALG_HANDLE::default();
@@ -53,32 +22,39 @@ static XTS_AES_256: LazyLock<Result<AlgHandle, XtsAes256Error>> = LazyLock::new(
         )
     }
     .ok()
+    .map(|()| AlgHandle(handle))
     .map_err(|e| err(e, "open algorithm provider"))
-    .map(|_| AlgHandle(handle))
 });
 
 fn err(err: windows_result::Error, op: &'static str) -> XtsAes256Error {
     XtsAes256Error(crate::BackendError(err, op))
 }
 
+pub struct XtsAes256Inner {
+    key: KeyHandle,
+}
+
+pub struct XtsAes256CtxInner<'a> {
+    key: &'a KeyHandle,
+    enc: bool,
+}
+
 impl XtsAes256Inner {
-    pub fn new(key: &[u8], data_unit_size: u32) -> Result<Self, XtsAes256Error> {
-        let key = {
-            let mut handle = BCRYPT_KEY_HANDLE::default();
-            // SAFETY: the algorithm handle is valid.
-            unsafe {
-                windows::Win32::Security::Cryptography::BCryptGenerateSymmetricKey(
-                    (*XTS_AES_256).clone()?.0,
-                    &mut handle,
-                    None,
-                    key,
-                    0,
-                )
-            }
-            .ok()
-            .map_err(|e| err(e, "generate symmetric key"))?;
-            Key(handle)
-        };
+    pub fn new(key: &[u8; KEY_LEN], data_unit_size: u32) -> Result<Self, XtsAes256Error> {
+        let mut handle = BCRYPT_KEY_HANDLE::default();
+        // SAFETY: the algorithm handle is valid.
+        let key = unsafe {
+            windows::Win32::Security::Cryptography::BCryptGenerateSymmetricKey(
+                XTS_AES_256.as_ref().map_err(|e| e.clone())?.0,
+                &mut handle,
+                None,
+                key,
+                0,
+            )
+        }
+        .ok()
+        .map(|()| KeyHandle(handle))
+        .map_err(|e| err(e, "generate symmetric key"))?;
 
         // SAFETY: the key handle is valid.
         unsafe {
