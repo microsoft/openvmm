@@ -41,7 +41,7 @@ impl Interrupt {
     ///      use [`Self::null_event`] instead.
     pub fn null() -> Self {
         // Create a dummy event.
-        Self::from_event(pal_event::Event::new())
+        Self::from_event(Event::new())
     }
 
     /// An interrupt that does nothing but is guaranteed to have an underlying event.
@@ -49,13 +49,13 @@ impl Interrupt {
     /// N.B. Currently this does the same thing as [`Self::null`], but it allows [`Self::null`] to
     ///      be optimized in the future, while callers that require an event can use this function.
     pub fn null_event() -> Self {
-        Self::from_event(pal_event::Event::new())
+        Self::from_event(Event::new())
     }
 
     /// Creates an interrupt from an event.
     ///
     /// The event will be signaled when [`Self::deliver`] is called.
-    pub fn from_event(event: pal_event::Event) -> Self {
+    pub fn from_event(event: Event) -> Self {
         Self {
             inner: InterruptInner::Event(Arc::new(event)),
         }
@@ -65,7 +65,7 @@ impl Interrupt {
     ///
     /// The current event will be signaled when [`Self::deliver`] is called. The event
     /// can be transparently changed without interaction from the caller.
-    pub fn from_cell(cell: mesh::Cell<pal_event::Event>) -> Self {
+    pub fn from_cell(cell: mesh::Cell<Event>) -> Self {
         Self {
             inner: InterruptInner::Cell(Arc::new(cell)),
         }
@@ -94,7 +94,7 @@ impl Interrupt {
     }
 
     /// Gets a reference to the backing event, if there is one.
-    pub fn event(&self) -> Option<&pal_event::Event> {
+    pub fn event(&self) -> Option<&Event> {
         match &self.inner {
             InterruptInner::Event(event) => Some(event.as_ref()),
             _ => None,
@@ -123,8 +123,8 @@ impl Interrupt {
 
 #[derive(Clone, MeshPayload)]
 enum InterruptInner {
-    Event(Arc<pal_event::Event>),
-    Cell(Arc<mesh::Cell<pal_event::Event>>),
+    Event(Arc<Event>),
+    Cell(Arc<mesh::Cell<Event>>),
     Fn(LocalOnly<Arc<dyn Send + Sync + Fn()>>),
 }
 
@@ -171,7 +171,10 @@ impl EventProxy {
 #[cfg(test)]
 mod tests {
     use super::Interrupt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_interrupt_event() {
@@ -194,5 +197,40 @@ mod tests {
         updater.set(event.clone()).await;
         interrupt.deliver();
         assert!(event.try_wait());
+    }
+
+    #[async_test]
+    async fn test_event_or_proxy_event_backed(driver: DefaultDriver) {
+        let orig_event = pal_event::Event::new();
+        let interrupt = Interrupt::from_event(orig_event.clone());
+        let (event, proxy) = interrupt.event_or_proxy(&driver).unwrap();
+        // Event-backed interrupt should return the same event and no proxy.
+        assert!(proxy.is_none());
+        event.signal();
+        assert!(orig_event.try_wait());
+    }
+
+    #[async_test]
+    async fn test_event_or_proxy_fn_backed(driver: DefaultDriver) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let count2 = count.clone();
+        let interrupt = Interrupt::from_fn(move || {
+            count2.fetch_add(1, Ordering::SeqCst);
+        });
+        let (event, proxy) = interrupt.event_or_proxy(&driver).unwrap();
+        // Fn-backed interrupt requires a proxy.
+        assert!(proxy.is_some());
+        // Signal the proxy event and give the async task a moment to deliver.
+        event.signal();
+        // Poll until the proxy task delivers the interrupt.
+        for _ in 0..100 {
+            if count.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            pal_async::timer::PolledTimer::new(&driver)
+                .sleep(std::time::Duration::from_millis(10))
+                .await;
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 }
