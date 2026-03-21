@@ -121,7 +121,7 @@
   - [Serial]()
   - [Graphics and Input]()
   - [Storage](./reference/backends/storage.md)
-  - [Networking]()
+  - [Networking](./reference/backends/networking.md)
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
     - [mesh]()

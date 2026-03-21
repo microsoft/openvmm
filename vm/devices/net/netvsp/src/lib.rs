@@ -356,6 +356,7 @@ struct Adapter {
 
 struct QueueState {
     queue: Box<dyn net_backend::Queue>,
+    pool: BufferPool,
     rx_buffer_range: RxBufferRange,
     target_vp_set: bool,
 }
@@ -4469,9 +4470,11 @@ impl Coordinator {
 
         let mut queues = Vec::new();
         let mut rx_buffers = Vec::new();
+        let mut per_queue_rx: Vec<Vec<RxId>> = Vec::new();
+        let guest_buffers;
         {
             let buffers = &state.buffers;
-            let guest_buffers = Arc::new(
+            guest_buffers = Arc::new(
                 GuestBuffers::new(
                     buffers.mem.clone(),
                     buffers.recv_buffer.gpadl.clone(),
@@ -4507,10 +4510,9 @@ impl Coordinator {
                     // indirection table, it is assigned just the reserved
                     // buffers.
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: &[],
                         driver: Box::new(drivers[0].clone()),
                     });
+                    per_queue_rx.push(Vec::new());
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
                         0..RX_RESERVED_CONTROL_BUFFERS,
@@ -4543,10 +4545,9 @@ impl Coordinator {
 
                     let (this, rest) = initial_rx.split_at(end);
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: this,
                         driver: Box::new(drivers[queue_index as usize].clone()),
                     });
+                    per_queue_rx.push(this.to_vec());
                     initial_rx = rest;
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
@@ -4589,9 +4590,20 @@ impl Coordinator {
 
         self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
-        for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
+        for (((worker, mut queue), rx_buffer), initial) in self
+            .workers
+            .iter_mut()
+            .zip(queues)
+            .zip(rx_buffers)
+            .zip(per_queue_rx)
+        {
+            let mut pool = BufferPool::new(guest_buffers.clone());
+            if !initial.is_empty() {
+                queue.rx_avail(&mut pool, &initial);
+            }
             worker.task_mut().queue_state = Some(QueueState {
                 queue,
+                pool,
                 target_vp_set: false,
                 rx_buffer_range: rx_buffer,
             });
@@ -5029,10 +5041,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
         if !state.pending_rx_packets.is_empty()
             && self.packet_filter != rndisprot::NDIS_PACKET_TYPE_NONE
         {
-            let epqueue = queue_state.queue.as_mut();
             let (front, back) = state.pending_rx_packets.as_slices();
-            epqueue.rx_avail(front);
-            epqueue.rx_avail(back);
+            queue_state.queue.rx_avail(&mut queue_state.pool, front);
+            queue_state.queue.rx_avail(&mut queue_state.pool, back);
             state.pending_rx_packets.clear();
         }
 
@@ -5123,10 +5134,21 @@ impl<T: 'static + RingMem> NetChannel<T> {
             };
 
             let did_some_work = (!ring_full
-                && self.process_endpoint_rx(buffers, state, data, queue_state.queue.as_mut())?)
+                && self.process_endpoint_rx(
+                    buffers,
+                    state,
+                    data,
+                    queue_state.queue.as_mut(),
+                    &mut queue_state.pool,
+                )?)
                 | self.process_ring_buffer(buffers, state, data, queue_state)?
                 | (!ring_full
-                    && self.process_endpoint_tx(state, data, queue_state.queue.as_mut())?)
+                    && self.process_endpoint_tx(
+                        state,
+                        data,
+                        queue_state.queue.as_mut(),
+                        &mut queue_state.pool,
+                    )?)
                 | self.transmit_pending_segments(state, data, queue_state)?
                 | self.send_pending_packets(state)?;
 
@@ -5149,7 +5171,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         // guest cannot keep up with the load.
                         if !ring_full {
                             // Check the network endpoint for tx completion or rx.
-                            if queue_state.queue.poll_ready(cx).is_ready() {
+                            if queue_state
+                                .queue
+                                .poll_ready(cx, &mut queue_state.pool)
+                                .is_ready()
+                            {
                                 tracing::trace!("endpoint ready");
                                 return Poll::Ready(None);
                             }
@@ -5195,7 +5221,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                                 remote_buffer_id_recv.poll_next_unpin(cx)
                             {
                                 if id >= RX_RESERVED_CONTROL_BUFFERS {
-                                    queue_state.queue.rx_avail(&[RxId(id)]);
+                                    queue_state
+                                        .queue
+                                        .rx_avail(&mut queue_state.pool, &[RxId(id)]);
                                 } else {
                                     state
                                         .primary
@@ -5229,9 +5257,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
         let n = epqueue
-            .rx_poll(&mut data.rx_ready)
+            .rx_poll(pool, &mut data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
             return Ok(false);
@@ -5282,7 +5311,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 state.stats.rx_dropped_ring_full.add(n as u64);
 
                 state.rx_bufs.free(data.rx_ready[0].0);
-                epqueue.rx_avail(&data.rx_ready[..n]);
+                epqueue.rx_avail(pool, &data.rx_ready[..n]);
             }
         }
 
@@ -5294,9 +5323,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
-        let result = epqueue.tx_poll(&mut data.tx_done);
+        let result = epqueue.tx_poll(pool, &mut data.tx_done);
 
         match result {
             Ok(n) => {
@@ -5440,7 +5470,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             &mut data.rx_done,
                         )
                         .ok_or(WorkerError::InvalidRndisPacketCompletion)?;
-                    queue_state.queue.rx_avail(&data.rx_done);
+                    queue_state
+                        .queue
+                        .rx_avail(&mut queue_state.pool, &data.rx_done);
                 }
                 PacketData::SubChannelRequest(request) if state.primary.is_some() => {
                     let mut subchannel_count = 0;
@@ -5558,7 +5590,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         let segments = &data.tx_segments[data.tx_segments_sent..];
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(segments)
+            .tx_avail(&mut queue_state.pool, segments)
             .map_err(WorkerError::Endpoint)?;
 
         let mut segments = &segments[..segments_sent];
