@@ -14,9 +14,6 @@ encryption = ["vmgs/encryption"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom"]
 
-# run encryption unit tests in CI
-ci = ["encryption"]
-
 [dependencies]
 disk_backend.workspace = true
 disk_vhd1.workspace = true
