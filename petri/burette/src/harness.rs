@@ -19,6 +19,7 @@ use std::future::Future;
 /// If created with `None` for the directory, all methods are no-ops.
 pub struct PerfRecorder {
     dir: Option<std::path::PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     pid: i32,
     #[cfg(target_os = "linux")]
     child: Option<(std::process::Child, std::path::PathBuf)>,
