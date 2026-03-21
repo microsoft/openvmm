@@ -27,23 +27,6 @@ use igvm_defs::IGVM_FIXED_HEADER;
 use igvm_defs::IgvmPlatformType;
 use zerocopy::FromBytes;
 
-/// Get the compatibility mask for a given platform type.
-///
-/// The compatibility mask is used to filter headers for specific platforms.
-/// Currently we use simple bit positions for each platform.
-pub fn platform_to_compatibility_mask(platform: IgvmPlatformType) -> u32 {
-    // The compatibility mask is typically set based on the platform headers
-    // in the IGVM file. For simplicity, we use a 1:1 mapping.
-    // In practice, you may want to read the existing platform headers to
-    // determine the correct mask.
-    match platform {
-        IgvmPlatformType::SEV_SNP => 0x1,
-        IgvmPlatformType::TDX => 0x2,
-        IgvmPlatformType::VSM_ISOLATION => 0x4,
-        _ => 0x1, // Default
-    }
-}
-
 /// Determine the [`IgvmRevision`] from raw IGVM binary data by inspecting the
 /// fixed header's `format_version` field.
 ///
@@ -99,8 +82,6 @@ pub fn patch_corim(
         validate_cose_sign1_nil_payload(sig)?;
     }
 
-    let compatibility_mask = platform_to_compatibility_mask(platform);
-
     // Determine the IGVM revision from the fixed header (needed to
     // reconstruct the file after modifying directives).
     let revision = igvm_revision_from_binary(igvm_data)?;
@@ -111,37 +92,43 @@ pub fn patch_corim(
     let igvm_file = IgvmFile::new_from_binary(igvm_data, None)
         .map_err(|e| anyhow::anyhow!("Failed to parse IGVM file: {e}"))?;
 
+    // Look up the compatibility mask for the requested platform from the
+    // file's actual platform headers, rather than assuming a hardcoded mapping.
+    let compatibility_mask = crate::lookup_compatibility_mask(igvm_file.platforms(), platform)?;
+
     // Build new directive headers:
     // - Keep all non-CoRIM directives unchanged
     // - Keep CoRIM directives for other platforms unchanged
-    // - Drop CoRIM directives for our target platform (we'll add replacements)
+    // - Drop ALL CoRIM directives for our target platform (both document
+    //   and signature), preserving their data so we can re-append any
+    //   that the caller did not provide a replacement for. This ensures
+    //   the (document, signature) pair is always emitted in the correct
+    //   order at the end, even when only one is being updated.
     let mut new_directives: Vec<IgvmDirectiveHeader> = Vec::new();
-    let mut had_existing_doc = false;
-    let mut had_existing_sig = false;
+    let mut existing_doc: Option<Vec<u8>> = None;
+    let mut existing_sig: Option<Vec<u8>> = None;
 
     for header in igvm_file.directives() {
         match header {
             IgvmDirectiveHeader::CorimDocument {
                 compatibility_mask: mask,
-                ..
-            } if *mask == compatibility_mask && corim_document.is_some() => {
-                had_existing_doc = true;
+                document,
+            } if *mask == compatibility_mask => {
                 tracing::info!(
                     compatibility_mask = format_args!("0x{mask:X}"),
-                    "Replacing existing CoRIM document header"
+                    "Removing existing CoRIM document header"
                 );
-                // Skip — replacement will be appended below
+                existing_doc = Some(document.clone());
             }
             IgvmDirectiveHeader::CorimSignature {
                 compatibility_mask: mask,
-                ..
-            } if *mask == compatibility_mask && corim_signature.is_some() => {
-                had_existing_sig = true;
+                signature,
+            } if *mask == compatibility_mask => {
                 tracing::info!(
                     compatibility_mask = format_args!("0x{mask:X}"),
-                    "Replacing existing CoRIM signature header"
+                    "Removing existing CoRIM signature header"
                 );
-                // Skip — replacement will be appended below
+                existing_sig = Some(signature.clone());
             }
             other => {
                 new_directives.push(other.clone());
@@ -149,18 +136,23 @@ pub fn patch_corim(
         }
     }
 
-    // Append new CoRIM headers. The igvm crate requires the document to
-    // appear before its corresponding signature in the directive list.
-    if let Some(doc) = corim_document {
+    // Determine final document and signature: prefer caller-provided data,
+    // fall back to the existing data we preserved above.
+    let had_existing = existing_doc.is_some() || existing_sig.is_some();
+    let final_doc = corim_document.map(|d| d.to_vec()).or(existing_doc);
+    let final_sig = corim_signature.map(|s| s.to_vec()).or(existing_sig);
+
+    // Append CoRIM headers in the required order (document before signature).
+    if let Some(doc) = final_doc {
         new_directives.push(IgvmDirectiveHeader::CorimDocument {
             compatibility_mask,
-            document: doc.to_vec(),
+            document: doc,
         });
     }
-    if let Some(sig) = corim_signature {
+    if let Some(sig) = final_sig {
         new_directives.push(IgvmDirectiveHeader::CorimSignature {
             compatibility_mask,
-            signature: sig.to_vec(),
+            signature: sig,
         });
     }
 
@@ -183,11 +175,7 @@ pub fn patch_corim(
         .serialize(&mut output)
         .map_err(|e| anyhow::anyhow!("Failed to serialize IGVM file: {e}"))?;
 
-    let action = if had_existing_doc || had_existing_sig {
-        "Updated"
-    } else {
-        "Added"
-    };
+    let action = if had_existing { "Updated" } else { "Added" };
 
     tracing::info!(
         action = action,

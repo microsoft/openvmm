@@ -11,7 +11,6 @@ mod identity_mapping;
 mod signed_measurement;
 mod vp_context_builder;
 
-use crate::corim::platform_to_compatibility_mask;
 use crate::corim::split_cose_sign1;
 use crate::file_loader::IgvmLoader;
 use crate::file_loader::LoaderIsolationType;
@@ -22,8 +21,10 @@ use clap::ValueEnum;
 use file_loader::IgvmLoaderRegister;
 use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
+use igvm::IgvmPlatformHeader;
 use igvm_defs::IGVM_FIXED_HEADER;
 use igvm_defs::IGVM_VHS_CORIM_DOCUMENT;
+use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
 use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
 use igvm_defs::IgvmPlatformType;
 use igvm_defs::IgvmVariableHeaderType;
@@ -413,6 +414,68 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
     Ok(())
 }
 
+/// Look up the compatibility mask for a given platform type by reading the
+/// platform headers from the IGVM file.
+///
+/// Each IGVM file declares its own platform-to-mask mapping via
+/// `IGVM_VHS_SUPPORTED_PLATFORM` headers. The mask is **not** determined
+/// by the platform type value — it depends on the order the platforms were
+/// added when the file was built. This function reads the actual mapping
+/// from the file rather than assuming a hardcoded convention.
+///
+/// Returns an error if the requested platform type is not present in the
+/// file's platform headers.
+fn lookup_compatibility_mask(
+    platforms: &[IgvmPlatformHeader],
+    platform: IgvmPlatformType,
+) -> anyhow::Result<u32> {
+    for header in platforms {
+        match header {
+            IgvmPlatformHeader::SupportedPlatform(info) => {
+                if info.platform_type == platform {
+                    return Ok(info.compatibility_mask);
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "Platform type {platform:?} not found in IGVM file platform headers. \
+         Available platforms: {}",
+        platforms
+            .iter()
+            .map(|h| match h {
+                IgvmPlatformHeader::SupportedPlatform(info) => {
+                    format!(
+                        "{:?} (mask=0x{:X})",
+                        info.platform_type, info.compatibility_mask
+                    )
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// Format a compatibility mask as a human-readable platform list using
+/// the platform headers from the IGVM file.
+fn format_platform_mask(platforms: &[IgvmPlatformHeader], mask: u32) -> String {
+    let mut names = Vec::new();
+    for header in platforms {
+        match header {
+            IgvmPlatformHeader::SupportedPlatform(info) => {
+                if mask & info.compatibility_mask != 0 {
+                    names.push(format!("{:?}", info.platform_type));
+                }
+            }
+        }
+    }
+    if names.is_empty() {
+        "Unknown".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
 /// Dump CoRIM headers from an IGVM file.
 fn dump_corim_headers(
     file_path: &std::path::Path,
@@ -438,10 +501,6 @@ fn dump_corim_headers(
         fs_err::create_dir_all(dir).context("creating output directory")?;
     }
 
-    // Convert platform filter to compatibility mask if specified
-    let platform_mask_filter =
-        platform_filter.map(|p| platform_to_compatibility_mask(IgvmPlatformType::from(p)));
-
     // Calculate the variable header section location
     let var_header_offset = fixed_header.variable_header_offset as usize;
     let var_header_size = fixed_header.variable_header_size as usize;
@@ -452,6 +511,62 @@ fn dump_corim_headers(
     }
 
     let var_headers = &image[var_header_offset..var_header_end];
+
+    // Parse the platform headers from the raw binary to get the
+    // platform-type-to-compatibility-mask mapping. We walk the variable
+    // header section and collect IGVM_VHT_SUPPORTED_PLATFORM entries,
+    // stopping at the first non-platform header (per the IGVM spec,
+    // platform headers must appear before initialization and directive
+    // headers).
+    let mut platform_headers: Vec<IgvmPlatformHeader> = Vec::new();
+    {
+        let mut plat_offset = 0;
+        while plat_offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
+            let hdr = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[plat_offset..])
+                .map_err(|_| {
+                    anyhow::anyhow!("Failed to read variable header at offset {}", plat_offset)
+                })?
+                .0;
+
+            if hdr.typ != IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM {
+                break; // End of platform section
+            }
+
+            let data_offset = plat_offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
+            if data_offset + size_of::<IGVM_VHS_SUPPORTED_PLATFORM>() > var_headers.len() {
+                break;
+            }
+
+            let plat = IGVM_VHS_SUPPORTED_PLATFORM::read_from_prefix(&var_headers[data_offset..])
+                .map_err(|_| anyhow::anyhow!("Failed to read supported platform header"))?
+                .0;
+            platform_headers.push(IgvmPlatformHeader::SupportedPlatform(plat));
+
+            let aligned_len = (hdr.length as usize + 7) & !7;
+            plat_offset = data_offset + aligned_len;
+        }
+    }
+
+    // Print the supported platform table
+    if !platform_headers.is_empty() {
+        println!("Supported Platforms:");
+        for header in &platform_headers {
+            match header {
+                IgvmPlatformHeader::SupportedPlatform(info) => {
+                    println!(
+                        "  {:?} -> compatibility_mask 0x{:X}",
+                        info.platform_type, info.compatibility_mask
+                    );
+                }
+            }
+        }
+        println!();
+    }
+
+    // Convert platform filter to compatibility mask using the file's actual mapping
+    let platform_mask_filter = platform_filter
+        .map(|p| lookup_compatibility_mask(&platform_headers, IgvmPlatformType::from(p)))
+        .transpose()?;
 
     // Iterate through variable headers looking for CoRIM headers
     let mut offset = 0;
@@ -486,26 +601,21 @@ fn dump_corim_headers(
         }
 
         // Align to 8 bytes for next header, guarding against overflow.
-        let aligned_len = header_data_len
-            .checked_add(7)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Variable header data length {} at offset {} is too large to align",
-                    header_data_len,
-                    offset
-                )
-            })?
-            & !7;
+        let aligned_len = header_data_len.checked_add(7).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Variable header data length {} at offset {} is too large to align",
+                header_data_len,
+                offset
+            )
+        })? & !7;
 
-        let next_offset = header_data_offset
-            .checked_add(aligned_len)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Next variable header offset would overflow for length {} at offset {}",
-                    header_data_len,
-                    offset
-                )
-            })?;
+        let next_offset = header_data_offset.checked_add(aligned_len).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Next variable header offset would overflow for length {} at offset {}",
+                header_data_len,
+                offset
+            )
+        })?;
 
         if next_offset > var_headers.len() {
             anyhow::bail!(
@@ -561,7 +671,7 @@ fn dump_corim_headers(
                     println!(
                         "  Compatibility Mask: 0x{:X} ({})",
                         corim_header.compatibility_mask,
-                        format_platform_mask(corim_header.compatibility_mask)
+                        format_platform_mask(&platform_headers, corim_header.compatibility_mask)
                     );
                     println!(
                         "  File Offset: 0x{:X} ({} bytes)",
@@ -617,25 +727,6 @@ fn dump_corim_headers(
     }
 
     Ok(())
-}
-
-/// Format a compatibility mask as a human-readable platform list.
-fn format_platform_mask(mask: u32) -> String {
-    let mut platforms = Vec::new();
-    if mask & platform_to_compatibility_mask(IgvmPlatformType::SEV_SNP) != 0 {
-        platforms.push("SNP");
-    }
-    if mask & platform_to_compatibility_mask(IgvmPlatformType::TDX) != 0 {
-        platforms.push("TDX");
-    }
-    if mask & platform_to_compatibility_mask(IgvmPlatformType::VSM_ISOLATION) != 0 {
-        platforms.push("VBS");
-    }
-    if platforms.is_empty() {
-        "Unknown".to_string()
-    } else {
-        platforms.join(", ")
-    }
 }
 
 /// Patch CoRIM headers into an existing IGVM file.
