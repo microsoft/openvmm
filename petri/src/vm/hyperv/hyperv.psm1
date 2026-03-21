@@ -120,7 +120,7 @@ function Get-DefaultRasd {
         [string] $ResourceSubType
     )
 
-    $allocCap = Get-CimInstance -Namespace "root/virtualization/v2" -ClassName "Msvm_AllocationCapabilities" | Where-Object { $_.ResourceSubType -eq $ResourceSubType }
+    $allocCap = Get-CimInstance -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_AllocationCapabilities" | Where-Object { $_.ResourceSubType -eq $ResourceSubType }
     $allocCap | Get-CimAssociatedInstance -ResultClassName "CIM_ResourceAllocationSettingData" -Association "Msvm_SettingsDefineCapabilities" | Where-Object { $_.InstanceId.EndsWith("Default") }
 }
 
@@ -155,6 +155,160 @@ function Get-VmSasd
 #
 # Hyper-V Configuration Cmdlets
 #
+
+function New-CustomVM
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string] $VMName,
+
+        [ValidateSet(1, 2)]
+        [int] $Generation = 2,
+
+        [bool] $GuestStateIsolationEnabled = $false,
+
+        [uint16] $GuestStateIsolationType = 0,
+
+        [uint16] $GuestStateIsolationMode = 0,
+
+        [Nullable[uint16]] $GuestStateLifetime = $null,
+
+        [string] $GuestStateFilePath = $null,
+
+        [bool] $VMBusMessageRedirection = $false,
+
+        [string] $FirmwareFile = $null,
+
+        [string] $FirmwareParameters = $null,
+
+        [switch] $IncreaseVtl2Memory,
+
+        [Nullable[bool]] $DefaultBootAlwaysAttempt,
+
+        [bool] $SecureBootEnabled = $false,
+
+        [string] $SecureBootTemplateId = $null,
+
+        [Nullable[uint64]] $ManagementVtlFeatureFlags = $null,
+
+        [Nullable[uint16]] $GuestStateEncryptionPolicy = $null,
+
+        [Nullable[uint64]] $Memory = 4GB,
+
+        [Nullable[uint64]] $VpCount = 2,
+
+        [uint16] $ApicMode = 0,
+
+        [uint64] $HwThreadsPerCore = 0,
+
+        [uint64] $MaxProcessorsPerNumaNode = 1
+    )
+
+    $vmms = Get-Vmms
+
+    if (-not $vmms) { throw "Failed to get the Msvm_VirtualSystemManagementService object" }
+
+    $vssdClass = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_VirtualSystemSettingData"
+
+    $vssdProperties = @{
+        ElementName                = $VMName
+        VirtualSystemSubType       = "Microsoft:Hyper-V:SubType:$Generation"
+        GuestStateIsolationEnabled = $GuestStateIsolationEnabled
+        GuestStateIsolationType    = $GuestStateIsolationType
+        GuestStateIsolationMode    = $GuestStateIsolationMode
+        VMBusMessageRedirection    = $VMBusMessageRedirection
+        SecureBootEnabled          = $SecureBootEnabled
+        VirtualNumaEnabled         = $false
+    }
+
+    if ($GuestStateFilePath) {
+        $vssdProperties["GuestStateDataRoot"] = Split-Path -Path $GuestStateFilePath -Parent
+        $vssdProperties["GuestStateFile"] = Split-Path -Path $GuestStateFilePath -Leaf
+    }
+
+    if ($GuestStateLifetime -ne $null) {
+        $vssdProperties["GuestStateLifetime"] = $GuestStateLifetime
+    }
+
+    if ($DefaultBootAlwaysAttempt -ne $null) {
+        $vssdProperties["DefaultBootAlwaysAttempt"] = $DefaultBootAlwaysAttempt
+    }
+
+    if ($ManagementVtlFeatureFlags -ne $null) {
+        $vssdProperties["ManagementVtlFeatureFlags"] = $ManagementVtlFeatureFlags
+    }
+
+    if ($GuestStateEncryptionPolicy -ne $null) {
+        $vssdProperties["GuestStateEncryptionPolicy"] = $GuestStateEncryptionPolicy
+    }
+
+    if ($FirmwareFile) {
+        # Enable OpenHCL by feature
+        $vssdProperties["GuestFeatureSet"] = 0x00000201
+        # Set the OpenHCL image file path
+        $vssdProperties["FirmwareFile"] = $FirmwareFile
+    }
+
+    if ($FirmwareParameters) {
+        $vssdProperties["FirmwareParameters"] = [System.Text.Encoding]::UTF8.GetBytes($FirmwareParameters)
+    }
+
+    if ($IncreaseVtl2Memory) {
+        # Configure VM for auto placement mode
+        $vssdProperties["Vtl2AddressSpaceConfigurationMode"] = 1
+        # 1GB of OpenHCL address space
+        $vssdProperties["Vtl2AddressRangeSize"] = 1024
+        # 512 MB of OpenHCL MMIO space. So total OpenHCL ram = Vtl2AddressRangeSize - Vtl2MmioAddressRangeSize.
+        $vssdProperties["Vtl2MmioAddressRangeSize"] = 512
+    }
+
+    if ($SecureBootTemplateId) {
+        $vssdProperties["SecureBootTemplateId"] = $SecureBootTemplateId
+    }
+
+    $vssd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_VirtualSystemSettingData" | New-CimInstance -ClientOnly -Property $vssdProperties
+
+    if (-not $vssd) { throw "Unable to create the Msvm_VirtualSystemSettingData object" }
+
+    $msd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_MemorySettingData" | New-CimInstance -ClientOnly -Property @{
+        VirtualQuantity      = $Memory / (1024 * 1024)
+        DynamicMemoryEnabled = $false
+    }
+
+    if (-not $msd) { throw "Unable to create the Msvm_MemorySettingData object" }
+
+    $psd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_ProcessorSettingData" | New-CimInstance -ClientOnly -Property @{
+        VirtualQuantity          = $VpCount
+        ApicMode                 = $ApicMode
+        HwThreadsPerCore         = $HwThreadsPerCore
+        MaxProcessorsPerNumaNode = $MaxProcessorsPerNumaNode
+    }
+
+    if (-not $psd) { throw "Unable to create the Msvm_ProcessorSettingData object" }
+
+    $vm = ($vmms | Invoke-CimMethod -Name "DefineSystem" -Arguments @{
+        "SystemSettings"   = ($vssd | ConvertTo-CimEmbeddedString) ;
+        "ResourceSettings" = @(
+            ($msd | ConvertTo-CimEmbeddedString),
+            ($psd | ConvertTo-CimEmbeddedString)
+        )
+    } | Trace-CimMethodExecution -MethodName "DefineSystem" -CimInstance $vmms)
+
+    if (-not $vm) { throw "Unable to DefineSystem" }
+
+    $vmid = $vm.ResultingSystem.Name
+    $vm = Get-VM -Id $vmid
+
+    $vm | Set-VM -CheckpointType Disabled
+
+    if (@(1, 2, 3) -contains $GuestStateIsolationType) {
+        $vm | Disable-VMConsoleSupport
+    }
+
+    $vmid
+}
 
 function Set-InitialMachineConfiguration
 {
