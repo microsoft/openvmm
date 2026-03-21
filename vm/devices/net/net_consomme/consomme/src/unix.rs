@@ -6,11 +6,12 @@
 //!
 //! - IPv6 address detection via `getifaddrs()`.
 //! - UDP GSO batch send:
-//!   - Linux: `sendmsg(2)` + `UDP_SEGMENT` cmsg (kernel segmentation).
+//!   - Linux: `setsockopt(IPPROTO_UDP, UDP_SEGMENT)` sets the segment size
+//!     once per connection; subsequent `send_to()` calls are segmented by the
+//!     kernel automatically.
 //!   - macOS: `sendmsg_x()` private API (user-space segments, one syscall).
-//!   - Other Unix: software loop over `send_to()`.
 
-// UNSAFETY: getifaddrs/freeifaddrs; sendmsg with a manually built msghdr;
+// UNSAFETY: getifaddrs/freeifaddrs; setsockopt for UDP_SEGMENT (Linux);
 // sendmsg_x (private Apple API) with a manually built msghdr_x array.
 #![expect(unsafe_code)]
 
@@ -18,63 +19,57 @@ use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 
-/// Send `data` as a UDP GSO batch, splitting into datagrams of `seg_size`
-/// bytes each.
+/// Configure the UDP GSO segment size on `socket`.
 ///
-/// - **Linux**: one `sendmsg(2)` call with a `UDP_SEGMENT` control message;
-///   the kernel (or NIC driver) performs the segmentation.
-/// - **macOS**: one `sendmsg_x()` call (private Apple API) with one
-///   `msghdr_x` entry per segment; user-space segments but a single syscall.
-/// - **Other Unix**: software loop — one `send_to()` call per segment.
+/// On Linux this calls `setsockopt(IPPROTO_UDP, UDP_SEGMENT, size)`, which
+/// persists for the lifetime of the connection. When `size` is 0 the option
+/// is cleared and normal (non-GSO) sends resume. On macOS `sendmsg_x` conveys
+/// the segment size per-call, so this is a no-op.
+#[cfg(target_os = "linux")]
+pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
+    use std::mem::size_of;
+    use std::os::unix::io::AsRawFd;
+
+    // SAFETY: setsockopt with a valid u16 optval per Linux udp(7) documentation
+    // for UDP_SEGMENT.
+    let ret = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::IPPROTO_UDP,
+            libc::UDP_SEGMENT,
+            std::ptr::from_ref(&size).cast::<libc::c_void>(),
+            size_of::<u16>() as libc::socklen_t,
+        )
+    };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Configure the UDP GSO segment size on `socket`.
+///
+/// On macOS the segment size is conveyed per-send via `sendmsg_x`, so there
+/// is nothing to configure on the socket itself. This is a no-op.
+#[cfg(target_os = "macos")]
+pub fn set_udp_gso_size(_socket: &UdpSocket, _size: u16) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Send `data` as a UDP GSO batch.
+///
+/// On Linux, `UDP_SEGMENT` must already be configured on the socket via
+/// [`set_udp_gso_size`]. The kernel then automatically splits the outgoing
+/// buffer into datagrams of that size. The `seg_size` parameter is accepted
+/// for API uniformity with the macOS implementation but is not used here.
 #[cfg(target_os = "linux")]
 pub fn send_udp_with_gso(
     socket: &UdpSocket,
     data: &[u8],
     dst: &SocketAddr,
-    seg_size: u16,
+    _seg_size: u16,
 ) -> std::io::Result<usize> {
-    use std::mem::size_of;
-    use std::os::unix::io::AsRawFd;
-
-    let sockaddr = socket2::SockAddr::from(*dst);
-    let iov = libc::iovec {
-        iov_base: data.as_ptr() as *mut libc::c_void,
-        iov_len: data.len(),
-    };
-    let cmsg_space =
-        // SAFETY: computing the buffer size for a single u16 cmsg.
-        unsafe { libc::CMSG_SPACE(size_of::<u16>() as u32) as usize };
-    let mut cmsg_buf = vec![0u8; cmsg_space];
-    // Use zeroed() + field assignment rather than struct literal syntax:
-    // musl's msghdr has private padding fields on 64-bit targets that make
-    // struct literal initialization fail to compile.
-    // SAFETY: all-zero is a valid initializer for msghdr.
-    let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
-    msg.msg_name = sockaddr.as_ptr() as *mut libc::c_void;
-    msg.msg_namelen = sockaddr.len();
-    msg.msg_iov = &iov as *const libc::iovec as *mut libc::iovec;
-    msg.msg_iovlen = 1;
-    msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
-    msg.msg_controllen = cmsg_space as _;
-    // SAFETY: msg_control and msg_controllen point to our allocated buffer,
-    // which is large enough for a single u16 UDP_SEGMENT control message.
-    let cmsg = unsafe { &mut *libc::CMSG_FIRSTHDR(&msg) };
-    cmsg.cmsg_level = libc::IPPROTO_UDP;
-    cmsg.cmsg_type = libc::UDP_SEGMENT;
-    cmsg.cmsg_len =
-        // SAFETY: computing the cmsg_len for a single u16 data field.
-        unsafe { libc::CMSG_LEN(size_of::<u16>() as u32) as _ };
-    // SAFETY: writing a u16 into the CMSG data area, which is correctly
-    // sized for a u16 payload.
-    unsafe { *(libc::CMSG_DATA(cmsg) as *mut u16) = seg_size };
-
-    // SAFETY: calling sendmsg(2) with a correctly constructed msghdr.
-    let ret = unsafe { libc::sendmsg(socket.as_raw_fd(), &msg, 0) };
-    if ret < 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(ret as usize)
-    }
+    socket.send_to(data, *dst)
 }
 
 /// macOS batch send using the private `sendmsg_x()` API.
@@ -141,7 +136,7 @@ pub fn send_udp_with_gso(
         .map(|iov| MsghdrX {
             msg_name: sockaddr.as_ptr() as *mut libc::c_void,
             msg_namelen: sockaddr.len(),
-            msg_iov: iov as *const libc::iovec as *mut libc::iovec,
+            msg_iov: std::ptr::from_ref(iov).cast_mut(),
             msg_iovlen: 1,
             msg_control: std::ptr::null_mut(),
             msg_controllen: 0,

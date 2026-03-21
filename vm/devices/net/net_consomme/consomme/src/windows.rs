@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 #![cfg(windows)]
-// UNSAFETY: Calling Win32 APIs to set TCP initial RTO and to check host IPv6
-// addresses.
+// UNSAFETY: Calling Win32 APIs to set TCP initial RTO, to configure UDP GSO
+// via setsockopt, and to check host IPv6 addresses.
 #![expect(unsafe_code)]
 
 use socket2::Socket;
@@ -99,73 +99,52 @@ pub fn host_has_ipv6_address() -> Result<bool, std::io::Error> {
     Ok(has_ipv6)
 }
 
-/// Send `data` as a UDP GSO batch using `WSASendMsg` with a
-/// `UDP_SEND_MSG_SIZE` control message so the Windows network stack splits
-/// it into datagrams of `seg_size` bytes each.
+// UDP_SEND_MSG_SIZE = 2 (ws2ipdef.h, IPPROTO_UDP level).
+const UDP_SEND_MSG_SIZE: i32 = 2;
+
+/// Configure the `UDP_SEND_MSG_SIZE` socket option on `socket`.
+///
+/// When `size` is non-zero the Windows networking stack automatically splits
+/// each outgoing send buffer into UDP datagrams of that many bytes. Setting
+/// it to 0 disables segmentation and restores normal send behaviour.
+///
+/// This is called once when the GSO segment size changes, not on every send,
+/// so the option persists for the lifetime of the connection.
+pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
+    let raw = socket.as_raw_socket() as WinSock::SOCKET;
+    let size_dword = size as u32;
+    // SAFETY: setsockopt with a valid DWORD optval per MSDN documentation for
+    // UDP_SEND_MSG_SIZE.
+    let ret = unsafe {
+        WinSock::setsockopt(
+            raw,
+            WinSock::IPPROTO_UDP as i32,
+            UDP_SEND_MSG_SIZE,
+            std::ptr::from_ref(&size_dword).cast::<u8>(),
+            size_of::<u32>() as i32,
+        )
+    };
+    if ret == WinSock::SOCKET_ERROR {
+        return Err(std::io::Error::from_raw_os_error(
+            // SAFETY: WSAGetLastError is safe to call after a socket error.
+            unsafe { WinSock::WSAGetLastError() } as i32,
+        ));
+    }
+    Ok(())
+}
+
+/// Send `data` as a UDP GSO batch.
+///
+/// The `UDP_SEND_MSG_SIZE` socket option must already be set to the desired
+/// segment size via [`set_udp_gso_size`] before calling this function. The
+/// Windows networking stack then automatically splits each outgoing send into
+/// datagrams of that size. The `seg_size` parameter is accepted for API
+/// uniformity with the Unix implementation but is not used here.
 pub fn send_udp_with_gso(
     socket: &UdpSocket,
     data: &[u8],
     dst: &SocketAddr,
-    seg_size: u16,
+    _seg_size: u16,
 ) -> std::io::Result<usize> {
-    // UDP_SEND_MSG_SIZE tells WSASendMsg the per-segment size.
-    const UDP_SEND_MSG_SIZE: i32 = 2;
-
-    let sockaddr = socket2::SockAddr::from(*dst);
-    let seg_size_dword = seg_size as u32;
-
-    let buf = WinSock::WSABUF {
-        len: data.len() as u32,
-        buf: data.as_ptr() as *mut u8,
-    };
-
-    let cmsg_space =
-        // SAFETY: computing the buffer size for a single u32 WSA cmsg.
-        unsafe { WinSock::WSA_CMSG_SPACE(size_of::<u32>() as u32) as usize };
-    let mut cmsg_buf = vec![0u8; cmsg_space];
-
-    let wsamsg = WinSock::WSAMSG {
-        name: sockaddr.as_ptr() as *mut WinSock::SOCKADDR,
-        namelen: sockaddr.len() as i32,
-        lpBuffers: &buf as *const WinSock::WSABUF as *mut WinSock::WSABUF,
-        dwBufferCount: 1,
-        Control: WinSock::WSABUF {
-            buf: cmsg_buf.as_mut_ptr(),
-            len: cmsg_space as u32,
-        },
-        dwFlags: 0,
-    };
-
-    // SAFETY: filling the WSAMSG control buffer per the WSA_CMSG documentation.
-    let cmsg = unsafe { &mut *WinSock::WSA_CMSG_FIRSTHDR(&wsamsg) };
-    cmsg.cmsg_level = WinSock::IPPROTO_UDP as i32;
-    cmsg.cmsg_type = UDP_SEND_MSG_SIZE;
-    cmsg.cmsg_len =
-        // SAFETY: computing cmsg_len for a single u32 data field.
-        unsafe { WinSock::WSA_CMSG_LEN(size_of::<u32>() as u32) };
-    // SAFETY: writing a u32 into the CMSG data area, which is correctly
-    // sized for a u32 payload.
-    unsafe { *(WinSock::WSA_CMSG_DATA(cmsg) as *mut u32) = seg_size_dword };
-
-    let mut bytes_sent = 0u32;
-    // SAFETY: calling WSASendMsg with a correctly constructed WSAMSG.
-    let ret = unsafe {
-        WinSock::WSASendMsg(
-            socket.as_raw_socket() as WinSock::SOCKET,
-            &wsamsg,
-            0,
-            &mut bytes_sent,
-            null_mut(),
-            None,
-        )
-    };
-
-    if ret == WinSock::SOCKET_ERROR {
-        Err(std::io::Error::from_raw_os_error(
-            // SAFETY: WSAGetLastError is safe to call after a socket error.
-            unsafe { WinSock::WSAGetLastError() } as i32,
-        ))
-    } else {
-        Ok(bytes_sent as usize)
-    }
+    socket.send_to(data, *dst)
 }
