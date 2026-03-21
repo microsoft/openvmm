@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     let name = "prep_steps";
     let (logger, artifacts, source_disk) = build(name)?;
     let r = run(name, &logger, artifacts, source_disk);
-    logger.log_test_result(name, &r);
+    logger.log_test_result(name, &r, false);
     r
 }
 

@@ -41,21 +41,44 @@ engineers' local machines and in CI. Put these special words in your test to opt
 
 ### "unstable" tests
 
-If a test is not yet reliable enough to gate PRs, add the `_unstable` suffix to
-the test function name. For example:
+If a test is not yet reliable enough to gate PRs, add `unstable` to the macro.
+
+For individual variants:
 
 ```rust,ignore
-async fn my_new_boot_test_unstable(config: PetriVmConfig) -> Result<(), anyhow::Error> {
+#[vmm_test(
+    // unstable variant:
+    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // other reliable variants:
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    // ...
+)]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+```
+
+For all variants of the test:
+
+```rust,ignore
+#[vmm_test_with(unstable(
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    // ...
+))]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     // ...
 }
 ```
 
 Unstable tests run in the same CI job as stable tests. When an unstable test fails
-the CI pass will pass with a warning
+the CI run will pass with a warning
 
-To promote an unstable test to stable, rename the function to remove the
-`_unstable` suffix. This is a single-place change — no CI or configuration
-updates are required.
+To promote an unstable test to stable, remove `unstable` from the macro. This is
+a single-place change — no CI or configuration updates are required.
+
+To ignore these `unstable` tags and report failures for all tests when running
+locally, set the following environment variable: `PETRI_REPORT_UNSTABLE_FAIL=1`
 
 ## Running VMM Tests (Flowey)
 
