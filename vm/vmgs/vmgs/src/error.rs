@@ -85,9 +85,11 @@ pub enum Error {
     #[error("Invalid argument: {0}")]
     InvalidArgument(&'static str),
 
+    #[cfg(feature = "encryption")]
     /// Cryptographic error
     #[error("Cryptographic error: {0}")]
     Crypto(#[source] crypto::aes_256_gcm::Aes256GcmError),
+
     /// Serde JSON error
     #[error("Serde JSON error: {0}")]
     Json(#[from] serde_json::Error),
