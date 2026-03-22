@@ -2381,7 +2381,7 @@ mod tests {
     use crate::scsi;
     use crate::scsidvd::ISO_SECTOR_SIZE;
     use crate::scsidvd::SimpleScsiDvd;
-    use futures::FutureExt;
+    use futures::executor::block_on;
     use guestmem::GuestMemory;
     use pal_async::async_test;
     use scsi::AdditionalSenseCode;
@@ -2408,10 +2408,7 @@ mod tests {
         let mem = GuestMemory::allocate(pattern.len());
         mem.write_at(0, &pattern).unwrap();
         let buffers = OwnedRequestBuffers::linear(0, pattern.len(), false);
-        disk.write_vectored(&buffers.buffer(&mem), 0, false)
-            .now_or_never()
-            .expect("RAM disk write should complete synchronously")
-            .unwrap();
+        block_on(disk.write_vectored(&buffers.buffer(&mem), 0, false)).unwrap();
 
         let scsi_dvd = SimpleScsiDvd::new(Some(disk));
         let sector_shift = ISO_SECTOR_SIZE.trailing_zeros() as u8;
