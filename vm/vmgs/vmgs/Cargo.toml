@@ -15,6 +15,9 @@ mesh = ["dep:mesh_protobuf"]
 encryption = ["dep:crypto", "crypto/ossl_vendored"]
 test_helpers = []
 
+# run encryption unit tests in CI
+ci = ["encryption"]
+
 [dependencies]
 disk_backend.workspace = true
 guestmem.workspace = true
