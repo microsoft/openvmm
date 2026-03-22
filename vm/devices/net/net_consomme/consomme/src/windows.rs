@@ -17,6 +17,7 @@ use windows_sys::Win32::Foundation::ERROR_SUCCESS;
 use windows_sys::Win32::NetworkManagement::IpHelper::MIB_UNICASTIPADDRESS_TABLE;
 use windows_sys::Win32::Networking::WinSock;
 use windows_sys::Win32::Networking::WinSock::AF_INET6;
+use windows_sys::Win32::Networking::WinSock::UDP_SEND_MSG_SIZE;
 
 pub fn disable_connection_retries(sock: &Socket) -> Result<(), i32> {
     const TCP_INITIAL_RTO_UNSPECIFIED_RTT: u16 = 0xffff;
@@ -99,17 +100,7 @@ pub fn host_has_ipv6_address() -> Result<bool, std::io::Error> {
     Ok(has_ipv6)
 }
 
-// UDP_SEND_MSG_SIZE = 2 (ws2ipdef.h, IPPROTO_UDP level).
-const UDP_SEND_MSG_SIZE: i32 = 2;
-
 /// Configure the `UDP_SEND_MSG_SIZE` socket option on `socket`.
-///
-/// When `size` is non-zero the Windows networking stack automatically splits
-/// each outgoing send buffer into UDP datagrams of that many bytes. Setting
-/// it to 0 disables segmentation and restores normal send behaviour.
-///
-/// This is called once when the GSO segment size changes, not on every send,
-/// so the option persists for the lifetime of the connection.
 pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     let raw = socket.as_raw_socket() as WinSock::SOCKET;
     let size_dword = size as u32;
@@ -118,7 +109,7 @@ pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     let ret = unsafe {
         WinSock::setsockopt(
             raw,
-            WinSock::IPPROTO_UDP as i32,
+            WinSock::IPPROTO_UDP,
             UDP_SEND_MSG_SIZE,
             std::ptr::from_ref(&size_dword).cast::<u8>(),
             size_of::<u32>() as i32,
@@ -133,18 +124,12 @@ pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Send `data` to `dst` via `socket`, using UDP GSO if `gso` is `Some`.
-///
-/// The `UDP_SEND_MSG_SIZE` socket option must already be set to the desired
-/// segment size via [`set_udp_gso_size`] before calling this function. The
-/// Windows networking stack then automatically splits each outgoing send into
-/// datagrams of that size, so this is just a plain `send_to` regardless of
-/// the `gso` value.
+/// Send `data` to `dst` via `socket`
 pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],
     dst: &SocketAddr,
-    _gso: Option<u16>,
+    _: Option<u16>,
 ) -> std::io::Result<usize> {
     socket.send_to(data, *dst)
 }

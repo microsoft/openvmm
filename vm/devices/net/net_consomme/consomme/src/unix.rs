@@ -14,6 +14,7 @@
 // sendmsg_x (private Apple API) with a manually built msghdr_x array.
 #![expect(unsafe_code)]
 
+use std::mem::size_of;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
@@ -26,9 +27,6 @@ use std::os::unix::io::AsRawFd;
 /// is cleared and normal (non-GSO) sends resume.
 #[cfg(target_os = "linux")]
 pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
-    use std::mem::size_of;
-    use std::os::unix::io::AsRawFd;
-
     // SAFETY: setsockopt with a valid u16 optval per Linux udp(7) documentation
     // for UDP_SEGMENT.
     let ret = unsafe {
@@ -66,7 +64,7 @@ pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],
     dst: &SocketAddr,
-    _gso: Option<u16>,
+    _: Option<u16>,
 ) -> std::io::Result<usize> {
     socket.send_to(data, *dst)
 }
