@@ -29,7 +29,7 @@ use virtio_resources::net::VirtioNetHandle;
 use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Basic boot test with the VTL 0 alias map.
 // TODO: Remove once #73 is fixed.
@@ -115,7 +115,7 @@ fn configure_for_sidecar<T: PetriVmmBackend>(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none)))]
 async fn sidecar_aps_unused<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
