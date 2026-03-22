@@ -600,12 +600,20 @@ impl<T: Client> Access<'_, T> {
         if payload.len() < IPV4_HEADER_LEN
             || ipv4.version() != 4
             || payload.len() < ipv4.header_len().into()
-            || payload.len() < ipv4.total_len().into()
         {
             return Err(DropReason::MalformedPacket);
         }
 
-        let total_len = if checksum.tso.is_some() {
+        // For segmentation offload (TSO/USO) the IP total_length field may
+        // not reflect the actual buffer size (it can hold only one segment's
+        // worth or wrap for payloads > 64 KiB). Use the real buffer length
+        // instead.
+        let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
+        if !segmentation_offload && payload.len() < ipv4.total_len().into() {
+            return Err(DropReason::MalformedPacket);
+        }
+
+        let total_len = if segmentation_offload {
             payload.len()
         } else {
             ipv4.total_len().into()
@@ -653,9 +661,15 @@ impl<T: Client> Access<'_, T> {
             return Err(DropReason::MalformedPacket);
         }
 
-        let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
-        if payload.len() < required_len {
-            return Err(DropReason::MalformedPacket);
+        // For segmentation offload (TSO/USO) the IPv6 payload_length field
+        // may not reflect the actual buffer size. Skip the length validation
+        // and use the full buffer.
+        let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
+        if !segmentation_offload {
+            let required_len = smoltcp::wire::IPV6_HEADER_LEN + ipv6.payload_len() as usize;
+            if payload.len() < required_len {
+                return Err(DropReason::MalformedPacket);
+            }
         }
 
         let next_header = ipv6.next_header();

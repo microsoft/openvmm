@@ -167,7 +167,6 @@ pub fn send_udp_with_gso(
     Ok(iovecs[..sent as usize].iter().map(|iov| iov.iov_len).sum())
 }
 
-
 /// Checks whether the host has at least one non-link-local, non-loopback
 /// IPv6 unicast address assigned.
 pub fn host_has_ipv6_address() -> Result<bool, std::io::Error> {

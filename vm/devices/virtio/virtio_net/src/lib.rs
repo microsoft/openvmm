@@ -262,20 +262,26 @@ impl VirtioDevice for Device {
         // must compute per-segment IPv4 header checksums.
         let host_tso4 = offloads.tso && offloads.tcp && offloads.ipv4_header;
         let host_tso6 = offloads.tso && offloads.tcp;
-        // VIRTIO_NET_F_HOST_UFO: we can handle UDP segmentation from the guest.
-        let host_ufo = offloads.ufo && offloads.udp;
+        // VIRTIO_NET_F_HOST_USO (bank 1): we can handle UDP segmentation from
+        // the guest. This is the modern USO feature (bit 56); the legacy
+        // HOST_UFO (bit 14) is not offered because it is deprecated in modern
+        // Linux kernels and causes connectivity issues.
+        let host_uso = offloads.ufo && offloads.udp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
             .with_csum(csum)
             .with_guest_csum(true)
             .with_host_tso4(host_tso4)
-            .with_host_tso6(host_tso6)
-            .with_host_ufo(host_ufo);
+            .with_host_tso6(host_tso6);
+
+        let features_bank1 = NetworkFeaturesBank1::new().with_host_uso(host_uso);
 
         DeviceTraits {
             device_id: 1,
-            device_features: VirtioDeviceFeatures::new().with_bank(0, features_bank0.into_bits()),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank(0, features_bank0.into_bits())
+                .with_bank(1, features_bank1.into_bits()),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
@@ -324,6 +330,7 @@ impl VirtioDevice for Device {
         .context("failed creating virtio net queue")?;
 
         let negotiated_features = NetworkFeaturesBank0::from(features.bank(0));
+        let negotiated_features_bank1 = NetworkFeaturesBank1::from(features.bank(1));
         let pair_idx = (idx / 2) as usize;
         let is_rx = idx.is_multiple_of(2);
 
@@ -379,7 +386,12 @@ impl VirtioDevice for Device {
                     tx_queue,
                     tx_queue_size,
                 };
-                self.insert_worker(virtio_state, pair_idx, negotiated_features);
+                self.insert_worker(
+                    virtio_state,
+                    pair_idx,
+                    negotiated_features,
+                    negotiated_features_bank1,
+                );
 
                 if first_pair {
                     self.coordinator.start();
@@ -609,6 +621,7 @@ impl Device {
         virtio_state: VirtioState,
         idx: usize,
         negotiated_features: NetworkFeaturesBank0,
+        negotiated_features_bank1: NetworkFeaturesBank1,
     ) {
         let mut builder = self.driver_source.builder();
         // TODO: set this correctly
@@ -629,6 +642,7 @@ impl Device {
             virtio_state,
             active_state,
             negotiated_features,
+            negotiated_features_bank1,
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
@@ -835,6 +849,8 @@ struct Worker {
     active_state: ActiveState,
     #[inspect(skip)]
     negotiated_features: NetworkFeaturesBank0,
+    #[inspect(skip)]
+    negotiated_features_bank1: NetworkFeaturesBank1,
 }
 
 impl Worker {
@@ -1021,6 +1037,7 @@ impl Worker {
             packet_prefix,
             packet_len,
             self.negotiated_features,
+            self.negotiated_features_bank1,
         );
 
         self.active_state.data.tx_segments[seg_start].ty = TxSegmentType::Head(TxMetadata {
@@ -1044,6 +1061,7 @@ impl Worker {
         packet_prefix: &[u8],
         packet_len: u32,
         features: NetworkFeaturesBank0,
+        features_bank1: NetworkFeaturesBank1,
     ) -> TxMetadata {
         let Some(header) = header else {
             return TxMetadata::default();
@@ -1122,13 +1140,17 @@ impl Worker {
         }
 
         // GSO (segmentation offload) — only honor if the corresponding
-        // HOST_TSO/HOST_UFO feature was negotiated.
-        let gso_enabled = match gso_protocol {
-            VirtioNetHeaderGsoProtocol::TCPV4 => features.host_tso4(),
-            VirtioNetHeaderGsoProtocol::TCPV6 => features.host_tso6(),
-            VirtioNetHeaderGsoProtocol::UDP => features.host_ufo(),
-            _ => false,
-        };
+        // HOST_TSO/HOST_USO feature was negotiated. Per the virtio spec, all
+        // GSO features require VIRTIO_NET_F_CSUM; guard against a misbehaving
+        // guest that negotiates GSO without CSUM.
+        let gso_enabled = features.csum()
+            && match gso_protocol {
+                VirtioNetHeaderGsoProtocol::TCPV4 => features.host_tso4(),
+                VirtioNetHeaderGsoProtocol::TCPV6 => features.host_tso6(),
+                VirtioNetHeaderGsoProtocol::UDP => features.host_ufo(),
+                VirtioNetHeaderGsoProtocol::UDP_L4 => features_bank1.host_uso(),
+                _ => false,
+            };
         if gso_enabled {
             if l2_len == 0 {
                 l2_len = parsed_l2_len;
@@ -1141,7 +1163,8 @@ impl Worker {
                     l3_len = header.csum_start - l2_len as u16;
                 }
 
-                let is_udp = gso_protocol == VirtioNetHeaderGsoProtocol::UDP;
+                let is_udp = gso_protocol == VirtioNetHeaderGsoProtocol::UDP
+                    || gso_protocol == VirtioNetHeaderGsoProtocol::UDP_L4;
 
                 // Derive l4_len from hdr_len if available:
                 //   hdr_len = l2_len + l3_len + l4_len (total header length)
@@ -1156,8 +1179,7 @@ impl Worker {
 
                 // For UDP GSO, hdr_len==0 is acceptable (fixed 8-byte header).
                 // For TCP GSO, we need a valid l4_len to proceed.
-                let valid_lengths =
-                    l3_len > 0 && (l4_len > 0 || (is_udp && header.hdr_len == 0));
+                let valid_lengths = l3_len > 0 && (l4_len > 0 || (is_udp && header.hdr_len == 0));
 
                 if valid_lengths {
                     if is_udp {
@@ -1176,8 +1198,16 @@ impl Worker {
 
                     // UDP GSO has no separate TCPV4/TCPV6 variants,
                     // so derive IP version from EtherType; TCP uses GSO type.
-                    let is_ipv4 = if is_udp { is_ipv4_from_eth } else { is_ipv4_from_gso };
-                    let is_ipv6 = if is_udp { is_ipv6_from_eth } else { is_ipv6_from_gso };
+                    let is_ipv4 = if is_udp {
+                        is_ipv4_from_eth
+                    } else {
+                        is_ipv4_from_gso
+                    };
+                    let is_ipv6 = if is_udp {
+                        is_ipv6_from_eth
+                    } else {
+                        is_ipv6_from_gso
+                    };
                     flags.set_is_ipv4(is_ipv4);
                     flags.set_is_ipv6(is_ipv6);
                     if is_ipv4 {
