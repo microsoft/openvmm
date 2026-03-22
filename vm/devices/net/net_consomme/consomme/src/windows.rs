@@ -133,13 +133,7 @@ pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Send `data` to `dst` via `socket`, using UDP GSO if `gso` is `Some`.
-///
-/// The `UDP_SEND_MSG_SIZE` socket option must already be set to the desired
-/// segment size via [`set_udp_gso_size`] before calling this function. The
-/// Windows networking stack then automatically splits each outgoing send into
-/// datagrams of that size, so this is just a plain `send_to` regardless of
-/// the `gso` value.
+/// Send `data` to `dst` via `socket`.
 pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],

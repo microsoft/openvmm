@@ -263,7 +263,7 @@ impl VirtioDevice for Device {
         // VIRTIO_NET_F_HOST_USO (bank 1): we can handle UDP segmentation from
         // the guest. This is the modern USO feature (bit 56); the legacy
         // HOST_UFO (bit 14) is not offered because it is deprecated in modern
-        // Linux kernels and causes connectivity issues.
+        // Linux kernels.
         let host_uso = offloads.uso && offloads.udp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
@@ -1077,15 +1077,18 @@ impl Worker {
         let mut max_tcp_segment_size: u16 = 0;
         let mut max_udp_segment_size: u16 = 0;
 
-        // Determine IP version from GSO type when available.
-        let is_ipv4_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV4;
-        let is_ipv6_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV6;
-
         // Parse the Ethernet header to determine IP version and L2 length.
-        // EtherType is at offset 12. If it's 0x8100 (VLAN), the real
-        // EtherType is at offset 16 and L2 is 18 bytes.
         let (parsed_l2_len, is_ipv4_from_eth, is_ipv6_from_eth) =
             Self::parse_ethertype(packet_prefix);
+
+        // Resolve IP version. TCP GSO types (TCPV4/TCPV6) encode the IP
+        // version directly. For everything else (UDP_L4, NONE), fall back
+        // to the EtherType parsed from the Ethernet header.
+        let (is_ipv4, is_ipv6) = match gso_protocol {
+            VirtioNetHeaderGsoProtocol::TCPV4 => (true, false),
+            VirtioNetHeaderGsoProtocol::TCPV6 => (false, true),
+            _ => (is_ipv4_from_eth, is_ipv6_from_eth),
+        };
 
         // Only honor NEEDS_CSUM if VIRTIO_NET_F_CSUM was negotiated.
         if flags_byte.needs_csum() && features.csum() {
@@ -1117,10 +1120,6 @@ impl Worker {
                     flags.set_offload_udp_checksum(true);
                 }
 
-                // Prefer GSO-derived IP version, then EtherType-derived.
-                let is_ipv4 = is_ipv4_from_gso || (!is_ipv6_from_gso && is_ipv4_from_eth);
-                let is_ipv6 = is_ipv6_from_gso || (!is_ipv4_from_gso && is_ipv6_from_eth);
-
                 // Only enable checksum offloads if we know the IP version;
                 // backends require consistent is_ipv4/is_ipv6 and header lengths.
                 if !is_ipv4 && !is_ipv6 {
@@ -1146,7 +1145,6 @@ impl Worker {
             && match gso_protocol {
                 VirtioNetHeaderGsoProtocol::TCPV4 => features.host_tso4(),
                 VirtioNetHeaderGsoProtocol::TCPV6 => features.host_tso6(),
-                VirtioNetHeaderGsoProtocol::UDP => features.host_ufo(),
                 VirtioNetHeaderGsoProtocol::UDP_L4 => features_bank1.host_uso(),
                 _ => false,
             };
@@ -1162,8 +1160,7 @@ impl Worker {
                     l3_len = header.csum_start - l2_len as u16;
                 }
 
-                let is_udp = gso_protocol == VirtioNetHeaderGsoProtocol::UDP
-                    || gso_protocol == VirtioNetHeaderGsoProtocol::UDP_L4;
+                let is_udp = gso_protocol == VirtioNetHeaderGsoProtocol::UDP_L4;
 
                 // Derive l4_len from hdr_len if available:
                 //   hdr_len = l2_len + l3_len + l4_len (total header length)
@@ -1195,18 +1192,6 @@ impl Worker {
                         max_tcp_segment_size = header.gso_size;
                     }
 
-                    // UDP GSO has no separate TCPV4/TCPV6 variants,
-                    // so derive IP version from EtherType; TCP uses GSO type.
-                    let is_ipv4 = if is_udp {
-                        is_ipv4_from_eth
-                    } else {
-                        is_ipv4_from_gso
-                    };
-                    let is_ipv6 = if is_udp {
-                        is_ipv6_from_eth
-                    } else {
-                        is_ipv6_from_gso
-                    };
                     flags.set_is_ipv4(is_ipv4);
                     flags.set_is_ipv6(is_ipv6);
                     if is_ipv4 {
