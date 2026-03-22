@@ -95,9 +95,7 @@ struct UdpConnection {
     recycle: bool,
     #[inspect(debug)]
     last_activity: Instant,
-    /// The UDP GSO segment size currently configured on the socket (0 = disabled).
-    /// Tracked to avoid redundant setsockopt calls on every packet.
-    gso_size: u16,
+    gso_size: Option<u16>,
 }
 
 #[derive(Inspect, Default)]
@@ -308,16 +306,12 @@ impl<T: Client> Access<'_, T> {
 
         let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
         let socket = conn.socket.as_ref().unwrap().get();
-        let new_gso = checksum.gso.unwrap_or(0);
-        if conn.gso_size != new_gso {
-            platform::set_udp_gso_size(socket, new_gso).map_err(DropReason::Io)?;
-            conn.gso_size = new_gso;
+        if conn.gso_size != checksum.gso {
+            platform::set_udp_gso_size(socket, checksum.gso.unwrap_or(0))
+                .map_err(DropReason::Io)?;
+            conn.gso_size = checksum.gso;
         }
-        let result = if let Some(seg_size) = checksum.gso {
-            platform::send_udp_with_gso(socket, udp_packet.payload(), &dst_sock_addr, seg_size)
-        } else {
-            socket.send_to(udp_packet.payload(), dst_sock_addr)
-        };
+        let result = platform::send_to(socket, udp_packet.payload(), &dst_sock_addr, checksum.gso);
         match result {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
@@ -362,7 +356,7 @@ impl<T: Client> Access<'_, T> {
                     stats: Default::default(),
                     recycle: false,
                     last_activity: Instant::now(),
-                    gso_size: 0,
+                    gso_size: None,
                 };
                 Ok(e.insert(conn))
             }

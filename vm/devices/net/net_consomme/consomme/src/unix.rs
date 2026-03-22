@@ -5,11 +5,10 @@
 //! Unix platform helpers for consomme.
 //!
 //! - IPv6 address detection via `getifaddrs()`.
-//! - UDP GSO batch send:
+//! - UDP GSO send:
 //!   - Linux: `setsockopt(IPPROTO_UDP, UDP_SEGMENT)` sets the segment size
-//!     once per connection; subsequent `send_to()` calls are segmented by the
-//!     kernel automatically.
-//!   - macOS: `sendmsg_x()` private API (user-space segments, one syscall).
+//!     once per connection
+//!   - macOS: `sendmsg_x()` private API.
 
 // UNSAFETY: getifaddrs/freeifaddrs; setsockopt for UDP_SEGMENT (Linux);
 // sendmsg_x (private Apple API) with a manually built msghdr_x array.
@@ -18,13 +17,13 @@
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
+use std::os::unix::io::AsRawFd;
 
 /// Configure the UDP GSO segment size on `socket`.
 ///
 /// On Linux this calls `setsockopt(IPPROTO_UDP, UDP_SEGMENT, size)`, which
 /// persists for the lifetime of the connection. When `size` is 0 the option
-/// is cleared and normal (non-GSO) sends resume. On macOS `sendmsg_x` conveys
-/// the segment size per-call, so this is a no-op.
+/// is cleared and normal (non-GSO) sends resume.
 #[cfg(target_os = "linux")]
 pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     use std::mem::size_of;
@@ -56,43 +55,45 @@ pub fn set_udp_gso_size(_socket: &UdpSocket, _size: u16) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Send `data` as a UDP GSO batch.
+/// Send `data` to `dst` via `socket`, using UDP GSO if `gso` is `Some`.
 ///
 /// On Linux, `UDP_SEGMENT` must already be configured on the socket via
 /// [`set_udp_gso_size`]. The kernel then automatically splits the outgoing
-/// buffer into datagrams of that size. The `seg_size` parameter is accepted
-/// for API uniformity with the macOS implementation but is not used here.
+/// buffer into datagrams of that size, so this is just a plain `send_to`
+/// regardless of the `gso` value.
 #[cfg(target_os = "linux")]
-pub fn send_udp_with_gso(
+pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],
     dst: &SocketAddr,
-    _seg_size: u16,
+    _gso: Option<u16>,
 ) -> std::io::Result<usize> {
     socket.send_to(data, *dst)
 }
 
-/// macOS batch send using the private `sendmsg_x()` API.
+/// Send `data` to `dst` via `socket`, using UDP GSO if `gso` is `Some`.
+///
+/// When `gso` is `None`, this is a plain `send_to`. When `gso` is
+/// `Some(seg_size)`, macOS uses the private `sendmsg_x()` API to batch
+/// multiple datagrams in a single syscall (user-space segmentation).
 ///
 /// `sendmsg_x()` and `msghdr_x` are undocumented Apple extensions (present
-/// since macOS 10.11) that allow sending multiple datagrams in a single
-/// syscall. `msghdr_x` is identical to the standard `msghdr` except for an
-/// extra `msg_datalen` field that records the byte count for each entry.
-/// `sendmsg_x` returns the number of messages queued, not bytes.
-///
-/// This gives us user-space segmentation with a single syscall, rather than
-/// one syscall per segment.
+/// since macOS 10.11). `msghdr_x` is identical to the standard `msghdr`
+/// except for an extra `msg_datalen` field that records the byte count for
+/// each entry. `sendmsg_x` returns the number of messages queued, not bytes.
 #[cfg(target_os = "macos")]
-pub fn send_udp_with_gso(
+pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],
     dst: &SocketAddr,
-    seg_size: u16,
+    gso: Option<u16>,
 ) -> std::io::Result<usize> {
-    use std::os::unix::io::AsRawFd;
+    let Some(seg_size) = gso else {
+        return socket.send_to(data, *dst);
+    };
 
-    // Private Apple extension of msghdr: identical layout up to msg_flags,
-    // then an extra msg_datalen field that holds the per-entry byte count.
+    // Private Apple extension of msghdr
+    // Adapted from: https://github.com/apple-oss-distributions/xnu/blob/8d741a5de7ff4191bf97d57b9f54c2f6d4a15585/bsd/sys/socket_private.h
     #[repr(C)]
     struct MsghdrX {
         msg_name: *mut libc::c_void,
@@ -119,8 +120,7 @@ pub fn send_udp_with_gso(
     let sockaddr = socket2::SockAddr::from(*dst);
     let seg_size = seg_size as usize;
 
-    // Build one iovec per segment. Collected up front so the Vec's heap
-    // allocation is stable before we take raw pointers into it.
+    // Build one iovec per segment.
     let iovecs: Vec<libc::iovec> = data
         .chunks(seg_size)
         .map(|chunk| libc::iovec {
@@ -129,8 +129,7 @@ pub fn send_udp_with_gso(
         })
         .collect();
 
-    // Build a matching msghdr_x per segment. Each entry shares the same
-    // destination address and points to its own iovec.
+    // Build a matching msghdr_x per segment.
     let hdrs: Vec<MsghdrX> = iovecs
         .iter()
         .map(|iov| MsghdrX {
