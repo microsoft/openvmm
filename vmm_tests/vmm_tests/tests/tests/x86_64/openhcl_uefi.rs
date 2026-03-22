@@ -12,8 +12,7 @@ use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 #[derive(Debug)]
 struct ExpectedNvmeDeviceProperties {
@@ -337,7 +336,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// OpenVMM.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let vm = config
         .modify_backend(|b| {
@@ -358,7 +357,7 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 ///
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {

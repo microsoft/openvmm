@@ -33,7 +33,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioPlan9Handle> for VirtioPlan9Resol
             input.driver_source,
             &resource.tag,
             Plan9FileSystem::new(&resource.root_path, resource.debug)?,
-            input.guest_memory.clone(),
         );
         Ok(device.into())
     }

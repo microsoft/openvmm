@@ -61,9 +61,11 @@ jobs:
             -D results
           test_count=$(find results -name petri.jsonl | wc -l)
           PASS_COUNT=$(find results -name petri.passed | wc -l)
+          FAIL_UNSTABLE_COUNT=$(find results -name petri.failed_unstable | wc -l)
           FAIL_COUNT=$((test_count - PASS_COUNT))
           echo "FAIL_COUNT=$FAIL_COUNT" >> "$GITHUB_ENV"
           echo "PASS_COUNT=$PASS_COUNT" >> "$GITHUB_ENV"
+          echo "FAIL_UNSTABLE_COUNT=$FAIL_UNSTABLE_COUNT" >> "$GITHUB_ENV"
           echo "SOURCE_BRANCH=$head_branch" >> "$GITHUB_ENV"
         env:
           event: ${{ github.event.workflow_run.event }}
@@ -119,7 +121,7 @@ jobs:
             -R "$repo" \
             "$SOURCE_PR" \
             -F - <<EOF
-          [At least one Petri test failed.](https://openvmm.dev/test-results/#/runs/$run_id)
+          [$FAIL_COUNT Petri tests failed ($FAIL_UNSTABLE_COUNT unstable)](https://openvmm.dev/test-results/#/runs/$run_id)
           EOF
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

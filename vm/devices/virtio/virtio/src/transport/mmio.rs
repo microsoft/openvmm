@@ -8,10 +8,9 @@ use super::task::TransportStateResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
-
+use crate::DynVirtioDevice;
 use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
-use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
@@ -28,6 +27,7 @@ use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
 use guestmem::DoorbellRegistration;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
@@ -80,6 +80,8 @@ pub struct VirtioMmioDevice {
     #[inspect(skip)]
     saved_queue_states: Vec<Option<QueueState>>,
     supports_save_restore: bool,
+    #[inspect(skip)]
+    guest_memory: GuestMemory,
 }
 
 #[derive(Inspect)]
@@ -108,8 +110,9 @@ impl fmt::Debug for VirtioMmioDevice {
 
 impl VirtioMmioDevice {
     pub fn new(
-        device: Box<dyn VirtioDevice>,
+        device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
+        guest_memory: GuestMemory,
         interrupt: LineInterrupt,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_gpa: u64,
@@ -159,7 +162,7 @@ impl VirtioMmioDevice {
             device_sender: sender,
             _device_task,
             state: TransportState::Ready,
-            device_id: traits.device_id as u32,
+            device_id: traits.device_id.0 as u32,
             vendor_id: 0x1af4,
             device_feature,
             device_feature_select: 0,
@@ -175,6 +178,7 @@ impl VirtioMmioDevice {
             interrupt_state,
             saved_queue_states: vec![None; traits.max_queues as usize],
             supports_save_restore,
+            guest_memory,
         }
     }
 
@@ -462,6 +466,7 @@ impl VirtioMmioDevice {
                                     params: *q,
                                     notify,
                                     event: self.events[i].clone(),
+                                    guest_memory: self.guest_memory.clone(),
                                 },
                             )
                         })
@@ -533,6 +538,7 @@ impl ChangeDeviceState for VirtioMmioDevice {
                         params: *q,
                         notify,
                         event: self.events[i].clone(),
+                        guest_memory: self.guest_memory.clone(),
                     },
                     initial_state,
                 ));

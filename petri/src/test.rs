@@ -39,7 +39,17 @@ use test_macro_support::TESTS;
 macro_rules! test {
     ($f:ident, $req:expr) => {
         $crate::multitest!(vec![
-            $crate::SimpleTest::new(stringify!($f), $req, $f, None,).into()
+            $crate::SimpleTest::new(stringify!($f), $req, $f, None, false).into()
+        ]);
+    };
+}
+
+/// Defines a single unstable test from a value that implements [`RunTest`].
+#[macro_export]
+macro_rules! unstable_test {
+    ($f:ident, $req:expr) => {
+        $crate::multitest!(vec![
+            $crate::SimpleTest::new(stringify!($f), $req, $f, None, true).into()
         ]);
     };
 }
@@ -148,7 +158,7 @@ impl Test {
             };
             Err(err)
         });
-        logger.log_test_result(&name, &r);
+        logger.log_test_result(&name, &r, self.test.0.unstable());
 
         for hook in post_test_hooks {
             tracing::info!(name = hook.name(), "Running post-test hook");
@@ -170,28 +180,19 @@ impl Test {
         self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> libtest_mimic::Trial {
-        let name = self.name();
-        let is_unstable = name.ends_with("_unstable");
-        libtest_mimic::Trial::test(name, move || {
-            map_test_result(self.run(resolve), &self.name(), is_unstable)
+        libtest_mimic::Trial::test(self.name(), move || match self.run(resolve) {
+            Ok(()) => Ok(()),
+            Err(err)
+                if self.test.0.unstable()
+                    && std::env::var("PETRI_REPORT_UNSTABLE_FAIL")
+                        .ok()
+                        .is_none_or(|v| v.is_empty() || v == "0") =>
+            {
+                tracing::warn!("ignoring unstable test failure: {err:#}");
+                Ok(())
+            }
+            Err(err) => Err(format!("{err:#}").into()),
         })
-    }
-}
-
-/// Maps a test result to a libtest-mimic result, suppressing failures for
-/// unstable tests.
-fn map_test_result(
-    result: anyhow::Result<()>,
-    test_name: &str,
-    is_unstable: bool,
-) -> Result<(), libtest_mimic::Failed> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(err) if is_unstable => {
-            tracing::warn!("unstable test failed (non-gating): {test_name}: {err:#}");
-            Ok(())
-        }
-        Err(err) => Err(format!("{err:#}").into()),
     }
 }
 
@@ -218,6 +219,8 @@ pub trait RunTest: Send {
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
     /// Returns the host requirements of the current test, if any.
     fn host_requirements(&self) -> Option<&TestCaseRequirements>;
+    /// Whether this test is unstable
+    fn unstable(&self) -> bool;
 }
 
 trait DynRunTest: Send {
@@ -225,6 +228,7 @@ trait DynRunTest: Send {
     fn artifact_requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
     fn host_requirements(&self) -> Option<&TestCaseRequirements>;
+    fn unstable(&self) -> bool;
 }
 
 impl<T: RunTest> DynRunTest for T {
@@ -247,6 +251,10 @@ impl<T: RunTest> DynRunTest for T {
 
     fn host_requirements(&self) -> Option<&TestCaseRequirements> {
         self.host_requirements()
+    }
+
+    fn unstable(&self) -> bool {
+        self.unstable()
     }
 }
 
@@ -293,6 +301,7 @@ pub struct SimpleTest<A, F> {
     run: F,
     /// Optional test requirements
     pub host_requirements: Option<TestCaseRequirements>,
+    unstable: bool,
 }
 
 impl<A, AR, F, E> SimpleTest<A, F>
@@ -308,12 +317,14 @@ where
         resolve: A,
         run: F,
         host_requirements: Option<TestCaseRequirements>,
+        unstable: bool,
     ) -> Self {
         SimpleTest {
             leaf_name,
             resolve,
             run,
             host_requirements,
+            unstable,
         }
     }
 }
@@ -340,6 +351,10 @@ where
 
     fn host_requirements(&self) -> Option<&TestCaseRequirements> {
         self.host_requirements.as_ref()
+    }
+
+    fn unstable(&self) -> bool {
+        self.unstable
     }
 }
 
@@ -392,36 +407,4 @@ pub fn test_main(
         .collect();
 
     libtest_mimic::run(&args.inner, trials).exit();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stable_test_failure_propagates() {
-        let result: anyhow::Result<()> = Err(anyhow::anyhow!("boom"));
-        assert!(map_test_result(result, "some_test", false).is_err());
-    }
-
-    #[test]
-    fn unstable_test_failure_is_suppressed() {
-        let result: anyhow::Result<()> = Err(anyhow::anyhow!("boom"));
-        assert!(map_test_result(result, "some_test_unstable", true).is_ok());
-    }
-
-    #[test]
-    fn unstable_test_success_passes_through() {
-        let result: anyhow::Result<()> = Ok(());
-        assert!(map_test_result(result, "some_test_unstable", true).is_ok());
-    }
-
-    #[test]
-    fn mid_name_unstable_is_not_suppressed() {
-        // _unstable appearing mid-name should not be treated as unstable.
-        // The caller (trial) uses ends_with("_unstable") to set is_unstable,
-        // so a mid-name occurrence means is_unstable=false.
-        let result: anyhow::Result<()> = Err(anyhow::anyhow!("boom"));
-        assert!(map_test_result(result, "foo_unstable_bar", false).is_err());
-    }
 }

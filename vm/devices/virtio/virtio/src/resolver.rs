@@ -49,7 +49,6 @@ impl AsyncResolveResource<PciDeviceHandleKind, VirtioPciDeviceHandle> for Virtio
                 resource.0,
                 VirtioResolveInput {
                     driver_source: input.driver_source,
-                    guest_memory: input.guest_memory,
                 },
             )
             .await
@@ -58,6 +57,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VirtioPciDeviceHandle> for Virtio
         let device = VirtioPciDevice::new(
             inner.0,
             &input.driver_source.simple(),
+            input.guest_memory.clone(),
             PciInterruptModel::Msix(input.msi_target),
             input.doorbell_registration,
             input.register_mmio,
