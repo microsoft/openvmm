@@ -124,7 +124,7 @@ pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Send `data` to `dst` via `socket`
+/// Send `data` to `dst` via `socket`.
 pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],
