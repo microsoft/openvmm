@@ -36,7 +36,7 @@ page_table.workspace = true
 virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
-vmgs_broker = { workspace = true, features = ["encryption"] }
+vmgs_broker.workspace = true
 vmm_core.workspace = true
 vmm_core_defs.workspace = true
 state_unit.workspace = true
@@ -99,6 +99,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+vmgs_broker = { workspace = true, features = ["encryption"] }
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
 
@@ -106,6 +107,7 @@ vmswitch.workspace = true
 virt_hvf = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+vmgs_broker = { workspace = true, features = ["encryption"] }
 virt_kvm = { workspace = true, optional = true }
 virt_mshv = { workspace = true, optional = true }
 
