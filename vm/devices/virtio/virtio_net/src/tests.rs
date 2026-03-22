@@ -1733,7 +1733,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
             tcp: true,
             udp: true,
             tso: true,
-            ufo: true,
+            uso: true,
         },
     };
 

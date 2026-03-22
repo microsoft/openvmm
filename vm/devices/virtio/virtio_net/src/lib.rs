@@ -266,7 +266,7 @@ impl VirtioDevice for Device {
         // the guest. This is the modern USO feature (bit 56); the legacy
         // HOST_UFO (bit 14) is not offered because it is deprecated in modern
         // Linux kernels and causes connectivity issues.
-        let host_uso = offloads.ufo && offloads.udp;
+        let host_uso = offloads.uso && offloads.udp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)

@@ -217,7 +217,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             tcp: true,
             udp: true,
             tso: true,
-            ufo: true,
+            uso: true,
         }
     }
 }

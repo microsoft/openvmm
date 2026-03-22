@@ -130,8 +130,8 @@ pub struct TxOffloadSupport {
     pub udp: bool,
     /// TCP segmentation offload.
     pub tso: bool,
-    /// UDP segmentation offload (UFO).
-    pub ufo: bool,
+    /// UDP segmentation offload (USO).
+    pub uso: bool,
 }
 
 #[derive(Debug, Clone)]
