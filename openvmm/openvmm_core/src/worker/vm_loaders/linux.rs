@@ -655,10 +655,7 @@ fn write_efi_and_acpi_tables(
     let reserved_start = efi_base;
     let reserved_end = align_up(rsdp_addr + 0x1000 + acpi_tables.tables.len() as u64, 0x1000);
     let reserved = [MemoryRange::new(reserved_start..reserved_end)];
-    for range in memory_range::subtract_ranges(
-        mem_layout.ram().iter().map(|r| r.range),
-        reserved,
-    ) {
+    for range in memory_range::subtract_ranges(mem_layout.ram().iter().map(|r| r.range), reserved) {
         mmap_entries.push(EfiMemoryDescriptor {
             typ: EfiMemoryType::EFI_CONVENTIONAL_MEMORY,
             _pad: 0,
