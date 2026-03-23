@@ -36,4 +36,4 @@ jobs:
       # flowey pipeline. This compiles flowey_hvlite first, then downloads
       # protoc, sysroots, firmware, and test kernels.
       - name: Restore packages
-        run: cargo xflowey restore-packages
+        run: cargo xflowey restore-packages --no-compat-igvm
