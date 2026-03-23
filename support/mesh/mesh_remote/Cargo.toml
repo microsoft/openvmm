@@ -35,6 +35,7 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 event-listener.workspace = true
+tempfile.workspace = true
 test_with_tracing.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
