@@ -155,6 +155,25 @@ const SYSTEM_IRQ_ACPI: u32 = 9;
 
 const WDAT_PORT: u16 = 0x30;
 
+#[derive(Copy, Clone)]
+struct ChipsetCapabilities {
+    with_ioapic: bool,
+    with_pic: bool,
+    with_pit: bool,
+    with_psp: bool,
+}
+
+impl ChipsetCapabilities {
+    fn from_parts(chipset: &BaseChipsetManifest, with_pit: bool) -> Self {
+        Self {
+            with_ioapic: chipset.with_generic_ioapic,
+            with_pic: chipset.with_generic_pic,
+            with_pit,
+            with_psp: chipset.with_generic_psp,
+        }
+    }
+}
+
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
     DefaultPool::spawn_on_thread("basic_device_thread")
@@ -567,7 +586,7 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
-    with_pit: bool,
+    chipset_caps: ChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1219,6 +1238,7 @@ impl InitializedVm {
                 let rom = rom_builder.build_from_file_location(firmware)?;
                 // TODO: move mtrr replay to a resource.
                 let halt_vps = halt_vps.clone();
+                let chipset_caps = ChipsetCapabilities::from_parts(&cfg.chipset, cfg.with_pit);
                 deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
                     logger,
                     generation_id_recv,
@@ -1230,10 +1250,10 @@ impl InitializedVm {
                             mem_layout: &mem_layout,
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
-                            with_ioapic: cfg.chipset.with_generic_ioapic,
-                            with_pic: cfg.chipset.with_generic_pic,
-                            with_pit: cfg.with_pit,
-                            with_psp: cfg.chipset.with_generic_psp,
+                            with_ioapic: chipset_caps.with_ioapic,
+                            with_pic: chipset_caps.with_pic,
+                            with_pit: chipset_caps.with_pit,
+                            with_psp: chipset_caps.with_psp,
                             pm_base: PM_BASE,
                             acpi_irq: SYSTEM_IRQ_ACPI,
                         };
@@ -2274,6 +2294,9 @@ impl InitializedVm {
         ))
         .await?;
 
+        let chipset_cfg = cfg.chipset;
+        let chipset_caps = ChipsetCapabilities::from_parts(&chipset_cfg, cfg.with_pit);
+
         let mut this = LoadedVm {
             state_units,
             running: false,
@@ -2304,8 +2327,8 @@ impl InitializedVm {
                 #[cfg(windows)]
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
-                chipset_cfg: cfg.chipset,
-                with_pit: cfg.with_pit,
+                chipset_cfg,
+                chipset_caps,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_count,
@@ -2335,6 +2358,10 @@ impl InitializedVm {
 }
 
 impl LoadedVmInner {
+    fn chipset_capabilities(&self) -> ChipsetCapabilities {
+        self.chipset_caps
+    }
+
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
@@ -2344,15 +2371,16 @@ impl LoadedVmInner {
         } else {
             None
         };
+        let chipset_caps = self.chipset_capabilities();
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
             pcie_host_bridges: &self.pcie_host_bridges,
-            with_ioapic: self.chipset_cfg.with_generic_ioapic,
-            with_psp: self.chipset_cfg.with_generic_psp,
-            with_pic: self.chipset_cfg.with_generic_pic,
-            with_pit: self.with_pit,
+            with_ioapic: chipset_caps.with_ioapic,
+            with_psp: chipset_caps.with_psp,
+            with_pic: chipset_caps.with_pic,
+            with_pit: chipset_caps.with_pit,
             pm_base: PM_BASE,
             acpi_irq: SYSTEM_IRQ_ACPI,
         };
@@ -2923,6 +2951,8 @@ impl LoadedVm {
             vmbus_server.remove().await.shutdown().await;
         }
 
+        let with_pit = self.inner.chipset_caps.with_pit;
+
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
             floppy_disks: vec![],        // TODO
@@ -2934,7 +2964,7 @@ impl LoadedVm {
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
-            with_pit: self.inner.with_pit,
+            with_pit,
             vmbus: None,      // TODO
             vtl2_vmbus: None, // TODO
             hypervisor: self.inner.hypervisor_cfg,
