@@ -698,7 +698,7 @@ impl HclNetworkVFManagerWorker {
                         (Vtl2DeviceState::Missing, true) => NextWorkItem::ManaDeviceArrived,
                         (state, false) => {
                             // Tracing to diagnose add that is not acted on due to missing device.
-                            if notification.action == UeventAction::Add {
+                            if action == UeventAction::Add {
                                  tracelimit::warn_ratelimited!(?state, ?action, exists, %device_path, "uevent received");
                             }
                             NextWorkItem::Continue
