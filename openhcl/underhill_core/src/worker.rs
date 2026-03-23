@@ -2334,12 +2334,14 @@ async fn new_underhill_vm(
                 mem_layout: &mem_layout,
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
-                with_ioapic: true, // underhill always runs with ioapic
-                with_pic: true,    // pcat always runs with pic and pit
-                with_pit: true,
-                with_psp: dps.general.psp_enabled,
-                pm_base: PM_BASE,
-                acpi_irq: SYSTEM_IRQ_ACPI,
+                arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                    with_ioapic: true, // openhcl always runs with ioapic
+                    with_pic: true,    // pcat always runs with pic and pit
+                    with_pit: true,
+                    with_psp: dps.general.psp_enabled,
+                    pm_base: PM_BASE,
+                    acpi_irq: SYSTEM_IRQ_ACPI,
+                },
             };
 
             let config = firmware_pcat::config::PcatBiosConfig {

@@ -37,7 +37,6 @@ pub enum Error {
     Efi(#[source] guestmem::GuestMemoryError),
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 struct Aarch64EfiInfo {
     systab_addr: u64,
     mmap_addr: u64,
@@ -510,7 +509,6 @@ fn build_dt(
     Ok(buffer)
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 /// Write synthesized EFI and ACPI structures into guest memory.
 ///
 /// On ARM64, the Linux kernel can discover devices via ACPI instead of a
@@ -694,7 +692,6 @@ fn write_efi_and_acpi_tables(
 /// [`write_efi_and_acpi_tables`]. The kernel then uses those EFI
 /// structures to locate the ACPI RSDP and discovers all hardware through
 /// ACPI tables instead of DT nodes.
-#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 fn build_stub_dt(
     cmdline: &str,
     initrd_start: u64,

@@ -464,12 +464,21 @@ pub fn write_uefi_config(
             mem_layout,
             cache_topology: None,
             pcie_host_bridges: &vec![],
-            with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
-            with_pic: false,                          // uefi never runs with pic or pit
-            with_pit: false,
-            with_psp: platform_config.general.psp_enabled,
-            pm_base: crate::worker::PM_BASE,
-            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            #[cfg(guest_arch = "x86_64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: false,
+                with_pit: false,
+                with_psp: platform_config.general.psp_enabled,
+                pm_base: crate::worker::PM_BASE,
+                acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            },
+            #[cfg(guest_arch = "aarch64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                // Not used for MADT/SRAT generation; only matters for FADT.
+                hypervisor_vendor_identity: 0,
+                virt_timer_ppi: processor_topology.virt_timer_ppi(),
+            },
         };
 
         // Build the ACPI tables as specified.
