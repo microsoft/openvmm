@@ -209,7 +209,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         // Max VTL of 2 implies paravisor.
         let with_paravisor = config.max_vtl == 2;
 
-        let mut loader = IgvmLoader::<R>::new(with_paravisor, loader_isolation_type);
+        let mut loader = IgvmLoader::<R>::new(with_paravisor, loader_isolation_type, false);
 
         load_image(&mut loader.loader(), &config.image, &resources)?;
 

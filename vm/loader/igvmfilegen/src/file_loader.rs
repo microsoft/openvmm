@@ -181,6 +181,9 @@ pub trait IgvmLoaderRegister: VbsRegister {
 
     /// The IGVM file revision to use for the built igvm file.
     fn igvm_revision() -> IgvmRevision;
+
+    /// Create a native VP context builder, if supported for this architecture.
+    fn create_native_vp_context() -> Option<Box<dyn VpContextBuilder<Register = Self>>>;
 }
 
 impl IgvmLoaderRegister for X86Register {
@@ -304,6 +307,12 @@ impl IgvmLoaderRegister for X86Register {
         // understand the V2 format.
         IgvmRevision::V1
     }
+
+    fn create_native_vp_context() -> Option<Box<dyn VpContextBuilder<Register = Self>>> {
+        Some(Box::new(
+            crate::vp_context_builder::native::NativeVpContext::new(),
+        ))
+    }
 }
 
 impl IgvmLoaderRegister for Aarch64Register {
@@ -335,6 +344,10 @@ impl IgvmLoaderRegister for Aarch64Register {
             arch: igvm::Arch::AArch64,
             page_size: 4096,
         }
+    }
+
+    fn create_native_vp_context() -> Option<Box<dyn VpContextBuilder<Register = Self>>> {
+        None
     }
 }
 
@@ -490,7 +503,11 @@ pub struct IgvmOutput {
 }
 
 impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
-    pub fn new(with_paravisor: bool, isolation_type: LoaderIsolationType) -> Self {
+    pub fn new(
+        with_paravisor: bool,
+        isolation_type: LoaderIsolationType,
+        use_native_vp_context: bool,
+    ) -> Self {
         let vp_context_builder: Option<Box<dyn VpContextBuilder<Register = R>>>;
         let platform_header;
         let max_vtl = if with_paravisor { Vtl::Vtl2 } else { Vtl::Vtl0 };
@@ -498,7 +515,14 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         match isolation_type {
             LoaderIsolationType::None | LoaderIsolationType::Vbs { .. } => {
-                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl)));
+                vp_context_builder = if use_native_vp_context {
+                    Some(
+                        R::create_native_vp_context()
+                            .expect("native VP context not supported for this architecture"),
+                    )
+                } else {
+                    Some(Box::new(VbsVpContext::<R>::new(max_vtl)))
+                };
 
                 // Add VBS platform header
                 let info = IGVM_VHS_SUPPORTED_PLATFORM {
