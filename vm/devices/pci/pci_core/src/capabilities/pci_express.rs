@@ -583,7 +583,29 @@ mod save_restore {
             #[mesh(2)]
             pub device_status: u16,
             #[mesh(3)]
-            pub flr_handler: u16,
+            pub link_control: u16,
+            #[mesh(4)]
+            pub link_status: u16,
+            #[mesh(5)]
+            pub slot_control: u16,
+            #[mesh(6)]
+            pub slot_status: u16,
+            #[mesh(7)]
+            pub root_control: u16,
+            #[mesh(8)]
+            pub root_status: u32,
+            #[mesh(9)]
+            pub device_control_2: u16,
+            #[mesh(10)]
+            pub device_status_2: u16,
+            #[mesh(11)]
+            pub link_control_2: u16,
+            #[mesh(12)]
+            pub link_status_2: u16,
+            #[mesh(13)]
+            pub slot_control_2: u16,
+            #[mesh(14)]
+            pub slot_status_2: u16,
         }
     }
 
@@ -591,11 +613,59 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+            let state = self.state.lock();
+            Ok(state::SavedState {
+                device_control: state.device_control.into_bits(),
+                device_status: state.device_status.into_bits(),
+                link_control: state.link_control.into_bits(),
+                link_status: state.link_status.into_bits(),
+                slot_control: state.slot_control.into_bits(),
+                slot_status: state.slot_status.into_bits(),
+                root_control: state.root_control.into_bits(),
+                root_status: state.root_status.into_bits(),
+                device_control_2: state.device_control_2.into_bits(),
+                device_status_2: state.device_status_2.into_bits(),
+                link_control_2: state.link_control_2.into_bits(),
+                link_status_2: state.link_status_2.into_bits(),
+                slot_control_2: state.slot_control_2.into_bits(),
+                slot_status_2: state.slot_status_2.into_bits(),
+            })
         }
 
-        fn restore(&mut self, _: Self::SavedState) -> Result<(), RestoreError> {
-            Err(RestoreError::SavedStateNotSupported)
+        fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                device_control,
+                device_status,
+                link_control,
+                link_status,
+                slot_control,
+                slot_status,
+                root_control,
+                root_status,
+                device_control_2,
+                device_status_2,
+                link_control_2,
+                link_status_2,
+                slot_control_2,
+                slot_status_2,
+            } = saved_state;
+
+            let mut state = self.state.lock();
+            state.device_control = pci_express::DeviceControl::from_bits(device_control);
+            state.device_status = pci_express::DeviceStatus::from_bits(device_status);
+            state.link_control = pci_express::LinkControl::from_bits(link_control);
+            state.link_status = pci_express::LinkStatus::from_bits(link_status);
+            state.slot_control = pci_express::SlotControl::from_bits(slot_control);
+            state.slot_status = pci_express::SlotStatus::from_bits(slot_status);
+            state.root_control = pci_express::RootControl::from_bits(root_control);
+            state.root_status = pci_express::RootStatus::from_bits(root_status);
+            state.device_control_2 = pci_express::DeviceControl2::from_bits(device_control_2);
+            state.device_status_2 = pci_express::DeviceStatus2::from_bits(device_status_2);
+            state.link_control_2 = pci_express::LinkControl2::from_bits(link_control_2);
+            state.link_status_2 = pci_express::LinkStatus2::from_bits(link_status_2);
+            state.slot_control_2 = pci_express::SlotControl2::from_bits(slot_control_2);
+            state.slot_status_2 = pci_express::SlotStatus2::from_bits(slot_status_2);
+            Ok(())
         }
     }
 }
@@ -1448,5 +1518,63 @@ mod tests {
         // Should not panic and should be silently ignored
         cap.set_presence_detect_state(true);
         cap.set_presence_detect_state(false);
+    }
+
+    #[test]
+    fn test_save_restore_roundtrip() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap = PciExpressCapability::new(DevicePortType::RootPort, None);
+
+        // Write some values via config space to change mutable state
+        // Device Control + Status is at offset 0x08
+        cap.write_u32(0x08, 0x0010); // Set relaxed ordering enable in DeviceControl
+        // Slot Control + Status at offset 0x18
+        cap.write_u32(0x18, 0x01); // Set attention button pressed enable
+
+        let saved = cap.save().expect("save should succeed");
+
+        // Create a fresh capability and restore
+        let mut cap2 = PciExpressCapability::new(DevicePortType::RootPort, None);
+        cap2.restore(saved).expect("restore should succeed");
+
+        // Verify the restored state matches
+        assert_eq!(cap.read_u32(0x08), cap2.read_u32(0x08));
+        assert_eq!(cap.read_u32(0x18), cap2.read_u32(0x18));
+    }
+
+    #[test]
+    fn test_save_restore_all_registers() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut cap =
+            PciExpressCapability::new(DevicePortType::RootPort, None).with_hotplug_support(1);
+
+        // Modify various registers through config space writes.
+        // Device Control/Status at 0x08
+        cap.write_u32(0x08, 0x2810); // correctable error reporting + relaxed ordering
+        // Link Control/Status at 0x10
+        cap.write_u32(0x10, 0x0002); // ASPM L1
+        // Root Control at 0x1C (upper 16 bits reserved if part of Root Caps)
+        cap.write_u32(0x1C, 0x0001); // system error on correctable error enable
+        // Device Control 2 / Status 2 at 0x28
+        cap.write_u32(0x28, 0x0010); // completion timeout disable
+
+        let saved = cap.save().expect("save should succeed");
+
+        let mut cap2 =
+            PciExpressCapability::new(DevicePortType::RootPort, None).with_hotplug_support(1);
+
+        cap2.restore(saved).expect("restore should succeed");
+
+        // Compare all register offsets that contain mutable state.
+        for offset in (0x08..=0x38).step_by(4) {
+            assert_eq!(
+                cap.read_u32(offset),
+                cap2.read_u32(offset),
+                "mismatch at offset {:#x}",
+                offset
+            );
+        }
     }
 }

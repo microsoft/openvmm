@@ -464,22 +464,68 @@ impl RootPort {
 
 mod save_restore {
     use super::*;
+    use vmcore::save_restore::ProtobufSaveRestore;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
 
-    impl SaveRestore for GenericPcieRootComplex {
-        type SavedState = SavedStateNotSupported;
+    mod state {
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateBlob;
+        use vmcore::save_restore::SavedStateRoot;
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+        /// Saved state for a single root port's configuration space.
+        #[derive(Protobuf)]
+        #[mesh(package = "pcie.root")]
+        pub struct PortSavedState {
+            /// The port number (device_function index in the ports HashMap).
+            #[mesh(1)]
+            pub port_number: u8,
+            /// The port's Type 1 configuration space state.
+            #[mesh(2)]
+            pub cfg_space: SavedStateBlob,
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            match state {}
+        /// Saved state for the entire PCIe root complex.
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.root")]
+        pub struct SavedState {
+            /// Saved state for each root port.
+            #[mesh(1)]
+            pub ports: Vec<PortSavedState>,
+        }
+    }
+
+    impl SaveRestore for GenericPcieRootComplex {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            let mut ports = Vec::new();
+            for (&port_number, (_, root_port)) in self.ports.iter_mut() {
+                let cfg_space = ProtobufSaveRestore::save(&mut root_port.port.cfg_space)?;
+                ports.push(state::PortSavedState {
+                    port_number,
+                    cfg_space,
+                });
+            }
+            Ok(state::SavedState { ports })
+        }
+
+        fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
+            for port_state in saved_state.ports {
+                let (_, root_port) = self.ports.get_mut(&port_state.port_number).ok_or_else(
+                    || {
+                        RestoreError::InvalidSavedState(
+                            anyhow::anyhow!(
+                                "saved state references port {:#x} which does not exist in current topology",
+                                port_state.port_number
+                            ),
+                        )
+                    },
+                )?;
+                ProtobufSaveRestore::restore(&mut root_port.port.cfg_space, port_state.cfg_space)?;
+            }
+            Ok(())
         }
     }
 }
@@ -795,5 +841,30 @@ mod tests {
             .port
             .forward_cfg_write_with_routing(&1, &0, 0x0, value);
         assert!(matches!(result, IoResult::Ok));
+    }
+
+    #[test]
+    fn test_root_complex_save_restore_roundtrip() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut rc = instantiate_root_complex(0, 255, 2);
+
+        // Program some bridge state via ECAM writes.
+        // Port 0 is at device 0 (device_function = 0x00), bus 0.
+        // Bus number register is at config offset 0x18.
+        // ECAM address: (device_function << 12) + cfg_offset
+        let addr = 0x18u64;
+        rc.mmio_write(addr, &[0x00, 0x01, 0x01, 0x00]).unwrap(); // primary=0, secondary=1, subordinate=1
+
+        let saved = rc.save().expect("save should succeed");
+
+        // Create a fresh root complex with the same topology
+        let mut rc2 = instantiate_root_complex(0, 255, 2);
+        rc2.restore(saved).expect("restore should succeed");
+
+        // Verify the bus numbers were restored
+        let mut data = [0u8; 4];
+        rc2.mmio_read(addr, &mut data).unwrap();
+        assert_eq!(data, [0x00, 0x01, 0x01, 0x00]);
     }
 }

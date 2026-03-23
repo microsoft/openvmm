@@ -447,22 +447,87 @@ impl PciConfigSpace for GenericPcieSwitch {
 
 mod save_restore {
     use super::*;
+    use vmcore::save_restore::ProtobufSaveRestore;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
 
-    impl SaveRestore for GenericPcieSwitch {
-        type SavedState = SavedStateNotSupported;
+    mod state {
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateBlob;
+        use vmcore::save_restore::SavedStateRoot;
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+        /// Saved state for a single downstream switch port.
+        #[derive(Protobuf)]
+        #[mesh(package = "pcie.switch")]
+        pub struct DownstreamPortSavedState {
+            /// The port number (index in the downstream_ports HashMap).
+            #[mesh(1)]
+            pub port_number: u8,
+            /// The port's Type 1 configuration space state.
+            #[mesh(2)]
+            pub cfg_space: SavedStateBlob,
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            match state {}
+        /// Saved state for the entire PCIe switch.
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.switch")]
+        pub struct SavedState {
+            /// Saved state for the upstream port's configuration space.
+            #[mesh(1)]
+            pub upstream_cfg_space: SavedStateBlob,
+            /// Saved state for each downstream port.
+            #[mesh(2)]
+            pub downstream_ports: Vec<DownstreamPortSavedState>,
+        }
+    }
+
+    impl SaveRestore for GenericPcieSwitch {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            let upstream_cfg_space = ProtobufSaveRestore::save(&mut self.upstream_port.cfg_space)?;
+
+            let mut downstream_ports = Vec::new();
+            for (&port_number, (_, downstream_port)) in self.downstream_ports.iter_mut() {
+                let cfg_space = ProtobufSaveRestore::save(&mut downstream_port.port.cfg_space)?;
+                downstream_ports.push(state::DownstreamPortSavedState {
+                    port_number,
+                    cfg_space,
+                });
+            }
+
+            Ok(state::SavedState {
+                upstream_cfg_space,
+                downstream_ports,
+            })
+        }
+
+        fn restore(&mut self, saved_state: Self::SavedState) -> Result<(), RestoreError> {
+            ProtobufSaveRestore::restore(
+                &mut self.upstream_port.cfg_space,
+                saved_state.upstream_cfg_space,
+            )?;
+
+            for port_state in saved_state.downstream_ports {
+                let (_, downstream_port) =
+                    self.downstream_ports
+                        .get_mut(&port_state.port_number)
+                        .ok_or_else(|| {
+                            RestoreError::InvalidSavedState(
+                                anyhow::anyhow!(
+                                    "saved state references downstream port {} which does not exist in current topology",
+                                    port_state.port_number
+                                ),
+                            )
+                        })?;
+                ProtobufSaveRestore::restore(
+                    &mut downstream_port.port.cfg_space,
+                    port_state.cfg_space,
+                )?;
+            }
+
+            Ok(())
         }
     }
 }
@@ -937,5 +1002,64 @@ mod tests {
             switch_with_hotplug.name().as_ref(),
             "test-switch-with-hotplug"
         );
+    }
+
+    #[test]
+    fn test_switch_save_restore_roundtrip() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        });
+
+        // Program upstream port bus numbers via config space write.
+        // PCI bus number register at offset 0x18.
+        switch
+            .upstream_port
+            .cfg_space
+            .write_u32(0x18, 0x0003_0200)
+            .unwrap();
+        // primary=0, secondary=2, subordinate=3
+
+        // Program downstream port 0 bus numbers.
+        let (_, ds_port_0) = switch.downstream_ports.get_mut(&0).unwrap();
+        ds_port_0
+            .port
+            .cfg_space
+            .write_u32(0x18, 0x0002_0200)
+            .unwrap();
+        // primary=2, secondary=2, subordinate=2 (just a leaf)
+
+        let saved = switch.save().expect("save should succeed");
+
+        // Create a fresh switch with the same topology
+        let mut switch2 = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        });
+
+        switch2.restore(saved).expect("restore should succeed");
+
+        // Verify upstream port bus numbers were restored
+        let mut value = 0u32;
+        switch2
+            .upstream_port
+            .cfg_space
+            .read_u32(0x18, &mut value)
+            .unwrap();
+        assert_eq!(value, 0x0003_0200);
+
+        // Verify downstream port 0 bus numbers were restored
+        let (_, ds_port_0_restored) = switch2.downstream_ports.get_mut(&0).unwrap();
+        let mut value2 = 0u32;
+        ds_port_0_restored
+            .port
+            .cfg_space
+            .read_u32(0x18, &mut value2)
+            .unwrap();
+        assert_eq!(value2, 0x0002_0200);
     }
 }

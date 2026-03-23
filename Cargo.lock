@@ -5769,6 +5769,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "memory_range",
+ "mesh",
  "pal_async",
  "pci_bus",
  "pci_core",
