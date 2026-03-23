@@ -541,9 +541,9 @@ impl virt::Partition for WhpPartition {
     ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         let v2m = self.inner.gic_v2m.as_ref()?;
         let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
-        Some(Arc::new(
-            virt::aarch64::gic_v2m::GicV2mSignalMsi::new(v2m, irqcon),
-        ))
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
     }
 
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
