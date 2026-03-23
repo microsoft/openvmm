@@ -268,12 +268,14 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
-        with_ioapic: true, // underhill always runs with ioapic
-        with_pic: false,
-        with_pit: false,
-        with_psp: platform_config.general.psp_enabled,
-        pm_base: crate::worker::PM_BASE,
-        acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+            with_ioapic: true, // underhill always runs with ioapic
+            with_pic: false,
+            with_pit: false,
+            with_psp: platform_config.general.psp_enabled,
+            pm_base: crate::worker::PM_BASE,
+            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        },
     };
 
     if mem_layout.mmio().len() < 2 {
@@ -306,7 +308,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
 
         dsdt.add_mmio_module(mem_layout.mmio()[0], mem_layout.mmio()[1]);
         // TODO: change this once PCI is running in underhill
-        dsdt.add_vmbus(false);
+        dsdt.add_vmbus(false, None);
         dsdt.add_rtc();
     });
     let acpi_len = acpi_tables.tables.len() + 0x1000;

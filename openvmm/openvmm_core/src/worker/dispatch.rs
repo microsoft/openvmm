@@ -110,8 +110,8 @@ use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
+use vm_topology::processor::aarch64::Aarch64PlatformConfig;
 use vm_topology::processor::aarch64::Aarch64Topology;
-use vm_topology::processor::aarch64::GicInfo;
 use vm_topology::processor::aarch64::GicV2mInfo;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
@@ -488,27 +488,11 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
             _ => anyhow::bail!("invalid architecture config"),
         };
-        let gic = if let Some(gic_config) = &arch.gic_config {
-            GicInfo {
-                gic_distributor_base: gic_config.gic_distributor_base,
-                gic_redistributors_base: gic_config.gic_redistributors_base,
-                gic_v2m: Some(GicV2mInfo {
-                    frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-                    spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
-                    spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
-                }),
-            }
-        } else {
-            GicInfo {
-                gic_distributor_base: openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
-                gic_redistributors_base: openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
-                gic_v2m: Some(GicV2mInfo {
-                    frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
-                    spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
-                    spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
-                }),
-            }
-        };
+        let gic_v2m = Some(GicV2mInfo {
+            frame_base: openvmm_defs::config::DEFAULT_GIC_V2M_MSI_FRAME_BASE,
+            spi_base: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_BASE,
+            spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
+        });
         let pmu_gsiv = match arch.pmu_gsiv {
             PmuGsivConfig::Gsiv(gsiv) => gsiv,
             PmuGsivConfig::Platform => platform_gsiv(hypervisor),
@@ -521,7 +505,25 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             tracing::warn!("PMU GSIV is set to 0");
         }
 
-        let mut builder = TopologyBuilder::new_aarch64(gic, pmu_gsiv);
+        let platform = if let Some(gic_config) = &arch.gic_config {
+            Aarch64PlatformConfig {
+                gic_distributor_base: gic_config.gic_distributor_base,
+                gic_redistributors_base: gic_config.gic_redistributors_base,
+                gic_v2m,
+                pmu_gsiv,
+                virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+            }
+        } else {
+            Aarch64PlatformConfig {
+                gic_distributor_base: openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
+                gic_redistributors_base: openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
+                gic_v2m,
+                pmu_gsiv,
+                virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+            }
+        };
+
+        let mut builder = TopologyBuilder::new_aarch64(platform);
         if let Some(smt) = self.enable_smt {
             builder.smt_enabled(smt);
         }
@@ -1237,12 +1239,14 @@ impl InitializedVm {
                             mem_layout: &mem_layout,
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
-                            with_ioapic: cfg.chipset.with_generic_ioapic,
-                            with_pic: cfg.chipset.with_generic_pic,
-                            with_pit: cfg.chipset.with_generic_pit,
-                            with_psp: cfg.chipset.with_generic_psp,
-                            pm_base: PM_BASE,
-                            acpi_irq: SYSTEM_IRQ_ACPI,
+                            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                                with_ioapic: cfg.chipset.with_generic_ioapic,
+                                with_pic: cfg.chipset.with_generic_pic,
+                                with_pit: cfg.chipset.with_generic_pit,
+                                with_psp: cfg.chipset.with_generic_psp,
+                                pm_base: PM_BASE,
+                                acpi_irq: SYSTEM_IRQ_ACPI,
+                            },
                         };
                         let srat = acpi_tables_builder.build_srat();
                         firmware_pcat::config::PcatBiosConfig {
@@ -2359,12 +2363,24 @@ impl LoadedVmInner {
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
             pcie_host_bridges: &self.pcie_host_bridges,
-            with_ioapic: self.chipset_cfg.with_generic_ioapic,
-            with_psp: self.chipset_cfg.with_generic_psp,
-            with_pic: self.chipset_cfg.with_generic_pic,
-            with_pit: self.chipset_cfg.with_generic_pit,
-            pm_base: PM_BASE,
-            acpi_irq: SYSTEM_IRQ_ACPI,
+            #[cfg(guest_arch = "x86_64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                with_ioapic: self.chipset_cfg.with_generic_ioapic,
+                with_psp: self.chipset_cfg.with_generic_psp,
+                with_pic: self.chipset_cfg.with_generic_pic,
+                with_pit: self.chipset_cfg.with_generic_pit,
+                pm_base: PM_BASE,
+                acpi_irq: SYSTEM_IRQ_ACPI,
+            },
+            #[cfg(guest_arch = "aarch64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                hypervisor_vendor_identity: if self.hypervisor_cfg.with_hv {
+                    u64::from_le_bytes(*b"MsHyperV")
+                } else {
+                    0
+                },
+                virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
+            },
         };
 
         if vtl2_only {
@@ -2381,7 +2397,14 @@ impl LoadedVmInner {
                 ref cmdline,
                 enable_serial,
                 ref custom_dsdt,
+                boot_mode,
             } => {
+                match boot_mode {
+                    openvmm_defs::config::LinuxDirectBootMode::DeviceTree => {
+                        anyhow::bail!("device tree boot mode is not supported on x86_64");
+                    }
+                    openvmm_defs::config::LinuxDirectBootMode::Acpi => {}
+                }
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
@@ -2397,7 +2420,7 @@ impl LoadedVmInner {
                             acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
                         } else {
                             acpi_builder.build_acpi_tables(gpa, |mem_layout, dsdt| {
-                                add_devices_to_dsdt(
+                                add_devices_to_dsdt_x64(
                                     mem_layout,
                                     dsdt,
                                     &self.chipset_cfg,
@@ -2424,19 +2447,40 @@ impl LoadedVmInner {
                 ref cmdline,
                 enable_serial,
                 custom_dsdt: _,
+                boot_mode,
             } => {
+                use openvmm_defs::config::LinuxDirectBootMode;
+
                 let kernel_config = super::vm_loaders::linux::KernelConfig {
                     kernel,
                     initrd,
                     cmdline,
                     mem_layout: &self.mem_layout,
                 };
+
+                let with_hv = self.hypervisor_cfg.with_hv;
+                let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
+                    Some(|rsdp_gpa: u64| {
+                        acpi_builder.build_acpi_tables(rsdp_gpa, |mem_layout, dsdt| {
+                            add_devices_to_dsdt_arm64(
+                                mem_layout,
+                                dsdt,
+                                enable_serial,
+                                with_hv,
+                            )
+                        })
+                    })
+                } else {
+                    None
+                };
+
                 let regs = super::vm_loaders::linux::load_linux_arm64(
                     &kernel_config,
                     &self.gm,
                     enable_serial,
                     &self.processor_topology,
                     &self.pcie_host_bridges,
+                    build_acpi,
                 )?;
 
                 (regs, Vec::new())
@@ -3000,7 +3044,7 @@ impl LoadedVm {
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-fn add_devices_to_dsdt(
+fn add_devices_to_dsdt_x64(
     mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
@@ -3067,8 +3111,51 @@ fn add_devices_to_dsdt(
         dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
     }
 
-    dsdt.add_vmbus(cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge);
+    dsdt.add_vmbus(
+        cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge,
+        None,
+    );
     dsdt.add_rtc();
+}
+
+#[cfg(guest_arch = "aarch64")]
+fn add_devices_to_dsdt_arm64(
+    mem_layout: &MemoryLayout,
+    dsdt: &mut dsdt::Dsdt,
+    enable_serial: bool,
+    with_hv: bool,
+) {
+    // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
+    const VMBUS_INTID: u32 = 18;
+    // SBSA UART MMIO bases and sizes.
+    const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
+    const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
+    const PL011_SERIAL_SIZE: u64 = 0x1000;
+    // UART GSIVs (SPI 1 = INTID 33, SPI 2 = INTID 34).
+    const PL011_SERIAL0_GSIV: u32 = 33;
+    const PL011_SERIAL1_GSIV: u32 = 34;
+
+    if with_hv {
+        // Internal invariant: the memory layout for ARM64 with HV always has
+        // at least two MMIO gaps (low + high). This is configured by OpenVMM
+        // itself, not by guest input.
+        assert!(
+            mem_layout.mmio().len() >= 2,
+            "need at least two MMIO regions"
+        );
+        let low_mmio_gap = mem_layout.mmio()[0];
+        let high_mmio_gap: MemoryRange = mem_layout.mmio()[1];
+        dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
+        // VMBus on ARM64 ACPI needs a per-CPU interrupt (PPI) in _CRS.
+        // Always place under VMOD, not PCI0 — ARM64 doesn't use the x86
+        // PCI0 DSDT node.
+        dsdt.add_vmbus(false, Some(VMBUS_INTID));
+    }
+
+    if enable_serial {
+        dsdt.add_sbsa_uart(b"\\_SB.UAR0", 0, PL011_SERIAL0_BASE, PL011_SERIAL_SIZE, PL011_SERIAL0_GSIV);
+        dsdt.add_sbsa_uart(b"\\_SB.UAR1", 1, PL011_SERIAL1_BASE, PL011_SERIAL_SIZE, PL011_SERIAL1_GSIV);
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]

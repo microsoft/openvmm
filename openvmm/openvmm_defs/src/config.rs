@@ -110,6 +110,24 @@ pub const DEFAULT_GIC_V2M_SPI_BASE: u32 = 512;
 /// Number of SPIs reserved for PCIe MSIs.
 pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
 
+/// Default virtual timer PPI (GIC INTID). PPI 4 = INTID 16 + 4 = 20.
+/// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
+pub const DEFAULT_VIRT_TIMER_PPI: u32 = 20;
+
+/// How firmware tables are presented to the guest in Linux direct boot.
+///
+/// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
+/// this selects between a full device tree or an ACPI boot path.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxDirectBootMode {
+    /// Full device tree with all devices described in DT nodes (aarch64 only).
+    DeviceTree,
+    /// ACPI tables for device discovery. On aarch64, this also synthesizes
+    /// an EFI system table so the kernel enters its ACPI code path. On x86,
+    /// ACPI tables are always provided via the zero page.
+    Acpi,
+}
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {
@@ -118,6 +136,7 @@ pub enum LoadMode {
         cmdline: String,
         enable_serial: bool,
         custom_dsdt: Option<Vec<u8>>,
+        boot_mode: LinuxDirectBootMode,
     },
     Uefi {
         firmware: File,

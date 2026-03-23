@@ -1125,6 +1125,7 @@ async fn vm_config_from_command_line(
         if !console_str.is_empty() {
             let _ = write!(&mut cmdline, " console={}", console_str);
         }
+
         if opt.gfx {
             cmdline += " console=tty";
         }
@@ -1162,6 +1163,11 @@ async fn vm_config_from_command_line(
             cmdline,
             custom_dsdt,
             enable_serial: any_serial_configured,
+            boot_mode: if opt.device_tree {
+                openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+            } else {
+                openvmm_defs::config::LinuxDirectBootMode::Acpi
+            },
         };
     }
 

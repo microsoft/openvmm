@@ -69,8 +69,6 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeAccess;
 
-const PPI_VTIMER: u32 = 20;
-
 const HV_ARM64_HVC_SMCCC_IDENTIFIER: u32 = (1 << 30) | (6 << 24) | 1;
 
 #[derive(Debug)]
@@ -152,6 +150,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                 // Apple Silicon does not support aarch32.
                 supports_aarch32_el0: false,
             },
+            virt_timer_ppi: self.config.processor_topology.virt_timer_ppi(),
             vps: self
                 .config
                 .processor_topology
@@ -444,6 +443,7 @@ impl AccessVmState for HvfPartitionStateAccess<'_> {
 #[derive(Inspect)]
 struct HvfPartitionInner {
     caps: Aarch64PartitionCapabilities,
+    virt_timer_ppi: u32,
     #[inspect(skip)]
     vps: Vec<HvfVpInner>,
     gicd: gic::Distributor,
@@ -919,7 +919,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                             self.vmtime.now().wrapping_add(Duration::from_millis(2)),
                         );
                         ready!(self.vmtime.poll_timeout(cx));
-                        self.gicr.raise(PPI_VTIMER);
+                        self.gicr.raise(self.partition.virt_timer_ppi);
                         continue;
                     }
 
@@ -928,7 +928,10 @@ impl<'p> Processor for HvfProcessor<'p> {
             })
             .await?;
 
-            if !self.gicr.is_pending_or_active(PPI_VTIMER) {
+            if !self
+                .gicr
+                .is_pending_or_active(self.partition.virt_timer_ppi)
+            {
                 // SAFETY: no requirements.
                 unsafe {
                     abi::hv_vcpu_set_vtimer_mask(self.vcpu.vcpu, false)
@@ -1129,7 +1132,7 @@ impl<'p> Processor for HvfProcessor<'p> {
                     }
                 }
                 abi::HvExitReason::VTIMER_ACTIVATED => {
-                    self.gicr.raise(PPI_VTIMER);
+                    self.gicr.raise(self.partition.virt_timer_ppi);
                 }
                 reason => {
                     return Err(dev.fatal_error(
