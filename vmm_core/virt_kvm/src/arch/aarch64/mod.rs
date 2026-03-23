@@ -644,10 +644,10 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                     .get_reg64(KvmRegisterId::SYS_ID_AA64PFR0_EL1.into())
                     .map_err(KvmError::Kvm)?;
                 // ID_AA64PFR0_EL1 bits [3:0] (EL0) indicate aarch32 support.
-                // 0b0001 = aarch64 and aarch32, 0b0010 = aarch64 only.
+                // 0b0001 = aarch64 only, 0b0010 = aarch64 and aarch32.
                 let el0 = pfr0 & 0xf;
                 PartitionCapabilities {
-                    supports_aarch32_el0: el0 == 1,
+                    supports_aarch32_el0: el0 == 2,
                 }
             },
             gic_v2m: self.config.processor_topology.gic_v2m(),
