@@ -6,6 +6,12 @@ name = "mana_driver"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# Exposes test-only injection helpers (`new_test`, `query_dev_config_test`,
+# `request_version_test`, etc.) so downstream crates can use them in their
+# own test suites without `#[cfg(test)]` being active in this crate.
+testing = []
+
 [dependencies]
 gdma_defs.workspace = true
 net_backend.workspace = true

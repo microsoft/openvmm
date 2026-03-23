@@ -576,6 +576,171 @@ async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
     let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
 }
 
+/// Verifies that the link speed queried from the adapter via the full driver
+/// stack is reported correctly through `dev_config().link_speed_bps()`,
+/// `vport.link_speed_bps()`, and `endpoint.link_speed()`.
+///
+/// The emulated GDMA device returns `adapter_link_speed_mbps = 0`, so the
+/// driver-stack path exercises the 200 Gbps fallback.
+#[async_test]
+async fn test_link_speed_default(driver: DefaultDriver) {
+    // Verify that a non-zero adapter_link_speed_mbps is converted to bps
+    // correctly, without going through the driver stack.
+    let dev_config_nonzero = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: 100 * 1000, // 100 Gbps
+    };
+    assert_eq!(
+        dev_config_nonzero.link_speed_bps(),
+        100 * 1000 * 1000 * 1000
+    );
+
+    // Now exercise the full driver stack. The emulated GDMA device returns
+    // adapter_link_speed_mbps = 0, so the 200 Gbps fallback is expected
+    // throughout.
+    const FALLBACK_LINK_SPEED_BPS: u64 = 200 * 1000 * 1000 * 1000;
+
+    let pages = 512; // 2MB
+    let mem = DeviceTestMemory::new(pages, false, "test_link_speed_default");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(LoopbackEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+
+    let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+
+    // Verify the link speed as seen in the device config populated by
+    // query_dev_config() during ManaDevice::new().
+    assert_eq!(thing.dev_config().link_speed_bps(), FALLBACK_LINK_SPEED_BPS);
+
+    let vport = thing
+        .new_vport(
+            0,
+            None,
+            &ManaQueryDeviceCfgResp {
+                pf_cap_flags1: 0.into(),
+                pf_cap_flags2: 0,
+                pf_cap_flags3: 0,
+                pf_cap_flags4: 0,
+                max_num_vports: 1,
+                reserved: 0,
+                max_num_eqs: 64,
+                adapter_mtu: 0,
+                reserved2: 0,
+                adapter_link_speed_mbps: 0,
+            },
+        )
+        .await
+        .unwrap();
+
+    // The vport inherits the link speed from the ManaDevice (emulator value).
+    assert_eq!(vport.link_speed_bps(), FALLBACK_LINK_SPEED_BPS);
+
+    // Verify it is also surfaced correctly through the Endpoint trait.
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    assert_eq!(endpoint.link_speed(), FALLBACK_LINK_SPEED_BPS);
+    endpoint.stop().await;
+}
+
+/// Verifies that a link speed injected via [`ManaDevice::new_test`] propagates
+/// through the full net_mana driver stack: `dev_config().link_speed_bps()`,
+/// `vport.link_speed_bps()`, and `endpoint.link_speed()`.
+#[async_test]
+async fn test_link_speed_expected(driver: DefaultDriver) {
+    verify_link_speed_expected(driver, 400 * 1000).await; // 400 Gbps
+}
+
+async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32) {
+    let link_speed_bps = link_speed_mbps as u64 * 1000 * 1000;
+
+    let pages = 512;
+    let mem = DeviceTestMemory::new(pages, false, "test_link_speed_expected");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(LoopbackEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
+
+    // Inject a specific non-zero link speed so we can verify it propagates
+    // through every layer of the driver stack.
+    let expected_dev_config = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: link_speed_mbps,
+    };
+
+    let thing = ManaDevice::new_test(&driver, device, 1, 1, None, Some(expected_dev_config))
+        .await
+        .unwrap();
+
+    // Layer 1: dev_config stored on ManaDevice.
+    assert_eq!(
+        thing.dev_config().link_speed_bps(),
+        link_speed_bps,
+        "dev_config().link_speed_bps() should reflect the injected link speed"
+    );
+
+    let vport_dev_config = ManaQueryDeviceCfgResp {
+        pf_cap_flags1: 0.into(),
+        pf_cap_flags2: 0,
+        pf_cap_flags3: 0,
+        pf_cap_flags4: 0,
+        max_num_vports: 1,
+        reserved: 0,
+        max_num_eqs: 64,
+        adapter_mtu: 0,
+        reserved2: 0,
+        adapter_link_speed_mbps: link_speed_mbps,
+    };
+    let vport = thing.new_vport(0, None, &vport_dev_config).await.unwrap();
+
+    // Layer 2: vport derives its link speed from the stored dev_config.
+    assert_eq!(
+        vport.link_speed_bps(),
+        link_speed_bps,
+        "vport.link_speed_bps() should reflect the injected link speed"
+    );
+
+    // Layer 3: ManaEndpoint surfaces it via the Endpoint trait.
+    let mut endpoint = ManaEndpoint::new(driver.clone(), vport, GuestDmaMode::DirectDma).await;
+    assert_eq!(
+        endpoint.link_speed(),
+        link_speed_bps,
+        "endpoint.link_speed() should reflect the injected link speed"
+    );
+    endpoint.stop().await;
+}
+
 async fn send_test_packet(
     driver: DefaultDriver,
     dma_mode: GuestDmaMode,

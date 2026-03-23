@@ -959,6 +959,171 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((resp, self.hwc_activity_id))
     }
 
+    /// Test-only variant of [`request_version`](Self::request_version) that
+    /// allows the caller to substitute the response body with a crafted value.
+    ///
+    /// The full HWC round-trip is performed identically to `request_version`.
+    /// After the hardware CQEs complete and the response header is validated,
+    /// if `expect_resp` is `Some(r)`, `r` is written into the response page
+    /// before the response body is read back, so the returned value reflects
+    /// the injected data rather than what the emulator wrote. Pass `None` for
+    /// behaviour identical to `request_version`.
+    ///
+    /// # Maintenance note
+    ///
+    /// This function is a near-copy of [`request_version`](Self::request_version)
+    /// and differs only in the single `expect_resp` injection block after
+    /// `push_rqe()`. If `request_version` ever changes (new parameters,
+    /// different HWC logic, etc.) **this function must be updated to match**.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn request_version_test<
+        Req: IntoBytes + Immutable + KnownLayout,
+        Resp: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
+        &mut self,
+        req_msg_type: u32,
+        req_msg_version: u16,
+        resp_msg_type: u32,
+        resp_msg_version: u16,
+        dev_id: GdmaDevId,
+        req: Req,
+        expect_resp: Option<Resp>,
+    ) -> anyhow::Result<(Resp, u32)> {
+        if self.hwc_failure {
+            anyhow::bail!("Previous hardware failure");
+        }
+        let req_hdr = GdmaMsgHdr {
+            hdr_type: GDMA_STANDARD_HEADER_TYPE,
+            msg_type: req_msg_type,
+            msg_version: req_msg_version,
+            hwc_msg_id: 0,
+            msg_size: (size_of::<GdmaReqHdr>() + size_of_val(&req)) as u32,
+        };
+        let expected_resp_hdr = GdmaMsgHdr {
+            msg_type: resp_msg_type,
+            msg_version: resp_msg_version,
+            msg_size: (size_of::<GdmaRespHdr>() + size_of::<Resp>()) as u32,
+            ..req_hdr
+        };
+        self.hwc_activity_id = self.hwc_activity_id.wrapping_add(1);
+        let hdr = GdmaReqHdr {
+            req: req_hdr,
+            resp: expected_resp_hdr,
+            dev_id,
+            activity_id: self.hwc_activity_id,
+        };
+
+        tracing::trace!(
+            request = format!("{:#x}", req_msg_type),
+            activity_id = format!("{:#x}", hdr.activity_id),
+            "HWC request",
+        );
+        // Zero the response page for the expected response size before sending
+        // the request. This ensures that fields added in newer response versions
+        // read as zero when talking to an older socmana that does not populate
+        // them, rather than containing stale data.
+        let expected_resp_size = size_of::<GdmaRespHdr>() + size_of::<Resp>();
+        self.dma_buffer
+            .write_at(RESPONSE_PAGE * PAGE_SIZE, &vec![0u8; expected_resp_size]);
+
+        self.dma_buffer.write_obj(REQUEST_PAGE * PAGE_SIZE, &hdr);
+        self.dma_buffer
+            .write_obj(REQUEST_PAGE * PAGE_SIZE + size_of_val(&hdr), &req);
+
+        let oob = HwcTxOob {
+            flags3: HwcTxOobFlags3::new().with_vscq_id(self.cq.id()),
+            flags4: HwcTxOobFlags4::new().with_vsq_id(self.sq.id()),
+            ..FromZeros::new_zeroed()
+        };
+
+        let hw_access = async {
+            let sqe_len = self
+                .sq
+                .push(
+                    oob,
+                    [Sge {
+                        address: self.dma_buffer.pfns()[REQUEST_PAGE] * PAGE_SIZE64,
+                        mem_key: self.gpa_mkey,
+                        size: (size_of_val(&hdr) + size_of_val(&req)) as u32,
+                    }],
+                )
+                .expect("send queue should not be full");
+
+            self.sq.commit();
+            let req_phys_addr = self.dma_buffer.pfns()[REQUEST_PAGE] * PAGE_SIZE64;
+            let sgl_phys_addr = self.dma_buffer.pfns()[SQ_PAGE] * PAGE_SIZE64;
+            let mem_key = self.gpa_mkey;
+            let cq_wait_context = || {
+                format!(
+                    "HWC request failed. request={:#x}, activity_id={:#x}, queue_phys_addr={:#x}, req_phys_addr={:#x}, write_size={}, mem_key={:#x}",
+                    req_msg_type,
+                    hdr.activity_id,
+                    sgl_phys_addr,
+                    req_phys_addr,
+                    size_of_val(&hdr) + size_of_val(&req),
+                    mem_key,
+                )
+            };
+            self.wait_cq().await.with_context(cq_wait_context)?;
+            self.wait_cq().await.with_context(cq_wait_context)?;
+            self.sq.advance_head(sqe_len);
+            self.rq.advance_head(RWQE_SIZE);
+            self.push_rqe();
+
+            // If a crafted response was provided, write it into the response
+            // page now (after the hardware has completed its round-trip but
+            // before the response body is read back), so callers observe the
+            // injected value.
+            if let Some(r) = expect_resp {
+                self.dma_buffer
+                    .write_obj(RESPONSE_PAGE * PAGE_SIZE + size_of::<GdmaRespHdr>(), &r);
+            }
+
+            let resp_hdr = self
+                .dma_buffer
+                .read_obj::<GdmaRespHdr>(RESPONSE_PAGE * PAGE_SIZE);
+
+            if resp_hdr.response.msg_size < size_of::<Resp>() as u32 {
+                anyhow::bail!(
+                    "response too small, request={:#x}, activity_id={:#x}",
+                    req_msg_type,
+                    hdr.activity_id
+                );
+            }
+            if resp_hdr.status != 0 {
+                anyhow::bail!(
+                    "failed with {:#x}, request={:#x}, activity_id={:#x}",
+                    resp_hdr.status,
+                    req_msg_type,
+                    hdr.activity_id
+                );
+            }
+
+            let resp = self
+                .dma_buffer
+                .read_obj::<Resp>(RESPONSE_PAGE * PAGE_SIZE + size_of_val(&resp_hdr));
+            tracing::trace!(
+                resp = ?resp.as_bytes(),
+                "read response body from DMA buffer",
+            );
+            Ok(resp)
+        };
+        let resp = match hw_access.await {
+            Ok(resp) => resp,
+            Err(err) => {
+                self.hwc_failure = true;
+                return Err(err);
+            }
+        };
+
+        tracing::trace!(
+            request = format!("{:#x}", req_msg_type),
+            activity_id = format!("{:#x}", hdr.activity_id),
+            "HWC response success",
+        );
+        Ok((resp, self.hwc_activity_id))
+    }
+
     pub async fn request<
         Req: IntoBytes + Immutable + KnownLayout,
         Resp: IntoBytes + FromBytes + Immutable + KnownLayout,
