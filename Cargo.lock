@@ -3499,6 +3499,7 @@ dependencies = [
  "loader",
  "loader_defs",
  "memory_range",
+ "page_table",
  "range_map_vec",
  "serde",
  "serde_json",

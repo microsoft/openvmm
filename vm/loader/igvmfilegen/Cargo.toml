@@ -12,6 +12,7 @@ loader.workspace = true
 loader_defs.workspace = true
 
 hvdef.workspace = true
+page_table.workspace = true
 
 memory_range.workspace = true
 vbs_defs.workspace = true
