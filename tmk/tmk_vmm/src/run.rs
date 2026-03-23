@@ -100,15 +100,15 @@ impl CommonState {
         let ram_size = 0x400000;
 
         #[cfg(guest_arch = "x86_64")]
-        let memory_layout = MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+        let memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
 
         #[cfg(guest_arch = "aarch64")]
         let mut memory_layout =
-            MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
 
         #[cfg(guest_arch = "aarch64")]
         let mut shared_memory_layout =
-            MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
         
         let map_size = ram_size;
         let non_zero_size =NonZeroUsize::new(map_size as usize).expect("Size was already checked to be non-zero");
