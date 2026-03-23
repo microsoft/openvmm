@@ -7,7 +7,8 @@ use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
-use vmm_test_macros::openvmm_test;
+// TODO: re-enable when boot_dt test is re-enabled
+// use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
 /// Boot Linux and verify the PMU interrupt is available.
@@ -47,7 +48,10 @@ async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), a
 }
 
 /// Boot ARM64 Linux in device-tree mode (full DT, no ACPI).
-#[openvmm_test(linux_direct_aarch64)]
+// TODO: disabled until we get a kernel that supports DT boot with the
+// current device configuration.
+// #[openvmm_test(linux_direct_aarch64)]
+#[allow(dead_code)]
 async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .modify_backend(|c| {
