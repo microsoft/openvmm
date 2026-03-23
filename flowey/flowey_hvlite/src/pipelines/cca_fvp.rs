@@ -174,8 +174,6 @@ impl IntoPipeline for CcaFvpCli {
                 local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                     interactive: true,
                     auto_install: install_missing_deps,
-                    force_nuget_mono: false,
-                    external_nuget_auth: false,
                     ignore_rust_version: true,
                 }),
                 verbose: ReadVar::from_static(verbose),
@@ -204,8 +202,6 @@ impl IntoPipeline for CcaFvpCli {
                 local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                     interactive: true,
                     auto_install: install_missing_deps,
-                    force_nuget_mono: false,
-                    external_nuget_auth: false,
                     ignore_rust_version: true,
                 }),
                 verbose: ReadVar::from_static(verbose),
@@ -237,8 +233,6 @@ impl IntoPipeline for CcaFvpCli {
                 local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                     interactive: true,
                     auto_install: install_missing_deps,
-                    force_nuget_mono: false,
-                    external_nuget_auth: false,
                     ignore_rust_version: true,
                 }),
                 verbose: ReadVar::from_static(verbose),
