@@ -23,7 +23,6 @@ pub enum NicBackend {
     /// VMBus synthetic NIC (NETVSP).
     Vmbus,
     /// Virtio-net on PCIe.
-    #[value(name = "virtio-net")]
     VirtioNet,
 }
 
@@ -53,6 +52,8 @@ pub struct NetworkTestState {
     agent: petri::pipette::PipetteClient,
     /// The host's real IP address, reachable from the guest via Consomme NAT.
     host_ip: String,
+    /// Async driver for timers.
+    driver: pal_async::DefaultDriver,
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
@@ -156,7 +157,12 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         let host_ip = detect_host_ip().context("failed to detect host IP")?;
         tracing::info!(host_ip = %host_ip, "detected host IP for iperf3 server");
 
-        Ok(NetworkTestState { vm, agent, host_ip })
+        Ok(NetworkTestState {
+            vm,
+            agent,
+            host_ip,
+            driver: driver.clone(),
+        })
     }
 
     async fn run_once(&self, state: &mut NetworkTestState) -> anyhow::Result<Vec<MetricResult>> {
@@ -164,31 +170,58 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         let label = self.nic.label();
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
+        let mut timer = pal_async::timer::PolledTimer::new(&state.driver);
+        let perf_delay = std::time::Duration::from_millis(500);
 
         // TCP TX (guest sends to host)
         let name = format!("net_{label}_tcp_tx_gbps");
         recorder.start(&name)?;
-        let m = run_iperf3_test(&state.agent, &state.host_ip, 5201, &name, IperfMode::TcpTx)
-            .await
-            .context("TCP TX test failed")?;
+        // Give perf time to attach.
+        timer.sleep(perf_delay).await;
+        let m = run_iperf3_test(
+            &state.agent,
+            &state.host_ip,
+            5201,
+            &name,
+            IperfMode::TcpTx,
+            &mut timer,
+        )
+        .await
+        .context("TCP TX test failed")?;
         recorder.stop()?;
         metrics.push(m);
 
         // TCP RX (host sends to guest, -R flag)
         let name = format!("net_{label}_tcp_rx_gbps");
         recorder.start(&name)?;
-        let m = run_iperf3_test(&state.agent, &state.host_ip, 5202, &name, IperfMode::TcpRx)
-            .await
-            .context("TCP RX test failed")?;
+        timer.sleep(perf_delay).await;
+        let m = run_iperf3_test(
+            &state.agent,
+            &state.host_ip,
+            5202,
+            &name,
+            IperfMode::TcpRx,
+            &mut timer,
+        )
+        .await
+        .context("TCP RX test failed")?;
         recorder.stop()?;
         metrics.push(m);
 
         // UDP TX (guest sends to host)
         let name = format!("net_{label}_udp_tx_pps");
         recorder.start(&name)?;
-        let m = run_iperf3_test(&state.agent, &state.host_ip, 5203, &name, IperfMode::UdpTx)
-            .await
-            .context("UDP TX test failed")?;
+        timer.sleep(perf_delay).await;
+        let m = run_iperf3_test(
+            &state.agent,
+            &state.host_ip,
+            5203,
+            &name,
+            IperfMode::UdpTx,
+            &mut timer,
+        )
+        .await
+        .context("UDP TX test failed")?;
         recorder.stop()?;
         metrics.push(m);
 
@@ -223,12 +256,13 @@ async fn run_iperf3_test(
     port: u16,
     metric_name: &str,
     mode: IperfMode,
+    timer: &mut pal_async::timer::PolledTimer,
 ) -> anyhow::Result<MetricResult> {
     // Spawn host iperf3 server (serves one client then exits).
     let server = spawn_iperf3_server(port)?;
 
     // Brief delay to let the server bind.
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    timer.sleep(std::time::Duration::from_millis(500)).await;
 
     // Build guest client command.
     let port_str = port.to_string();

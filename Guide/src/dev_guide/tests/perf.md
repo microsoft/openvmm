@@ -24,7 +24,7 @@ cargo build --release \
 Measures launch-to-pipette-connect time using Linux direct boot:
 
 ```bash
-burette run --test boot_time -o report.json
+burette run --test boot-time -o report.json
 ```
 
 Available profiles control the VM configuration:
@@ -38,10 +38,10 @@ Available profiles control the VM configuration:
 
 ```bash
 # Use a specific profile
-burette run --test boot_time --profile minimal -o report.json
+burette run --test boot-time --profile minimal -o report.json
 
 # Custom iteration count and guest RAM
-burette run --test boot_time --iterations 20 --mem-mb 1024
+burette run --test boot-time --iterations 20 --mem-mb 1024
 ```
 
 ### Memory overhead
@@ -51,6 +51,18 @@ openvmm process tree:
 
 ```bash
 burette run --test memory -o memory.json
+```
+
+### Network throughput
+
+Measures TCP throughput (Gbps) and UDP packet rate (pps) using iperf3
+with an Alpine VM and Consomme networking:
+
+```bash
+burette run --test network -o network.json
+
+# Test with virtio-net instead of VMBus
+burette run --test network --nic virtio-net -o network.json
 ```
 
 Reported metrics:
@@ -78,13 +90,13 @@ and per-VM memory overhead. Default sweep: N = 1, 2, 4, 8, 16, 32,
 
 ```bash
 # Full geometric sweep (auto-stops at 90% host memory)
-burette run --test scale_boot --mem-mb 256 -o scale.json
+burette run --test scale-boot --mem-mb 256 -o scale.json
 
 # Single data point
-burette run --test scale_boot --vms 16 --mem-mb 256
+burette run --test scale-boot --vms 16 --mem-mb 256
 
 # Custom sweep
-burette run --test scale_boot --vms 1,2,4,8 --max-vms 32
+burette run --test scale-boot --vms 1,2,4,8 --max-vms 32
 ```
 
 Per-N metrics include `scale_{N}_mean_boot_ms`,

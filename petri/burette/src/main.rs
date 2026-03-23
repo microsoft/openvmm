@@ -13,7 +13,7 @@
 //! burette run -o report.json
 //!
 //! # Run only boot time test
-//! burette run --test boot_time -o report.json
+//! burette run --test boot-time -o report.json
 //!
 //! # Run with custom iteration count
 //! burette run --iterations 20 -o report.json
@@ -121,7 +121,7 @@ struct RunArgs {
     #[arg(long, default_value = "vmbus")]
     nic: NicBackend,
 
-    /// Record `perf record -a -g` traces scoped to each iperf3 test,
+    /// Record `perf record -p <pid> -g` traces scoped to each iperf3 test,
     /// saving per-test .data files in this directory. Linux only.
     #[arg(long)]
     perf_dir: Option<PathBuf>,

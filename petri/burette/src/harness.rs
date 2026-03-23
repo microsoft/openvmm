@@ -78,8 +78,6 @@ impl PerfRecorder {
             .spawn()
             .context("failed to spawn perf record — is perf installed?")?;
         tracing::info!(path = %data_path.display(), "perf recording started");
-        // Give perf time to attach.
-        std::thread::sleep(std::time::Duration::from_millis(500));
         self.child = Some((child, data_path));
         Ok(())
     }

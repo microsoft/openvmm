@@ -26,14 +26,12 @@ pub enum BootProfile {
     Standard,
     /// Like Standard but with kernel console output suppressed
     /// (`quiet loglevel=0`). Isolates serial emulation overhead.
-    #[value(name = "quiet-serial")]
     QuietSerial,
     /// Pipette-as-init, minimal devices, no serial, shared memory.
     /// Measures VMM + kernel boot without serial overhead.
     Minimal,
     /// Pipette-as-init, minimal devices, no serial, private memory.
     /// Fastest configuration — eliminates mmap overhead for guest RAM.
-    #[value(name = "minimal-private")]
     MinimalPrivate,
 }
 
