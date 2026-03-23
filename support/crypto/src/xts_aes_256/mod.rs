@@ -25,7 +25,7 @@ pub struct XtsAes256(sys::XtsAes256Inner);
 
 /// An error for XTS-AES-256 cryptographic operations.
 #[derive(Clone, Debug, Error)]
-#[error("XTS-AES-256 error: {0}")]
+#[error("XTS-AES-256 error")]
 pub struct XtsAes256Error(#[source] super::BackendError);
 
 impl XtsAes256 {

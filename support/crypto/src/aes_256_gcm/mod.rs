@@ -25,7 +25,7 @@ pub struct Aes256Gcm(sys::Aes256GcmInner);
 
 /// An error for AES-256-GCM cryptographic operations.
 #[derive(Clone, Debug, Error)]
-#[error("AES-256-GCM error: {0}")]
+#[error("AES-256-GCM error")]
 pub struct Aes256GcmError(#[source] super::BackendError);
 
 impl Aes256Gcm {

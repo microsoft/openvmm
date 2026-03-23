@@ -32,12 +32,12 @@ use thiserror::Error;
 /// operation being performed when the error occurred.
 #[cfg(unix)]
 #[derive(Clone, Debug, Error)]
-#[error("openssl error during {1}: {0}")]
+#[error("openssl error during {1}")]
 pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 
 /// An error that occurred in the crypto backend, with a description of the
 /// operation being performed when the error occurred.
 #[cfg(windows)]
 #[derive(Clone, Debug, Error)]
-#[error("bcrypt error during {1}: {0}")]
+#[error("bcrypt error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);
