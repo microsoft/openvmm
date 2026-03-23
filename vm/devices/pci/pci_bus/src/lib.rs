@@ -123,6 +123,12 @@ pub trait GenericPciBusDevice: 'static + Send {
     ) -> Option<IoResult> {
         None
     }
+
+    /// Whether direct Type 0 accesses on an attached child bus should be
+    /// routed exclusively through the forwarding hooks.
+    fn supports_multi_function_device(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]

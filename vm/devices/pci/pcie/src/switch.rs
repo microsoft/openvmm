@@ -439,6 +439,10 @@ impl PciConfigSpace for GenericPcieSwitch {
         self.route_cfg_write(bus, device_function, offset, value)
     }
 
+    fn supports_multi_function_device(&self) -> bool {
+        true
+    }
+
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
         // PCIe switches typically don't have a fixed BDF requirement
         None

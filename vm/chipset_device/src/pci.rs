@@ -61,6 +61,16 @@ pub trait PciConfigSpace: ChipsetDevice {
         None
     }
 
+    /// Whether direct Type 0 accesses on an attached child bus should be
+    /// routed exclusively through the forwarding hooks.
+    ///
+    /// Devices such as PCIe switches and function-aware forwarding endpoints
+    /// can expose multiple functions behind a single attached slot and need the
+    /// child-bus device/function tuple to resolve accesses correctly.
+    fn supports_multi_function_device(&self) -> bool {
+        false
+    }
+
     /// Check if the device has a suggested (bus, device, function) it expects
     /// to be located at.
     ///

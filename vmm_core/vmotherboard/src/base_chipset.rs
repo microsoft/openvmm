@@ -864,6 +864,18 @@ mod weak_mutex_pci {
                 .expect("builder code ensures supports_pci.is_some()")
                 .pci_cfg_write_forward(bus, device_function, offset, value)
         }
+
+        fn supports_multi_function_device(&self) -> bool {
+            let Some(device) = self.0.upgrade() else {
+                return false;
+            };
+
+            device
+                .lock()
+                .supports_pci()
+                .expect("builder code ensures supports_pci.is_some()")
+                .supports_multi_function_device()
+        }
     }
 
     // wiring to enable using the generic PCI bus alongside the Arc+CloseableMutex device infra
