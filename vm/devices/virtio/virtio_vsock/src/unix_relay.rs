@@ -63,6 +63,7 @@ impl RelaySocket {
                 poll: Mutex::new(poll),
                 awaiting_read: AtomicBool::new(false),
                 awaiting_write: AtomicBool::new(false),
+                has_data: AtomicBool::new(false),
             }),
         })
     }
@@ -79,13 +80,17 @@ impl RelaySocket {
             .then(|| -> Pin<Box<dyn Future<Output = T> + Send>> {
                 let inner = self.inner.clone();
                 Box::pin(async move {
-                    inner
+                    let events = inner
                         .await_ready(
                             InterestSlot::Read,
                             PollEvents::IN | PollEvents::RDHUP | PollEvents::HUP | PollEvents::ERR,
                         )
                         .await;
 
+                    // TODO: Handle HUP specifically to send RST on socket close. This may get sent
+                    // together with IN, so return it so it can be stored and handled after calling
+                    // read for the last time (or handle RDHUP and avoid calling the last read?).
+                    inner.has_data.store(true, Ordering::Release);
                     result
                 })
             })
@@ -99,17 +104,24 @@ impl RelaySocket {
             .then(|| -> Pin<Box<dyn Future<Output = T> + Send>> {
                 let inner = self.inner.clone();
                 Box::pin(async move {
-                    let events = inner
+                    inner
                         .await_ready(
                             InterestSlot::Write,
-                            PollEvents::OUT | PollEvents::RDHUP | PollEvents::HUP | PollEvents::ERR,
+                            PollEvents::OUT | PollEvents::HUP | PollEvents::ERR,
                         )
                         .await;
 
-                    tracing::info!("write-ready events: {:?}", events);
                     result
                 })
             })
+    }
+
+    pub fn clear_ready(&self, slot: InterestSlot) {
+        self.inner.poll.lock().clear_socket_ready(slot);
+    }
+
+    pub fn has_data(&self) -> bool {
+        self.inner.has_data.swap(false, Ordering::AcqRel)
     }
 
     fn await_read_ready_needed(&self) -> bool {
@@ -127,13 +139,13 @@ struct RelaySocketInner {
     socket: UnixStream,
     awaiting_read: AtomicBool,
     awaiting_write: AtomicBool,
+    has_data: AtomicBool,
 }
 
 impl RelaySocketInner {
-    async fn await_ready(self: Arc<Self>, slot: InterestSlot, events: PollEvents) -> PollEvents {
+    async fn await_ready(&self, slot: InterestSlot, events: PollEvents) -> PollEvents {
         let events = poll_fn(|cx| {
             let mut poll = self.poll.lock();
-            poll.clear_socket_ready(slot);
             poll.poll_socket_ready(cx, slot, events)
         })
         .await;

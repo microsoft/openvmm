@@ -6,6 +6,7 @@
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use std::io::IoSlice;
+use std::io::IoSliceMut;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -55,6 +56,8 @@ pub struct VsockHeader {
     pub buf_alloc: u32,
     pub fwd_cnt: u32,
 }
+
+pub const VSOCK_HEADER_SIZE: usize = size_of::<VsockHeader>();
 
 pub struct VsockPacket<'a> {
     pub header: VsockHeader,

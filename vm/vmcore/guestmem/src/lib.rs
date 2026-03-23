@@ -2371,6 +2371,10 @@ impl<'a, T: LockedRange<'a>> LockedRangeImpl<'a, T> {
     pub fn get(&self) -> &T {
         &self.inner
     }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
 }
 
 impl<'a, T: LockedRange<'a>> Drop for LockedRangeImpl<'a, T> {

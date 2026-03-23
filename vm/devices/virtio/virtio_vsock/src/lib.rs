@@ -25,11 +25,13 @@ mod unix_relay;
 
 use crate::connection::ConnKey;
 use crate::connection::RxWork;
+use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockPacket;
 use connection::ConnectionManager;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use guestmem::LockedRange;
+use guestmem::LockedRangeImpl;
 use guestmem::ranges::PagedRange;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
@@ -37,6 +39,7 @@ use spec::VIRTIO_DEVICE_TYPE_VSOCK;
 use spec::VsockConfig;
 use spec::VsockHeader;
 use std::io::IoSlice;
+use std::io::IoSliceMut;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::Context;
@@ -53,6 +56,7 @@ use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::VirtioQueuePayload;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -198,7 +202,7 @@ type WriteReadyItem = Pin<Box<dyn Future<Output = ConnKey> + Send>>;
 type RxWorkQueue = FuturesUnordered<RxWorkItem>;
 
 struct PendingWork {
-    rx_work: Option<RxWork>,
+    rx_work: Option<RxWorkItem>,
     write_ready_work: Option<WriteReadyItem>,
 }
 
@@ -208,16 +212,23 @@ impl PendingWork {
         write_ready_work: None,
     };
 
-    fn rx(work: RxWork) -> Self {
+    fn rx(work: Option<RxWorkItem>) -> Self {
         Self {
-            rx_work: Some(work),
+            rx_work: work,
+            write_ready_work: None,
+        }
+    }
+
+    fn simple_rx(work: RxWork) -> Self {
+        Self {
+            rx_work: Some(Box::pin(async move { work })),
             write_ready_work: None,
         }
     }
 
     fn new(work: Option<WriteReadyItem>, rx_work: Option<RxWork>) -> Self {
         Self {
-            rx_work,
+            rx_work: rx_work.map(|w| -> RxWorkItem { Box::pin(async move { w }) }),
             write_ready_work: work,
         }
     }
@@ -245,35 +256,27 @@ impl VsockWorker {
         state: &mut VsockWorkerState,
         work: VirtioQueueCallbackWork,
     ) -> anyhow::Result<()> {
-        let hdr_size = size_of::<VsockHeader>();
         let readable_len = work.get_payload_length(false) as usize;
 
-        if readable_len < hdr_size {
+        if readable_len < VSOCK_HEADER_SIZE {
             tracing::warn!(readable_len, "vsock tx packet too small for header");
             anyhow::bail!("vsock tx packet too small for header");
         }
 
         let mut header = VsockHeader::new_zeroed();
-        work.read(&self.mem, &mut header.as_mut_bytes()[..hdr_size])?;
+        work.read(&self.mem, &mut header.as_mut_bytes()[..VSOCK_HEADER_SIZE])?;
 
         tracing::trace!(?header, "got tx packet from guest");
         let pending_work = {
             // TODO: Avoid allocating.
-            let regions = data_regions(&work.payload, false, hdr_size as u64, header.len as u64);
-            let gpn_list = try_build_gpn_list(&regions);
-            let locked = if let Some((gpns, offset, len)) = &gpn_list {
-                if *len != header.len as usize {
-                    let key = ConnKey::from_tx_packet(&header);
-                    self.work
-                        .push(Box::pin(async move { RxWork::SendReset(key) }));
-                    anyhow::bail!("data length mismatch in vsock tx packet");
-                }
-                let paged_range = PagedRange::new(*offset, *len, gpns).unwrap();
-                self.mem
-                    .lock_range(paged_range, LockedIoSlice(Vec::new()))?
-            } else {
-                todo!("read into temp buffer");
-            };
+            let locked = lock_payload_data(
+                &self.mem,
+                &work.payload,
+                header.len as u64,
+                true,
+                false,
+                LockedIoSlice(Vec::new()),
+            )?;
 
             // Process through the relay.
             state
@@ -287,7 +290,7 @@ impl VsockWorker {
 
     fn queue_pending_work(&mut self, pending: PendingWork) {
         if let Some(work) = pending.rx_work {
-            self.work.push(Box::pin(async move { work }));
+            self.work.push(work);
         }
         if let Some(work) = pending.write_ready_work {
             self.write_ready_work.push(work);
@@ -311,18 +314,21 @@ impl VsockWorker {
         //     }
         // };
 
-        if let Some(header) = state.relay.get_rx_packet(rx_work) {
-            tracing::info!(?header, "sending reply");
-            let mut work = state
-                .rx_queue
-                .try_next()
-                .expect("peek already succeeded")
-                .expect("queue was already checked to have items");
+        let mut work = state
+            .rx_queue
+            .try_next()
+            .expect("peek already succeeded")
+            .expect("queue was already checked to have items");
 
-            let header = header.as_bytes();
-            work.write(&self.mem, header).expect("TODO");
-            work.complete(header.len() as u32);
+        let (header, pending_work) = state.relay.get_rx_packet(&self.mem, &work.payload, rx_work);
+        if let Some(header) = header {
+            tracing::info!(?header, "sending reply");
+            let header_bytes = header.as_bytes();
+            work.write(&self.mem, header_bytes).expect("TODO");
+            work.complete(header_bytes.len() as u32 + header.len);
         }
+
+        self.queue_pending_work(pending_work);
 
         // while !state.pending_rx.is_empty() {
         //     match state.rx_queue.try_next() {
@@ -609,4 +615,41 @@ impl<'a> LockedRange<'a> for LockedIoSlice<'a> {
             unsafe { std::slice::from_raw_parts(sub_range.as_ptr().cast::<u8>(), sub_range.len()) };
         self.0.push(IoSlice::new(slice));
     }
+}
+
+struct LockedIoSliceMut<'a>(Vec<IoSliceMut<'a>>);
+
+impl<'a> LockedRange<'a> for LockedIoSliceMut<'a> {
+    fn push_sub_range(&mut self, sub_range: &'a [std::sync::atomic::AtomicU8]) {
+        // SAFETY: Treating AtomicU8 as mut u8 for vectored IO. The lifetime annotations ensure the
+        // sub_range lives long enough for the IoSliceMut.
+        let slice = unsafe {
+            std::slice::from_raw_parts_mut(sub_range.as_ptr() as *mut u8, sub_range.len())
+        };
+        self.0.push(IoSliceMut::new(slice));
+    }
+}
+
+fn lock_payload_data<'a, T: LockedRange<'a>>(
+    mem: &'a GuestMemory,
+    payload: &[VirtioQueuePayload],
+    data_len: u64,
+    require_exact_len: bool,
+    writable: bool,
+    locked_range: T,
+) -> anyhow::Result<LockedRangeImpl<'a, T>> {
+    let regions = data_regions(payload, writable, VSOCK_HEADER_SIZE as u64, data_len);
+    let gpn_list = try_build_gpn_list(&regions);
+    let locked = if let Some((gpns, offset, len)) = &gpn_list {
+        if require_exact_len && *len != data_len as usize {
+            anyhow::bail!("data length mismatch in vsock tx packet");
+        }
+        let paged_range =
+            PagedRange::new(*offset, *len, gpns).expect("offset and len should be valid");
+        mem.lock_range(paged_range, locked_range)?
+    } else {
+        todo!("use temp buffer");
+    };
+
+    Ok(locked)
 }

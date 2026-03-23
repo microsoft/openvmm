@@ -17,9 +17,11 @@
 //! `CONNECT <port>` text protocol (the same hybrid vsock protocol used by
 //! Firecracker and others).
 
+use crate::LockedIoSliceMut;
 use crate::PendingWork;
 use crate::RxWorkItem;
 use crate::WriteReadyItem;
+use crate::lock_payload_data;
 use crate::ring::RingBuffer;
 use crate::spec::Operation;
 use crate::spec::ShutdownFlags;
@@ -34,6 +36,8 @@ use bitfield_struct::bitfield;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::io;
+use guestmem::GuestMemory;
+use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReadyExt;
 use pal_async::socket::PolledSocket;
@@ -41,12 +45,16 @@ use pal_async::socket::ReadHalf;
 use pal_async::socket::WriteHalf;
 use std::collections::HashMap;
 use std::io::IoSlice;
+use std::io::IoSliceMut;
+use std::io::Read;
 use std::io::Write;
 use std::num::Wrapping;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::path::PathBuf;
 use unix_socket::UnixStream;
+use virtio::VirtioQueueCallbackWork;
+use virtio::queue::VirtioQueuePayload;
 use vmcore::vm_task::VmTaskDriver;
 
 const TX_BUF_SIZE: u32 = 65536;
@@ -72,31 +80,49 @@ impl ConnKey {
 struct PendingReply {
     reset: bool,
     respond: bool,
-    #[bits(30)]
+    credit_request: bool,
+    #[bits(29)]
     _reserved: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionState {
+    Connecting,
+    Connected {
+        read_shutdown: bool,
+        write_shutdown: bool,
+    },
+}
+
+impl ConnectionState {
+    fn is_connected(&self) -> bool {
+        matches!(self, Self::Connected { .. })
+    }
 }
 
 /// Tracks the state of a single vsock connection relayed to a Unix socket.
 struct Connection {
     key: ConnKey,
+    /// TODO: Some of this logically belongs in the ConnectionState.
     /// Buffer allocation advertised by the peer (guest).
     peer_buf_alloc: u32,
     /// Received data that the peer has forwarded from its buffer.
-    peer_fwd_cnt: Wrapping<u32>,
+    peer_fwd_cnt: u32,
+    tx_cnt: Wrapping<u32>,
     /// Data received from the peer that has been forwarded to the unix socket relay.
     fwd_cnt: Wrapping<u32>,
     last_sent_fwd_count: u32,
     pending_reply: PendingReply,
     socket: RelaySocket,
     recv_buf: Option<RingBuffer>,
-    is_write_shutdown: bool,
+    state: ConnectionState,
 }
 
 impl Connection {
     fn new(
         key: ConnKey,
         peer_buf_alloc: u32,
-        peer_fwd_cnt: Wrapping<u32>,
+        peer_fwd_cnt: u32,
         pending_reply: PendingReply,
         socket: RelaySocket,
     ) -> Self {
@@ -104,12 +130,13 @@ impl Connection {
             key,
             peer_buf_alloc,
             peer_fwd_cnt,
+            tx_cnt: Wrapping(0),
             fwd_cnt: Wrapping(0),
             last_sent_fwd_count: 0,
             pending_reply,
             socket,
             recv_buf: None,
-            is_write_shutdown: false,
+            state: ConnectionState::Connecting,
         }
     }
 
@@ -118,7 +145,11 @@ impl Connection {
         data: &[IoSlice<'_>],
         data_len: usize,
     ) -> anyhow::Result<Option<WriteReadyItem>> {
-        if self.is_write_shutdown {
+        if let ConnectionState::Connected {
+            write_shutdown: true,
+            ..
+        } = self.state
+        {
             anyhow::bail!("peer has shutdown write side but sent data");
         }
 
@@ -134,10 +165,12 @@ impl Connection {
                     n
                 }
                 Err(e) => {
+                    // TODO: Implement Read and Write on the socket so we can handle WouldBlock there.
                     if e.kind() != io::ErrorKind::WouldBlock {
                         return Err(e).context("failed to write to guest socket");
                     }
 
+                    self.socket.clear_ready(InterestSlot::Write);
                     0
                 }
             }
@@ -174,13 +207,18 @@ impl Connection {
                 if e.kind() != io::ErrorKind::WouldBlock {
                     return Err(e).context("failed to write buffered data to guest socket");
                 } else {
+                    self.socket.clear_ready(InterestSlot::Write);
                     tracing::info!("write would block");
                 }
             }
         }
 
         if buf.is_empty() {
-            if self.is_write_shutdown {
+            if let ConnectionState::Connected {
+                write_shutdown: true,
+                ..
+            } = self.state
+            {
                 self.socket
                     .get()
                     .shutdown(std::net::Shutdown::Write)
@@ -201,7 +239,15 @@ impl Connection {
         self.fwd_cnt.0 != self.last_sent_fwd_count
     }
 
-    fn shutdown(&mut self, mut flags: ShutdownFlags) -> io::Result<()> {
+    fn shutdown(&mut self, mut flags: ShutdownFlags) -> anyhow::Result<()> {
+        let ConnectionState::Connected {
+            mut read_shutdown,
+            mut write_shutdown,
+        } = self.state
+        else {
+            anyhow::bail!("invalid state for shutdown: {:?}", self.state);
+        };
+
         if flags.send() {
             // Don't actually shutdown the write side if we're still waiting to flush data out of
             // the buffer.
@@ -209,23 +255,97 @@ impl Connection {
                 flags.set_send(false);
             }
 
-            self.is_write_shutdown = true;
+            write_shutdown = true;
         }
 
         let how = if flags.send() {
             if flags.receive() {
+                read_shutdown = true;
                 std::net::Shutdown::Both
             } else {
                 std::net::Shutdown::Write
             }
         } else if flags.receive() {
+            read_shutdown = true;
             std::net::Shutdown::Read
         } else {
             return Ok(());
         };
 
+        self.state = ConnectionState::Connected {
+            read_shutdown,
+            write_shutdown,
+        };
+
         self.socket.get().shutdown(how)?;
         Ok(())
+    }
+
+    fn handle_host_data(
+        &mut self,
+        mem: &GuestMemory,
+        payload: &[VirtioQueuePayload],
+        guest_cid: u64,
+    ) -> anyhow::Result<Option<VsockHeader>> {
+        let peer_free = self.peer_credit_available();
+        if peer_free == 0 {
+            tracing::info!("peer has no buffer credit available, waiting for credit update");
+            return Ok(Some(new_reply_packet(
+                self.key,
+                Operation::CREDIT_REQUEST,
+                guest_cid,
+                self.fwd_cnt.0,
+            )));
+        }
+
+        tracing::info!(peer_free, "peer buffer credit available");
+        let mut locked = lock_payload_data(
+            mem,
+            payload,
+            peer_free.into(),
+            false,
+            true,
+            LockedIoSliceMut(Vec::new()),
+        )?;
+
+        let packet = match self.socket.get().read_vectored(locked.get_mut().0.as_mut()) {
+            Ok(n) => {
+                if n == 0 {
+                    tracing::info!("host socket shutdown");
+                    self.socket.clear_ready(InterestSlot::Read);
+                    Some(new_shutdown_packet(
+                        self.key,
+                        guest_cid,
+                        self.fwd_cnt.0,
+                        ShutdownFlags::new().with_send(true),
+                    ))
+                } else {
+                    tracing::info!(n, "read data from host socket");
+                    self.tx_cnt += n as u32;
+                    Some(new_rw_packet(self.key, guest_cid, self.fwd_cnt.0, n as u32))
+                }
+            }
+            Err(e) => {
+                tracing::info!(
+                    err = &e as &dyn std::error::Error,
+                    "failed to read from host socket"
+                );
+                if e.kind() != std::io::ErrorKind::WouldBlock {
+                    return Err(e.into());
+                } else {
+                    self.socket.clear_ready(InterestSlot::Read);
+                    None
+                }
+            }
+        };
+
+        Ok(packet)
+    }
+
+    /// Calculate the peer's available buffer space based on the advertised buffer allocation, how
+    /// much data we've sent, and how much the peer has forwarded from its buffer.
+    fn peer_credit_available(&self) -> u32 {
+        (Wrapping(self.peer_buf_alloc) - (self.tx_cnt - Wrapping(self.peer_fwd_cnt))).0
     }
 }
 
@@ -295,7 +415,7 @@ impl ConnectionManager {
                 "invalid source CID"
             );
 
-            return PendingWork::rx(RxWork::SendReset(key));
+            return PendingWork::simple_rx(RxWork::SendReset(key));
         }
 
         let op = Operation(packet.header.op);
@@ -311,13 +431,13 @@ impl ConnectionManager {
                             Connection::new(
                                 key,
                                 packet.header.buf_alloc,
-                                Wrapping(packet.header.fwd_cnt),
+                                packet.header.fwd_cnt,
                                 PendingReply::new().with_respond(true),
                                 socket,
                             ),
                         );
 
-                        PendingWork::rx(RxWork::Connection(key))
+                        PendingWork::simple_rx(RxWork::Connection(key))
                     }
                     Err(err) => {
                         tracelimit::warn_ratelimited!(
@@ -325,7 +445,7 @@ impl ConnectionManager {
                             port = key.local_port,
                             "failed to connect to host socket for vsock request"
                         );
-                        PendingWork::rx(RxWork::SendReset(key))
+                        PendingWork::simple_rx(RxWork::SendReset(key))
                     }
                 }
             }
@@ -333,7 +453,7 @@ impl ConnectionManager {
                 // Guest is sending data.
                 let Some(conn) = self.conns.get_mut(&key) else {
                     tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
-                    return PendingWork::rx(RxWork::SendReset(key));
+                    return PendingWork::simple_rx(RxWork::SendReset(key));
                 };
 
                 match conn.handle_guest_data(packet.data, packet.header.len as usize) {
@@ -348,7 +468,7 @@ impl ConnectionManager {
                             ?key,
                             "failed to write guest data to host socket"
                         );
-                        PendingWork::rx(RxWork::SendReset(key))
+                        PendingWork::simple_rx(RxWork::SendReset(key))
                     }
                 }
                 // if let Some(conn) = self.conns.get(&key) {
@@ -381,17 +501,17 @@ impl ConnectionManager {
             Operation::SHUTDOWN => {
                 let Some(conn) = self.conns.get_mut(&key) else {
                     tracelimit::warn_ratelimited!(?key, "SHUTDOWN for unknown connection");
-                    return PendingWork::rx(RxWork::SendReset(key));
+                    return PendingWork::simple_rx(RxWork::SendReset(key));
                 };
 
                 if let Err(err) = conn.shutdown(ShutdownFlags::from_bits(packet.header.flags)) {
                     tracelimit::warn_ratelimited!(
-                        error = &err as &dyn std::error::Error,
+                        error = err.as_ref() as &dyn std::error::Error,
                         ?key,
                         "failed to shutdown connection"
                     );
 
-                    PendingWork::rx(RxWork::SendReset(key))
+                    PendingWork::simple_rx(RxWork::SendReset(key))
                 } else {
                     PendingWork::NONE
                 }
@@ -403,13 +523,21 @@ impl ConnectionManager {
                 PendingWork::NONE
             }
             Operation::CREDIT_UPDATE => {
-                // let mut conns = self.conns.lock();
-                // if let Some(conn) = conns.get_mut(&key) {
-                //     conn.peer_buf_alloc = u32::from_le(hdr.buf_alloc);
-                //     conn.peer_fwd_cnt = u32::from_le(hdr.fwd_cnt);
-                // }
-                // None
-                todo!();
+                let Some(conn) = self.conns.get_mut(&key) else {
+                    tracelimit::warn_ratelimited!(?key, "CREDIT_UPDATE for unknown connection");
+                    return PendingWork::simple_rx(RxWork::SendReset(key));
+                };
+
+                conn.peer_buf_alloc = packet.header.buf_alloc;
+                conn.peer_fwd_cnt = packet.header.fwd_cnt;
+                if conn.peer_credit_available() > 0 {
+                    PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(key)))
+                } else {
+                    // Peer sent an update with zero bytes available for some reason, so request
+                    // another update.
+                    conn.pending_reply.with_credit_request(true);
+                    PendingWork::simple_rx(RxWork::Connection(key))
+                }
             }
             Operation::CREDIT_REQUEST => {
                 // Guest is requesting credit info from us. Reply with a
@@ -453,7 +581,7 @@ impl ConnectionManager {
                     ?key,
                     "failed to write buffered data to host socket on write ready"
                 );
-                PendingWork::rx(RxWork::SendReset(key))
+                PendingWork::simple_rx(RxWork::SendReset(key))
             }
         }
     }
@@ -494,36 +622,91 @@ impl ConnectionManager {
     //     self.new_reply_packet(key, Operation::RESPONSE)
     // }
 
-    pub fn get_rx_packet(&mut self, work: RxWork) -> Option<VsockHeader> {
+    pub fn get_rx_packet(
+        &mut self,
+        mem: &GuestMemory,
+        payload: &[VirtioQueuePayload],
+        work: RxWork,
+    ) -> (Option<VsockHeader>, PendingWork) {
         match work {
             RxWork::Connection(key) => {
-                let conn = self.conns.get_mut(&key)?;
-                if conn.pending_reply.reset() {
+                let Some(conn) = self.conns.get_mut(&key) else {
+                    return (None, PendingWork::NONE);
+                };
+
+                // TODO: Make a function in Connection for this.
+                let header = if conn.pending_reply.reset() {
                     // Remove the connection immediately on reset.
                     self.conns.remove(&key);
-                    Some(self.new_rst_packet(key))
+                    return (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE);
                 } else if conn.pending_reply.respond() {
                     conn.pending_reply.set_respond(false);
+                    conn.state = ConnectionState::Connected {
+                        read_shutdown: false,
+                        write_shutdown: false,
+                    };
                     conn.last_sent_fwd_count = conn.fwd_cnt.0;
-                    let fwd_cnt = conn.fwd_cnt.0;
 
-                    Some(self.new_reply_packet(key, Operation::RESPONSE, fwd_cnt))
+                    Some(new_reply_packet(
+                        key,
+                        Operation::RESPONSE,
+                        self.guest_cid,
+                        conn.fwd_cnt.0,
+                    ))
                 } else if conn.peer_needs_credit_update() {
                     conn.last_sent_fwd_count = conn.fwd_cnt.0;
                     let fwd_cnt = conn.fwd_cnt.0;
 
                     tracing::info!(?key, fwd_cnt, "sending credit update");
-                    Some(self.new_reply_packet(key, Operation::CREDIT_UPDATE, fwd_cnt))
+                    Some(new_reply_packet(
+                        key,
+                        Operation::CREDIT_UPDATE,
+                        self.guest_cid,
+                        conn.fwd_cnt.0,
+                    ))
+                } else if conn.pending_reply.credit_request() {
+                    conn.pending_reply.set_credit_request(false);
+                    Some(new_reply_packet(
+                        key,
+                        Operation::CREDIT_REQUEST,
+                        self.guest_cid,
+                        conn.fwd_cnt.0,
+                    ))
+                } else if conn.socket.has_data() {
+                    assert_eq!(conn.pending_reply.into_bits(), 0);
+                    match conn.handle_host_data(mem, payload, self.guest_cid) {
+                        Ok(header) => header,
+                        Err(err) => {
+                            tracelimit::warn_ratelimited!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                ?key,
+                                "failed to read data from host socket"
+                            );
+                            self.conns.remove(&key);
+                            return (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE);
+                        }
+                    }
                 } else {
                     assert_eq!(conn.pending_reply.into_bits(), 0);
                     None
-                }
+                };
+
+                let pending_work = if conn.pending_reply.into_bits() != 0 {
+                    // More replies pending, so handle that the next time around.
+                    PendingWork::simple_rx(RxWork::Connection(key))
+                } else if conn.state.is_connected() && conn.peer_credit_available() > 0 {
+                    // No replies pending, so make sure we're waiting for data.
+                    PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(key)))
+                } else {
+                    PendingWork::NONE
+                };
 
                 // TODO: Check for socket data
+                (header, pending_work)
             }
             RxWork::SendReset(key) => {
                 // TODO: Check if the connection exists and remove it?
-                Some(self.new_rst_packet(key))
+                (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE)
             }
         }
     }
@@ -675,36 +858,6 @@ impl ConnectionManager {
         // }
         // packets
     }
-
-    fn new_reply_packet(&self, key: ConnKey, op: Operation, fwd_cnt: u32) -> VsockHeader {
-        VsockHeader {
-            src_cid: VSOCK_CID_HOST,
-            dst_cid: self.guest_cid,
-            src_port: key.local_port,
-            dst_port: key.peer_port,
-            len: 0,
-            socket_type: SocketType::STREAM.0,
-            op: op.0,
-            flags: ShutdownFlags::new().into(),
-            buf_alloc: TX_BUF_SIZE,
-            fwd_cnt,
-        }
-    }
-
-    fn new_rst_packet(&self, key: ConnKey) -> VsockHeader {
-        VsockHeader {
-            src_cid: VSOCK_CID_HOST,
-            dst_cid: self.guest_cid,
-            src_port: key.local_port,
-            dst_port: key.peer_port,
-            len: 0,
-            socket_type: SocketType::STREAM.0,
-            op: Operation::RST.0,
-            flags: ShutdownFlags::new().into(),
-            buf_alloc: 0,
-            fwd_cnt: 0,
-        }
-    }
 }
 
 /// Read a hybrid vsock connect request (`CONNECT <port>\n`) from a Unix socket.
@@ -813,4 +966,69 @@ pub enum RxWork {
     Connection(ConnKey),
     // For port combinations that may not actually exist
     SendReset(ConnKey),
+}
+
+fn new_reply_packet(key: ConnKey, op: Operation, guest_cid: u64, fwd_cnt: u32) -> VsockHeader {
+    VsockHeader {
+        src_cid: VSOCK_CID_HOST,
+        dst_cid: guest_cid,
+        src_port: key.local_port,
+        dst_port: key.peer_port,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: op.0,
+        flags: ShutdownFlags::new().into(),
+        buf_alloc: TX_BUF_SIZE,
+        fwd_cnt,
+    }
+}
+
+fn new_rw_packet(key: ConnKey, guest_cid: u64, fwd_cnt: u32, len: u32) -> VsockHeader {
+    VsockHeader {
+        src_cid: VSOCK_CID_HOST,
+        dst_cid: guest_cid,
+        src_port: key.local_port,
+        dst_port: key.peer_port,
+        len,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::RW.0,
+        flags: ShutdownFlags::new().into(),
+        buf_alloc: TX_BUF_SIZE,
+        fwd_cnt,
+    }
+}
+
+fn new_shutdown_packet(
+    key: ConnKey,
+    guest_cid: u64,
+    fwd_cnt: u32,
+    flags: ShutdownFlags,
+) -> VsockHeader {
+    VsockHeader {
+        src_cid: VSOCK_CID_HOST,
+        dst_cid: guest_cid,
+        src_port: key.local_port,
+        dst_port: key.peer_port,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::SHUTDOWN.0,
+        flags: flags.into(),
+        buf_alloc: TX_BUF_SIZE,
+        fwd_cnt,
+    }
+}
+
+fn new_rst_packet(guest_cid: u64, key: ConnKey) -> VsockHeader {
+    VsockHeader {
+        src_cid: VSOCK_CID_HOST,
+        dst_cid: guest_cid,
+        src_port: key.local_port,
+        dst_port: key.peer_port,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::RST.0,
+        flags: ShutdownFlags::new().into(),
+        buf_alloc: 0,
+        fwd_cnt: 0,
+    }
 }
