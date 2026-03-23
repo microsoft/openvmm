@@ -1038,13 +1038,14 @@ async fn vm_config_from_command_line(
     // TODO: load from VMGS file if it exists
     let bios_guid = Guid::new_random();
 
-    let VmChipsetResult {
-        chipset,
-        with_pit,
-        mut chipset_devices,
-    } = chipset
+    let chipset = chipset
         .build()
         .context("failed to build chipset configuration")?;
+    let with_pit = chipset.with_pit();
+    let VmChipsetResult {
+        chipset,
+        mut chipset_devices,
+    } = chipset;
 
     if opt.restore_snapshot.is_some() {
         // Snapshot restore: skip firmware loading entirely. Device state and

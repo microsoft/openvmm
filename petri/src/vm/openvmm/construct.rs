@@ -426,9 +426,9 @@ impl PetriVmConfigOpenVmm {
             Some(memdiff_vmgs(&vmgs)?)
         };
 
+        let with_pit = chipset.with_pit();
         let VmChipsetResult {
             chipset,
-            with_pit,
             mut chipset_devices,
         } = chipset;
 

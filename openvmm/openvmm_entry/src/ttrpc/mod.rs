@@ -454,6 +454,7 @@ impl VmService {
         .with_serial(ports)
         .build()
         .context("failed to build vm configuration")?;
+        let with_pit = chipset.with_pit();
 
         let mut config = Config {
             // TODO: devices, other stuff
@@ -480,7 +481,7 @@ impl VmService {
                 transparent_hugepages: false,
             },
             chipset: chipset.chipset,
-            with_pit: chipset.with_pit,
+            with_pit,
             processor_topology: ProcessorTopologyConfig {
                 proc_count: req_config
                     .processor_config
