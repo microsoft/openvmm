@@ -14,12 +14,7 @@ disk_backend.workspace = true
 disk_vhd1.workspace = true
 futures.workspace = true
 vmgs_format.workspace = true
-
-[target.'cfg(unix)'.dependencies]
-vmgs = { workspace = true, features = ["encryption_ossl"] }
-
-[target.'cfg(windows)'.dependencies]
-vmgs = { workspace = true, features = ["encryption_win"] }
+vmgs = { workspace = true, features = ["encryption"] }
 
 [lints]
 workspace = true

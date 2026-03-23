@@ -996,8 +996,10 @@ version = "0.0.0"
 dependencies = [
  "openssl",
  "thiserror 2.0.16",
+ "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9591,8 +9593,8 @@ name = "vmgs"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "cfg-if",
  "crc32fast",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -9601,7 +9603,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh_protobuf",
- "openssl",
  "pal_async",
  "parking_lot",
  "scsi_buffers",
@@ -9609,8 +9610,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
- "windows 0.62.0",
- "windows-result 0.4.0",
  "zerocopy",
 ]
 
