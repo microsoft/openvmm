@@ -52,6 +52,10 @@ use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
 use vpci::bus_control::VpciBusEvent;
 
+/// Default timeout for actions communicating with other components where an action
+/// is expected to take time, but still complete in a reasonable window.
+const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug)]
 enum HclNetworkVfManagerMessage {
     AddGuestVFManager(
@@ -435,7 +439,6 @@ impl HclNetworkVFManagerWorker {
     }
 
     async fn send_vf_state_change_notifications(&self) -> anyhow::Result<()> {
-        const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let all_results =
             futures::future::join_all(self.guest_state_notifications.iter().map(async |update| {
                 update
@@ -644,7 +647,6 @@ impl HclNetworkVFManagerWorker {
 
         // If endpoints take any significant time to disconnect, we should proceed anyways;
         // cleanup & recovery is better than timing out the host.
-        const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
         ctx.until_cancelled(disconnecting_endpoints)
             .await
