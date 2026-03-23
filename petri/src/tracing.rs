@@ -132,11 +132,18 @@ impl PetriLogSource {
     }
 
     /// Traces and logs the result of a test run in the format expected by our tooling.
-    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>) {
+    pub fn log_test_result(&self, name: &str, r: &anyhow::Result<()>, unstable: bool) {
         let result_path = match &r {
             Ok(()) => {
                 tracing::info!("test passed");
                 "petri.passed"
+            }
+            Err(err) if unstable => {
+                tracing::warn!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "unstable test failed"
+                );
+                "petri.failed_unstable"
             }
             Err(err) => {
                 tracing::error!(

@@ -536,6 +536,7 @@ fn parse_gic(node: &Node<'_>) -> anyhow::Result<GicInfo> {
     Ok(GicInfo {
         gic_distributor_base: reg[0],
         gic_redistributors_base: reg[2],
+        gic_v2m: None,
     })
 }
 
@@ -1056,6 +1057,7 @@ mod tests {
             gic: Some(GicInfo {
                 gic_distributor_base: 0x10000,
                 gic_redistributors_base: 0x20000,
+                gic_v2m: None,
             }),
             pmu_gsiv: Some(0x17),
             accepted_ranges: vec![

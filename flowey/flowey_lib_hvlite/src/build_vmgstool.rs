@@ -76,11 +76,7 @@ impl SimpleFlowNode for Node {
 
         let mut features = Vec::new();
         if with_crypto {
-            match target.as_triple().operating_system {
-                target_lexicon::OperatingSystem::Windows => features.push("encryption_win".into()),
-                target_lexicon::OperatingSystem::Linux => features.push("encryption_ossl".into()),
-                _ => unreachable!(),
-            };
+            features.push("encryption".into());
         }
         if with_test_helpers {
             features.push("test_helpers".into());

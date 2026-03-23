@@ -414,6 +414,7 @@ dependencies = [
  "anyhow",
  "build_rs_git_info",
  "clap",
+ "futures",
  "jiff",
  "openvmm_defs",
  "pal_async",
@@ -426,6 +427,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "windows 0.62.0",
 ]
 
 [[package]]
@@ -994,8 +996,10 @@ version = "0.0.0"
 dependencies = [
  "openssl",
  "thiserror 2.0.16",
+ "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
+ "zerocopy",
 ]
 
 [[package]]
@@ -2416,6 +2420,21 @@ dependencies = [
  "scsi_buffers",
  "user_driver",
  "user_driver_emulated_mock",
+ "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
+name = "fuzz_pcie"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "chipset_device",
+ "libfuzzer-sys",
+ "memory_range",
+ "pal_async",
+ "pci_bus",
+ "pcie",
  "vmcore",
  "xtask_fuzz",
 ]
@@ -5397,9 +5416,12 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "fs-err",
  "get_resources",
  "mesh",
  "openvmm_defs",
+ "sparse_mmap",
+ "tempfile",
  "tracing",
  "vm_resource",
 ]
@@ -8933,14 +8955,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "chipset_device",
  "device_emulators",
  "futures",
  "guestmem",
  "inspect",
  "mesh",
- "open_enum",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -8952,6 +8972,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "virtio_resources",
+ "virtio_spec",
  "vm_resource",
  "vmcore",
  "zerocopy",
@@ -9106,6 +9127,16 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "virtio_spec"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "zerocopy",
 ]
 
 [[package]]
@@ -9562,8 +9593,8 @@ name = "vmgs"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "cfg-if",
  "crc32fast",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -9572,7 +9603,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh_protobuf",
- "openssl",
  "pal_async",
  "parking_lot",
  "scsi_buffers",
@@ -9580,8 +9610,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
- "windows 0.62.0",
- "windows-result 0.4.0",
  "zerocopy",
 ]
 
@@ -9782,6 +9810,7 @@ dependencies = [
  "nvme_spec",
  "nvme_test",
  "openvmm_defs",
+ "openvmm_helpers",
  "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",

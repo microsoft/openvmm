@@ -1,0 +1,39 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fuzz_pcie"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+xtask_fuzz.workspace = true
+
+pcie = { workspace = true, features = ["fuzz"] }
+pci_bus.workspace = true
+chipset_device.workspace = true
+memory_range.workspace = true
+vmcore.workspace = true
+pal_async.workspace = true
+
+arbitrary = { workspace = true, features = ["derive"] }
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libfuzzer-sys.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.xtask.fuzz.onefuzz-allowlist]
+fuzz_pcie = ["fuzz_pcie.rs", "../src/*.rs"]
+
+[[bin]]
+name = "fuzz_pcie"
+path = "fuzz_pcie.rs"
+test = false
+doc = false
+doctest = false
+
+[lints]
+workspace = true

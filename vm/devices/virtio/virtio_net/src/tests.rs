@@ -530,7 +530,7 @@ impl TestHarness {
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let mac = MacAddress::new([0x00, 0x15, 0x5d, 0xaa, 0xbb, 0xcc]);
-        let device = Device::builder().build(&driver_source, mem.clone(), Box::new(endpoint), mac);
+        let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
 
         let rx_event = Event::new();
         let rx_interrupt_event = Event::new();
@@ -582,10 +582,12 @@ impl TestHarness {
                     },
                     notify: rx_interrupt,
                     event: self.rx_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &features,
                 None,
             )
+            .await
             .unwrap();
 
         // Queue 1: TX
@@ -602,10 +604,12 @@ impl TestHarness {
                     },
                     notify: tx_interrupt,
                     event: self.tx_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &features,
                 None,
             )
+            .await
             .unwrap();
 
         // Wait for the mock endpoint to provide a queue handle
@@ -715,9 +719,9 @@ impl TestHarness {
 
     /// Disable the device (stops all queues).
     async fn disable(&mut self) {
-        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 1)).await;
-        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 0)).await;
-        self.device.reset();
+        self.device.stop_queue(1).await;
+        self.device.stop_queue(0).await;
+        self.device.reset().await;
     }
 
     /// Reset memory layout tracking for a fresh enable cycle.
@@ -1625,7 +1629,6 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
 /// endpoint supports TCP/UDP/TSO offloads.
 #[async_test]
 async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
-    let mem = GuestMemory::allocate(4096);
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
@@ -1638,7 +1641,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
         },
     };
 
-    let device = Device::builder().build(&driver_source, mem, Box::new(endpoint), mac);
+    let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
     let traits = device.traits();
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));
@@ -1662,7 +1665,6 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
 /// endpoint supports none.
 #[async_test]
 async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
-    let mem = GuestMemory::allocate(4096);
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mac = MacAddress::new([0x00, 0x15, 0x5d, 0x01, 0x02, 0x03]);
 
@@ -1670,7 +1672,7 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
         offloads: TxOffloadSupport::default(),
     };
 
-    let device = Device::builder().build(&driver_source, mem, Box::new(endpoint), mac);
+    let device = Device::builder().build(&driver_source, Box::new(endpoint), mac);
     let traits = device.traits();
 
     let bank0 = NetworkFeaturesBank0::from(traits.device_features.bank(0));

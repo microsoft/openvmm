@@ -362,7 +362,7 @@ impl TestHarness {
         let (io, handle) = new_mock_serial();
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioConsoleDevice::new(&driver_source, mem.clone(), Box::new(io));
+        let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
 
         let rx_event = Event::new();
         let rx_interrupt_event = Event::new();
@@ -387,7 +387,7 @@ impl TestHarness {
     }
 
     /// Enable the device with both queues.
-    fn enable(&mut self) {
+    async fn enable(&mut self) {
         let features = VirtioDeviceFeatures::new();
 
         // Queue 0: receiveq (host→guest)
@@ -404,10 +404,12 @@ impl TestHarness {
                     },
                     notify: Interrupt::from_event(self.rx_interrupt_event.clone()),
                     event: self.rx_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &features,
                 None,
             )
+            .await
             .unwrap();
 
         // Queue 1: transmitq (guest→host)
@@ -424,10 +426,12 @@ impl TestHarness {
                     },
                     notify: Interrupt::from_event(self.tx_interrupt_event.clone()),
                     event: self.tx_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &features,
                 None,
             )
+            .await
             .unwrap();
     }
 
@@ -523,9 +527,9 @@ impl TestHarness {
 
     /// Disable the device.
     async fn disable(&mut self) {
-        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 0)).await;
-        futures::future::poll_fn(|cx| self.device.poll_stop_queue(cx, 1)).await;
-        self.device.reset();
+        self.device.stop_queue(0).await;
+        self.device.stop_queue(1).await;
+        self.device.reset().await;
     }
 
     /// Reset memory layout tracking for a fresh enable cycle.
@@ -548,7 +552,7 @@ impl TestHarness {
 #[async_test]
 async fn guest_tx_basic(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     let payload = b"Hello from guest!";
     harness.post_tx_and_signal(0, payload);
@@ -565,7 +569,7 @@ async fn guest_tx_basic(driver: DefaultDriver) {
 #[async_test]
 async fn guest_rx_basic(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     let buffer_size: u32 = 256;
     let gpa = harness.post_rx_buffer_and_signal(0, buffer_size);
@@ -588,7 +592,7 @@ async fn guest_rx_basic(driver: DefaultDriver) {
 #[async_test]
 async fn guest_tx_multiple(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     let messages: [&[u8]; 3] = [b"one", b"two", b"three"];
 
@@ -607,7 +611,7 @@ async fn guest_tx_multiple(driver: DefaultDriver) {
 #[async_test]
 async fn guest_rx_multiple(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     let payloads: [&[u8]; 3] = [b"alpha", b"beta!", b"gamma"];
 
@@ -630,7 +634,7 @@ async fn guest_rx_multiple(driver: DefaultDriver) {
 #[async_test]
 async fn guest_rx_large_payload(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     let data_len: u32 = 4000;
     let gpa = harness.post_rx_buffer_and_signal(0, data_len);
@@ -652,7 +656,7 @@ async fn guest_rx_large_payload(driver: DefaultDriver) {
 #[async_test]
 async fn disconnect_drains_tx_then_reconnect(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     // Verify TX works while connected.
     harness.post_tx_and_signal(0, b"before-disconnect");
@@ -688,7 +692,7 @@ async fn disconnect_drains_tx_then_reconnect(driver: DefaultDriver) {
 #[async_test]
 async fn disable_and_reenable(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     // Send a TX message to verify the device is working.
     harness.post_tx_and_signal(0, b"first-cycle");
@@ -702,7 +706,7 @@ async fn disable_and_reenable(driver: DefaultDriver) {
 
     // Re-enable.
     harness.reset_rings();
-    harness.enable();
+    harness.enable().await;
 
     // Verify the device works after re-enable.
     harness.post_tx_and_signal(0, b"second-cycle");
@@ -715,12 +719,11 @@ async fn disable_and_reenable(driver: DefaultDriver) {
 /// Traits report correct device ID, queue count, and feature bits.
 #[async_test]
 async fn traits_are_correct(driver: DefaultDriver) {
-    let mem = GuestMemory::allocate(64);
     let (io, _handle) = new_mock_serial();
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let device = VirtioConsoleDevice::new(&driver_source, mem, Box::new(io));
+    let device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     let traits = device.traits();
-    assert_eq!(traits.device_id, 3); // VIRTIO_DEVICE_ID_CONSOLE
+    assert_eq!(traits.device_id, virtio::spec::VirtioDeviceType::CONSOLE);
     assert_eq!(traits.max_queues, 2); // receiveq + transmitq
 }
 
@@ -729,7 +732,7 @@ async fn traits_are_correct(driver: DefaultDriver) {
 #[async_test]
 async fn guest_tx_used_len_is_zero(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     harness.post_tx_and_signal(0, b"test payload");
     let (used_id, used_len) = harness.wait_for_tx_used().await;
@@ -744,7 +747,7 @@ async fn guest_tx_used_len_is_zero(driver: DefaultDriver) {
 #[async_test]
 async fn guest_tx_large_payload(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     let payload: Vec<u8> = (0..8000u16).map(|i| (i % 256) as u8).collect();
     harness.post_tx_and_signal(0, &payload);
@@ -762,7 +765,7 @@ async fn guest_tx_large_payload(driver: DefaultDriver) {
 #[async_test]
 async fn guest_tx_large_payload_partial_writes(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     // Limit each poll_write to 100 bytes to force many iterations.
     harness.handle.set_max_write_size(100);
@@ -784,7 +787,7 @@ async fn guest_tx_large_payload_partial_writes(driver: DefaultDriver) {
 #[async_test]
 async fn tx_partial_write_disconnect_reconnect(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     // Arrange: the next write accepts 3 bytes then auto-disconnects.
     harness.handle.set_write_limit_then_disconnect(3);
@@ -820,7 +823,7 @@ async fn tx_partial_write_disconnect_reconnect(driver: DefaultDriver) {
 #[async_test]
 async fn rx_zero_length_buffer_no_disconnect(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);
-    harness.enable();
+    harness.enable().await;
 
     // Post a zero-length writeable RX buffer.
     harness.post_rx_buffer_and_signal(0, 0);
@@ -846,12 +849,11 @@ async fn rx_zero_length_buffer_no_disconnect(driver: DefaultDriver) {
 /// Config space read returns cols | (rows << 16) at offset 0.
 #[async_test]
 async fn config_read(driver: DefaultDriver) {
-    let mem = GuestMemory::allocate(64);
     let (io, _handle) = new_mock_serial();
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-    let mut device = VirtioConsoleDevice::new(&driver_source, mem, Box::new(io));
+    let mut device = VirtioConsoleDevice::new(&driver_source, Box::new(io));
     // Default config: cols=0, rows=0
-    let val = device.read_registers_u32(0);
+    let val = device.read_registers_u32(0).await;
     assert_eq!(val, 0);
 }
 
@@ -876,10 +878,12 @@ async fn tx_only_single_queue(driver: DefaultDriver) {
                 },
                 notify: Interrupt::from_event(harness.tx_interrupt_event.clone()),
                 event: harness.tx_event.clone(),
+                guest_memory: harness.mem.clone(),
             },
             &features,
             None,
         )
+        .await
         .unwrap();
 
     harness.post_tx_and_signal(0, b"tx-only");
@@ -911,10 +915,12 @@ async fn rx_only_single_queue(driver: DefaultDriver) {
                 },
                 notify: Interrupt::from_event(harness.rx_interrupt_event.clone()),
                 event: harness.rx_event.clone(),
+                guest_memory: harness.mem.clone(),
             },
             &features,
             None,
         )
+        .await
         .unwrap();
 
     let gpa = harness.post_rx_buffer_and_signal(0, 64);

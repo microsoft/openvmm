@@ -1,0 +1,41 @@
+name: "Copilot Setup Steps"
+
+# Validate the setup steps when they change, and allow manual testing.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  # This job name is required — the Copilot coding agent looks for it by name.
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      # Install the exact Rust toolchain used by CI.
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- --default-toolchain=1.94.0 -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # Install cargo-nextest so the agent can run unit tests.
+      # Keep this version in sync with NEXTEST in
+      # flowey/flowey_lib_hvlite/src/_jobs/cfg_versions.rs
+      - name: Install cargo-nextest
+        run: |
+          curl -LsSf https://get.nexte.st/0.9.101/linux | tar zxf - -C "$HOME/.cargo/bin"
+
+      # Restore protoc and other build dependencies via the canonical
+      # flowey pipeline. This compiles flowey_hvlite first, then downloads
+      # protoc, sysroots, firmware, and test kernels.
+      - name: Restore packages
+        run: cargo xflowey restore-packages --no-compat-igvm

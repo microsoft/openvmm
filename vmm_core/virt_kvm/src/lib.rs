@@ -89,6 +89,10 @@ struct KvmPartitionInner {
     // This is used for debugging via Inspect
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
+
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
 }
 
 // TODO: Chunk this up into smaller types.

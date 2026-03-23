@@ -6,6 +6,7 @@
 
 use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingManagerClient;
+use crate::mapping_manager::MappingParams;
 use crate::partition_mapper::PartitionMapper;
 use futures::StreamExt;
 use inspect::Inspect;
@@ -48,6 +49,9 @@ struct RegionParams {
     name: String,
     range: MemoryRange,
     priority: u8,
+    /// Whether mappings in this region are DMA targets (guest RAM or
+    /// similar shareable memory).
+    dma_target: bool,
 }
 
 #[derive(Copy, Clone, Debug, MeshPayload, PartialEq, Eq, Inspect)]
@@ -394,12 +398,13 @@ impl RegionManagerTask {
             let range = range_within(region_range, params.range_in_region);
             self.inner
                 .mapping_manager
-                .add_mapping(
+                .add_mapping(MappingParams {
                     range,
-                    params.mappable.clone(),
-                    params.file_offset,
-                    params.writable,
-                )
+                    mappable: params.mappable.clone(),
+                    file_offset: params.file_offset,
+                    writable: params.writable,
+                    dma_target: region.params.dma_target,
+                })
                 .await;
 
             for partition in &mut self.inner.partitions {
@@ -451,12 +456,13 @@ impl RegionManagerTaskInner {
         // Add the mappings for the region.
         for mapping in &region.mappings {
             self.mapping_manager
-                .add_mapping(
-                    range_within(region.params.range, mapping.params.range_in_region),
-                    mapping.params.mappable.clone(),
-                    mapping.params.file_offset,
-                    mapping.params.writable && map_params.writable,
-                )
+                .add_mapping(MappingParams {
+                    range: range_within(region.params.range, mapping.params.range_in_region),
+                    mappable: mapping.params.mappable.clone(),
+                    file_offset: mapping.params.file_offset,
+                    writable: mapping.params.writable && map_params.writable,
+                    dma_target: region.params.dma_target,
+                })
                 .await;
         }
 
@@ -534,11 +540,13 @@ impl RegionManagerClient {
         name: String,
         range: MemoryRange,
         priority: u8,
+        dma_target: bool,
     ) -> Result<RegionHandle, AddRegionError> {
         let params = RegionParams {
             name,
             range,
             priority,
+            dma_target,
         };
 
         let id = self
@@ -662,6 +670,7 @@ mod tests {
                     priority,
                     name: priority.to_string(),
                     range: MemoryRange::new(range),
+                    dma_target: false,
                 })?;
                 self.0
                     .map_region(

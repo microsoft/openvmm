@@ -44,14 +44,10 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use serial_core::SerialIo;
 use spec::VIRTIO_CONSOLE_F_SIZE;
-use spec::VIRTIO_DEVICE_ID_CONSOLE;
 use spec::VirtioConsoleConfig;
 use std::future::poll_fn;
 use std::pin::Pin;
 use std::pin::pin;
-use std::task::Context;
-use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -73,21 +69,15 @@ pub struct VirtioConsoleDevice {
     config: VirtioConsoleConfig,
     #[inspect(skip)]
     worker: TaskControl<ConsoleWorker, ConsoleWorkerState>,
-    memory: GuestMemory,
 }
 
 impl VirtioConsoleDevice {
     /// Create a new virtio console device backed by the given serial I/O.
-    pub fn new(
-        driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
-        io: Box<dyn SerialIo>,
-    ) -> Self {
+    pub fn new(driver_source: &VmTaskDriverSource, io: Box<dyn SerialIo>) -> Self {
         Self {
             driver: driver_source.simple(),
             config: VirtioConsoleConfig::default(),
             worker: TaskControl::new(ConsoleWorker { io }),
-            memory,
         }
     }
 }
@@ -97,7 +87,7 @@ impl VirtioDevice for VirtioConsoleDevice {
         let mut features = VirtioDeviceFeatures::new();
         features.set_bank(0, 1 << VIRTIO_CONSOLE_F_SIZE);
         DeviceTraits {
-            device_id: VIRTIO_DEVICE_ID_CONSOLE,
+            device_id: virtio::spec::VirtioDeviceType::CONSOLE,
             device_features: features,
             max_queues: 2, // receiveq (0) + transmitq (1)
             device_register_length: size_of::<VirtioConsoleConfig>() as u32,
@@ -105,25 +95,26 @@ impl VirtioDevice for VirtioConsoleDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         self.config.read_u32(offset)
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
         // Console config is read-only from the guest perspective.
     }
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        let guest_memory = resources.guest_memory.clone();
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.memory.clone(),
+            resources.guest_memory,
             resources.notify,
             pal_async::wait::PolledWait::new(&self.driver, resources.event)?,
             initial_state,
@@ -157,7 +148,7 @@ impl VirtioDevice for VirtioConsoleDevice {
                 ConsoleWorkerState {
                     receiveq,
                     transmitq,
-                    mem: self.memory.clone(),
+                    mem: guest_memory,
                     partial_transmit: 0,
                 },
             );
@@ -166,14 +157,14 @@ impl VirtioDevice for VirtioConsoleDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         if !self.worker.has_state() {
-            return Poll::Ready(None);
+            return None;
         }
 
         // Stop the worker (shared by both queues). Once stopped, we can
         // reach into the state to take the requested queue.
-        ready!(self.worker.poll_stop(cx));
+        self.worker.stop().await;
 
         let state = self.worker.state_mut().unwrap();
         let queue = match idx {
@@ -190,10 +181,10 @@ impl VirtioDevice for VirtioConsoleDevice {
             self.worker.start();
         }
 
-        Poll::Ready(queue.map(|q| q.queue_state()))
+        queue.map(|q| q.queue_state())
     }
 
-    fn reset(&mut self) {}
+    async fn reset(&mut self) {}
 }
 
 #[derive(InspectMut)]

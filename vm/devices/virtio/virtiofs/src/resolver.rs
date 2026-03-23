@@ -42,7 +42,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                     root_path,
                     Some(&LxVolumeOptions::from_option_string(mount_options)),
                 )?,
-                input.guest_memory.clone(),
                 0,
                 None,
             ),
@@ -52,7 +51,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                     input.driver_source,
                     &resource.tag,
                     crate::SectionFs::new(root_path)?,
-                    input.guest_memory.clone(),
                     8 * 1024 * 1024 * 1024, // 8GB of shared memory,
                     None,
                 )

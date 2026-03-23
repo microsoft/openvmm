@@ -4,13 +4,16 @@
 use super::*;
 
 pub struct XtsAes256Inner {
-    enc: openssl::cipher_ctx::CipherCtx,
-    dec: openssl::cipher_ctx::CipherCtx,
+    key: [u8; KEY_LEN],
 }
 
-pub struct XtsAes256CtxInner<'a> {
+pub struct XtsAes256EncCtxInner<'a> {
     ctx: openssl::cipher_ctx::CipherCtx,
-    enc: bool,
+    _dummy: &'a (),
+}
+
+pub struct XtsAes256DecCtxInner<'a> {
+    ctx: openssl::cipher_ctx::CipherCtx,
     _dummy: &'a (),
 }
 
@@ -19,51 +22,54 @@ fn err(err: openssl::error::ErrorStack, op: &'static str) -> XtsAes256Error {
 }
 
 impl XtsAes256Inner {
-    pub fn new(key: &[u8], _data_unit_size: u32) -> Result<Self, XtsAes256Error> {
-        let mut enc = openssl::cipher_ctx::CipherCtx::new()
+    pub fn new(key: &[u8; KEY_LEN], _data_unit_size: u32) -> Result<Self, XtsAes256Error> {
+        Ok(XtsAes256Inner { key: *key })
+    }
+
+    pub fn enc_ctx(&self) -> Result<XtsAes256EncCtxInner<'_>, XtsAes256Error> {
+        let mut ctx = openssl::cipher_ctx::CipherCtx::new()
             .map_err(|e| err(e, "creating encrypt context"))?;
-        enc.encrypt_init(
+        ctx.encrypt_init(
             Some(openssl::cipher::Cipher::aes_256_xts()),
-            Some(key),
+            Some(&self.key),
             None,
         )
         .map_err(|e| err(e, "encrypt init"))?;
-        let mut dec = openssl::cipher_ctx::CipherCtx::new()
+        Ok(XtsAes256EncCtxInner { ctx, _dummy: &() })
+    }
+
+    pub fn dec_ctx(&self) -> Result<XtsAes256DecCtxInner<'_>, XtsAes256Error> {
+        let mut ctx = openssl::cipher_ctx::CipherCtx::new()
             .map_err(|e| err(e, "creating decrypt context"))?;
-        dec.decrypt_init(
+        ctx.decrypt_init(
             Some(openssl::cipher::Cipher::aes_256_xts()),
-            Some(key),
+            Some(&self.key),
             None,
         )
         .map_err(|e| err(e, "decrypt init"))?;
-        Ok(XtsAes256Inner { enc, dec })
-    }
-
-    pub fn ctx(&self, enc: bool) -> Result<XtsAes256CtxInner<'_>, XtsAes256Error> {
-        let mut ctx =
-            openssl::cipher_ctx::CipherCtx::new().map_err(|e| err(e, "creating cipher context"))?;
-        ctx.copy(if enc { &self.enc } else { &self.dec })
-            .map_err(|e| err(e, "copying cipher context"))?;
-        Ok(XtsAes256CtxInner {
-            ctx,
-            enc,
-            _dummy: &(),
-        })
+        Ok(XtsAes256DecCtxInner { ctx, _dummy: &() })
     }
 }
 
-impl XtsAes256CtxInner<'_> {
+impl XtsAes256EncCtxInner<'_> {
     pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
         let iv = tweak.to_le_bytes();
-        if self.enc {
-            self.ctx
-                .encrypt_init(None, None, Some(&iv))
-                .map_err(|e| err(e, "encryption"))?;
-        } else {
-            self.ctx
-                .decrypt_init(None, None, Some(&iv))
-                .map_err(|e| err(e, "decryption"))?;
-        }
+        self.ctx
+            .encrypt_init(None, None, Some(&iv))
+            .map_err(|e| err(e, "encryption"))?;
+        self.ctx
+            .cipher_update_inplace(data, data.len())
+            .map_err(|e| err(e, "cipher update"))?;
+        Ok(())
+    }
+}
+
+impl XtsAes256DecCtxInner<'_> {
+    pub fn cipher(&mut self, tweak: u128, data: &mut [u8]) -> Result<(), XtsAes256Error> {
+        let iv = tweak.to_le_bytes();
+        self.ctx
+            .decrypt_init(None, None, Some(&iv))
+            .map_err(|e| err(e, "decryption"))?;
         self.ctx
             .cipher_update_inplace(data, data.len())
             .map_err(|e| err(e, "cipher update"))?;
