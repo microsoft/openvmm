@@ -51,7 +51,7 @@ async fn pmu_gsiv<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), a
 // TODO: disabled until we get a kernel that supports DT boot with the
 // current device configuration.
 // #[openvmm_test(linux_direct_aarch64)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 async fn boot_dt(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let (vm, agent) = config
         .modify_backend(|c| {
