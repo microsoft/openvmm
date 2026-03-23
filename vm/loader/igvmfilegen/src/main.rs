@@ -209,7 +209,12 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         // Max VTL of 2 implies paravisor.
         let with_paravisor = config.max_vtl == 2;
 
-        let mut loader = IgvmLoader::<R>::new(with_paravisor, loader_isolation_type, false);
+        // Use native VP context for Linux direct boot without isolation.
+        let use_native_vp_context = matches!(config.image, Image::Linux(_))
+            && matches!(loader_isolation_type, LoaderIsolationType::None);
+
+        let mut loader =
+            IgvmLoader::<R>::new(with_paravisor, loader_isolation_type, use_native_vp_context);
 
         load_image(&mut loader.loader(), &config.image, &resources)?;
 
