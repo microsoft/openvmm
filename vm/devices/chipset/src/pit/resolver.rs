@@ -33,7 +33,6 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, PitDeviceHandle> for PitResol
         _resource: PitDeviceHandle,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // Preserve legacy wiring used by base_chipset before PIT resourcification.
         let interrupt = input.configure.new_line(IRQ_LINE_SET, "timer0", 2);
         let vmtime = input.vmtime.access("pit");
         Ok(PitDevice::new(interrupt, vmtime).into())
