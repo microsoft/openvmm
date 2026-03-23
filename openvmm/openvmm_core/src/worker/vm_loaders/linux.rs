@@ -229,8 +229,9 @@ fn build_dt(
     const GIC_PPI: u32 = 1;
     const IRQ_TYPE_LEVEL_LOW: u32 = 8;
     const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
-    const IRQ_TYPE_EDGE_FALLING: u32 = 2;
-    const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
+    const IRQ_TYPE_EDGE_RISING: u32 = 1;
+    /// VMBus PPI offset for the DT `interrupts` property.
+    const VMBUS_PPI_OFFSET: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI - 16;
 
     let mut root_builder = builder
         .start_node("")?
@@ -336,6 +337,7 @@ fn build_dt(
 
     // ARM64 Architectural Timer.
     // The DT `interrupts` property uses the PPI offset (INTID - 16).
+    assert!((16..32).contains(&processor_topology.virt_timer_ppi()));
     let virt_timer_ppi_offset = processor_topology.virt_timer_ppi() - 16;
     let timer = root_builder
         .start_node("timer")?
@@ -349,11 +351,8 @@ fn build_dt(
         .add_null(p_always_on)?;
     root_builder = timer.end_node()?;
 
-    // Add PMU, if the interrupt is non-zero.
-    let pmu_gsiv = processor_topology.pmu_gsiv();
-    if pmu_gsiv != 0 {
-        // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
-        // be the case today.
+    // Add PMU, if the interrupt is configured.
+    if let Some(pmu_gsiv) = processor_topology.pmu_gsiv() {
         assert!((16..32).contains(&pmu_gsiv));
         let ppi_index = pmu_gsiv - 16;
         let pmu = root_builder
@@ -484,7 +483,7 @@ fn build_dt(
             p_interrupts,
             // Here 3 parameters are used as the "#interrupt-cells"
             // above specifies.
-            &[GIC_PPI, VMBUS_INTID, IRQ_TYPE_EDGE_FALLING],
+            &[GIC_PPI, VMBUS_PPI_OFFSET, IRQ_TYPE_EDGE_RISING],
         )?
         .end_node()?;
 

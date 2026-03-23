@@ -54,8 +54,8 @@ pub struct Aarch64PlatformConfig {
     pub gic_redistributors_base: u64,
     /// GIC v2m MSI frame, if MSIs via v2m are supported.
     pub gic_v2m: Option<GicV2mInfo>,
-    /// Performance Monitor Unit GSIV. 0 if not available.
-    pub pmu_gsiv: u32,
+    /// Performance Monitor Unit GSIV (GIC INTID). `None` if not available.
+    pub pmu_gsiv: Option<u32>,
     /// Virtual timer PPI (GIC INTID, e.g. 20 for PPI 4).
     pub virt_timer_ppi: u32,
 }
@@ -88,7 +88,7 @@ pub struct Aarch64VpInfo {
     pub gicr: u64,
     /// Performance Interrupt GSIV (PMU)
     #[cfg_attr(feature = "inspect", inspect(hex))]
-    pub pmu_gsiv: u32,
+    pub pmu_gsiv: Option<u32>,
 }
 
 impl AsRef<VpInfo> for Aarch64VpInfo {
@@ -117,6 +117,16 @@ impl TopologyBuilder<Aarch64Topology> {
                 requested: proc_count,
                 max: u8::MAX.into(),
             });
+        }
+        if !(16..32).contains(&self.arch.platform.virt_timer_ppi) {
+            return Err(InvalidTopology::InvalidPpiIntid(
+                self.arch.platform.virt_timer_ppi,
+            ));
+        }
+        if let Some(gsiv) = self.arch.platform.pmu_gsiv {
+            if !(16..32).contains(&gsiv) {
+                return Err(InvalidTopology::InvalidPpiIntid(gsiv));
+            }
         }
         let mpidrs = (0..proc_count).map(|vp_index| {
             // TODO: construct mpidr appropriately for the specified
@@ -183,7 +193,7 @@ impl ProcessorTopology<Aarch64Topology> {
     }
 
     /// Returns the PMU GSIV
-    pub fn pmu_gsiv(&self) -> u32 {
+    pub fn pmu_gsiv(&self) -> Option<u32> {
         self.arch.platform.pmu_gsiv
     }
 

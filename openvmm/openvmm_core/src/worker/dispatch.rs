@@ -472,7 +472,10 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
                     gic_distributor_base: self.gic_distributor_base(),
                     gic_redistributors_base: self.gic_redistributors_base(),
                 }),
-                pmu_gsiv: PmuGsivConfig::Gsiv(self.pmu_gsiv()),
+                pmu_gsiv: match self.pmu_gsiv() {
+                    Some(gsiv) => PmuGsivConfig::Gsiv(gsiv),
+                    None => PmuGsivConfig::Disabled,
+                },
             })),
         }
     }
@@ -494,15 +497,16 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             spi_count: openvmm_defs::config::DEFAULT_GIC_V2M_SPI_COUNT,
         });
         let pmu_gsiv = match arch.pmu_gsiv {
-            PmuGsivConfig::Gsiv(gsiv) => gsiv,
+            PmuGsivConfig::Disabled => None,
+            PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
             PmuGsivConfig::Platform => platform_gsiv(hypervisor),
         };
 
         // TODO: When this value is supported on all platforms, we should change
         // the arch config to not be an option. For now, warn since the ARM VBSA
         // expects this to be available.
-        if pmu_gsiv == 0 {
-            tracing::warn!("PMU GSIV is set to 0");
+        if pmu_gsiv.is_none() {
+            tracing::warn!("PMU GSIV is not set");
         }
 
         let platform = if let Some(gic_config) = &arch.gic_config {
@@ -626,7 +630,7 @@ fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
     anyhow::bail!("no hypervisor available");
 }
 
-fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
+fn platform_gsiv(hypervisor: Hypervisor) -> Option<u32> {
     let gsiv = match hypervisor {
         #[cfg(all(
             feature = "virt_whp",
@@ -634,15 +638,15 @@ fn platform_gsiv(hypervisor: Hypervisor) -> u32 {
             guest_is_native,
             guest_arch = "aarch64"
         ))]
-        Hypervisor::Whp => virt_whp::WHP_PMU_GSIV,
+        Hypervisor::Whp => Some(virt_whp::WHP_PMU_GSIV),
         // TODO: hvf supports the PMU interrupt, but enabling it didn't seem to
         // make it work it a Linux guest. More investigation required.
         #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
-        Hypervisor::Hvf => 0,
-        _ => 0,
+        Hypervisor::Hvf => None,
+        _ => None,
     };
 
-    if gsiv == 0 {
+    if gsiv.is_none() {
         tracing::warn!(?hypervisor, "no platform GSIV available for hypervisor");
     }
 
@@ -2462,12 +2466,7 @@ impl LoadedVmInner {
                 let build_acpi = if boot_mode == LinuxDirectBootMode::Acpi {
                     Some(|rsdp_gpa: u64| {
                         acpi_builder.build_acpi_tables(rsdp_gpa, |mem_layout, dsdt| {
-                            add_devices_to_dsdt_arm64(
-                                mem_layout,
-                                dsdt,
-                                enable_serial,
-                                with_hv,
-                            )
+                            add_devices_to_dsdt_arm64(mem_layout, dsdt, enable_serial, with_hv)
                         })
                     })
                 } else {
@@ -3126,7 +3125,7 @@ fn add_devices_to_dsdt_arm64(
     with_hv: bool,
 ) {
     // VMBus GIC INTID (PPI 2 = INTID 16 + 2 = 18), matching the DT path.
-    const VMBUS_INTID: u32 = 18;
+    const VMBUS_INTID: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI;
     // SBSA UART MMIO bases and sizes.
     const PL011_SERIAL0_BASE: u64 = 0xEFFEC000;
     const PL011_SERIAL1_BASE: u64 = 0xEFFEB000;
@@ -3153,8 +3152,20 @@ fn add_devices_to_dsdt_arm64(
     }
 
     if enable_serial {
-        dsdt.add_sbsa_uart(b"\\_SB.UAR0", 0, PL011_SERIAL0_BASE, PL011_SERIAL_SIZE, PL011_SERIAL0_GSIV);
-        dsdt.add_sbsa_uart(b"\\_SB.UAR1", 1, PL011_SERIAL1_BASE, PL011_SERIAL_SIZE, PL011_SERIAL1_GSIV);
+        dsdt.add_sbsa_uart(
+            b"\\_SB.UAR0",
+            0,
+            PL011_SERIAL0_BASE,
+            PL011_SERIAL_SIZE,
+            PL011_SERIAL0_GSIV,
+        );
+        dsdt.add_sbsa_uart(
+            b"\\_SB.UAR1",
+            1,
+            PL011_SERIAL1_BASE,
+            PL011_SERIAL_SIZE,
+            PL011_SERIAL1_GSIV,
+        );
     }
 }
 

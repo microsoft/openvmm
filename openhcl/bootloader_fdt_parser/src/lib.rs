@@ -535,7 +535,7 @@ fn parse_gic(node: &Node<'_>) -> anyhow::Result<Aarch64PlatformConfig> {
         gic_distributor_base: reg[0],
         gic_redistributors_base: reg[2],
         gic_v2m: None,
-        pmu_gsiv: 0,
+        pmu_gsiv: None,
         // TODO: parse from the DT timer node instead of hardcoding.
         virt_timer_ppi: 20,
     })
@@ -665,7 +665,7 @@ impl ParsedBootDtInfo {
 
         // Merge PMU GSIV into the GIC platform config if both were parsed.
         if let (Some(gic), Some(pmu_gsiv)) = (&mut gic, pmu_gsiv) {
-            gic.pmu_gsiv = pmu_gsiv;
+            gic.pmu_gsiv = Some(pmu_gsiv);
         }
 
         Ok(Self {
@@ -847,8 +847,7 @@ mod tests {
 
         // PMU
         if let Some(gic) = &info.gic {
-            let pmu_gsiv = gic.pmu_gsiv;
-            if pmu_gsiv != 0 {
+            if let Some(pmu_gsiv) = gic.pmu_gsiv {
                 anyhow::ensure!(
                     (16..32).contains(&pmu_gsiv),
                     "PMU GSIV {pmu_gsiv} is not a valid PPI (expected 16..32)"
@@ -1069,7 +1068,7 @@ mod tests {
                 gic_distributor_base: 0x10000,
                 gic_redistributors_base: 0x20000,
                 gic_v2m: None,
-                pmu_gsiv: 0x17,
+                pmu_gsiv: Some(0x17),
                 virt_timer_ppi: 20,
             }),
             accepted_ranges: vec![

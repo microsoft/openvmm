@@ -114,6 +114,9 @@ pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
 /// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
 pub const DEFAULT_VIRT_TIMER_PPI: u32 = 20;
 
+/// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
+pub const DEFAULT_VMBUS_PPI: u32 = 18;
+
 /// How firmware tables are presented to the guest in Linux direct boot.
 ///
 /// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
@@ -276,6 +279,8 @@ pub enum PmuGsivConfig {
     Platform,
     /// Use the specified GSIV value for the PMU.
     Gsiv(u32),
+    /// Disable the PMU.
+    Disabled,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]

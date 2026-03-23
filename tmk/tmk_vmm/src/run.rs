@@ -65,7 +65,7 @@ impl CommonState {
                 gic_distributor_base: 0xff000000,
                 gic_redistributors_base: 0xff020000,
                 gic_v2m: None,
-                pmu_gsiv: 0,
+                pmu_gsiv: None,
                 virt_timer_ppi: 20, // DEFAULT_VIRT_TIMER_PPI
             })
             .build(1)
