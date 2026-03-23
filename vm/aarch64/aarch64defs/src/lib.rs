@@ -412,6 +412,7 @@ open_enum! {
         ARM64_REVIDR_EL1 = SystemRegEncoding::make(3, 0, 0, 0, 6),
         CTR_EL0 = SystemRegEncoding::make(3, 3, 0, 0, 1),
         ARM64_VMPIDR_EL2 = SystemRegEncoding::make(3, 4, 0, 0, 5),
+        ID_AA64PFR0_EL1 = SystemRegEncoding::make(3, 0, 0, 4, 0),
         ID_AA64PFR1_EL1 = SystemRegEncoding::make(3, 0, 0, 4, 1),
         ID_AA64DFR0_EL1 = SystemRegEncoding::make(3, 0, 0, 5, 0),
         ID_AA64DFR1_EL1 = SystemRegEncoding::make(3, 0, 0, 5, 1),

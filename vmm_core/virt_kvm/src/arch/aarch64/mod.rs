@@ -178,6 +178,7 @@ open_enum::open_enum! {
         SYS_MAIR_EL1 = sys_reg64(SystemReg::MAIR_EL1),
         SYS_SPSR_EL1 = sys_reg64(SystemReg::SPSR_EL1),
         SYS_VBAR_EL1 = sys_reg64(SystemReg::VBAR),
+        SYS_ID_AA64PFR0_EL1 = sys_reg64(SystemReg::ID_AA64PFR0_EL1),
     }
 }
 
@@ -636,7 +637,19 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                     eval: false.into(),
                 })
                 .collect(),
-            caps: PartitionCapabilities {},
+            caps: {
+                let pfr0 = self
+                    .vm
+                    .vp(0)
+                    .get_reg64(KvmRegisterId::SYS_ID_AA64PFR0_EL1.into())
+                    .map_err(KvmError::Kvm)?;
+                // ID_AA64PFR0_EL1 bits [3:0] (EL0) indicate aarch32 support.
+                // 0b0001 = aarch64 and aarch32, 0b0010 = aarch64 only.
+                let el0 = pfr0 & 0xf;
+                PartitionCapabilities {
+                    supports_aarch32_el0: el0 == 1,
+                }
+            },
             gic_v2m: self.config.processor_topology.gic_v2m(),
         };
 
