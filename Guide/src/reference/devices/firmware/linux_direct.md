@@ -27,9 +27,10 @@ On x86_64, OpenVMM follows the standard Linux boot protocol:
 1. The kernel image is loaded at the conventional 1 MB address.
 2. An initrd (if provided) is placed after the kernel.
 3. A **zero page** is constructed containing the memory map, command line
-   pointer, initrd location, and ACPI RSDP address.
+   pointer, and initrd location.
 4. ACPI tables (MADT, FADT, DSDT, SRAT, etc.) are built by OpenVMM's ACPI
-   builder and written into guest memory.
+   builder and written at `0xE0000`, where the kernel finds the RSDP via
+   its standard firmware scan.
 5. A GDT and initial page tables are set up.
 6. The BSP register state is configured and execution begins.
 

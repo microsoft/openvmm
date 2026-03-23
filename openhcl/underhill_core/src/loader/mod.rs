@@ -269,7 +269,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         cache_topology: None,
         pcie_host_bridges: &vec![],
         arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-            with_ioapic: true, // underhill always runs with ioapic
+            with_ioapic: true, // openhcl always runs with ioapic
             with_pic: false,
             with_pit: false,
             with_psp: platform_config.general.psp_enabled,

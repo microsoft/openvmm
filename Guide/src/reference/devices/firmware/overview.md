@@ -15,8 +15,6 @@ The boot mode is selected by which `--kernel`, `--uefi`, `--pcat`, or
 configuration).
 
 ```admonish note
-Not all boot modes are available on all architectures. PCAT BIOS is
-x86_64 only. Linux direct boot supports both architectures but with
-different kernel image formats — see the
-[Linux Direct](./linux_direct.md) page for details.
+Not all boot modes are available on all architectures — see the table
+above for supported combinations.
 ```
