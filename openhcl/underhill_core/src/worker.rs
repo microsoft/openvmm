@@ -1324,7 +1324,7 @@ fn new_aarch64_topology(
                 mpidr,
                 gicr: gic_redistributors_base
                     + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
-                pmu_gsiv,
+                pmu_gsiv: gic.pmu_gsiv,
             }
         }))
         .context("failed to construct the processor topology")
