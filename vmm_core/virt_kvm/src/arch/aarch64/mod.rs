@@ -637,6 +637,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 })
                 .collect(),
             caps: PartitionCapabilities {},
+            gic_v2m: self.config.processor_topology.gic_v2m(),
         };
 
         let partition = KvmPartition {
@@ -676,6 +677,17 @@ impl virt::Partition for KvmPartition {
 
     fn request_msi(&self, _vtl: Vtl, _request: virt::irqcon::MsiRequest) {
         tracelimit::warn_ratelimited!("msis not supported");
+    }
+
+    fn as_signal_msi(
+        self: &Arc<Self>,
+        _minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+        let v2m = self.inner.gic_v2m.as_ref()?;
+        let irqcon = self.inner.clone() as Arc<dyn virt::irqcon::ControlGic>;
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
     }
 
     fn request_yield(&self, vp_index: VpIndex) {

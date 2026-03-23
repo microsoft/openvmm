@@ -98,6 +98,18 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
+/// Base address of the GIC v2m MSI frame. Must not overlap GIC dist/redist,
+/// serial UARTs, or VMBus MMIO. Matches the Hyper-V convention.
+pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
+/// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
+pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
+
+/// First GIC interrupt ID reserved for PCIe MSIs via the v2m frame.
+/// Must be in the SPI range (32–1019) and not conflict with other devices.
+pub const DEFAULT_GIC_V2M_SPI_BASE: u32 = 512;
+/// Number of SPIs reserved for PCIe MSIs.
+pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
+
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
     Linux {

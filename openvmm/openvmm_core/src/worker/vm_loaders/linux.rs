@@ -16,6 +16,7 @@ use std::io::Seek;
 use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
 
@@ -135,6 +136,7 @@ fn build_dt(
     _gm: &GuestMemory,
     enable_serial: bool,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
+    pcie_host_bridges: &[PcieHostBridge],
     initrd_start: u64,
     initrd_end: u64,
 ) -> Result<Vec<u8>, fdt::builder::Error> {
@@ -199,10 +201,17 @@ fn build_dt(
     let p_current_speed = builder.add_string("current-speed")?;
     let p_arm_periph_id = builder.add_string("arm,primecell-periphid")?;
     let p_dma_coherent = builder.add_string("dma-coherent")?;
+    let p_bus_range = builder.add_string("bus-range")?;
+    let p_linux_pci_domain = builder.add_string("linux,pci-domain")?;
+    let p_msi_parent = builder.add_string("msi-parent")?;
+    let p_msi_controller = builder.add_string("msi-controller")?;
+    let p_arm_msi_base_spi = builder.add_string("arm,msi-base-spi")?;
+    let p_arm_msi_num_spis = builder.add_string("arm,msi-num-spis")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
     const PHANDLE_APB_PCLK: u32 = 2;
+    const PHANDLE_V2M: u32 = 3;
 
     const GIC_SPI: u32 = 0;
     const GIC_PPI: u32 = 1;
@@ -275,6 +284,8 @@ fn build_dt(
         .end_node()?;
 
     // ARM64 Generic Interrupt Controller aka GIC, v3.
+    // The GICv3 node has a v2m child for SPI-based MSIs (PCIe).
+    let v2m_info = processor_topology.gic_v2m();
     let gicv3 = root_builder
         .start_node(format!("intc@{gic_dist_base:x}").as_str())?
         .add_str(p_compatible, "arm,gic-v3")?
@@ -293,7 +304,23 @@ fn build_dt(
         .add_null(p_interrupt_controller)?
         .add_u32(p_phandle, PHANDLE_GIC)?
         .add_null(p_ranges)?;
-    root_builder = gicv3.end_node()?;
+    root_builder = if let Some(v2m) = v2m_info {
+        gicv3
+            .start_node(format!("v2m@{:x}", v2m.frame_base).as_str())?
+            .add_str(p_compatible, "arm,gic-v2m-frame")?
+            .add_null(p_msi_controller)?
+            .add_u64_array(
+                p_reg,
+                &[v2m.frame_base, openvmm_defs::config::GIC_V2M_MSI_FRAME_SIZE],
+            )?
+            .add_u32(p_arm_msi_base_spi, v2m.spi_base)?
+            .add_u32(p_arm_msi_num_spis, v2m.spi_count)?
+            .add_u32(p_phandle, PHANDLE_V2M)?
+            .end_node()?
+            .end_node()?
+    } else {
+        gicv3.end_node()?
+    };
 
     // ARM64 Architectural Timer.
     const HYPERV_VIRT_TIMER_PPI: u32 = 4; // relative to PPI base of 16
@@ -321,6 +348,71 @@ fn build_dt(
             .add_str(p_compatible, "arm,armv8-pmuv3")?
             .add_u32_array(p_interrupts, &[GIC_PPI, ppi_index, IRQ_TYPE_LEVEL_HIGH])?;
         root_builder = pmu.end_node()?;
+    }
+
+    // Add a PCIe host bridge node for each bridge.
+    // PCI address space type bits (phys.hi bits 25:24).
+    const PCI_SPACE_MEM32: u32 = 0x02000000; // 32-bit non-prefetchable MMIO
+    const PCI_SPACE_MEM64: u32 = 0x03000000; // 64-bit prefetchable MMIO
+
+    for bridge in pcie_host_bridges {
+        let name = format!("pcie@{:x}", bridge.ecam_range.start());
+
+        // The `ranges` property encodes translations from PCI MMIO address
+        // space to CPU physical address space.  Each entry is 7 cells:
+        //   [pci-phys.hi, pci-phys.mid, pci-phys.lo,
+        //    cpu-phys.hi, cpu-phys.lo,
+        //    size.hi, size.lo]
+        let mut ranges: Vec<u32> = Vec::new();
+
+        let low_start = bridge.low_mmio.start();
+        let low_len = bridge.low_mmio.len();
+        if low_len > 0 {
+            ranges.extend_from_slice(&[
+                PCI_SPACE_MEM32,
+                0,
+                low_start as u32,
+                (low_start >> 32) as u32,
+                (low_start & 0xFFFF_FFFF) as u32,
+                (low_len >> 32) as u32,
+                (low_len & 0xFFFF_FFFF) as u32,
+            ]);
+        }
+
+        let high_start = bridge.high_mmio.start();
+        let high_len = bridge.high_mmio.len();
+        if high_len > 0 {
+            ranges.extend_from_slice(&[
+                PCI_SPACE_MEM64,
+                (high_start >> 32) as u32,
+                (high_start & 0xFFFF_FFFF) as u32,
+                (high_start >> 32) as u32,
+                (high_start & 0xFFFF_FFFF) as u32,
+                (high_len >> 32) as u32,
+                (high_len & 0xFFFF_FFFF) as u32,
+            ]);
+        }
+
+        // No interrupt-map is provided because all devices use MSIs via the
+        // v2m frame; legacy INTx routing is not supported.
+        let mut node = root_builder
+            .start_node(name.as_str())?
+            .add_str(p_compatible, "pci-host-ecam-generic")?
+            .add_str(p_device_type, "pci")?
+            .add_u32(p_linux_pci_domain, bridge.segment as u32)?
+            .add_u64_array(p_reg, &[bridge.ecam_range.start(), bridge.ecam_range.len()])?
+            .add_u32_array(
+                p_bus_range,
+                &[bridge.start_bus as u32, bridge.end_bus as u32],
+            )?
+            .add_u32(p_address_cells, 3)?
+            .add_u32(p_size_cells, 2)?
+            .add_u32(p_interrupt_parent, PHANDLE_GIC)?
+            .add_u32_array(p_ranges, &ranges)?;
+        if v2m_info.is_some() {
+            node = node.add_u32(p_msi_parent, PHANDLE_V2M)?;
+        }
+        root_builder = node.end_node()?;
     }
 
     let mut soc = root_builder
@@ -411,6 +503,7 @@ pub fn load_linux_arm64(
     gm: &GuestMemory,
     enable_serial: bool,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
+    pcie_host_bridges: &[PcieHostBridge],
 ) -> Result<Vec<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
@@ -444,6 +537,7 @@ pub fn load_linux_arm64(
         gm,
         enable_serial,
         processor_topology,
+        pcie_host_bridges,
         initrd_start,
         initrd_end,
     )
