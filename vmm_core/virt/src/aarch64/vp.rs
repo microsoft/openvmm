@@ -372,8 +372,6 @@ impl StateElement<Aarch64PartitionCapabilities, Aarch64VpInfo> for SystemRegiste
 
     fn at_reset(_caps: &Aarch64PartitionCapabilities, _vp: &Aarch64VpInfo) -> Self {
         Self {
-            // TODO-aarch64: the spec specifies additional 1 bits at reset, but
-            // mshv doesn't seem to match. Investigate.
             sctlr_el1: u64::from(
                 SctlrEl1::new()
                     .with_eos(true)
@@ -381,7 +379,9 @@ impl StateElement<Aarch64PartitionCapabilities, Aarch64VpInfo> for SystemRegiste
                     .with_eis(true)
                     .with_span(true)
                     .with_n_tlsmd(true)
-                    .with_lsmaoe(true),
+                    .with_lsmaoe(true)
+                    .with_itd(true)
+                    .with_sed(true),
             ),
             ttbr0_el1: 0,
             ttbr1_el1: 0,
