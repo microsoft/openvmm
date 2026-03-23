@@ -454,31 +454,6 @@ impl PacketCaptureQueue {
     }
 }
 
-/// Reads data from guest memory segments into a capture buffer, respecting
-/// segment boundaries.
-///
-/// Returns `(bytes_copied, total_segment_len)`. The `total_segment_len` is the
-/// sum of all segment lengths, including segments that extend past the end of
-/// `buf` (useful for reporting the original packet length in PCAP headers).
-fn read_segments_to_buf(
-    mem: &GuestMemory,
-    segments: impl IntoIterator<Item = (u64, u32)>,
-    buf: &mut [u8],
-) -> (usize, u32) {
-    let mut len = 0;
-    let mut total_len: u32 = 0;
-    for (gpa, seg_len) in segments {
-        total_len += seg_len;
-        if len == buf.len() {
-            continue;
-        }
-        let copy_length = std::cmp::min(buf.len() - len, seg_len as usize);
-        let _ = mem.read_at(gpa, &mut buf[len..len + copy_length]);
-        len += copy_length;
-    }
-    (len, total_len)
-}
-
 #[async_trait]
 impl Queue for PacketCaptureQueue {
     async fn update_target_vp(&mut self, target_vp: u32) {
@@ -503,11 +478,20 @@ impl Queue for PacketCaptureQueue {
                 let snaplen = self.pcap.snaplen.load(Ordering::Relaxed);
                 for id in &packets[..n] {
                     let mut buf = vec![0; snaplen];
-                    let (len, pkt_len) = read_segments_to_buf(
-                        &self.mem,
-                        pool.guest_addresses(*id).iter().map(|s| (s.gpa, s.len)),
-                        &mut buf,
-                    );
+                    let mut len = 0;
+                    let mut pkt_len = 0;
+                    for segment in pool.guest_addresses(*id).iter() {
+                        pkt_len += segment.len;
+                        if len == buf.len() {
+                            continue;
+                        }
+
+                        let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
+                        let _ = self
+                            .mem
+                            .read_at(segment.gpa, &mut buf[len..len + copy_length]);
+                        len += copy_length;
+                    }
 
                     if len == 0 {
                         continue;
@@ -539,8 +523,18 @@ impl Queue for PacketCaptureQueue {
                     continue;
                 }
                 let mut buf = vec![0; snaplen];
-                let (len, _) =
-                    read_segments_to_buf(&self.mem, this.iter().map(|s| (s.gpa, s.len)), &mut buf);
+                let mut len = 0;
+                for segment in this {
+                    if len == buf.len() {
+                        break;
+                    }
+
+                    let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
+                    let _ = self
+                        .mem
+                        .read_at(segment.gpa, &mut buf[len..len + copy_length]);
+                    len += copy_length;
+                }
 
                 if len == 0 {
                     continue;
@@ -575,103 +569,322 @@ impl InspectMut for PacketCaptureQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use net_backend::RxBufferSegment;
+    use net_backend::RxMetadata;
+    use net_backend::TxMetadata;
+    use net_backend::TxSegmentType;
 
     const PAGE_SIZE: usize = 4096;
 
-    /// A single segment near the end of guest memory. With a snaplen larger
-    /// than the segment, the old unbounded `buf[len..]` slice would cause
-    /// `read_at` to attempt reading past the end of guest memory, failing
-    /// silently and leaving the buffer as zeros.
-    #[test]
-    fn read_segments_single_segment_at_end_of_memory() {
-        let mem = GuestMemory::allocate(PAGE_SIZE);
-        let pattern = [0xAA_u8; 16];
-        mem.write_at(PAGE_SIZE as u64 - 16, &pattern).unwrap();
+    // -- Shared test helpers --------------------------------------------------
 
-        let mut buf = vec![0u8; 64];
-        let (len, total_len) =
-            read_segments_to_buf(&mem, [(PAGE_SIZE as u64 - 16, 16u32)], &mut buf);
+    /// A `Write` adapter that appends into a shared `Vec<u8>`.
+    struct SharedWriter(Arc<parking_lot::Mutex<Vec<u8>>>);
 
-        assert_eq!(len, 16);
-        assert_eq!(total_len, 16);
-        assert_eq!(&buf[..16], &pattern);
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
-    /// Two segments near the end of guest memory. The snaplen (64) is larger
-    /// than both segments combined (32 bytes). Without the bounded slice fix,
-    /// the first `read_at` would try to read 64 bytes starting at GPA 4064,
-    /// crossing the end of the 4096-byte guest memory.
+    /// Creates a [`Pcap`] with capture enabled and returns the raw PCAP output
+    /// buffer so tests can inspect captured data.
+    fn make_pcap(snaplen: usize) -> (Arc<Pcap>, Arc<parking_lot::Mutex<Vec<u8>>>) {
+        let (control_tx, _control_rx) = mesh::channel();
+        let output = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let pcap = Arc::new(Pcap::new(control_tx));
+        pcap.enabled.store(true, Ordering::Relaxed);
+        pcap.snaplen.store(snaplen, Ordering::Relaxed);
+
+        let pcap_ng_writer =
+            PcapNgWriter::with_endianness(SharedWriter(output.clone()), pcap_file::Endianness::Big)
+                .unwrap();
+        *pcap.pcap_writer.lock() = Some(Box::new(LocalPcapWriter {
+            inner: pcap_ng_writer,
+        }));
+
+        (pcap, output)
+    }
+
+    // -- Mock BufferAccess / Queue for RX tests --------------------------------
+
+    /// A [`BufferAccess`] that maps every [`RxId`] to a fixed set of guest
+    /// memory segments, allowing the test to control exactly where in guest
+    /// memory the capture code reads.
+    struct MockBufferAccess {
+        mem: GuestMemory,
+        segments: Vec<RxBufferSegment>,
+    }
+
+    impl BufferAccess for MockBufferAccess {
+        fn guest_memory(&self) -> &GuestMemory {
+            &self.mem
+        }
+        fn guest_addresses(&mut self, _id: RxId) -> &[RxBufferSegment] {
+            &self.segments
+        }
+        fn capacity(&self, _id: RxId) -> u32 {
+            self.segments.iter().map(|s| s.len).sum()
+        }
+        fn write_data(&mut self, _id: RxId, _buf: &[u8]) {}
+        fn write_header(&mut self, _id: RxId, _metadata: &RxMetadata) {}
+    }
+
+    /// A mock inner [`Queue`] for RX‐capture tests.
+    ///
+    /// * `rx_poll` returns the pre‐loaded [`RxId`]s.
+    /// * `buffer_access` exposes the controlled [`MockBufferAccess`].
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct MockRxQueue {
+        rx_packets: Vec<RxId>,
+        pool: MockBufferAccess,
+    }
+
+    impl Queue for MockRxQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+            Poll::Ready(())
+        }
+        fn rx_avail(&mut self, _done: &[RxId]) {}
+        fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+            let n = packets.len().min(self.rx_packets.len());
+            for (d, s) in packets.iter_mut().zip(self.rx_packets.drain(..n)) {
+                *d = s;
+            }
+            Ok(n)
+        }
+        fn tx_avail(&mut self, _segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+            Ok((false, 0))
+        }
+        fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+            Ok(0)
+        }
+        fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
+            Some(&mut self.pool)
+        }
+    }
+
+    // -- Mock Queue for TX tests -----------------------------------------------
+
+    /// A mock inner [`Queue`] for TX‐capture tests.  `tx_avail` accepts every
+    /// segment without doing any real work.
+    #[derive(InspectMut)]
+    #[inspect(skip)]
+    struct MockTxQueue;
+
+    impl Queue for MockTxQueue {
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+            Poll::Ready(())
+        }
+        fn rx_avail(&mut self, _done: &[RxId]) {}
+        fn rx_poll(&mut self, _packets: &mut [RxId]) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+        fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+            Ok((false, segments.len()))
+        }
+        fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+            Ok(0)
+        }
+        fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
+            None
+        }
+    }
+
+    // -- RX tests --------------------------------------------------------------
+
+    /// Exercises `PacketCaptureQueue::rx_poll` with a single segment positioned
+    /// at the very end of guest memory.  The snaplen (65535) is much larger
+    /// than the 16‐byte segment.
+    ///
+    /// Before the fix the capture code passed `&mut buf[len..]` (65535 bytes)
+    /// to `read_at`, causing it to attempt reading 65535 bytes starting at
+    /// GPA 4080 — well past the 4096‐byte memory.  The read failed, the error
+    /// was silently swallowed (`let _ = …`), and the capture buffer stayed
+    /// zero‐filled.  After the fix, only `copy_length` (16) bytes are
+    /// requested and the read succeeds.
     #[test]
-    fn read_segments_multiple_segments_at_end_of_memory() {
+    fn rx_poll_captures_segment_at_end_of_memory() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let pattern = [0xAA_u8; 16];
+        let gpa = PAGE_SIZE as u64 - 16;
+        mem.write_at(gpa, &pattern).unwrap();
+
+        let mock_queue = MockRxQueue {
+            rx_packets: vec![RxId(0)],
+            pool: MockBufferAccess {
+                mem: mem.clone(),
+                segments: vec![RxBufferSegment { gpa, len: 16 }],
+            },
+        };
+
+        let (pcap, output) = make_pcap(65535);
+        let mut queue = PacketCaptureQueue {
+            queue: Box::new(mock_queue),
+            mem,
+            pcap,
+        };
+
+        let mut packets = [RxId(0); 1];
+        let n = queue.rx_poll(&mut packets).unwrap();
+        assert_eq!(n, 1);
+
+        // The PCAP output must contain the 0xAA pattern.  Before the fix the
+        // buffer was all zeros, so this assertion would fail.
+        let output = output.lock();
+        assert!(
+            output.windows(16).any(|w| w == pattern),
+            "PCAP output should contain the 0xAA pattern from guest memory, \
+             got all zeros (read_at over-read failed silently)"
+        );
+    }
+
+    /// Like the single‐segment test but with *two* segments near the end of
+    /// guest memory.  The first segment starts 32 bytes before the end, the
+    /// second 16 bytes before the end.
+    ///
+    /// With the old unbounded slice the first `read_at` already tries to read
+    /// 65535 bytes from GPA 4064, which fails.
+    #[test]
+    fn rx_poll_captures_multiple_segments_at_end_of_memory() {
         let mem = GuestMemory::allocate(PAGE_SIZE);
         let pattern_a = [0xAA_u8; 16];
         let pattern_b = [0xBB_u8; 16];
-        mem.write_at(PAGE_SIZE as u64 - 32, &pattern_a).unwrap();
-        mem.write_at(PAGE_SIZE as u64 - 16, &pattern_b).unwrap();
+        let gpa_a = PAGE_SIZE as u64 - 32;
+        let gpa_b = PAGE_SIZE as u64 - 16;
+        mem.write_at(gpa_a, &pattern_a).unwrap();
+        mem.write_at(gpa_b, &pattern_b).unwrap();
 
-        let mut buf = vec![0u8; 64];
-        let (len, total_len) = read_segments_to_buf(
-            &mem,
-            [
-                (PAGE_SIZE as u64 - 32, 16u32),
-                (PAGE_SIZE as u64 - 16, 16u32),
-            ],
-            &mut buf,
+        let mock_queue = MockRxQueue {
+            rx_packets: vec![RxId(0)],
+            pool: MockBufferAccess {
+                mem: mem.clone(),
+                segments: vec![
+                    RxBufferSegment {
+                        gpa: gpa_a,
+                        len: 16,
+                    },
+                    RxBufferSegment {
+                        gpa: gpa_b,
+                        len: 16,
+                    },
+                ],
+            },
+        };
+
+        let (pcap, output) = make_pcap(65535);
+        let mut queue = PacketCaptureQueue {
+            queue: Box::new(mock_queue),
+            mem,
+            pcap,
+        };
+
+        let mut packets = [RxId(0); 1];
+        let n = queue.rx_poll(&mut packets).unwrap();
+        assert_eq!(n, 1);
+
+        let output = output.lock();
+        assert!(
+            output.windows(16).any(|w| w == pattern_a),
+            "PCAP output should contain the 0xAA pattern (segment 1)"
         );
-
-        assert_eq!(len, 32);
-        assert_eq!(total_len, 32);
-        assert_eq!(&buf[..16], &pattern_a);
-        assert_eq!(&buf[16..32], &pattern_b);
-    }
-
-    /// Snaplen smaller than the segment length truncates the copy but still
-    /// reports the full segment length as `total_len`.
-    #[test]
-    fn read_segments_snaplen_truncates() {
-        let mem = GuestMemory::allocate(PAGE_SIZE);
-        let pattern = [0xCC_u8; 64];
-        mem.write_at(0, &pattern).unwrap();
-
-        let mut buf = vec![0u8; 16];
-        let (len, total_len) = read_segments_to_buf(&mem, [(0u64, 64u32)], &mut buf);
-
-        assert_eq!(len, 16);
-        assert_eq!(total_len, 64);
-        assert_eq!(&buf[..16], &[0xCC; 16]);
-    }
-
-    /// Multiple segments where total data exceeds snaplen. The buffer should
-    /// contain data from the first segments up to the snaplen limit, and
-    /// `total_len` should reflect all segments.
-    #[test]
-    fn read_segments_multiple_segments_exceed_snaplen() {
-        let mem = GuestMemory::allocate(PAGE_SIZE);
-        mem.write_at(0, &[0xAA_u8; 32]).unwrap();
-        mem.write_at(100, &[0xBB_u8; 32]).unwrap();
-        mem.write_at(200, &[0xCC_u8; 32]).unwrap();
-
-        let mut buf = vec![0u8; 48];
-        let (len, total_len) = read_segments_to_buf(
-            &mem,
-            [(0u64, 32u32), (100u64, 32u32), (200u64, 32u32)],
-            &mut buf,
+        assert!(
+            output.windows(16).any(|w| w == pattern_b),
+            "PCAP output should contain the 0xBB pattern (segment 2)"
         );
-
-        assert_eq!(len, 48);
-        assert_eq!(total_len, 96);
-        assert_eq!(&buf[..32], &[0xAA; 32]);
-        assert_eq!(&buf[32..48], &[0xBB; 16]);
     }
 
-    /// Empty segments produce zero-length output.
-    #[test]
-    fn read_segments_empty() {
-        let mem = GuestMemory::allocate(PAGE_SIZE);
-        let mut buf = vec![0u8; 64];
-        let (len, total_len) = read_segments_to_buf(&mem, std::iter::empty(), &mut buf);
+    // -- TX tests --------------------------------------------------------------
 
-        assert_eq!(len, 0);
-        assert_eq!(total_len, 0);
+    /// Exercises `PacketCaptureQueue::tx_avail` with a single TX segment at
+    /// the end of guest memory.  Same root cause as the RX test: the old code
+    /// passed the full remaining buffer to `read_at`.
+    #[test]
+    fn tx_avail_captures_segment_at_end_of_memory() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let pattern = [0xBB_u8; 16];
+        let gpa = PAGE_SIZE as u64 - 16;
+        mem.write_at(gpa, &pattern).unwrap();
+
+        let (pcap, output) = make_pcap(65535);
+        let mut queue = PacketCaptureQueue {
+            queue: Box::new(MockTxQueue),
+            mem,
+            pcap,
+        };
+
+        let segments = vec![TxSegment {
+            ty: TxSegmentType::Head(TxMetadata {
+                id: TxId(0),
+                segment_count: 1,
+                len: 16,
+                ..Default::default()
+            }),
+            gpa,
+            len: 16,
+        }];
+
+        let _ = queue.tx_avail(&segments).unwrap();
+
+        let output = output.lock();
+        assert!(
+            output.windows(16).any(|w| w == pattern),
+            "PCAP output should contain the 0xBB pattern from guest memory, \
+             got all zeros (read_at over-read failed silently)"
+        );
+    }
+
+    /// Exercises `PacketCaptureQueue::tx_avail` with two TX segments (head +
+    /// tail) near the end of guest memory.
+    #[test]
+    fn tx_avail_captures_multiple_segments_at_end_of_memory() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let pattern_a = [0xCC_u8; 16];
+        let pattern_b = [0xDD_u8; 16];
+        let gpa_a = PAGE_SIZE as u64 - 32;
+        let gpa_b = PAGE_SIZE as u64 - 16;
+        mem.write_at(gpa_a, &pattern_a).unwrap();
+        mem.write_at(gpa_b, &pattern_b).unwrap();
+
+        let (pcap, output) = make_pcap(65535);
+        let mut queue = PacketCaptureQueue {
+            queue: Box::new(MockTxQueue),
+            mem,
+            pcap,
+        };
+
+        let segments = vec![
+            TxSegment {
+                ty: TxSegmentType::Head(TxMetadata {
+                    id: TxId(0),
+                    segment_count: 2,
+                    len: 32,
+                    ..Default::default()
+                }),
+                gpa: gpa_a,
+                len: 16,
+            },
+            TxSegment {
+                ty: TxSegmentType::Tail,
+                gpa: gpa_b,
+                len: 16,
+            },
+        ];
+
+        let _ = queue.tx_avail(&segments).unwrap();
+
+        let output = output.lock();
+        assert!(
+            output.windows(16).any(|w| w == pattern_a),
+            "PCAP output should contain the 0xCC pattern (segment 1)"
+        );
+        assert!(
+            output.windows(16).any(|w| w == pattern_b),
+            "PCAP output should contain the 0xDD pattern (segment 2)"
+        );
     }
 }
