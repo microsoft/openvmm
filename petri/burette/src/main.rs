@@ -23,6 +23,7 @@
 //! ```
 
 mod harness;
+mod iperf_helper;
 mod report;
 mod tests;
 
@@ -34,6 +35,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tests::boot_time::BootProfile;
 use tests::disk_io::DiskBackend;
+use tests::network::NetBackend;
 use tests::network::NicBackend;
 
 /// Available performance tests.
@@ -45,7 +47,7 @@ enum TestName {
     ScaleBoot,
     /// Measures VMM memory overhead.
     Memory,
-    /// Network throughput via iperf3 (Alpine VM + Consomme).
+    /// Network throughput via iperf3.
     Network,
     /// Block I/O throughput via fio (Alpine VM + data disk).
     DiskIo,
@@ -124,6 +126,10 @@ struct RunArgs {
     #[arg(long, default_value = "vmbus")]
     nic: NicBackend,
 
+    /// Network endpoint backend.
+    #[arg(long, default_value = "consomme")]
+    backend: NetBackend,
+
     /// Record `perf record -p <pid> -g` traces scoped to each test,
     /// saving per-test .data files in this directory. Linux only.
     #[arg(long)]
@@ -171,6 +177,21 @@ struct PackageArgs {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Check for helper subprocess modes before any threads spawn.
+    // The TAP helper must call unshare(CLONE_NEWUSER) while single-threaded.
+    match std::env::args().nth(1).as_deref() {
+        Some("iperf-helper") => {
+            iperf_helper::run_helper();
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        Some("tap-ns-helper") => {
+            iperf_helper::linux::run_tap_helper();
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -296,6 +317,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 let test = tests::network::NetworkTest {
                     diag: args.diag,
                     nic: args.nic,
+                    backend: args.backend,
                     perf_dir: args.perf_dir.clone(),
                 };
 
