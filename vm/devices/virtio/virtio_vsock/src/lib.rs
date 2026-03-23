@@ -27,6 +27,7 @@ use crate::connection::ConnKey;
 use crate::connection::RxWork;
 use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockPacket;
+use anyhow::Context;
 use connection::ConnectionManager;
 use futures::StreamExt;
 use guestmem::GuestMemory;
@@ -35,29 +36,25 @@ use guestmem::LockedRangeImpl;
 use guestmem::ranges::PagedRange;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
-use spec::VIRTIO_DEVICE_TYPE_VSOCK;
 use spec::VsockConfig;
 use spec::VsockHeader;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::task::Context;
 use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::StopTask;
 use task_control::TaskControl;
 use unicycle::FuturesUnordered;
 use unix_socket::UnixListener;
 use virtio::DeviceTraits;
-use virtio::PeekedWork;
-use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::VirtioQueuePayload;
 use virtio::spec::VirtioDeviceFeatures;
+use virtio::spec::VirtioDeviceType;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
@@ -65,6 +62,9 @@ use zerocopy::IntoBytes;
 
 /// The number of virtqueues: rx, tx, event.
 const QUEUE_COUNT: usize = 3;
+const RX_QUEUE_INDEX: usize = 0;
+const TX_QUEUE_INDEX: usize = 1;
+const EVENT_QUEUE_INDEX: usize = 2;
 
 /// Virtio vsock device.
 #[derive(InspectMut)]
@@ -74,10 +74,12 @@ pub struct VirtioVsockDevice {
     base_path: PathBuf,
     #[inspect(skip)]
     listener: Option<UnixListener>,
-    memory: GuestMemory,
     driver: VmTaskDriver,
     #[inspect(skip)]
     worker: TaskControl<VsockWorker, VsockWorkerState>,
+    #[inspect(skip)]
+    started_queues: [Option<VirtioQueue>; QUEUE_COUNT],
+    stopped_queue_count: usize,
 }
 
 impl VirtioVsockDevice {
@@ -96,19 +98,18 @@ impl VirtioVsockDevice {
         guest_cid: u64,
         base_path: PathBuf,
         listener: Option<UnixListener>,
-        memory: GuestMemory,
     ) -> Self {
         Self {
             guest_cid,
             base_path,
             listener,
-            memory: memory.clone(),
             driver: driver_source.simple(),
             worker: TaskControl::new(VsockWorker {
-                mem: memory,
                 work: FuturesUnordered::new(),
                 write_ready_work: FuturesUnordered::new(),
             }),
+            started_queues: [const { None }; QUEUE_COUNT],
+            stopped_queue_count: 0,
         }
     }
 }
@@ -116,7 +117,7 @@ impl VirtioVsockDevice {
 impl VirtioDevice for VirtioVsockDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
-            device_id: VIRTIO_DEVICE_TYPE_VSOCK,
+            device_id: VirtioDeviceType::VSOCK,
             device_features: VirtioDeviceFeatures::new(),
             max_queues: QUEUE_COUNT.try_into().unwrap(),
             device_register_length: size_of::<VsockConfig>() as u32,
@@ -124,7 +125,7 @@ impl VirtioDevice for VirtioVsockDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         // Device config: guest_cid is a 64-bit LE value.
         let config = VsockConfig {
             guest_cid: self.guest_cid.to_le(),
@@ -138,54 +139,82 @@ impl VirtioDevice for VirtioVsockDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, offset: u16, val: u32) {
+    async fn write_registers_u32(&mut self, offset: u16, val: u32) {
         tracing::warn!(offset, val, "vsock: unexpected config write");
     }
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        assert!(resources.queues.len() >= QUEUE_COUNT);
-        let mut queues = Vec::with_capacity(QUEUE_COUNT);
-        let mut resources_iter = resources.queues.into_iter();
-        for _ in 0..QUEUE_COUNT {
-            let queue_resources = resources_iter.next().expect("not enough queues provided");
-            let event = PolledWait::new(&self.driver, queue_resources.event)?;
-
-            let queue = VirtioQueue::new(
-                resources.features.clone(),
-                queue_resources.params,
-                self.memory.clone(),
-                queue_resources.notify,
-                event,
-            )?;
-            queues.push(queue);
+    async fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: virtio::QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<virtio::queue::QueueState>,
+    ) -> anyhow::Result<()> {
+        if idx >= QUEUE_COUNT as u16 {
+            anyhow::bail!("invalid virtio queue index");
         }
 
-        let relay = ConnectionManager::new(
-            self.driver.clone(),
-            self.guest_cid,
-            self.base_path.clone(),
-            self.listener.take(),
-        )?;
+        if self.started_queues[idx as usize].is_some() {
+            anyhow::bail!("virtio queue already started");
+        }
 
-        let state = VsockWorkerState {
-            rx_queue: queues.remove(0),
-            tx_queue: queues.remove(0),
-            event_queue: queues.remove(0),
-            relay,
-        };
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create queue event")?;
 
-        self.worker
-            .insert(self.driver.clone(), "virtio-vsock-worker", state);
-        self.worker.start();
+        let queue = VirtioQueue::new(
+            features.clone(),
+            resources.params,
+            resources.guest_memory.clone(),
+            resources.notify,
+            queue_event,
+            initial_state,
+        )
+        .context("failed to create virtio queue")?;
+
+        self.started_queues[idx as usize] = Some(queue);
+        if self.started_queues.iter().all(|q| q.is_some()) {
+            let relay = ConnectionManager::new(
+                self.driver.clone(),
+                self.guest_cid,
+                self.base_path.clone(),
+                self.listener.take(),
+            )?;
+
+            let state = VsockWorkerState {
+                rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
+                tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap(),
+                event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
+                relay,
+                memory: resources.guest_memory.clone(),
+            };
+
+            self.worker
+                .insert(self.driver.clone(), "virtio-vsock-worker", state);
+            self.worker.start();
+        }
+
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(self.worker.poll_stop(cx));
-        if self.worker.has_state() {
-            self.worker.remove();
+    async fn stop_queue(&mut self, idx: u16) -> Option<virtio::queue::QueueState> {
+        // Stop the worker task (cancels the run loop via until_stopped).
+        if self.worker.stop().await {
+            let state = self.worker.remove();
+            self.started_queues[RX_QUEUE_INDEX] = Some(state.rx_queue);
+            self.started_queues[TX_QUEUE_INDEX] = Some(state.tx_queue);
+            self.started_queues[EVENT_QUEUE_INDEX] = Some(state.event_queue);
+
+            // Drain in-flight IOs to completion. The FuturesUnordered lives in
+            // BlkWorker and survives the stop — its pending disk IO futures are
+            // polled here until all descriptors are completed in the used ring.
+            // TODO?
+            //poll_fn(|cx| self.worker.task_mut().poll_drain(cx)).await;
         }
-        Poll::Ready(())
+
+        // Remove the queue state (drops VirtioQueue).
+        self.started_queues[idx as usize]
+            .take()
+            .map(|queue| queue.queue_state())
     }
 }
 
@@ -195,6 +224,7 @@ struct VsockWorkerState {
     #[allow(dead_code)] // Required by the spec but not actively polled.
     event_queue: VirtioQueue,
     relay: ConnectionManager,
+    memory: GuestMemory,
 }
 
 type RxWorkItem = Pin<Box<dyn Future<Output = RxWork> + Send>>;
@@ -235,7 +265,6 @@ impl PendingWork {
 }
 
 struct VsockWorker {
-    mem: GuestMemory,
     work: RxWorkQueue,
     write_ready_work: FuturesUnordered<WriteReadyItem>,
 }
@@ -264,13 +293,16 @@ impl VsockWorker {
         }
 
         let mut header = VsockHeader::new_zeroed();
-        work.read(&self.mem, &mut header.as_mut_bytes()[..VSOCK_HEADER_SIZE])?;
+        work.read(
+            &state.memory,
+            &mut header.as_mut_bytes()[..VSOCK_HEADER_SIZE],
+        )?;
 
         tracing::trace!(?header, "got tx packet from guest");
         let pending_work = {
             // TODO: Avoid allocating.
             let locked = lock_payload_data(
-                &self.mem,
+                &state.memory,
                 &work.payload,
                 header.len as u64,
                 true,
@@ -320,11 +352,14 @@ impl VsockWorker {
             .expect("peek already succeeded")
             .expect("queue was already checked to have items");
 
-        let (header, pending_work) = state.relay.get_rx_packet(&self.mem, &work.payload, rx_work);
+        let (header, pending_work) =
+            state
+                .relay
+                .get_rx_packet(&state.memory, &work.payload, rx_work);
         if let Some(header) = header {
             tracing::info!(?header, "sending reply");
             let header_bytes = header.as_bytes();
-            work.write(&self.mem, header_bytes).expect("TODO");
+            work.write(&state.memory, header_bytes).expect("TODO");
             work.complete(header_bytes.len() as u32 + header.len);
         }
 
@@ -413,7 +448,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     };
 
                     let has_rx_work = peeked.is_some();
-                    let event = std::future::poll_fn(|cx: &mut Context<'_>| {
+                    let event = std::future::poll_fn(|cx| {
                         if let Poll::Ready(Some(item)) = self.write_ready_work.poll_next_unpin(cx) {
                             return Poll::Ready(Event::WriteReady(item));
                         }
@@ -506,7 +541,7 @@ struct DataRegion {
 /// (the request header for writes), and limits the total to `data_len`
 /// (which excludes the status byte for reads).
 fn data_regions(
-    payloads: &[virtio::queue::VirtioQueuePayload],
+    payloads: &[VirtioQueuePayload],
     writable: bool,
     skip_bytes: u64,
     data_len: u64,

@@ -41,7 +41,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioVsockHandle> for VirtioVsockResol
             resource.guest_cid,
             PathBuf::from(&resource.uds_path),
             listener,
-            input.guest_memory.clone(),
         );
         Ok(device.into())
     }
