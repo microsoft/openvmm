@@ -43,6 +43,9 @@ use pal_async::socket::PollReadyExt;
 use pal_async::socket::PolledSocket;
 use pal_async::socket::ReadHalf;
 use pal_async::socket::WriteHalf;
+use pal_async::timer::Instant;
+use pal_async::timer::PolledTimer;
+use pal_async::wait::PolledWait;
 use std::collections::HashMap;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
@@ -52,12 +55,14 @@ use std::num::Wrapping;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use unix_socket::UnixStream;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::VirtioQueuePayload;
 use vmcore::vm_task::VmTaskDriver;
 
 const TX_BUF_SIZE: u32 = 65536;
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A key that uniquely identifies a vsock connection.
 /// TODO: I think these need a sequence number since some futures could outlive the connection.
@@ -88,22 +93,14 @@ struct PendingReply {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionState {
     Connecting,
-    Connected {
-        read_shutdown: bool,
-        write_shutdown: bool,
-    },
-}
-
-impl ConnectionState {
-    fn is_connected(&self) -> bool {
-        matches!(self, Self::Connected { .. })
-    }
+    Connected,
 }
 
 /// Tracks the state of a single vsock connection relayed to a Unix socket.
 struct Connection {
     key: ConnKey,
-    /// TODO: Some of this logically belongs in the ConnectionState.
+    /// TODO: Some of this logically belongs in the ConnectionState. Though my life would be easier
+    /// if I just move everything out of there.
     /// Buffer allocation advertised by the peer (guest).
     peer_buf_alloc: u32,
     /// Received data that the peer has forwarded from its buffer.
@@ -116,6 +113,10 @@ struct Connection {
     socket: RelaySocket,
     recv_buf: Option<RingBuffer>,
     state: ConnectionState,
+    timeout: Option<Instant>,
+    send_shutdown: bool,
+    receive_shutdown: bool,
+    local_send_shutdown: bool,
 }
 
 impl Connection {
@@ -137,6 +138,10 @@ impl Connection {
             socket,
             recv_buf: None,
             state: ConnectionState::Connecting,
+            timeout: None,
+            send_shutdown: false,
+            receive_shutdown: false,
+            local_send_shutdown: false,
         }
     }
 
@@ -145,11 +150,11 @@ impl Connection {
         data: &[IoSlice<'_>],
         data_len: usize,
     ) -> anyhow::Result<Option<WriteReadyItem>> {
-        if let ConnectionState::Connected {
-            write_shutdown: true,
-            ..
-        } = self.state
-        {
+        if self.state != ConnectionState::Connected {
+            anyhow::bail!("peer sent data before connection established");
+        }
+
+        if self.send_shutdown {
             anyhow::bail!("peer has shutdown write side but sent data");
         }
 
@@ -166,6 +171,9 @@ impl Connection {
                 }
                 Err(e) => {
                     // TODO: Implement Read and Write on the socket so we can handle WouldBlock there.
+                    // We cannot handle BrokenPipe to indicate a receive shutdown to the guest,
+                    // because it needs to be informed of the error on this write and the only way
+                    // to do that is to reset.
                     if e.kind() != io::ErrorKind::WouldBlock {
                         return Err(e).context("failed to write to guest socket");
                     }
@@ -214,11 +222,8 @@ impl Connection {
         }
 
         if buf.is_empty() {
-            if let ConnectionState::Connected {
-                write_shutdown: true,
-                ..
-            } = self.state
-            {
+            // TODO: Check if I do this when shutdown is received.
+            if self.send_shutdown {
                 self.socket
                     .get()
                     .shutdown(std::net::Shutdown::Write)
@@ -240,13 +245,9 @@ impl Connection {
     }
 
     fn shutdown(&mut self, mut flags: ShutdownFlags) -> anyhow::Result<()> {
-        let ConnectionState::Connected {
-            mut read_shutdown,
-            mut write_shutdown,
-        } = self.state
-        else {
-            anyhow::bail!("invalid state for shutdown: {:?}", self.state);
-        };
+        if self.state != ConnectionState::Connected {
+            anyhow::bail!("peer sent shutdown before connection established");
+        }
 
         if flags.send() {
             // Don't actually shutdown the write side if we're still waiting to flush data out of
@@ -255,26 +256,21 @@ impl Connection {
                 flags.set_send(false);
             }
 
-            write_shutdown = true;
+            self.send_shutdown = true;
         }
 
         let how = if flags.send() {
             if flags.receive() {
-                read_shutdown = true;
+                self.receive_shutdown = true;
                 std::net::Shutdown::Both
             } else {
                 std::net::Shutdown::Write
             }
         } else if flags.receive() {
-            read_shutdown = true;
+            self.receive_shutdown = true;
             std::net::Shutdown::Read
         } else {
             return Ok(());
-        };
-
-        self.state = ConnectionState::Connected {
-            read_shutdown,
-            write_shutdown,
         };
 
         self.socket.get().shutdown(how)?;
@@ -312,6 +308,7 @@ impl Connection {
             Ok(n) => {
                 if n == 0 {
                     tracing::info!("host socket shutdown");
+                    self.local_send_shutdown = true;
                     self.socket.clear_ready(InterestSlot::Read);
                     Some(new_shutdown_packet(
                         self.key,
@@ -346,6 +343,16 @@ impl Connection {
     /// much data we've sent, and how much the peer has forwarded from its buffer.
     fn peer_credit_available(&self) -> u32 {
         (Wrapping(self.peer_buf_alloc) - (self.tx_cnt - Wrapping(self.peer_fwd_cnt))).0
+    }
+
+    fn set_timeout(&mut self, driver: &VmTaskDriver, duration: Duration) -> PendingWork {
+        self.timeout = Some(Instant::now() + duration);
+        let mut timer = PolledTimer::new(driver);
+        let key = self.key;
+        PendingWork::rx(Some(Box::pin(async move {
+            timer.sleep(duration).await;
+            RxWork::Connection(key)
+        })))
     }
 }
 
@@ -513,6 +520,7 @@ impl ConnectionManager {
 
                     PendingWork::simple_rx(RxWork::SendReset(key))
                 } else {
+                    // TODO: Send RST after data flushed to socket.
                     PendingWork::NONE
                 }
             }
@@ -625,6 +633,7 @@ impl ConnectionManager {
     pub fn get_rx_packet(
         &mut self,
         mem: &GuestMemory,
+        driver: &VmTaskDriver,
         payload: &[VirtioQueuePayload],
         work: RxWork,
     ) -> (Option<VsockHeader>, PendingWork) {
@@ -634,6 +643,14 @@ impl ConnectionManager {
                     return (None, PendingWork::NONE);
                 };
 
+                if let Some(timeout) = conn.timeout {
+                    if Instant::now() >= timeout {
+                        tracing::info!(?key, "connection timed out");
+                        self.conns.remove(&key);
+                        return (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE);
+                    }
+                }
+
                 // TODO: Make a function in Connection for this.
                 let header = if conn.pending_reply.reset() {
                     // Remove the connection immediately on reset.
@@ -641,10 +658,7 @@ impl ConnectionManager {
                     return (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE);
                 } else if conn.pending_reply.respond() {
                     conn.pending_reply.set_respond(false);
-                    conn.state = ConnectionState::Connected {
-                        read_shutdown: false,
-                        write_shutdown: false,
-                    };
+                    conn.state = ConnectionState::Connected;
                     conn.last_sent_fwd_count = conn.fwd_cnt.0;
 
                     Some(new_reply_packet(
@@ -694,8 +708,20 @@ impl ConnectionManager {
                 let pending_work = if conn.pending_reply.into_bits() != 0 {
                     // More replies pending, so handle that the next time around.
                     PendingWork::simple_rx(RxWork::Connection(key))
-                } else if conn.state.is_connected() && conn.peer_credit_available() > 0 {
+                } else if conn.socket.is_closed() {
+                    if conn.local_send_shutdown {
+                        conn.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
+                    } else {
+                        // Socket closed without us shutting down the write side, so reset immediately.
+                        self.conns.remove(&key);
+                        PendingWork::simple_rx(RxWork::SendReset(key))
+                    }
+                } else if conn.state == ConnectionState::Connected
+                    && conn.peer_credit_available() > 0
+                {
                     // No replies pending, so make sure we're waiting for data.
+                    // N.B. This is done even if the socket was shutdown because this is how we find
+                    //      out if it was closed or has an error if there is no write pending.
                     PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(key)))
                 } else {
                     PendingWork::NONE

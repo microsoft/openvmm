@@ -107,6 +107,7 @@ impl VirtioVsockDevice {
             worker: TaskControl::new(VsockWorker {
                 work: FuturesUnordered::new(),
                 write_ready_work: FuturesUnordered::new(),
+                driver: driver_source.simple(),
             }),
             started_queues: [const { None }; QUEUE_COUNT],
             stopped_queue_count: 0,
@@ -267,6 +268,7 @@ impl PendingWork {
 struct VsockWorker {
     work: RxWorkQueue,
     write_ready_work: FuturesUnordered<WriteReadyItem>,
+    driver: VmTaskDriver,
 }
 
 impl VsockWorker {
@@ -355,7 +357,7 @@ impl VsockWorker {
         let (header, pending_work) =
             state
                 .relay
-                .get_rx_packet(&state.memory, &work.payload, rx_work);
+                .get_rx_packet(&state.memory, &self.driver, &work.payload, rx_work);
         if let Some(header) = header {
             tracing::info!(?header, "sending reply");
             let header_bytes = header.as_bytes();

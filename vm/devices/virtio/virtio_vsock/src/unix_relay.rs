@@ -64,6 +64,7 @@ impl RelaySocket {
                 awaiting_read: AtomicBool::new(false),
                 awaiting_write: AtomicBool::new(false),
                 has_data: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
             }),
         })
     }
@@ -87,10 +88,14 @@ impl RelaySocket {
                         )
                         .await;
 
-                    // TODO: Handle HUP specifically to send RST on socket close. This may get sent
-                    // together with IN, so return it so it can be stored and handled after calling
-                    // read for the last time (or handle RDHUP and avoid calling the last read?).
-                    inner.has_data.store(true, Ordering::Release);
+                    if events.has_in() | events.has_err() | events.has_rdhup() {
+                        inner.has_data.store(true, Ordering::Release);
+                    }
+
+                    if events.has_hup() {
+                        inner.closed.store(true, Ordering::Release);
+                    }
+
                     result
                 })
             })
@@ -104,12 +109,16 @@ impl RelaySocket {
             .then(|| -> Pin<Box<dyn Future<Output = T> + Send>> {
                 let inner = self.inner.clone();
                 Box::pin(async move {
-                    inner
+                    let events = inner
                         .await_ready(
                             InterestSlot::Write,
                             PollEvents::OUT | PollEvents::HUP | PollEvents::ERR,
                         )
                         .await;
+
+                    if events.has_hup() {
+                        inner.closed.store(true, Ordering::Release);
+                    }
 
                     result
                 })
@@ -122,6 +131,10 @@ impl RelaySocket {
 
     pub fn has_data(&self) -> bool {
         self.inner.has_data.swap(false, Ordering::AcqRel)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
     }
 
     fn await_read_ready_needed(&self) -> bool {
@@ -140,6 +153,7 @@ struct RelaySocketInner {
     awaiting_read: AtomicBool,
     awaiting_write: AtomicBool,
     has_data: AtomicBool,
+    closed: AtomicBool,
 }
 
 impl RelaySocketInner {
