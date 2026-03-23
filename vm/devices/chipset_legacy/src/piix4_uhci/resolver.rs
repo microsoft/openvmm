@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
-use thiserror::Error;
+use std::convert::Infallible;
 use vm_resource::AsyncResolveResource;
 use vm_resource::declare_static_async_resolver;
 use vm_resource::kind::ChipsetDeviceHandleKind;
@@ -21,16 +21,12 @@ declare_static_async_resolver! {
     (ChipsetDeviceHandleKind, Piix4PciUsbUhciStubDeviceHandle),
 }
 
-/// Errors that can occur when resolving the PIIX4 USB UHCI stub device.
-#[derive(Debug, Error)]
-pub enum ResolvePiix4PciUsbUhciStubError {}
-
 #[async_trait]
 impl AsyncResolveResource<ChipsetDeviceHandleKind, Piix4PciUsbUhciStubDeviceHandle>
     for Piix4PciUsbUhciStubResolver
 {
     type Output = ResolvedChipsetDevice;
-    type Error = ResolvePiix4PciUsbUhciStubError;
+    type Error = Infallible;
 
     async fn resolve(
         &self,
