@@ -487,7 +487,9 @@ impl Queue for PacketCaptureQueue {
                         }
 
                         let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                        let _ = self.mem.read_at(segment.gpa, &mut buf[len..]);
+                        let _ = self
+                            .mem
+                            .read_at(segment.gpa, &mut buf[len..len + copy_length]);
                         len += copy_length;
                     }
 
@@ -528,7 +530,9 @@ impl Queue for PacketCaptureQueue {
                     }
 
                     let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                    let _ = self.mem.read_at(segment.gpa, &mut buf[len..]);
+                    let _ = self
+                        .mem
+                        .read_at(segment.gpa, &mut buf[len..len + copy_length]);
                     len += copy_length;
                 }
 
