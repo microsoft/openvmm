@@ -17,6 +17,7 @@ use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
+use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
@@ -30,6 +31,7 @@ use state_unit::StateUnits;
 use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
+use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -730,9 +732,15 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in device_handles {
-            builder
-                .arc_mutex_device(device.name.as_ref())
-                .with_external_pci()
+            let needs_manual_pci_registration =
+                device.resource.id() == Piix4PciUsbUhciStubDeviceHandle::ID;
+
+            let mut device_builder = builder.arc_mutex_device(device.name.as_ref());
+            if needs_manual_pci_registration {
+                device_builder = device_builder.with_external_pci();
+            }
+
+            device_builder
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
