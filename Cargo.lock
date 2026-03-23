@@ -996,6 +996,7 @@ version = "0.0.0"
 dependencies = [
  "openssl",
  "thiserror 2.0.16",
+ "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
  "zerocopy",

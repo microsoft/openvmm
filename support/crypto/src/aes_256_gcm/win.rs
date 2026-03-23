@@ -11,8 +11,8 @@ use windows::Win32::Security::Cryptography::BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS
 use zerocopy::IntoBytes;
 
 static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(|| {
+    const CHAINING_MODE: &[u16] = wchar::wchz!("ChainingModeGCM");
     let mut handle = BCRYPT_ALG_HANDLE::default();
-    let chaining_mode = "ChainingModeGCM\0".encode_utf16().collect::<Vec<u16>>();
 
     // SAFETY: Errors are handled before the handle is used, and the handle is closed on drop.
     unsafe {
@@ -29,7 +29,7 @@ static AES_256_GCM: LazyLock<Result<AlgHandle, Aes256GcmError>> = LazyLock::new(
         windows::Win32::Security::Cryptography::BCryptSetProperty(
             handle.0.into(),
             windows::Win32::Security::Cryptography::BCRYPT_CHAINING_MODE,
-            chaining_mode.as_bytes(),
+            CHAINING_MODE.as_bytes(),
             0,
         )
         .ok()
