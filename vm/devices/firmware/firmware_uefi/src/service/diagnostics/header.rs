@@ -10,7 +10,6 @@ use guestmem::GuestMemoryError;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::ADVANCED_LOGGER_INFO_VERSION;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
-use uefi_specs::hyperv::advanced_logger::MAX_LOGGER_CHAIN_DEPTH;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 
 /// Maximum allowed size of the log buffer (4MB)
@@ -56,10 +55,9 @@ pub struct LogBufferHeader {
 impl LogBufferHeader {
     /// Parse and validate a log buffer header from guest memory at the given GPA.
     ///
-    /// If the header's `new_logger_info_address` field is non-zero, the chain
-    /// is followed (up to [`MAX_LOGGER_CHAIN_DEPTH`] hops) to locate the final
-    /// relocated buffer. This provides defense-in-depth against event ordering
-    /// issues where UEFI may not have re-advertised the relocated GPA yet.
+    /// The UEFI EfiDiagnosticsDxe driver is responsible for following the
+    /// `NewLoggerInfoAddress` chain and advertising the final relocated GPA.
+    /// This function reads the header at the GPA that UEFI provided directly.
     ///
     /// # Arguments
     /// * `gpa` - Optional guest physical address of the log buffer header
@@ -70,7 +68,22 @@ impl LogBufferHeader {
     pub fn from_guest_memory(gpa: Option<Gpa>, gm: &GuestMemory) -> Result<Self, HeaderParseError> {
         let gpa = gpa.ok_or(HeaderParseError::NoGpa)?;
 
-        let (raw_header, final_gpa) = Self::read_and_follow_chain(gpa, gm)?;
+        let raw_header: AdvancedLoggerInfo = gm.read_plain(gpa.as_u64())?;
+
+        let expected_sig = u32::from_le_bytes(SIG_HEADER);
+        if raw_header.signature != expected_sig {
+            return Err(HeaderParseError::SignatureMismatch(
+                expected_sig,
+                raw_header.signature,
+            ));
+        }
+
+        if raw_header.version != ADVANCED_LOGGER_INFO_VERSION {
+            return Err(HeaderParseError::VersionMismatch(
+                ADVANCED_LOGGER_INFO_VERSION,
+                raw_header.version,
+            ));
+        }
 
         if raw_header.log_buffer_size > MAX_LOG_BUFFER_SIZE {
             return Err(HeaderParseError::BufferSizeExceeded(
@@ -92,56 +105,10 @@ impl LogBufferHeader {
         }
 
         Ok(Self {
-            base_gpa: final_gpa,
+            base_gpa: gpa,
             buffer_offset: raw_header.log_buffer_offset,
             used_size,
         })
-    }
-
-    /// Read a header at the given GPA, validate it, and follow the
-    /// `new_logger_info_address` chain up to [`MAX_LOGGER_CHAIN_DEPTH`] hops.
-    ///
-    /// Returns the final header and the GPA it was read from.
-    fn read_and_follow_chain(
-        start_gpa: Gpa,
-        gm: &GuestMemory,
-    ) -> Result<(AdvancedLoggerInfo, Gpa), HeaderParseError> {
-        let mut current_gpa = start_gpa;
-
-        for _depth in 0..MAX_LOGGER_CHAIN_DEPTH {
-            let raw_header: AdvancedLoggerInfo = gm.read_plain(current_gpa.as_u64())?;
-
-            let expected_sig = u32::from_le_bytes(SIG_HEADER);
-            if raw_header.signature != expected_sig {
-                return Err(HeaderParseError::SignatureMismatch(
-                    expected_sig,
-                    raw_header.signature,
-                ));
-            }
-
-            if raw_header.version != ADVANCED_LOGGER_INFO_VERSION {
-                return Err(HeaderParseError::VersionMismatch(
-                    ADVANCED_LOGGER_INFO_VERSION,
-                    raw_header.version,
-                ));
-            }
-
-            // If no chain pointer, this is the final buffer.
-            if raw_header.new_logger_info_address == 0 {
-                return Ok((raw_header, current_gpa));
-            }
-
-            // Follow the chain to the next buffer.
-            let next_addr = u32::try_from(raw_header.new_logger_info_address)
-                .map_err(|_| HeaderParseError::Overflow("new_logger_info_address"))?;
-            current_gpa = Gpa::new(next_addr)
-                .map_err(|_| HeaderParseError::Overflow("new_logger_info_address"))?;
-        }
-
-        // Exhausted chain depth — use the last header we read.
-        // This shouldn't happen in practice (max depth is 3).
-        let raw_header: AdvancedLoggerInfo = gm.read_plain(current_gpa.as_u64())?;
-        Ok((raw_header, current_gpa))
     }
 
     /// Get the size of data currently in the buffer.
