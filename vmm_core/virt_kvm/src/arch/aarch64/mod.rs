@@ -622,6 +622,22 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
         // make this configurable.
         self.set_timer_ppis(20, 19)?;
 
+        let caps = {
+            let supports_aarch32_el0 = {
+                let pfr0 = self
+                    .vm
+                    .vp(0)
+                    .get_reg64(KvmRegisterId::SYS_ID_AA64PFR0_EL1.into())
+                    .map_err(KvmError::Kvm)?;
+                // ID_AA64PFR0_EL1 bits [3:0] (EL0) indicate aarch32 support.
+                // 0b0001 = aarch64 only, 0b0010 = aarch64 and aarch32.
+                pfr0 & 0xf == 2
+            };
+            PartitionCapabilities {
+                supports_aarch32_el0,
+            }
+        };
+
         let partition = KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
@@ -637,19 +653,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                     eval: false.into(),
                 })
                 .collect(),
-            caps: {
-                let pfr0 = self
-                    .vm
-                    .vp(0)
-                    .get_reg64(KvmRegisterId::SYS_ID_AA64PFR0_EL1.into())
-                    .map_err(KvmError::Kvm)?;
-                // ID_AA64PFR0_EL1 bits [3:0] (EL0) indicate aarch32 support.
-                // 0b0001 = aarch64 only, 0b0010 = aarch64 and aarch32.
-                let el0 = pfr0 & 0xf;
-                PartitionCapabilities {
-                    supports_aarch32_el0: el0 == 2,
-                }
-            },
+            caps,
             gic_v2m: self.config.processor_topology.gic_v2m(),
         };
 
