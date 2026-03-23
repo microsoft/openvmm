@@ -31,7 +31,10 @@ impl Aarch64InitialRegs {
 }
 
 #[derive(Debug, Inspect)]
-pub struct Aarch64PartitionCapabilities {}
+pub struct Aarch64PartitionCapabilities {
+    /// Whether the processor supports aarch32 execution at EL0.
+    pub supports_aarch32_el0: bool,
+}
 
 #[derive(Error, Debug)]
 pub enum Aarch64PartitionCapabilitiesError {}

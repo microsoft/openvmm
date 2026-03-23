@@ -1027,7 +1027,15 @@ impl WhpPartitionInner {
             caps
         };
         #[cfg(guest_arch = "aarch64")]
-        let caps = virt::aarch64::Aarch64PartitionCapabilities {};
+        let caps = {
+            let features =
+                whp::capabilities::processor_features().for_op("get processor features")?;
+            virt::aarch64::Aarch64PartitionCapabilities {
+                supports_aarch32_el0: features
+                    .bank0
+                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
+            }
+        };
 
         let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
             whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
