@@ -121,8 +121,9 @@ This project uses the **Rust 2024 edition** (`edition = "2024"` in root
 ## Autonomous Agent Inner Loop
 
 When running as a coding agent (GitHub Copilot coding agent or similar),
-follow this validation loop **before pushing each commit**. This catches
-the same errors as CI job0 locally, avoiding slow push-and-wait cycles.
+follow this validation loop **before pushing each commit**. This covers
+the common early CI failures (including the fmt + clippy checks from job0)
+locally, avoiding slow push-and-wait cycles.
 
 1. **Identify modified packages.** For each file you changed, find the
    crate's `Cargo.toml` and note the package name.
