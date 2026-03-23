@@ -29,5 +29,6 @@ pub mod local_restore_packages;
 pub mod publish_vmgstool_gh_release;
 pub mod test_local_flowey_build_igvm;
 pub mod local_install_shrinkwrap;
+pub mod local_openvmm_repo;
 pub mod local_shrinkwrap_build;
 pub mod local_shrinkwrap_run;

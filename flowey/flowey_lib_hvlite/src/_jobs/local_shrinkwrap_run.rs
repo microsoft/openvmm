@@ -5,6 +5,7 @@ use flowey::node::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use super::local_openvmm_repo::get_openvmm_tmk_repo;
 
 flowey_request! {
     /// Parameters for modifying rootfs.ext2 and running shrinkwrap.
@@ -48,7 +49,12 @@ impl SimpleFlowNode for Node {
                 let toolchain_dir = shrinkwrap_dir.parent()
                     .ok_or_else(|| anyhow::anyhow!("shrinkwrap_dir has no parent"))?;
 
-                let tmk_kernel_dir = toolchain_dir.join("OpenVMM-TMK");
+                let tmk_kernel_dir = get_openvmm_tmk_repo()?;
+                anyhow::ensure!(
+                    tmk_kernel_dir.is_dir(),
+                    "OPENVMM_TMK_REPO_PATH does not exist or is not a directory: {}",
+                    tmk_kernel_dir.display()
+                );
                 let host_kernel_dir = toolchain_dir.join("OHCL-Linux-Kernel");
 
                 let simple_tmk = tmk_kernel_dir.join("target/aarch64-minimal_rt-none/debug/simple_tmk");

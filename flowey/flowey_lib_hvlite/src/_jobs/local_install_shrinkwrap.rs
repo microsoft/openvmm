@@ -2,16 +2,15 @@
 // Licensed under the MIT License.
 
 //! Install Shrinkwrap and its dependencies on Ubuntu.
-
 use flowey::node::prelude::*;
 use flowey::node::prelude::RustRuntimeServices;
 use std::path::Path;
+use std::path::PathBuf;
+use super::local_openvmm_repo::get_openvmm_tmk_repo;
 
 const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
 const OHCL_LINUX_KERNEL_PLANE0_BRANCH: &str = "with-arm-rebased-planes";
-const OPENVMM_TMK_REPO: &str = "https://github.com/Flgodd67/openvmm.git";
-const OPENVMM_TMK_BRANCH: &str = "cca-enablement";
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
 const CCA_CONFIG_REPO: &str = "https://github.com/weiding-msft/cca_config";
 
@@ -251,16 +250,20 @@ impl SimpleFlowNode for Node {
                     log::info!("To rebuild, delete the Image file and run again");
                 }
 
-                // 4.5) Clone OpenVMM TMK branch with plane0 support and build TMK components
-                let tmk_kernel_dir = toolchain_dir.join("OpenVMM-TMK");
-                clone_or_update_repo(
-                    &rt,
-                    OPENVMM_TMK_REPO,
-                    &tmk_kernel_dir,
-                    update_repo,
-                    Some(OPENVMM_TMK_BRANCH),
-                    "OpenVMM TMK",
-                )?;
+                // 4.5) Prefer local OpenVMM checkout for TMK components
+                let tmk_kernel_dir = get_openvmm_tmk_repo()?;
+                anyhow::ensure!(
+                    tmk_kernel_dir.is_dir(),
+                    "OPENVMM_TMK_REPO_PATH does not exist or is not a directory: {}",
+                    tmk_kernel_dir.display()
+                );
+                log::info!("Using local OpenVMM repo at {}", tmk_kernel_dir.display());
+                if update_repo {
+                    log::info!(
+                        "Skipping repo update for local OpenVMM checkout at {}",
+                        tmk_kernel_dir.display()
+                    );
+                }
 
                 // Install Rust targets and build TMK components if do_installs is true
                 if do_installs {
