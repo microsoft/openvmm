@@ -96,8 +96,7 @@ pub enum Image {
         #[serde(skip_serializing_if = "Option::is_none")]
         linux: Option<LinuxImage>,
     },
-    /// Load the Linux kernel.
-    /// TODO: Currently, this only works with underhill.
+    /// Load the Linux kernel directly.
     Linux(LinuxImage),
 }
 
