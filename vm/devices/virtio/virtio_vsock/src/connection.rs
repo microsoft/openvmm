@@ -86,7 +86,8 @@ struct PendingReply {
     reset: bool,
     respond: bool,
     credit_request: bool,
-    #[bits(29)]
+    credit_update: bool,
+    #[bits(28)]
     _reserved: u32,
 }
 
@@ -465,6 +466,7 @@ impl ConnectionManager {
             }
             Operation::RW => {
                 // Guest is sending data.
+                // TODO: Use a custom error type so handle reset can be more easily propagated.
                 let Some(conn) = self.conns.get_mut(&key) else {
                     tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
                     return PendingWork::simple_rx(RxWork::SendReset(key));
@@ -560,19 +562,13 @@ impl ConnectionManager {
                 }
             }
             Operation::CREDIT_REQUEST => {
-                // Guest is requesting credit info from us. Reply with a
-                // CREDIT_UPDATE.
-                // Some((
-                //     VsockHeader::new_reply(
-                //         dst_cid,
-                //         src_cid,
-                //         dst_port,
-                //         src_port,
-                //         protocol::VIRTIO_VSOCK_OP_CREDIT_UPDATE,
-                //     ),
-                //     Vec::new(),
-                // ))
-                todo!();
+                let Some(conn) = self.conns.get_mut(&key) else {
+                    tracelimit::warn_ratelimited!(?key, "CREDIT_REQUEST for unknown connection");
+                    return PendingWork::simple_rx(RxWork::SendReset(key));
+                };
+
+                conn.pending_reply.set_credit_update(true);
+                PendingWork::simple_rx(RxWork::Connection(key))
             }
             _ => {
                 tracing::debug!(header = ?packet.header, "unknown vsock operation");
@@ -700,10 +696,11 @@ impl ConnectionManager {
                         self.guest_cid,
                         conn.fwd_cnt.0,
                     ))
-                } else if conn.peer_needs_credit_update() {
+                } else if conn.peer_needs_credit_update() || conn.pending_reply.credit_update() {
                     conn.last_sent_fwd_count = conn.fwd_cnt.0;
                     let fwd_cnt = conn.fwd_cnt.0;
 
+                    conn.pending_reply.set_credit_update(false);
                     tracing::info!(?key, fwd_cnt, "sending credit update");
                     Some(new_reply_packet(
                         key,
