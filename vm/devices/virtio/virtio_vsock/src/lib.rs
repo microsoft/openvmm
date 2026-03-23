@@ -265,6 +265,7 @@ impl PendingWork {
     }
 }
 
+// TODO: Only put immutable state in here.
 struct VsockWorker {
     work: RxWorkQueue,
     write_ready_work: FuturesUnordered<WriteReadyItem>,

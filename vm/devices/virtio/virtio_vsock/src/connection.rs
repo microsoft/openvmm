@@ -244,7 +244,7 @@ impl Connection {
         self.fwd_cnt.0 != self.last_sent_fwd_count
     }
 
-    fn shutdown(&mut self, mut flags: ShutdownFlags) -> anyhow::Result<()> {
+    fn shutdown(&mut self, mut flags: ShutdownFlags) -> anyhow::Result<PendingWork> {
         if self.state != ConnectionState::Connected {
             anyhow::bail!("peer sent shutdown before connection established");
         }
@@ -252,7 +252,7 @@ impl Connection {
         if flags.send() {
             // Don't actually shutdown the write side if we're still waiting to flush data out of
             // the buffer.
-            if self.recv_buf.as_ref().is_some_and(|buf| !buf.is_empty()) {
+            if !self.is_recv_buf_empty() {
                 flags.set_send(false);
             }
 
@@ -262,19 +262,22 @@ impl Connection {
         let how = if flags.send() {
             if flags.receive() {
                 self.receive_shutdown = true;
-                std::net::Shutdown::Both
+                Some(std::net::Shutdown::Both)
             } else {
-                std::net::Shutdown::Write
+                Some(std::net::Shutdown::Write)
             }
         } else if flags.receive() {
             self.receive_shutdown = true;
-            std::net::Shutdown::Read
+            Some(std::net::Shutdown::Read)
         } else {
-            return Ok(());
+            None
         };
 
-        self.socket.get().shutdown(how)?;
-        Ok(())
+        if let Some(how) = how {
+            self.socket.get().shutdown(how)?;
+        }
+
+        Ok(PendingWork::NONE)
     }
 
     fn handle_host_data(
@@ -353,6 +356,10 @@ impl Connection {
             timer.sleep(duration).await;
             RxWork::Connection(key)
         })))
+    }
+
+    fn is_recv_buf_empty(&self) -> bool {
+        self.recv_buf.as_ref().map_or(true, |buf| buf.is_empty())
     }
 }
 
@@ -519,8 +526,13 @@ impl ConnectionManager {
                     );
 
                     PendingWork::simple_rx(RxWork::SendReset(key))
+                } else if conn.send_shutdown && conn.receive_shutdown && conn.is_recv_buf_empty() {
+                    // Both sides have shutdown and all buffered data has been forwarded, so we can
+                    // reset immediately.
+                    tracing::info!(?key, "connection fully shutdown, removing");
+                    self.conns.remove(&key);
+                    PendingWork::simple_rx(RxWork::SendReset(key))
                 } else {
-                    // TODO: Send RST after data flushed to socket.
                     PendingWork::NONE
                 }
             }
@@ -578,11 +590,32 @@ impl ConnectionManager {
         };
 
         match conn.write_from_buffer() {
-            Ok(future) => PendingWork::new(
-                future,
-                conn.peer_needs_credit_update()
-                    .then_some(RxWork::Connection(key)),
-            ),
+            Ok(future) => {
+                if conn.send_shutdown && conn.is_recv_buf_empty() {
+                    if let Err(err) = conn.socket.get().shutdown(std::net::Shutdown::Write) {
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            ?key,
+                            "failed to shutdown write side of socket after flushing buffer"
+                        );
+
+                        self.conns.remove(&key);
+                        return PendingWork::simple_rx(RxWork::SendReset(key));
+                    }
+
+                    if conn.receive_shutdown {
+                        tracing::info!(?key, "connection fully shutdown after write, removing");
+                        self.conns.remove(&key);
+                        return PendingWork::simple_rx(RxWork::SendReset(key));
+                    }
+                }
+
+                PendingWork::new(
+                    future,
+                    conn.peer_needs_credit_update()
+                        .then_some(RxWork::Connection(key)),
+                )
+            }
             Err(err) => {
                 tracelimit::warn_ratelimited!(
                     error = err.as_ref() as &dyn std::error::Error,
