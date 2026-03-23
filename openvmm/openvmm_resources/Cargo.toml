@@ -107,6 +107,7 @@ rusqlite = { workspace = true, features = ["bundled"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
+vhost_user_frontend.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 net_dio.workspace = true
