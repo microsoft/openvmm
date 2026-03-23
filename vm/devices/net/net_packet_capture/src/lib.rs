@@ -454,6 +454,31 @@ impl PacketCaptureQueue {
     }
 }
 
+/// Reads data from guest memory segments into a capture buffer, respecting
+/// segment boundaries.
+///
+/// Returns `(bytes_copied, total_segment_len)`. The `total_segment_len` is the
+/// sum of all segment lengths, including segments that extend past the end of
+/// `buf` (useful for reporting the original packet length in PCAP headers).
+fn read_segments_to_buf(
+    mem: &GuestMemory,
+    segments: impl IntoIterator<Item = (u64, u32)>,
+    buf: &mut [u8],
+) -> (usize, u32) {
+    let mut len = 0;
+    let mut total_len: u32 = 0;
+    for (gpa, seg_len) in segments {
+        total_len += seg_len;
+        if len == buf.len() {
+            continue;
+        }
+        let copy_length = std::cmp::min(buf.len() - len, seg_len as usize);
+        let _ = mem.read_at(gpa, &mut buf[len..len + copy_length]);
+        len += copy_length;
+    }
+    (len, total_len)
+}
+
 #[async_trait]
 impl Queue for PacketCaptureQueue {
     async fn update_target_vp(&mut self, target_vp: u32) {
@@ -478,20 +503,11 @@ impl Queue for PacketCaptureQueue {
                 let snaplen = self.pcap.snaplen.load(Ordering::Relaxed);
                 for id in &packets[..n] {
                     let mut buf = vec![0; snaplen];
-                    let mut len = 0;
-                    let mut pkt_len = 0;
-                    for segment in pool.guest_addresses(*id).iter() {
-                        pkt_len += segment.len;
-                        if len == buf.len() {
-                            continue;
-                        }
-
-                        let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                        let _ = self
-                            .mem
-                            .read_at(segment.gpa, &mut buf[len..len + copy_length]);
-                        len += copy_length;
-                    }
+                    let (len, pkt_len) = read_segments_to_buf(
+                        &self.mem,
+                        pool.guest_addresses(*id).iter().map(|s| (s.gpa, s.len)),
+                        &mut buf,
+                    );
 
                     if len == 0 {
                         continue;
@@ -523,18 +539,8 @@ impl Queue for PacketCaptureQueue {
                     continue;
                 }
                 let mut buf = vec![0; snaplen];
-                let mut len = 0;
-                for segment in this {
-                    if len == buf.len() {
-                        break;
-                    }
-
-                    let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                    let _ = self
-                        .mem
-                        .read_at(segment.gpa, &mut buf[len..len + copy_length]);
-                    len += copy_length;
-                }
+                let (len, _) =
+                    read_segments_to_buf(&self.mem, this.iter().map(|s| (s.gpa, s.len)), &mut buf);
 
                 if len == 0 {
                     continue;
@@ -563,5 +569,109 @@ impl Queue for PacketCaptureQueue {
 impl InspectMut for PacketCaptureQueue {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         self.current_mut().inspect_mut(req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE_SIZE: usize = 4096;
+
+    /// A single segment near the end of guest memory. With a snaplen larger
+    /// than the segment, the old unbounded `buf[len..]` slice would cause
+    /// `read_at` to attempt reading past the end of guest memory, failing
+    /// silently and leaving the buffer as zeros.
+    #[test]
+    fn read_segments_single_segment_at_end_of_memory() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let pattern = [0xAA_u8; 16];
+        mem.write_at(PAGE_SIZE as u64 - 16, &pattern).unwrap();
+
+        let mut buf = vec![0u8; 64];
+        let (len, total_len) =
+            read_segments_to_buf(&mem, [(PAGE_SIZE as u64 - 16, 16u32)], &mut buf);
+
+        assert_eq!(len, 16);
+        assert_eq!(total_len, 16);
+        assert_eq!(&buf[..16], &pattern);
+    }
+
+    /// Two segments near the end of guest memory. The snaplen (64) is larger
+    /// than both segments combined (32 bytes). Without the bounded slice fix,
+    /// the first `read_at` would try to read 64 bytes starting at GPA 4064,
+    /// crossing the end of the 4096-byte guest memory.
+    #[test]
+    fn read_segments_multiple_segments_at_end_of_memory() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let pattern_a = [0xAA_u8; 16];
+        let pattern_b = [0xBB_u8; 16];
+        mem.write_at(PAGE_SIZE as u64 - 32, &pattern_a).unwrap();
+        mem.write_at(PAGE_SIZE as u64 - 16, &pattern_b).unwrap();
+
+        let mut buf = vec![0u8; 64];
+        let (len, total_len) = read_segments_to_buf(
+            &mem,
+            [
+                (PAGE_SIZE as u64 - 32, 16u32),
+                (PAGE_SIZE as u64 - 16, 16u32),
+            ],
+            &mut buf,
+        );
+
+        assert_eq!(len, 32);
+        assert_eq!(total_len, 32);
+        assert_eq!(&buf[..16], &pattern_a);
+        assert_eq!(&buf[16..32], &pattern_b);
+    }
+
+    /// Snaplen smaller than the segment length truncates the copy but still
+    /// reports the full segment length as `total_len`.
+    #[test]
+    fn read_segments_snaplen_truncates() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let pattern = [0xCC_u8; 64];
+        mem.write_at(0, &pattern).unwrap();
+
+        let mut buf = vec![0u8; 16];
+        let (len, total_len) = read_segments_to_buf(&mem, [(0u64, 64u32)], &mut buf);
+
+        assert_eq!(len, 16);
+        assert_eq!(total_len, 64);
+        assert_eq!(&buf[..16], &[0xCC; 16]);
+    }
+
+    /// Multiple segments where total data exceeds snaplen. The buffer should
+    /// contain data from the first segments up to the snaplen limit, and
+    /// `total_len` should reflect all segments.
+    #[test]
+    fn read_segments_multiple_segments_exceed_snaplen() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        mem.write_at(0, &[0xAA_u8; 32]).unwrap();
+        mem.write_at(100, &[0xBB_u8; 32]).unwrap();
+        mem.write_at(200, &[0xCC_u8; 32]).unwrap();
+
+        let mut buf = vec![0u8; 48];
+        let (len, total_len) = read_segments_to_buf(
+            &mem,
+            [(0u64, 32u32), (100u64, 32u32), (200u64, 32u32)],
+            &mut buf,
+        );
+
+        assert_eq!(len, 48);
+        assert_eq!(total_len, 96);
+        assert_eq!(&buf[..32], &[0xAA; 32]);
+        assert_eq!(&buf[32..48], &[0xBB; 16]);
+    }
+
+    /// Empty segments produce zero-length output.
+    #[test]
+    fn read_segments_empty() {
+        let mem = GuestMemory::allocate(PAGE_SIZE);
+        let mut buf = vec![0u8; 64];
+        let (len, total_len) = read_segments_to_buf(&mem, std::iter::empty(), &mut buf);
+
+        assert_eq!(len, 0);
+        assert_eq!(total_len, 0);
     }
 }
