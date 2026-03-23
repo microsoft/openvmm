@@ -17,7 +17,6 @@ use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
-use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
@@ -31,7 +30,6 @@ use state_unit::StateUnits;
 use std::fmt::Debug;
 use std::sync::Arc;
 use thiserror::Error;
-use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -732,21 +730,27 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in device_handles {
-            let needs_manual_pci_registration =
-                device.resource.id() == Piix4PciUsbUhciStubDeviceHandle::ID;
+            let ChipsetDeviceHandle {
+                name,
+                resource,
+                pci_placement,
+            } = device;
 
-            let mut device_builder = builder.arc_mutex_device(device.name.as_ref());
-            if needs_manual_pci_registration {
-                device_builder = device_builder.with_external_pci();
+            let mut device_builder = builder.arc_mutex_device(name.as_ref());
+            if let Some(pci_placement) = pci_placement {
+                let (bus, slot, function) = pci_placement.bdf;
+                device_builder = device_builder
+                    .on_pci_bus(BusId::new(pci_placement.bus_name.as_str()))
+                    .with_pci_addr(bus, slot, function);
             }
 
             device_builder
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
-                            device.resource,
+                            resource,
                             ResolveChipsetDeviceHandleParams {
-                                device_name: device.name.as_ref(),
+                                device_name: name.as_ref(),
                                 guest_memory: &foundation.untrusted_dma_memory,
                                 encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
                                 vmtime: foundation.vmtime,
@@ -787,10 +791,6 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
         target_start: u32,
     ) {
         self.add_line_target(id, source_range, target_start)
-    }
-
-    fn register_static_pci(&mut self, bus_name: &str, bdf: (u8, u8, u8)) {
-        self.register_static_pci(BusId::new(bus_name), bdf)
     }
 
     fn omit_saved_state(&mut self) {

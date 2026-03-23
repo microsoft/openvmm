@@ -31,14 +31,9 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, Piix4PciUsbUhciStubDeviceHand
     async fn resolve(
         &self,
         _resolver: &vm_resource::ResourceResolver,
-        resource: Piix4PciUsbUhciStubDeviceHandle,
-        input: ResolveChipsetDeviceHandleParams<'_>,
+        _resource: Piix4PciUsbUhciStubDeviceHandle,
+        _input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // As per PIIX4 spec, UHCI sits at fixed BDF 00:07.2.
-        input
-            .configure
-            .register_static_pci(resource.pci_bus_name.as_str(), (0, 7, 2));
-
         Ok(Piix4UsbUhciStub::new().into())
     }
 }

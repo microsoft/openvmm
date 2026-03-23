@@ -1326,6 +1326,7 @@ async fn vm_config_from_command_line(
                 worker_host: mesh.make_host("tpm", None).await?,
             }
             .into_resource(),
+            pci_placement: None,
         });
     }
 

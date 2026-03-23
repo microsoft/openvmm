@@ -102,10 +102,7 @@ pub mod piix4_uhci {
 
     /// A handle to the PIIX4 USB UHCI stub controller.
     #[derive(MeshPayload)]
-    pub struct Piix4PciUsbUhciStubDeviceHandle {
-        /// Name of the PCI bus this device should attach to.
-        pub pci_bus_name: String,
-    }
+    pub struct Piix4PciUsbUhciStubDeviceHandle;
 
     impl ResourceId<ChipsetDeviceHandleKind> for Piix4PciUsbUhciStubDeviceHandle {
         const ID: &'static str = "piix4PciUsbUhciStub";

@@ -2972,6 +2972,7 @@ async fn new_underhill_vm(
                     .await?,
             }
             .into_resource(),
+            pci_placement: None,
         });
     };
 
