@@ -121,7 +121,8 @@ async fn parse_guest_pci_devices(
     linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
-    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pcie_root_emulation_single_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -151,7 +152,8 @@ async fn pcie_root_emulation_single_segment(
     linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
-    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pcie_root_emulation_multi_segment(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
@@ -181,7 +183,8 @@ async fn pcie_root_emulation_multi_segment(
     linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2404_server_x64)),
-    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
 )]
 async fn pcie_switches(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
