@@ -3189,6 +3189,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hybrid_vsock"
+version = "0.1.0"
+dependencies = [
+ "fs-err",
+ "guid",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "hyper"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9573,13 +9582,13 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "fs-err",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.3",
  "guestmem",
  "guid",
  "hvdef",
+ "hybrid_vsock",
  "inspect",
  "mesh",
  "pal_async",
