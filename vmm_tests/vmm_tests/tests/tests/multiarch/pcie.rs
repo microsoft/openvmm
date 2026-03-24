@@ -249,7 +249,7 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 
     let sh = agent.unix_shell();
 
-    // Confirm the NVMe controllers show up as a block device
+    // Confirm the NVMe controllers show up block devices
     let nsid_output = cmd!(sh, "cat /sys/block/nvme0n1/nsid").read().await?;
     assert_eq!(nsid_output, "1");
     let nsid_output = cmd!(sh, "cat /sys/block/nvme1n1/nsid").read().await?;
@@ -257,7 +257,7 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 
     // Confirm the MANA devices show up as ethernet adapters with
     // the right MAC addresses
-    let mut mac_output = vec![
+    let mut mac_output: [String ; 2]= [
         cmd!(sh, "cat /sys/class/net/eth0/address").read().await?,
         cmd!(sh, "cat /sys/class/net/eth1/address").read().await?,
     ];
