@@ -12,13 +12,13 @@ use std::fmt;
 use vmm_test_macros::openvmm_test;
 
 /// List of MAC addresses for tests to use.
-const PCIE_NIC_MAC_ADDRESSES: [MacAddress; 4] = [
+const PCIE_NIC_MAC_ADDRESSES: [MacAddress; 2] = [
     MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
     MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x13]),
 ];
 
 /// List of NVMe Subsystem IDs for tests to use.
-const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 4] = [
+const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 2] = [
     guid::guid!("55bfb22d-3f6c-4d5a-8ed8-d779dbdae6b8"),
     guid::guid!("6e4fbff0-eefc-4982-9e09-faf2f185701e"),
 ];
@@ -255,11 +255,15 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
     let nsid_output = cmd!(sh, "cat /sys/block/nvme1n1/nsid").read().await?;
     assert_eq!(nsid_output, "1");
 
-    // Confirm the MANA devices show up as an ethernet adapter
-    let ifconfig_output = cmd!(sh, "ifconfig eth0").read().await?;
-    assert!(ifconfig_output.contains("HWaddr 00:15:5D:12:12:1"));
-    let ifconfig_output = cmd!(sh, "ifconfig eth1").read().await?;
-    assert!(ifconfig_output.contains("HWaddr 00:15:5D:12:12:1"));
+    // Confirm the MANA devices show up as ethernet adapters with
+    // the right MAC addresses
+    let mut mac_output = vec![
+        cmd!(sh, "cat /sys/class/net/eth0/address").read().await?,
+        cmd!(sh, "cat /sys/class/net/eth1/address").read().await?,
+    ];
+    mac_output.sort();
+    assert_eq!(mac_output[0], "00:15:5d:12:12:12");
+    assert_eq!(mac_output[1], "00:15:5d:12:12:13");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
