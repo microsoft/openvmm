@@ -78,13 +78,18 @@ pub trait GenericPciBusDevice: 'static + Send {
 
     /// Handle a PCI configuration space read with full routing context.
     ///
-    /// This method receives configuration space accesses with the target bus and
-    /// function information. For devices downstream of a PCIe port the device
-    /// number is always zero, so all 8 bits of `function` represent functions
-    /// within a single PCIe endpoint. The default implementation dispatches to
-    /// [`pci_cfg_read`](Self::pci_cfg_read) for function 0 accesses on
-    /// single-function devices. Routing components (switches, bridges) and
-    /// multi-function devices should override this method.
+    /// This method receives configuration space accesses with the target bus
+    /// and function number. The interpretation of `function` depends on the
+    /// bus topology: on a legacy PCI bus it carries packed device/function
+    /// bits (0..=255), while downstream of a PCIe port the device number is
+    /// always zero so all 8 bits represent functions within a single
+    /// endpoint.
+    ///
+    /// The default implementation dispatches function 0 to
+    /// [`pci_cfg_read`](Self::pci_cfg_read) and returns all-1s for other
+    /// functions (the standard "no device present" response). Routing
+    /// components (switches, bridges) and multi-function devices should
+    /// override this method.
     ///
     /// Returns `None` if the backing device is no longer responding.
     fn pci_cfg_read_with_routing(
@@ -97,18 +102,23 @@ pub trait GenericPciBusDevice: 'static + Send {
         if function == 0 {
             self.pci_cfg_read(offset, value)
         } else {
+            *value = !0;
             Some(IoResult::Ok)
         }
     }
 
     /// Handle a PCI configuration space write with full routing context.
     ///
-    /// This method receives configuration space accesses with the target bus and
-    /// function information. For devices downstream of a PCIe port the device
-    /// number is always zero, so all 8 bits of `function` represent functions
-    /// within a single PCIe endpoint. The default implementation dispatches to
-    /// [`pci_cfg_write`](Self::pci_cfg_write) for function 0 accesses on
-    /// single-function devices. Routing components (switches, bridges) and
+    /// This method receives configuration space accesses with the target bus
+    /// and function number. The interpretation of `function` depends on the
+    /// bus topology: on a legacy PCI bus it carries packed device/function
+    /// bits (0..=255), while downstream of a PCIe port the device number is
+    /// always zero so all 8 bits represent functions within a single
+    /// endpoint.
+    ///
+    /// The default implementation dispatches function 0 to
+    /// [`pci_cfg_write`](Self::pci_cfg_write) and silently drops writes to
+    /// other functions. Routing components (switches, bridges) and
     /// multi-function devices should override this method.
     ///
     /// Returns `None` if the backing device is no longer responding.

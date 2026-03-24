@@ -438,6 +438,8 @@ impl PciConfigSpace for GenericPcieSwitch {
             }
         }
 
+        // No device at this function / bus — return all-1s.
+        *value = !0;
         IoResult::Ok
     }
 
@@ -1061,6 +1063,9 @@ mod tests {
         let mut value2 = 0u32;
         let result2 = port.forward_cfg_read_with_routing(&1, &1, 0x0, &mut value2);
         assert!(matches!(result2, IoResult::Ok));
-        assert_eq!(value2, 0, "Non-zero function should return no data");
+        assert_eq!(
+            value2, !0,
+            "Non-zero function should return all-1s (no device)"
+        );
     }
 }
