@@ -6,7 +6,6 @@
 use crate::VirtioFs;
 use crate::virtio::VirtioFsDevice;
 use lxutil::LxVolumeOptions;
-use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::fs::VirtioFsBackend;
@@ -43,7 +42,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                     root_path,
                     Some(&LxVolumeOptions::from_option_string(mount_options)),
                 )?,
-                input.guest_memory.clone(),
                 0,
                 None,
             ),
@@ -53,7 +51,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                     input.driver_source,
                     &resource.tag,
                     crate::SectionFs::new(root_path)?,
-                    input.guest_memory.clone(),
                     8 * 1024 * 1024 * 1024, // 8GB of shared memory,
                     None,
                 )
@@ -63,6 +60,6 @@ impl ResolveResource<VirtioDeviceHandle, VirtioFsHandle> for VirtioFsResolver {
                 anyhow::bail!("section fs not supported on this platform")
             }
         };
-        Ok(VirtioDeviceAdapter::new(device).into())
+        Ok(device.into())
     }
 }

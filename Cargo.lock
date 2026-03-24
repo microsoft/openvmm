@@ -351,15 +351,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block_crypto"
-version = "0.0.0"
-dependencies = [
- "openssl",
- "thiserror 2.0.16",
- "windows 0.62.0",
-]
-
-[[package]]
 name = "blocking"
 version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -415,6 +406,30 @@ dependencies = [
 [[package]]
 name = "build_rs_guest_arch"
 version = "0.0.0"
+
+[[package]]
+name = "burette"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "build_rs_git_info",
+ "clap",
+ "futures",
+ "jiff",
+ "libc",
+ "openvmm_defs",
+ "pal_async",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_core",
+ "petri_artifacts_vmm_test",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "windows 0.62.0",
+]
 
 [[package]]
 name = "bytemuck"
@@ -977,6 +992,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
+name = "crypto"
+version = "0.0.0"
+dependencies = [
+ "openssl",
+ "thiserror 2.0.16",
+ "wchar",
+ "windows 0.62.0",
+ "windows-result 0.4.0",
+ "zerocopy",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1344,7 +1371,7 @@ name = "disk_crypt"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "block_crypto",
+ "crypto",
  "disk_backend",
  "disk_crypt_resources",
  "disklayer_ram",
@@ -2394,6 +2421,21 @@ dependencies = [
  "scsi_buffers",
  "user_driver",
  "user_driver_emulated_mock",
+ "vmcore",
+ "xtask_fuzz",
+]
+
+[[package]]
+name = "fuzz_pcie"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "chipset_device",
+ "libfuzzer-sys",
+ "memory_range",
+ "pal_async",
+ "pci_bus",
+ "pcie",
  "vmcore",
  "xtask_fuzz",
 ]
@@ -3949,6 +3991,7 @@ name = "mana_driver"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "build_info",
  "chipset_device",
  "futures",
  "gdma",
@@ -4178,7 +4221,6 @@ dependencies = [
  "mesh_channel",
  "mesh_node",
  "mesh_protobuf",
- "ntapi",
  "open_enum",
  "pal",
  "pal_async",
@@ -4191,6 +4233,7 @@ dependencies = [
  "tracing_helpers",
  "unicycle",
  "unix_socket",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 
@@ -4528,6 +4571,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitfield-struct 0.11.0",
  "futures",
  "guestmem",
  "inspect",
@@ -4536,11 +4580,13 @@ dependencies = [
  "linux_net_bindings",
  "net_backend",
  "net_backend_resources",
+ "open_enum",
  "pal_async",
  "parking_lot",
  "thiserror 2.0.16",
  "tracing",
  "vm_resource",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4636,9 +4682,9 @@ dependencies = [
 
 [[package]]
 name = "ntapi"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
 dependencies = [
  "winapi",
 ]
@@ -5371,9 +5417,12 @@ dependencies = [
  "disk_backend_resources",
  "disk_vhd1",
  "disk_vhdmp",
+ "fs-err",
  "get_resources",
  "mesh",
  "openvmm_defs",
+ "sparse_mmap",
+ "tempfile",
  "tracing",
  "vm_resource",
 ]
@@ -5433,6 +5482,7 @@ dependencies = [
  "uidevices",
  "virtio",
  "virtio_blk",
+ "virtio_console",
  "virtio_net",
  "virtio_p9",
  "virtio_pmem",
@@ -5541,7 +5591,7 @@ dependencies = [
  "tempfile",
  "unicycle",
  "unix_socket",
- "winapi",
+ "windows-result 0.4.0",
  "windows-sys 0.61.0",
  "zerocopy",
 ]
@@ -5959,6 +6009,7 @@ dependencies = [
  "mesh",
  "mesh_remote",
  "pal_async",
+ "parking_lot",
  "pipette_protocol",
  "socket2",
  "tracing",
@@ -8730,6 +8781,7 @@ dependencies = [
  "pal",
  "pal_event",
  "parking_lot",
+ "pci_core",
  "signal-hook",
  "static_assertions",
  "thiserror 2.0.16",
@@ -8904,14 +8956,12 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.11.0",
  "chipset_device",
  "device_emulators",
  "futures",
  "guestmem",
  "inspect",
  "mesh",
- "open_enum",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -8923,6 +8973,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "virtio_resources",
+ "virtio_spec",
  "vm_resource",
  "vmcore",
  "zerocopy",
@@ -8957,6 +9008,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio_console"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "pal_event",
+ "parking_lot",
+ "serial_core",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
+]
+
+[[package]]
 name = "virtio_net"
 version = "0.0.0"
 dependencies = [
@@ -8977,6 +9054,7 @@ dependencies = [
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.16",
+ "tracelimit",
  "tracing",
  "virtio",
  "virtio_resources",
@@ -9053,6 +9131,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio_spec"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "inspect",
+ "open_enum",
+ "zerocopy",
+]
+
+[[package]]
 name = "virtiofs"
 version = "0.0.0"
 dependencies = [
@@ -9073,6 +9161,7 @@ dependencies = [
  "virtio_resources",
  "vm_resource",
  "vmcore",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 
@@ -9505,8 +9594,8 @@ name = "vmgs"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "cfg-if",
  "crc32fast",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -9515,7 +9604,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh_protobuf",
- "openssl",
  "pal_async",
  "parking_lot",
  "scsi_buffers",
@@ -9523,8 +9611,6 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "vmgs_format",
- "windows 0.62.0",
- "windows-result 0.4.0",
  "zerocopy",
 ]
 
@@ -9725,6 +9811,7 @@ dependencies = [
  "nvme_spec",
  "nvme_test",
  "openvmm_defs",
+ "openvmm_helpers",
  "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",
@@ -9824,7 +9911,7 @@ dependencies = [
  "thiserror 2.0.16",
  "tracing",
  "widestring",
- "winapi",
+ "windows-sys 0.61.0",
  "zerocopy",
 ]
 

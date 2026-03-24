@@ -184,6 +184,11 @@ pub(super) struct PetriVmInner {
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,
     pub(super) framebuffer_view: Option<View>,
+    /// Whether CIDATA has already been mounted inside the guest.
+    /// Used to skip re-mounting after save/restore (where guest state is
+    /// preserved) while still mounting after a full reset/reboot.
+    pub(super) cidata_mounted: bool,
+    pub(super) pid: i32,
 }
 
 struct PetriVmHaltReceiver {
@@ -222,6 +227,11 @@ impl PetriVmOpenVmm {
             .vtl2_vsock_path
             .as_deref()
             .context("VM is not configured with OpenHCL")
+    }
+
+    /// Get the PID of the openvmm child process.
+    pub fn pid(&self) -> i32 {
+        self.inner.pid
     }
 
     petri_vm_fn!(
@@ -277,8 +287,25 @@ impl PetriVmOpenVmm {
         pub async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>
     );
 
-    petri_vm_fn!(pub(crate) async fn resume(&mut self) -> anyhow::Result<()>);
-    petri_vm_fn!(pub(crate) async fn verify_save_restore(&mut self) -> anyhow::Result<()>);
+    petri_vm_fn!(
+        /// Pause the VM. Call [`resume`](Self::resume) to continue execution.
+        pub async fn pause(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Save the VM's device and processor state, returning the serialized
+        /// bytes. The VM should be paused before calling this.
+        pub async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>
+    );
+    petri_vm_fn!(
+        /// Resume a paused VM.
+        pub async fn resume(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Perform a pulse save/restore cycle: pause the VM, save all state,
+        /// reset, restore, and resume. Useful for verifying that device state
+        /// survives a save/restore round-trip.
+        pub async fn verify_save_restore(&mut self) -> anyhow::Result<()>
+    );
     petri_vm_fn!(pub(crate) async fn launch_linux_direct_pipette(&mut self) -> anyhow::Result<()>);
 
     /// Wrap the provided future in a race with the worker process's halt
@@ -465,6 +492,8 @@ impl PetriVmInner {
     async fn reset(&mut self) -> anyhow::Result<()> {
         tracing::info!("Resetting VM");
         self.worker.reset().await?;
+        // Guest state is lost on reset, so CIDATA needs to be remounted.
+        self.cidata_mounted = false;
         // On linux direct, pipette won't auto-start unless it is the init
         // process. When it isn't, restart it over serial. (When pipette runs
         // as PID 1 via rdinit=/pipette, linux_direct_serial_agent is None, so
@@ -506,9 +535,12 @@ impl PetriVmInner {
 
         // When pipette runs as PID 1 init and a CIDATA agent disk is
         // attached, mount it so test files are available at /cidata.
+        // Skip if already mounted (e.g. reconnecting after save/restore
+        // where guest state is preserved).
         if !set_high_vtl
             && self.resources.properties.uses_pipette_as_init
             && self.resources.properties.has_agent_disk
+            && !self.cidata_mounted
         {
             tracing::info!("mounting CIDATA agent disk via pipette");
             client
@@ -527,9 +559,20 @@ impl PetriVmInner {
                 .run()
                 .await
                 .context("failed to mount CIDATA disk")?;
+            self.cidata_mounted = true;
         }
 
         Ok(client)
+    }
+
+    async fn pause(&self) -> anyhow::Result<()> {
+        self.worker.pause().await?;
+        Ok(())
+    }
+
+    async fn save_state(&self) -> anyhow::Result<Vec<u8>> {
+        let state_msg = self.worker.save().await?;
+        Ok(mesh::payload::encode(state_msg))
     }
 
     async fn resume(&self) -> anyhow::Result<()> {

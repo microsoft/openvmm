@@ -39,6 +39,8 @@ impl PetriVmConfigOpenVmm {
 
             openvmm_log_file,
 
+            memory_backing_file,
+
             ged,
             framebuffer_view,
         } = self;
@@ -80,14 +82,28 @@ impl PetriVmConfigOpenVmm {
                 .collect::<BTreeMap<OsString, OsString>>(),
         };
 
-        let host = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
+        let (host, pid) = Self::openvmm_host(&mut resources, &mesh, openvmm_log_file, log_env)
             .await
             .context("failed to create host process")?;
-        let (worker, halt_notif) = Worker::launch(&host, config)
+        // If a memory backing file was requested, open/create it and size
+        // it to match the configured guest RAM.
+        let shared_memory = memory_backing_file
+            .as_ref()
+            .map(|mem_path| {
+                openvmm_helpers::shared_memory::open_memory_backing_file(
+                    mem_path,
+                    config.memory.mem_size,
+                )
+            })
+            .transpose()?;
+
+        let (worker, halt_notif) = Worker::launch(&host, config, shared_memory)
             .await
             .context("failed to launch vm worker")?;
 
         let worker = Arc::new(worker);
+
+        let is_minimal = resources.properties.minimal_mode;
 
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
@@ -95,6 +111,8 @@ impl PetriVmConfigOpenVmm {
                 mesh,
                 worker,
                 framebuffer_view,
+                cidata_mounted: false,
+                pid,
             },
             halt_notif,
         );
@@ -103,7 +121,7 @@ impl PetriVmConfigOpenVmm {
         vm.resume().await?;
 
         // Run basic save/restore test if it is supported
-        if supports_save_restore {
+        if supports_save_restore && !is_minimal {
             tracing::info!("Testing save/restore");
             vm.verify_save_restore().await?;
         }
@@ -155,7 +173,7 @@ impl PetriVmConfigOpenVmm {
         mesh: &Mesh,
         log_file: PetriLogFile,
         vmm_env: BTreeMap<OsString, OsString>,
-    ) -> anyhow::Result<WorkerHost> {
+    ) -> anyhow::Result<(WorkerHost, i32)> {
         // Copy the child's stderr to this process's, since internally this is
         // wrapped by the test harness.
         let (stderr_read, stderr_write) = pal::pipe_pair()?;
@@ -171,14 +189,15 @@ impl PetriVmConfigOpenVmm {
         resources.log_stream_tasks.push(task);
 
         let (host, runner) = mesh_worker::worker_host();
-        mesh.launch_host(
-            ProcessConfig::new("vmm")
-                .process_name(&resources.openvmm_path)
-                .stderr(Some(stderr_write))
-                .env(vmm_env.into_iter()),
-            openvmm_defs::entrypoint::MeshHostParams { runner },
-        )
-        .await?;
-        Ok(host)
+        let pid = mesh
+            .launch_host(
+                ProcessConfig::new("vmm")
+                    .process_name(&resources.openvmm_path)
+                    .stderr(Some(stderr_write))
+                    .env(vmm_env.into_iter()),
+                openvmm_defs::entrypoint::MeshHostParams { runner },
+            )
+            .await?;
+        Ok((host, pid))
     }
 }

@@ -21,6 +21,7 @@
 //! its early days... but the code still has plenty of echoes from that initial
 //! C++ port, which really ought to get ironed out.
 
+#[cfg(feature = "encryption")]
 mod encrypt;
 mod error;
 mod storage;

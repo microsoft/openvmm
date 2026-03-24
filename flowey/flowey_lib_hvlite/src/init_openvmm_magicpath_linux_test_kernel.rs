@@ -76,14 +76,19 @@ impl FlowNode for Node {
                                 OpenvmmLinuxTestKernelArch::X64 => "x64",
                             });
                     fs_err::create_dir_all(&test_kernel_path)?;
-                    fs_err::copy(openvmm_linux_test_initrd, test_kernel_path.join("initrd"))?;
-                    fs_err::copy(
-                        openvmm_linux_test_kernel,
-                        test_kernel_path.join(match arch {
-                            OpenvmmLinuxTestKernelArch::Aarch64 => "Image",
-                            OpenvmmLinuxTestKernelArch::X64 => "vmlinux",
-                        }),
-                    )?;
+
+                    let initrd_dst = test_kernel_path.join("initrd");
+                    if openvmm_linux_test_initrd.absolute()? != initrd_dst.absolute()? {
+                        fs_err::copy(openvmm_linux_test_initrd, initrd_dst)?;
+                    }
+
+                    let kernel_dst = test_kernel_path.join(match arch {
+                        OpenvmmLinuxTestKernelArch::Aarch64 => "Image",
+                        OpenvmmLinuxTestKernelArch::X64 => "vmlinux",
+                    });
+                    if openvmm_linux_test_kernel.absolute()? != kernel_dst.absolute()? {
+                        fs_err::copy(openvmm_linux_test_kernel, kernel_dst)?;
+                    }
 
                     Ok(())
                 }

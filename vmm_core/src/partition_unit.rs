@@ -448,6 +448,10 @@ impl PartitionUnitRunner {
             self.partition
                 .scrub_vtl(vtl)
                 .map_err(InitialRegError::ScrubVtl)?;
+            self.vp_set
+                .scrub(vtl)
+                .await
+                .map_err(InitialRegError::ScrubVtl)?;
             self.needs_reset = false;
         }
 
@@ -507,6 +511,7 @@ impl StateUnit for PartitionUnitRunner {
 
     async fn reset(&mut self) -> anyhow::Result<()> {
         self.partition.reset()?;
+        self.vp_set.reset().await?;
         self.clear_halt();
         self.needs_reset = false;
         Ok(())

@@ -31,7 +31,7 @@ pub const NODEJS: &str = "24.x";
 //      increases with each release from the respective branch.
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.12.52.5";
 pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.52.5";
-pub const OPENVMM_DEPS: &str = "0.1.0-20260312.3";
+pub const OPENVMM_DEPS: &str = "0.1.0-20260319.1";
 pub const PROTOC: &str = "27.1";
 
 flowey_request! {

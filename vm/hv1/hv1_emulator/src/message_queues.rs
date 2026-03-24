@@ -73,6 +73,15 @@ impl MessageQueues {
         self.pending.store(pending, Ordering::Relaxed);
     }
 
+    /// Clears all queued messages.
+    pub fn clear(&self) {
+        let queues = &mut self.queues.lock();
+        for q in queues.iter_mut() {
+            q.clear();
+        }
+        self.pending.store(0, Ordering::Relaxed);
+    }
+
     /// Enqueues a message to be posted to the guest.
     pub fn enqueue_message(&self, sint: u8, message: &HvMessage) -> bool {
         let mut queues = self.queues.lock();

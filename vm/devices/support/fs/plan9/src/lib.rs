@@ -45,6 +45,13 @@ impl Plan9FileSystem {
         })
     }
 
+    /// Reset the filesystem state, clearing all open fids and the
+    /// negotiated protocol size. Called on guest-initiated device reset.
+    pub fn reset(&self) {
+        self.fids.write().clear();
+        self.negotiated_size.store(0, Ordering::Relaxed);
+    }
+
     // Process a message received from virtio.
     pub fn process_message(&self, message: &[u8], response: &mut [u8]) -> lx::Result<usize> {
         let mut reader = SliceReader::new(message);

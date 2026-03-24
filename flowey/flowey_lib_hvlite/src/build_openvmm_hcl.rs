@@ -84,6 +84,7 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::run_cargo_build::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
+        ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -131,6 +132,19 @@ impl FlowNode for Node {
 
             // required due to ambient dependencies in openvmm_hcl's source code
             pre_build_deps.push(openhcl_deps_path.clone().into_side_effect());
+
+            // TODO: install build tools for other platforms
+            if matches!(
+                ctx.platform(),
+                FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+            ) {
+                pre_build_deps.push(ctx.reqv(|v| {
+                    flowey_lib_common::install_dist_pkg::Request::Install {
+                        package_names: vec!["build-essential".into()],
+                        done: v,
+                    }
+                }));
+            }
 
             let mut features = features
                 .into_iter()

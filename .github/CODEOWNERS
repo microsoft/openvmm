@@ -22,5 +22,12 @@
 # Storage
 /vm/devices/storage @microsoft/openvmm-reviewers @microsoft/openvmm-storage
 
-# Cargo dependencies
-/Cargo.lock @microsoft/openvmm-dependency-reviewers
+# Cargo dependencies — external dependency changes in Cargo.lock are reviewed
+# by the dep-review GitHub Actions workflow (dep-review.yml) rather than via
+# CODEOWNERS, so that internal-only lockfile changes don't require a dependency
+# reviewer. See .github/workflows/dep-review.yml for details.
+#
+# Changes to the dep-review infrastructure itself require both CI and dependency reviewer approval.
+/.github/scripts/dep-review* @microsoft/openvmm-ci-reviewers @microsoft/openvmm-dependency-reviewers
+/.github/workflows/dep-review* @microsoft/openvmm-ci-reviewers @microsoft/openvmm-dependency-reviewers
+/.github/dep-policy.json @microsoft/openvmm-ci-reviewers @microsoft/openvmm-dependency-reviewers

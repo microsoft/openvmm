@@ -316,6 +316,29 @@ impl HwControl {
                 let req: GdmaVerifyVerReq = read
                     .read_plain()
                     .context("reading verify vf driver request")?;
+
+                let drv_name = core::ffi::CStr::from_bytes_until_nul(&req.os_ver_str1)
+                    .ok()
+                    .and_then(|c| c.to_str().ok())
+                    .unwrap_or("<invalid>");
+                let drv_commit = core::ffi::CStr::from_bytes_until_nul(&req.os_ver_str2)
+                    .ok()
+                    .and_then(|c| c.to_str().ok())
+                    .unwrap_or("<invalid>");
+                tracing::info!(
+                    drv_name,
+                    drv_commit,
+                    os_type = format_args!("{:#x}", req.os_type),
+                    os_ver_major = req.os_ver_major,
+                    os_ver_minor = req.os_ver_minor,
+                    os_ver_build = req.os_ver_build,
+                    os_ver_platform = req.os_ver_platform,
+                    cap_flags1 = format_args!("{:#x}", req.gd_drv_cap_flags1),
+                    protocol_ver_min = req.protocol_ver_min,
+                    protocol_ver_max = req.protocol_ver_max,
+                    "vf driver version",
+                );
+
                 let resp = GdmaVerifyVerResp {
                     gdma_protocol_ver: req.protocol_ver_min,
                     pf_cap_flags1: 0,

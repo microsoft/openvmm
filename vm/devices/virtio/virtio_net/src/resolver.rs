@@ -6,7 +6,6 @@
 use crate::Device;
 use async_trait::async_trait;
 use net_backend::resolve::ResolveEndpointParams;
-use virtio::VirtioDeviceAdapter;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::net::VirtioNetHandle;
@@ -48,13 +47,8 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
             )
             .await?;
 
-        let device = builder.build(
-            input.driver_source,
-            input.guest_memory.clone(),
-            endpoint.0,
-            resource.mac_address,
-        );
+        let device = builder.build(input.driver_source, endpoint.0, resource.mac_address);
 
-        Ok(VirtioDeviceAdapter::new(device).into())
+        Ok(device.into())
     }
 }

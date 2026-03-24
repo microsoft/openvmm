@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Constants defined by the virtio spec
+//! Types and constants defined by the virtio specification.
+//!
+//! Reference: <https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html>
+
+#![expect(missing_docs)]
 
 use bitfield_struct::bitfield;
 use inspect::Inspect;
@@ -119,6 +123,21 @@ pub struct VirtioDeviceStatus {
 impl VirtioDeviceStatus {
     pub fn as_u32(&self) -> u32 {
         self.into_bits() as u32
+    }
+}
+
+open_enum::open_enum! {
+    /// Virtio device type IDs as defined by the virtio specification.
+    ///
+    /// Reference: <https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html> §5
+    pub enum VirtioDeviceType: u16 {
+        NET = 1,
+        BLK = 2,
+        CONSOLE = 3,
+        RNG = 4,
+        P9 = 9,
+        FS = 26,
+        PMEM = 27,
     }
 }
 

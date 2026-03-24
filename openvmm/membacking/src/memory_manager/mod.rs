@@ -242,6 +242,7 @@ impl GuestMemoryBuilder {
                     ram_size
                         .try_into()
                         .map_err(|_| MemoryBuildError::RamTooLarge(ram_size))?,
+                    "guest-ram",
                 )
                 .map_err(MemoryBuildError::AllocationFailed)?
                 .into(),
@@ -324,6 +325,11 @@ impl GuestMemoryBuilder {
                 va_mapper
                     .alloc_range(range.start() as usize, range.len() as usize)
                     .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *range))?;
+                va_mapper.set_range_name(
+                    range.start() as usize,
+                    range.len() as usize,
+                    "guest-ram-private",
+                );
             }
 
             // Mark private RAM as THP-eligible so khugepaged can collapse
@@ -349,7 +355,7 @@ impl GuestMemoryBuilder {
         for range in &ram_ranges {
             let region = region_manager
                 .client()
-                .new_region("ram".into(), *range, RAM_PRIORITY)
+                .new_region("ram".into(), *range, RAM_PRIORITY, true)
                 .await
                 .expect("regions cannot overlap yet");
 
@@ -400,6 +406,13 @@ impl GuestMemoryBuilder {
 #[derive(Debug, MeshPayload)]
 pub struct SharedMemoryBacking {
     guest_ram: Mappable,
+}
+
+impl SharedMemoryBacking {
+    /// Create a SharedMemoryBacking from a mappable handle/fd.
+    pub fn from_mappable(guest_ram: Mappable) -> Self {
+        Self { guest_ram }
+    }
 }
 
 /// A mesh-serializable object for providing access to guest memory.

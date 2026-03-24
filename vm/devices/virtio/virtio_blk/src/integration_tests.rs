@@ -27,7 +27,7 @@ use scsi_buffers::RequestBuffers;
 use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
-use virtio::VirtioDeviceV2;
+use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::AVAIL_ELEMENT_SIZE;
@@ -183,7 +183,7 @@ impl TestHarness {
         init_used_ring(&mem, USED_ADDR);
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioBlkDevice::new(&driver_source, mem.clone(), disk, read_only);
+        let device = VirtioBlkDevice::new(&driver_source, disk, read_only);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -201,7 +201,7 @@ impl TestHarness {
     }
 
     /// Enable the device with one queue.
-    fn enable(&mut self) {
+    async fn enable(&mut self) {
         let interrupt = Interrupt::from_event(self.interrupt_event.clone());
 
         self.device
@@ -217,10 +217,12 @@ impl TestHarness {
                     },
                     notify: interrupt,
                     event: self.queue_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
                 &VirtioDeviceFeatures::new(),
                 None,
             )
+            .await
             .unwrap();
     }
 
@@ -588,7 +590,7 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
 async fn write_then_read_roundtrip(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false); // 64 KiB
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write a recognizable pattern to sector 0.
     let data: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
@@ -620,7 +622,7 @@ async fn write_then_read_roundtrip(driver: DefaultDriver) {
 async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let data_gpa = harness.post_read_request(0, 4, 512);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -637,7 +639,7 @@ async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
 async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, true);
     let mut harness = TestHarness::new(&driver, disk, true);
-    harness.enable();
+    harness.enable().await;
 
     // Attempt to write — this should fail.
     // We need to find the status byte location: it's the writable descriptor
@@ -686,7 +688,7 @@ async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
 async fn flush_succeeds(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     harness.post_flush_request(0);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -699,7 +701,7 @@ async fn flush_succeeds(driver: DefaultDriver) {
 async fn get_id_returns_identifier(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let id_gpa = harness.post_get_id_request(0);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -718,7 +720,7 @@ async fn get_id_returns_identifier(driver: DefaultDriver) {
 async fn unsupported_request_type(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let status_gpa = harness.post_raw_request(0, 0xFF, 0);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -734,7 +736,7 @@ async fn unsupported_request_type(driver: DefaultDriver) {
 async fn multi_sector_write_read(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write 2 sectors (1024 bytes) starting at sector 2.
     let data: Vec<u8> = (0..1024).map(|i| ((i * 7 + 3) % 256) as u8).collect();
@@ -757,7 +759,7 @@ async fn multi_sector_write_read(driver: DefaultDriver) {
 async fn sequential_write_read_flush(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write
     let pattern = [0xDE; 512];
@@ -795,7 +797,7 @@ async fn sequential_write_read_flush(driver: DefaultDriver) {
 async fn sector_offset_correctness(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false); // 128 × 512-byte sectors
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write to sector 10.
     let data = [0xAA; 512];
@@ -955,7 +957,7 @@ async fn write_read_4k_sector_disk(driver: DefaultDriver) {
     // 64 KiB disk with 4096-byte sectors → 16 disk sectors.
     let disk = Disk::new(TestDisk4K::new(64 * 1024, 4096)).unwrap();
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write to virtio sector 8 (= byte offset 4096 = disk sector 1).
     let data = [0xAA; 4096];
@@ -993,7 +995,7 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
     // 128 KiB disk with 4096-byte sectors → 32 disk sectors.
     let disk = Disk::new(TestDisk4K::new(128 * 1024, 4096)).unwrap();
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write different patterns to virtio sectors 0, 16, and 24.
     // Virtio sector 0  → disk sector 0  (byte offset 0)
@@ -1046,7 +1048,7 @@ async fn check_discard(
     expected_status: u8,
 ) {
     let mut harness = TestHarness::new(driver, disk, read_only);
-    harness.enable();
+    harness.enable().await;
     let status_gpa = harness.post_discard_request(0, sector, num_sectors, flags);
     let (_id, used_len) = harness.wait_for_used().await;
     assert_eq!(used_len, 1);
@@ -1175,7 +1177,7 @@ async fn discard_512b_sector_any_count_succeeds(driver: DefaultDriver) {
 async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let frag_size: u32 = 256;
 

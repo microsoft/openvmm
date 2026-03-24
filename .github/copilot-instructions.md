@@ -31,7 +31,7 @@ For cross-compilation from WSL2 to Windows, see
 Do NOT commit without completing all three steps.**
 
 1. `cargo clippy --all-targets -p <package-name>` — for each modified package.
-2. `cargo doc -p <package-name>` — for each modified package.
+2. `cargo doc --no-deps -p <package-name>` — for each modified package.
 3. `cargo xtask fmt --fix` — fix formatting, headers, naming conventions.
    Run this **last** because fixing clippy/doc issues may introduce
    formatting changes that need to be cleaned up.
@@ -97,6 +97,11 @@ cargo nextest run -p <package-name>
 - **CI failures** — to investigate failing CI checks on a PR, load the
   `openvmm-ci-investigation` skill.
 
+## Rust Edition
+
+This project uses the **Rust 2024 edition** (`edition = "2024"` in root
+`Cargo.toml`).
+
 ## Common Pitfalls
 
 - **`guest_arch` not `target_arch`**: For guest-architecture-specific code,
@@ -112,3 +117,28 @@ cargo nextest run -p <package-name>
   hand-edit them. Run `cargo xflowey regen` to regenerate.
 - **flowey nodes**: Use `flowey::shell_cmd!` and `rt.sh` inside flowey
   nodes — not `xshell::cmd!` or `xshell::Shell::new`.
+
+## Autonomous Agent Inner Loop
+
+When running as a coding agent (GitHub Copilot coding agent or similar),
+follow this validation loop **before pushing each commit**. This covers
+the common early CI failures (including the fmt + clippy checks from job0)
+locally, avoiding slow push-and-wait cycles.
+
+1. **Identify modified packages.** For each file you changed, find the
+   crate's `Cargo.toml` and note the package name.
+2. **Check compilation:** `cargo check -p <package>` — fast type-check.
+3. **Clippy:** `cargo clippy --all-targets -p <package>` — lint.
+4. **Doc:** `cargo doc --no-deps -p <package>` — catch doc errors.
+5. **Unit tests:** `cargo nextest run -p <package>` — run the crate's
+   tests. If nextest is not installed, use `cargo test -p <package>`.
+6. **Formatting:** `cargo xtask fmt --fix` — run last, since earlier
+   fixes may introduce formatting changes.
+
+If any step fails, fix the issue and re-run from that step. Do not push
+until all six steps pass.
+
+**Cost notes:** Steps 2–5 are scoped to the modified package (`-p`),
+so they are fast even in this large workspace. Step 6 runs workspace-wide
+but is also fast. The full cycle typically takes under 2 minutes for
+a single-crate change.

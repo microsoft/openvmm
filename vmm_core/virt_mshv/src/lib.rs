@@ -50,6 +50,7 @@ use pal::unix::pthread::*;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::io;
 use std::sync::Arc;
@@ -327,6 +328,10 @@ impl virt::Partition for MshvPartition {
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
         self.inner.request_msi(request)
+    }
+
+    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        Some(self.inner.clone())
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -1120,6 +1125,12 @@ impl MshvPartitionInner {
                 "failed to request msi"
             );
         }
+    }
+}
+
+impl SignalMsi for MshvPartitionInner {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.request_msi(MsiRequest { address, data });
     }
 }
 

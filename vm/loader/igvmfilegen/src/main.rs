@@ -38,6 +38,7 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
+use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -409,7 +410,7 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         device_tree_blob: Option<&[u8]>,
     ) -> Result<loader::linux::LoadInfo, loader::linux::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
         Self: GuestArch;
 
     fn load_openhcl<F>(
@@ -418,13 +419,13 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         shim: &mut F,
         sidecar: Option<&mut F>,
         command_line: CommandLineType<'_>,
-        initrd: Option<&[u8]>,
+        initrd: Option<(&mut dyn loader::common::ReadSeek, u64)>,
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
     ) -> Result<(), loader::paravisor::Error>
     where
-        F: std::io::Read + std::io::Seek;
+        F: std::io::Read + Seek;
 }
 
 impl IgvmfilegenRegister for X86Register {
@@ -444,7 +445,7 @@ impl IgvmfilegenRegister for X86Register {
         _device_tree_blob: Option<&[u8]>,
     ) -> Result<loader::linux::LoadInfo, loader::linux::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::linux::load_kernel_and_initrd_x64(
             importer,
@@ -460,13 +461,13 @@ impl IgvmfilegenRegister for X86Register {
         shim: &mut F,
         sidecar: Option<&mut F>,
         command_line: CommandLineType<'_>,
-        initrd: Option<&[u8]>,
+        initrd: Option<(&mut dyn loader::common::ReadSeek, u64)>,
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
     ) -> Result<(), loader::paravisor::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::paravisor::load_openhcl_x64(
             importer,
@@ -499,7 +500,7 @@ impl IgvmfilegenRegister for Aarch64Register {
         device_tree_blob: Option<&[u8]>,
     ) -> Result<loader::linux::LoadInfo, loader::linux::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::linux::load_kernel_and_initrd_arm64(
             importer,
@@ -516,13 +517,13 @@ impl IgvmfilegenRegister for Aarch64Register {
         shim: &mut F,
         _sidecar: Option<&mut F>,
         command_line: CommandLineType<'_>,
-        initrd: Option<&[u8]>,
+        initrd: Option<(&mut dyn loader::common::ReadSeek, u64)>,
         memory_page_base: Option<u64>,
         memory_page_count: u64,
         vtl0_config: Vtl0Config<'_>,
     ) -> Result<(), loader::paravisor::Error>
     where
-        F: std::io::Read + std::io::Seek,
+        F: std::io::Read + Seek,
     {
         loader::paravisor::load_openhcl_arm64(
             importer,
@@ -575,11 +576,11 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 kernel_path.display()
             ))?;
 
-            let initrd = {
+            let mut initrd = {
                 let initrd_path = resources
                     .get(ResourceType::UnderhillInitrd)
                     .expect("validated present");
-                Some(fs_err::read(initrd_path).context(format!(
+                Some(fs_err::File::open(initrd_path).context(format!(
                     "reading underhill initrd at {}",
                     initrd_path.display()
                 ))?)
@@ -598,7 +599,13 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                     None
                 };
 
-            let initrd_slice = initrd.as_deref();
+            let initrd_info = if let Some(ref mut f) = initrd {
+                let size = f.seek(std::io::SeekFrom::End(0))?;
+                f.rewind()?;
+                Some((f as &mut dyn loader::common::ReadSeek, size))
+            } else {
+                None
+            };
 
             // TODO: While the paravisor supports multiple things that can be
             // loaded in VTL0, we don't yet have updated file builder config for
@@ -646,7 +653,7 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                 &mut shim,
                 sidecar.as_mut(),
                 command_line,
-                initrd_slice,
+                initrd_info,
                 memory_page_base,
                 memory_page_count,
                 vtl0_load_config,
@@ -692,22 +699,27 @@ fn load_linux<R: IgvmfilegenRegister + GuestArch + 'static>(
         "reading vtl0 kernel image at {}",
         kernel_path.display()
     ))?;
-    let initrd_vec = if use_initrd {
+    let mut initrd_file = if use_initrd {
         let initrd_path = resources
             .get(ResourceType::LinuxInitrd)
             .expect("validated present");
-        fs_err::read(initrd_path)
-            .context(format!("reading vtl0 initrd at {}", initrd_path.display()))?
+        Some(
+            fs_err::File::open(initrd_path)
+                .context(format!("reading vtl0 initrd at {}", initrd_path.display()))?,
+        )
     } else {
-        Vec::new()
-    };
-    let initrd = if initrd_vec.is_empty() {
         None
-    } else {
+    };
+    let initrd = if let Some(ref mut f) = initrd_file {
+        let size = f.seek(std::io::SeekFrom::End(0))?;
+        f.rewind()?;
         Some(InitrdConfig {
             initrd_address: loader::linux::InitrdAddressType::AfterKernel,
-            initrd: &initrd_vec,
+            initrd: f,
+            size,
         })
+    } else {
+        None
     };
     let load_info = R::load_linux_kernel_and_initrd(loader, &mut kernel, 0, initrd, None)
         .context("loading linux kernel and initrd")?;

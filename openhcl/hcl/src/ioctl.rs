@@ -1864,6 +1864,11 @@ impl Hcl {
         Some(self.sidecar.as_ref()?.base_cpu(vp_index))
     }
 
+    /// Returns whether sidecar support is enabled for this partition.
+    pub fn sidecar_enabled(&self) -> bool {
+        self.sidecar.is_some()
+    }
+
     /// Create a VP runner for the given partition.
     pub fn runner<'a, T: Backing<'a>>(
         &'a self,

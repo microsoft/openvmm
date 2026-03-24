@@ -64,6 +64,7 @@ impl CommonState {
             vm_topology::processor::arch::GicInfo {
                 gic_distributor_base: 0xff000000,
                 gic_redistributors_base: 0xff020000,
+                gic_v2m: None,
             },
             0,
         )

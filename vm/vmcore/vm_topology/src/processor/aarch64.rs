@@ -52,6 +52,22 @@ pub struct GicInfo {
     /// GIC redistributors base
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub gic_redistributors_base: u64,
+    /// GIC v2m MSI frame base address, and the SPI range it owns.
+    /// `None` if MSIs via v2m are not supported.
+    pub gic_v2m: Option<GicV2mInfo>,
+}
+
+/// GIC v2m MSI frame parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
+pub struct GicV2mInfo {
+    /// Physical base address of the v2m MSI frame.
+    #[cfg_attr(feature = "inspect", inspect(hex))]
+    pub frame_base: u64,
+    /// First GIC interrupt ID in the SPI range owned by this frame.
+    pub spi_base: u32,
+    /// Number of SPIs owned by this frame.
+    pub spi_count: u32,
 }
 
 /// ARM64 specific VP info.
@@ -167,5 +183,10 @@ impl ProcessorTopology<Aarch64Topology> {
     /// Returns the PMU GSIV
     pub fn pmu_gsiv(&self) -> u32 {
         self.arch.pmu_gsiv
+    }
+
+    /// Returns the GIC v2m MSI frame info, if present.
+    pub fn gic_v2m(&self) -> Option<GicV2mInfo> {
+        self.arch.gic.gic_v2m
     }
 }
