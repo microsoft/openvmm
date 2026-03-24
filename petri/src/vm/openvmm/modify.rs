@@ -28,6 +28,7 @@ use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::PcieDeviceConfig;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
+use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
@@ -219,7 +220,7 @@ impl PetriVmConfigOpenVmm {
     /// All root ports are named according to their index within their parent
     /// using the naming scheme `sXrcYrpZ`. For example, the third root port on
     /// the fourth root complex in segment 0 would be named `s0rc3rp2`.
-    pub fn with_pcie_topology(
+    pub fn with_pcie_root_topology(
         mut self,
         segment_count: u64,
         root_complex_per_segment: u64,
@@ -288,6 +289,23 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
+        self
+    }
+
+    /// Add a PCIe switch to the VM.
+    pub fn with_pcie_switch(
+        mut self,
+        port_name: &str,
+        switch_name: &str,
+        port_count: u8,
+        hotplug: bool,
+    ) -> Self {
+        self.config.pcie_switches.push(PcieSwitchConfig {
+            name: switch_name.to_string(),
+            num_downstream_ports: port_count,
+            parent_port: port_name.to_string(),
+            hotplug,
+        });
         self
     }
 

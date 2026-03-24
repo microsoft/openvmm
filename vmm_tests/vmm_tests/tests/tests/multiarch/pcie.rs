@@ -132,7 +132,7 @@ async fn pcie_root_emulation_single_segment(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
-        .modify_backend(|b| b.with_pcie_topology(1, 4, 4))
+        .modify_backend(|b| b.with_pcie_root_topology(1, 4, 4))
         .run()
         .await?;
 
@@ -162,7 +162,7 @@ async fn pcie_root_emulation_multi_segment(
 ) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
-        .modify_backend(|b| b.with_pcie_topology(4, 1, 8))
+        .modify_backend(|b| b.with_pcie_root_topology(4, 1, 8))
         .run()
         .await?;
 
@@ -181,14 +181,20 @@ async fn pcie_root_emulation_multi_segment(
     Ok(())
 }
 
-#[openvmm_test(linux_direct_x64)]
-async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+#[openvmm_test(
+    linux_direct_x64,
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+)]
+async fn pcie_switches(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
         .modify_backend(|b| {
-            b.with_pcie_topology(1, 1, 8)
-                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
-                .with_pcie_nic("s0rc0rp1", PCIE_NIC_MAC_ADDRESSES[0])
+            b.with_pcie_root_topology(1, 1, 4)
+                .with_pcie_switch("s0rc0rp0", "sw0", 2, false)
+                .with_pcie_switch("s0rc0rp1", "sw1", 2, false)
+                .with_pcie_switch("sw1-downstream-1", "sw2", 2, false)
         })
         .run()
         .await?;
@@ -196,29 +202,68 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
     let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
     tracing::info!(?guest_devices, "guest devices");
 
-    // Confirm the NVMe controller enumerates at the PCI level
+    let upstream_switch_port_count = guest_devices
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc031 && d.class_code == 0x060400)
+        .count();
+    assert_eq!(upstream_switch_port_count, 3);
+
+    let downstream_switch_port_count = guest_devices
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc032 && d.class_code == 0x060400)
+        .count();
+    assert_eq!(downstream_switch_port_count, 6);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+#[openvmm_test(linux_direct_x64)]
+async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_pcie_root_topology(1, 1, 8)
+                .with_pcie_nvme("s0rc0rp0", PCIE_NVME_SUBSYSTEM_IDS[0])
+                .with_pcie_nic("s0rc0rp1", PCIE_NIC_MAC_ADDRESSES[0])
+                .with_pcie_switch("s0rc0rp3", "sw0", 2, false)
+                .with_pcie_nvme("sw0-downstream-0", PCIE_NVME_SUBSYSTEM_IDS[1])
+                .with_pcie_nic("sw0-downstream-1", PCIE_NIC_MAC_ADDRESSES[1])
+        })
+        .run()
+        .await?;
+
+    let guest_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?guest_devices, "guest devices");
+
+    // Confirm the NVMe controllers enumerate at the PCI level
     let nvme_count = guest_devices
         .iter()
         .filter(|d| d.class_code == 0x010802)
         .count();
-    assert_eq!(nvme_count, 1);
+    assert_eq!(nvme_count, 2);
 
     // Confirm the MANA device enumerates at the PCI level
     let nic_count = guest_devices
         .iter()
         .filter(|d| d.class_code == 0x020000)
         .count();
-    assert_eq!(nic_count, 1);
+    assert_eq!(nic_count, 2);
 
     let sh = agent.unix_shell();
 
-    // Confirm the NVMe controller shows up as a block device
+    // Confirm the NVMe controllers show up as a block device
     let nsid_output = cmd!(sh, "cat /sys/block/nvme0n1/nsid").read().await?;
     assert_eq!(nsid_output, "1");
+    let nsid_output = cmd!(sh, "cat /sys/block/nvme1n1/nsid").read().await?;
+    assert_eq!(nsid_output, "1");
 
-    // Confirm the MANA device shows up as an ethernet adapter
+    // Confirm the MANA devices show up as an ethernet adapter
     let ifconfig_output = cmd!(sh, "ifconfig eth0").read().await?;
-    assert!(ifconfig_output.contains("HWaddr 00:15:5D:12:12:12"));
+    assert!(ifconfig_output.contains("HWaddr 00:15:5D:12:12:1"));
+    let ifconfig_output = cmd!(sh, "ifconfig eth1").read().await?;
+    assert!(ifconfig_output.contains("HWaddr 00:15:5D:12:12:1"));
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
