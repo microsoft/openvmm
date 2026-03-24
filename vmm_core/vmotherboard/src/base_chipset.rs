@@ -1039,7 +1039,7 @@ pub mod options {
             }
 
             devices {
-                $($name:ident: $ty:ty,)*
+                $($name:ident: $ty:ty => $mesh_idx:literal,)*
             }
         ) => {paste::paste!{
             $(#[$m])*
@@ -1049,7 +1049,7 @@ pub mod options {
 
             $(#[$m2])*
             pub struct $base_chipset_manifest {
-                $(pub [<with_ $name>]: bool,)*
+                $(#[mesh($mesh_idx)] pub [<with_ $name>]: bool,)*
             }
 
             impl $base_chipset_manifest {
@@ -1108,34 +1108,34 @@ pub mod options {
         }
 
         devices {
-            generic_cmos_rtc:            dev::GenericCmosRtcDeps,
-            generic_ioapic:              dev::GenericIoApicDeps,
-            generic_isa_dma:             dev::GenericIsaDmaDeps,
-            generic_isa_floppy:          dev::GenericIsaFloppyDeps,
-            generic_pci_bus:             dev::GenericPciBusDeps,
-            generic_pic:                 dev::GenericPicDeps,
-            generic_psp:                 dev::GenericPspDeps,
+            generic_cmos_rtc:            dev::GenericCmosRtcDeps => 1,
+            generic_ioapic:              dev::GenericIoApicDeps => 2,
+            generic_isa_dma:             dev::GenericIsaDmaDeps => 3,
+            generic_isa_floppy:          dev::GenericIsaFloppyDeps => 4,
+            generic_pci_bus:             dev::GenericPciBusDeps => 5,
+            generic_pic:                 dev::GenericPicDeps => 6,
+            generic_psp:                 dev::GenericPspDeps => 8,
 
-            hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
-            hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
-            hyperv_framebuffer:          dev::HyperVFramebufferDeps,
-            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps,
-            hyperv_ide:                  dev::HyperVIdeDeps,
-            hyperv_power_management:     dev::HyperVPowerManagementDeps,
-            hyperv_vga:                  dev::HyperVVgaDeps,
+            hyperv_firmware_pcat:        dev::HyperVFirmwarePcat => 9,
+            hyperv_firmware_uefi:        dev::HyperVFirmwareUefi => 10,
+            hyperv_framebuffer:          dev::HyperVFramebufferDeps => 11,
+            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps => 12,
+            hyperv_ide:                  dev::HyperVIdeDeps => 13,
+            hyperv_power_management:     dev::HyperVPowerManagementDeps => 14,
+            hyperv_vga:                  dev::HyperVVgaDeps => 15,
 
-            i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
+            i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps => 16,
 
-            piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
-            piix4_pci_bus:               dev::Piix4PciBusDeps,
-            piix4_pci_isa_bridge:        dev::Piix4PciIsaBridgeDeps,
-            piix4_pci_usb_uhci_stub:     dev::Piix4PciUsbUhciStubDeps,
-            piix4_power_management:      dev::Piix4PowerManagementDeps,
+            piix4_cmos_rtc:              dev::Piix4CmosRtcDeps => 17,
+            piix4_pci_bus:               dev::Piix4PciBusDeps => 18,
+            piix4_pci_isa_bridge:        dev::Piix4PciIsaBridgeDeps => 19,
+            piix4_pci_usb_uhci_stub:     dev::Piix4PciUsbUhciStubDeps => 20,
+            piix4_power_management:      dev::Piix4PowerManagementDeps => 21,
 
-            underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
+            underhill_vga_proxy:         dev::UnderhillVgaProxyDeps => 22,
 
-            winbond_super_io_and_floppy_stub: dev::WinbondSuperIoAndFloppyStubDeps,
-            winbond_super_io_and_floppy_full: dev::WinbondSuperIoAndFloppyFullDeps,
+            winbond_super_io_and_floppy_stub: dev::WinbondSuperIoAndFloppyStubDeps => 23,
+            winbond_super_io_and_floppy_full: dev::WinbondSuperIoAndFloppyFullDeps => 24,
         }
     }
 

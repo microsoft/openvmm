@@ -367,7 +367,7 @@ impl VmManifestBuilder {
 
 impl VmChipsetResult {
     /// Returns true when the chipset device list contains a PIT handle.
-    pub fn with_pit(&self) -> bool {
+    pub fn has_pit(&self) -> bool {
         self.chipset_devices
             .iter()
             .any(|d| d.resource.id() == PitDeviceHandle::ID)
@@ -387,7 +387,7 @@ impl VmChipsetResult {
     fn attach_pit(&mut self) -> &mut Self {
         const PIT_ID: &str = PitDeviceHandle::ID;
 
-        if self.with_pit() {
+        if self.has_pit() {
             return self;
         }
 
@@ -613,6 +613,6 @@ mod tests {
             .count();
 
         assert_eq!(pit_count, 1, "PIT handle should only be attached once");
-        assert!(result.with_pit());
+        assert!(result.has_pit());
     }
 }
