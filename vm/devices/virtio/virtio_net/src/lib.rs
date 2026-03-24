@@ -740,10 +740,8 @@ impl Coordinator {
             .into_iter()
             .unzip();
         let mut queue_config = Vec::with_capacity(rx_pools.len());
-        for (i, pool) in rx_pools.into_iter().enumerate() {
+        for _pool in &rx_pools {
             queue_config.push(QueueConfig {
-                pool: Box::new(pool),
-                initial_rx: ready_packets[i].as_slice(),
                 driver: Box::new(c_state.adapter.driver.clone()),
             });
         }
@@ -757,7 +755,10 @@ impl Coordinator {
 
         assert_eq!(queues.len(), self.workers.len());
 
-        for (worker, queue) in self.workers.iter_mut().zip(queues) {
+        for ((worker, mut queue), ready) in self.workers.iter_mut().zip(queues).zip(&ready_packets)
+        {
+            let pool = &mut worker.state_mut().unwrap().active_state.pending_rx_packets;
+            queue.rx_avail(pool, ready);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -870,18 +871,22 @@ impl Worker {
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
             // cancellation.
+            let pending_rx_packets = &mut self.active_state.pending_rx_packets;
+            let tx_segments = &self.active_state.data.tx_segments;
+            let tx_queue = &mut self.virtio_state.tx_queue;
+            let rx_queue = &mut self.virtio_state.rx_queue;
             stop.until_stopped(std::future::poll_fn(|cx| {
-                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx) {
+                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx, pending_rx_packets) {
                     return Poll::Ready(());
                 }
 
-                if self.active_state.data.tx_segments.is_empty()
-                    && let Poll::Ready(()) = self.virtio_state.tx_queue.poll_kick(cx)
+                if tx_segments.is_empty()
+                    && let Poll::Ready(()) = tx_queue.poll_kick(cx)
                 {
                     return Poll::Ready(());
                 }
 
-                if let Poll::Ready(()) = self.virtio_state.rx_queue.poll_kick(cx) {
+                if let Poll::Ready(()) = rx_queue.poll_kick(cx) {
                     return Poll::Ready(());
                 }
 
@@ -1221,7 +1226,7 @@ impl Worker {
             }
         }
         if !rx_ids.is_empty() {
-            epqueue.rx_avail(rx_ids.as_slice());
+            epqueue.rx_avail(&mut self.active_state.pending_rx_packets, rx_ids.as_slice());
             Ok(true)
         } else {
             Ok(false)
@@ -1234,7 +1239,7 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         let state = &mut self.active_state;
         let n = epqueue
-            .rx_poll(&mut state.data.rx_ready)
+            .rx_poll(&mut state.pending_rx_packets, &mut state.data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
             return Ok(false);
@@ -1255,7 +1260,10 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
         let n = epqueue
-            .tx_poll(&mut self.active_state.data.tx_done)
+            .tx_poll(
+                &mut self.active_state.pending_rx_packets,
+                &mut self.active_state.data.tx_done,
+            )
             .map_err(|tx_error| WorkerError::Endpoint(tx_error.into()))?;
         if n == 0 {
             return Ok(false);
@@ -1282,7 +1290,10 @@ impl Worker {
         }
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(&self.active_state.data.tx_segments)
+            .tx_avail(
+                &mut self.active_state.pending_rx_packets,
+                &self.active_state.data.tx_segments,
+            )
             .map_err(WorkerError::Endpoint)?;
 
         if sync {

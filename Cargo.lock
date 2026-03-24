@@ -4556,7 +4556,6 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-concurrency",
- "guestmem",
  "inspect",
  "mesh",
  "net_backend",
@@ -4594,7 +4593,6 @@ name = "netvsp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "arrayvec",
  "async-trait",
  "bitfield-struct 0.11.0",
  "event-listener",

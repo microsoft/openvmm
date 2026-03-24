@@ -735,12 +735,10 @@ async fn test_endpoint(
     let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
     endpoint.set_test_configuration(test_configuration);
     let mut queues = Vec::new();
-    let pool = net_backend::tests::Bufs::new(payload_mem.clone());
+    let mut pool = net_backend::tests::Bufs::new(payload_mem.clone());
     endpoint
         .get_queues(
             vec![QueueConfig {
-                pool: Box::new(pool.clone()),
-                initial_rx: &(1..128).map(RxId).collect::<Vec<_>>(),
                 driver: Box::new(driver.clone()),
             }],
             None,
@@ -749,9 +747,12 @@ async fn test_endpoint(
         .await
         .unwrap();
 
+    // Post initial RX buffers.
+    queues[0].rx_avail(&mut pool, &(1..128u32).map(RxId).collect::<Vec<_>>());
+
     payload_mem.write_at(0, &data_to_send).unwrap();
 
-    queues[0].tx_avail(tx_segments).unwrap();
+    queues[0].tx_avail(&mut pool, tx_segments).unwrap();
 
     // Poll for completion
     // Keep at least couple of elements in the Rx and Tx done vectors to
@@ -765,7 +766,7 @@ async fn test_endpoint(
     while rx_packets_n == 0 {
         let mut context = CancelContext::new().with_timeout(Duration::from_secs(1));
         match context
-            .until_cancelled(poll_fn(|cx| queues[0].poll_ready(cx)))
+            .until_cancelled(poll_fn(|cx| queues[0].poll_ready(cx, &mut pool)))
             .await
         {
             Err(CancelReason::DeadlineExceeded) => break,
@@ -775,9 +776,13 @@ async fn test_endpoint(
             }
             _ => {}
         }
-        rx_packets_n += queues[0].rx_poll(&mut rx_packets[rx_packets_n..]).unwrap();
+        rx_packets_n += queues[0]
+            .rx_poll(&mut pool, &mut rx_packets[rx_packets_n..])
+            .unwrap();
         // GDMA Errors generate a TryReturn error, ignored here.
-        tx_done_n += queues[0].tx_poll(&mut tx_done[tx_done_n..]).unwrap_or(0);
+        tx_done_n += queues[0]
+            .tx_poll(&mut pool, &mut tx_done[tx_done_n..])
+            .unwrap_or(0);
         if expected_num_received_packets == 0 {
             break;
         }
