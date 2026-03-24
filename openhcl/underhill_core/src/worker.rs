@@ -1302,14 +1302,13 @@ fn new_x86_topology(
 
 #[cfg(guest_arch = "aarch64")]
 fn new_aarch64_topology(
-    gic: vm_topology::processor::aarch64::GicInfo,
+    gic: vm_topology::processor::aarch64::Aarch64PlatformConfig,
     cpus: &[bootloader_fdt_parser::Cpu],
-    pmu_gsiv: u32,
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::aarch64::Aarch64Topology>> {
     // TODO SMP: Query the MT property from the host topology somehow. Device Tree
     // doesn't specify that.
     let gic_redistributors_base = gic.gic_redistributors_base;
-    TopologyBuilder::new_aarch64(gic, pmu_gsiv)
+    TopologyBuilder::new_aarch64(gic)
         .vps_per_socket(cpus.len() as u32)
         .build_with_vp_info(cpus.iter().enumerate().map(|(vp_index, cpu)| {
             let mpidr = aarch64defs::MpidrEl1::from(
@@ -1325,7 +1324,7 @@ fn new_aarch64_topology(
                 mpidr,
                 gicr: gic_redistributors_base
                     + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
-                pmu_gsiv,
+                pmu_gsiv: gic.pmu_gsiv,
             }
         }))
         .context("failed to construct the processor topology")
@@ -1731,16 +1730,11 @@ async fn new_underhill_vm(
 
     #[cfg(guest_arch = "aarch64")]
     let processor_topology = {
-        new_aarch64_topology(
-            boot_info
-                .gic
-                .context("did not get gic state from bootloader")?,
-            &boot_info.cpus,
-            boot_info
-                .pmu_gsiv
-                .context("did not get pmu gsiv from bootloader")?,
-        )
-        .context("failed to construct the processor topology")?
+        let platform = boot_info
+            .gic
+            .context("did not get gic state from bootloader")?;
+        new_aarch64_topology(platform, &boot_info.cpus)
+            .context("failed to construct the processor topology")?
     };
 
     // also construct the VMGS nice and early, as much like the GET, it also
@@ -2340,12 +2334,14 @@ async fn new_underhill_vm(
                 mem_layout: &mem_layout,
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
-                with_ioapic: true, // underhill always runs with ioapic
-                with_pic: true,    // pcat always runs with pic and pit
-                with_pit: true,
-                with_psp: dps.general.psp_enabled,
-                pm_base: PM_BASE,
-                acpi_irq: SYSTEM_IRQ_ACPI,
+                arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                    with_ioapic: true, // openhcl always runs with ioapic
+                    with_pic: true,    // pcat always runs with pic and pit
+                    with_pit: true,
+                    with_psp: dps.general.psp_enabled,
+                    pm_base: PM_BASE,
+                    acpi_irq: SYSTEM_IRQ_ACPI,
+                },
             };
 
             let config = firmware_pcat::config::PcatBiosConfig {

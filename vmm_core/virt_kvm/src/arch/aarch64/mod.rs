@@ -618,9 +618,12 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
         // TODO: Save the GICv3 FD to a File to ensure it is cleaned up.
         self.add_gicv3()?;
 
-        // Use the Hyper-V timers instead of the ARM architectural ones. TODO:
-        // make this configurable.
-        self.set_timer_ppis(20, 19)?;
+        // Configure the virtual timer PPI from topology. KVM also requires
+        // a physical timer PPI, but we don't expose it to the guest.
+        self.set_timer_ppis(
+            self.config.processor_topology.virt_timer_ppi(),
+            19, // KVM requires this; unused by the guest
+        )?;
 
         let caps = {
             let supports_aarch32_el0 = {

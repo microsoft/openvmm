@@ -20,6 +20,8 @@ membacking.workspace = true
 memory_range = { workspace = true, features = ["mesh"] }
 vm_topology = { workspace = true, features = ["mesh"] }
 guestmem.workspace = true
+uefi_specs.workspace = true
+crc32fast.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 vmgs_resources.workspace = true
