@@ -23,11 +23,7 @@ use file_loader::IgvmVtlLoader;
 use igvm::IgvmFile;
 use igvm::IgvmPlatformHeader;
 use igvm_defs::IGVM_FIXED_HEADER;
-use igvm_defs::IGVM_VHS_CORIM_DOCUMENT;
-use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
-use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
 use igvm_defs::IgvmPlatformType;
-use igvm_defs::IgvmVariableHeaderType;
 use igvm_defs::SnpPolicy;
 use igvm_defs::TdxPolicy;
 use igvmfilegen_config::Config;
@@ -483,11 +479,12 @@ fn dump_corim_headers(
     platform_filter: Option<Platform>,
     output_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    use std::mem::size_of;
-
     let image = fs_err::read(file_path).context("reading input file")?;
 
-    // Parse the fixed header
+    // Parse the IGVM file using the igvm crate's structured API.
+    let igvm_file = IgvmFile::new_from_binary(&image, None)
+        .map_err(|e| anyhow::anyhow!("Failed to parse IGVM file: {e}"))?;
+
     let fixed_header = IGVM_FIXED_HEADER::read_from_prefix(image.as_slice())
         .map_err(|_| anyhow::anyhow!("Invalid fixed header"))?
         .0;
@@ -501,64 +498,12 @@ fn dump_corim_headers(
         fs_err::create_dir_all(dir).context("creating output directory")?;
     }
 
-    // Calculate the variable header section location
-    let var_header_offset = fixed_header.variable_header_offset as usize;
-    let var_header_size = fixed_header.variable_header_size as usize;
-    let var_header_end = var_header_offset + var_header_size;
-
-    if var_header_end > image.len() {
-        bail!("Variable header section extends beyond file size");
-    }
-
-    let var_headers = &image[var_header_offset..var_header_end];
-
-    // Parse the platform headers from the raw binary to get the
-    // platform-type-to-compatibility-mask mapping. We walk the variable
-    // header section and collect IGVM_VHT_SUPPORTED_PLATFORM entries,
-    // stopping at the first non-platform header (per the IGVM spec,
-    // platform headers must appear before initialization and directive
-    // headers).
-    let mut platform_headers: Vec<IgvmPlatformHeader> = Vec::new();
-    {
-        let mut plat_offset = 0;
-        while plat_offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
-            let hdr = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[plat_offset..])
-                .map_err(|_| {
-                    anyhow::anyhow!("Failed to read variable header at offset {}", plat_offset)
-                })?
-                .0;
-
-            if hdr.typ != IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM {
-                break; // End of platform section
-            }
-
-            let data_offset = plat_offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
-            if data_offset + size_of::<IGVM_VHS_SUPPORTED_PLATFORM>() > var_headers.len() {
-                let expected_size =
-                    size_of::<IGVM_VHS_VARIABLE_HEADER>() + size_of::<IGVM_VHS_SUPPORTED_PLATFORM>();
-                let remaining = var_headers.len().saturating_sub(plat_offset);
-                bail!(
-                    "Truncated supported platform header at offset {}: expected at least {} bytes, but only {} bytes remain",
-                    plat_offset,
-                    expected_size,
-                    remaining
-                );
-            }
-
-            let plat = IGVM_VHS_SUPPORTED_PLATFORM::read_from_prefix(&var_headers[data_offset..])
-                .map_err(|_| anyhow::anyhow!("Failed to read supported platform header"))?
-                .0;
-            platform_headers.push(IgvmPlatformHeader::SupportedPlatform(plat));
-
-            let aligned_len = (hdr.length as usize + 7) & !7;
-            plat_offset = data_offset + aligned_len;
-        }
-    }
+    let platforms = igvm_file.platforms();
 
     // Print the supported platform table
-    if !platform_headers.is_empty() {
+    if !platforms.is_empty() {
         println!("Supported Platforms:");
-        for header in &platform_headers {
+        for header in platforms {
             match header {
                 IgvmPlatformHeader::SupportedPlatform(info) => {
                     println!(
@@ -573,156 +518,73 @@ fn dump_corim_headers(
 
     // Convert platform filter to compatibility mask using the file's actual mapping
     let platform_mask_filter = platform_filter
-        .map(|p| lookup_compatibility_mask(&platform_headers, IgvmPlatformType::from(p)))
+        .map(|p| lookup_compatibility_mask(platforms, IgvmPlatformType::from(p)))
         .transpose()?;
 
-    // Iterate through variable headers looking for CoRIM headers
-    let mut offset = 0;
+    // Iterate through initialization headers looking for CoRIM entries
     let mut document_count: u32 = 0;
     let mut signature_count: u32 = 0;
 
-    while offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
-        let header = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[offset..])
-            .map_err(|_| anyhow::anyhow!("Failed to read variable header at offset {}", offset))?
-            .0;
-
-        let header_data_offset = offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
-        let header_data_len = header.length as usize;
-
-        // Validate that the declared header data length fits within the variable-header section.
-        if header_data_offset > var_headers.len() {
-            anyhow::bail!(
-                "Variable header data offset {} at offset {} exceeds variable header section of length {}",
-                header_data_offset,
-                offset,
-                var_headers.len()
-            );
-        }
-
-        if header_data_len > var_headers.len() - header_data_offset {
-            anyhow::bail!(
-                "Variable header data length {} at offset {} exceeds remaining variable header section ({} bytes left)",
-                header_data_len,
-                offset,
-                var_headers.len() - header_data_offset
-            );
-        }
-
-        // Align to 8 bytes for next header, guarding against overflow.
-        let aligned_len = header_data_len.checked_add(7).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Variable header data length {} at offset {} is too large to align",
-                header_data_len,
-                offset
-            )
-        })? & !7;
-
-        let next_offset = header_data_offset.checked_add(aligned_len).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Next variable header offset would overflow for length {} at offset {}",
-                header_data_len,
-                offset
-            )
-        })?;
-
-        if next_offset > var_headers.len() {
-            anyhow::bail!(
-                "Variable header at offset {} with length {} extends past variable header section (next_offset={}, len={})",
-                offset,
-                header_data_len,
-                next_offset,
-                var_headers.len()
-            );
-        }
-        // Determine if this is a CoRIM header and which kind
-        let corim_kind = match header.typ {
-            IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT => {
-                Some((CorimHeaderType::Document, "Document", "cbor"))
-            }
-            IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE => {
-                Some((CorimHeaderType::Signature, "Signature", "cose"))
-            }
-            _ => None,
+    for header in igvm_file.initializations() {
+        let (kind, label, extension, compatibility_mask, payload) = match header {
+            igvm::IgvmInitializationHeader::CorimDocument {
+                compatibility_mask,
+                document,
+            } => (
+                CorimHeaderType::Document,
+                "Document",
+                "cbor",
+                *compatibility_mask,
+                document.as_slice(),
+            ),
+            igvm::IgvmInitializationHeader::CorimSignature {
+                compatibility_mask,
+                signature,
+            } => (
+                CorimHeaderType::Signature,
+                "Signature",
+                "cose",
+                *compatibility_mask,
+                signature.as_slice(),
+            ),
+            _ => continue,
         };
 
-        if let Some((kind, label, extension)) = corim_kind {
-            // Both IGVM_VHS_CORIM_DOCUMENT and IGVM_VHS_CORIM_SIGNATURE have
-            // identical binary layouts, so we can parse either as IGVM_VHS_CORIM_DOCUMENT.
-            if header_data_offset + size_of::<IGVM_VHS_CORIM_DOCUMENT>() <= var_headers.len() {
-                let corim_header =
-                    IGVM_VHS_CORIM_DOCUMENT::read_from_prefix(&var_headers[header_data_offset..])
-                        .map_err(|_| anyhow::anyhow!("Failed to read CoRIM {label} header"))?
-                        .0;
+        let show_type = header_type_filter.is_none_or(|t| t == kind);
+        let show_platform = platform_mask_filter.is_none_or(|mask| compatibility_mask & mask != 0);
 
-                let show_type = header_type_filter.is_none_or(|t| t == kind);
-                let show_platform = platform_mask_filter
-                    .is_none_or(|mask| corim_header.compatibility_mask & mask != 0);
-
-                if show_type && show_platform {
-                    let count = match kind {
-                        CorimHeaderType::Document => {
-                            document_count += 1;
-                            document_count
-                        }
-                        CorimHeaderType::Signature => {
-                            signature_count += 1;
-                            signature_count
-                        }
-                    };
-
-                    println!("CoRIM {label} Header #{count}:");
-                    println!(
-                        "  Header Type: 0x{:X} (IGVM_VHT_CORIM_{label})",
-                        header.typ.0,
-                        label = label.to_uppercase()
-                    );
-                    println!(
-                        "  Compatibility Mask: 0x{:X} ({})",
-                        corim_header.compatibility_mask,
-                        format_platform_mask(&platform_headers, corim_header.compatibility_mask)
-                    );
-                    println!(
-                        "  File Offset: 0x{:X} ({} bytes)",
-                        corim_header.file_offset, corim_header.file_offset
-                    );
-                    println!("  Size: {} bytes", corim_header.size_bytes);
-                    println!("  Reserved: 0x{:X}", corim_header.reserved);
-                    println!(
-                        "  Raw Header (hex): {}",
-                        corim_header
-                            .as_bytes()
-                            .iter()
-                            .map(|b| format!("{:02X}", b))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    );
-
-                    if let Some(ref dir) = output_dir {
-                        let payload_start = corim_header.file_offset as usize;
-                        let payload_end = payload_start + corim_header.size_bytes as usize;
-
-                        if payload_end <= image.len() {
-                            let payload = &image[payload_start..payload_end];
-                            let file_prefix = label.to_lowercase();
-                            let output_file =
-                                dir.join(format!("corim_{file_prefix}_{count}.{extension}"));
-                            fs_err::write(&output_file, payload).context(format!(
-                                "writing {label} payload to {}",
-                                output_file.display()
-                            ))?;
-                            println!("  Output: {}", output_file.display());
-                        } else {
-                            println!(
-                                "  Warning: Payload extends beyond file bounds, skipping extraction"
-                            );
-                        }
-                    }
-                    println!();
-                }
-            }
+        if !show_type || !show_platform {
+            continue;
         }
 
-        offset = next_offset;
+        let count = match kind {
+            CorimHeaderType::Document => {
+                document_count += 1;
+                document_count
+            }
+            CorimHeaderType::Signature => {
+                signature_count += 1;
+                signature_count
+            }
+        };
+
+        println!("CoRIM {label} Header #{count}:");
+        println!(
+            "  Compatibility Mask: 0x{compatibility_mask:X} ({})",
+            format_platform_mask(platforms, compatibility_mask)
+        );
+        println!("  Size: {} bytes", payload.len());
+
+        if let Some(ref dir) = output_dir {
+            let file_prefix = label.to_lowercase();
+            let output_file = dir.join(format!("corim_{file_prefix}_{count}.{extension}"));
+            fs_err::write(&output_file, payload).context(format!(
+                "writing {label} payload to {}",
+                output_file.display()
+            ))?;
+            println!("  Output: {}", output_file.display());
+        }
+        println!();
     }
 
     if document_count == 0 && signature_count == 0 {
