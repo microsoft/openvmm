@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use anyhow::Context;
-use futures::AsyncWrite;
 use futures::future::poll_fn;
 use hybrid_vsock::ConnectionRequest;
 use pal_async::driver::Driver;
@@ -11,11 +10,9 @@ use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::AsSockRef;
 use pal_async::socket::PollSocketReady;
-use pal_async::socket::PolledSocket;
 use parking_lot::Mutex;
 use std::io;
 use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -25,23 +22,22 @@ use std::sync::atomic::Ordering;
 use vmcore::vm_task::VmTaskDriver;
 
 pub struct UnixSocketRelay {
-    driver: VmTaskDriver,
     base_path: PathBuf,
 }
 
 impl UnixSocketRelay {
-    pub fn new(driver: VmTaskDriver, base_path: PathBuf) -> Self {
-        Self { driver, base_path }
+    pub fn new(base_path: PathBuf) -> Self {
+        Self { base_path }
     }
 
-    pub fn connect(&self, port: u32) -> anyhow::Result<RelaySocket> {
+    pub fn connect(&self, driver: &VmTaskDriver, port: u32) -> anyhow::Result<RelaySocket> {
         let request = ConnectionRequest::Port(port);
         let socket_path = request.host_uds_path(&self.base_path)?;
         let stream = UnixStream::connect(socket_path)
-            .with_context(|| "Failed to connect to Unix socket for vsock relay")?;
+            .context("Failed to connect to Unix socket for vsock relay")?;
 
-        let socket = RelaySocket::new(&self.driver, stream)
-            .with_context(|| "Failed to create relay socket for vsock relay")?;
+        let socket = RelaySocket::new(driver, stream)
+            .context("Failed to create relay socket for vsock relay")?;
 
         Ok(socket)
     }

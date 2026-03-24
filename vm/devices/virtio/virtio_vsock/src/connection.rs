@@ -35,8 +35,11 @@ use anyhow::Context;
 use bitfield_struct::bitfield;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
+use futures::future::Pending;
 use futures::io;
 use guestmem::GuestMemory;
+use hybrid_vsock::ConnectionRequest;
+use hybrid_vsock::HYBRID_CONNECT_REQUEST_LEN;
 use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PollReadyExt;
@@ -63,6 +66,7 @@ use vmcore::vm_task::VmTaskDriver;
 
 const TX_BUF_SIZE: u32 = 65536;
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A key that uniquely identifies a vsock connection.
 /// TODO: I think these need a sequence number since some futures could outlive the connection.
@@ -91,17 +95,22 @@ struct PendingReply {
     _reserved: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum ConnectionState {
-    Connecting,
+    PreHostConnect {
+        buffer: Box<[u8]>,
+        bytes_received: usize,
+    },
+    PostHostConnect,
+    GuestConnecting,
     Connected,
 }
 
 /// Tracks the state of a single vsock connection relayed to a Unix socket.
 struct Connection {
     key: ConnKey,
-    /// TODO: Some of this logically belongs in the ConnectionState. Though my life would be easier
-    /// if I just move everything out of there.
+    seq: u64,
+    state: ConnectionState,
     /// Buffer allocation advertised by the peer (guest).
     peer_buf_alloc: u32,
     /// Received data that the peer has forwarded from its buffer.
@@ -113,7 +122,6 @@ struct Connection {
     pending_reply: PendingReply,
     socket: RelaySocket,
     recv_buf: Option<RingBuffer>,
-    state: ConnectionState,
     timeout: Option<Instant>,
     send_shutdown: bool,
     receive_shutdown: bool,
@@ -123,6 +131,7 @@ struct Connection {
 impl Connection {
     fn new(
         key: ConnKey,
+        seq: u64,
         peer_buf_alloc: u32,
         peer_fwd_cnt: u32,
         pending_reply: PendingReply,
@@ -130,6 +139,7 @@ impl Connection {
     ) -> Self {
         Self {
             key,
+            seq,
             peer_buf_alloc,
             peer_fwd_cnt,
             tx_cnt: Wrapping(0),
@@ -138,8 +148,35 @@ impl Connection {
             pending_reply,
             socket,
             recv_buf: None,
-            state: ConnectionState::Connecting,
+            state: ConnectionState::GuestConnecting,
             timeout: None,
+            send_shutdown: false,
+            receive_shutdown: false,
+            local_send_shutdown: false,
+        }
+    }
+
+    fn new_pending(local_port: u32, seq: u64, socket: RelaySocket) -> Self {
+        Self {
+            key: ConnKey {
+                local_port,
+                // Not known yet.
+                peer_port: 0,
+            },
+            seq,
+            state: ConnectionState::PreHostConnect {
+                buffer: Box::new([0; HYBRID_CONNECT_REQUEST_LEN]),
+                bytes_received: 0,
+            },
+            peer_buf_alloc: 0,
+            peer_fwd_cnt: 0,
+            tx_cnt: Wrapping(0),
+            fwd_cnt: Wrapping(0),
+            last_sent_fwd_count: 0,
+            pending_reply: PendingReply::new(),
+            socket,
+            recv_buf: None,
+            timeout: Some(Instant::now() + CONNECTION_TIMEOUT),
             send_shutdown: false,
             receive_shutdown: false,
             local_send_shutdown: false,
@@ -343,6 +380,47 @@ impl Connection {
         Ok(packet)
     }
 
+    fn handle_read_connect(&mut self) -> anyhow::Result<bool> {
+        let ConnectionState::PreHostConnect {
+            buffer,
+            bytes_received,
+        } = &mut self.state
+        else {
+            panic!("handle_read_connect called in invalid state");
+        };
+
+        // TODO: Use the read that handles WouldBlock.
+        let n = self.socket.get().read(&mut buffer[*bytes_received..])?;
+        if n == 0 {
+            anyhow::bail!("host socket closed before connection request was fully read");
+        }
+
+        *bytes_received += n;
+        if buffer[*bytes_received - 1] != b'\n' {
+            if *bytes_received == buffer.len() {
+                anyhow::bail!("connect request too long");
+            }
+
+            tracing::trace!(
+                bytes_received,
+                "partial connect request received, waiting for more data"
+            );
+            return Ok(false);
+        }
+
+        let request = ConnectionRequest::parse_connect_request(&buffer[..*bytes_received - 1])
+            .context("failed to parse connect request")?;
+
+        let port = request.port().ok_or_else(|| {
+            anyhow::anyhow!("connect request using non-vsock format: {request:?}")
+        })?;
+
+        tracing::trace!(port, "host connect request received");
+        self.key.peer_port = port;
+        self.state = ConnectionState::PostHostConnect;
+        Ok(true)
+    }
+
     /// Calculate the peer's available buffer space based on the advertised buffer allocation, how
     /// much data we've sent, and how much the peer has forwarded from its buffer.
     fn peer_credit_available(&self) -> u32 {
@@ -393,6 +471,8 @@ pub struct ConnectionManager {
     guest_cid: u64,
     relay: UnixSocketRelay,
     conns: HashMap<ConnKey, Connection>,
+    pending_conns: HashMap<u64, Connection>,
+    next_seq: u64,
 }
 
 impl ConnectionManager {
@@ -401,23 +481,47 @@ impl ConnectionManager {
     /// `guest_cid` is the CID assigned to the guest.
     /// `base_path` is the directory path prefix for Unix sockets. For a vsock
     /// port P, the relay will try `<base_path>_P` first, then `<base_path>`.
-    pub fn new(
-        driver: VmTaskDriver,
-        guest_cid: u64,
-        base_path: PathBuf,
-        listener: Option<UnixListener>,
-    ) -> anyhow::Result<Self> {
-        let relay = Self {
+    pub fn new(guest_cid: u64, base_path: PathBuf) -> Self {
+        Self {
             guest_cid,
-            relay: UnixSocketRelay::new(driver, base_path),
+            relay: UnixSocketRelay::new(base_path),
             conns: HashMap::new(),
-        };
+            pending_conns: HashMap::new(),
+            next_seq: 0,
+        }
+    }
 
-        Ok(relay)
+    pub fn handle_host_connect(
+        &mut self,
+        driver: &VmTaskDriver,
+        stream: UnixStream,
+    ) -> anyhow::Result<(PendingWork, PendingWork)> {
+        let socket = RelaySocket::new(driver, stream)
+            .context("Failed to create relay socket for incoming host connection")?;
+        let seq = self.next_seq;
+        // TODO: Allocate a local port.
+
+        let conn = Connection::new_pending(1234, seq, socket);
+
+        let read_work =
+            PendingWork::rx(conn.socket.await_read_ready(RxWork::PendingConnection(seq)));
+
+        let mut timer = PolledTimer::new(driver);
+        let timeout_work = PendingWork::rx(Some(Box::pin(async move {
+            timer.sleep(CONNECTION_TIMEOUT).await;
+            RxWork::PendingConnection(seq)
+        })));
+
+        assert!(self.pending_conns.insert(seq, conn).is_none());
+        Ok((read_work, timeout_work))
     }
 
     /// Handle a packet received from the guest on the tx virtqueue.
-    pub fn handle_guest_tx(&mut self, packet: VsockPacket<'_>) -> PendingWork {
+    pub fn handle_guest_tx(
+        &mut self,
+        driver: &VmTaskDriver,
+        packet: VsockPacket<'_>,
+    ) -> PendingWork {
         let key = ConnKey::from_tx_packet(&packet.header);
 
         // Validate the packet. Only stream sockets are supported currently.
@@ -438,13 +542,15 @@ impl ConnectionManager {
             Operation::REQUEST => {
                 tracing::info!(?packet.header, "connect request");
                 // Guest is initiating a connection to a port on the host.
-                match self.relay.connect(key.local_port) {
+                match self.relay.connect(driver, key.local_port) {
                     Ok(socket) => {
                         // TODO: Handle existing connection
+                        let seq = self.get_next_seq();
                         self.conns.insert(
                             key,
                             Connection::new(
                                 key,
+                                seq,
                                 packet.header.buf_alloc,
                                 packet.header.fwd_cnt,
                                 PendingReply::new().with_respond(true),
@@ -462,6 +568,28 @@ impl ConnectionManager {
                         );
                         PendingWork::simple_rx(RxWork::SendReset(key))
                     }
+                }
+            }
+            Operation::RESPONSE => {
+                // Guest is accepting a host-initiated connection.
+                // Update credit info and mark connection as established.
+                let Some(conn) = self.conns.get_mut(&key) else {
+                    tracelimit::warn_ratelimited!(?key, "RESPONSE for unknown connection");
+                    return PendingWork::simple_rx(RxWork::SendReset(key));
+                };
+
+                conn.peer_buf_alloc = packet.header.buf_alloc;
+                conn.peer_fwd_cnt = packet.header.fwd_cnt;
+                conn.state = ConnectionState::Connected;
+                conn.timeout = None;
+
+                if conn.peer_credit_available() > 0 {
+                    PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(key)))
+                } else {
+                    // Peer sent a response with zero bytes available for some reason, so request
+                    // an update.
+                    conn.pending_reply.with_credit_request(true);
+                    PendingWork::simple_rx(RxWork::Connection(key))
                 }
             }
             Operation::RW => {
@@ -760,6 +888,49 @@ impl ConnectionManager {
                 // TODO: Check for socket data
                 (header, pending_work)
             }
+            RxWork::PendingConnection(seq) => {
+                let Some(conn) = self.pending_conns.get_mut(&seq) else {
+                    // This can happen if e.g. the timeout fires after the event connected.
+                    return (None, PendingWork::NONE);
+                };
+
+                if conn.timeout.map_or(false, |t| Instant::now() >= t) {
+                    tracing::debug!(seq, "pending connection timed out");
+                    self.pending_conns.remove(&seq);
+                    return (None, PendingWork::NONE);
+                }
+
+                let ready = match conn.handle_read_connect() {
+                    Ok(ready) => ready,
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            seq,
+                            "failed to read connect request from host socket"
+                        );
+                        self.pending_conns.remove(&seq);
+                        return (None, PendingWork::NONE);
+                    }
+                };
+
+                if ready {
+                    let conn = self.pending_conns.remove(&seq).unwrap();
+                    let key = conn.key;
+                    self.conns.insert(conn.key, conn);
+                    (
+                        Some(new_reply_packet(key, Operation::REQUEST, self.guest_cid, 0)),
+                        PendingWork::NONE,
+                    )
+                } else {
+                    // Not ready yet, so wait for more data.
+                    (
+                        None,
+                        PendingWork::rx(
+                            conn.socket.await_read_ready(RxWork::PendingConnection(seq)),
+                        ),
+                    )
+                }
+            }
             RxWork::SendReset(key) => {
                 // TODO: Check if the connection exists and remove it?
                 (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE)
@@ -914,6 +1085,12 @@ impl ConnectionManager {
         // }
         // packets
     }
+
+    fn get_next_seq(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        seq
+    }
 }
 
 /// Read a hybrid vsock connect request (`CONNECT <port>\n`) from a Unix socket.
@@ -1020,6 +1197,7 @@ async fn relay_data(
 
 pub enum RxWork {
     Connection(ConnKey),
+    PendingConnection(u64),
     // For port combinations that may not actually exist
     SendReset(ConnKey),
 }

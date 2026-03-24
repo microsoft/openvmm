@@ -30,18 +30,12 @@ impl ResolveResource<VirtioDeviceHandle, VirtioVsockHandle> for VirtioVsockResol
         resource: VirtioVsockHandle,
         input: VirtioResolveInput<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let listener = resource
-            .listener_path
-            .as_ref()
-            .map(UnixListener::bind)
-            .transpose()?;
-
         let device = VirtioVsockDevice::new(
             input.driver_source,
             resource.guest_cid,
-            PathBuf::from(&resource.uds_path),
-            listener,
-        );
+            resource.base_path.into(),
+            resource.listener,
+        )?;
         Ok(device.into())
     }
 }

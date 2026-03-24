@@ -8,6 +8,12 @@ use fs_err::PathExt;
 use guid::Guid;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
+
+/// The maximum length of a valid connect request. It could be shorter if it contains a port number
+/// instead of a service ID.
+pub const HYBRID_CONNECT_REQUEST_LEN: usize =
+    "CONNECT 00000000-facb-11e6-bd58-64006a7986d3\n".len();
 
 // This GUID is an embedding of the AF_VSOCK port into an AF_HYPERV service ID.
 const VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
@@ -79,6 +85,22 @@ impl ConnectionRequest {
 
         Ok(path.into())
     }
+
+    /// Parses a connection request from a buffer containing a UTF-8 string of the format "CONNECT <port or service ID>\n".
+    pub fn parse_connect_request(buf: &[u8]) -> Result<Self, ParseError> {
+        let rest = buf
+            .strip_prefix(b"CONNECT ")
+            .ok_or(ParseError::MissingPrefix)?;
+
+        let rest = std::str::from_utf8(rest).map_err(ParseError::InvalidString)?;
+        if let Ok(port) = u32::from_str(rest) {
+            Ok(ConnectionRequest::Port(port))
+        } else if let Ok(service_id) = Guid::from_str(rest) {
+            Ok(ConnectionRequest::ServiceId(service_id))
+        } else {
+            Err(ParseError::InvalidFormat(rest.to_string()))
+        }
+    }
 }
 
 /// Error returned by [`ConnectionRequest::host_uds_path`].
@@ -90,4 +112,21 @@ pub enum UdsPathError {
     /// An I/O error occurred while checking for the listener.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+/// Error returned by [`ConnectionRequest::parse_connect_request`].
+#[derive(Debug, thiserror::Error)]
+pub enum ParseError {
+    /// The connect request did not contain a newline within the maximum expected length.
+    #[error("connect request did not fit")]
+    RequestTooLong,
+    /// The connect request did not start with the expected "CONNECT " prefix.
+    #[error("missing CONNECT prefix")]
+    MissingPrefix,
+    /// The connect request contained invalid UTF-8.
+    #[error("invalid UTF-8 in connect request")]
+    InvalidString(#[from] std::str::Utf8Error),
+    /// The connect request did not contain a valid port number or service ID.
+    #[error("invalid port or service ID: {0}")]
+    InvalidFormat(String),
 }

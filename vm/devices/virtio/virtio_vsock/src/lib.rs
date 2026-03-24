@@ -35,11 +35,14 @@ use guestmem::LockedRange;
 use guestmem::LockedRangeImpl;
 use guestmem::ranges::PagedRange;
 use inspect::InspectMut;
+use pal_async::socket::PolledSocket;
 use pal_async::wait::PolledWait;
 use spec::VsockConfig;
 use spec::VsockHeader;
+use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::Poll;
@@ -70,10 +73,6 @@ const EVENT_QUEUE_INDEX: usize = 2;
 #[derive(InspectMut)]
 pub struct VirtioVsockDevice {
     guest_cid: u64,
-    #[inspect(skip)]
-    base_path: PathBuf,
-    #[inspect(skip)]
-    listener: Option<UnixListener>,
     driver: VmTaskDriver,
     #[inspect(skip)]
     worker: TaskControl<VsockWorker, VsockWorkerState>,
@@ -97,21 +96,24 @@ impl VirtioVsockDevice {
         driver_source: &VmTaskDriverSource,
         guest_cid: u64,
         base_path: PathBuf,
-        listener: Option<UnixListener>,
-    ) -> Self {
-        Self {
+        listener: UnixListener,
+    ) -> anyhow::Result<Self> {
+        let driver = driver_source.simple();
+        let listener = PolledSocket::new(&driver, listener)
+            .context("failed to create polled socket for vsock relay listener")?;
+        Ok(Self {
             guest_cid,
-            base_path,
-            listener,
-            driver: driver_source.simple(),
+            driver: driver.clone(),
             worker: TaskControl::new(VsockWorker {
                 work: FuturesUnordered::new(),
                 write_ready_work: FuturesUnordered::new(),
-                driver: driver_source.simple(),
+                driver,
+                connections: ConnectionManager::new(guest_cid, base_path),
+                listener,
             }),
             started_queues: [const { None }; QUEUE_COUNT],
             stopped_queue_count: 0,
-        }
+        })
     }
 }
 
@@ -174,18 +176,10 @@ impl VirtioDevice for VirtioVsockDevice {
 
         self.started_queues[idx as usize] = Some(queue);
         if self.started_queues.iter().all(|q| q.is_some()) {
-            let relay = ConnectionManager::new(
-                self.driver.clone(),
-                self.guest_cid,
-                self.base_path.clone(),
-                self.listener.take(),
-            )?;
-
             let state = VsockWorkerState {
                 rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap(),
                 event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
-                relay,
                 memory: resources.guest_memory.clone(),
             };
 
@@ -224,7 +218,6 @@ struct VsockWorkerState {
     tx_queue: VirtioQueue,
     #[allow(dead_code)] // Required by the spec but not actively polled.
     event_queue: VirtioQueue,
-    relay: ConnectionManager,
     memory: GuestMemory,
 }
 
@@ -270,6 +263,8 @@ struct VsockWorker {
     work: RxWorkQueue,
     write_ready_work: FuturesUnordered<WriteReadyItem>,
     driver: VmTaskDriver,
+    connections: ConnectionManager,
+    listener: PolledSocket<UnixListener>,
 }
 
 impl VsockWorker {
@@ -314,9 +309,8 @@ impl VsockWorker {
             )?;
 
             // Process through the relay.
-            state
-                .relay
-                .handle_guest_tx(VsockPacket::new(header, &locked.get().0))
+            self.connections
+                .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
         };
 
         self.queue_pending_work(pending_work);
@@ -356,8 +350,7 @@ impl VsockWorker {
             .expect("queue was already checked to have items");
 
         let (header, pending_work) =
-            state
-                .relay
+            self.connections
                 .get_rx_packet(&state.memory, &self.driver, &work.payload, rx_work);
         if let Some(header) = header {
             tracing::info!(?header, "sending reply");
@@ -418,8 +411,9 @@ impl VsockWorker {
         // }
     }
 
-    fn handle_write_ready(&mut self, state: &mut VsockWorkerState, key: ConnKey) {
-        self.queue_pending_work(state.relay.handle_write_ready(key));
+    fn handle_write_ready(&mut self, key: ConnKey) {
+        let pending_work = self.connections.handle_write_ready(key);
+        self.queue_pending_work(pending_work);
     }
 }
 
@@ -433,9 +427,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
             .until_stopped(async {
                 loop {
                     enum Event {
-                        TxWork(std::io::Result<VirtioQueueCallbackWork>),
+                        TxWork(io::Result<VirtioQueueCallbackWork>),
                         RxWork(RxWork),
                         WriteReady(ConnKey),
+                        Accept(io::Result<UnixStream>),
                         Retry,
                     }
 
@@ -470,6 +465,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             return Poll::Ready(Event::Retry);
                         }
 
+                        if let Poll::Ready(result) = self.listener.poll_accept(cx) {
+                            return Poll::Ready(Event::Accept(result.map(|(stream, _)| stream)));
+                        }
+
                         Poll::Pending
                     })
                     .await;
@@ -490,7 +489,30 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             self.handle_rx_work(state, work);
                         }
                         Event::WriteReady(key) => {
-                            self.handle_write_ready(state, key);
+                            self.handle_write_ready(key);
+                        }
+                        Event::Accept(Err(err)) => {
+                            tracing::error!(
+                                error = &err as &dyn std::error::Error,
+                                "error accepting host connections"
+                            );
+
+                            return false;
+                        }
+                        Event::Accept(Ok(stream)) => {
+                            tracing::trace!("host unix socket accepted");
+                            match self.connections.handle_host_connect(&self.driver, stream) {
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        "error handling Unix socket connect"
+                                    );
+                                }
+                                Ok((read_work, timeout_work)) => {
+                                    self.queue_pending_work(read_work);
+                                    self.queue_pending_work(timeout_work);
+                                }
+                            }
                         }
                         Event::Retry => (),
                     }

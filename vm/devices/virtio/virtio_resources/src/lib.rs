@@ -152,6 +152,7 @@ pub mod console {
 
 pub mod vsock {
     use mesh::MeshPayload;
+    use std::os::unix::net::UnixListener;
     use vm_resource::ResourceId;
     use vm_resource::kind::VirtioDeviceHandle;
 
@@ -159,12 +160,11 @@ pub mod vsock {
     pub struct VirtioVsockHandle {
         /// The guest context ID (CID).
         pub guest_cid: u64,
-        /// Base path for Unix domain socket relay. For a vsock port P, the
-        /// relay will try `<uds_path>_P` then `<uds_path>`.
-        pub uds_path: String,
-        /// Optional path for a listener socket that accepts host-initiated
-        /// connections using the hybrid vsock connect protocol.
-        pub listener_path: Option<String>,
+        /// Base path for Unix domain socket relay. The relay will listen on this path, and allow
+        /// host application to listen using this path appended with either the port number or a
+        /// corresponding service ID.
+        pub base_path: String,
+        pub listener: UnixListener,
     }
 
     impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {

@@ -1639,12 +1639,13 @@ async fn vm_config_from_command_line(
         }
     }
 
+    let listener = vsock_listener(Some("/tmp/vsock"))?.unwrap();
     add_virtio_device(
         VirtioBusCli::Auto,
         virtio_resources::vsock::VirtioVsockHandle {
             guest_cid: 0x123,
-            uds_path: "/tmp/vsock".into(),
-            listener_path: None,
+            base_path: "/tmp/vsock".into(),
+            listener,
         }
         .into_resource(),
     );

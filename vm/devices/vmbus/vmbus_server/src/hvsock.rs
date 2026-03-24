@@ -16,6 +16,8 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
+use hybrid_vsock::ConnectionRequest;
+use hybrid_vsock::HYBRID_CONNECT_REQUEST_LEN;
 use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
 use pal_async::socket::PolledSocket;
@@ -176,7 +178,7 @@ impl ListenerWorker {
 
     async fn spawn_relay(&self, connection: UnixStream) -> anyhow::Result<Task<()>> {
         let mut socket = PolledSocket::new(self.inner.driver.as_ref(), connection)?;
-        let (service_id, format) = read_hybrid_vsock_connect(&mut socket).await?;
+        let request = read_hybrid_vsock_connect(&mut socket).await?;
 
         let instance_id = Guid::new_random();
         let mut offer = Offer::new(
@@ -184,7 +186,7 @@ impl ListenerWorker {
             self.inner.vmbus.as_ref(),
             OfferParams {
                 interface_name: "hvsocket_connect".into(),
-                interface_id: service_id,
+                interface_id: request.service_id(),
                 instance_id,
                 channel_type: ChannelType::HvSocket {
                     is_connect: true,
@@ -207,7 +209,7 @@ impl ListenerWorker {
 
         let pipe = BytePipe::new(channel).context("failed to create vmbus pipe")?;
 
-        tracing::debug!(%service_id, endpoint_id = %instance_id, "connected host to guest");
+        tracing::debug!(service_id = %request.service_id(), endpoint_id = %instance_id, "connected host to guest");
 
         let task = self
             .inner
@@ -217,13 +219,13 @@ impl ListenerWorker {
                 let _offer = offer;
 
                 // Notify the client that connection was successful.
-                let s = match format {
-                    ServiceIdFormat::Vsock => format!("OK {}\n", instance_id.data1),
-                    ServiceIdFormat::HyperV => format!("OK {}\n", instance_id),
+                let s = match request {
+                    ConnectionRequest::Port(_) => format!("OK {}\n", instance_id.data1),
+                    ConnectionRequest::ServiceId(_) => format!("OK {}\n", instance_id),
                 };
                 if let Err(err) = socket.write_all(s.as_bytes()).await {
                     tracing::error!(
-                        %service_id,
+                        service_id = %request.service_id(),
                         error = &err as &dyn std::error::Error,
                         "failed to write OK response"
                     );
@@ -231,12 +233,12 @@ impl ListenerWorker {
 
                 if let Err(err) = relay_connected(pipe, socket).await {
                     tracing::error!(
-                        %service_id,
+                        service_id = %request.service_id(),
                         error = &err as &dyn std::error::Error,
                         "connection relay failed"
                     );
                 } else {
-                    tracing::debug!(%service_id, "connection relay finished");
+                    tracing::debug!(service_id = %request.service_id(), "connection relay finished");
                 }
             });
 
@@ -244,16 +246,10 @@ impl ListenerWorker {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum ServiceIdFormat {
-    Vsock,
-    HyperV,
-}
-
 async fn read_hybrid_vsock_connect(
     socket: &mut PolledSocket<UnixStream>,
-) -> anyhow::Result<(Guid, ServiceIdFormat)> {
-    let mut buf = [0; "CONNECT 00000000-facb-11e6-bd58-64006a7986d3\n".len()];
+) -> anyhow::Result<ConnectionRequest> {
+    let mut buf = [0; HYBRID_CONNECT_REQUEST_LEN];
     let mut i = 0;
     while i == 0 || buf[i - 1] != b'\n' {
         if i == buf.len() {
@@ -269,28 +265,9 @@ async fn read_hybrid_vsock_connect(
         i += n;
     }
 
-    let rest = buf[..i - 1]
-        .strip_prefix(b"CONNECT ")
-        .or_else(|| buf[..i - 1].strip_prefix(b"connect "))
-        .context("invalid connect request")?;
-
-    let rest = std::str::from_utf8(rest).context("invalid connect request")?;
-    let (service_id, format) = if let Ok(port) = rest.parse::<u32>() {
-        (
-            Guid {
-                data1: port,
-                ..VSOCK_TEMPLATE
-            },
-            ServiceIdFormat::Vsock,
-        )
-    } else if let Ok(service_id) = rest.parse::<Guid>() {
-        (service_id, ServiceIdFormat::HyperV)
-    } else {
-        anyhow::bail!("invalid port or service ID: {}", rest);
-    };
-
-    tracing::debug!(%service_id, ?format, "got hybrid connect request");
-    Ok((service_id, format))
+    let request = ConnectionRequest::parse_connect_request(&buf[..i - 1])?;
+    tracing::debug!(?request, "got hybrid connect request");
+    Ok(request)
 }
 
 struct PendingConnection {
@@ -312,10 +289,6 @@ impl Drop for PendingConnection {
             .send(HvsockConnectResult::from_request(&self.request, false));
     }
 }
-
-// This GUID is an embedding of the AF_VSOCK port into an
-// AF_HYPERV service ID.
-static VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
 
 struct HvsockRelayWorker {
     guest_send: mesh::Sender<HvsockConnectResult>,
@@ -418,7 +391,7 @@ impl RelayInner {
         // channel with the guest has been established, since that's a
         // failure-prone operation and we don't want the host to see a broken
         // connection.
-        let vsock_request = hybrid_vsock::ConnectionRequest::ServiceId(request.service_id);
+        let vsock_request = ConnectionRequest::ServiceId(request.service_id);
         let path = vsock_request.host_uds_path(base_path)?;
 
         let mut offer = Offer::new(
