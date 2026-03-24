@@ -4,6 +4,7 @@
 use anyhow::Context;
 use futures::AsyncWrite;
 use futures::future::poll_fn;
+use hybrid_vsock::ConnectionRequest;
 use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::interest::InterestSlot;
@@ -34,13 +35,11 @@ impl UnixSocketRelay {
     }
 
     pub fn connect(&self, port: u32) -> anyhow::Result<RelaySocket> {
-        let socket_path = format!("{}_{}", self.base_path.to_str().unwrap(), port);
-        tracing::info!(
-            "Connecting to Unix socket for vsock relay: {:?}",
-            socket_path
-        );
+        let request = ConnectionRequest::Port(port);
+        let socket_path = request.host_uds_path(&self.base_path)?;
         let stream = UnixStream::connect(socket_path)
             .with_context(|| "Failed to connect to Unix socket for vsock relay")?;
+
         let socket = RelaySocket::new(&self.driver, stream)
             .with_context(|| "Failed to create relay socket for vsock relay")?;
 

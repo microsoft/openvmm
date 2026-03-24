@@ -9195,6 +9195,7 @@ dependencies = [
  "event-listener",
  "futures",
  "guestmem",
+ "hybrid_vsock",
  "inspect",
  "mesh",
  "open_enum",
