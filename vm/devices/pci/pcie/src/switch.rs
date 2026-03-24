@@ -321,12 +321,11 @@ impl GenericPcieSwitch {
             }
 
             if downstream_bus_range.contains(&bus) {
-                return Some(downstream_port.port.forward_cfg_read_with_routing(
-                    &bus,
-                    &function,
-                    cfg_offset,
-                    value,
-                ));
+                return Some(
+                    downstream_port
+                        .port
+                        .forward_cfg_read_with_routing(&bus, &function, cfg_offset, value),
+                );
             }
         }
 
@@ -351,12 +350,11 @@ impl GenericPcieSwitch {
             }
 
             if downstream_bus_range.contains(&bus) {
-                return Some(downstream_port.port.forward_cfg_write_with_routing(
-                    &bus,
-                    &function,
-                    cfg_offset,
-                    value,
-                ));
+                return Some(
+                    downstream_port
+                        .port
+                        .forward_cfg_write_with_routing(&bus, &function, cfg_offset, value),
+                );
             }
         }
 
@@ -426,8 +424,21 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
-        self.route_cfg_read(bus, function, offset, value)
-            .unwrap_or(IoResult::Ok)
+        if let Some(result) = self.route_cfg_read(bus, function, offset, value) {
+            return result;
+        }
+
+        // Routing didn't handle this access. If the bus is outside the
+        // downstream routing range, this is a Type 0 access targeting the
+        // switch's own upstream port config space.
+        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
+        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+            if function == 0 {
+                return self.upstream_port.cfg_space.read_u32(offset, value);
+            }
+        }
+
+        IoResult::Ok
     }
 
     fn pci_cfg_write_with_routing(
@@ -437,8 +448,21 @@ impl PciConfigSpace for GenericPcieSwitch {
         offset: u16,
         value: u32,
     ) -> IoResult {
-        self.route_cfg_write(bus, function, offset, value)
-            .unwrap_or(IoResult::Ok)
+        if let Some(result) = self.route_cfg_write(bus, function, offset, value) {
+            return result;
+        }
+
+        // Routing didn't handle this access. If the bus is outside the
+        // downstream routing range, this is a Type 0 access targeting the
+        // switch's own upstream port config space.
+        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
+        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+            if function == 0 {
+                return self.upstream_port.cfg_space.write_u32(offset, value);
+            }
+        }
+
+        IoResult::Ok
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -939,5 +963,104 @@ mod tests {
             switch_with_hotplug.name().as_ref(),
             "test-switch-with-hotplug"
         );
+    }
+
+    /// Adapts a `GenericPcieSwitch` to the `GenericPciBusDevice` trait so it
+    /// can be attached to a downstream port as a linked device in tests.
+    struct SwitchAdapter(GenericPcieSwitch);
+
+    impl GenericPciBusDevice for SwitchAdapter {
+        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+            Some(PciConfigSpace::pci_cfg_read(&mut self.0, offset, value))
+        }
+
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+            Some(PciConfigSpace::pci_cfg_write(&mut self.0, offset, value))
+        }
+
+        fn pci_cfg_read_with_routing(
+            &mut self,
+            bus: u8,
+            function: u8,
+            offset: u16,
+            value: &mut u32,
+        ) -> Option<IoResult> {
+            Some(
+                self.0
+                    .pci_cfg_read_with_routing(bus, function, offset, value),
+            )
+        }
+
+        fn pci_cfg_write_with_routing(
+            &mut self,
+            bus: u8,
+            function: u8,
+            offset: u16,
+            value: u32,
+        ) -> Option<IoResult> {
+            Some(
+                self.0
+                    .pci_cfg_write_with_routing(bus, function, offset, value),
+            )
+        }
+    }
+
+    #[test]
+    fn test_switch_enumeration_through_port() {
+        use crate::port::PcieDownstreamPort;
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let mut port = PcieDownstreamPort::new(
+            "root-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+        );
+
+        // Configure the root port's bus range: secondary=1, subordinate=10
+        port.cfg_space
+            .write_u32(0x18, (10u32 << 16) | (1u32 << 8))
+            .unwrap();
+
+        // Create and attach a switch behind the port
+        let switch = GenericPcieSwitch::new(GenericPcieSwitchDefinition {
+            name: "test-switch".into(),
+            downstream_port_count: 2,
+            hotplug: false,
+        });
+
+        port.link = Some(("switch".into(), Box::new(SwitchAdapter(switch))));
+
+        // Type 0 config read to bus 1 (secondary), function 0 — this should
+        // read the switch's upstream port config space and return its
+        // vendor/device ID.
+        let mut value = 0u32;
+        let result = port.forward_cfg_read_with_routing(&1, &0, 0x0, &mut value);
+        assert!(matches!(result, IoResult::Ok));
+
+        let expected = (UPSTREAM_SWITCH_PORT_DEVICE_ID as u32) << 16 | (VENDOR_ID as u32);
+        assert_eq!(
+            value, expected,
+            "Type 0 access to bus 1 function 0 must read the switch's upstream port"
+        );
+
+        // Non-zero function on the same bus should return no device (switch
+        // upstream port is single-function).
+        let mut value2 = 0u32;
+        let result2 = port.forward_cfg_read_with_routing(&1, &1, 0x0, &mut value2);
+        assert!(matches!(result2, IoResult::Ok));
+        assert_eq!(value2, 0, "Non-zero function should return no data");
     }
 }

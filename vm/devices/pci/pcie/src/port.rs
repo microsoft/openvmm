@@ -374,6 +374,9 @@ mod tests {
         ));
 
         let mut value = 0;
+        // All accesses on the secondary bus go through
+        // pci_cfg_read_with_routing — the linked device is responsible
+        // for dispatching function 0 to its own config space.
         assert!(matches!(
             port.forward_cfg_read_with_routing(&1, &0, 0x10, &mut value),
             IoResult::Ok
@@ -423,6 +426,9 @@ mod tests {
             }),
         ));
 
+        // All accesses on the secondary bus go through
+        // pci_cfg_write_with_routing — the linked device is responsible
+        // for dispatching function 0 to its own config space.
         assert!(matches!(
             port.forward_cfg_write_with_routing(&1, &0, 0x10, 0xAAAA_0000),
             IoResult::Ok
