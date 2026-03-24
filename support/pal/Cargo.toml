@@ -14,6 +14,7 @@ sandbox_tests = []
 [target.'cfg(windows)'.dependencies]
 headervec.workspace = true
 pal_event.workspace = true
+thiserror.workspace = true
 
 ntapi = { workspace = true, features = ["impl-default"] }
 socket2 = { workspace = true, features = ["all"] }
