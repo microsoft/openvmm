@@ -1450,13 +1450,7 @@ fn trace_tcp_packet(tcp: &TcpRepr<'_>, payload_len: usize, label: &str) {
             TcpControl::None => None,
         },
         seq = tcp.seq_number.0 as u32,
-        next_seq = (tcp.seq_number.0 as u32).wrapping_add(
-            payload_len as u32
-                + match tcp.control {
-                    TcpControl::Syn | TcpControl::Fin | TcpControl::Rst => 1u32,
-                    _ => 0,
-                },
-        ),
+        next_seq = (tcp.seq_number.0 as u32).wrapping_add((payload_len + tcp.control.len()) as u32),
         ack = tcp.ack_number.map(|a| a.0 as u32),
         window = tcp.window_len,
         payload_len,
