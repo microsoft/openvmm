@@ -752,6 +752,15 @@ impl Device {
         offer: &OfferParams,
         count: usize,
     ) -> anyhow::Result<()> {
+        // The `events` vector is sized to `max_subchannels + 1` at offer
+        // time, so any `count` larger than that means the caller supplied
+        // an invalid subchannel count. (ex. fuzz test save/restore)
+        anyhow::ensure!(
+            count <= self.events.len(),
+            "requested channel count ({count}) exceeds maximum ({})",
+            self.events.len(),
+        );
+
         // Offer new subchannels.
         let mut r = Ok(());
         for subchannel_idx in self.server_requests.len()..count {

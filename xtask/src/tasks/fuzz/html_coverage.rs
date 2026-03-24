@@ -4,9 +4,9 @@
 //! Glue to generate HTML LCOV-based coverage reports from `cargo-fuzz`
 //! `coverage.profdata` files.
 
+use super::cargo_fuzz::coverage_binary_path;
 use anyhow::Context;
 use std::path::Path;
-use std::path::PathBuf;
 
 pub(super) fn generate_html_coverage_report(
     ctx: &crate::XtaskCtx,
@@ -19,33 +19,14 @@ pub(super) fn generate_html_coverage_report(
         .join(target_name)
         .join("coverage.profdata");
 
-    // would be great if there was an easy way to find where the resulting
-    // `cargo fuzz coverage` bin gets dumped to... but this seems to work ok.
-    let coverage_bin = {
-        let mut coverage_bin: Option<PathBuf> = None;
-        for e in walkdir::WalkDir::new(ctx.root.join("target")) {
-            let e = e?;
-            if e.file_name() != target_name
-                || !e.path().components().any(|c| c.as_os_str() == "coverage")
-            {
-                continue;
-            }
-
-            // instead of immediately breaking, as a sanity check, keep looking
-            // for other matches, erroring out if there is a dupe (which would
-            // indicate that this logic needs some more tweaking)
-            if let Some(existing_bin) = &coverage_bin {
-                panic!(
-                    "xtask bug: found multiple potential coverage bins: {} and {}",
-                    existing_bin.display(),
-                    e.path().display()
-                )
-            } else {
-                coverage_bin = Some(e.into_path());
-            }
-        }
-        coverage_bin.expect("xtask bug: failed to find the coverage-instrumented fuzzer bin")
-    };
+    // Derive the coverage binary path using the same layout as cargo-fuzz:
+    //   target/<triple>/coverage/<triple>/release/<target_name>
+    let coverage_bin = coverage_binary_path(&ctx.root, target_name)?;
+    anyhow::ensure!(
+        coverage_bin.is_file(),
+        "xtask bug: coverage binary not found at {}. Was `cargo fuzz coverage` run first?",
+        coverage_bin.display()
+    );
 
     let llvm_tools_dir = 'llvm_tools_dir: {
         let output = std::process::Command::new("rustc")

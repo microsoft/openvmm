@@ -39,6 +39,7 @@
   - [Fuzzing](./dev_guide/tests/fuzzing.md)
     - [Running Fuzzers](./dev_guide/tests/fuzzing/running.md)
     - [Writing Fuzzers](./dev_guide/tests/fuzzing/writing.md)
+    - [NetVSP Fuzzing](./dev_guide/tests/fuzzing/netvsp.md)
 - [Developer Tools / Utilities](./dev_guide/dev_tools.md)
   - [`flowey`](./dev_guide/dev_tools/flowey.md)
     - [`Flowey Fundamentals`](./dev_guide/dev_tools/flowey/flowey_fundamentals.md)

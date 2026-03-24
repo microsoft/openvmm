@@ -118,3 +118,40 @@ impl CargoFuzzCommand {
         matches!(self, CargoFuzzCommand::Run { .. })
     }
 }
+
+/// Determine the coverage binary path using the same layout as `cargo-fuzz`.
+///
+/// `cargo fuzz coverage` places binaries at:
+///   `<repo>/target/<triple>/coverage/<triple>/release/<target_name>`
+pub(super) fn coverage_binary_path(repo_root: &Path, target_name: &str) -> anyhow::Result<PathBuf> {
+    let triple = host_triple()?;
+    Ok(repo_root
+        .join("target")
+        .join(&triple)
+        .join("coverage")
+        .join(&triple)
+        .join("release")
+        .join(target_name))
+}
+
+fn host_triple() -> anyhow::Result<String> {
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .context("failed to run `rustc -vV`")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`rustc -vV` failed with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+    let stdout = std::str::from_utf8(&output.stdout).context("rustc output was not utf-8")?;
+    for line in stdout.lines() {
+        if let Some(triple) = line.strip_prefix("host: ") {
+            return Ok(triple.to_owned());
+        }
+    }
+    anyhow::bail!("could not determine host triple from `rustc -vV` output")
+}

@@ -34,6 +34,7 @@ members = [
   "vm/devices/chipset/fuzz",
   "vm/devices/pci/pcie/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
+  "vm/devices/net/netvsp/fuzz",
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",

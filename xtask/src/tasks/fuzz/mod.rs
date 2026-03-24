@@ -14,6 +14,7 @@ use std::path::PathBuf;
 mod cargo_fuzz;
 mod html_coverage;
 mod init_from_template;
+mod netvsp;
 mod onefuzz_schema;
 mod parse_fuzz_crate_toml;
 
@@ -190,6 +191,22 @@ enum FuzzCommand {
         /// Extra args to forward to `cargo fuzz coverage`.
         #[clap(raw(true))]
         extra: Vec<String>,
+    },
+    /// Run all NetVSP fuzz targets as one campaign.
+    Netvsp {
+        /// Campaign duration per target, in minutes.
+        #[clap(default_value_t = 5)]
+        duration_minutes: u64,
+
+        /// The Rust toolchain to use. Defaults to the environment's default toolchain.
+        #[clap(long)]
+        toolchain: Option<String>,
+    },
+    /// Collect and merge coverage across all NetVSP fuzz targets.
+    NetvspCoverage {
+        /// The Rust toolchain to use for `cargo fuzz coverage`.
+        #[clap(long)]
+        toolchain: Option<String>,
     },
     /// Build fuzzers and construct a Onefuzz-ready drop folder.
     Onefuzz {
@@ -385,6 +402,16 @@ impl Xtask for Fuzz {
                         &target_name,
                     )?;
                 }
+            }
+            FuzzCommand::Netvsp {
+                duration_minutes,
+                toolchain,
+            } => {
+                netvsp::run_netvsp_campaign(fuzz_targets, duration_minutes, toolchain)?;
+            }
+            FuzzCommand::NetvspCoverage { toolchain } => {
+                let nightly = netvsp::resolve_nightly_toolchain(toolchain.as_deref())?;
+                netvsp::run_netvsp_coverage(&ctx, fuzz_targets, &nightly)?;
             }
             FuzzCommand::Onefuzz {
                 target,
