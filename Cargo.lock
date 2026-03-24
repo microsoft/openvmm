@@ -972,8 +972,11 @@ dependencies = [
  "bitflags 2.9.3",
  "crossterm_winapi",
  "document-features",
+ "mio",
  "parking_lot",
  "rustix 1.0.8",
+ "signal-hook",
+ "signal-hook-mio",
  "winapi",
 ]
 
@@ -2082,6 +2085,7 @@ name = "flowey_lib_hvlite"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "flowey",
  "flowey_lib_common",
  "fs-err",
@@ -4374,6 +4378,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78bed444cc8a2160f01cbcf811ef18cac863ad68ae8ca62092e8db51d51c761c"
 dependencies = [
  "libc",
+ "log",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.59.0",
 ]
@@ -7092,6 +7097,17 @@ checksum = "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
 dependencies = [
  "libc",
  "signal-hook-registry",
+]
+
+[[package]]
+name = "signal-hook-mio"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b75a19a7a740b25bc7944bdee6172368f988763b744e3d4dfe753f6b4ece40cc"
+dependencies = [
+ "libc",
+ "mio",
+ "signal-hook",
 ]
 
 [[package]]
