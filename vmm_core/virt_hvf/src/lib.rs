@@ -148,7 +148,10 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             .collect::<Vec<_>>();
 
         let inner = Arc::new(HvfPartitionInner {
-            caps: Aarch64PartitionCapabilities {},
+            caps: Aarch64PartitionCapabilities {
+                // Apple Silicon does not support aarch32.
+                supports_aarch32_el0: false,
+            },
             vps: self
                 .config
                 .processor_topology

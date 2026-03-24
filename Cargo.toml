@@ -342,6 +342,7 @@ video_core = { path = "vm/devices/video_core" }
 vga = { path = "vm/devices/vga" }
 vga_proxy = { path = "vm/devices/vga_proxy" }
 virtio = { path = "vm/devices/virtio/virtio" }
+virtio_spec = { path = "vm/devices/virtio/virtio_spec" }
 virtio_blk = { path = "vm/devices/virtio/virtio_blk" }
 virtio_console = { path = "vm/devices/virtio/virtio_console" }
 virtio_p9 = { path = "vm/devices/virtio/virtio_p9" }

@@ -21,7 +21,7 @@ use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
 use petri::PetriVmBuilder;
 #[cfg(windows)]
-use petri::hyperv::HyperVPetriBackend;
+use petri::PetriVmmBackend;
 use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::PipetteClient;
 use petri::pipette::cmd;
@@ -39,9 +39,9 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
-#[cfg(windows)]
-use vmm_test_macros::hyperv_test;
 use vmm_test_macros::openvmm_test;
+#[cfg(windows)]
+use vmm_test_macros::vmm_test;
 
 /// Create a VPCI device config for an NVMe controller assigned to VTL2, with a single namespace.
 /// The namespace will be backed by either a file or a ramdisk, depending on whether
@@ -91,7 +91,7 @@ async fn test_storage_linux(
     controller_guid: Guid,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
-    const DEVICE_DISCOVER_RETRIES: u32 = 10;
+    const DEVICE_DISCOVER_RETRIES: u32 = 20;
     const DEVICE_DISCOVER_SLEEP_SECS: u64 = 3;
 
     let sh = agent.unix_shell();
@@ -294,8 +294,10 @@ async fn storvsp(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyh
 /// Test a Linux VM with a SCSI disk assigned to VTL2 and
 /// vmbus relay. This should expose one disk to VTL0 via vmbus.
 #[cfg(windows)]
-#[hyperv_test(openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
-async fn storvsp_hyperv(config: PetriVmBuilder<HyperVPetriBackend>) -> Result<(), anyhow::Error> {
+#[vmm_test(hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+async fn storvsp_hyperv<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
     let vtl2_lun = 5;
     let vtl0_scsi_lun = 0;
     let scsi_instance = Guid::new_random();

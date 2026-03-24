@@ -12,6 +12,12 @@ pub struct RestorePackagesCli {
     ///
     /// If none are specified, defaults to just the current host architecture.
     arch: Vec<CommonArchCli>,
+
+    /// Skip downloading released OpenHCL IGVM files used for compatibility testing.
+    ///
+    /// This avoids the need for `gh` CLI authentication.
+    #[clap(long)]
+    no_compat_igvm: bool,
 }
 
 impl IntoPipeline for RestorePackagesCli {
@@ -21,7 +27,11 @@ impl IntoPipeline for RestorePackagesCli {
         );
 
         let mut pipeline = Pipeline::new();
-        let (pub_last_release_igvm_files, _) = pipeline.new_artifact("last-release-igvm-files");
+        let pub_last_release_igvm_files = if self.no_compat_igvm {
+            None
+        } else {
+            Some(pipeline.new_artifact("last-release-igvm-files").0)
+        };
         let mut job = pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
@@ -59,7 +69,7 @@ impl IntoPipeline for RestorePackagesCli {
             |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
                 arches,
                 done: ctx.new_done_handle(),
-                release_artifact: ctx.publish_artifact(pub_last_release_igvm_files),
+                release_artifact: pub_last_release_igvm_files.map(|a| ctx.publish_artifact(a)),
             },
         );
         job.finish();

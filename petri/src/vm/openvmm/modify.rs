@@ -168,6 +168,30 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enable a virtio-net NIC for the VM backed by Consomme.
+    ///
+    /// This exposes a virtio-net device on a PCIe root port, suitable for
+    /// guests running virtio drivers (e.g. Linux with UEFI boot).
+    pub fn with_virtio_nic(mut self, port_name: &str) -> Self {
+        let endpoint =
+            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: port_name.to_string(),
+            resource: virtio_resources::VirtioPciDeviceHandle(
+                virtio_resources::net::VirtioNetHandle {
+                    max_queues: None,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                }
+                .into_resource(),
+            )
+            .into_resource(),
+        });
+
+        self
+    }
+
     /// Load with the specified VTL2 relocation mode.
     pub fn with_vtl2_relocation_mode(mut self, mode: Vtl2BaseAddressType) -> Self {
         let LoadMode::Igvm {

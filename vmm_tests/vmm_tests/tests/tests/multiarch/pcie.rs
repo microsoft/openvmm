@@ -217,6 +217,8 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
     assert_eq!(nsid_output, "1");
 
     // Confirm the MANA device shows up as an ethernet adapter
+    cmd!(sh, "ifconfig eth0 up").run().await?;
+    cmd!(sh, "udhcpc eth0").run().await?;
     let ifconfig_output = cmd!(sh, "ifconfig eth0").read().await?;
     assert!(ifconfig_output.contains("HWaddr 00:15:5D:12:12:12"));
 

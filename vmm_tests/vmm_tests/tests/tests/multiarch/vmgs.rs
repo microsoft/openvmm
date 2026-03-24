@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use vmgs_resources::GuestStateEncryptionPolicy;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Verify that UEFI default boots even if invalid boot entries exist
 /// when `default_boot_always_attempt` is enabled.
@@ -83,7 +83,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
 ///
 /// This test exists to ensure we are not getting a false positive for
 /// the `default_boot` and `clear_vmgs` test above.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
@@ -94,7 +94,7 @@ async fn clear_vmgs<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))[VMGS_WITH_BOOT_ENTRY]
-)]
+))]
 async fn invalid_boot_entries<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
     (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),

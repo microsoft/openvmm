@@ -13,7 +13,7 @@
 //! burette run -o report.json
 //!
 //! # Run only boot time test
-//! burette run --test boot_time -o report.json
+//! burette run --test boot-time -o report.json
 //!
 //! # Run with custom iteration count
 //! burette run --iterations 20 -o report.json
@@ -32,6 +32,21 @@ use report::MetricStats;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use tests::boot_time::BootProfile;
+use tests::network::NicBackend;
+
+/// Available performance tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum TestName {
+    /// Measures launch-to-pipette-connect time via Linux direct boot.
+    BootTime,
+    /// Measures boot time across concurrent VM counts.
+    ScaleBoot,
+    /// Measures VMM memory overhead.
+    Memory,
+    /// Network throughput via iperf3 (Alpine VM + Consomme).
+    Network,
+}
 
 /// Global log source for petri, initialized once.
 static LOG_SOURCE: OnceLock<petri::PetriLogSource> = OnceLock::new();
@@ -72,19 +87,17 @@ struct RunArgs {
     #[arg(long, default_value = "vmm_test_results/burette")]
     log_dir: PathBuf,
 
-    /// Run only a specific test (e.g. "boot_time"). Omit to run all.
+    /// Run only a specific test. Omit to run all.
     #[arg(long)]
-    test: Option<String>,
+    test: Option<TestName>,
 
     /// Override the number of iterations per test.
     #[arg(long)]
     iterations: Option<u32>,
 
     /// Boot time profile: defines the VM configuration to measure.
-    /// Available profiles: standard, quiet-serial, minimal, minimal-private.
-    /// Default: minimal-private (fastest).
     #[arg(long, default_value = "minimal-private")]
-    profile: String,
+    profile: BootProfile,
 
     /// Guest RAM in MiB. Default: 2048.
     #[arg(long, default_value = "2048")]
@@ -103,6 +116,15 @@ struct RunArgs {
     /// Maximum number of concurrent VMs for scale_boot sweep.
     #[arg(long, default_value = "64")]
     max_vms: u32,
+
+    /// NIC backend for the network test.
+    #[arg(long, default_value = "vmbus")]
+    nic: NicBackend,
+
+    /// Record `perf record -p <pid> -g` traces scoped to each iperf3 test,
+    /// saving per-test .data files in this directory. Linux only.
+    #[arg(long)]
+    perf_dir: Option<PathBuf>,
 }
 
 #[derive(clap::Args)]
@@ -123,6 +145,11 @@ struct PackageArgs {
     /// Output tarball path.
     #[arg(short, long, default_value = "burette_bundle.tar.gz")]
     output: PathBuf,
+
+    /// Keep debug symbols in ELF binaries (larger bundle, but
+    /// enables `perf report` symbol resolution).
+    #[arg(long)]
+    no_strip: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -166,47 +193,47 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
     std::fs::create_dir_all(&args.log_dir)
         .with_context(|| format!("failed to create log dir: {}", args.log_dir.display()))?;
 
-    let log_source =
-        petri::try_init_tracing(&args.log_dir).context("failed to initialize tracing")?;
+    let default_level = if args.diag {
+        tracing::level_filters::LevelFilter::DEBUG
+    } else {
+        tracing::level_filters::LevelFilter::INFO
+    };
+
+    let log_source = petri::try_init_tracing(&args.log_dir, default_level)
+        .context("failed to initialize tracing")?;
     LOG_SOURCE
         .set(log_source)
         .ok()
         .context("log source already initialized")?;
 
     // Determine which tests to run.
-    let available_tests = ["boot_time", "scale_boot", "memory"];
-    let tests_to_run: Vec<&str> = if let Some(ref name) = args.test {
-        if !available_tests.contains(&name.as_str()) {
-            anyhow::bail!(
-                "unknown test: {name}. Available tests: {}",
-                available_tests.join(", ")
-            );
-        }
-        vec![name.as_str()]
+    let all_tests = [
+        TestName::BootTime,
+        TestName::ScaleBoot,
+        TestName::Memory,
+        TestName::Network,
+    ];
+    let tests_to_run: Vec<TestName> = if let Some(name) = args.test {
+        vec![name]
     } else {
-        available_tests.to_vec()
+        all_tests.to_vec()
     };
 
     let mut all_stats: Vec<MetricStats> = Vec::new();
 
     for test_name in &tests_to_run {
-        match *test_name {
-            "boot_time" => {
-                let profile =
-                    tests::boot_time::BootProfile::from_name(&args.profile).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown profile '{}'. Available: {}",
-                            args.profile,
-                            tests::boot_time::BootProfile::all_names().join(", ")
-                        )
-                    })?;
-
+        match test_name {
+            TestName::BootTime => {
                 let artifacts = resolve_artifacts(tests::boot_time::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
-                let test =
-                    tests::boot_time::BootTimeTest::new(profile, args.diag, args.mem_mb, &resolver)
-                        .context("boot_time prep")?;
+                let test = tests::boot_time::BootTimeTest::new(
+                    args.profile,
+                    args.diag,
+                    args.mem_mb,
+                    &resolver,
+                )
+                .context("boot_time prep")?;
 
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
                     harness::run_cold_test(&test, &resolver, &driver, args.iterations).await
@@ -214,21 +241,12 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 .context("boot_time test failed")?;
                 all_stats.extend(stats);
             }
-            "scale_boot" => {
-                let profile =
-                    tests::boot_time::BootProfile::from_name(&args.profile).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown profile '{}'. Available: {}",
-                            args.profile,
-                            tests::boot_time::BootProfile::all_names().join(", ")
-                        )
-                    })?;
-
+            TestName::ScaleBoot => {
                 let artifacts = resolve_artifacts(tests::scale_boot::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
                 let test = tests::scale_boot::ScaleBootTest::new(
-                    profile,
+                    args.profile,
                     args.mem_mb,
                     args.vms.clone(),
                     args.max_vms,
@@ -242,20 +260,11 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 .context("scale_boot test failed")?;
                 all_stats.extend(stats);
             }
-            "memory" => {
-                let profile =
-                    tests::boot_time::BootProfile::from_name(&args.profile).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "unknown profile '{}'. Available: {}",
-                            args.profile,
-                            tests::boot_time::BootProfile::all_names().join(", ")
-                        )
-                    })?;
-
+            TestName::Memory => {
                 let artifacts = resolve_artifacts(tests::memory::register_artifacts)?;
                 let resolver = petri::ArtifactResolver::resolver(&artifacts);
 
-                let test = tests::memory::MemoryTest::new(profile, args.mem_mb, &resolver)
+                let test = tests::memory::MemoryTest::new(args.profile, args.mem_mb, &resolver)
                     .context("memory prep")?;
 
                 let stats = pal_async::DefaultPool::run_with(async |driver| {
@@ -264,7 +273,22 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                 .context("memory test failed")?;
                 all_stats.extend(stats);
             }
-            _ => unreachable!(),
+            TestName::Network => {
+                let test = tests::network::NetworkTest {
+                    diag: args.diag,
+                    nic: args.nic,
+                    perf_dir: args.perf_dir.clone(),
+                };
+
+                let artifacts = resolve_artifacts(tests::network::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                })
+                .context("network test failed")?;
+                all_stats.extend(stats);
+            }
         }
     }
 
@@ -287,42 +311,54 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
     let resolver =
         petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
 
-    // Resolve artifact paths via the standard resolver infrastructure.
+    let bundle_name = petri_artifact_resolver_openvmm_known_paths::resolve_bundle_name;
+
+    // Each entry: (artifact ID, resolved path, bundle-relative destination).
+    // Bundle destinations come from resolve_bundle_name, which returns the
+    // same file_name that get_path uses — so VMM_TESTS_CONTENT_DIR finds them.
+    let artifact_ids = [
+        petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
+        petri_artifacts_common::artifacts::PIPETTE_LINUX_X64.erase(),
+        petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase(),
+        petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
+        petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64.erase(),
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64.erase(),
+    ];
+
+    let mut files: Vec<(PathBuf, String)> = Vec::new();
+
+    // Add burette itself (not an artifact — it's our own binary).
     let burette_path =
         petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("burette")
             .context("failed to find burette binary")?;
-    let openvmm_path = resolver
-        .resolve(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase())
-        .context("failed to resolve openvmm binary")?;
-    let pipette_path = resolver
-        .resolve(petri_artifacts_common::artifacts::PIPETTE_LINUX_X64.erase())
-        .context("failed to resolve pipette binary")?;
-    let kernel_path = resolver
-        .resolve(
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase(),
-        )
-        .context("failed to resolve vmlinux kernel")?;
-    let initrd_path = resolver
-        .resolve(
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
-        )
-        .context("failed to resolve initrd")?;
+    files.push((burette_path, "burette".into()));
+
+    // Resolve each artifact and determine its bundle destination.
+    for id in artifact_ids {
+        let path = resolver
+            .resolve(id)
+            .with_context(|| format!("failed to resolve artifact {id:?}"))?;
+
+        let dest = if let Some(name) = bundle_name(id) {
+            name.to_string()
+        } else {
+            // VHD images: use the filename from the resolved path,
+            // which matches IsHostedOnHvliteAzureBlobStore::FILENAME.
+            path.file_name()
+                .context("artifact path has no filename")?
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        files.push((path, dest));
+    }
 
     // Stage files into a temporary directory.
     let staging = tempfile::tempdir().context("failed to create staging dir")?;
     let bundle = staging.path().join("burette_bundle");
 
-    // (source_path, relative destination in bundle)
-    let files: &[(&Path, &str)] = &[
-        (&burette_path, "burette"),
-        (&openvmm_path, "openvmm"),
-        (&pipette_path, "pipette"),
-        (&kernel_path, "x64/vmlinux"),
-        (&initrd_path, "x64/initrd"),
-    ];
-
     // Verify all source files exist.
-    for (path, name) in files {
+    for (path, name) in &files {
         anyhow::ensure!(
             path.exists(),
             "missing artifact: {} (expected at {})",
@@ -333,7 +369,7 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
 
     // Copy files into staging directory, stripping debug symbols from
     // ELF binaries to reduce tarball size.
-    for (src, name) in files {
+    for (src, name) in &files {
         let dest = bundle.join(name);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
@@ -341,8 +377,8 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         }
         std::fs::copy(src, &dest).with_context(|| format!("failed to copy {name}"))?;
 
-        // Strip if it looks like an ELF executable (not vmlinux/initrd).
-        if !name.contains('/') {
+        // Strip debug symbols from ELF executables to reduce tarball size.
+        if !args.no_strip && matches!(name.as_str(), "burette" | "openvmm" | "pipette") {
             let _ = std::process::Command::new("strip").arg(&dest).status();
         }
 

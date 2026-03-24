@@ -17,9 +17,8 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Tests for Hyper-V integration components.
 mod ic;
@@ -37,13 +36,13 @@ mod vmbus_relay;
 mod vmgs;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_x64(none),
     openvmm_openhcl_uefi_x64(none),
     openvmm_uefi_aarch64(none),
     hyperv_openhcl_uefi_aarch64(none),
     hyperv_openhcl_uefi_x64(none)
-)]
+))]
 async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config.run_without_agent().await?;
     vm.wait_for_clean_teardown().await?;
@@ -72,7 +71,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -133,10 +132,10 @@ async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 }
 
 /// Basic boot test without agent
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
     openvmm_pcat_x64(iso(freebsd_13_2_x64))
-)]
+))]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -158,11 +157,11 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -187,7 +186,7 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 /// Basic boot test with a single VP.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -269,7 +268,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
@@ -392,7 +391,7 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 
 /// Verify that secure boot fails with a mismatched template.
 /// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
@@ -406,7 +405,7 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-)]
+))]
 async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -424,14 +423,16 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test EFI diagnostics with no boot devices on OpenVMM.
+/// Test EFI diagnostics with no boot devices.
 /// TODO:
-///   - kmsg support in Hyper-V
-///   - openhcl_uefi_aarch64 support
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
-async fn efi_diagnostics_no_boot(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
+#[vmm_test_with(noagent(
+    hyperv_openhcl_uefi_x64(none),
+    hyperv_openhcl_uefi_aarch64(none),
+    openvmm_openhcl_uefi_x64(none)
+))]
+async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let vm = config.with_uefi_frontpage(true).run_without_agent().await?;
 
@@ -457,11 +458,11 @@ async fn efi_diagnostics_no_boot(
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_x64(guest_test_uefi_x64),
     openvmm_uefi_aarch64(guest_test_uefi_aarch64),
     openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
-)]
+))]
 async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()

@@ -7,6 +7,7 @@
 #![cfg(test)]
 
 use crate::DeviceTraits;
+use crate::DynVirtioDevice;
 use crate::PciInterruptModel;
 use crate::QueueResources;
 use crate::VirtioDevice;
@@ -1228,13 +1229,13 @@ impl VirtioDevice for FailingTestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         _idx: u16,
         _resources: QueueResources,
@@ -1244,12 +1245,8 @@ impl VirtioDevice for FailingTestDevice {
         anyhow::bail!("intentional enable failure for testing")
     }
 
-    fn poll_stop_queue(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-        _idx: u16,
-    ) -> std::task::Poll<Option<QueueState>> {
-        std::task::Poll::Ready(None)
+    async fn stop_queue(&mut self, _idx: u16) -> Option<QueueState> {
+        None
     }
 }
 
@@ -1259,7 +1256,6 @@ struct TestDevice {
     traits: DeviceTraits,
     queue_work: Option<TestDeviceQueueWorkFn>,
     driver: vmcore::vm_task::VmTaskDriver,
-    mem: GuestMemory,
     workers: Vec<TaskControl<TestDeviceTask, TestDeviceQueue>>,
 }
 
@@ -1268,13 +1264,11 @@ impl TestDevice {
         driver_source: &VmTaskDriverSource,
         traits: DeviceTraits,
         queue_work: Option<TestDeviceQueueWorkFn>,
-        mem: &GuestMemory,
     ) -> Self {
         Self {
             traits,
             queue_work,
             driver: driver_source.simple(),
-            mem: mem.clone(),
             workers: Vec::new(),
         }
     }
@@ -1285,13 +1279,13 @@ impl VirtioDevice for TestDevice {
         self.traits.clone()
     }
 
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -1307,7 +1301,7 @@ impl VirtioDevice for TestDevice {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.mem.clone(),
+            resources.guest_memory,
             resources.notify,
             queue_event,
             initial_state,
@@ -1334,21 +1328,17 @@ impl VirtioDevice for TestDevice {
         Ok(())
     }
 
-    fn poll_stop_queue(
-        &mut self,
-        cx: &mut std::task::Context<'_>,
-        idx: u16,
-    ) -> std::task::Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         let idx = idx as usize;
         if idx >= self.workers.len() || !self.workers[idx].has_state() {
-            return std::task::Poll::Ready(None);
+            return None;
         }
-        std::task::ready!(self.workers[idx].poll_stop(cx));
+        self.workers[idx].stop().await;
         let state = self.workers[idx].remove().queue.queue_state();
-        std::task::Poll::Ready(Some(state))
+        Some(state)
     }
 
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         self.workers.clear();
     }
 
@@ -1409,16 +1399,16 @@ impl VirtioPciTestDevice {
             Box::new(TestDevice::new(
                 &driver_source,
                 DeviceTraits {
-                    device_id: 3,
+                    device_id: VirtioDeviceType::CONSOLE,
                     device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                     max_queues: num_queues,
                     device_register_length: 12,
                     ..Default::default()
                 },
                 queue_work,
-                &mem,
             )),
             driver,
+            mem.clone(),
             PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
@@ -1460,16 +1450,16 @@ async fn verify_chipset_config(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2548,16 +2538,16 @@ async fn verify_device_queue_simple_inner(
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: features.clone(),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             Some(queue_work),
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2634,16 +2624,16 @@ async fn verify_device_multi_queue_inner(
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: features.clone(),
                 max_queues: num_queues + 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             Some(queue_work),
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2800,7 +2790,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
     let mut dev = VirtioMmioDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
@@ -2808,6 +2798,7 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         interrupt,
         Some(doorbell_registration),
         0,
@@ -2850,7 +2841,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 12,
@@ -2858,6 +2849,7 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         PciInterruptModel::Msix(msi_conn.target()),
         Some(doorbell_registration),
         &mut ExternallyManagedMmioIntercepts,
@@ -3531,7 +3523,7 @@ impl PartialFailTestDevice {
     fn new(max_queues: u16, fail_at: u16) -> Self {
         Self {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues,
                 device_register_length: 0,
@@ -3549,11 +3541,11 @@ impl VirtioDevice for PartialFailTestDevice {
     fn traits(&self) -> DeviceTraits {
         self.traits.clone()
     }
-    fn read_registers_u32(&mut self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         0
     }
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
-    fn start_queue(
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn start_queue(
         &mut self,
         idx: u16,
         _resources: QueueResources,
@@ -3566,15 +3558,11 @@ impl VirtioDevice for PartialFailTestDevice {
         self.started.push(idx);
         Ok(())
     }
-    fn poll_stop_queue(
-        &mut self,
-        _cx: &mut std::task::Context<'_>,
-        idx: u16,
-    ) -> std::task::Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         self.stopped.push(idx);
-        std::task::Poll::Ready(None)
+        None
     }
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         self.reset_count += 1;
     }
 }
@@ -3611,13 +3599,14 @@ struct MmioTestTransport {
 }
 
 impl MmioTestTransport {
-    fn new(device: Box<dyn VirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
+    fn new(device: Box<dyn DynVirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let interrupt = LineInterrupt::detached();
         let mut dev = VirtioMmioDevice::new(
             device,
             driver,
+            GuestMemory::empty(),
             interrupt,
             Some(doorbell_registration),
             0,
@@ -3676,7 +3665,7 @@ struct PciTestTransport {
 }
 
 impl PciTestTransport {
-    fn new(device: Box<dyn VirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
+    fn new(device: Box<dyn DynVirtioDevice>, driver: &DefaultDriver, num_queues: u16) -> Self {
         let test_mem = VirtioTestMemoryAccess::new();
         let doorbell_registration: Arc<dyn DoorbellRegistration> = test_mem;
         let msi_conn = MsiConnection::new();
@@ -3684,6 +3673,7 @@ impl PciTestTransport {
         let mut dev = VirtioPciDevice::new(
             device,
             driver,
+            GuestMemory::empty(),
             PciInterruptModel::Msix(msi_conn.target()),
             Some(doorbell_registration),
             &mut ExternallyManagedMmioIntercepts,
@@ -3965,7 +3955,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 12,
@@ -3974,9 +3964,9 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             Some(Arc::new(|_i, mut work: VirtioQueueCallbackWork| {
                 work.complete(42);
             })),
-            &mem,
         )),
         &driver,
+        mem,
         PciInterruptModel::IntX(pci_core::PciInterruptPin::IntA, line),
         Some(doorbell_registration),
         &mut ExternallyManagedMmioIntercepts,
@@ -4144,16 +4134,16 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt,
         Some(doorbell_registration.clone()),
         0,
@@ -4178,16 +4168,16 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver_source.simple(),
+        mem.clone(),
         interrupt2,
         Some(doorbell_registration),
         0,
@@ -4233,16 +4223,16 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new(), // no device-specific features
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver,
+        mem,
         PciInterruptModel::Msix(msi_conn.target()),
         None,
         &mut ExternallyManagedMmioIntercepts,
@@ -4267,7 +4257,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
     let mut dev = VirtioPciDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new(),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4275,6 +4265,7 @@ async fn pci_save_not_supported_device(_driver: DefaultDriver) {
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         PciInterruptModel::Msix(msi_conn.target()),
         None,
         &mut ExternallyManagedMmioIntercepts,
@@ -4295,7 +4286,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
     let mut dev = VirtioMmioDevice::new(
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new(),
                 max_queues: 1,
                 device_register_length: 0,
@@ -4303,6 +4294,7 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
             },
         }),
         &_driver,
+        GuestMemory::empty(),
         interrupt,
         None,
         0,
@@ -4386,16 +4378,16 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver,
+        mem.clone(),
         interrupt,
         Some(doorbell_registration.clone()),
         0,
@@ -4422,16 +4414,16 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Box::new(TestDevice::new(
             &driver_source,
             DeviceTraits {
-                device_id: 3,
+                device_id: VirtioDeviceType::CONSOLE,
                 device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
             },
             None,
-            &mem,
         )),
         &driver,
+        mem.clone(),
         interrupt2,
         Some(doorbell_registration),
         0,

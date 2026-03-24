@@ -23,10 +23,10 @@ use inspect_counters::Counter;
 use pal_async::wait::PolledWait;
 use scsi_buffers::RequestBuffers;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::StopTask;
@@ -62,7 +62,7 @@ pub struct VirtioBlkDevice {
 
 /// Persistent worker state. Survives across enable/disable cycles.
 ///
-/// Holds the disk backend, guest memory, stats counters, and the
+/// Holds the disk backend, stats counters, and the
 /// `FuturesUnordered` that tracks in-flight IOs. The IO futures
 /// live here (not in `BlkQueueState`) so they survive when the
 /// task is stopped — they're drained in `poll_disable()` before
@@ -70,8 +70,6 @@ pub struct VirtioBlkDevice {
 #[derive(Inspect)]
 struct BlkWorker {
     disk: Disk,
-    #[inspect(skip)]
-    memory: GuestMemory,
     read_only: bool,
     #[inspect(flatten)]
     stats: WorkerStats,
@@ -82,6 +80,7 @@ struct BlkWorker {
 /// Transient queue state, created in `enable()` and removed in `poll_disable()`.
 struct BlkQueueState {
     queue: VirtioQueue,
+    memory: GuestMemory,
 }
 
 #[derive(Inspect, Default)]
@@ -166,7 +165,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                     Completed(IoCompletion),
                 }
 
-                let event = std::future::poll_fn(|cx| {
+                let event = poll_fn(|cx| {
                     // Poll for completed IOs first to free up slots.
                     if let Poll::Ready(Some(completion)) = self.ios.poll_next_unpin(cx) {
                         return Poll::Ready(Event::Completed(completion));
@@ -185,7 +184,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
                 match event {
                     Event::NewWork(Ok(work)) => {
                         let disk = self.disk.clone();
-                        let mem = self.memory.clone();
+                        let mem = state.memory.clone();
                         let read_only = self.read_only;
                         self.ios.push(Box::pin(async move {
                             process_request(&disk, &mem, read_only, work).await
@@ -209,12 +208,7 @@ impl AsyncRun<BlkQueueState> for BlkWorker {
 
 impl VirtioBlkDevice {
     /// Creates a new virtio-blk device backed by the given disk.
-    pub fn new(
-        driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
-        disk: Disk,
-        read_only: bool,
-    ) -> Self {
+    pub fn new(driver_source: &VmTaskDriverSource, disk: Disk, read_only: bool) -> Self {
         let sector_count = disk.sector_count();
         let sector_size = disk.sector_size();
         let physical_sector_size = disk.physical_sector_size();
@@ -283,7 +277,6 @@ impl VirtioBlkDevice {
         Self {
             worker: TaskControl::new(BlkWorker {
                 disk,
-                memory,
                 read_only,
                 stats: WorkerStats::default(),
                 ios: FuturesUnordered::new(),
@@ -314,7 +307,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
 
         DeviceTraits {
-            device_id: VIRTIO_BLK_DEVICE_ID,
+            device_id: virtio::spec::VirtioDeviceType::BLK,
             device_features: VirtioDeviceFeatures::new()
                 .with_bank0(VirtioDeviceFeaturesBank0::new().with_device_specific(features)),
             max_queues: 1,
@@ -324,7 +317,7 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         // The transport reads the device config space as a sequence of u32s.
         // We serialize VirtioBlkConfig to bytes and return the requested
         // 4-byte window. Three cases:
@@ -346,11 +339,11 @@ impl VirtioDevice for VirtioBlkDevice {
         }
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {
         // Config space is read-only for virtio-blk.
     }
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
@@ -365,7 +358,7 @@ impl VirtioDevice for VirtioBlkDevice {
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.worker.task().memory.clone(),
+            resources.guest_memory.clone(),
             resources.notify,
             queue_event,
             initial_state,
@@ -375,26 +368,29 @@ impl VirtioDevice for VirtioBlkDevice {
         self.worker.insert(
             self.driver.clone(),
             "virtio-blk-worker",
-            BlkQueueState { queue },
+            BlkQueueState {
+                queue,
+                memory: resources.guest_memory,
+            },
         );
         self.worker.start();
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         assert_eq!(idx, 0);
         if !self.worker.has_state() {
-            return Poll::Ready(None);
+            return None;
         }
         // Stop the worker task (cancels the run loop via until_stopped).
-        ready!(self.worker.poll_stop(cx));
+        self.worker.stop().await;
         // Drain in-flight IOs to completion. The FuturesUnordered lives in
         // BlkWorker and survives the stop — its pending disk IO futures are
         // polled here until all descriptors are completed in the used ring.
-        ready!(self.worker.task_mut().poll_drain(cx));
+        poll_fn(|cx| self.worker.task_mut().poll_drain(cx)).await;
         // Remove the queue state (drops VirtioQueue).
         let state = self.worker.remove().queue.queue_state();
-        Poll::Ready(Some(state))
+        Some(state)
     }
 
     fn supports_save_restore(&self) -> bool {

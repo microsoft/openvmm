@@ -40,7 +40,6 @@ use pal_async::wait::PolledWait;
 use std::future::pending;
 use std::mem::offset_of;
 use std::sync::Arc;
-use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::InspectTaskMut;
@@ -228,7 +227,6 @@ struct Adapter {
 
 pub struct Device {
     registers: NetConfig,
-    memory: GuestMemory,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
@@ -271,7 +269,7 @@ impl VirtioDevice for Device {
             .with_host_tso6(host_tso6);
 
         DeviceTraits {
-            device_id: 1,
+            device_id: virtio::spec::VirtioDeviceType::NET,
             device_features: VirtioDeviceFeatures::new().with_bank(0, features_bank0.into_bits()),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
@@ -279,7 +277,7 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn read_registers_u32(&mut self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         match offset {
             0 => u32::from_le_bytes(self.registers.mac[..4].try_into().unwrap()),
             4 => {
@@ -298,22 +296,23 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn start_queue(
+    async fn start_queue(
         &mut self,
         idx: u16,
         resources: QueueResources,
         features: &VirtioDeviceFeatures,
         initial_state: Option<QueueState>,
     ) -> anyhow::Result<()> {
+        let guest_memory = resources.guest_memory.clone();
         let queue_size = resources.params.size;
         let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
             .context("failed creating queue event")?;
         let queue = VirtioQueue::new(
             features.clone(),
             resources.params,
-            self.memory.clone(),
+            resources.guest_memory,
             resources.notify,
             queue_event,
             initial_state,
@@ -376,7 +375,7 @@ impl VirtioDevice for Device {
                     tx_queue,
                     tx_queue_size,
                 };
-                self.insert_worker(virtio_state, pair_idx, negotiated_features);
+                self.insert_worker(virtio_state, pair_idx, &guest_memory, negotiated_features);
 
                 if first_pair {
                     self.coordinator.start();
@@ -389,7 +388,7 @@ impl VirtioDevice for Device {
         Ok(())
     }
 
-    fn poll_stop_queue(&mut self, cx: &mut Context<'_>, idx: u16) -> Poll<Option<QueueState>> {
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
         let pair_idx = (idx / 2) as usize;
 
         if pair_idx < self.pairs.len() {
@@ -398,16 +397,16 @@ impl VirtioDevice for Device {
                 if is_rx != stopping_rx {
                     // The caller is stopping the queue that wasn't started;
                     // leave the pending half intact.
-                    return Poll::Ready(None);
+                    return None;
                 }
                 // Drop the pending half-open queue.
                 self.pairs[pair_idx] = QueuePairState::Empty;
             } else if matches!(self.pairs[pair_idx], QueuePairState::Active) {
                 // Stop the coordinator (which stops all workers).
-                let _ = std::task::ready!(self.coordinator.poll_stop(cx));
+                self.coordinator.stop().await;
                 if let Some(coordinator) = self.coordinator.state_mut() {
                     for worker in &mut coordinator.workers {
-                        let _ = std::task::ready!(worker.poll_stop(cx));
+                        worker.stop().await;
                     }
                 }
                 let _ = self.coordinator.remove();
@@ -416,10 +415,10 @@ impl VirtioDevice for Device {
         }
 
         // We don't support save/restore of virtio-net queue state yet.
-        Poll::Ready(None)
+        None
     }
 
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
         self.pairs.fill_with(|| QueuePairState::Empty);
     }
 
@@ -520,7 +519,6 @@ impl NicBuilder {
     pub fn build(
         self,
         driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
         endpoint: Box<dyn Endpoint>,
         mac_address: MacAddress,
     ) -> Device {
@@ -558,7 +556,6 @@ impl NicBuilder {
 
         Device {
             registers,
-            memory,
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
@@ -605,6 +602,7 @@ impl Device {
         &mut self,
         virtio_state: VirtioState,
         idx: usize,
+        guest_memory: &GuestMemory,
         negotiated_features: NetworkFeaturesBank0,
     ) {
         let mut builder = self.driver_source.builder();
@@ -618,7 +616,7 @@ impl Device {
         let driver = builder.build("virtio-net");
 
         let active_state = ActiveState::new(
-            self.memory.clone(),
+            guest_memory.clone(),
             virtio_state.rx_queue_size,
             virtio_state.tx_queue_size,
         );

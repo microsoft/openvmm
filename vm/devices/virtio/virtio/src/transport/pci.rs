@@ -11,10 +11,9 @@ use super::task::TransportStateResult;
 use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
-
+use crate::DynVirtioDevice;
 use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
-use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
 use crate::queue::QueueState;
@@ -34,6 +33,7 @@ use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
 use guestmem::DoorbellRegistration;
+use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
@@ -123,12 +123,15 @@ pub struct VirtioPciDevice {
     #[inspect(skip)]
     saved_queue_states: Vec<Option<QueueState>>,
     supports_save_restore: bool,
+    #[inspect(skip)]
+    guest_memory: GuestMemory,
 }
 
 impl VirtioPciDevice {
     pub fn new(
-        mut device: Box<dyn VirtioDevice>,
+        mut device: Box<dyn DynVirtioDevice>,
         driver: &impl Spawn,
+        guest_memory: GuestMemory,
         interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
@@ -148,7 +151,7 @@ impl VirtioPciDevice {
 
         let hardware_ids = HardwareIds {
             vendor_id: VIRTIO_VENDOR_ID,
-            device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id,
+            device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id.0,
             revision_id: 1,
             prog_if: ProgrammingInterface::NONE,
             base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
@@ -305,6 +308,7 @@ impl VirtioPciDevice {
             shared_memory_size,
             saved_queue_states: vec![None; traits.max_queues as usize],
             supports_save_restore,
+            guest_memory,
         })
     }
 
@@ -578,6 +582,7 @@ impl VirtioPciDevice {
                                     params: *q,
                                     notify,
                                     event: self.events[i].clone(),
+                                    guest_memory: self.guest_memory.clone(),
                                 },
                             )
                         })
@@ -708,6 +713,7 @@ impl ChangeDeviceState for VirtioPciDevice {
                         params: *q,
                         notify,
                         event: self.events[i].clone(),
+                        guest_memory: self.guest_memory.clone(),
                     },
                     initial_state,
                 ));
@@ -741,7 +747,61 @@ impl ChangeDeviceState for VirtioPciDevice {
         // Drain ignoring result — reset_status() below clears everything.
         let _ = self.state.drain(&self.device_sender).await;
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
+
+        // reset_status() handles device_status, config_generation,
+        // interrupt_status, doorbells, and interrupt line level.
         self.reset_status();
+
+        // Destructure to ensure every field is handled; the compiler will
+        // flag new fields that are not addressed here.
+        let Self {
+            device_sender: _,
+            _device_task,
+            state: _,
+            device_feature: _,
+            device_feature_select,
+            driver_feature,
+            driver_feature_select,
+            msix_config_vector,
+            queue_select,
+            events: _,
+            queues,
+            msix_vectors,
+            // Handled by reset_status() above.
+            interrupt_status: _,
+            device_status: _,
+            poll_waker: _,
+            config_generation: _,
+            interrupt_kind: _,
+            doorbells: _,
+            config_space,
+            shared_memory_size: _,
+            saved_queue_states,
+            supports_save_restore: _,
+            guest_memory: _,
+        } = self;
+
+        // Reset PCI config space so BARs and command register return to
+        // their power-on defaults.
+        config_space.reset();
+
+        *device_feature_select = 0;
+        *driver_feature = VirtioDeviceFeatures::new();
+        *driver_feature_select = 0;
+        *msix_config_vector = 0;
+        *queue_select = 0;
+        for q in queues {
+            *q = QueueParams {
+                size: QUEUE_MAX_SIZE,
+                ..Default::default()
+            };
+        }
+        for v in msix_vectors {
+            *v = 0;
+        }
+        for s in saved_queue_states {
+            *s = None;
+        }
     }
 }
 

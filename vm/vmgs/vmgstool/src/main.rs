@@ -57,7 +57,7 @@ pub(crate) enum Error {
     Vmgs(#[from] VmgsError),
     #[error("VMGS file already exists")]
     FileExists,
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[error("Adding encryption key")]
     EncryptionKey(#[source] VmgsError),
     #[error("Data file / STDOUT IO")]
@@ -605,15 +605,15 @@ async fn vmgs_file_update_key(
     vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key.as_ref()).await
 }
 
-#[cfg_attr(not(with_encryption), expect(unused_variables))]
+#[cfg_attr(not(feature = "encryption"), expect(unused_variables))]
 async fn vmgs_update_key(
     vmgs: &mut Vmgs,
     encryption_alg: EncryptionAlgorithm,
     new_encryption_key: &[u8],
 ) -> Result<(), Error> {
-    #[cfg(not(with_encryption))]
+    #[cfg(not(feature = "encryption"))]
     unreachable!("encryption requires the encryption feature");
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     {
         tracing::info!("Updating encryption key");
         vmgs.update_encryption_key(new_encryption_key, encryption_alg)
@@ -637,7 +637,7 @@ async fn vmgs_file_create(
         .map(|(_, key_path)| read_key_path(key_path))
         .transpose()?;
     let encryption_alg_key =
-        encryption_alg_key.map(|(alg, _)| (alg, encryption_key.as_deref().unwrap()));
+        encryption_alg_key.map(|(alg, _)| (alg, encryption_key.as_ref().unwrap()));
 
     let vmgs = vmgs_create(disk, encryption_alg_key).await?;
 
@@ -747,21 +747,25 @@ fn vhdfiledisk_create(
     Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
-#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
+#[cfg_attr(
+    not(feature = "encryption"),
+    expect(unused_mut),
+    expect(unused_variables)
+)]
 async fn vmgs_create(
     disk: Disk,
-    encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
+    encryption_alg_key: Option<(EncryptionAlgorithm, &[u8; VMGS_ENCRYPTION_KEY_SIZE])>,
 ) -> Result<Vmgs, Error> {
     tracing::info!("Formatting VMGS");
     let mut vmgs = Vmgs::format_new(disk, None).await?;
 
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
         tracing::info!("Adding encryption key");
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         vmgs.update_encryption_key(encryption_key, algorithm)
             .await
             .map_err(Error::EncryptionKey)?;
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
     }
 
@@ -814,9 +818,9 @@ async fn vmgs_write(
     }
 
     if encrypt {
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         vmgs.write_file_encrypted(file_id, data).await?;
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
     } else {
         vmgs.write_file_allow_overwrite_encrypted(file_id, data)
@@ -1193,7 +1197,7 @@ async fn vmgs_file_open(
 
     let encryption_key = key_path.map(read_key_path).transpose()?;
 
-    let res = vmgs_open(disk, encryption_key.as_deref(), open_mode).await;
+    let res = vmgs_open(disk, encryption_key.as_ref(), open_mode).await;
 
     if matches!(
         res,
@@ -1207,18 +1211,22 @@ async fn vmgs_file_open(
     res
 }
 
-#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
+#[cfg_attr(
+    not(feature = "encryption"),
+    expect(unused_mut),
+    expect(unused_variables)
+)]
 async fn vmgs_open(
     disk: Disk,
-    encryption_key: Option<&[u8]>,
+    encryption_key: Option<&[u8; VMGS_ENCRYPTION_KEY_SIZE]>,
     open_mode: OpenMode,
 ) -> Result<Vmgs, Error> {
     let mut vmgs: Vmgs = Vmgs::open(disk, None).await?;
 
     if let Some(encryption_key) = encryption_key {
-        #[cfg(with_encryption)]
+        #[cfg(feature = "encryption")]
         vmgs.unlock_with_encryption_key(encryption_key).await?;
-        #[cfg(not(with_encryption))]
+        #[cfg(not(feature = "encryption"))]
         unreachable!("Encryption requires the encryption feature");
     } else if vmgs.encrypted() {
         match open_mode {
@@ -1233,7 +1241,7 @@ async fn vmgs_open(
     Ok(vmgs)
 }
 
-fn read_key_path(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
+fn read_key_path(path: impl AsRef<Path>) -> Result<[u8; VMGS_ENCRYPTION_KEY_SIZE], Error> {
     tracing::info!("Reading encryption key: {}", path.as_ref().display());
     let metadata = fs_err::metadata(&path).map_err(Error::KeyFile)?;
     if metadata.len() != VMGS_ENCRYPTION_KEY_SIZE as u64 {
@@ -1244,14 +1252,10 @@ fn read_key_path(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
     }
 
     let bytes = fs_err::read(&path).map_err(Error::KeyFile)?;
-    if bytes.len() != metadata.len() as usize {
-        return Err(Error::InvalidKeySize(
-            VMGS_ENCRYPTION_KEY_SIZE as u64,
-            bytes.len() as u64,
-        ));
-    }
-
-    Ok(bytes)
+    let bytes_sized = bytes.try_into().map_err(|bytes: Vec<u8>| {
+        Error::InvalidKeySize(VMGS_ENCRYPTION_KEY_SIZE as u64, bytes.len() as u64)
+    })?;
+    Ok(bytes_sized)
 }
 
 async fn vmgs_file_query_file_size(
@@ -1348,7 +1352,7 @@ mod tests {
         path: impl AsRef<Path>,
         file_size: Option<u64>,
         force_create: bool,
-        encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
+        encryption_alg_key: Option<(EncryptionAlgorithm, &[u8; VMGS_ENCRYPTION_KEY_SIZE])>,
     ) -> Result<(), Error> {
         let disk = vhdfiledisk_create(path, file_size, force_create)?;
         let _ = vmgs_create(disk, encryption_alg_key).await?;
@@ -1358,7 +1362,7 @@ mod tests {
     pub(crate) async fn test_vmgs_open(
         path: impl AsRef<Path>,
         open_mode: OpenMode,
-        encryption_key: Option<&[u8]>,
+        encryption_key: Option<&[u8; VMGS_ENCRYPTION_KEY_SIZE]>,
     ) -> Result<Vmgs, Error> {
         let file = fs_err::OpenOptions::new()
             .read(true)
@@ -1380,7 +1384,7 @@ mod tests {
         vmgs_query_file_size(&vmgs, file_id)
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     async fn test_vmgs_query_encryption(
         file_path: impl AsRef<Path>,
     ) -> Result<EncryptionAlgorithm, Error> {
@@ -1390,12 +1394,12 @@ mod tests {
         Ok(vmgs.get_encryption_algorithm())
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     async fn test_vmgs_update_key(
         file_path: impl AsRef<Path>,
         encryption_alg: EncryptionAlgorithm,
-        encryption_key: Option<&[u8]>,
-        new_encryption_key: &[u8],
+        encryption_key: Option<&[u8; VMGS_ENCRYPTION_KEY_SIZE]>,
+        new_encryption_key: &[u8; VMGS_ENCRYPTION_KEY_SIZE],
     ) -> Result<(), Error> {
         let mut vmgs =
             test_vmgs_open(file_path, OpenMode::ReadWriteRequire, encryption_key).await?;
@@ -1494,11 +1498,11 @@ mod tests {
         assert_eq!(buf_3, read_buf_3);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn read_write_encrypted_file() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
         let buf_1 = b"123".to_vec();
 
         test_vmgs_create(
@@ -1534,13 +1538,13 @@ mod tests {
             .unwrap();
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn encrypted_read_write_plain_file() {
         // You shouldn't be able to use encryption if you create the VMGS
         // file without encryption.
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; VMGS_ENCRYPTION_KEY_SIZE];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
@@ -1549,11 +1553,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn plain_read_write_encrypted_file() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
         let buf_1 = b"123".to_vec();
 
         test_vmgs_create(
@@ -1602,11 +1606,11 @@ mod tests {
         assert_eq!(file_size, buf.len() as u64);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn query_encrypted_file() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
         let buf_1 = b"123".to_vec();
 
         test_vmgs_create(
@@ -1717,12 +1721,12 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_update_encryption_key() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
-        let new_encryption_key = vec![6; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
+        let new_encryption_key = [6; VMGS_ENCRYPTION_KEY_SIZE];
         let buf_1 = b"123".to_vec();
 
         test_vmgs_create(
@@ -1769,11 +1773,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_add_encryption_key() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
         let buf_1 = b"123".to_vec();
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
@@ -1797,11 +1801,11 @@ mod tests {
         assert!(read_buf == buf_1);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_query_encryption_update() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
 
         test_vmgs_create(&path, None, false, None).await.unwrap();
 
@@ -1816,11 +1820,11 @@ mod tests {
         assert_eq!(encryption_algorithm, EncryptionAlgorithm::AES_GCM);
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn test_query_encryption_new() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
 
         test_vmgs_create(
             &path,
@@ -1877,11 +1881,11 @@ mod tests {
             .unwrap_err();
     }
 
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     #[async_test]
     async fn move_delete_file_encrypted() {
         let (_dir, path) = new_path();
-        let encryption_key = vec![5; 32];
+        let encryption_key = [5; VMGS_ENCRYPTION_KEY_SIZE];
         let buf_1 = b"123".to_vec();
         let buf_2 = b"456".to_vec();
 
