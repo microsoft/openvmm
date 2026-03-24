@@ -534,7 +534,15 @@ fn dump_corim_headers(
 
             let data_offset = plat_offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
             if data_offset + size_of::<IGVM_VHS_SUPPORTED_PLATFORM>() > var_headers.len() {
-                break;
+                let expected_size =
+                    size_of::<IGVM_VHS_VARIABLE_HEADER>() + size_of::<IGVM_VHS_SUPPORTED_PLATFORM>();
+                let remaining = var_headers.len().saturating_sub(plat_offset);
+                bail!(
+                    "Truncated supported platform header at offset {}: expected at least {} bytes, but only {} bytes remain",
+                    plat_offset,
+                    expected_size,
+                    remaining
+                );
             }
 
             let plat = IGVM_VHS_SUPPORTED_PLATFORM::read_from_prefix(&var_headers[data_offset..])
