@@ -84,7 +84,7 @@ impl PcieDownstreamPort {
     pub fn forward_cfg_read_with_routing(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> IoResult {
@@ -98,8 +98,7 @@ impl PcieDownstreamPort {
 
         if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                let result =
-                    device.pci_cfg_read_with_routing(*bus, *device_function, cfg_offset, value);
+                let result = device.pci_cfg_read_with_routing(*bus, *function, cfg_offset, value);
 
                 if let Some(result) = result {
                     match result {
@@ -122,7 +121,7 @@ impl PcieDownstreamPort {
     pub fn forward_cfg_write_with_routing(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
@@ -136,8 +135,7 @@ impl PcieDownstreamPort {
 
         if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                let result =
-                    device.pci_cfg_write_with_routing(*bus, *device_function, cfg_offset, value);
+                let result = device.pci_cfg_write_with_routing(*bus, *function, cfg_offset, value);
 
                 if let Some(result) = result {
                     match result {
@@ -231,14 +229,14 @@ mod tests {
         fn pci_cfg_read_with_routing(
             &mut self,
             bus: u8,
-            device_function: u8,
+            function: u8,
             offset: u16,
             value: &mut u32,
         ) -> Option<IoResult> {
             self.stats
                 .lock()
                 .forward_reads
-                .push((bus, device_function, offset));
+                .push((bus, function, offset));
             *value = 0x1234_5678;
             Some(IoResult::Ok)
         }
@@ -246,14 +244,14 @@ mod tests {
         fn pci_cfg_write_with_routing(
             &mut self,
             bus: u8,
-            device_function: u8,
+            function: u8,
             offset: u16,
             value: u32,
         ) -> Option<IoResult> {
             self.stats
                 .lock()
                 .forward_writes
-                .push((bus, device_function, offset, value));
+                .push((bus, function, offset, value));
             Some(IoResult::Ok)
         }
     }

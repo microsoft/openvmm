@@ -16,24 +16,27 @@ pub trait PciConfigSpace: ChipsetDevice {
     /// Handle a PCI configuration space read with full routing context.
     ///
     /// This method receives configuration space accesses with the target bus and
-    /// device/function information. The default implementation dispatches to
-    /// [`pci_cfg_read`](Self::pci_cfg_read) for function 0 accesses on single-function
-    /// devices. Routing components (switches, bridges) and multi-function devices
-    /// should override this method.
+    /// function information. For devices downstream of a PCIe port the device
+    /// number is always zero, so all 8 bits of `function` represent functions
+    /// within a single PCIe endpoint. The default implementation dispatches to
+    /// [`pci_cfg_read`](Self::pci_cfg_read) for function 0 accesses on
+    /// single-function devices. Routing components (switches, bridges) and
+    /// multi-function devices should override this method.
     ///
     /// # Parameters
     /// - `bus`: Target bus number
-    /// - `device_function`: Combined device and function number
+    /// - `function`: Function number (all 8 bits; device number is always 0
+    ///   for PCIe endpoints downstream of a port)
     /// - `offset`: Configuration space offset
     /// - `value`: Pointer to receive the read value
     fn pci_cfg_read_with_routing(
         &mut self,
         _bus: u8,
-        device_function: u8,
+        function: u8,
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
-        if device_function == 0 {
+        if function == 0 {
             self.pci_cfg_read(offset, value)
         } else {
             IoResult::Ok
@@ -43,24 +46,27 @@ pub trait PciConfigSpace: ChipsetDevice {
     /// Handle a PCI configuration space write with full routing context.
     ///
     /// This method receives configuration space accesses with the target bus and
-    /// device/function information. The default implementation dispatches to
-    /// [`pci_cfg_write`](Self::pci_cfg_write) for function 0 accesses on single-function
-    /// devices. Routing components (switches, bridges) and multi-function devices
-    /// should override this method.
+    /// function information. For devices downstream of a PCIe port the device
+    /// number is always zero, so all 8 bits of `function` represent functions
+    /// within a single PCIe endpoint. The default implementation dispatches to
+    /// [`pci_cfg_write`](Self::pci_cfg_write) for function 0 accesses on
+    /// single-function devices. Routing components (switches, bridges) and
+    /// multi-function devices should override this method.
     ///
     /// # Parameters
     /// - `bus`: Target bus number
-    /// - `device_function`: Combined device and function number
+    /// - `function`: Function number (all 8 bits; device number is always 0
+    ///   for PCIe endpoints downstream of a port)
     /// - `offset`: Configuration space offset
     /// - `value`: Value to write
     fn pci_cfg_write_with_routing(
         &mut self,
         _bus: u8,
-        device_function: u8,
+        function: u8,
         offset: u16,
         value: u32,
     ) -> IoResult {
-        if device_function == 0 {
+        if function == 0 {
             self.pci_cfg_write(offset, value)
         } else {
             IoResult::Ok
