@@ -128,6 +128,54 @@ enum OidAction {
         /// INTEGER, 4 bytes of a u32.
         value_bytes: Vec<u8>,
     },
+    /// Set offload parameters with structured valid-range enum values.
+    ///
+    /// Unlike `SetOffloadParameters` which fuzzes the raw struct bytes, this
+    /// variant constructs `NdisOffloadParameters` with each checksum field
+    /// drawn from the valid `OffloadParametersChecksum` discriminants (0–4)
+    /// and each LSO field from valid `OffloadParametersSimple` discriminants
+    /// (0–2). This ensures the `tx_rx()` and `enable()` methods are
+    /// exercised across all their match arms.
+    SetStructuredOffloadParameters {
+        ipv4_checksum: u8,
+        tcp4_checksum: u8,
+        udp4_checksum: u8,
+        tcp6_checksum: u8,
+        udp6_checksum: u8,
+        lsov1: u8,
+        lsov2_ipv4: u8,
+        lsov2_ipv6: u8,
+    },
+    /// Query the hardware offload capabilities via
+    /// `OID_TCP_OFFLOAD_HARDWARE_CAPABILITIES`.
+    QueryOffloadHardwareCapabilities,
+    /// Set offload encapsulation with specific valid/invalid combinations.
+    ///
+    /// Exercises both the success path (IEEE 802.3 encapsulation with
+    /// correct header size) and the error paths (wrong encapsulation type
+    /// or header size) in `oid_set_offload_encapsulation`.
+    SetStructuredOffloadEncapsulation {
+        ipv4_enabled: u32,
+        ipv4_encap_type: u32,
+        ipv4_header_size: u32,
+        ipv6_enabled: u32,
+        ipv6_encap_type: u32,
+        ipv6_header_size: u32,
+    },
+    /// Set offload parameters then immediately query the current config.
+    ///
+    /// Exercises the state update in `oid_set_offload_parameters` followed
+    /// by the readback in `OID_TCP_OFFLOAD_CURRENT_CONFIG`, ensuring the
+    /// `ndis_offload()` serialization path is covered after each mutation.
+    SetThenQueryOffload {
+        ipv4_checksum: u8,
+        tcp4_checksum: u8,
+        udp4_checksum: u8,
+        tcp6_checksum: u8,
+        udp6_checksum: u8,
+        lsov2_ipv4: u8,
+        lsov2_ipv6: u8,
+    },
 }
 
 /// Execute one OID fuzz action.
@@ -218,8 +266,133 @@ async fn execute_next_action(
             let rndis_bytes = build_rndis_config_parameter(name, param_type, &value_bytes);
             send_rndis_control(queue, mem, &rndis_bytes, &LAYOUT, next_transaction_id).await?;
         }
+        OidAction::SetStructuredOffloadParameters {
+            ipv4_checksum,
+            tcp4_checksum,
+            udp4_checksum,
+            tcp6_checksum,
+            udp6_checksum,
+            lsov1,
+            lsov2_ipv4,
+            lsov2_ipv6,
+        } => {
+            let params = build_structured_offload_params(
+                ipv4_checksum,
+                tcp4_checksum,
+                udp4_checksum,
+                tcp6_checksum,
+                udp6_checksum,
+                lsov1,
+                lsov2_ipv4,
+                lsov2_ipv6,
+            );
+            let rndis_bytes = build_rndis_oid_set(
+                rndisprot::Oid::OID_TCP_OFFLOAD_PARAMETERS,
+                params.as_bytes(),
+            );
+            send_rndis_control(queue, mem, &rndis_bytes, &LAYOUT, next_transaction_id).await?;
+        }
+        OidAction::QueryOffloadHardwareCapabilities => {
+            let rndis_bytes =
+                build_rndis_oid_query(rndisprot::Oid::OID_TCP_OFFLOAD_HARDWARE_CAPABILITIES, &[]);
+            send_rndis_control(queue, mem, &rndis_bytes, &LAYOUT, next_transaction_id).await?;
+        }
+        OidAction::SetStructuredOffloadEncapsulation {
+            ipv4_enabled,
+            ipv4_encap_type,
+            ipv4_header_size,
+            ipv6_enabled,
+            ipv6_encap_type,
+            ipv6_header_size,
+        } => {
+            let encap = rndisprot::NdisOffloadEncapsulation {
+                header: rndisprot::NdisObjectHeader {
+                    object_type: rndisprot::NdisObjectType::OFFLOAD_ENCAPSULATION,
+                    revision: 1,
+                    size: rndisprot::NDIS_SIZEOF_OFFLOAD_ENCAPSULATION_REVISION_1 as u16,
+                },
+                ipv4_enabled,
+                ipv4_encapsulation_type: ipv4_encap_type,
+                ipv4_header_size,
+                ipv6_enabled,
+                ipv6_encapsulation_type: ipv6_encap_type,
+                ipv6_header_size,
+            };
+            let rndis_bytes =
+                build_rndis_oid_set(rndisprot::Oid::OID_OFFLOAD_ENCAPSULATION, encap.as_bytes());
+            send_rndis_control(queue, mem, &rndis_bytes, &LAYOUT, next_transaction_id).await?;
+        }
+        OidAction::SetThenQueryOffload {
+            ipv4_checksum,
+            tcp4_checksum,
+            udp4_checksum,
+            tcp6_checksum,
+            udp6_checksum,
+            lsov2_ipv4,
+            lsov2_ipv6,
+        } => {
+            // Set offload parameters with valid-range values.
+            let params = build_structured_offload_params(
+                ipv4_checksum,
+                tcp4_checksum,
+                udp4_checksum,
+                tcp6_checksum,
+                udp6_checksum,
+                0, // lsov1 = NO_CHANGE
+                lsov2_ipv4,
+                lsov2_ipv6,
+            );
+            let rndis_bytes = build_rndis_oid_set(
+                rndisprot::Oid::OID_TCP_OFFLOAD_PARAMETERS,
+                params.as_bytes(),
+            );
+            send_rndis_control(queue, mem, &rndis_bytes, &LAYOUT, next_transaction_id).await?;
+            drain_queue_async(queue).await;
+
+            // Query back the current config to exercise ndis_offload() serialization.
+            let rndis_bytes =
+                build_rndis_oid_query(rndisprot::Oid::OID_TCP_OFFLOAD_CURRENT_CONFIG, &[]);
+            send_rndis_control(queue, mem, &rndis_bytes, &LAYOUT, next_transaction_id).await?;
+        }
     }
     Ok(())
+}
+
+/// Build `NdisOffloadParameters` with each field clamped to its valid
+/// discriminant range so that `tx_rx()` and `enable()` are exercised
+/// across all match arms rather than falling through to `None`.
+fn build_structured_offload_params(
+    ipv4_checksum: u8,
+    tcp4_checksum: u8,
+    udp4_checksum: u8,
+    tcp6_checksum: u8,
+    udp6_checksum: u8,
+    lsov1: u8,
+    lsov2_ipv4: u8,
+    lsov2_ipv6: u8,
+) -> rndisprot::NdisOffloadParameters {
+    rndisprot::NdisOffloadParameters {
+        header: rndisprot::NdisObjectHeader {
+            object_type: rndisprot::NdisObjectType::DEFAULT,
+            revision: 1,
+            size: rndisprot::NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1 as u16,
+        },
+        // OffloadParametersChecksum valid range: 0..=4
+        ipv4_checksum: rndisprot::OffloadParametersChecksum(ipv4_checksum % 5),
+        tcp4_checksum: rndisprot::OffloadParametersChecksum(tcp4_checksum % 5),
+        udp4_checksum: rndisprot::OffloadParametersChecksum(udp4_checksum % 5),
+        tcp6_checksum: rndisprot::OffloadParametersChecksum(tcp6_checksum % 5),
+        udp6_checksum: rndisprot::OffloadParametersChecksum(udp6_checksum % 5),
+        // OffloadParametersSimple valid range: 0..=2
+        lsov1: rndisprot::OffloadParametersSimple(lsov1 % 3),
+        ipsec_v1: 0,
+        lsov2_ipv4: rndisprot::OffloadParametersSimple(lsov2_ipv4 % 3),
+        lsov2_ipv6: rndisprot::OffloadParametersSimple(lsov2_ipv6 % 3),
+        tcp_connection_ipv4: 0,
+        tcp_connection_ipv6: 0,
+        reserved: 0,
+        flags: 0,
+    }
 }
 
 fn do_fuzz(input: &[u8]) {

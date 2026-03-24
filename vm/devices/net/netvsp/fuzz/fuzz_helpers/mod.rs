@@ -814,7 +814,7 @@ pub async fn negotiate_to_ready_full(
     // Without this yield, the single-threaded executor never polls the
     // coordinator, so the worker stays in WaitingForCoordinator and
     // main_loop is never entered.
-    yield_to_executor(20).await;
+    yield_to_executor(10).await;
 
     Ok(())
 }
@@ -1312,12 +1312,22 @@ pub fn try_read_one_completion(queue: &mut Queue<GpadlRingMem>) -> bool {
 /// Drain all pending packets from the queue. Useful to avoid ring-full
 /// deadlocks between fuzz actions.
 pub fn drain_queue(queue: &mut Queue<GpadlRingMem>) {
+    let _ = drain_queue_once(queue);
+}
+
+/// Drain all currently pending packets from the queue once.
+///
+/// Returns `true` if at least one packet was drained.
+fn drain_queue_once(queue: &mut Queue<GpadlRingMem>) -> bool {
+    let mut drained_any = false;
     loop {
         let (mut reader, _) = queue.split();
-        if reader.try_read().is_err() {
-            break;
+        match reader.try_read() {
+            Ok(_) => drained_any = true,
+            Err(_) => break,
         }
     }
+    drained_any
 }
 
 /// Drain all pending packets from the queue, yielding to the executor
@@ -1328,17 +1338,24 @@ pub fn drain_queue(queue: &mut Queue<GpadlRingMem>) {
 ///
 /// For a synchronous (non-yielding) drain, use [`drain_queue`] instead.
 pub async fn drain_queue_async(queue: &mut Queue<GpadlRingMem>) {
-    // Yield first so the NIC worker gets CPU time to process packets
-    // already in the guest→host ring and write responses to the
-    // host→guest ring.
-    yield_to_executor(1).await;
-    loop {
-        let (mut reader, _) = queue.split();
-        if reader.try_read().is_err() {
-            break;
-        }
-        // Yield once per packet so background tasks can process.
+    // Yield so the NIC worker gets CPU time to process packets already
+    // in the guest→host ring and write responses to the host→guest ring.
+    // Repeat until we observe two consecutive empty drains (quiescent),
+    // with a hard cap to keep each fuzz action bounded.
+    const MAX_DRAIN_ROUNDS: usize = 16;
+    const QUIESCENT_EMPTY_ROUNDS: usize = 2;
+
+    let mut consecutive_empty_rounds = 0;
+    for _ in 0..MAX_DRAIN_ROUNDS {
         yield_to_executor(1).await;
+        if drain_queue_once(queue) {
+            consecutive_empty_rounds = 0;
+        } else {
+            consecutive_empty_rounds += 1;
+            if consecutive_empty_rounds >= QUIESCENT_EMPTY_ROUNDS {
+                break;
+            }
+        }
     }
 }
 

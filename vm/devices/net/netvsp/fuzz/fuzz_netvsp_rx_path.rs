@@ -123,6 +123,23 @@ enum RxAction {
     },
     /// Send a frame of exactly MTU size to exercise the capacity boundary.
     SendMtuSizedFrame,
+    /// Inject a raw packet from the host/backend into the guest RX path.
+    /// This goes through `process_endpoint_rx` → `poll_ready` → `rx_poll`,
+    /// bypassing the TX→loopback roundtrip.
+    InjectHostRxPacket {
+        packet: Vec<u8>,
+        metadata: FuzzRxMetadata,
+    },
+    /// Inject a burst of raw packets from the host/backend.
+    InjectHostRxBurst {
+        packets: Vec<(Vec<u8>, FuzzRxMetadata)>,
+    },
+    /// Inject a mostly valid Ethernet frame from the host/backend.
+    InjectHostValidEthernet {
+        #[arbitrary(with = fuzz_helpers::arbitrary_valid_ethernet_frame)]
+        frame_data: Vec<u8>,
+        metadata: FuzzRxMetadata,
+    },
 }
 
 /// Execute one RX fuzz action.
@@ -131,6 +148,7 @@ async fn execute_next_action(
     queue: &mut Queue<GpadlRingMem>,
     mem: &GuestMemory,
     next_transaction_id: &mut u64,
+    rx_send: &mesh::Sender<(Vec<u8>, FuzzRxMetadata)>,
 ) -> Result<(), anyhow::Error> {
     let action = input.arbitrary::<RxAction>()?;
     fuzz_eprintln!("action: {action:?}");
@@ -256,6 +274,20 @@ async fn execute_next_action(
             )
             .await?;
         }
+        RxAction::InjectHostRxPacket { packet, metadata } => {
+            rx_send.send((packet, metadata));
+        }
+        RxAction::InjectHostRxBurst { packets } => {
+            for (packet, metadata) in packets {
+                rx_send.send((packet, metadata));
+            }
+        }
+        RxAction::InjectHostValidEthernet {
+            frame_data,
+            metadata,
+        } => {
+            rx_send.send((frame_data, metadata));
+        }
     }
     Ok(())
 }
@@ -270,13 +302,15 @@ fn do_fuzz(input: &[u8]) {
     let remaining_start = input.len() - pre.len();
     let fuzz_input = &input[remaining_start..];
 
-    // Use the FuzzEndpoint so that the loopback reflects TX-to-RX.
-    let (mut endpoint, _handles) = FuzzEndpoint::new(FuzzEndpointConfig {
-        enable_rx_injection: false,
+    // Use the FuzzEndpoint so that the loopback reflects TX-to-RX and
+    // the fuzzer can inject host-side RX packets directly.
+    let (mut endpoint, handles) = FuzzEndpoint::new(FuzzEndpointConfig {
+        enable_rx_injection: true,
         enable_action_injection: false,
         ..FuzzEndpointConfig::default()
     });
     endpoint.loopback_metadata = loopback_meta;
+    let rx_send = handles.rx_send.expect("rx injection enabled");
     let config = FuzzNicConfig {
         endpoint: Box::new(endpoint),
         virtual_function: None,
@@ -322,7 +356,7 @@ fn do_fuzz(input: &[u8]) {
 
             // Run RX-focused fuzz actions until input is exhausted.
             while !fuzzer_input.is_empty() {
-                execute_next_action(fuzzer_input, &mut queue, &mem, &mut next_transaction_id)
+                execute_next_action(fuzzer_input, &mut queue, &mem, &mut next_transaction_id, &rx_send)
                     .await?;
                 drain_queue_async(&mut queue).await;
             }

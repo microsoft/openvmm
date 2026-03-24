@@ -263,9 +263,10 @@ fn do_fuzz(input: &[u8]) {
 
     // Fuzz-select whether VF switch should fail, exercising both
     // DataPathSynthetic (failure) and DataPathSwitched (success) states.
-    // Use the last byte of input to avoid consuming bytes from the main
-    // Unstructured stream.
-    let fail_vf = input.last().is_some_and(|b| b % 4 == 0);
+    let mut pre = Unstructured::new(input);
+    let fail_vf = pre.arbitrary::<bool>().unwrap_or(false);
+    let remaining_start = input.len() - pre.len();
+    let fuzz_input = &input[remaining_start..];
 
     let (endpoint, _handles) = FuzzEndpoint::new(FuzzEndpointConfig {
         enable_rx_injection: false,
@@ -280,7 +281,7 @@ fn do_fuzz(input: &[u8]) {
         ..FuzzNicConfig::default()
     };
 
-    run_fuzz_loop_with_config(input, &LAYOUT, config, |fuzzer_input, setup| {
+    run_fuzz_loop_with_config(fuzz_input, &LAYOUT, config, |fuzzer_input, setup| {
         Box::pin(async move {
             let mut queue = setup.queue;
             let mem = setup.mem;

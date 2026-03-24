@@ -33,6 +33,7 @@ use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
 use fuzz_helpers::DATA_PAGES;
 use fuzz_helpers::PageLayout;
+use fuzz_helpers::RingFullError;
 use fuzz_helpers::build_rss_oid_set;
 use fuzz_helpers::build_structured_rndis_packet;
 use fuzz_helpers::drain_queue;
@@ -351,13 +352,19 @@ async fn execute_next_action(
                     completion.as_bytes(),
                 );
                 let (_, mut writer) = q.split();
-                writer
-                    .write(vmbus_async::queue::OutgoingPacket {
-                        transaction_id: buffer_id as u64,
-                        packet_type: OutgoingPacketType::Completion,
-                        payload: &[&payload],
-                    })
-                    .await?;
+                match writer.try_write(&vmbus_async::queue::OutgoingPacket {
+                    transaction_id: buffer_id as u64,
+                    packet_type: OutgoingPacketType::Completion,
+                    payload: &[&payload],
+                }) {
+                    Ok(()) => {}
+                    Err(vmbus_async::queue::TryWriteError::Full(_)) => {
+                        anyhow::bail!(RingFullError);
+                    }
+                    Err(vmbus_async::queue::TryWriteError::Queue(err)) => {
+                        return Err(err.into());
+                    }
+                }
             }
         }
         SubchannelAction::SetRssParameters {

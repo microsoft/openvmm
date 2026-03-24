@@ -452,6 +452,10 @@ async fn execute_next_action(
                 true,
             )
             .await?;
+            // A matching revoke terminates the NIC worker. Drain
+            // synchronously and signal the caller to stop.
+            fuzz_helpers::drain_queue(queue);
+            return Ok(ActionResult::ChannelClosed);
         }
         InteropAction::ControlRevokeSendBuffer { msg } => {
             send_inband_nvsp(
@@ -462,6 +466,10 @@ async fn execute_next_action(
                 true,
             )
             .await?;
+            // A matching revoke terminates the NIC worker. Drain
+            // synchronously and signal the caller to stop.
+            fuzz_helpers::drain_queue(queue);
+            return Ok(ActionResult::ChannelClosed);
         }
         InteropAction::ControlSwitchDataPath { msg } => {
             send_inband_nvsp(
