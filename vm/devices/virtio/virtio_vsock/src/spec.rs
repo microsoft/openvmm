@@ -6,14 +6,10 @@
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use std::io::IoSlice;
-use std::io::IoSliceMut;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-
-/// Virtio device type ID for socket devices.
-pub const VIRTIO_DEVICE_TYPE_VSOCK: u16 = 19;
 
 // Feature bits defined by the spec but not all actively used.
 #[allow(dead_code)]
@@ -67,10 +63,6 @@ pub struct VsockPacket<'a> {
 impl<'a> VsockPacket<'a> {
     pub fn new(header: VsockHeader, data: &'a [IoSlice<'a>]) -> Self {
         Self { header, data }
-    }
-
-    pub fn header_only(header: VsockHeader) -> Self {
-        Self { header, data: &[] }
     }
 }
 

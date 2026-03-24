@@ -4,8 +4,6 @@
 //! Defines the resource resolver for virtio-vsock devices.
 
 use crate::VirtioVsockDevice;
-use std::path::PathBuf;
-use unix_socket::UnixListener;
 use virtio::resolve::ResolvedVirtioDevice;
 use virtio::resolve::VirtioResolveInput;
 use virtio_resources::vsock::VirtioVsockHandle;

@@ -23,11 +23,6 @@ impl RingBuffer {
         }
     }
 
-    /// Total capacity of the buffer.
-    pub fn capacity(&self) -> usize {
-        self.buf.len()
-    }
-
     /// Number of bytes currently stored.
     pub fn len(&self) -> usize {
         self.len
@@ -85,24 +80,6 @@ impl RingBuffer {
         self.len += written;
     }
 
-    /// Reads up to `buf.len()` bytes into `buf`. Returns the number of bytes
-    /// actually read.
-    pub fn read(&mut self, buf: &mut [u8]) -> usize {
-        let to_read = buf.len().min(self.len);
-
-        let first = to_read.min(self.buf.len() - self.head);
-        buf[..first].copy_from_slice(&self.buf[self.head..self.head + first]);
-
-        let second = to_read - first;
-        if second > 0 {
-            buf[first..first + second].copy_from_slice(&self.buf[..second]);
-        }
-
-        self.head = (self.head + to_read) % self.buf.len();
-        self.len -= to_read;
-        to_read
-    }
-
     /// Writes the current contents of the ring buffer to `writer`, using
     /// `write_vectored` when the data wraps around. Advances the read
     /// position by the number of bytes written and returns that count.
@@ -127,21 +104,6 @@ impl RingBuffer {
 
         Ok(total_written)
     }
-
-    /// Discards up to `count` bytes from the front. Returns the number of
-    /// bytes actually discarded.
-    pub fn skip(&mut self, count: usize) -> usize {
-        let to_skip = count.min(self.len);
-        self.head = (self.head + to_skip) % self.buf.len();
-        self.len -= to_skip;
-        to_skip
-    }
-
-    /// Resets the buffer to empty without changing its capacity.
-    pub fn clear(&mut self) {
-        self.head = 0;
-        self.len = 0;
-    }
 }
 
 #[cfg(test)]
@@ -156,7 +118,6 @@ mod tests {
     #[test]
     fn new_buffer_is_empty() {
         let ring = RingBuffer::new(16);
-        assert_eq!(ring.capacity(), 16);
         assert_eq!(ring.len(), 0);
         assert!(ring.is_empty());
         assert_eq!(ring.available(), 16);
@@ -169,9 +130,9 @@ mod tests {
         assert_eq!(ring.len(), 5);
         assert_eq!(ring.available(), 3);
 
-        let mut buf = [0u8; 8];
-        assert_eq!(ring.read(&mut buf), 5);
-        assert_eq!(&buf[..5], b"hello");
+        let buf = read_to_vec(&mut ring);
+        assert_eq!(buf.len(), 5);
+        assert_eq!(&buf, b"hello");
         assert!(ring.is_empty());
     }
 
@@ -179,15 +140,13 @@ mod tests {
     fn write_wraps_around() {
         let mut ring = RingBuffer::new(8);
         write_bytes(&mut ring, b"abcdef");
-        let mut tmp = [0u8; 4];
-        assert_eq!(ring.read(&mut tmp), 4);
-        assert_eq!(&tmp, b"abcd");
+        let buf = read_to_vec(&mut ring);
+        assert_eq!(&buf, b"abcdef");
         write_bytes(&mut ring, b"ghijk");
-        assert_eq!(ring.len(), 7);
+        assert_eq!(ring.len(), 5);
 
-        let mut out = [0u8; 7];
-        assert_eq!(ring.read(&mut out), 7);
-        assert_eq!(&out, b"efghijk");
+        let buf = read_to_vec(&mut ring);
+        assert_eq!(&buf, b"ghijk");
     }
 
     #[test]
@@ -213,9 +172,8 @@ mod tests {
         ring.write(&[IoSlice::new(a), IoSlice::new(b)], 0);
         assert_eq!(ring.len(), 11);
 
-        let mut out = [0u8; 11];
-        ring.read(&mut out);
-        assert_eq!(&out, b"hello world");
+        let buf = read_to_vec(&mut ring);
+        assert_eq!(&buf, b"hello world");
     }
 
     #[test]
@@ -227,9 +185,8 @@ mod tests {
         ring.write(&[IoSlice::new(a), IoSlice::new(b)], 6);
         assert_eq!(ring.len(), 5);
 
-        let mut out = [0u8; 5];
-        ring.read(&mut out);
-        assert_eq!(&out, b"world");
+        let buf = read_to_vec(&mut ring);
+        assert_eq!(&buf, b"world");
     }
 
     #[test]
@@ -242,9 +199,8 @@ mod tests {
         ring.write(&[IoSlice::new(s1), IoSlice::new(s2), IoSlice::new(s3)], 3);
         assert_eq!(ring.len(), 5);
 
-        let mut out = [0u8; 5];
-        ring.read(&mut out);
-        assert_eq!(&out, b"defgh");
+        let buf = read_to_vec(&mut ring);
+        assert_eq!(&buf, b"defgh");
     }
 
     #[test]
@@ -252,27 +208,6 @@ mod tests {
         let mut ring = RingBuffer::new(8);
         ring.write(&[IoSlice::new(b"abc")], 3);
         assert!(ring.is_empty());
-    }
-
-    #[test]
-    fn skip_discards_bytes() {
-        let mut ring = RingBuffer::new(8);
-        write_bytes(&mut ring, b"abcdef");
-        assert_eq!(ring.skip(3), 3);
-        assert_eq!(ring.len(), 3);
-
-        let mut buf = [0u8; 3];
-        ring.read(&mut buf);
-        assert_eq!(&buf, b"def");
-    }
-
-    #[test]
-    fn clear_resets() {
-        let mut ring = RingBuffer::new(8);
-        write_bytes(&mut ring, b"data");
-        ring.clear();
-        assert!(ring.is_empty());
-        assert_eq!(ring.available(), 8);
     }
 
     #[test]
@@ -290,9 +225,9 @@ mod tests {
     fn read_to_wrapped() {
         let mut ring = RingBuffer::new(8);
         // Fill and partially drain to move head forward.
-        write_bytes(&mut ring, b"abcdef");
-        ring.skip(4); // head=4, data="ef"
-        write_bytes(&mut ring, b"ghij"); // wraps: buf=[i,j,_,_,e,f,g,h]
+        write_bytes(&mut ring, b"abcd");
+        read_to_vec(&mut ring);
+        write_bytes(&mut ring, b"efghij"); // wraps: buf=[i,j,_,_,e,f,g,h]
         assert_eq!(ring.len(), 6);
 
         let mut out = Vec::new();
@@ -309,5 +244,12 @@ mod tests {
         let n = ring.read_to(&mut out).unwrap();
         assert_eq!(n, 0);
         assert!(out.is_empty());
+    }
+
+    fn read_to_vec(ring: &mut RingBuffer) -> Vec<u8> {
+        let mut out = Vec::new();
+        let size = ring.read_to(&mut out).unwrap();
+        out.truncate(size);
+        out
     }
 }

@@ -23,7 +23,7 @@ mod ring;
 mod spec;
 mod unix_relay;
 
-use crate::connection::ConnKey;
+use crate::connection::ConnectionInstanceId;
 use crate::connection::RxWork;
 use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockPacket;
@@ -222,7 +222,7 @@ struct VsockWorkerState {
 }
 
 type RxWorkItem = Pin<Box<dyn Future<Output = RxWork> + Send>>;
-type WriteReadyItem = Pin<Box<dyn Future<Output = ConnKey> + Send>>;
+type WriteReadyItem = Pin<Box<dyn Future<Output = ConnectionInstanceId> + Send>>;
 type RxWorkQueue = FuturesUnordered<RxWorkItem>;
 
 struct PendingWork {
@@ -411,8 +411,8 @@ impl VsockWorker {
         // }
     }
 
-    fn handle_write_ready(&mut self, key: ConnKey) {
-        let pending_work = self.connections.handle_write_ready(key);
+    fn handle_write_ready(&mut self, id: ConnectionInstanceId) {
+        let pending_work = self.connections.handle_write_ready(id);
         self.queue_pending_work(pending_work);
     }
 }
@@ -429,7 +429,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     enum Event {
                         TxWork(io::Result<VirtioQueueCallbackWork>),
                         RxWork(RxWork),
-                        WriteReady(ConnKey),
+                        WriteReady(ConnectionInstanceId),
                         Accept(io::Result<UnixStream>),
                         Retry,
                     }
