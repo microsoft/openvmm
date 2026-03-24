@@ -113,13 +113,15 @@ enum Options {
         /// detached signature, then write both to the IGVM file.
         /// Mutually exclusive with --corim-document and --corim-signature.
         #[clap(long, conflicts_with_all = ["corim_document", "corim_signature"])]
-        corim_signed: Option<PathBuf>,
+        corim_bundle: Option<PathBuf>,
         /// Path to the CoRIM document CBOR payload file (optional, but at least one of
-        /// document/signature/signed must be provided)
+        /// document/signature/bundle must be provided)
         #[clap(long)]
         corim_document: Option<PathBuf>,
         /// Path to the CoRIM signature (COSE_Sign1 with nil payload) file (optional, but
-        /// at least one of document/signature/signed must be provided)
+        /// at least one of document/signature/bundle must be provided)
+        /// Note: writing signature alone requires that a corresponding document already
+        /// exists in the file for the same compatibility mask,
         #[clap(long)]
         corim_signature: Option<PathBuf>,
         /// Platform type for the CoRIM headers
@@ -245,20 +247,20 @@ fn main() -> anyhow::Result<()> {
         Options::PatchCorim {
             input,
             output,
-            corim_signed,
+            corim_bundle,
             corim_document,
             corim_signature,
             platform,
         } => {
-            if corim_signed.is_none() && corim_document.is_none() && corim_signature.is_none() {
+            if corim_bundle.is_none() && corim_document.is_none() && corim_signature.is_none() {
                 bail!(
-                    "At least one of --corim-signed, --corim-document, or --corim-signature must be specified"
+                    "At least one of --corim-bundle, --corim-document, or --corim-signature must be specified"
                 );
             }
             patch_corim_headers(
                 input,
                 output,
-                corim_signed,
+                corim_bundle,
                 corim_document,
                 corim_signature,
                 platform,
@@ -341,7 +343,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         map_files.push(igvm_output.map);
 
         if let Some(doc) = igvm_output.doc {
-            // Write the document to a file with the same name,
+            // Write the measurement document to a file with the same name,
             // but with -[isolation].json extension.
             let doc_path = {
                 let mut name = base_path.to_os_string();
@@ -418,10 +420,7 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
 /// platform headers from the IGVM file.
 ///
 /// Each IGVM file declares its own platform-to-mask mapping via
-/// `IGVM_VHS_SUPPORTED_PLATFORM` headers. The mask is **not** determined
-/// by the platform type value — it depends on the order the platforms were
-/// added when the file was built. This function reads the actual mapping
-/// from the file rather than assuming a hardcoded convention.
+/// `IGVM_VHS_SUPPORTED_PLATFORM` headers.
 ///
 /// Returns an error if the requested platform type is not present in the
 /// file's platform headers.
@@ -438,6 +437,7 @@ fn lookup_compatibility_mask(
             }
         }
     }
+
     anyhow::bail!(
         "Platform type {platform:?} not found in IGVM file platform headers. \
          Available platforms: {}",
@@ -741,7 +741,7 @@ fn dump_corim_headers(
 fn patch_corim_headers(
     input: PathBuf,
     output: PathBuf,
-    corim_signed: Option<PathBuf>,
+    corim_bundle: Option<PathBuf>,
     corim_document: Option<PathBuf>,
     corim_signature: Option<PathBuf>,
     platform: Platform,
@@ -750,26 +750,25 @@ fn patch_corim_headers(
     let igvm_data =
         fs_err::read(&input).context(format!("reading input IGVM file at {}", input.display()))?;
 
-    // If --corim-signed is provided, split the bundled COSE_Sign1 into
+    // If --corim-bundle is provided, split the bundled COSE_Sign1 into
     // document (payload) and detached signature (COSE_Sign1 with nil payload).
-    let (document_data, signature_data) = if let Some(signed_path) = &corim_signed {
-        let signed_data = fs_err::read(signed_path).context(format!(
-            "reading signed CoRIM file at {}",
-            signed_path.display()
+    let (document_data, signature_data) = if let Some(bundle_path) = &corim_bundle {
+        let bundle_data = fs_err::read(bundle_path).context(format!(
+            "reading bundled CoRIM file at {}",
+            bundle_path.display()
         ))?;
 
         tracing::info!(
-            path = %signed_path.display(),
-            size = signed_data.len(),
+            path = %bundle_path.display(),
+            size = bundle_data.len(),
             "Splitting bundled signed CoRIM into document and detached signature"
         );
 
-        let (doc, sig) = split_cose_sign1(&signed_data).context("splitting signed CoRIM")?;
-
+        let (doc, sig) = split_cose_sign1(&bundle_data).context("splitting bundled CoRIM")?;
         tracing::info!(
             document_size = doc.len(),
             detached_signature_size = sig.len(),
-            "Successfully split signed CoRIM"
+            "Successfully split bundled CoRIM"
         );
 
         (Some(doc), Some(sig))
@@ -798,7 +797,7 @@ fn patch_corim_headers(
     tracing::info!(
         input = %input.display(),
         output = %output.display(),
-        signed = corim_signed.as_ref().map(|p| p.display().to_string()),
+        bundle = corim_bundle.as_ref().map(|p| p.display().to_string()),
         document = corim_document.as_ref().map(|p| p.display().to_string()),
         signature = corim_signature.as_ref().map(|p| p.display().to_string()),
         platform = ?platform,
