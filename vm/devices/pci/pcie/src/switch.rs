@@ -440,7 +440,9 @@ impl PciConfigSpace for GenericPcieSwitch {
     }
 
     fn supports_multi_function_device(&self) -> bool {
-        true
+        // For now, the switch emulators in this code base are
+        // just single-function within the switches themselves.
+        false
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {

@@ -99,6 +99,10 @@ impl PcieDownstreamPort {
         if *bus == *bus_range.start() {
             // Perform type-0 access to the child device's config space.
             if let Some((_, device)) = &mut self.link {
+                // If this device has marked itself as supporting multiple functions,
+                // use the PCI config read function which specifies a function number,
+                // else fall back to the single-function version where the function number
+                // is implicitly zero.
                 let result = if device.supports_multi_function_device() {
                     device.pci_cfg_read_forward(*bus, *device_function, cfg_offset, value)
                 } else if *device_function == 0 {
@@ -158,6 +162,10 @@ impl PcieDownstreamPort {
         if *bus == *bus_range.start() {
             // Perform type-0 access to the child device's config space.
             if let Some((_, device)) = &mut self.link {
+                // If this device has marked itself as supporting multiple functions,
+                // use the PCI config write function which specifies a function number,
+                // else fall back to the single-function version where the function number
+                // is implicitly zero.
                 let result = if device.supports_multi_function_device() {
                     device.pci_cfg_write_forward(*bus, *device_function, cfg_offset, value)
                 } else if *device_function == 0 {
@@ -230,9 +238,10 @@ impl PcieDownstreamPort {
 mod tests {
     use super::*;
     use chipset_device::io::IoResult;
+    use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::spec::hwid::HardwareIds;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     // Mock device for testing
     struct MockDevice;
@@ -281,12 +290,12 @@ mod tests {
 
     impl GenericPciBusDevice for MultiFunctionMockDevice {
         fn pci_cfg_read(&mut self, _offset: u16, _value: &mut u32) -> Option<IoResult> {
-            self.stats.lock().unwrap().direct_reads += 1;
+            self.stats.lock().direct_reads += 1;
             Some(IoResult::Ok)
         }
 
         fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
-            self.stats.lock().unwrap().direct_writes += 1;
+            self.stats.lock().direct_writes += 1;
             Some(IoResult::Ok)
         }
 
@@ -299,7 +308,6 @@ mod tests {
         ) -> Option<IoResult> {
             self.stats
                 .lock()
-                .unwrap()
                 .forward_reads
                 .push((bus, device_function, offset));
             *value = 0x1234_5678;
@@ -315,7 +323,6 @@ mod tests {
         ) -> Option<IoResult> {
             self.stats
                 .lock()
-                .unwrap()
                 .forward_writes
                 .push((bus, device_function, offset, value));
             Some(IoResult::Ok)
@@ -453,7 +460,7 @@ mod tests {
             IoResult::Ok
         ));
 
-        let stats = stats.lock().unwrap().clone();
+        let stats = stats.lock().clone();
         assert_eq!(stats.direct_reads, 0);
         assert_eq!(stats.forward_reads, vec![(1, 0, 0x10), (1, 3, 0x14)]);
     }
@@ -502,7 +509,7 @@ mod tests {
             IoResult::Ok
         ));
 
-        let stats = stats.lock().unwrap().clone();
+        let stats = stats.lock().clone();
         assert_eq!(stats.direct_writes, 0);
         assert_eq!(
             stats.forward_writes,

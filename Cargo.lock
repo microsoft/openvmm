@@ -5770,6 +5770,7 @@ dependencies = [
  "inspect",
  "memory_range",
  "pal_async",
+ "parking_lot",
  "pci_bus",
  "pci_core",
  "tracelimit",
