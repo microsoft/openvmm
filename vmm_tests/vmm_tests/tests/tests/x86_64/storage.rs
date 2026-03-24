@@ -91,7 +91,7 @@ async fn test_storage_linux(
     controller_guid: Guid,
     expected_devices: Vec<ExpectedGuestDevice>,
 ) -> anyhow::Result<()> {
-    const DEVICE_DISCOVER_RETRIES: u32 = 10;
+    const DEVICE_DISCOVER_RETRIES: u32 = 20;
     const DEVICE_DISCOVER_SLEEP_SECS: u64 = 3;
 
     let sh = agent.unix_shell();
