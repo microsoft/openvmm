@@ -144,7 +144,7 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Add a PCIe NVMe device to the using the NVMe emulator.
+    /// Add a PCIe NVMe device to the VM using the NVMe emulator.
     pub fn with_pcie_nvme(mut self, port_name: &str, subsystem_id: Guid) -> Self {
         self.config.pcie_devices.push(PcieDeviceConfig {
             port_name: port_name.to_string(),

@@ -11,20 +11,16 @@ use pipette_client::PipetteClient;
 use std::fmt;
 use vmm_test_macros::openvmm_test;
 
-/// List of MAC addresses for tests to use with [`PetriVmConfigOpenVmm::with_pcie_nic`]
+/// List of MAC addresses for tests to use.
 const PCIE_NIC_MAC_ADDRESSES: [MacAddress; 4] = [
     MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]),
     MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x13]),
-    MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x14]),
-    MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x15]),
 ];
 
-/// List of NVMe Subsystem IDs for tests to use with [`PetriVmConfigOpenVmm::with_pcie_nvme`].
+/// List of NVMe Subsystem IDs for tests to use.
 const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 4] = [
     guid::guid!("55bfb22d-3f6c-4d5a-8ed8-d779dbdae6b8"),
     guid::guid!("6e4fbff0-eefc-4982-9e09-faf2f185701e"),
-    guid::guid!("5f429e81-06e4-4a5f-8763-1f589ce51f9d"),
-    guid::guid!("9732c737-d78a-4c29-bc8c-72664b8fe970"),
 ];
 
 struct ParsedPciDevice {
@@ -144,7 +140,7 @@ async fn pcie_root_emulation_single_segment(
         .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
         .count();
 
-    assert_eq!(root_port_count, 1 * 4 * 4);
+    assert_eq!(root_port_count, 16);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
@@ -174,7 +170,7 @@ async fn pcie_root_emulation_multi_segment(
         .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
         .count();
 
-    assert_eq!(root_port_count, 4 * 1 * 8);
+    assert_eq!(root_port_count, 32);
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
