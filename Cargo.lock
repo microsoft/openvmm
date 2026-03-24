@@ -3384,7 +3384,7 @@ dependencies = [
 [[package]]
 name = "igvm"
 version = "0.4.0"
-source = "git+https://github.com/chris-oo/igvm?branch=corim-header#eadb2cc6e0c56a7f1aa2b24038f4f0667ac79fc1"
+source = "git+https://github.com/chris-oo/igvm?branch=corim-header#e96caf193935761d6c1df7a1570f51b183e2b6dd"
 dependencies = [
  "bitfield-struct 0.10.1",
  "crc32fast",
@@ -3401,7 +3401,7 @@ dependencies = [
 [[package]]
 name = "igvm_defs"
 version = "0.4.0"
-source = "git+https://github.com/chris-oo/igvm?branch=corim-header#eadb2cc6e0c56a7f1aa2b24038f4f0667ac79fc1"
+source = "git+https://github.com/chris-oo/igvm?branch=corim-header#e96caf193935761d6c1df7a1570f51b183e2b6dd"
 dependencies = [
  "bitfield-struct 0.10.1",
  "open-enum",
@@ -3429,6 +3429,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber",
