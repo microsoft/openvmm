@@ -2525,7 +2525,7 @@ pub struct HvX64SegmentRegister {
 
 /// Place holder to default for arm64
 impl HvX64SegmentRegister {
-    pub fn defaultArm64() -> Self{
+    pub fn default_arm64() -> Self{
         Self {
             base: 0,
             limit: 0,

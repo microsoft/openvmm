@@ -223,9 +223,7 @@ where
 
     // During the second pass, read in each section pointed to by the program headers,
     // and import into the guest memory.
-    let mut count: i64 = 0;
     for phdr in phdrs {
-        count += 1;
         if phdr.p_type.get(LE) != elf::PT_LOAD {
             continue;
         }

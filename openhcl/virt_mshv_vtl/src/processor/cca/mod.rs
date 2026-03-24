@@ -636,7 +636,7 @@ impl HardwareIsolatedBacking for CcaBacked {
             instruction_length_and_cr8: 0,
             cpl: 0,
             efer_lma: false,
-            cs: hvdef::HvX64SegmentRegister::defaultArm64(),
+            cs: hvdef::HvX64SegmentRegister::default_arm64(),
             rip: 0,
             rflags: 0,
             rax: 0,
