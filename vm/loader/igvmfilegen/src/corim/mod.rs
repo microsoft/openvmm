@@ -142,6 +142,16 @@ pub fn patch_corim(
     let final_doc = corim_document.map(|d| d.to_vec()).or(existing_doc);
     let final_sig = corim_signature.map(|s| s.to_vec()).or(existing_sig);
 
+    // If a signature is requested but there is no corresponding document,
+    // fail early with a targeted error message rather than relying on the
+    // generic validation error from IgvmFile::new().
+    if final_sig.is_some() && final_doc.is_none() {
+        anyhow::bail!(
+            "Cannot attach CoRIM signature for compatibility mask 0x{compatibility_mask:X} \
+             without a corresponding CoRIM document. Provide --corim-document or ensure an \
+             existing document is present for this mask before adding a signature."
+        );
+    }
     // Append CoRIM headers in the required order (document before signature).
     if let Some(doc) = final_doc {
         new_initializations.push(IgvmInitializationHeader::CorimDocument {
