@@ -23,7 +23,7 @@ pub trait PciConfigSpace: ChipsetDevice {
     ///
     /// # Parameters
     /// - `bus`: Target bus number
-    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `device_function`: Combined device and function number
     /// - `offset`: Configuration space offset
     /// - `value`: Pointer to receive the read value
     fn pci_cfg_read_with_routing(
@@ -50,7 +50,7 @@ pub trait PciConfigSpace: ChipsetDevice {
     ///
     /// # Parameters
     /// - `bus`: Target bus number
-    /// - `device_function`: Combined device and function number (device << 3 | function)
+    /// - `device_function`: Combined device and function number
     /// - `offset`: Configuration space offset
     /// - `value`: Value to write
     fn pci_cfg_write_with_routing(
