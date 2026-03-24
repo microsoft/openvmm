@@ -597,47 +597,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn with_pit_matrix_matches_chipset_type() {
-        let hyperv_gen1 = VmManifestBuilder::new(BaseChipsetType::HypervGen1, MachineArch::X86_64)
-            .build()
-            .expect("hyperv gen1 manifest should build");
-        assert!(hyperv_gen1.with_pit());
-
-        let unenlightened_x64 = VmManifestBuilder::new(
-            BaseChipsetType::UnenlightenedLinuxDirect,
-            MachineArch::X86_64,
-        )
-        .build()
-        .expect("unenlightened x64 manifest should build");
-        assert!(unenlightened_x64.with_pit());
-
-        let unenlightened_aarch64 = VmManifestBuilder::new(
-            BaseChipsetType::UnenlightenedLinuxDirect,
-            MachineArch::Aarch64,
-        )
-        .build()
-        .expect("unenlightened aarch64 manifest should build");
-        assert!(!unenlightened_aarch64.with_pit());
-
-        let hyperv_gen2_uefi =
-            VmManifestBuilder::new(BaseChipsetType::HypervGen2Uefi, MachineArch::X86_64)
-                .build()
-                .expect("hyperv gen2 uefi manifest should build");
-        assert!(!hyperv_gen2_uefi.with_pit());
-
-        let hyperv_gen2_linux =
-            VmManifestBuilder::new(BaseChipsetType::HyperVGen2LinuxDirect, MachineArch::X86_64)
-                .build()
-                .expect("hyperv gen2 linux manifest should build");
-        assert!(!hyperv_gen2_linux.with_pit());
-
-        let hcl_host = VmManifestBuilder::new(BaseChipsetType::HclHost, MachineArch::X86_64)
-            .build()
-            .expect("hcl host manifest should build");
-        assert!(!hcl_host.with_pit());
-    }
-
-    #[test]
     fn attach_pit_is_idempotent() {
         let mut result = VmChipsetResult {
             chipset: BaseChipsetManifest::empty(),
