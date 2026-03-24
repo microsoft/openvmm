@@ -294,12 +294,15 @@ macro_rules! log {
 /// - a log file, in human readable format. This file is `petri.log`, except
 ///   for events whose target ends in `.log`, which go to separate files named by
 ///   the target.
-pub fn try_init_tracing(root_path: &Path) -> anyhow::Result<PetriLogSource> {
+pub fn try_init_tracing(
+    root_path: &Path,
+    default_level: LevelFilter,
+) -> anyhow::Result<PetriLogSource> {
     let targets =
         if let Ok(var) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
             var.parse().unwrap()
         } else {
-            Targets::new().with_default(LevelFilter::DEBUG)
+            Targets::new().with_default(default_level)
         };
 
     // Canonicalize so that printed attachment paths are most likely to work.

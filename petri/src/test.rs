@@ -127,7 +127,8 @@ impl Test {
         let artifacts = resolve(&name, self.artifact_requirements.clone())
             .context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
-        let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
+        let logger = try_init_tracing(output_dir, tracing::level_filters::LevelFilter::DEBUG)
+            .context("failed to initialize tracing")?;
         let mut post_test_hooks = Vec::new();
 
         // Catch test panics in order to cleanly log the panic result. Without

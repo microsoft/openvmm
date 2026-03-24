@@ -25,6 +25,9 @@ serde_json = { workspace = true, features = ["std"] }
 tempfile.workspace = true
 tracing.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "Win32_System_ProcessStatus",
