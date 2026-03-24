@@ -419,30 +419,26 @@ impl PciConfigSpace for GenericPcieSwitch {
         self.upstream_port.cfg_space.write_u32(offset, value)
     }
 
-    fn pci_cfg_read_forward(
+    fn pci_cfg_read_with_routing(
         &mut self,
         bus: u8,
         device_function: u8,
         offset: u16,
         value: &mut u32,
-    ) -> Option<IoResult> {
+    ) -> IoResult {
         self.route_cfg_read(bus, device_function, offset, value)
+            .unwrap_or(IoResult::Ok)
     }
 
-    fn pci_cfg_write_forward(
+    fn pci_cfg_write_with_routing(
         &mut self,
         bus: u8,
         device_function: u8,
         offset: u16,
         value: u32,
-    ) -> Option<IoResult> {
+    ) -> IoResult {
         self.route_cfg_write(bus, device_function, offset, value)
-    }
-
-    fn supports_multi_function_device(&self) -> bool {
-        // For now, the switch emulators in this code base are
-        // just single-function within the switches themselves.
-        false
+            .unwrap_or(IoResult::Ok)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {

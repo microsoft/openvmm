@@ -96,23 +96,10 @@ impl PcieDownstreamPort {
             return IoResult::Ok;
         }
 
-        if *bus == *bus_range.start() {
-            // Perform type-0 access to the child device's config space.
+        if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                // If this device has marked itself as supporting multiple functions,
-                // use the PCI config read function which specifies a function number,
-                // else fall back to the single-function version where the function number
-                // is implicitly zero.
-                let result = if device.supports_multi_function_device() {
-                    device.pci_cfg_read_forward(*bus, *device_function, cfg_offset, value)
-                } else if *device_function == 0 {
-                    device.pci_cfg_read(cfg_offset, value)
-                } else {
-                    tracelimit::warn_ratelimited!(
-                        "invalid access: multi-function device access not supported for now"
-                    );
-                    return IoResult::Ok;
-                };
+                let result =
+                    device.pci_cfg_read_with_routing(*bus, *device_function, cfg_offset, value);
 
                 if let Some(result) = result {
                     match result {
@@ -120,19 +107,7 @@ impl PcieDownstreamPort {
                         res => return res,
                     }
                 }
-            }
-        } else if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                // Forward access to the linked device.
-                let result = device.pci_cfg_read_forward(*bus, *device_function, cfg_offset, value);
-
-                if let Some(result) = result {
-                    match result {
-                        IoResult::Ok => (),
-                        res => return res,
-                    }
-                }
-            } else {
+            } else if *bus != *bus_range.start() {
                 tracelimit::warn_ratelimited!(
                     "invalid access: bus number to access not within port's bus number range"
                 );
@@ -159,36 +134,10 @@ impl PcieDownstreamPort {
             return IoResult::Ok;
         }
 
-        if *bus == *bus_range.start() {
-            // Perform type-0 access to the child device's config space.
+        if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                // If this device has marked itself as supporting multiple functions,
-                // use the PCI config write function which specifies a function number,
-                // else fall back to the single-function version where the function number
-                // is implicitly zero.
-                let result = if device.supports_multi_function_device() {
-                    device.pci_cfg_write_forward(*bus, *device_function, cfg_offset, value)
-                } else if *device_function == 0 {
-                    device.pci_cfg_write(cfg_offset, value)
-                } else {
-                    tracelimit::warn_ratelimited!(
-                        "invalid access: multi-function device access not supported for now"
-                    );
-                    return IoResult::Ok;
-                };
-
-                if let Some(result) = result {
-                    match result {
-                        IoResult::Ok => (),
-                        res => return res,
-                    }
-                }
-            }
-        } else if bus_range.contains(bus) {
-            if let Some((_, device)) = &mut self.link {
-                // Forward access to the linked device.
                 let result =
-                    device.pci_cfg_write_forward(*bus, *device_function, cfg_offset, value);
+                    device.pci_cfg_write_with_routing(*bus, *device_function, cfg_offset, value);
 
                 if let Some(result) = result {
                     match result {
@@ -196,7 +145,7 @@ impl PcieDownstreamPort {
                         res => return res,
                     }
                 }
-            } else {
+            } else if *bus != *bus_range.start() {
                 tracelimit::warn_ratelimited!(
                     "invalid access: bus number to access not within port's bus number range"
                 );
@@ -254,26 +203,6 @@ mod tests {
         fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
             None
         }
-
-        fn pci_cfg_read_forward(
-            &mut self,
-            _bus: u8,
-            _device_function: u8,
-            _offset: u16,
-            _value: &mut u32,
-        ) -> Option<IoResult> {
-            None
-        }
-
-        fn pci_cfg_write_forward(
-            &mut self,
-            _bus: u8,
-            _device_function: u8,
-            _offset: u16,
-            _value: u32,
-        ) -> Option<IoResult> {
-            None
-        }
     }
 
     #[derive(Default, Debug, Clone, PartialEq, Eq)]
@@ -299,7 +228,7 @@ mod tests {
             Some(IoResult::Ok)
         }
 
-        fn pci_cfg_read_forward(
+        fn pci_cfg_read_with_routing(
             &mut self,
             bus: u8,
             device_function: u8,
@@ -314,7 +243,7 @@ mod tests {
             Some(IoResult::Ok)
         }
 
-        fn pci_cfg_write_forward(
+        fn pci_cfg_write_with_routing(
             &mut self,
             bus: u8,
             device_function: u8,
@@ -326,10 +255,6 @@ mod tests {
                 .forward_writes
                 .push((bus, device_function, offset, value));
             Some(IoResult::Ok)
-        }
-
-        fn supports_multi_function_device(&self) -> bool {
-            true
         }
     }
 

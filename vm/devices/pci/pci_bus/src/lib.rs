@@ -76,58 +76,50 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult>;
 
-    /// Forward a PCI configuration space read to a downstream device.
+    /// Handle a PCI configuration space read with full routing context.
     ///
-    /// Default implementation returns `None`, indicating this device doesn't support routing.
-    /// Routing components like switches and bridges should override this method.
+    /// This method receives configuration space accesses with the target bus and
+    /// device/function information. The default implementation dispatches to
+    /// [`pci_cfg_read`](Self::pci_cfg_read) for function 0 accesses on single-function
+    /// devices. Routing components (switches, bridges) and multi-function devices
+    /// should override this method.
     ///
-    /// # Parameters
-    /// - `bus`: Target bus number for the downstream device
-    /// - `device_function`: Combined device and function number (device << 3 | function)
-    /// - `offset`: Configuration space offset within the target device
-    /// - `value`: Pointer to receive the read value
-    ///
-    /// # Returns
-    /// `Some(IoResult)` if the routing component handled the forward, `None` if
-    /// the component doesn't support routing or the target is not reachable.
-    fn pci_cfg_read_forward(
+    /// Returns `None` if the backing device is no longer responding.
+    fn pci_cfg_read_with_routing(
         &mut self,
         _bus: u8,
-        _device_function: u8,
-        _offset: u16,
-        _value: &mut u32,
+        device_function: u8,
+        offset: u16,
+        value: &mut u32,
     ) -> Option<IoResult> {
-        None
+        if device_function == 0 {
+            self.pci_cfg_read(offset, value)
+        } else {
+            Some(IoResult::Ok)
+        }
     }
 
-    /// Forward a PCI configuration space write to a downstream device.
+    /// Handle a PCI configuration space write with full routing context.
     ///
-    /// Default implementation returns `None`, indicating this device doesn't support routing.
-    /// Routing components like switches and bridges should override this method.
+    /// This method receives configuration space accesses with the target bus and
+    /// device/function information. The default implementation dispatches to
+    /// [`pci_cfg_write`](Self::pci_cfg_write) for function 0 accesses on single-function
+    /// devices. Routing components (switches, bridges) and multi-function devices
+    /// should override this method.
     ///
-    /// # Parameters
-    /// - `bus`: Target bus number for the downstream device
-    /// - `device_function`: Combined device and function number (device << 3 | function)
-    /// - `offset`: Configuration space offset within the target device
-    /// - `value`: Value to write to the target device
-    ///
-    /// # Returns
-    /// `Some(IoResult)` if the routing component handled the forward, `None` if
-    /// the component doesn't support routing or the target is not reachable.
-    fn pci_cfg_write_forward(
+    /// Returns `None` if the backing device is no longer responding.
+    fn pci_cfg_write_with_routing(
         &mut self,
         _bus: u8,
-        _device_function: u8,
-        _offset: u16,
-        _value: u32,
+        device_function: u8,
+        offset: u16,
+        value: u32,
     ) -> Option<IoResult> {
-        None
-    }
-
-    /// Whether direct Type 0 accesses on an attached child bus should be
-    /// routed exclusively through the forwarding hooks.
-    fn supports_multi_function_device(&self) -> bool {
-        false
+        if device_function == 0 {
+            self.pci_cfg_write(offset, value)
+        } else {
+            Some(IoResult::Ok)
+        }
     }
 }
 

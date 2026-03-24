@@ -835,46 +835,38 @@ mod weak_mutex_pci {
             )
         }
 
-        fn pci_cfg_read_forward(
+        fn pci_cfg_read_with_routing(
             &mut self,
             bus: u8,
             device_function: u8,
             offset: u16,
             value: &mut u32,
         ) -> Option<IoResult> {
-            self.0
-                .upgrade()?
-                .lock()
-                .supports_pci()
-                .expect("builder code ensures supports_pci.is_some()")
-                .pci_cfg_read_forward(bus, device_function, offset, value)
+            Some(
+                self.0
+                    .upgrade()?
+                    .lock()
+                    .supports_pci()
+                    .expect("builder code ensures supports_pci.is_some()")
+                    .pci_cfg_read_with_routing(bus, device_function, offset, value),
+            )
         }
 
-        fn pci_cfg_write_forward(
+        fn pci_cfg_write_with_routing(
             &mut self,
             bus: u8,
             device_function: u8,
             offset: u16,
             value: u32,
         ) -> Option<IoResult> {
-            self.0
-                .upgrade()?
-                .lock()
-                .supports_pci()
-                .expect("builder code ensures supports_pci.is_some()")
-                .pci_cfg_write_forward(bus, device_function, offset, value)
-        }
-
-        fn supports_multi_function_device(&self) -> bool {
-            let Some(device) = self.0.upgrade() else {
-                return false;
-            };
-
-            device
-                .lock()
-                .supports_pci()
-                .expect("builder code ensures supports_pci.is_some()")
-                .supports_multi_function_device()
+            Some(
+                self.0
+                    .upgrade()?
+                    .lock()
+                    .supports_pci()
+                    .expect("builder code ensures supports_pci.is_some()")
+                    .pci_cfg_write_with_routing(bus, device_function, offset, value),
+            )
         }
     }
 
