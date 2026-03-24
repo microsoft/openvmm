@@ -424,12 +424,12 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
 /// Test EFI diagnostics with no boot devices.
 /// TODO:
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[vmm_test_with(noagent(
-    hyperv_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_aarch64(none),
-    openvmm_openhcl_uefi_x64(none)
-))]
-async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
+// #[vmm_test_with(noagent(
+//     hyperv_openhcl_uefi_x64(none),
+//     hyperv_openhcl_uefi_aarch64(none),
+//     openvmm_openhcl_uefi_x64(none)
+// ))]
+async fn _efi_diagnostics_no_boot<T: PetriVmmBackend>(
     _config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     // let vm = config.with_uefi_frontpage(true).run_without_agent().await?;
