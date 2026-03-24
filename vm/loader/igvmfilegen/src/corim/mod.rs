@@ -139,8 +139,18 @@ pub fn patch_corim(
     // Determine final document and signature: prefer caller-provided data,
     // fall back to the existing data we preserved above.
     let had_existing = existing_doc.is_some() || existing_sig.is_some();
-    let final_doc = corim_document.map(|d| d.to_vec()).or(existing_doc);
-    let final_sig = corim_signature.map(|s| s.to_vec()).or(existing_sig);
+    let final_doc = corim_document.map(|d| d.to_vec()).or(existing_doc.clone());
+    let final_sig = corim_signature.map(|s| s.to_vec()).or(existing_sig.clone());
+
+    // Log when existing headers are being preserved (caller did not provide
+    // a replacement). This avoids confusion when the final output includes
+    // data the caller didn't explicitly pass on the command line.
+    if corim_document.is_none() && existing_doc.is_some() {
+        tracing::info!("Preserving existing CoRIM document from input file");
+    }
+    if corim_signature.is_none() && existing_sig.is_some() {
+        tracing::info!("Preserving existing CoRIM signature from input file");
+    }
 
     // If a signature is requested but there is no corresponding document,
     // fail early with a targeted error message rather than relying on the
@@ -152,6 +162,10 @@ pub fn patch_corim(
              existing document is present for this mask before adding a signature."
         );
     }
+    // Capture final sizes for logging (before values are moved).
+    let final_doc_size = final_doc.as_ref().map(|d| d.len()).unwrap_or(0);
+    let final_sig_size = final_sig.as_ref().map(|s| s.len()).unwrap_or(0);
+
     // Append CoRIM headers in the required order (document before signature).
     if let Some(doc) = final_doc {
         new_initializations.push(IgvmInitializationHeader::CorimDocument {
@@ -191,8 +205,8 @@ pub fn patch_corim(
         action = action,
         original_size = igvm_data.len(),
         new_size = output.len(),
-        document_size = corim_document.map(|d| d.len()).unwrap_or(0),
-        signature_size = corim_signature.map(|s| s.len()).unwrap_or(0),
+        final_document_size = final_doc_size,
+        final_signature_size = final_sig_size,
         platform = ?platform,
         "{} CoRIM headers in IGVM file",
         action
@@ -752,5 +766,92 @@ mod tests {
         assert_eq!(sigs.len(), 1);
         assert_eq!(docs[0].payload, new_doc);
         assert_eq!(sigs[0].payload, new_sig);
+    }
+
+    #[test]
+    fn test_patch_corim_signature_only_preserves_document_round_trip() {
+        // End-to-end test: create file with both CoRIM headers, then update
+        // only the signature. Verify the document is preserved AND the
+        // output is re-parseable (round-trips through new_from_binary).
+        let page_data = vec![0xFE; 4096];
+        let igvm_data = build_igvm(
+            vec![new_platform(0x1, IgvmPlatformType::VSM_ISOLATION)],
+            vec![new_page_data(0, 0x1, &page_data)],
+        );
+
+        let original_doc = b"document-must-survive-signature-only-update";
+
+        // Step 1: add both document and signature
+        let with_both = patch_corim(
+            &igvm_data,
+            Some(original_doc.as_slice()),
+            Some(COSE_SIGN1_NIL),
+            IgvmPlatformType::VSM_ISOLATION,
+        )
+        .expect("initial patch with both");
+
+        // Step 2: re-parse the output to confirm CoRIM is in initializations
+        let parsed =
+            IgvmFile::new_from_binary(&with_both, None).expect("output should be parseable");
+        let corim_inits: Vec<_> = parsed
+            .initializations()
+            .iter()
+            .filter(|h| {
+                matches!(
+                    h,
+                    IgvmInitializationHeader::CorimDocument { .. }
+                        | IgvmInitializationHeader::CorimSignature { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            corim_inits.len(),
+            2,
+            "parsed file should have 2 CoRIM init headers (doc + sig)"
+        );
+
+        // Step 3: update ONLY the signature
+        let new_sig: &[u8] = &[0xD2, 0x84, 0x40, 0xA0, 0xF6, 0x41, 0x00];
+        let updated = patch_corim(
+            &with_both,
+            None, // no document provided
+            Some(new_sig),
+            IgvmPlatformType::VSM_ISOLATION,
+        )
+        .expect("signature-only update should succeed");
+
+        // Step 4: verify via raw binary inspection
+        let (docs, sigs) = extract_corim_headers(&updated);
+        assert_eq!(docs.len(), 1, "document must still be present");
+        assert_eq!(sigs.len(), 1, "signature must be present");
+        assert_eq!(
+            docs[0].payload,
+            original_doc.as_slice(),
+            "document payload must be identical to the original"
+        );
+        assert_eq!(
+            sigs[0].payload, new_sig,
+            "signature must be the newly provided one"
+        );
+
+        // Step 5: verify the output is a valid IGVM file (re-parseable)
+        let reparsed = IgvmFile::new_from_binary(&updated, None)
+            .expect("updated output should be re-parseable");
+        let corim_inits_after: Vec<_> = reparsed
+            .initializations()
+            .iter()
+            .filter(|h| {
+                matches!(
+                    h,
+                    IgvmInitializationHeader::CorimDocument { .. }
+                        | IgvmInitializationHeader::CorimSignature { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            corim_inits_after.len(),
+            2,
+            "re-parsed file should still have 2 CoRIM init headers"
+        );
     }
 }
