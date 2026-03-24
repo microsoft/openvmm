@@ -257,7 +257,7 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 
     // Confirm the MANA devices show up as ethernet adapters with
     // the right MAC addresses
-    let mut mac_output: [String ; 2]= [
+    let mut mac_output: [String; 2] = [
         cmd!(sh, "cat /sys/class/net/eth0/address").read().await?,
         cmd!(sh, "cat /sys/class/net/eth1/address").read().await?,
     ];
