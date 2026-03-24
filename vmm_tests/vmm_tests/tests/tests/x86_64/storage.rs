@@ -700,7 +700,7 @@ async fn storvsp_dynamic_add_disk(
 
     // 128MB for the first NS and 1MB extra for each subsequent NS
     const fn disk_sectors(index: u32) -> u64 {
-        (128 + (index as u64)) * 1024 * 1024 / SECTOR_SIZE
+        (128 + (index as u64)) * 1024 * 1024 / SECTOR_SIZE * 1
     }
 
     let scsi_instance = Guid::new_random();
