@@ -1041,7 +1041,6 @@ async fn vm_config_from_command_line(
     let chipset = chipset
         .build()
         .context("failed to build chipset configuration")?;
-    let with_pit = chipset.with_pit();
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
@@ -1637,7 +1636,6 @@ async fn vm_config_from_command_line(
 
     let mut cfg = Config {
         chipset,
-        with_pit,
         load_mode,
         floppy_disks,
         pcie_root_complexes,

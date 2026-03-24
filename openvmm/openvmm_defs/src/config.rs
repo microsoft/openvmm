@@ -33,7 +33,6 @@ pub struct Config {
     pub processor_topology: ProcessorTopologyConfig,
     pub hypervisor: HypervisorConfig,
     pub chipset: BaseChipsetManifest,
-    pub with_pit: bool,
     pub vmbus: Option<VmbusConfig>,
     pub vtl2_vmbus: Option<VmbusConfig>,
     #[cfg(windows)]

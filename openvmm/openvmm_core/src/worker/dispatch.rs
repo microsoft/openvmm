@@ -164,11 +164,15 @@ struct ChipsetCapabilities {
 }
 
 impl ChipsetCapabilities {
-    fn from_parts(chipset: &BaseChipsetManifest, with_pit: bool) -> Self {
+    fn from_parts(chipset: &BaseChipsetManifest, chipset_devices: &[ChipsetDeviceHandle]) -> Self {
+        const PIT_RESOURCE_ID: &str = "pit";
+
         Self {
             with_ioapic: chipset.with_generic_ioapic,
             with_pic: chipset.with_generic_pic,
-            with_pit,
+            with_pit: chipset_devices
+                .iter()
+                .any(|device| device.resource.id() == PIT_RESOURCE_ID),
             with_psp: chipset.with_generic_psp,
         }
     }
@@ -193,7 +197,6 @@ impl Manifest {
             memory: config.memory,
             processor_topology: config.processor_topology,
             chipset: config.chipset,
-            with_pit: config.with_pit,
             #[cfg(windows)]
             kernel_vmnics: config.kernel_vmnics,
             input: config.input,
@@ -241,8 +244,6 @@ pub struct Manifest {
     processor_topology: ProcessorTopologyConfig,
     hypervisor: HypervisorConfig,
     chipset: BaseChipsetManifest,
-    /// Whether a PIT device is present (used for ACPI table generation).
-    with_pit: bool,
     #[cfg(windows)]
     kernel_vmnics: Vec<openvmm_defs::config::KernelVmNicConfig>,
     input: mesh::Receiver<InputData>,
@@ -1150,6 +1151,7 @@ impl InitializedVm {
         ));
 
         let mapper = memory_manager.device_memory_mapper();
+        let chipset_caps = ChipsetCapabilities::from_parts(&cfg.chipset, &cfg.chipset_devices);
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1238,7 +1240,6 @@ impl InitializedVm {
                 let rom = rom_builder.build_from_file_location(firmware)?;
                 // TODO: move mtrr replay to a resource.
                 let halt_vps = halt_vps.clone();
-                let chipset_caps = ChipsetCapabilities::from_parts(&cfg.chipset, cfg.with_pit);
                 deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
                     logger,
                     generation_id_recv,
@@ -2295,7 +2296,6 @@ impl InitializedVm {
         .await?;
 
         let chipset_cfg = cfg.chipset;
-        let chipset_caps = ChipsetCapabilities::from_parts(&chipset_cfg, cfg.with_pit);
 
         let mut this = LoadedVm {
             state_units,
@@ -2951,8 +2951,6 @@ impl LoadedVm {
             vmbus_server.remove().await.shutdown().await;
         }
 
-        let with_pit = self.inner.chipset_caps.with_pit;
-
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
             floppy_disks: vec![],        // TODO
@@ -2964,7 +2962,6 @@ impl LoadedVm {
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
-            with_pit,
             vmbus: None,      // TODO
             vtl2_vmbus: None, // TODO
             hypervisor: self.inner.hypervisor_cfg,

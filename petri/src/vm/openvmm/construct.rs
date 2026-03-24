@@ -426,7 +426,6 @@ impl PetriVmConfigOpenVmm {
             Some(memdiff_vmgs(&vmgs)?)
         };
 
-        let with_pit = chipset.with_pit();
         let VmChipsetResult {
             chipset,
             mut chipset_devices,
@@ -448,7 +447,6 @@ impl PetriVmConfigOpenVmm {
 
             // Base chipset
             chipset,
-            with_pit,
             chipset_devices,
 
             // Basic virtualization device support
