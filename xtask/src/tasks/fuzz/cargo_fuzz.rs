@@ -139,6 +139,14 @@ fn host_triple() -> anyhow::Result<String> {
         .arg("-vV")
         .output()
         .context("failed to run `rustc -vV`")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "`rustc -vV` failed with {}: {}",
+            output.status,
+            stderr.trim()
+        );
+    }
     let stdout = std::str::from_utf8(&output.stdout).context("rustc output was not utf-8")?;
     for line in stdout.lines() {
         if let Some(triple) = line.strip_prefix("host: ") {

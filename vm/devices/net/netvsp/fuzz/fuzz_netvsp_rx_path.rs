@@ -356,8 +356,14 @@ fn do_fuzz(input: &[u8]) {
 
             // Run RX-focused fuzz actions until input is exhausted.
             while !fuzzer_input.is_empty() {
-                execute_next_action(fuzzer_input, &mut queue, &mem, &mut next_transaction_id, &rx_send)
-                    .await?;
+                execute_next_action(
+                    fuzzer_input,
+                    &mut queue,
+                    &mem,
+                    &mut next_transaction_id,
+                    &rx_send,
+                )
+                .await?;
                 drain_queue_async(&mut queue).await;
             }
             Ok(())
