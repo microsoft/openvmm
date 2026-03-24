@@ -655,6 +655,7 @@ impl VmChipsetResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_with_tracing::test;
 
     #[test]
     fn attach_pit_is_idempotent() {

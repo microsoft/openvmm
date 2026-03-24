@@ -9215,6 +9215,7 @@ dependencies = [
  "serial_core",
  "serial_debugcon_resources",
  "serial_pl011_resources",
+ "test_with_tracing",
  "thiserror 2.0.16",
  "vm_resource",
  "vmotherboard",

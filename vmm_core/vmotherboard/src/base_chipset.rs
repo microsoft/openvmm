@@ -340,6 +340,9 @@ impl<'a> BaseChipsetBuilder<'a> {
             }
 
             if dma.is_some() {
+                tracelimit::warn_ratelimited!(
+                    "multiple GenericIsaDmaDeviceHandle entries found; ignoring duplicate handle"
+                );
                 continue;
             }
 
@@ -1026,7 +1029,10 @@ impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
         let mut dma = self.dma.lock();
         let Some(dma) = dma.supports_isa_dma_controller() else {
-            tracing::error!("resolved ISA DMA device had unexpected concrete type");
+            tracelimit::error_ratelimited!(
+                channel = self.channel_num,
+                "resolved ISA DMA device had unexpected concrete type"
+            );
             return 0;
         };
 
@@ -1039,7 +1045,10 @@ impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     ) -> Option<vmcore::isa_dma_channel::IsaDmaBuffer> {
         let mut dma = self.dma.lock();
         let Some(dma) = dma.supports_isa_dma_controller() else {
-            tracing::error!("resolved ISA DMA device had unexpected concrete type");
+            tracelimit::error_ratelimited!(
+                channel = self.channel_num,
+                "resolved ISA DMA device had unexpected concrete type"
+            );
             return None;
         };
 
@@ -1062,7 +1071,10 @@ impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn complete(&mut self) {
         let mut dma = self.dma.lock();
         let Some(dma) = dma.supports_isa_dma_controller() else {
-            tracing::error!("resolved ISA DMA device had unexpected concrete type");
+            tracelimit::error_ratelimited!(
+                channel = self.channel_num,
+                "resolved ISA DMA device had unexpected concrete type"
+            );
             return;
         };
 
