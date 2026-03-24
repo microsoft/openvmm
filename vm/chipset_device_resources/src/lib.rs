@@ -181,6 +181,12 @@ impl ChipsetDevice for ErasedChipsetDevice {
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         self.0.supports_tdisp()
     }
+
+    fn supports_isa_dma_controller(
+        &mut self,
+    ) -> Option<&mut dyn chipset_device::isa_dma::IsaDmaController> {
+        self.0.supports_isa_dma_controller()
+    }
 }
 
 impl ProtobufSaveRestore for ErasedChipsetDevice {

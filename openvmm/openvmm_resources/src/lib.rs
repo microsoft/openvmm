@@ -12,6 +12,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
     #[cfg(guest_arch = "x86_64")]
+    chipset::dma::resolver::GenericIsaDmaResolver,
+    #[cfg(guest_arch = "x86_64")]
     chipset::pit::resolver::PitResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,

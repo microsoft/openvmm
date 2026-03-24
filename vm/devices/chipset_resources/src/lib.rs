@@ -42,6 +42,22 @@ pub mod pit {
     }
 }
 
+pub mod isa_dma {
+    //! Resource definitions for the generic ISA DMA controller.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to the generic dual 8237 ISA DMA controller device.
+    #[derive(MeshPayload)]
+    pub struct GenericIsaDmaDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenericIsaDmaDeviceHandle {
+        const ID: &'static str = "genericIsaDma";
+    }
+}
+
 pub mod battery {
     //! Resource definitions for the battery device
 

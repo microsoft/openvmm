@@ -20,8 +20,9 @@ use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
-use chipset_resources::pit::PitDeviceHandle;
+use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
+use chipset_resources::pit::PitDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -250,6 +251,7 @@ impl VmManifestBuilder {
                     return Err(Error(ErrorInner::UnsupportedArch));
                 }
                 result.attach_i8042();
+                result.attach_generic_isa_dma();
                 result.attach_piix4_pci_usb_uhci_stub();
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
@@ -412,6 +414,24 @@ impl VmChipsetResult {
             }
             .into_resource(),
         });
+        self
+    }
+
+    fn attach_generic_isa_dma(&mut self) -> &mut Self {
+        if self
+            .chipset_devices
+            .iter()
+            .any(|d| d.resource.id() == GenericIsaDmaDeviceHandle::ID)
+        {
+            return self;
+        }
+
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "dma".to_owned(),
+            resource: GenericIsaDmaDeviceHandle.into_resource(),
+            pci_placement: None,
+        });
+
         self
     }
     
