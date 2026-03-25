@@ -811,3 +811,350 @@ async fn large_payload_guest_to_host(driver: DefaultDriver) {
     stream.read_exact(&mut received).unwrap();
     assert_eq!(received, payload);
 }
+
+/// Host-initiated connection: a host Unix client connects to the device's
+/// listener, sends `CONNECT <port>\n`, the device forwards a REQUEST to the
+/// guest, the guest responds with RESPONSE, and data flows bidirectionally.
+#[async_test]
+async fn host_connect_to_guest(driver: DefaultDriver) {
+    use std::os::unix::net::UnixStream as StdUnixStream;
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let host_listener_path = tmp_dir.path().join("host_listener.sock");
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    harness.enable().await;
+
+    // Post rx buffers so the device can deliver the REQUEST to the guest.
+    let mut rx_gpas = Vec::new();
+    for _ in 0..4 {
+        let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
+        rx_gpas.push(gpa);
+    }
+
+    // Host connects to the device's listener socket.
+    let mut host_stream =
+        StdUnixStream::connect(&host_listener_path).expect("connect to host listener");
+    host_stream.set_nonblocking(false).unwrap();
+
+    // Host sends the hybrid vsock connect request for guest port 8080.
+    host_stream
+        .write_all(b"CONNECT 8080\n")
+        .expect("send connect request");
+
+    // Wait for the device to deliver a REQUEST to the guest on the rx queue.
+    // Skip any non-REQUEST packets.
+    let mut rx_buf_idx = 0;
+    let (req_local_port, req_peer_port) = loop {
+        let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+
+        let hdr = harness.read_header(gpa);
+        let op = hdr.op;
+        if Operation(op) == Operation::REQUEST {
+            let src_port = hdr.src_port;
+            let dst_port = hdr.dst_port;
+            let dst_cid = hdr.dst_cid;
+            assert_eq!(dst_cid, GUEST_CID);
+            assert_eq!(dst_port, 8080);
+            break (src_port, dst_port);
+        }
+    };
+
+    // Guest responds with RESPONSE to accept the connection.
+    let response_hdr = VsockHeader {
+        src_cid: GUEST_CID,
+        dst_cid: VSOCK_CID_HOST,
+        src_port: req_peer_port,
+        dst_port: req_local_port,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::RESPONSE.0,
+        flags: 0,
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: 0,
+    };
+    harness.post_tx_packet(&response_hdr, &[]);
+    harness.wait_for_tx_used().await;
+
+    // The device should send "OK <port>\n" back through the Unix socket.
+    let mut ok_buf = [0u8; 64];
+    let n = host_stream.read(&mut ok_buf).expect("read OK response");
+    let ok_str = std::str::from_utf8(&ok_buf[..n]).expect("valid UTF-8");
+    let ok_str = ok_str.trim_end_matches('\n');
+    let port_str = ok_str
+        .strip_prefix("OK ")
+        .unwrap_or_else(|| panic!("expected 'OK <port>', got: {ok_str:?}"));
+    let ok_port: u32 = port_str
+        .parse()
+        .unwrap_or_else(|_| panic!("expected numeric port in OK response, got: {port_str:?}"));
+    assert!(ok_port > 0, "OK port should be non-zero, got {ok_port}");
+
+    // Now the connection is established. Send data from the host to the guest.
+    let payload = b"hello from host side";
+    host_stream.write_all(payload).expect("write host data");
+
+    // Wait for RW packet on the rx queue.
+    loop {
+        let (_rx_id, rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+
+        let hdr = harness.read_header(gpa);
+        let op = hdr.op;
+        if Operation(op) == Operation::RW {
+            let data_len = hdr.len;
+            assert!(rx_len >= HDR_SIZE + data_len);
+            let data = harness.read_rx_data(gpa, data_len);
+            assert_eq!(&data, payload);
+            break;
+        }
+    }
+
+    // Send data from the guest to the host through the same connection.
+    let guest_payload = b"hello from guest side";
+    let rw_hdr = harness.guest_header(
+        req_peer_port,
+        req_local_port,
+        Operation::RW,
+        guest_payload.len() as u32,
+        0,
+    );
+    harness.post_tx_packet(&rw_hdr, guest_payload);
+    harness.wait_for_tx_used().await;
+
+    // Read the data on the host side.
+    let mut recv_buf = vec![0u8; guest_payload.len()];
+    host_stream
+        .read_exact(&mut recv_buf)
+        .expect("read guest data on host");
+    assert_eq!(&recv_buf, guest_payload);
+}
+
+/// Host-initiated connection using an hvsocket vsock template GUID in the
+/// CONNECT message. The device should parse the GUID, extract the embedded
+/// port, deliver a REQUEST to the guest, and reply with an OK containing the
+/// same GUID format.
+#[async_test]
+async fn host_connect_to_guest_with_guid(driver: DefaultDriver) {
+    use std::os::unix::net::UnixStream as StdUnixStream;
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let host_listener_path = tmp_dir.path().join("host_listener.sock");
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    harness.enable().await;
+
+    // Post rx buffers.
+    let mut rx_gpas = Vec::new();
+    for _ in 0..4 {
+        let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
+        rx_gpas.push(gpa);
+    }
+
+    // Host connects to the device's listener socket.
+    let mut host_stream =
+        StdUnixStream::connect(&host_listener_path).expect("connect to host listener");
+    host_stream.set_nonblocking(false).unwrap();
+
+    // Send CONNECT using the hvsocket vsock template GUID for port 8080.
+    // Port 8080 = 0x1F90, so the GUID is 00001f90-facb-11e6-bd58-64006a7986d3.
+    let connect_guid = "00001f90-facb-11e6-bd58-64006a7986d3";
+    let connect_msg = format!("CONNECT {connect_guid}\n");
+    host_stream
+        .write_all(connect_msg.as_bytes())
+        .expect("send GUID connect request");
+
+    // Wait for the REQUEST on the rx queue.
+    let mut rx_buf_idx = 0;
+    let (req_local_port, req_peer_port) = loop {
+        let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+
+        let hdr = harness.read_header(gpa);
+        let op = hdr.op;
+        if Operation(op) == Operation::REQUEST {
+            let src_port = hdr.src_port;
+            let dst_port = hdr.dst_port;
+            let dst_cid = hdr.dst_cid;
+            assert_eq!(dst_cid, GUEST_CID);
+            // The device should extract port 8080 from the GUID.
+            assert_eq!(dst_port, 8080);
+            break (src_port, dst_port);
+        }
+    };
+
+    // Guest responds with RESPONSE.
+    let response_hdr = VsockHeader {
+        src_cid: GUEST_CID,
+        dst_cid: VSOCK_CID_HOST,
+        src_port: req_peer_port,
+        dst_port: req_local_port,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::RESPONSE.0,
+        flags: 0,
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: 0,
+    };
+    harness.post_tx_packet(&response_hdr, &[]);
+    harness.wait_for_tx_used().await;
+
+    // The device should reply with "OK <guid>\n" using the same GUID format.
+    let mut ok_buf = [0u8; 128];
+    let n = host_stream.read(&mut ok_buf).expect("read OK response");
+    let ok_str = std::str::from_utf8(&ok_buf[..n]).expect("valid UTF-8");
+    let ok_str = ok_str.trim_end_matches('\n');
+    let ok_value = ok_str
+        .strip_prefix("OK ")
+        .unwrap_or_else(|| panic!("expected 'OK <guid>', got: {ok_str:?}"));
+
+    // Verify the response is a valid GUID matching the vsock template for
+    // the device's local port.
+    let ok_guid: guid::Guid = ok_value
+        .parse()
+        .unwrap_or_else(|_| panic!("expected GUID in OK response, got: {ok_value:?}"));
+
+    // The GUID should use the vsock template with the local port embedded.
+    let ok_port = hybrid_vsock::VsockPortOrId::Id(ok_guid)
+        .port()
+        .unwrap_or_else(|| panic!("OK GUID does not match vsock template: {ok_guid}"));
+    assert!(ok_port > 0, "OK port should be non-zero, got {ok_port}");
+}
+
+/// Two simultaneous host-to-guest connections must receive different local
+/// port numbers in their OK responses. This exercises port allocation —
+/// currently the device hardcodes local_port to 1234, so this test is
+/// expected to fail until that is fixed.
+#[async_test]
+async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver) {
+    use std::os::unix::net::UnixStream as StdUnixStream;
+
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let host_listener_path = tmp_dir.path().join("host_listener.sock");
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    harness.enable().await;
+
+    // Post plenty of rx buffers for both connection handshakes.
+    let mut rx_gpas = Vec::new();
+    for _ in 0..8 {
+        let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
+        rx_gpas.push(gpa);
+    }
+    let mut rx_buf_idx = 0;
+
+    // Helper: drive one host-to-guest connection through the handshake and
+    // return the port number from the OK response.
+    //
+    // Because we can't call async methods on harness from a closure (borrow
+    // issues), the logic is inlined below for each connection.
+
+    // --- Connection 1 ---
+    let mut host_stream1 =
+        StdUnixStream::connect(&host_listener_path).expect("connect to host listener (1)");
+    host_stream1.set_nonblocking(false).unwrap();
+    host_stream1
+        .write_all(b"CONNECT 9001\n")
+        .expect("send connect (1)");
+
+    // Wait for REQUEST for connection 1.
+    let (req1_local, req1_peer) = loop {
+        let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+        let hdr = harness.read_header(gpa);
+        if Operation(hdr.op) == Operation::REQUEST {
+            let dst_cid = hdr.dst_cid;
+            let dst_port = hdr.dst_port;
+            assert_eq!(dst_cid, GUEST_CID);
+            assert_eq!(dst_port, 9001);
+            break (hdr.src_port, dst_port);
+        }
+    };
+
+    // Guest accepts connection 1.
+    let resp1 = VsockHeader {
+        src_cid: GUEST_CID,
+        dst_cid: VSOCK_CID_HOST,
+        src_port: req1_peer,
+        dst_port: req1_local,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::RESPONSE.0,
+        flags: 0,
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: 0,
+    };
+    harness.post_tx_packet(&resp1, &[]);
+    harness.wait_for_tx_used().await;
+
+    // Read OK for connection 1.
+    let mut ok_buf = [0u8; 64];
+    let n = host_stream1.read(&mut ok_buf).expect("read OK (1)");
+    let ok1 = std::str::from_utf8(&ok_buf[..n])
+        .expect("valid UTF-8")
+        .trim_end_matches('\n')
+        .strip_prefix("OK ")
+        .unwrap_or_else(|| panic!("expected OK, got: {:?}", &ok_buf[..n]))
+        .to_string();
+    let port1: u32 = ok1
+        .parse()
+        .unwrap_or_else(|_| panic!("expected numeric port, got: {ok1:?}"));
+
+    // --- Connection 2 ---
+    let mut host_stream2 =
+        StdUnixStream::connect(&host_listener_path).expect("connect to host listener (2)");
+    host_stream2.set_nonblocking(false).unwrap();
+    host_stream2
+        .write_all(b"CONNECT 9002\n")
+        .expect("send connect (2)");
+
+    // Wait for REQUEST for connection 2.
+    let (req2_local, req2_peer) = loop {
+        let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+        let hdr = harness.read_header(gpa);
+        if Operation(hdr.op) == Operation::REQUEST {
+            let dst_cid = hdr.dst_cid;
+            let dst_port = hdr.dst_port;
+            assert_eq!(dst_cid, GUEST_CID);
+            assert_eq!(dst_port, 9002);
+            break (hdr.src_port, dst_port);
+        }
+    };
+
+    // Guest accepts connection 2.
+    let resp2 = VsockHeader {
+        src_cid: GUEST_CID,
+        dst_cid: VSOCK_CID_HOST,
+        src_port: req2_peer,
+        dst_port: req2_local,
+        len: 0,
+        socket_type: SocketType::STREAM.0,
+        op: Operation::RESPONSE.0,
+        flags: 0,
+        buf_alloc: GUEST_BUF_ALLOC,
+        fwd_cnt: 0,
+    };
+    harness.post_tx_packet(&resp2, &[]);
+    harness.wait_for_tx_used().await;
+
+    // Read OK for connection 2.
+    let n = host_stream2.read(&mut ok_buf).expect("read OK (2)");
+    let ok2 = std::str::from_utf8(&ok_buf[..n])
+        .expect("valid UTF-8")
+        .trim_end_matches('\n')
+        .strip_prefix("OK ")
+        .unwrap_or_else(|| panic!("expected OK, got: {:?}", &ok_buf[..n]))
+        .to_string();
+    let port2: u32 = ok2
+        .parse()
+        .unwrap_or_else(|_| panic!("expected numeric port, got: {ok2:?}"));
+
+    // The two connections must have been assigned different local ports.
+    assert_ne!(
+        port1, port2,
+        "two simultaneous host connections should get different ports, but both got {port1}"
+    );
+}

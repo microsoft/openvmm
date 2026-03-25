@@ -39,6 +39,7 @@ use pal_async::interest::InterestSlot;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::io::IoSlice;
 use std::num::Wrapping;
 use std::path::PathBuf;
@@ -116,6 +117,7 @@ struct Connection {
     send_shutdown: bool,
     receive_shutdown: bool,
     local_send_shutdown: bool,
+    allocated_local_port: bool,
 }
 
 impl Connection {
@@ -143,6 +145,7 @@ impl Connection {
             send_shutdown: false,
             receive_shutdown: false,
             local_send_shutdown: false,
+            allocated_local_port: false,
         }
     }
 
@@ -171,6 +174,7 @@ impl Connection {
             send_shutdown: false,
             receive_shutdown: false,
             local_send_shutdown: false,
+            allocated_local_port: true,
         }
     }
 
@@ -513,6 +517,8 @@ pub struct ConnectionManager {
     conns: HashMap<ConnKey, Connection>,
     pending_conns: HashMap<u64, Connection>,
     next_seq: u64,
+    local_ports: HashSet<u32>,
+    last_local_port: u32,
 }
 
 impl ConnectionManager {
@@ -528,6 +534,8 @@ impl ConnectionManager {
             conns: HashMap::new(),
             pending_conns: HashMap::new(),
             next_seq: 0,
+            local_ports: HashSet::new(),
+            last_local_port: (1u32 << 30) - 1,
         }
     }
 
@@ -541,7 +549,7 @@ impl ConnectionManager {
         let seq = self.next_seq;
         // TODO: Allocate a local port.
 
-        let conn = Connection::new_pending(1234, seq, socket);
+        let conn = Connection::new_pending(self.allocate_local_port(), seq, socket);
 
         let read_work =
             PendingWork::rx(conn.socket.await_read_ready(RxWork::PendingConnection(seq)));
@@ -629,13 +637,13 @@ impl ConnectionManager {
                             ?key,
                             "failed to handle RESPONSE from guest"
                         );
-                        self.conns.remove(&key);
+                        self.remove_connection(&key);
                         PendingWork::simple_rx(RxWork::SendReset(key))
                     }
                 }
             }
             Operation::RST => {
-                if let Some(_conn) = self.conns.remove(&key) {
+                if self.remove_connection(&key).is_some() {
                     tracing::debug!(?key, "guest reset connection");
                 }
                 PendingWork::NONE
@@ -658,7 +666,7 @@ impl ConnectionManager {
                     // Both sides have shutdown and all buffered data has been forwarded, so we can
                     // reset immediately.
                     tracing::info!(?key, "connection fully shutdown, removing");
-                    self.conns.remove(&key);
+                    self.remove_connection(&key);
                     PendingWork::simple_rx(RxWork::SendReset(key))
                 } else {
                     PendingWork::NONE
@@ -745,7 +753,7 @@ impl ConnectionManager {
                         key = ?id.key,
                         "failed to complete connection from host"
                     );
-                    self.conns.remove(&id.key);
+                    self.remove_connection(&id.key);
                     PendingWork::simple_rx(RxWork::SendReset(id.key))
                 }
             };
@@ -761,13 +769,13 @@ impl ConnectionManager {
                             "failed to shutdown write side of socket after flushing buffer"
                         );
 
-                        self.conns.remove(&id.key);
+                        self.remove_connection(&id.key);
                         return PendingWork::simple_rx(RxWork::SendReset(id.key));
                     }
 
                     if conn.receive_shutdown {
                         tracing::info!(?id, "connection fully shutdown after write, removing");
-                        self.conns.remove(&id.key);
+                        self.remove_connection(&id.key);
                         return PendingWork::simple_rx(RxWork::SendReset(id.key));
                     }
                 }
@@ -845,7 +853,7 @@ impl ConnectionManager {
                 if let Some(timeout) = conn.timeout {
                     if Instant::now() >= timeout {
                         tracing::info!(?id, "connection timed out");
-                        self.conns.remove(&id.key);
+                        self.remove_connection(&id.key);
                         return (
                             Some(new_rst_packet(self.guest_cid, id.key)),
                             PendingWork::NONE,
@@ -856,7 +864,7 @@ impl ConnectionManager {
                 // TODO: Make a function in Connection for this.
                 let header = if conn.pending_reply.reset() {
                     // Remove the connection immediately on reset.
-                    self.conns.remove(&id.key);
+                    self.remove_connection(&id.key);
                     return (
                         Some(new_rst_packet(self.guest_cid, id.key)),
                         PendingWork::NONE,
@@ -902,7 +910,7 @@ impl ConnectionManager {
                                 ?id.key,
                                 "failed to read data from host socket"
                             );
-                            self.conns.remove(&id.key);
+                            self.remove_connection(&id.key);
                             return (
                                 Some(new_rst_packet(self.guest_cid, id.key)),
                                 PendingWork::NONE,
@@ -922,7 +930,7 @@ impl ConnectionManager {
                         conn.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
                     } else {
                         // Socket closed without us shutting down the write side, so reset immediately.
-                        self.conns.remove(&id.key);
+                        self.remove_connection(&id.key);
                         PendingWork::simple_rx(RxWork::SendReset(id.key))
                     }
                 } else if conn.state == ConnectionState::Connected
@@ -947,7 +955,7 @@ impl ConnectionManager {
 
                 if conn.timeout.is_some_and(|t| Instant::now() >= t) {
                     tracing::debug!(seq, "pending connection timed out");
-                    self.pending_conns.remove(&seq);
+                    self.remove_pending_connection(seq);
                     return (None, PendingWork::NONE);
                 }
 
@@ -959,12 +967,13 @@ impl ConnectionManager {
                             seq,
                             "failed to read connect request from host socket"
                         );
-                        self.pending_conns.remove(&seq);
+                        self.remove_pending_connection(seq);
                         return (None, PendingWork::NONE);
                     }
                 };
 
                 if ready {
+                    // Do not use remove_pending_connection because the port should stay allocated.
                     let conn = self.pending_conns.remove(&seq).unwrap();
                     let key = conn.key;
                     self.conns.insert(conn.key, conn);
@@ -993,6 +1002,42 @@ impl ConnectionManager {
         let seq = self.next_seq;
         self.next_seq += 1;
         seq
+    }
+
+    fn allocate_local_port(&mut self) -> u32 {
+        loop {
+            self.last_local_port = (self.last_local_port + 1) & !(1 << 31) | (1 << 30);
+
+            // Using a HashSet is probably more efficient than anything else for the expected small
+            // number of connections.
+            // N.B. This does not avoid collission with listening sockets, though the high range
+            //      used should make that unlikely. In case it does happen, the guest should still
+            //      use a different source port so the connection key is still unique.
+            if self.local_ports.insert(self.last_local_port) {
+                break;
+            }
+        }
+
+        self.last_local_port
+    }
+
+    fn free_local_port(&mut self, conn: Option<&Connection>) {
+        if let Some(conn) = conn {
+            if conn.allocated_local_port {
+                self.local_ports.remove(&conn.key.local_port);
+            }
+        }
+    }
+
+    fn remove_connection(&mut self, key: &ConnKey) -> Option<Connection> {
+        let conn = self.conns.remove(key);
+        self.free_local_port(conn.as_ref());
+        conn
+    }
+
+    fn remove_pending_connection(&mut self, seq: u64) {
+        let conn = self.pending_conns.remove(&seq);
+        self.free_local_port(conn.as_ref());
     }
 }
 
