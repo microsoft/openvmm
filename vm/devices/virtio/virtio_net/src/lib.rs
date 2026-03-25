@@ -254,19 +254,16 @@ impl VirtioDevice for Device {
         let offloads = &self.adapter.tx_offload_support;
 
         // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
-        let csum = offloads.tcp || offloads.udp;
+        let csum = offloads.tcp && offloads.udp;
         // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
-        // TSO4 also requires IPv4 header checksum support since the backend
-        // must compute per-segment IPv4 header checksums.
-        let host_tso4 = offloads.tso && offloads.tcp && offloads.ipv4_header;
-        let host_tso6 = offloads.tso && offloads.tcp;
+        let host_tso = offloads.tso && offloads.tcp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
             .with_csum(csum)
             .with_guest_csum(true)
-            .with_host_tso4(host_tso4)
-            .with_host_tso6(host_tso6);
+            .with_host_tso4(host_tso)
+            .with_host_tso6(host_tso);
 
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::NET,

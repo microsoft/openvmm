@@ -179,6 +179,9 @@ impl Endpoint for TapEndpoint {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         TxOffloadSupport {
+            // TAP does not support IPv4 header checksum offload, but netvsp
+            // (NDIS/TAP) guests require it for LSOv4. It's relatively cheap for
+            // us to compute in software, so report it. Virtio-net won't use it.
             ipv4_header: true,
             tcp: true,
             udp: true,
@@ -311,22 +314,24 @@ impl Queue for TapQueue {
                 let hdr = build_vnet_hdr(meta);
                 let hdr_bytes = hdr.as_bytes();
                 let mut packet = linearize(pool, &mut segments)?;
-                // The virtio net header has no mechanism for IPv4 header
-                // checksum offload, and in bridged configurations the kernel
-                // won't recompute it. Compute it in software for non-TSO
-                // packets when the guest (netvsp/NDIS) requested it. TSO
-                // packets don't need this because the kernel's GSO engine
-                // rewrites each segment's IPv4 header including the checksum.
-                if meta.flags.offload_ip_header_checksum()
-                    && meta.flags.is_ipv4()
-                    && !meta.flags.offload_tcp_segmentation()
-                {
+
+                // Fix up the IPv4 header checksum when the frontend
+                // requested IPv4 header checksum offload.
+                //
+                // The virtio vnet header has no mechanism for IPv4 header
+                // checksum offload, so we compute it in software. This
+                // also covers NDIS/netvsp LSO packets, where the guest
+                // driver zeroes ip_check (NDIS convention); the kernel's
+                // TAP GSO engine requires a valid checksum to segment
+                // the packet correctly.
+                if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
                     fixup_ipv4_header_checksum(
                         &mut packet,
                         meta.l2_len as usize,
                         meta.l3_len as usize,
                     );
                 }
+
                 let bufs = [
                     std::io::IoSlice::new(hdr_bytes),
                     std::io::IoSlice::new(&packet),
