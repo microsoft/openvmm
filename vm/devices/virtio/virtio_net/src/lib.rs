@@ -1217,9 +1217,7 @@ impl Worker {
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
                 Err(mut work) => {
-                    tracelimit::warn_ratelimited!(
-                        "dropping RX buffer: descriptor index already in use"
-                    );
+                    // Reason has been traced by the callee.
                     self.active_state.stats.rx_dropped.increment();
                     work.complete(0);
                 }

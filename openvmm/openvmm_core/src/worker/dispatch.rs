@@ -2387,6 +2387,7 @@ impl LoadedVmInner {
         } else {
             None
         };
+        #[cfg(guest_arch = "x86_64")]
         let chipset_caps = self.chipset_capabilities();
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
