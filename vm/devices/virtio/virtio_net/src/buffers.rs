@@ -18,6 +18,7 @@ struct RxPacket {
     work: VirtioQueueCallbackWork,
     len: u32,
     cap: u32,
+    data_write_failed: bool,
 }
 
 /// Holds virtio buffers available for a network backend to send data to the client.
@@ -91,7 +92,12 @@ impl VirtioWorkPool {
             );
             return Err(work);
         };
-        *packet = Some(RxPacket { len: 0, cap, work });
+        *packet = Some(RxPacket {
+            len: 0,
+            cap,
+            work,
+            data_write_failed: false,
+        });
         Ok(RxId(idx.into()))
     }
 
@@ -132,6 +138,8 @@ impl BufferAccess for VirtioWorkPool {
                 error = &err as &dyn std::error::Error,
                 "rx memory write failure"
             );
+            packet.data_write_failed = true;
+            packet.len = 0;
         }
     }
 
@@ -178,6 +186,11 @@ impl BufferAccess for VirtioWorkPool {
         let packet = self.rx_packets[id.0 as usize]
             .as_mut()
             .expect("invalid buffer index");
+        if packet.data_write_failed {
+            // write_data failed; skip header so complete_packet delivers a
+            // zero-length packet instead of corrupt data.
+            return;
+        }
         if let Err(err) = packet
             .work
             .write(&self.mem, &virtio_net_header.as_bytes()[..header_size()])
