@@ -98,7 +98,14 @@ impl PcieDownstreamPort {
 
         if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                let result = device.pci_cfg_read_with_routing(*bus, *function, cfg_offset, value);
+                let secondary_bus = *bus_range.start();
+                let result = device.pci_cfg_read_with_routing(
+                    secondary_bus,
+                    *bus,
+                    *function,
+                    cfg_offset,
+                    value,
+                );
 
                 if let Some(result) = result {
                     match result {
@@ -135,7 +142,14 @@ impl PcieDownstreamPort {
 
         if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                let result = device.pci_cfg_write_with_routing(*bus, *function, cfg_offset, value);
+                let secondary_bus = *bus_range.start();
+                let result = device.pci_cfg_write_with_routing(
+                    secondary_bus,
+                    *bus,
+                    *function,
+                    cfg_offset,
+                    value,
+                );
 
                 if let Some(result) = result {
                     match result {
@@ -228,7 +242,8 @@ mod tests {
 
         fn pci_cfg_read_with_routing(
             &mut self,
-            bus: u8,
+            _secondary_bus: u8,
+            target_bus: u8,
             function: u8,
             offset: u16,
             value: &mut u32,
@@ -236,14 +251,15 @@ mod tests {
             self.stats
                 .lock()
                 .forward_reads
-                .push((bus, function, offset));
+                .push((target_bus, function, offset));
             *value = 0x1234_5678;
             Some(IoResult::Ok)
         }
 
         fn pci_cfg_write_with_routing(
             &mut self,
-            bus: u8,
+            _secondary_bus: u8,
+            target_bus: u8,
             function: u8,
             offset: u16,
             value: u32,
@@ -251,7 +267,7 @@ mod tests {
             self.stats
                 .lock()
                 .forward_writes
-                .push((bus, function, offset, value));
+                .push((target_bus, function, offset, value));
             Some(IoResult::Ok)
         }
     }

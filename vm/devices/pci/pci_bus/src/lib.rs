@@ -85,6 +85,13 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// always zero so all 8 bits represent functions within a single
     /// endpoint.
     ///
+    /// A device can distinguish Type 0 (local) from Type 1 (forwarded)
+    /// configuration cycles by comparing `target_bus` and `secondary_bus`:
+    /// when they are equal the access targets this device directly (Type 0),
+    /// otherwise it should be routed downstream (Type 1). An SR-IOV
+    /// capable device can use `secondary_bus` together with `target_bus` and
+    /// `function` to compute the VF number.
+    ///
     /// The default implementation dispatches function 0 to
     /// [`pci_cfg_read`](Self::pci_cfg_read) and returns all-1s for other
     /// functions (the standard "no device present" response). Routing
@@ -94,12 +101,13 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// Returns `None` if the backing device is no longer responding.
     fn pci_cfg_read_with_routing(
         &mut self,
-        _bus: u8,
+        secondary_bus: u8,
+        target_bus: u8,
         function: u8,
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        if function == 0 {
+        if secondary_bus == target_bus && function == 0 {
             self.pci_cfg_read(offset, value)
         } else {
             *value = !0;
@@ -116,6 +124,13 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// always zero so all 8 bits represent functions within a single
     /// endpoint.
     ///
+    /// A device can distinguish Type 0 (local) from Type 1 (forwarded)
+    /// configuration cycles by comparing `target_bus` and `secondary_bus`:
+    /// when they are equal the access targets this device directly (Type 0),
+    /// otherwise it should be routed downstream (Type 1). An SR-IOV
+    /// capable device can use `secondary_bus` together with `target_bus` and
+    /// `function` to compute the VF number.
+    ///
     /// The default implementation dispatches function 0 to
     /// [`pci_cfg_write`](Self::pci_cfg_write) and silently drops writes to
     /// other functions. Routing components (switches, bridges) and
@@ -124,12 +139,13 @@ pub trait GenericPciBusDevice: 'static + Send {
     /// Returns `None` if the backing device is no longer responding.
     fn pci_cfg_write_with_routing(
         &mut self,
-        _bus: u8,
+        secondary_bus: u8,
+        target_bus: u8,
         function: u8,
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        if function == 0 {
+        if secondary_bus == target_bus && function == 0 {
             self.pci_cfg_write(offset, value)
         } else {
             Some(IoResult::Ok)

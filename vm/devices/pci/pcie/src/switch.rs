@@ -419,20 +419,20 @@ impl PciConfigSpace for GenericPcieSwitch {
 
     fn pci_cfg_read_with_routing(
         &mut self,
-        bus: u8,
+        secondary_bus: u8,
+        target_bus: u8,
         function: u8,
         offset: u16,
         value: &mut u32,
     ) -> IoResult {
-        if let Some(result) = self.route_cfg_read(bus, function, offset, value) {
+        if let Some(result) = self.route_cfg_read(target_bus, function, offset, value) {
             return result;
         }
 
-        // Routing didn't handle this access. If the bus is outside the
-        // downstream routing range, this is a Type 0 access targeting the
-        // switch's own upstream port config space.
-        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
-        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+        // Routing didn't handle this access. If target_bus equals the
+        // secondary_bus passed by the parent port, this is a Type 0 access
+        // targeting the switch's own upstream port config space.
+        if target_bus == secondary_bus {
             if function == 0 {
                 return self.upstream_port.cfg_space.read_u32(offset, value);
             }
@@ -445,20 +445,20 @@ impl PciConfigSpace for GenericPcieSwitch {
 
     fn pci_cfg_write_with_routing(
         &mut self,
-        bus: u8,
+        secondary_bus: u8,
+        target_bus: u8,
         function: u8,
         offset: u16,
         value: u32,
     ) -> IoResult {
-        if let Some(result) = self.route_cfg_write(bus, function, offset, value) {
+        if let Some(result) = self.route_cfg_write(target_bus, function, offset, value) {
             return result;
         }
 
-        // Routing didn't handle this access. If the bus is outside the
-        // downstream routing range, this is a Type 0 access targeting the
-        // switch's own upstream port config space.
-        let upstream_bus_range = self.upstream_port.cfg_space().assigned_bus_range();
-        if upstream_bus_range == (0..=0) || !upstream_bus_range.contains(&bus) {
+        // Routing didn't handle this access. If target_bus equals the
+        // secondary_bus passed by the parent port, this is a Type 0 access
+        // targeting the switch's own upstream port config space.
+        if target_bus == secondary_bus {
             if function == 0 {
                 return self.upstream_port.cfg_space.write_u32(offset, value);
             }
@@ -982,28 +982,36 @@ mod tests {
 
         fn pci_cfg_read_with_routing(
             &mut self,
-            bus: u8,
+            secondary_bus: u8,
+            target_bus: u8,
             function: u8,
             offset: u16,
             value: &mut u32,
         ) -> Option<IoResult> {
-            Some(
-                self.0
-                    .pci_cfg_read_with_routing(bus, function, offset, value),
-            )
+            Some(self.0.pci_cfg_read_with_routing(
+                secondary_bus,
+                target_bus,
+                function,
+                offset,
+                value,
+            ))
         }
 
         fn pci_cfg_write_with_routing(
             &mut self,
-            bus: u8,
+            secondary_bus: u8,
+            target_bus: u8,
             function: u8,
             offset: u16,
             value: u32,
         ) -> Option<IoResult> {
-            Some(
-                self.0
-                    .pci_cfg_write_with_routing(bus, function, offset, value),
-            )
+            Some(self.0.pci_cfg_write_with_routing(
+                secondary_bus,
+                target_bus,
+                function,
+                offset,
+                value,
+            ))
         }
     }
 

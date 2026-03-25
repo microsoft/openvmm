@@ -68,27 +68,29 @@ impl GenericPciBusDevice for SwitchAdapter {
 
     fn pci_cfg_read_with_routing(
         &mut self,
-        bus: u8,
+        secondary_bus: u8,
+        target_bus: u8,
         function: u8,
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
         Some(
             self.0
-                .pci_cfg_read_with_routing(bus, function, offset, value),
+                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
         )
     }
 
     fn pci_cfg_write_with_routing(
         &mut self,
-        bus: u8,
+        secondary_bus: u8,
+        target_bus: u8,
         function: u8,
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
         Some(
             self.0
-                .pci_cfg_write_with_routing(bus, function, offset, value),
+                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
         )
     }
 }
