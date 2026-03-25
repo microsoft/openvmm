@@ -364,7 +364,6 @@ impl AlpcNode {
             directory,
             secret,
             Some(path_string),
-            None,
         )?)
     }
 
@@ -387,7 +386,6 @@ impl AlpcNode {
         directory: OwnedHandle,
         mesh_secret: [u8; 32],
         directory_path: Option<String>,
-        expected_server_sid: Option<Vec<u8>>,
     ) -> Result<Self, NodeSetupError> {
         let directory = Arc::new(directory);
         let port = alpc::PortConfig::new()
@@ -422,17 +420,9 @@ impl AlpcNode {
         let connect_task = driver.spawn("mesh alpc connect", {
             let directory = directory.clone();
             let driver = driver.clone();
-            let expected_server_sid = expected_server_sid.clone();
             async move {
-                Self::process_connects(
-                    &driver,
-                    local_id,
-                    directory,
-                    connect_recv,
-                    mesh_secret,
-                    expected_server_sid,
-                )
-                .await
+                Self::process_connects(&driver, local_id, directory, connect_recv, mesh_secret)
+                    .await
             }
         });
 
@@ -547,7 +537,6 @@ impl AlpcNode {
         directory: Arc<OwnedHandle>,
         mut connect_recv: mpsc::UnboundedReceiver<(NodeId, RemoteNodeHandle)>,
         mesh_secret: [u8; 32],
-        expected_server_sid: Option<Vec<u8>>,
     ) {
         let teardowns: Mutex<HashMap<NodeId, mesh_channel::OneshotSender<()>>> = Default::default();
         let mut connect_tasks = FuturesUnordered::new();
@@ -575,7 +564,6 @@ impl AlpcNode {
                 teardown_recv,
                 &teardowns,
                 &mesh_secret,
-                expected_server_sid.as_deref(),
             ));
         }
 
@@ -592,18 +580,14 @@ impl AlpcNode {
         local_id: NodeId,
         remote_id: NodeId,
         mesh_secret: &[u8; 32],
-        expected_server_sid: Option<&[u8]>,
     ) -> io::Result<PolledWait<AlpcPort>> {
         let data = AlpcConnectionData {
             node_id: (local_id.0).0,
             mesh_secret: *mesh_secret,
         };
-        let mut config = alpc::PortConfig::new()
+        let config = alpc::PortConfig::new()
             .max_message_len(MAX_MESSAGE_SIZE)
             .waitable(true);
-        if let Some(sid) = expected_server_sid {
-            config = config.required_server_sid(sid)?;
-        }
         let port = config.connect(
             ObjectAttributes::new()
                 .root(directory.as_handle())
@@ -643,19 +627,9 @@ impl AlpcNode {
         teardown_recv: mesh_channel::OneshotReceiver<()>,
         teardowns: &Mutex<HashMap<NodeId, mesh_channel::OneshotSender<()>>>,
         mesh_secret: &[u8; 32],
-        expected_server_sid: Option<&[u8]>,
     ) {
         tracing::debug!(node = ?local_id, remote_node = ?remote_id, "connecting to node");
-        match Self::connect_alpc(
-            driver,
-            directory,
-            local_id,
-            remote_id,
-            mesh_secret,
-            expected_server_sid,
-        )
-        .await
-        {
+        match Self::connect_alpc(driver, directory, local_id, remote_id, mesh_secret).await {
             Ok(mut port) => {
                 let (failed_send, failed_recv) = mesh_channel::oneshot();
                 handle.connect(Connection {
@@ -877,15 +851,9 @@ impl AlpcNode {
     }
 
     /// Joins the ALPC mesh using a named invitation.
-    ///
-    /// `expected_server_sid` is the SID of the expected ALPC server process.
-    /// When non-empty, all ALPC connections will use `RequiredServerSid` for
-    /// mutual auth. Pass an empty `Vec` to skip SID validation (e.g., when
-    /// filesystem permissions on the invitation socket are sufficient).
     pub fn join_named(
         driver: impl Driver + Spawn + Clone,
         invitation: NamedInvitation,
-        expected_server_sid: Vec<u8>,
         port: Port,
     ) -> Result<Self, JoinError> {
         let mesh_secret: [u8; 32] = invitation
@@ -907,21 +875,12 @@ impl AlpcNode {
             path: invitation.directory_path.clone(),
             source: e,
         })?;
-        // Validate and normalize the expected server SID.
-        // Empty means "no SID check"; non-empty gets validated when
-        // passed to PortConfig::required_server_sid during ALPC connect.
-        let sid = if expected_server_sid.is_empty() {
-            None
-        } else {
-            Some(expected_server_sid)
-        };
         let node = Self::with_id(
             driver,
             invitation.credentials.address.local_addr.node,
             directory,
             mesh_secret,
             Some(invitation.directory_path),
-            sid,
         )?;
         let init_port =
             mesh_channel::OneshotSender::<InitialMessage>::from(node.local_node.add_port(
@@ -1422,9 +1381,7 @@ mod tests {
         let (invitation, handle) = inviter.invite_named(recv.into()).await.unwrap();
 
         let (send2, mut recv2) = channel::<u32>();
-        // In same-process tests, pass an empty SID (RequiredServerSid
-        // won't be checked for same-process connections).
-        let node2 = AlpcNode::join_named(driver, invitation, Vec::new(), send2.into()).unwrap();
+        let node2 = AlpcNode::join_named(driver, invitation, send2.into()).unwrap();
         handle.await;
 
         send.send(42);

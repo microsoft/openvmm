@@ -188,7 +188,7 @@ impl AlpcNode {
         let invitation: NamedInvitation =
             mesh_protobuf::decode(&data).map_err(JoinBySocketError::Decode)?;
 
-        AlpcNode::join_named(driver, invitation, Vec::new(), port).map_err(JoinBySocketError::Join)
+        AlpcNode::join_named(driver, invitation, port).map_err(JoinBySocketError::Join)
     }
 }
 
