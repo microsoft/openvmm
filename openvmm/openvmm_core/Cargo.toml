@@ -49,6 +49,7 @@ vmotherboard = { workspace = true, features = [
     "dev_winbond_super_io_and_floppy_full",
 ] }
 chipset_legacy.workspace = true
+chipset_resources.workspace = true
 chipset_device_resources.workspace = true
 chipset_device_worker.workspace = true
 disk_backend.workspace = true

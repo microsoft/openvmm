@@ -5177,6 +5177,7 @@ dependencies = [
  "chipset_device_resources",
  "chipset_device_worker",
  "chipset_legacy",
+ "chipset_resources",
  "crc32fast",
  "debug_ptr",
  "disk_backend",

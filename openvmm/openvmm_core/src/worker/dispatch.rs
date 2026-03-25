@@ -10,6 +10,7 @@ use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_resources::pit::PitDeviceHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -99,6 +100,7 @@ use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::Resource;
+use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
@@ -166,7 +168,7 @@ struct ChipsetCapabilities {
 
 impl ChipsetCapabilities {
     fn from_parts(chipset: &BaseChipsetManifest, chipset_devices: &[ChipsetDeviceHandle]) -> Self {
-        const PIT_RESOURCE_ID: &str = "pit";
+        const PIT_RESOURCE_ID: &str = PitDeviceHandle::ID;
 
         Self {
             with_ioapic: chipset.with_generic_ioapic,
