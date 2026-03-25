@@ -103,6 +103,32 @@ Per-N metrics include `scale_{N}_mean_boot_ms`,
 `scale_{N}_p99_boot_ms`, `scale_{N}_last_ready_ms`,
 `scale_{N}_per_vm_memory_mib`, and others.
 
+### Disk I/O
+
+Measures block I/O throughput (MiB/s) and IOPS using fio in an Alpine VM
+with a data disk. Supports virtio-blk and storvsc (synthetic SCSI) backends:
+
+```bash
+# Virtio-blk with RAM-backed disk (measures virtio overhead)
+burette run --test disk-io -o disk.json
+
+# Storvsc backend
+burette run --test disk-io --disk-backend storvsc -o disk.json
+
+# File-backed disk for realistic host I/O latency
+burette run --test disk-io --data-disk /tmp/test.raw --data-disk-size-gib 8
+```
+
+Reported metrics per backend:
+
+- `fio_{backend}_seq_read_bw` / `fio_{backend}_seq_write_bw` — sequential bandwidth (MiB/s)
+- `fio_{backend}_rand_read_bw` / `fio_{backend}_rand_write_bw` — random bandwidth (MiB/s)
+- `fio_{backend}_rand_read_iops` / `fio_{backend}_rand_write_iops` — random IOPS
+
+By default a RAM-backed disk is used to isolate virtio/storvsc overhead
+without host filesystem noise. Pass `--data-disk` with a path on fast
+storage (e.g., NVMe) for end-to-end latency measurements.
+
 ## Comparing Reports
 
 ```bash

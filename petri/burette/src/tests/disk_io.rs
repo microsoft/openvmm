@@ -22,7 +22,7 @@ const ARCH: petri_artifacts_common::tags::MachineArch =
 /// Which disk backend to use for the fio test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum DiskBackend {
-    /// Virtio-blk via MMIO.
+    /// Virtio-blk via PCIe (virtio-pci).
     #[value(name = "virtio-blk")]
     VirtioBlk,
     /// Synthetic SCSI (storvsc).
@@ -101,6 +101,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         resolver: &petri::ArtifactResolver<'_>,
         driver: &pal_async::DefaultDriver,
     ) -> anyhow::Result<DiskIoTestState> {
+        anyhow::ensure!(
+            self.data_disk_size_gib > 0,
+            "data_disk_size_gib must be greater than 0"
+        );
         let disk_size_bytes = self.data_disk_size_gib * 1024 * 1024 * 1024;
 
         // Create the data disk file if using file-backed storage.
@@ -155,6 +159,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         let data_disk_path = self.data_disk.clone();
         match self.backend {
             DiskBackend::VirtioBlk => {
+                // Build the disk resource before entering the closure (which
+                // can't propagate errors).
+                let disk = make_disk_resource(&data_disk_path, disk_size_bytes)
+                    .context("failed to create data disk resource")?;
                 builder = builder.modify_backend(move |b| {
                     // Add NETVSP NIC for package installation.
                     let b = b.with_nic();
@@ -163,8 +171,6 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                         use openvmm_defs::config::PcieDeviceConfig;
                         use openvmm_defs::config::PcieRootComplexConfig;
                         use openvmm_defs::config::PcieRootPortConfig;
-
-                        let disk = make_disk_resource(&data_disk_path, disk_size_bytes);
 
                         // Set up PCIe topology for the virtio-blk device.
                         let low_mmio_start = c.memory.mmio_gaps[0].start();
@@ -316,19 +322,18 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 fn make_disk_resource(
     path: &Option<PathBuf>,
     size_bytes: u64,
-) -> vm_resource::Resource<vm_resource::kind::DiskHandleKind> {
+) -> anyhow::Result<vm_resource::Resource<vm_resource::kind::DiskHandleKind>> {
     match path {
-        Some(p) => {
-            openvmm_helpers::disk::open_disk_type(p, false).expect("failed to open data disk")
-        }
+        Some(p) => openvmm_helpers::disk::open_disk_type(p, false)
+            .with_context(|| format!("failed to open data disk at {}", p.display())),
         None => {
             use disk_backend_resources::LayeredDiskHandle;
             use disk_backend_resources::layer::RamDiskLayerHandle;
-            LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+            Ok(LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                 len: Some(size_bytes),
                 sector_size: None,
             })
-            .into_resource()
+            .into_resource())
         }
     }
 }
@@ -336,27 +341,26 @@ fn make_disk_resource(
 /// Discover the data disk device path in the guest.
 ///
 /// For virtio-blk, the device appears as /dev/vda (first virtio-blk device).
-/// For storvsc, it appears as an additional /dev/sd* device.
+/// For storvsc, the device is located via the controller's VMBus instance GUID
+/// in sysfs, which is stable regardless of device enumeration order.
 async fn discover_data_disk(
     agent: &petri::pipette::PipetteClient,
     backend: DiskBackend,
 ) -> anyhow::Result<String> {
     let sh = agent.unix_shell();
 
-    // List block devices via /sys/block (always available, no extra packages).
-    let blocks = cmd!(sh, "ls /sys/block")
-        .read()
-        .await
-        .context("failed to list /sys/block")?;
-
-    tracing::debug!(blocks = %blocks, "guest block devices");
-
-    let devices: Vec<&str> = blocks.split_whitespace().collect();
-
     match backend {
         DiskBackend::VirtioBlk => {
+            // List block devices via /sys/block (always available, no extra packages).
+            let blocks = cmd!(sh, "ls /sys/block")
+                .read()
+                .await
+                .context("failed to list /sys/block")?;
+
+            tracing::debug!(blocks = %blocks, "guest block devices");
+
             // Find the first vd* device.
-            for dev in &devices {
+            for dev in blocks.split_whitespace() {
                 if dev.starts_with("vd") {
                     return Ok(format!("/dev/{dev}"));
                 }
@@ -364,15 +368,21 @@ async fn discover_data_disk(
             anyhow::bail!("no virtio-blk device (vd*) found in guest; found: {blocks}")
         }
         DiskBackend::Storvsc => {
-            // Find sd* devices that aren't the boot disk.
-            // The boot disk is sda; agent disk is sdb; data disk is the last one.
-            let mut sd_devices: Vec<&&str> =
-                devices.iter().filter(|n| n.starts_with("sd")).collect();
-            sd_devices.sort();
-            let data_dev = sd_devices
-                .last()
-                .context("no SCSI data disk (sd*) found in guest")?;
-            Ok(format!("/dev/{data_dev}"))
+            // Discover the data disk by controller GUID via sysfs, which is
+            // stable regardless of device enumeration order.
+            let guid = DATA_DISK_SCSI_CONTROLLER;
+            let list_cmd =
+                format!("ls -d /sys/bus/vmbus/devices/{guid}/host*/target*/*:0:0:0/block/sd*");
+            let path = cmd!(sh, "sh -c {list_cmd}")
+                .read()
+                .await
+                .with_context(|| format!("no SCSI data disk found for controller {guid}"))?;
+            let dev = path
+                .lines()
+                .next()
+                .and_then(|l| l.rsplit('/').next())
+                .context("failed to parse device name from sysfs")?;
+            Ok(format!("/dev/{dev}"))
         }
     }
 }
