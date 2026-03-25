@@ -159,7 +159,6 @@ const SYSTEM_IRQ_ACPI: u32 = 9;
 const WDAT_PORT: u16 = 0x30;
 
 #[derive(Copy, Clone)]
-#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 struct ChipsetCapabilities {
     with_ioapic: bool,
     with_pic: bool,
@@ -168,7 +167,6 @@ struct ChipsetCapabilities {
 }
 
 impl ChipsetCapabilities {
-    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     fn from_parts(chipset: &BaseChipsetManifest, chipset_devices: &[ChipsetDeviceHandle]) -> Self {
         const PIT_RESOURCE_ID: &str = PitDeviceHandle::ID;
 
