@@ -33,6 +33,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tests::boot_time::BootProfile;
+use tests::disk_io::DiskBackend;
 use tests::network::NicBackend;
 
 /// Available performance tests.
@@ -46,6 +47,8 @@ enum TestName {
     Memory,
     /// Network throughput via iperf3 (Alpine VM + Consomme).
     Network,
+    /// Block I/O throughput via fio (Alpine VM + data disk).
+    DiskIo,
 }
 
 /// Global log source for petri, initialized once.
@@ -121,10 +124,25 @@ struct RunArgs {
     #[arg(long, default_value = "vmbus")]
     nic: NicBackend,
 
-    /// Record `perf record -p <pid> -g` traces scoped to each iperf3 test,
+    /// Record `perf record -p <pid> -g` traces scoped to each test,
     /// saving per-test .data files in this directory. Linux only.
     #[arg(long)]
     perf_dir: Option<PathBuf>,
+
+    /// Disk backend for the disk_io test.
+    #[arg(long, default_value = "virtio-blk")]
+    disk_backend: DiskBackend,
+
+    /// Path to raw data disk file for the disk_io test.
+    /// Must be on fast storage (e.g. NVMe) for meaningful results.
+    /// If omitted, uses a RAM-backed disk (measures virtio/storvsc overhead
+    /// without host filesystem noise).
+    #[arg(long)]
+    data_disk: Option<PathBuf>,
+
+    /// Data disk size in GiB for the disk_io test.
+    #[arg(long, default_value = "4")]
+    data_disk_size_gib: u64,
 }
 
 #[derive(clap::Args)]
@@ -212,6 +230,7 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
         TestName::ScaleBoot,
         TestName::Memory,
         TestName::Network,
+        TestName::DiskIo,
     ];
     let tests_to_run: Vec<TestName> = if let Some(name) = args.test {
         vec![name]
@@ -287,6 +306,24 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
                     harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
                 })
                 .context("network test failed")?;
+                all_stats.extend(stats);
+            }
+            TestName::DiskIo => {
+                let test = tests::disk_io::DiskIoTest {
+                    diag: args.diag,
+                    backend: args.disk_backend,
+                    data_disk: args.data_disk.clone(),
+                    data_disk_size_gib: args.data_disk_size_gib,
+                    perf_dir: args.perf_dir.clone(),
+                };
+
+                let artifacts = resolve_artifacts(tests::disk_io::register_artifacts)?;
+                let resolver = petri::ArtifactResolver::resolver(&artifacts);
+
+                let stats = pal_async::DefaultPool::run_with(async |driver| {
+                    harness::run_warm_test(&test, &resolver, &driver, args.iterations).await
+                })
+                .context("disk_io test failed")?;
                 all_stats.extend(stats);
             }
         }
