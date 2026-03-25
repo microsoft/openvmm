@@ -36,6 +36,7 @@ guid.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
+socket2 = { workspace = true, features = ["all"] }
 tempfile.workspace = true
 test_with_tracing.workspace = true
 

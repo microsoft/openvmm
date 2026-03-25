@@ -15,13 +15,16 @@ use parking_lot::Mutex;
 use std::io;
 use std::io::Read;
 use std::io::Write;
-use std::os::fd::AsRawFd;
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::unix::prelude::*;
+#[cfg(windows)]
+use std::os::windows::prelude::*;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use unix_socket::UnixStream;
 use vmcore::vm_task::VmTaskDriver;
 
 pub struct UnixSocketRelay {
@@ -54,7 +57,13 @@ impl RelaySocket {
     pub fn new(driver: &VmTaskDriver, stream: UnixStream) -> io::Result<Self> {
         let sock_ref = stream.as_sock_ref();
         sock_ref.set_nonblocking(true)?;
-        let poll = driver.new_dyn_socket_ready(sock_ref.as_raw_fd())?;
+        #[cfg(unix)]
+        let fd = sock_ref.as_raw_fd();
+        #[cfg(windows)]
+        let fd = sock_ref.as_raw_socket();
+
+        let poll = driver.new_dyn_socket_ready(fd)?;
+
         Ok(Self {
             inner: Arc::new(RelaySocketInner {
                 socket: stream,

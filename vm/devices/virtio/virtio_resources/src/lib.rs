@@ -152,7 +152,7 @@ pub mod console {
 
 pub mod vsock {
     use mesh::MeshPayload;
-    use std::os::unix::net::UnixListener;
+    use unix_socket::UnixListener;
     use vm_resource::ResourceId;
     use vm_resource::kind::VirtioDeviceHandle;
 

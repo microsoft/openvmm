@@ -212,6 +212,7 @@ impl Connection {
         let remaining = data_len - bytes_sent;
         if remaining == 0 {
             // All data was sent.
+            tracing::info!(bytes_sent, "forwarded data to relay socket");
             return Ok(None);
         }
 
@@ -228,7 +229,7 @@ impl Connection {
             );
         }
 
-        tracing::info!(remaining, "buffering data from guest");
+        tracing::info!(remaining, ring_len = buf.len(), "buffering data from guest");
         buf.write(data, bytes_sent);
         Ok(self.socket.await_write_ready(self.instance_id()))
     }

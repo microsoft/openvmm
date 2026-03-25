@@ -19,7 +19,6 @@ use pal_async::wait::PolledWait;
 use pal_event::Event;
 use std::io::Read;
 use std::io::Write;
-use std::os::unix::net::UnixListener as StdUnixListener;
 use std::time::Duration;
 use test_with_tracing::test;
 use unix_socket::UnixListener;
@@ -46,7 +45,7 @@ use zerocopy::IntoBytes;
 
 // --- Constants ---
 
-const QUEUE_SIZE: u16 = 32;
+const QUEUE_SIZE: u16 = 256;
 const GUEST_CID: u64 = 3;
 
 // Memory layout for three virtqueues (rx=0, tx=1, event=2).
@@ -65,7 +64,7 @@ const EVENT_USED_ADDR: u64 = 0x8000;
 
 // Data area for packet headers and payloads
 const DATA_BASE: u64 = 0x10000;
-const TOTAL_MEM_SIZE: usize = 0x80000;
+const TOTAL_MEM_SIZE: usize = 0x100000;
 
 // The vsock header is 44 bytes.
 const HDR_SIZE: u32 = VSOCK_HEADER_SIZE as u32;
@@ -476,9 +475,10 @@ impl TestHarness {
     }
 
     /// Create a Unix listener at the path the relay will use for a given port.
-    fn create_port_listener(&self, port: u32) -> StdUnixListener {
+    fn create_port_listener(&self, port: u32) -> PolledSocket<UnixListener> {
         let socket_path = self._tmp_dir.path().join(format!("vsock_{port}"));
-        StdUnixListener::bind(&socket_path).expect("bind port listener")
+        let listener = UnixListener::bind(&socket_path).expect("bind port listener");
+        PolledSocket::new(&self.driver, listener).unwrap()
     }
 
     /// Perform a full guest-initiated connection handshake.
@@ -491,10 +491,10 @@ impl TestHarness {
     /// Returns the accepted host-side stream.
     async fn connect_guest_to_host(
         &mut self,
-        listener: &StdUnixListener,
+        listener: &mut PolledSocket<UnixListener>,
         guest_port: u32,
         host_port: u32,
-    ) -> std::os::unix::net::UnixStream {
+    ) -> unix_socket::UnixStream {
         // Post an rx buffer for the response.
         let (_rx_desc, rx_gpa) = self.post_rx_buffer(HDR_SIZE + 1024);
 
@@ -504,11 +504,9 @@ impl TestHarness {
 
         // Accept the connection on the host side using async polling so the
         // device worker can make progress on the same async executor.
-        let mut polled_listener =
-            PolledSocket::new(&self.driver, listener.try_clone().unwrap()).unwrap();
         let (stream, _) = mesh::CancelContext::new()
             .with_timeout(Duration::from_secs(5))
-            .until_cancelled(polled_listener.accept())
+            .until_cancelled(listener.accept())
             .await
             .expect("timed out waiting for host accept")
             .expect("accept failed");
@@ -555,10 +553,12 @@ async fn config_returns_guest_cid(driver: DefaultDriver) {
 async fn guest_connect_handshake(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(5000);
+    let mut listener = harness.create_port_listener(5000);
     harness.enable().await;
 
-    let _stream = harness.connect_guest_to_host(&listener, 1024, 5000).await;
+    let _stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5000)
+        .await;
 }
 
 /// Guest sends data to the host through an established connection.
@@ -566,10 +566,12 @@ async fn guest_connect_handshake(driver: DefaultDriver) {
 async fn guest_to_host_data(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(5001);
+    let mut listener = harness.create_port_listener(5001);
     harness.enable().await;
 
-    let mut stream = harness.connect_guest_to_host(&listener, 1024, 5001).await;
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5001)
+        .await;
 
     // Send data from the guest.
     let payload = b"hello from guest";
@@ -588,10 +590,12 @@ async fn guest_to_host_data(driver: DefaultDriver) {
 async fn host_to_guest_data(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(5002);
+    let mut listener = harness.create_port_listener(5002);
     harness.enable().await;
 
-    let mut stream = harness.connect_guest_to_host(&listener, 1024, 5002).await;
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5002)
+        .await;
 
     // Post rx buffers for the incoming data.
     let (_rx_desc, rx_gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
@@ -619,10 +623,12 @@ async fn host_to_guest_data(driver: DefaultDriver) {
 async fn bidirectional_echo(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(5003);
+    let mut listener = harness.create_port_listener(5003);
     harness.enable().await;
 
-    let mut stream = harness.connect_guest_to_host(&listener, 1024, 5003).await;
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5003)
+        .await;
 
     // Post rx buffers upfront so the device can deliver credit updates and
     // data packets without blocking.
@@ -698,15 +704,19 @@ async fn connect_to_nonexistent_port_gets_rst(driver: DefaultDriver) {
 async fn multiple_simultaneous_connections(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener_a = harness.create_port_listener(6000);
-    let listener_b = harness.create_port_listener(6001);
+    let mut listener_a = harness.create_port_listener(6000);
+    let mut listener_b = harness.create_port_listener(6001);
     harness.enable().await;
 
     // Establish connection A (guest port 1000 -> host port 6000).
-    let mut stream_a = harness.connect_guest_to_host(&listener_a, 1000, 6000).await;
+    let mut stream_a = harness
+        .connect_guest_to_host(&mut listener_a, 1000, 6000)
+        .await;
 
     // Establish connection B (guest port 1001 -> host port 6001).
-    let mut stream_b = harness.connect_guest_to_host(&listener_b, 1001, 6001).await;
+    let mut stream_b = harness
+        .connect_guest_to_host(&mut listener_b, 1001, 6001)
+        .await;
 
     // Send data on connection A.
     let payload_a = b"connection A data";
@@ -736,14 +746,18 @@ async fn multiple_simultaneous_connections(driver: DefaultDriver) {
 async fn multiple_connections_same_host_port(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(7000);
+    let mut listener = harness.create_port_listener(7000);
     harness.enable().await;
 
     // Connection 1: guest port 2000 -> host port 7000.
-    let mut stream1 = harness.connect_guest_to_host(&listener, 2000, 7000).await;
+    let mut stream1 = harness
+        .connect_guest_to_host(&mut listener, 2000, 7000)
+        .await;
 
     // Connection 2: guest port 2001 -> host port 7000.
-    let mut stream2 = harness.connect_guest_to_host(&listener, 2001, 7000).await;
+    let mut stream2 = harness
+        .connect_guest_to_host(&mut listener, 2001, 7000)
+        .await;
 
     // Send distinct data on each connection.
     let payload1 = b"stream one";
@@ -771,10 +785,12 @@ async fn multiple_connections_same_host_port(driver: DefaultDriver) {
 async fn guest_shutdown(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(5010);
+    let mut listener = harness.create_port_listener(5010);
     harness.enable().await;
 
-    let mut stream = harness.connect_guest_to_host(&listener, 1024, 5010).await;
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5010)
+        .await;
 
     // Guest sends SHUTDOWN with both send and receive flags.
     let flags = ShutdownFlags::new().with_send(true).with_receive(true);
@@ -795,10 +811,12 @@ async fn guest_shutdown(driver: DefaultDriver) {
 async fn large_payload_guest_to_host(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
-    let listener = harness.create_port_listener(5020);
+    let mut listener = harness.create_port_listener(5020);
     harness.enable().await;
 
-    let mut stream = harness.connect_guest_to_host(&listener, 1024, 5020).await;
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5020)
+        .await;
 
     // Send a 4KB payload from the guest.
     let payload: Vec<u8> = (0..4096).map(|i| (i % 251) as u8).collect();
@@ -817,7 +835,7 @@ async fn large_payload_guest_to_host(driver: DefaultDriver) {
 /// guest, the guest responds with RESPONSE, and data flows bidirectionally.
 #[async_test]
 async fn host_connect_to_guest(driver: DefaultDriver) {
-    use std::os::unix::net::UnixStream as StdUnixStream;
+    use unix_socket::UnixStream as StdUnixStream;
 
     let tmp_dir = tempfile::tempdir().unwrap();
     let host_listener_path = tmp_dir.path().join("host_listener.sock");
@@ -937,7 +955,7 @@ async fn host_connect_to_guest(driver: DefaultDriver) {
 /// same GUID format.
 #[async_test]
 async fn host_connect_to_guest_with_guid(driver: DefaultDriver) {
-    use std::os::unix::net::UnixStream as StdUnixStream;
+    use unix_socket::UnixStream as StdUnixStream;
 
     let tmp_dir = tempfile::tempdir().unwrap();
     let host_listener_path = tmp_dir.path().join("host_listener.sock");
@@ -1028,7 +1046,7 @@ async fn host_connect_to_guest_with_guid(driver: DefaultDriver) {
 /// expected to fail until that is fixed.
 #[async_test]
 async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver) {
-    use std::os::unix::net::UnixStream as StdUnixStream;
+    use unix_socket::UnixStream as StdUnixStream;
 
     let tmp_dir = tempfile::tempdir().unwrap();
     let host_listener_path = tmp_dir.path().join("host_listener.sock");
@@ -1156,5 +1174,112 @@ async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver)
     assert_ne!(
         port1, port2,
         "two simultaneous host connections should get different ports, but both got {port1}"
+    );
+}
+
+/// Exercises the device's internal ring buffer by making the host stop
+/// reading so the Unix socket back-pressures, then resuming reads and
+/// verifying all data arrives intact and that credit updates flow.
+///
+/// Flow:
+///  1. Establish a guest→host connection.
+///  2. Shrink the host socket's receive buffer so back-pressure builds
+///     quickly.
+///  3. Guest sends many small RW packets without the host reading.
+///  4. Eventually the device's socket write blocks and data accumulates in
+///     the device's 64 KB ring buffer.
+///  5. Host begins draining data — the device flushes its buffer and sends
+///     CREDIT_UPDATE packets on the rx queue as `fwd_cnt` advances.
+///  6. Assert that all bytes arrive and at least one CREDIT_UPDATE was seen.
+#[async_test]
+async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5050);
+    harness.enable().await;
+
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5050)
+        .await;
+
+    // Send data from the guest in 1 KB chunks. We'll send enough to exceed the socket buffer and
+    // spill into the device's ring buffer. On Windows, this seems to require about 64KB, and on
+    // Linux it's around 96KB.
+    const CHUNK_SIZE: usize = 1024;
+    const NUM_CHUNKS: usize = 128;
+    const TOTAL_BYTES: usize = CHUNK_SIZE * NUM_CHUNKS;
+
+    let mut sent_bytes = Vec::with_capacity(TOTAL_BYTES);
+    for i in 0..NUM_CHUNKS {
+        let chunk: Vec<u8> = (0..CHUNK_SIZE)
+            .map(|j| ((i * 7 + j * 3) % 251) as u8)
+            .collect();
+        let header = harness.guest_header(1024, 5050, Operation::RW, chunk.len() as u32, 0);
+        // Reuse descriptor 0 and the same data region each iteration since
+        // we wait for the previous one to complete before posting the next.
+        harness.next_tx_desc = 0;
+        harness.next_data_offset = DATA_BASE;
+        harness.post_tx_packet(&header, &chunk);
+        // Wait for the tx descriptor to be consumed so the device processes
+        // each packet before we queue the next.
+        harness.wait_for_tx_used().await;
+        sent_bytes.extend_from_slice(&chunk);
+    }
+
+    // Post an RX buffer so the device can send a credit update, which should be pending since it
+    // eagerly sends them.
+    let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
+    let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+    let hdr = harness.read_header(gpa);
+    let op = hdr.op;
+    assert_eq!(Operation(op), Operation::CREDIT_UPDATE);
+    assert!(
+        hdr.fwd_cnt > 0,
+        "device should have forwarded at least some data."
+    );
+    assert!(
+        hdr.fwd_cnt < TOTAL_BYTES as u32,
+        "some data should have been buffered"
+    );
+
+    // Host begins reading — this unblocks the device's socket writes and
+    // triggers ring buffer flushes + credit updates.
+    let mut received = Vec::with_capacity(TOTAL_BYTES);
+    let mut buf = [0u8; 4096];
+    // Use non-blocking reads in a poll loop so the async executor can
+    // process the device's write-ready events concurrently.
+    let mut polled_stream = PolledSocket::new(&driver, stream).unwrap();
+    mesh::CancelContext::new()
+        .with_timeout(Duration::from_secs(10))
+        .until_cancelled(async {
+            use futures::AsyncReadExt;
+            while received.len() < TOTAL_BYTES {
+                let n = polled_stream
+                    .read(&mut buf)
+                    .await
+                    .expect("host read failed");
+                assert!(n > 0, "unexpected EOF from host socket");
+                received.extend_from_slice(&buf[..n]);
+            }
+        })
+        .await
+        .expect("timed out reading data on host side");
+
+    assert_eq!(received.len(), TOTAL_BYTES);
+    assert_eq!(
+        received, sent_bytes,
+        "received data does not match sent data"
+    );
+
+    // Post another RX buffer so we can get the final credit update.
+    let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
+    let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+    let hdr = harness.read_header(gpa);
+    let op = hdr.op;
+    assert_eq!(Operation(op), Operation::CREDIT_UPDATE);
+    let fwd_cnt = hdr.fwd_cnt;
+    assert_eq!(
+        fwd_cnt, TOTAL_BYTES as u32,
+        "final credit update should reflect all forwarded data"
     );
 }
