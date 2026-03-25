@@ -23,6 +23,7 @@ pub mod build_openhcl_igvm_from_recipe;
 pub mod build_openhcl_initrd;
 pub mod build_openvmm;
 pub mod build_openvmm_hcl;
+pub mod build_openvmm_vhost;
 pub mod build_pipette;
 pub mod build_prep_steps;
 pub mod build_rustdoc;

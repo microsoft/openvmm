@@ -16,6 +16,7 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
+use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -477,5 +478,125 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
         MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
     }
+    Ok(())
+}
+
+/// Boot with a virtio-blk device served by the openvmm_vhost binary over
+/// a vhost-user Unix socket.  Verifies the full stack: guest driver →
+/// virtio transport → frontend protocol → socket → backend protocol →
+/// virtio-blk device → disk file.
+#[cfg(target_os = "linux")]
+#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
+async fn vhost_user_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use virtio_resources::vhost_user::VhostUserDeviceHandle;
+
+    let openvmm_vhost_path =
+        petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("openvmm_vhost")?;
+
+    // Create a temporary directory for the socket and disk file.
+    let tmp_dir = tempfile::tempdir().context("create temp dir")?;
+    let socket_path = tmp_dir.path().join("vhost.sock");
+    let disk_path = tmp_dir.path().join("test.raw");
+
+    // Create a small raw disk file (8 MiB).
+    let disk_size: u64 = 8 * 1024 * 1024;
+    {
+        let f = std::fs::File::create(&disk_path).context("create disk file")?;
+        f.set_len(disk_size).context("set disk length")?;
+    }
+
+    // Spawn the openvmm_vhost backend process.
+    let mut backend_child = std::process::Command::new(&openvmm_vhost_path)
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("blk")
+        .arg("--disk")
+        .arg(&disk_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("spawn openvmm_vhost")?;
+
+    // Wait for the socket to appear (the server creates it on listen).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !socket_path.exists() {
+        if std::time::Instant::now() > deadline {
+            if let Some(status) = backend_child.try_wait()? {
+                anyhow::bail!("openvmm_vhost exited early with status: {status}");
+            }
+            anyhow::bail!(
+                "timed out waiting for vhost-user socket at {}",
+                socket_path.display()
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Connect to the backend and build the VM config.
+    let stream =
+        unix_socket::UnixStream::connect(&socket_path).context("connect to vhost-user socket")?;
+
+    let vhost_resource = VhostUserDeviceHandle {
+        socket: stream.into(),
+        device_id: 2, // VIRTIO_ID_BLOCK
+    }
+    .into_resource();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.virtio_devices.push((VirtioBus::Mmio, vhost_resource));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Verify the virtio-blk device appears as /dev/vda.
+    let vda_size = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    let expected_sectors = disk_size / 512;
+    assert_eq!(
+        vda_sectors, expected_sectors,
+        "unexpected disk size in sectors"
+    );
+
+    // Write data and read it back.
+    cmd!(
+        sh,
+        "sh -c 'echo hello_vhost_user | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to vhost-user-blk device")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda bs=512 count=1 2>/dev/null | head -c 16'"
+    )
+    .read()
+    .await
+    .context("read from vhost-user-blk device")?;
+    assert!(
+        readback.starts_with("hello_vhost_user"),
+        "read back data mismatch: {readback}"
+    );
+
+    // Clean shutdown.
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    // The backend serves one connection and exits.
+    tracing::info!("waiting for openvmm_vhost to exit");
+    let status = backend_child.wait().context("wait for openvmm_vhost")?;
+    assert!(
+        status.success(),
+        "openvmm_vhost exited with non-zero status: {status}"
+    );
+
     Ok(())
 }

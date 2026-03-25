@@ -533,6 +533,8 @@ impl IntoPipeline for CheckinGatesCli {
 
             let (pub_openvmm, use_openvmm) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-openvmm"));
+            let (pub_openvmm_vhost, use_openvmm_vhost) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-openvmm_vhost"));
             let (pub_igvmfilegen, _) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-igvmfilegen"));
             let (pub_vmgs_lib, _) =
@@ -558,6 +560,8 @@ impl IntoPipeline for CheckinGatesCli {
             match arch {
                 CommonArch::X86_64 => {
                     vmm_tests_artifacts_linux_x86.use_openvmm = Some(use_openvmm.clone());
+                    vmm_tests_artifacts_linux_x86.use_openvmm_vhost =
+                        Some(use_openvmm_vhost.clone());
                     vmm_tests_artifacts_linux_x86.use_guest_test_uefi =
                         Some(use_guest_test_uefi.clone());
                     vmm_tests_artifacts_windows_x86.use_guest_test_uefi =
@@ -609,6 +613,16 @@ impl IntoPipeline for CheckinGatesCli {
                         },
                         openvmm: ctx.publish_typed_artifact(pub_openvmm),
                     }
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_openvmm_vhost::Request {
+                    params: flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
+                        profile: CommonProfile::from_release(release),
+                    },
+                    openvmm_vhost: ctx.publish_typed_artifact(pub_openvmm_vhost),
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
                     target: vmgstool_target,
@@ -1434,6 +1448,7 @@ mod vmm_tests_artifact_builders {
     use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts;
     use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
     use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
+    use flowey_lib_hvlite::build_openvmm_vhost::OpenvmmVhostOutput;
     use flowey_lib_hvlite::build_pipette::PipetteOutput;
     use flowey_lib_hvlite::build_prep_steps::PrepStepsOutput;
     use flowey_lib_hvlite::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
@@ -1452,6 +1467,7 @@ mod vmm_tests_artifact_builders {
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         // linux build machine
         pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_openvmm_vhost: Option<UseTypedArtifact<OpenvmmVhostOutput>>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         // any machine
         pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
@@ -1462,6 +1478,7 @@ mod vmm_tests_artifact_builders {
         pub fn finish(self) -> Result<ResolveVmmTestsDepArtifacts, &'static str> {
             let VmmTestsArtifactsBuilderLinuxX86 {
                 use_openvmm,
+                use_openvmm_vhost,
                 use_guest_test_uefi,
                 use_pipette_windows,
                 use_pipette_linux_musl,
@@ -1478,6 +1495,9 @@ mod vmm_tests_artifact_builders {
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                openvmm_vhost: use_openvmm_vhost
+                    .as_ref()
+                    .map(|a| ctx.use_typed_artifact(a)),
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
                 guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
@@ -1552,6 +1572,7 @@ mod vmm_tests_artifact_builders {
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                openvmm_vhost: None,
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
                 guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
@@ -1612,6 +1633,7 @@ mod vmm_tests_artifact_builders {
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
                 openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                openvmm_vhost: None,
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
                 guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),

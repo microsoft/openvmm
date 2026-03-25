@@ -3,10 +3,10 @@
 
 //! vhost-user backend device server.
 //!
-//! Implements the vhost-user backend protocol, driving a [`VirtioDevice`]
-//! implementation. The server listens on a Unix domain socket, accepts one
-//! connection at a time, and translates vhost-user protocol messages into
-//! `VirtioDevice` trait calls.
+//! Implements the vhost-user backend protocol, driving a
+//! [`VirtioDevice`](virtio::VirtioDevice) implementation. The server listens on
+//! a Unix domain socket, accepts one connection at a time, and translates
+//! vhost-user protocol messages into `VirtioDevice` trait calls.
 
 #![cfg(unix)]
 #![expect(missing_docs)]
@@ -79,29 +79,28 @@ impl VhostUserDeviceServer {
 
         tracing::info!(path = %path.display(), "vhost-user server listening");
 
-        loop {
-            let (stream, _addr) = listener.accept().await?;
-            let polled = PolledSocket::new(driver, stream)?;
-            let socket = VhostUserSocket::new(polled);
+        let (stream, _addr) = listener.accept().await?;
+        let polled = PolledSocket::new(driver, stream)?;
+        let socket = VhostUserSocket::new(polled);
 
-            tracing::info!("vhost-user client connected");
+        tracing::info!("vhost-user client connected");
 
-            match self.handle_connection(&socket).await {
-                Ok(()) => {
-                    tracing::info!("vhost-user client disconnected");
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = &*e as &dyn std::error::Error,
-                        "vhost-user connection error"
-                    );
-                }
+        match self.handle_connection(&socket).await {
+            Ok(()) => {
+                tracing::info!("vhost-user client disconnected");
             }
-
-            // Reset device state for the next connection.
-            self.stop_all_queues().await;
-            self.device.reset().await;
+            Err(e) => {
+                tracing::warn!(
+                    error = &*e as &dyn std::error::Error,
+                    "vhost-user connection error"
+                );
+            }
         }
+
+        // Clean up device state.
+        self.stop_all_queues().await;
+        self.device.reset().await;
+        Ok(())
     }
 
     /// Serve a single connection (used for testing with socketpairs).
