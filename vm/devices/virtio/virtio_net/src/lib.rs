@@ -270,7 +270,13 @@ impl VirtioDevice for Device {
 
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::NET,
-            device_features: VirtioDeviceFeatures::new().with_bank(0, features_bank0.into_bits()),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::from_bits(features_bank0.into_bits())
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
