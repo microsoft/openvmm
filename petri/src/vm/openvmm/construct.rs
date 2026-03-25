@@ -1020,6 +1020,7 @@ impl PetriVmConfigSetupCore<'_> {
                     worker_host: self.make_device_worker("tpm").await?,
                 }
                 .into_resource(),
+                pci_placement: None,
             }))
         } else {
             Ok(None)

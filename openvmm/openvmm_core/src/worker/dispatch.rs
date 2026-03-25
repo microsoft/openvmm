@@ -1659,10 +1659,6 @@ impl InitializedVm {
             (cfg.chipset.with_piix4_pci_isa_bridge).then_some(dev::Piix4PciIsaBridgeDeps {
                 attached_to: pci_bus_id_piix4.clone(),
             });
-        let deps_piix4_pci_usb_uhci_stub =
-            (cfg.chipset.with_piix4_pci_usb_uhci_stub).then_some(dev::Piix4PciUsbUhciStubDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
         let deps_piix4_power_management =
             (cfg.chipset.with_piix4_power_management).then_some(dev::Piix4PowerManagementDeps {
                 attached_to: pci_bus_id_piix4.clone(),
@@ -1689,7 +1685,6 @@ impl InitializedVm {
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_piix4_pci_isa_bridge,
-                deps_piix4_pci_usb_uhci_stub,
                 deps_piix4_power_management,
                 deps_underhill_vga_proxy: None,
                 deps_winbond_super_io_and_floppy_stub: None,
