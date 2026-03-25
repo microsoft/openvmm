@@ -999,7 +999,7 @@ async fn vm_config_from_command_line(
 
     let has_com3 = serial2_cfg.is_some();
 
-    let mut chipset = VmManifestBuilder::new(
+    let mut chipset_builder = VmManifestBuilder::new(
         if opt.igvm.is_some() {
             BaseChipsetType::HclHost
         } else if opt.pcat {
@@ -1015,21 +1015,22 @@ async fn vm_config_from_command_line(
     );
 
     if framebuffer.is_some() {
-        chipset = chipset.with_framebuffer();
+        chipset_builder = chipset_builder.with_framebuffer();
     }
     if opt.guest_watchdog {
-        chipset = chipset.with_guest_watchdog();
+        chipset_builder = chipset_builder.with_guest_watchdog();
     }
     if any_serial_configured {
-        chipset = chipset.with_serial([serial0_cfg, serial1_cfg, serial2_cfg, serial3_cfg]);
+        chipset_builder =
+            chipset_builder.with_serial([serial0_cfg, serial1_cfg, serial2_cfg, serial3_cfg]);
     }
     if opt.battery {
         let (tx, rx) = mesh::channel();
         tx.send(HostBatteryUpdate::default_present());
-        chipset = chipset.with_battery(rx);
+        chipset_builder = chipset_builder.with_battery(rx);
     }
     if let Some(cfg) = &opt.debugcon {
-        chipset = chipset.with_debugcon(
+        chipset_builder = chipset_builder.with_debugcon(
             debugcon_cfg.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
             cfg.port,
         );
@@ -1038,12 +1039,13 @@ async fn vm_config_from_command_line(
     // TODO: load from VMGS file if it exists
     let bios_guid = Guid::new_random();
 
-    let VmChipsetResult {
-        chipset,
-        mut chipset_devices,
-    } = chipset
+    let chipset_result = chipset_builder
         .build()
         .context("failed to build chipset configuration")?;
+    let VmChipsetResult {
+        chipset: chipset_manifest,
+        mut chipset_devices,
+    } = chipset_result;
 
     if opt.restore_snapshot.is_some() {
         // Snapshot restore: skip firmware loading entirely. Device state and
@@ -1640,7 +1642,7 @@ async fn vm_config_from_command_line(
     }
 
     let mut cfg = Config {
-        chipset,
+        chipset: chipset_manifest,
         load_mode,
         floppy_disks,
         pcie_root_complexes,
