@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::ring::RingBuffer;
 use anyhow::Context;
 use futures::future::poll_fn;
 use hybrid_vsock::ConnectionRequest;
@@ -12,6 +13,8 @@ use pal_async::socket::AsSockRef;
 use pal_async::socket::PollSocketReady;
 use parking_lot::Mutex;
 use std::io;
+use std::io::Read;
+use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -64,8 +67,59 @@ impl RelaySocket {
         })
     }
 
-    pub fn get(&self) -> &UnixStream {
-        &self.inner.socket
+    /// Reads data from the socket. If the operation would block, returns Ok(None) and clears the
+    /// cached ready state for the read half.
+    pub fn read(&self, buf: &mut [u8]) -> io::Result<Option<usize>> {
+        // Read and Write require &mut self, but they are actually implemented on &UnixStream, so
+        // this translates the Arc into something that will work.
+        let socket = &mut &self.inner.socket;
+        self.check_would_block(socket.read(buf), InterestSlot::Read)
+    }
+
+    /// Reads data from the socket into multiple buffers. If the operation would block, returns
+    /// Ok(None) and clears the cached ready state for the socket.
+    pub fn read_vectored(&self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<Option<usize>> {
+        let socket = &mut &self.inner.socket;
+        self.check_would_block(socket.read_vectored(bufs), InterestSlot::Read)
+    }
+
+    /// Writes data to the socket. If the operation would block, returns Ok(0) and clears the
+    /// cached ready state for the write half.
+    pub fn write_vectored(&self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        let socket = &mut &self.inner.socket;
+
+        // Just return 0 instead of None for the ease of the caller, since for Write that does not
+        // mean shutdown.
+        self.check_would_block(socket.write_vectored(bufs), InterestSlot::Write)
+            .map(|size| size.unwrap_or_default())
+    }
+
+    /// Writes data from the given ring buffer to the socket. If the operation would block, clears
+    /// the cached ready state for the write half and returns Ok(0).
+    pub fn write_from_ring(&self, ring: &mut RingBuffer) -> io::Result<usize> {
+        let socket = &mut &self.inner.socket;
+        self.check_would_block(ring.read_to(socket), InterestSlot::Write)
+            .map(|size| size.unwrap_or_default())
+    }
+
+    // Helper to handle would block errors for reading/writing.
+    fn check_would_block(
+        &self,
+        result: io::Result<usize>,
+        slot: InterestSlot,
+    ) -> io::Result<Option<usize>> {
+        match result {
+            Ok(size) => Ok(Some(size)),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                self.clear_ready(slot);
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn shutdown(&self, how: std::net::Shutdown) -> io::Result<()> {
+        self.inner.socket.shutdown(how)
     }
 
     pub fn await_read_ready<T: 'static + Send>(

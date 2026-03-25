@@ -32,7 +32,6 @@ use crate::unix_relay::RelaySocket;
 use crate::unix_relay::UnixSocketRelay;
 use anyhow::Context;
 use bitfield_struct::bitfield;
-use futures::io;
 use guestmem::GuestMemory;
 use hybrid_vsock::ConnectionRequest;
 use hybrid_vsock::HYBRID_CONNECT_REQUEST_LEN;
@@ -41,8 +40,6 @@ use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
 use std::collections::HashMap;
 use std::io::IoSlice;
-use std::io::Read;
-use std::io::Write;
 use std::num::Wrapping;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -196,39 +193,26 @@ impl Connection {
             anyhow::bail!("peer has shutdown write side but sent data");
         }
 
-        let bytes_sent = if self.recv_buf.as_ref().is_none_or(|buf| buf.is_empty()) {
-            match self.socket.get().write_vectored(data) {
-                Ok(n) => {
-                    self.fwd_cnt += n as u32;
-                    tracing::info!(self.fwd_cnt, self.last_sent_fwd_count, "forwarded");
-                    if n == data_len {
-                        return Ok(None);
-                    }
-
-                    n
-                }
-                Err(e) => {
-                    // TODO: Implement Read and Write on the socket so we can handle WouldBlock there.
-                    // We cannot handle BrokenPipe to indicate a receive shutdown to the guest,
-                    // because it needs to be informed of the error on this write and the only way
-                    // to do that is to reset.
-                    if e.kind() != io::ErrorKind::WouldBlock {
-                        return Err(e).context("failed to write to guest socket");
-                    }
-
-                    self.socket.clear_ready(InterestSlot::Write);
-                    0
-                }
-            }
+        let bytes_sent = if self.is_recv_buf_empty() {
+            self.socket
+                .write_vectored(data)
+                .context("failed write data to relay socket")?
         } else {
+            // There is already buffered data, so that needs to be sent first, and the additional
+            // data should be added to the buffer.
             0
         };
+
+        self.fwd_cnt += bytes_sent as u32;
+        let remaining = data_len - bytes_sent;
+        if remaining == 0 {
+            // All data was sent.
+            return Ok(None);
+        }
 
         let buf = self
             .recv_buf
             .get_or_insert_with(|| RingBuffer::new(TX_BUF_SIZE as usize));
-
-        let remaining = data_len - bytes_sent;
 
         // The guest should not do this since it knows how much space we have.
         if remaining > buf.available() {
@@ -245,33 +229,29 @@ impl Connection {
     }
 
     fn write_from_buffer(&mut self) -> anyhow::Result<Option<WriteReadyItem>> {
-        tracing::info!("writing buffered data to host socket");
-        let buf = self.recv_buf.as_mut().expect("buffer must exist");
-        match buf.read_to(&mut self.socket.get()) {
-            Ok(written) => self.fwd_cnt += written as u32,
-            Err(e) => {
-                if e.kind() != io::ErrorKind::WouldBlock {
-                    return Err(e).context("failed to write buffered data to guest socket");
-                } else {
-                    self.socket.clear_ready(InterestSlot::Write);
-                    tracing::info!("write would block");
-                }
-            }
-        }
+        let ring = self.recv_buf.as_mut().expect("buffer must exist");
+        let sent = self
+            .socket
+            .write_from_ring(ring)
+            .context("failed to write buffered data to relay socket")?;
 
-        if buf.is_empty() {
+        tracing::info!(sent, "forwarded buffered data to relay socket");
+
+        self.fwd_cnt += sent as u32;
+        if ring.is_empty() {
             // TODO: Check if I do this when shutdown is received.
+            // Check if the peer has already sent a shutdown that we can forward to the host now
+            // that the buffer is empty.
             if self.send_shutdown {
                 self.socket
-                    .get()
                     .shutdown(std::net::Shutdown::Write)
                     .context("failed to shutdown write side of socket")?;
             }
 
             Ok(None)
         } else {
-            tracing::info!(
-                buf_len = buf.len(),
+            tracing::trace!(
+                ring_len = ring.len(),
                 "write buffer not empty after write, waiting for write ready"
             );
             Ok(self.socket.await_write_ready(self.instance_id()))
@@ -288,9 +268,10 @@ impl Connection {
         }
 
         if flags.send() {
-            // Don't actually shutdown the write side if we're still waiting to flush data out of
-            // the buffer.
+            // Don't actually shutdown the host socket write if we're still waiting to flush data
+            // out of the buffer.
             if !self.is_recv_buf_empty() {
+                tracing::info!("deferring send shutdown until buffer is flushed");
                 flags.set_send(false);
             }
 
@@ -312,7 +293,8 @@ impl Connection {
         };
 
         if let Some(how) = how {
-            self.socket.get().shutdown(how)?;
+            tracing::info!(?how, "peer initiated shutdown");
+            self.socket.shutdown(how)?;
         }
 
         Ok(PendingWork::NONE)
@@ -345,39 +327,32 @@ impl Connection {
             LockedIoSliceMut(Vec::new()),
         )?;
 
-        let packet = match self.socket.get().read_vectored(locked.get_mut().0.as_mut()) {
-            Ok(n) => {
-                if n == 0 {
-                    tracing::info!("host socket shutdown");
-                    self.local_send_shutdown = true;
-                    self.socket.clear_ready(InterestSlot::Read);
-                    Some(new_shutdown_packet(
-                        self.key,
-                        guest_cid,
-                        self.fwd_cnt.0,
-                        ShutdownFlags::new().with_send(true),
-                    ))
-                } else {
-                    tracing::info!(n, "read data from host socket");
-                    self.tx_cnt += n as u32;
-                    Some(new_rw_packet(self.key, guest_cid, self.fwd_cnt.0, n as u32))
-                }
-            }
-            Err(e) => {
-                tracing::info!(
-                    err = &e as &dyn std::error::Error,
-                    "failed to read from host socket"
-                );
-                if e.kind() != std::io::ErrorKind::WouldBlock {
-                    return Err(e.into());
-                } else {
-                    self.socket.clear_ready(InterestSlot::Read);
-                    None
-                }
-            }
+        let Some(bytes_read) = self
+            .socket
+            .read_vectored(locked.get_mut().0.as_mut())
+            .context("failed to read from host socket")?
+        else {
+            // No data available (would block).
+            return Ok(None);
         };
 
-        Ok(packet)
+        let packet = if bytes_read == 0 {
+            tracing::debug!("host socket shutdown");
+            self.local_send_shutdown = true;
+            self.socket.clear_ready(InterestSlot::Read);
+            new_shutdown_packet(
+                self.key,
+                guest_cid,
+                self.fwd_cnt.0,
+                ShutdownFlags::new().with_send(true),
+            )
+        } else {
+            tracing::trace!(bytes_read, "read data from host socket");
+            self.tx_cnt += bytes_read as u32;
+            new_rw_packet(self.key, guest_cid, self.fwd_cnt.0, bytes_read as u32)
+        };
+
+        Ok(Some(packet))
     }
 
     fn handle_read_connect(&mut self) -> anyhow::Result<bool> {
@@ -390,7 +365,11 @@ impl Connection {
         };
 
         // TODO: Use the read that handles WouldBlock.
-        let n = self.socket.get().read(&mut buffer[*bytes_received..])?;
+        let Some(n) = self.socket.read(&mut buffer[*bytes_received..])? else {
+            // No data available (would block).
+            return Ok(false);
+        };
+
         if n == 0 {
             anyhow::bail!("host socket closed before connection request was fully read");
         }
@@ -445,7 +424,7 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         // Shutdown the socket so any pending read/write polls will complete.
-        let _ = self.socket.get().shutdown(std::net::Shutdown::Both);
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
     }
 }
 
@@ -690,7 +669,7 @@ impl ConnectionManager {
         match conn.write_from_buffer() {
             Ok(future) => {
                 if conn.send_shutdown && conn.is_recv_buf_empty() {
-                    if let Err(err) = conn.socket.get().shutdown(std::net::Shutdown::Write) {
+                    if let Err(err) = conn.socket.shutdown(std::net::Shutdown::Write) {
                         tracelimit::warn_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             ?id,
