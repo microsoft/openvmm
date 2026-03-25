@@ -346,16 +346,18 @@ impl VsockWorker {
         //     }
         // };
 
-        let mut work = state
+        let work = state
             .rx_queue
-            .try_next()
-            .expect("peek already succeeded")
+            .try_peek()
+            .expect("peek already succeeded before")
             .expect("queue was already checked to have items");
 
         let (header, pending_work) =
             self.connections
-                .get_rx_packet(&state.memory, &self.driver, &work.payload, rx_work);
+                .get_rx_packet(&state.memory, &self.driver, work.payload(), rx_work);
+
         if let Some(header) = header {
+            let mut work = work.consume();
             tracing::info!(?header, "sending reply");
             let header_bytes = header.as_bytes();
             work.write(&state.memory, header_bytes).expect("TODO");
