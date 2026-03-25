@@ -385,7 +385,7 @@ impl<T: Client> Access<'_, T> {
                 src: SocketAddr::V6(SocketAddrV6::new(addresses.src_addr, tcp.src_port, 0, 0)),
             },
         };
-        trace_tcp_packet(&tcp, tcp.payload.len(), "recv");
+        tracing::trace!(?tcp, "tcp packet");
 
         let is_dns_tcp =
             is_gateway_dns_tcp(&ft, &self.inner.state.params, self.inner.dns.is_some());
@@ -569,7 +569,7 @@ impl<T: Client> Sender<'_, T> {
             payload: &[],
         };
 
-        trace_tcp_packet(&tcp, 0, "rst xmit");
+        tracing::trace!(?tcp, "tcp rst xmit");
 
         self.send_packet(&tcp, None);
     }
@@ -1082,7 +1082,7 @@ impl TcpConnectionInner {
             assert!(tx_next <= tx_end);
             assert!(self.needs_ack || tx_next > self.tx_send);
 
-            trace_tcp_packet(&tcp, payload_len, "xmit");
+            tracing::trace!(?tcp, %tx_next, "tcp xmit");
 
             let payload = self
                 .tx_buffer
@@ -1137,7 +1137,7 @@ impl TcpConnectionInner {
             payload: &[],
         };
 
-        trace_tcp_packet(&tcp, 0, "ack");
+        tracing::trace!(?tcp, "tcp ack xmit");
 
         sender.send_packet(&tcp, None);
     }
@@ -1432,30 +1432,6 @@ impl TcpListener {
             Poll::Pending => Ok(None),
         }
     }
-}
-
-/// Trace a TCP packet with structured key/value fields.
-///
-/// Logs protocol-relevant fields (flags, seq, ack, window, payload length)
-/// as individual tracing fields instead of dumping the full `TcpRepr` Debug
-/// output which includes raw payload bytes.
-fn trace_tcp_packet(tcp: &TcpRepr<'_>, payload_len: usize, label: &str) {
-    tracing::trace!(
-        label,
-        flags = match tcp.control {
-            TcpControl::Syn => Some("SYN"),
-            TcpControl::Fin => Some("FIN"),
-            TcpControl::Rst => Some("RST"),
-            TcpControl::Psh => Some("PSH"),
-            TcpControl::None => None,
-        },
-        seq = tcp.seq_number.0 as u32,
-        next_seq = (tcp.seq_number.0 as u32).wrapping_add((payload_len + tcp.control.len()) as u32),
-        ack = tcp.ack_number.map(|a| a.0 as u32),
-        window = tcp.window_len,
-        payload_len,
-        "tcp packet",
-    );
 }
 
 fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
