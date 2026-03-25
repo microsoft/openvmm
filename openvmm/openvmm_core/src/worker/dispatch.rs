@@ -1270,11 +1270,11 @@ impl InitializedVm {
                             pcie_host_bridges: &Vec::new(),
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: chipset_caps.with_ioapic,
-                                    with_pic: chipset_caps.with_pic,
-                                    with_pit: chipset_caps.with_pit,
-                                    with_psp: chipset_caps.with_psp,
-                                    pm_base: PM_BASE,
-                                    acpi_irq: SYSTEM_IRQ_ACPI,
+                                with_pic: chipset_caps.with_pic,
+                                with_pit: chipset_caps.with_pit,
+                                with_psp: chipset_caps.with_psp,
+                                pm_base: PM_BASE,
+                                acpi_irq: SYSTEM_IRQ_ACPI,
                             },
                         };
                         let srat = acpi_tables_builder.build_srat();
@@ -2401,11 +2401,11 @@ impl LoadedVmInner {
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                 with_ioapic: chipset_caps.with_ioapic,
-                    with_psp: chipset_caps.with_psp,
-                    with_pic: chipset_caps.with_pic,
-                    with_pit: chipset_caps.with_pit,
-                    pm_base: PM_BASE,
-                    acpi_irq: SYSTEM_IRQ_ACPI,
+                with_psp: chipset_caps.with_psp,
+                with_pic: chipset_caps.with_pic,
+                with_pit: chipset_caps.with_pit,
+                pm_base: PM_BASE,
+                acpi_irq: SYSTEM_IRQ_ACPI,
             },
             #[cfg(guest_arch = "aarch64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
