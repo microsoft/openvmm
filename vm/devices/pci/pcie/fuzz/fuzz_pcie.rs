@@ -124,12 +124,14 @@ impl FuzzRootComplex {
                 hotplug,
             })
             .collect();
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let rc = GenericPcieRootComplex::new(
             &mut register_mmio,
             START_BUS,
             END_BUS,
             ecam_range,
             port_defs,
+            msi_conn.target(),
         );
         Self { rc }
     }

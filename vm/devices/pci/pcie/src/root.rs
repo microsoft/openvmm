@@ -23,6 +23,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -93,12 +94,17 @@ enum DecodedEcamAccess<'a> {
 
 impl GenericPcieRootComplex {
     /// Constructs a new `GenericPcieRootComplex` emulator.
+    ///
+    /// `msi_target` is the MSI target for all root ports in this complex.
+    /// The caller is responsible for creating the `MsiConnection` and
+    /// connecting it to the platform's interrupt controller.
     pub fn new(
         register_mmio: &mut dyn RegisterMmioIntercept,
         start_bus: u8,
         end_bus: u8,
         ecam_range: MemoryRange,
         ports: Vec<GenericPcieRootPortDefinition>,
+        msi_target: &MsiTarget,
     ) -> Self {
         assert_eq!(
             ecam_size_from_bus_numbers(start_bus, end_bus),
@@ -119,7 +125,8 @@ impl GenericPcieRootComplex {
                 } else {
                     None
                 };
-                let root_port = RootPort::new(definition.name.clone(), hotplug_slot_number);
+                let root_port =
+                    RootPort::new(definition.name.clone(), hotplug_slot_number, msi_target);
                 (device_number, (definition.name, root_port))
             })
             .collect();
@@ -170,6 +177,31 @@ impl GenericPcieRootComplex {
             .collect();
 
         ports
+    }
+
+    /// Hot-add a device to a named port.
+    pub fn hotplug_add_device(
+        &mut self,
+        port_name: &str,
+        device_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> anyhow::Result<()> {
+        let (_, (_, root_port)) = self
+            .ports
+            .iter_mut()
+            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.hotplug_add_device(device_name, device)
+    }
+
+    /// Hot-remove the device from a named port.
+    pub fn hotplug_remove_device(&mut self, port_name: &str) -> anyhow::Result<()> {
+        let (_, (_, root_port)) = self
+            .ports
+            .iter_mut()
+            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.hotplug_remove_device()
     }
 
     /// Returns the size of the ECAM MMIO region this root complex is emulating.
@@ -379,7 +411,12 @@ impl RootPort {
     /// # Arguments
     /// * `name` - The name for this root port
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
-    pub fn new(name: impl Into<Arc<str>>, hotplug_slot_number: Option<u32>) -> Self {
+    /// * `msi_target` - MSI target for interrupt delivery
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        hotplug_slot_number: Option<u32>,
+        msi_target: &MsiTarget,
+    ) -> Self {
         let name_str = name.into();
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
@@ -398,6 +435,7 @@ impl RootPort {
             DevicePortType::RootPort,
             false,
             hotplug_slot_number,
+            msi_target,
         );
 
         Self { port }
@@ -504,7 +542,15 @@ mod tests {
 
         let mut register_mmio = TestPcieMmioRegistration {};
         let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
-        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, ecam, port_defs)
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        GenericPcieRootComplex::new(
+            &mut register_mmio,
+            start_bus,
+            end_bus,
+            ecam,
+            port_defs,
+            msi_conn.target(),
+        )
     }
 
     #[test]
@@ -751,7 +797,10 @@ mod tests {
     #[test]
     fn test_root_port_hotplug_options() {
         // Test with hotplug disabled (None)
-        let root_port_no_hotplug = RootPort::new("test-port-no-hotplug", None);
+        let root_port_no_hotplug = {
+            let c = pci_core::msi::MsiConnection::new();
+            RootPort::new("test-port-no-hotplug", None, c.target())
+        };
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
         let mut vendor_device_id: u32 = 0;
@@ -764,7 +813,10 @@ mod tests {
         assert_eq!(vendor_device_id, expected);
 
         // Test with hotplug enabled (Some(slot_number))
-        let root_port_with_hotplug = RootPort::new("test-port-hotplug", Some(5));
+        let root_port_with_hotplug = {
+            let c = pci_core::msi::MsiConnection::new();
+            RootPort::new("test-port-hotplug", Some(5), c.target())
+        };
         let mut vendor_device_id_hotplug: u32 = 0;
         root_port_with_hotplug
             .port
@@ -778,7 +830,10 @@ mod tests {
 
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
-        let mut root_port = RootPort::new("test-port", None);
+        let mut root_port = {
+            let c = pci_core::msi::MsiConnection::new();
+            RootPort::new("test-port", None, c.target())
+        };
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = root_port.port.cfg_space.assigned_bus_range();

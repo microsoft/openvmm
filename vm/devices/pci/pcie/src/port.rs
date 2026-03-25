@@ -10,7 +10,7 @@ use pci_bus::GenericPciBusDevice;
 use pci_core::capabilities::msi_cap::MsiCapability;
 use pci_core::capabilities::pci_express::PciExpressCapability;
 use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
-use pci_core::msi::MsiConnection;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
@@ -41,12 +41,14 @@ impl PcieDownstreamPort {
     /// * `port_type` - The PCIe port type (root port, downstream switch port, etc.)
     /// * `multi_function` - Whether this port should have the multi-function flag set
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
+    /// * `msi_target` - MSI target for interrupt delivery
     pub fn new(
         name: impl Into<String>,
         hardware_ids: HardwareIds,
         port_type: DevicePortType,
         multi_function: bool,
         hotplug_slot_number: Option<u32>,
+        msi_target: &MsiTarget,
     ) -> Self {
         let port_name = name.into();
 
@@ -55,9 +57,7 @@ impl PcieDownstreamPort {
             None => (false, None),
         };
 
-        let msi_conn = MsiConnection::new();
-        // Create MSI capability with 1 message (multiple_message_capable=0), 64-bit addressing, no per-vector masking
-        let msi_capability = MsiCapability::new(0, true, false, msi_conn.target());
+        let msi_capability = MsiCapability::new(0, true, false, msi_target);
 
         let pcie_cap = if hotplug {
             let slot_num = slot_number.unwrap_or(0);
@@ -76,6 +76,32 @@ impl PcieDownstreamPort {
             name: port_name,
             cfg_space,
             link: None,
+        }
+    }
+
+    /// Notify the guest of a hotplug event via MSI.
+    ///
+    /// Fires MSI if the guest has enabled hot_plug_interrupt_enable in
+    /// Slot Control. The caller must have already set the appropriate
+    /// status bits (via set_hotplug_state) before calling this.
+    fn fire_hotplug_msi(&self) {
+        let hotplug_enabled = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .is_some_and(|pcie| pcie.hot_plug_interrupt_enabled());
+
+        if hotplug_enabled {
+            if let Some(interrupt) = self
+                .cfg_space
+                .capabilities()
+                .iter()
+                .find_map(|cap| cap.as_msi_cap())
+                .and_then(|msi| msi.interrupt())
+            {
+                interrupt.deliver();
+            }
         }
     }
 
@@ -193,6 +219,69 @@ impl PcieDownstreamPort {
         // If the name doesn't match, fail immediately (no forwarding)
         bail!("port name does not match")
     }
+
+    /// Hot-add a device to this port at runtime.
+    ///
+    /// Unlike `add_pcie_device`, this method verifies the port is hotplug-capable
+    /// and fires MSI to notify the guest's pciehp driver.
+    pub fn hotplug_add_device(
+        &mut self,
+        device_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> anyhow::Result<()> {
+        let is_hotplug_capable = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable());
+
+        if !is_hotplug_capable {
+            bail!("port '{}' is not hotplug capable", self.name);
+        }
+        if self.link.is_some() {
+            bail!("port '{}' is already occupied", self.name);
+        }
+
+        self.link = Some((device_name.into(), device));
+
+        // Atomically set presence + link active + changed bits, then fire MSI
+        for cap in self.cfg_space.capabilities().iter() {
+            if let Some(pcie) = cap.as_pci_express() {
+                pcie.set_hotplug_state(true);
+            }
+        }
+        self.fire_hotplug_msi();
+        Ok(())
+    }
+
+    /// Hot-remove the device from this port at runtime.
+    pub fn hotplug_remove_device(&mut self) -> anyhow::Result<()> {
+        let is_hotplug_capable = self
+            .cfg_space
+            .capabilities()
+            .iter()
+            .find_map(|cap| cap.as_pci_express())
+            .is_some_and(|pcie| pcie.slot_capabilities().hot_plug_capable());
+
+        if !is_hotplug_capable {
+            bail!("port '{}' is not hotplug capable", self.name);
+        }
+        if self.link.is_none() {
+            bail!("port '{}' is empty", self.name);
+        }
+
+        self.link = None;
+
+        // Atomically clear presence + link active + set changed bits, then fire MSI
+        for cap in self.cfg_space.capabilities().iter() {
+            if let Some(pcie) = cap.as_pci_express() {
+                pcie.set_hotplug_state(false);
+            }
+        }
+        self.fire_hotplug_msi();
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -288,12 +377,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             Some(1), // Enable hotplug with slot number 1
+            msi_conn.target(),
         );
 
         // Initially, presence detect state should be 0
@@ -337,12 +428,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None, // No hotplug
+            msi_conn.target(),
         );
 
         // Add a device to the port (should not panic even without hotplug support)

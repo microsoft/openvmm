@@ -45,4 +45,14 @@ pub trait PciCapability: Send + Sync + Inspect + ProtobufSaveRestore {
     fn as_pci_express_mut(&mut self) -> Option<&mut pci_express::PciExpressCapability> {
         None
     }
+
+    /// Downcast to MSI capability
+    fn as_msi_cap(&self) -> Option<&msi_cap::MsiCapability> {
+        None
+    }
+
+    /// Downcast to MSI capability (mutable)
+    fn as_msi_cap_mut(&mut self) -> Option<&mut msi_cap::MsiCapability> {
+        None
+    }
 }

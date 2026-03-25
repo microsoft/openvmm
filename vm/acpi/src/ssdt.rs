@@ -131,9 +131,75 @@ impl Ssdt {
         pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
         pcie.add_object(&NamedInteger::new(b"_BBN", start_bus.into()));
 
-        // TODO: Add an _OSC method to grant native PCIe control. Linux ignores
-        // OSC and assumes control, but Windows will skip initialization of
-        // some PCIe features when OSC is not granted.
+        // _OSC method: grant native PCIe control to the OS.
+        //
+        // Per ACPI spec §6.2.11 (_OSC, Operating System Capabilities), the OS
+        // calls _OSC to negotiate platform feature control. For PCIe root
+        // complexes, the UUID and capability definitions are specified in the
+        // PCI Firmware Specification §4.5.1 (_OSC Implementation for PCI Host
+        // Bridge Devices).
+        //
+        // UUID: 33DB4D5B-1FF7-401C-9657-7441C03DD766
+        //   (PCI Firmware Spec §4.5.1, Table 4-3)
+        //
+        // Status DWORD[0] bit 2: "Unrecognized UUID"
+        //   (ACPI spec §6.2.11.1, Table 6.15)
+        //
+        // Method(_OSC, 4) {
+        //   CreateDWordField(Arg3, 0, STS0)
+        //   If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766"))) {
+        //     Store(0, STS0)  // clear status — grant everything
+        //   } Else {
+        //     Or(STS0, 0x04, STS0)  // unrecognized UUID
+        //   }
+        //   Return(Arg3)
+        // }
+        let mut osc_method = Method::new(b"_OSC");
+        osc_method.set_arg_count(4);
+
+        // CreateDWordField(Arg3, 0, STS0)
+        osc_method.add_operation(&CreateDWordFieldOp {
+            source_buffer: encode_arg(3),
+            byte_index: encode_integer(0),
+            field_name: *b"STS0",
+        });
+
+        // If (LEqual(Arg0, ToUUID("33DB4D5B-1FF7-401C-9657-7441C03DD766")))
+        let pcie_osc_uuid = guid::guid!("33DB4D5B-1FF7-401C-9657-7441C03DD766");
+        let uuid_buffer = Buffer(pcie_osc_uuid.as_bytes()).to_bytes();
+        let lequal = LEqualOp {
+            left: encode_arg(0),
+            right: uuid_buffer,
+        };
+
+        // Else { Or(STS0, 0x04, STS0) }
+        let or_op = OrOp {
+            operand1: b"STS0".to_vec(),
+            operand2: encode_integer(0x04),
+            target_name: b"STS0".to_vec(),
+        };
+        let else_body = ElseOp {
+            body: or_op.to_bytes(),
+        };
+
+        // If block: UUID matches — clear status and grant everything
+        let store_zero = StoreOp {
+            source: encode_integer(0),
+            destination: b"STS0".to_vec(),
+        };
+        let if_op = IfOp {
+            predicate: lequal.to_bytes(),
+            body: store_zero.to_bytes(),
+        };
+        osc_method.add_operation(&if_op);
+        osc_method.add_operation(&else_body);
+
+        // Return(Arg3)
+        osc_method.add_operation(&ReturnOp {
+            result: encode_arg(3),
+        });
+
+        pcie.add_object(&osc_method);
 
         let mut crs = CurrentResourceSettings::new();
         crs.add_resource(&BusNumber::new(
