@@ -293,7 +293,7 @@ async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Re
 
     let sh = agent.unix_shell();
 
-    // Confirm the NVMe controllers show up block devices
+    // Confirm the NVMe controllers show up as block devices
     let nsid_output = cmd!(sh, "cat /sys/block/nvme0n1/nsid").read().await?;
     assert_eq!(nsid_output, "1");
     let nsid_output = cmd!(sh, "cat /sys/block/nvme1n1/nsid").read().await?;
@@ -337,7 +337,7 @@ async fn pcie_hotplug(
     tracing::info!(?initial_devices, "initial PCI devices");
     assert_eq!(initial_endpoints, 0, "expected no endpoints initially");
 
-    // Hot-add an NVMe controller (no namespaces) to rp0
+    // Hot-add an NVMe controller (no namespaces) to the first root port
     let nvme_resource = vm_resource::Resource::new(nvme_resources::NvmeControllerHandle {
         subsystem_id: PCIE_NVME_SUBSYSTEM_IDS[0],
         msix_count: 2,
