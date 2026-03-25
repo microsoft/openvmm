@@ -55,6 +55,11 @@ use std::time::Instant;
 
 use crate::DNS_PORT;
 
+#[cfg(unix)]
+use crate::unix as platform;
+#[cfg(windows)]
+use crate::windows as platform;
+
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
     timeout: Duration,
@@ -90,6 +95,7 @@ struct UdpConnection {
     recycle: bool,
     #[inspect(debug)]
     last_activity: Instant,
+    gso_size: Option<u16>,
 }
 
 #[derive(Inspect, Default)]
@@ -299,13 +305,14 @@ impl<T: Client> Access<'_, T> {
         };
 
         let conn = self.get_or_insert(guest_addr, Some(frame.src_addr))?;
-        match conn
-            .socket
-            .as_mut()
-            .unwrap()
-            .get()
-            .send_to(udp_packet.payload(), dst_sock_addr)
-        {
+        let socket = conn.socket.as_ref().unwrap().get();
+        if conn.gso_size != checksum.gso {
+            platform::set_udp_gso_size(socket, checksum.gso.unwrap_or(0))
+                .map_err(DropReason::Io)?;
+            conn.gso_size = checksum.gso;
+        }
+        let result = platform::send_to(socket, udp_packet.payload(), &dst_sock_addr, checksum.gso);
+        match result {
             Ok(_) => {
                 conn.stats.tx_packets.increment();
                 conn.last_activity = Instant::now();
@@ -349,6 +356,7 @@ impl<T: Client> Access<'_, T> {
                     stats: Default::default(),
                     recycle: false,
                     last_activity: Instant::now(),
+                    gso_size: None,
                 };
                 Ok(e.insert(conn))
             }

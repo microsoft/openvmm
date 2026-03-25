@@ -216,6 +216,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             tcp: true,
             udp: true,
             tso: true,
+            uso: true,
         }
     }
 }
@@ -347,6 +348,10 @@ impl net_backend::Queue for ConsommeQueue {
                     .flags
                     .offload_tcp_segmentation()
                     .then_some(meta.max_tcp_segment_size),
+                gso: meta
+                    .flags
+                    .offload_udp_segmentation()
+                    .then_some(meta.max_udp_segment_size),
             };
 
             let mut buf = vec![0; meta.len as usize];

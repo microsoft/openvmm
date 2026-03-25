@@ -48,6 +48,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 use crate::Device;
 
 use crate::NetworkFeaturesBank0;
+use crate::NetworkFeaturesBank1;
 use crate::VirtioNetHeader;
 use crate::VirtioNetHeaderFlags;
 use crate::VirtioNetHeaderGso;
@@ -1078,6 +1079,16 @@ fn features_tso() -> NetworkFeaturesBank0 {
         .with_host_tso6(true)
 }
 
+/// Features with HOST_USO enabled in bank 1 (for USO tests).
+fn features_uso_bank1() -> NetworkFeaturesBank1 {
+    NetworkFeaturesBank1::new().with_host_uso(true)
+}
+
+/// Default (empty) bank 1 features for non-USO tests.
+fn no_bank1() -> NetworkFeaturesBank1 {
+    NetworkFeaturesBank1::new()
+}
+
 /// Build a minimal Ethernet header (14 bytes) with the given EtherType.
 fn make_eth_header(ethertype: u16) -> [u8; 14] {
     let mut h = [0u8; 14];
@@ -1117,7 +1128,7 @@ fn make_virtio_header(
 #[test]
 fn tx_offload_no_offloads() {
     let header = VirtioNetHeader::new_zeroed();
-    let meta = Worker::parse_tx_offloads(Some(&header), &[], 1000, features_csum());
+    let meta = Worker::parse_tx_offloads(Some(&header), &[], 1000, features_csum(), no_bank1());
     assert_eq!(
         meta.flags.into_bits(),
         TxFlags::new().into_bits(),
@@ -1131,7 +1142,7 @@ fn tx_offload_no_offloads() {
 /// No header at all → default TxMetadata.
 #[test]
 fn tx_offload_none_header() {
-    let meta = Worker::parse_tx_offloads(None, &[], 500, features_csum());
+    let meta = Worker::parse_tx_offloads(None, &[], 500, features_csum(), no_bank1());
     assert_eq!(meta.flags.into_bits(), TxFlags::new().into_bits());
 }
 
@@ -1152,6 +1163,7 @@ fn tx_offload_tcp_checksum() {
         &make_eth_header(ETHERTYPE_IPV4),
         1000,
         features_csum(),
+        no_bank1(),
     );
     assert!(meta.flags.offload_tcp_checksum(), "TCP csum should be set");
     assert!(
@@ -1185,6 +1197,7 @@ fn tx_offload_udp_checksum() {
         &make_eth_header(ETHERTYPE_IPV4),
         800,
         features_csum(),
+        no_bank1(),
     );
     assert!(!meta.flags.offload_tcp_checksum());
     assert!(meta.flags.offload_udp_checksum(), "UDP csum should be set");
@@ -1210,6 +1223,7 @@ fn tx_offload_ipv6_tcp_checksum() {
         &make_eth_header(ETHERTYPE_IPV6),
         1000,
         features_csum(),
+        no_bank1(),
     );
     assert!(meta.flags.offload_tcp_checksum());
     // EtherType tells us this is IPv6.
@@ -1235,6 +1249,7 @@ fn tx_offload_tso4() {
         &make_eth_header(ETHERTYPE_IPV4),
         64000,
         features_tso(),
+        no_bank1(),
     );
     assert!(meta.flags.offload_tcp_segmentation(), "TSO should be set");
     assert!(
@@ -1270,6 +1285,7 @@ fn tx_offload_tso6() {
         &make_eth_header(ETHERTYPE_IPV6),
         64000,
         features_tso(),
+        no_bank1(),
     );
     assert!(meta.flags.offload_tcp_segmentation());
     assert!(meta.flags.offload_tcp_checksum());
@@ -1301,10 +1317,80 @@ fn tx_offload_tso_without_needs_csum() {
         &make_eth_header(ETHERTYPE_IPV4),
         64000,
         features_tso(),
+        no_bank1(),
     );
     assert!(meta.flags.offload_tcp_segmentation());
     assert!(meta.flags.is_ipv4());
     assert_eq!(meta.max_tcp_segment_size, 1460);
+}
+
+/// USO4: gso_type=UDP_L4 with IPv4 EtherType.
+#[test]
+fn tx_offload_uso4() {
+    // IPv4 USO: 14 (L2) + 20 (L3) + 8 (UDP) = 42 byte header
+    let header = make_virtio_header(
+        true,
+        VirtioNetHeaderGsoProtocol::UDP_L4,
+        42,   // hdr_len
+        1472, // gso_size (UDP payload per segment)
+        34,   // csum_start (14 + 20)
+        6,    // UDP csum offset
+    );
+    let meta = Worker::parse_tx_offloads(
+        Some(&header),
+        &make_eth_header(ETHERTYPE_IPV4),
+        65000,
+        features_csum(),
+        features_uso_bank1(),
+    );
+    assert!(meta.flags.offload_udp_segmentation(), "USO should be set");
+    assert!(
+        meta.flags.offload_udp_checksum(),
+        "UDP csum should be set for USO"
+    );
+    assert!(
+        meta.flags.offload_ip_header_checksum(),
+        "IPv4 header csum should be set"
+    );
+    assert!(meta.flags.is_ipv4());
+    assert!(!meta.flags.is_ipv6());
+    assert_eq!(meta.l2_len, 14);
+    assert_eq!(meta.l3_len, 20);
+    assert_eq!(meta.max_udp_segment_size, 1472);
+    assert!(!meta.flags.offload_tcp_segmentation());
+}
+
+/// USO6: gso_type=UDP_L4 with IPv6 EtherType.
+#[test]
+fn tx_offload_uso6() {
+    // IPv6 USO: 14 (L2) + 40 (L3) + 8 (UDP) = 62 byte header
+    let header = make_virtio_header(
+        true,
+        VirtioNetHeaderGsoProtocol::UDP_L4,
+        62,   // hdr_len
+        1452, // gso_size
+        54,   // csum_start (14 + 40)
+        6,    // UDP csum offset
+    );
+    let meta = Worker::parse_tx_offloads(
+        Some(&header),
+        &make_eth_header(ETHERTYPE_IPV6),
+        65000,
+        features_csum(),
+        features_uso_bank1(),
+    );
+    assert!(meta.flags.offload_udp_segmentation(), "USO should be set");
+    assert!(meta.flags.offload_udp_checksum());
+    assert!(
+        !meta.flags.offload_ip_header_checksum(),
+        "no IPv4 header csum for IPv6"
+    );
+    assert!(!meta.flags.is_ipv4());
+    assert!(meta.flags.is_ipv6());
+    assert_eq!(meta.l2_len, 14);
+    assert_eq!(meta.l3_len, 40);
+    assert_eq!(meta.max_udp_segment_size, 1452);
+    assert!(!meta.flags.offload_tcp_segmentation());
 }
 
 /// VLAN-tagged frame: 802.1Q tag (EtherType 0x8100) wrapping IPv4.
@@ -1325,7 +1411,13 @@ fn tx_offload_vlan_ipv4() {
         38, // csum_start (18 + 20)
         16, // TCP checksum offset
     );
-    let meta = Worker::parse_tx_offloads(Some(&header), &vlan_header, 1000, features_csum());
+    let meta = Worker::parse_tx_offloads(
+        Some(&header),
+        &vlan_header,
+        1000,
+        features_csum(),
+        no_bank1(),
+    );
     assert!(meta.flags.offload_tcp_checksum(), "TCP csum should be set");
     assert!(meta.flags.is_ipv4(), "should detect IPv4 through VLAN tag");
     assert!(!meta.flags.is_ipv6());
@@ -1350,7 +1442,13 @@ fn tx_offload_vlan_ipv6() {
         58, // csum_start (18 + 40)
         6,  // UDP checksum offset
     );
-    let meta = Worker::parse_tx_offloads(Some(&header), &vlan_header, 1000, features_csum());
+    let meta = Worker::parse_tx_offloads(
+        Some(&header),
+        &vlan_header,
+        1000,
+        features_csum(),
+        no_bank1(),
+    );
     assert!(meta.flags.offload_udp_checksum(), "UDP csum should be set");
     assert!(meta.flags.is_ipv6(), "should detect IPv6 through VLAN tag");
     assert!(!meta.flags.is_ipv4());
@@ -1573,8 +1671,8 @@ async fn rx_offload_data_valid_validated_but_wrong(driver: DefaultDriver) {
 
 // --- Feature Negotiation Tests ---
 
-/// Verify that the device advertises CSUM and HOST_TSO features when the
-/// endpoint supports TCP/UDP/TSO offloads.
+/// Verify that the device advertises CSUM, HOST_TSO, and HOST_USO features
+/// when the endpoint supports TCP/UDP/TSO/USO offloads.
 #[async_test]
 async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -1586,6 +1684,7 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
             tcp: true,
             udp: true,
             tso: true,
+            uso: true,
         },
     };
 
@@ -1606,6 +1705,12 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
     assert!(
         bank0.host_tso6(),
         "HOST_TSO6 should be set when tso+tcp supported"
+    );
+
+    let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
+    assert!(
+        bank1.host_uso(),
+        "HOST_USO should be set when uso+udp offloads supported"
     );
 }
 
@@ -1634,6 +1739,12 @@ async fn feature_negotiation_no_offloads(driver: DefaultDriver) {
     assert!(
         !bank0.host_tso6(),
         "HOST_TSO6 should not be set without TSO"
+    );
+
+    let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
+    assert!(
+        !bank1.host_uso(),
+        "HOST_USO should not be set without USO offloads"
     );
 }
 

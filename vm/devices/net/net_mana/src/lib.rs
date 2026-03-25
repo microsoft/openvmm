@@ -519,6 +519,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
             udp: true,
             // Tbe bounce buffer path does not support TSO.
             tso: !self.bounce_buffer,
+            uso: false,
         }
     }
 
