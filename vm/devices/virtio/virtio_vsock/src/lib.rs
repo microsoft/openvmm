@@ -412,8 +412,8 @@ impl VsockWorker {
     }
 
     fn handle_write_ready(&mut self, id: ConnectionInstanceId) {
-        let pending_work = self.connections.handle_write_ready(id);
-        self.queue_pending_work(pending_work);
+        let pending = self.connections.handle_write_ready(id);
+        self.queue_pending_work(pending);
     }
 }
 
@@ -488,8 +488,8 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                         Event::RxWork(work) => {
                             self.handle_rx_work(state, work);
                         }
-                        Event::WriteReady(key) => {
-                            self.handle_write_ready(key);
+                        Event::WriteReady(id) => {
+                            self.handle_write_ready(id);
                         }
                         Event::Accept(Err(err)) => {
                             tracing::error!(

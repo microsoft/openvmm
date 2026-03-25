@@ -4,7 +4,7 @@
 use crate::ring::RingBuffer;
 use anyhow::Context;
 use futures::future::poll_fn;
-use hybrid_vsock::ConnectionRequest;
+use hybrid_vsock::VsockPortOrId;
 use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::interest::InterestSlot;
@@ -34,7 +34,7 @@ impl UnixSocketRelay {
     }
 
     pub fn connect(&self, driver: &VmTaskDriver, port: u32) -> anyhow::Result<RelaySocket> {
-        let request = ConnectionRequest::Port(port);
+        let request = VsockPortOrId::Port(port);
         let socket_path = request.host_uds_path(&self.base_path)?;
         let stream = UnixStream::connect(socket_path)
             .context("Failed to connect to Unix socket for vsock relay")?;
@@ -91,6 +91,12 @@ impl RelaySocket {
         // Just return 0 instead of None for the ease of the caller, since for Write that does not
         // mean shutdown.
         self.check_would_block(socket.write_vectored(bufs), InterestSlot::Write)
+            .map(|size| size.unwrap_or_default())
+    }
+
+    pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
+        let socket = &mut &self.inner.socket;
+        self.check_would_block(socket.write(buf), InterestSlot::Write)
             .map(|size| size.unwrap_or_default())
     }
 

@@ -6,6 +6,7 @@
 
 use fs_err::PathExt;
 use guid::Guid;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -18,23 +19,23 @@ pub const HYBRID_CONNECT_REQUEST_LEN: usize =
 // This GUID is an embedding of the AF_VSOCK port into an AF_HYPERV service ID.
 const VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
 
-/// Defines a connection request for a vsock or hvsocket connection.
+/// Represents the local or remote port number for a vsock connection, or the service ID or instance
+/// ID for an hvsocket connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConnectionRequest {
-    /// A connection request for a vsock port number.
+pub enum VsockPortOrId {
+    /// The vsock port number.
     Port(u32),
-    /// A connection request for an hvsocket service ID.
-    ServiceId(Guid),
+    /// The hvsocket service ID or instance ID, represented as a GUID.
+    Id(Guid),
 }
 
-impl ConnectionRequest {
-    /// Gets the vsock port number associated with this connection request. This will return a value
-    /// if the request either directly uses a port, or uses a service ID that matches the hvsocket
-    /// vsock template.
+impl VsockPortOrId {
+    /// Gets the vsock port number. This will return `Some` if the instance either directly uses a
+    /// port, or uses a service ID that matches the hvsocket vsock template.
     pub fn port(&self) -> Option<u32> {
         match self {
-            ConnectionRequest::Port(port) => Some(*port),
-            ConnectionRequest::ServiceId(service_id) => {
+            VsockPortOrId::Port(port) => Some(*port),
+            VsockPortOrId::Id(service_id) => {
                 let stripped_id = Guid {
                     data1: 0,
                     ..*service_id
@@ -44,24 +45,28 @@ impl ConnectionRequest {
         }
     }
 
-    /// Gets the vsock service ID associated with this connection request. If this connection
-    /// request is for a port, it will use the hvsocket vsock template to construct a service ID.
-    pub fn service_id(&self) -> Guid {
+    /// Gets the vsock service ID. If this instance is a port, it will use the hvsocket vsock
+    /// template to construct a service ID.
+    pub fn id(&self) -> Guid {
         match self {
-            ConnectionRequest::Port(port) => Guid {
-                data1: *port,
-                ..VSOCK_TEMPLATE
-            },
-            ConnectionRequest::ServiceId(service_id) => *service_id,
+            VsockPortOrId::Port(port) => Self::port_to_id(*port),
+            VsockPortOrId::Id(service_id) => *service_id,
         }
     }
 
-    /// Gets the path of a Unix domain socket on the host that is listening for this connection
-    /// request.
+    /// Converts a vsock port number into a GUID using the hvsocket vsock template.
+    pub fn port_to_id(port: u32) -> Guid {
+        Guid {
+            data1: port,
+            ..VSOCK_TEMPLATE
+        }
+    }
+
+    /// Gets the path of a Unix domain socket listener on the host using this port or id.
     ///
-    /// If the path uses a vsock port number, either directly or through the hvsocket vsock
-    /// template, then a listener using the port number will be given preference over one using the
-    /// service ID.
+    /// If this instance is a port, or uses a GUID that matches the hvsocket vsock template, this
+    /// function will first use a path with that port number appended. If that path doesn't exist,
+    /// or if this instance uses a non-vsock GUID, it will use a path with the full ID.
     pub fn host_uds_path(&self, base_path: impl AsRef<Path>) -> Result<PathBuf, UdsPathError> {
         let base_path = base_path.as_ref();
         let mut path = base_path.as_os_str().to_owned();
@@ -78,7 +83,7 @@ impl ConnectionRequest {
             path.push(base_path);
         }
 
-        path.push(format!("_{}", self.service_id()));
+        path.push(format!("_{}", self.id()));
         if !Path::new(&path).fs_err_try_exists()? {
             return Err(UdsPathError::NoListener(base_path.to_path_buf()));
         }
@@ -86,7 +91,8 @@ impl ConnectionRequest {
         Ok(path.into())
     }
 
-    /// Parses a connection request from a buffer containing a UTF-8 string of the format "CONNECT <port or service ID>\n".
+    /// Parses a connection request from a buffer containing a UTF-8 string of the format "CONNECT
+    /// <port or service ID>\n".
     pub fn parse_connect_request(buf: &[u8]) -> Result<Self, ParseError> {
         let rest = buf
             .strip_prefix(b"CONNECT ")
@@ -94,12 +100,45 @@ impl ConnectionRequest {
 
         let rest = std::str::from_utf8(rest).map_err(ParseError::InvalidString)?;
         if let Ok(port) = u32::from_str(rest) {
-            Ok(ConnectionRequest::Port(port))
+            Ok(VsockPortOrId::Port(port))
         } else if let Ok(service_id) = Guid::from_str(rest) {
-            Ok(ConnectionRequest::ServiceId(service_id))
+            Ok(VsockPortOrId::Id(service_id))
         } else {
             Err(ParseError::InvalidFormat(rest.to_string()))
         }
+    }
+
+    /// Gets the response string that should be sent back to the guest on a successful connection,
+    /// of the format "OK <port or service ID>\n".
+    ///
+    /// In this case, any instance using a GUID will be formatted using the full service ID, even if
+    /// it matches the hvsocket vsock template. The format returned should always match the format
+    /// that was used in the "CONNECT" request.
+    pub fn get_ok_response(&self) -> String {
+        match self {
+            VsockPortOrId::Port(port) => format!("OK {}\n", port),
+            VsockPortOrId::Id(service_id) => format!("OK {}\n", service_id),
+        }
+    }
+
+    /// Writes the response string that should be sent back to the guest on a successful connection
+    /// into the provided buffer, and returns the number of bytes written.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the buffer is too small to hold the response.
+    pub fn write_ok_response(&self, buf: &mut [u8]) -> usize {
+        let mut cursor = std::io::Cursor::new(buf);
+        match self {
+            VsockPortOrId::Port(port) => {
+                writeln!(cursor, "OK {}", port).expect("buffer should be large enough")
+            }
+            VsockPortOrId::Id(service_id) => {
+                writeln!(cursor, "OK {}", service_id).expect("buffer should be large enough")
+            }
+        }
+
+        cursor.position() as usize
     }
 }
 

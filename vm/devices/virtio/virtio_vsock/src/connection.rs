@@ -33,8 +33,8 @@ use crate::unix_relay::UnixSocketRelay;
 use anyhow::Context;
 use bitfield_struct::bitfield;
 use guestmem::GuestMemory;
-use hybrid_vsock::ConnectionRequest;
 use hybrid_vsock::HYBRID_CONNECT_REQUEST_LEN;
+use hybrid_vsock::VsockPortOrId;
 use pal_async::interest::InterestSlot;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
@@ -87,11 +87,11 @@ struct PendingReply {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ConnectionState {
-    PreHostConnect {
-        buffer: Box<[u8]>,
+    HostConnecting {
+        buffer: Vec<u8>,
         bytes_received: usize,
+        use_guid: Option<bool>,
     },
-    PostHostConnect,
     GuestConnecting,
     Connected,
 }
@@ -154,9 +154,10 @@ impl Connection {
                 peer_port: 0,
             },
             seq,
-            state: ConnectionState::PreHostConnect {
-                buffer: Box::new([0; HYBRID_CONNECT_REQUEST_LEN]),
+            state: ConnectionState::HostConnecting {
+                buffer: vec![0; HYBRID_CONNECT_REQUEST_LEN],
                 bytes_received: 0,
+                use_guid: None,
             },
             peer_buf_alloc: 0,
             peer_fwd_cnt: 0,
@@ -356,9 +357,10 @@ impl Connection {
     }
 
     fn handle_read_connect(&mut self) -> anyhow::Result<bool> {
-        let ConnectionState::PreHostConnect {
+        let ConnectionState::HostConnecting {
             buffer,
             bytes_received,
+            use_guid,
         } = &mut self.state
         else {
             panic!("handle_read_connect called in invalid state");
@@ -387,17 +389,89 @@ impl Connection {
             return Ok(false);
         }
 
-        let request = ConnectionRequest::parse_connect_request(&buffer[..*bytes_received - 1])
+        let request = VsockPortOrId::parse_connect_request(&buffer[..*bytes_received - 1])
             .context("failed to parse connect request")?;
 
         let port = request.port().ok_or_else(|| {
             anyhow::anyhow!("connect request using non-vsock format: {request:?}")
         })?;
 
+        // Make sure we send the OK message using the same format used for the request.
+        *use_guid = Some(matches!(request, VsockPortOrId::Id(_)));
+
         tracing::trace!(port, "host connect request received");
         self.key.peer_port = port;
-        self.state = ConnectionState::PostHostConnect;
         Ok(true)
+    }
+
+    fn handle_response(&mut self, header: &VsockHeader) -> anyhow::Result<PendingWork> {
+        let ConnectionState::HostConnecting {
+            buffer,
+            bytes_received,
+            use_guid: Some(use_guid),
+        } = &mut self.state
+        else {
+            anyhow::bail!("invalid state for RESPONSE");
+        };
+
+        self.peer_buf_alloc = header.buf_alloc;
+        self.peer_fwd_cnt = header.fwd_cnt;
+
+        let response = if *use_guid {
+            VsockPortOrId::Id(VsockPortOrId::port_to_id(self.key.local_port))
+        } else {
+            VsockPortOrId::Port(self.key.local_port)
+        };
+
+        let size = response.write_ok_response(buffer);
+        buffer.truncate(size);
+        *bytes_received = 0;
+        self.complete_host_connection()
+    }
+
+    fn complete_host_connection(&mut self) -> anyhow::Result<PendingWork> {
+        let ConnectionState::HostConnecting {
+            buffer,
+            bytes_received,
+            ..
+        } = &mut self.state
+        else {
+            panic!("invalid state");
+        };
+
+        *bytes_received += self
+            .socket
+            .write(buffer)
+            .context("failed to write OK response to host socket")?;
+        if *bytes_received != buffer.len() {
+            tracing::trace!(
+                bytes_sent = *bytes_received,
+                total_size = buffer.len(),
+                "partial OK response sent to host, waiting for write ready"
+            );
+
+            return Ok(PendingWork::new(
+                self.socket.await_write_ready(self.instance_id()),
+                None,
+            ));
+        }
+
+        tracing::debug!("OK response sent, connection established");
+        self.state = ConnectionState::Connected;
+        self.timeout = None;
+        let pending = if self.peer_credit_available() > 0 {
+            PendingWork::rx(
+                self.socket
+                    .await_read_ready(RxWork::Connection(self.instance_id())),
+            )
+        } else {
+            // Peer sent a response message with zero bytes available for some reason, so request
+            // an update.
+            self.pending_reply.with_credit_request(true);
+            PendingWork::simple_rx(RxWork::Connection(self.instance_id()))
+        };
+
+        Ok(pending)
     }
 
     /// Calculate the peer's available buffer space based on the advertised buffer allocation, how
@@ -547,21 +621,17 @@ impl ConnectionManager {
                     return PendingWork::simple_rx(RxWork::SendReset(key));
                 };
 
-                conn.peer_buf_alloc = packet.header.buf_alloc;
-                conn.peer_fwd_cnt = packet.header.fwd_cnt;
-                conn.state = ConnectionState::Connected;
-                conn.timeout = None;
-
-                if conn.peer_credit_available() > 0 {
-                    PendingWork::rx(
-                        conn.socket
-                            .await_read_ready(RxWork::Connection(conn.instance_id())),
-                    )
-                } else {
-                    // Peer sent a response with zero bytes available for some reason, so request
-                    // an update.
-                    conn.pending_reply.with_credit_request(true);
-                    PendingWork::simple_rx(RxWork::Connection(conn.instance_id()))
+                match conn.handle_response(&packet.header) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            ?key,
+                            "failed to handle RESPONSE from guest"
+                        );
+                        self.conns.remove(&key);
+                        PendingWork::simple_rx(RxWork::SendReset(key))
+                    }
                 }
             }
             Operation::RST => {
@@ -664,6 +734,21 @@ impl ConnectionManager {
 
         if id.seq != conn.seq {
             return PendingWork::NONE;
+        }
+
+        if matches!(conn.state, ConnectionState::HostConnecting { .. }) {
+            return match conn.complete_host_connection() {
+                Ok(value) => value,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        key = ?id.key,
+                        "failed to complete connection from host"
+                    );
+                    self.conns.remove(&id.key);
+                    PendingWork::simple_rx(RxWork::SendReset(id.key))
+                }
+            };
         }
 
         match conn.write_from_buffer() {
