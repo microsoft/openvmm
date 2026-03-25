@@ -3428,11 +3428,11 @@ async fn split_queue_state_advances_on_pop(driver: DefaultDriver) {
     .unwrap();
 
     guest.queue_available_desc(0, 0);
-    let work = queue.try_next().unwrap().unwrap();
+    let mut work = queue.try_next().unwrap().unwrap();
     let state = queue.queue_state();
     assert_eq!(state.avail_index, 1);
     // Complete the descriptor → used_index advances
-    drop(work);
+    work.complete(0);
     let state = queue.queue_state();
     assert_eq!(state.used_index, 1);
 }

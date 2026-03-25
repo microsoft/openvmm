@@ -273,8 +273,16 @@ fn process_virtiofs_request(
         }
     };
 
-    // Dispatch to the file system.
-    let mut sender = VirtioReplySender { work, mem };
+    // Dispatch to the file system. The sender writes the reply into guest
+    // memory but does not complete the descriptor—completion happens once,
+    // after dispatch returns. For FUSE no-reply operations (Forget,
+    // BatchForget, Destroy), send() is never called and bytes_written
+    // stays 0.
+    let mut sender = VirtioReplySender {
+        work: &work,
+        mem,
+        bytes_written: 0,
+    };
     let mapper = worker
         .shared_memory_region
         .as_ref()
@@ -287,16 +295,21 @@ fn process_virtiofs_request(
         &mut sender,
         mapper.as_ref().map(|x| x as &dyn fuse::Mapper),
     );
+    work.complete(sender.bytes_written);
 }
 /// An implementation of `ReplySender` for virtio payload.
+///
+/// Writes the FUSE reply into guest memory and records the byte count.
+/// Does not complete the descriptor—the caller is responsible for that.
 struct VirtioReplySender<'a> {
-    work: VirtioQueueCallbackWork,
+    work: &'a VirtioQueueCallbackWork,
     mem: &'a GuestMemory,
+    bytes_written: u32,
 }
 
 impl fuse::ReplySender for VirtioReplySender<'_> {
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-        let mut writer = VirtioPayloadWriter::new(self.mem, &self.work);
+        let mut writer = VirtioPayloadWriter::new(self.mem, self.work);
         let mut size = 0;
 
         // Write all the slices to the payload buffers.
@@ -306,7 +319,7 @@ impl fuse::ReplySender for VirtioReplySender<'_> {
             size += buf.len();
         }
 
-        self.work.complete(size as u32);
+        self.bytes_written = size as u32;
         Ok(())
     }
 }
