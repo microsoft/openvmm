@@ -20,7 +20,6 @@ use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -36,6 +35,12 @@ use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::queue::DescriptorFlags;
+use virtio::test_helpers::init_avail_ring;
+use virtio::test_helpers::init_used_ring;
+use virtio::test_helpers::make_available;
+use virtio::test_helpers::read_used;
+use virtio::test_helpers::wait_for_used;
+use virtio::test_helpers::write_descriptor;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -384,36 +389,6 @@ impl Endpoint for MockEndpoint {
 
 // --- Guest memory helpers ---
 
-/// Write a split virtio descriptor at the given descriptor table base.
-fn write_descriptor(
-    mem: &GuestMemory,
-    desc_table_base: u64,
-    index: u16,
-    addr: u64,
-    len: u32,
-    flags: DescriptorFlags,
-    next: u16,
-) {
-    let base = desc_table_base + 16 * index as u64;
-    mem.write_at(base, &addr.to_le_bytes()).unwrap();
-    mem.write_at(base + 8, &len.to_le_bytes()).unwrap();
-    mem.write_at(base + 12, &u16::from(flags).to_le_bytes())
-        .unwrap();
-    mem.write_at(base + 14, &next.to_le_bytes()).unwrap();
-}
-
-/// Initialize avail ring (flags=0, idx=0).
-fn init_avail_ring(mem: &GuestMemory, avail_addr: u64) {
-    mem.write_at(avail_addr, &0u16.to_le_bytes()).unwrap(); // flags
-    mem.write_at(avail_addr + 2, &0u16.to_le_bytes()).unwrap(); // idx
-}
-
-/// Initialize used ring (flags=0, idx=0).
-fn init_used_ring(mem: &GuestMemory, used_addr: u64) {
-    mem.write_at(used_addr, &0u16.to_le_bytes()).unwrap(); // flags
-    mem.write_at(used_addr + 2, &0u16.to_le_bytes()).unwrap(); // idx
-}
-
 /// Post a TX packet as a descriptor chain.
 ///
 /// The first descriptor covers the virtio-net header. Subsequent descriptors
@@ -447,56 +422,6 @@ fn post_tx_packet(
         let next = if is_last { 0 } else { desc_idx + 1 };
         write_descriptor(mem, TX_DESC_ADDR, desc_idx, gpa, len, flags, next);
     }
-}
-
-/// Make a descriptor index available in the avail ring and bump the index.
-fn make_available(mem: &GuestMemory, avail_addr: u64, desc_index: u16, avail_idx: &mut u16) {
-    let ring_offset = avail_addr + 4 + 2 * (*avail_idx % QUEUE_SIZE) as u64;
-    mem.write_at(ring_offset, &desc_index.to_le_bytes())
-        .unwrap();
-    *avail_idx = avail_idx.wrapping_add(1);
-    // Write the new avail idx
-    mem.write_at(avail_addr + 2, &avail_idx.to_le_bytes())
-        .unwrap();
-}
-
-/// Read the used ring index.
-fn read_used_idx(mem: &GuestMemory, used_addr: u64) -> u16 {
-    let mut buf = [0u8; 2];
-    mem.read_at(used_addr + 2, &mut buf).unwrap();
-    u16::from_le_bytes(buf)
-}
-
-/// Read a used ring entry.
-fn read_used_entry(mem: &GuestMemory, used_addr: u64, index: u16) -> (u32, u32) {
-    let entry_offset = used_addr + 4 + 8 * (index % QUEUE_SIZE) as u64;
-    let mut id_buf = [0u8; 4];
-    let mut len_buf = [0u8; 4];
-    mem.read_at(entry_offset, &mut id_buf).unwrap();
-    mem.read_at(entry_offset + 4, &mut len_buf).unwrap();
-    (u32::from_le_bytes(id_buf), u32::from_le_bytes(len_buf))
-}
-
-/// Read the next TX used ring entry, returning (desc_id, bytes_written) or None.
-fn read_used(mem: &GuestMemory, used_idx: &mut u16) -> Option<(u16, u32)> {
-    let current_used_idx = read_used_idx(mem, TX_USED_ADDR);
-    if current_used_idx == *used_idx {
-        return None;
-    }
-    let (id, len) = read_used_entry(mem, TX_USED_ADDR, *used_idx);
-    *used_idx = used_idx.wrapping_add(1);
-    Some((id as u16, len))
-}
-
-/// Read the next RX used ring entry, returning (desc_id, bytes_written) or None.
-fn read_rx_used(mem: &GuestMemory, used_idx: &mut u16) -> Option<(u16, u32)> {
-    let current_used_idx = read_used_idx(mem, RX_USED_ADDR);
-    if current_used_idx == *used_idx {
-        return None;
-    }
-    let (id, len) = read_used_entry(mem, RX_USED_ADDR, *used_idx);
-    *used_idx = used_idx.wrapping_add(1);
-    Some((id as u16, len))
 }
 
 // --- Test Harness ---
@@ -658,25 +583,27 @@ impl TestHarness {
             &[(data_gpa, data_len)],
         );
 
-        make_available(&self.mem, TX_AVAIL_ADDR, desc_index, &mut self.tx_avail_idx);
+        make_available(
+            &self.mem,
+            TX_AVAIL_ADDR,
+            QUEUE_SIZE,
+            desc_index,
+            &mut self.tx_avail_idx,
+        );
         self.tx_event.signal();
     }
 
     /// Wait for the next TX used ring entry with a timeout.
     async fn wait_for_used(&mut self) -> (u16, u32) {
-        let mut wait = PolledWait::new(&self.driver, self.tx_interrupt_event.clone()).unwrap();
-        mesh::CancelContext::new()
-            .with_timeout(Duration::from_secs(5))
-            .until_cancelled(async {
-                loop {
-                    if let Some(entry) = read_used(&self.mem, &mut self.tx_used_idx) {
-                        return entry;
-                    }
-                    wait.wait().await.unwrap();
-                }
-            })
-            .await
-            .expect("timed out waiting for TX used ring entry")
+        wait_for_used(
+            &self.driver,
+            &self.tx_interrupt_event,
+            &self.mem,
+            TX_USED_ADDR,
+            QUEUE_SIZE,
+            &mut self.tx_used_idx,
+        )
+        .await
     }
 
     // --- RX helpers ---
@@ -700,26 +627,28 @@ impl TestHarness {
             flags,
             0,
         );
-        make_available(&self.mem, RX_AVAIL_ADDR, desc_index, &mut self.rx_avail_idx);
+        make_available(
+            &self.mem,
+            RX_AVAIL_ADDR,
+            QUEUE_SIZE,
+            desc_index,
+            &mut self.rx_avail_idx,
+        );
         self.rx_event.signal();
         gpa
     }
 
     /// Wait for the next RX used ring entry with a timeout.
     async fn wait_for_rx_used(&mut self) -> (u16, u32) {
-        let mut wait = PolledWait::new(&self.driver, self.rx_interrupt_event.clone()).unwrap();
-        mesh::CancelContext::new()
-            .with_timeout(Duration::from_secs(5))
-            .until_cancelled(async {
-                loop {
-                    if let Some(entry) = read_rx_used(&self.mem, &mut self.rx_used_idx) {
-                        return entry;
-                    }
-                    wait.wait().await.unwrap();
-                }
-            })
-            .await
-            .expect("timed out waiting for RX used ring entry")
+        wait_for_used(
+            &self.driver,
+            &self.rx_interrupt_event,
+            &self.mem,
+            RX_USED_ADDR,
+            QUEUE_SIZE,
+            &mut self.rx_used_idx,
+        )
+        .await
     }
 
     /// Disable the device (stops all queues).
@@ -805,7 +734,13 @@ async fn async_completion_single_packet(driver: DefaultDriver) {
 
     // Used ring should be empty since it's async
     assert!(
-        read_used(&harness.mem, &mut harness.tx_used_idx).is_none(),
+        read_used(
+            &harness.mem,
+            TX_USED_ADDR,
+            QUEUE_SIZE,
+            &mut harness.tx_used_idx
+        )
+        .is_none(),
         "used ring should be empty before async completion"
     );
 
@@ -938,6 +873,7 @@ async fn partial_submit_multi_packet(driver: DefaultDriver) {
         make_available(
             &harness.mem,
             TX_AVAIL_ADDR,
+            QUEUE_SIZE,
             desc_index,
             &mut harness.tx_avail_idx,
         );
@@ -956,7 +892,13 @@ async fn partial_submit_multi_packet(driver: DefaultDriver) {
     // processed through the second packet (we got it from the used ring),
     // so any further processing would be synchronous. Just check the ring.
     assert!(
-        read_used(&harness.mem, &mut harness.tx_used_idx).is_none(),
+        read_used(
+            &harness.mem,
+            TX_USED_ADDR,
+            QUEUE_SIZE,
+            &mut harness.tx_used_idx
+        )
+        .is_none(),
         "third packet should not be completed yet"
     );
 
@@ -1460,6 +1402,7 @@ async fn tx_offload_end_to_end_tcp_csum(driver: DefaultDriver) {
     make_available(
         &harness.mem,
         TX_AVAIL_ADDR,
+        QUEUE_SIZE,
         desc_index,
         &mut harness.tx_avail_idx,
     );

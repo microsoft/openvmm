@@ -29,7 +29,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
-mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
 parking_lot.workspace = true

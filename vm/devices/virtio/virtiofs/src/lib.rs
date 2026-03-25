@@ -6,6 +6,8 @@
 
 mod file;
 mod inode;
+#[cfg(test)]
+mod integration_tests;
 pub mod resolver;
 #[cfg(windows)]
 mod section;

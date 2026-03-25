@@ -292,10 +292,10 @@ impl MmioIntercept for GenericPcieRootComplex {
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.read_u32(cfg_offset, &mut dword_value));
             }
-            DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
+            DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_read(
                     &bus_number,
-                    &device_function,
+                    &function,
                     cfg_offset & !3,
                     &mut dword_value,
                 ));
@@ -352,10 +352,10 @@ impl MmioIntercept for GenericPcieRootComplex {
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
             }
-            DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
+            DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_write(
                     &bus_number,
-                    &device_function,
+                    &function,
                     cfg_offset,
                     write_dword,
                 ));
@@ -442,23 +442,23 @@ impl RootPort {
     fn forward_cfg_read(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> IoResult {
         self.port
-            .forward_cfg_read_with_routing(bus, device_function, cfg_offset, value)
+            .forward_cfg_read_with_routing(bus, function, cfg_offset, value)
     }
 
     fn forward_cfg_write(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
         self.port
-            .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
+            .forward_cfg_write_with_routing(bus, function, cfg_offset, value)
     }
 }
 

@@ -84,7 +84,7 @@ impl PcieDownstreamPort {
     pub fn forward_cfg_read_with_routing(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> IoResult {
@@ -96,29 +96,16 @@ impl PcieDownstreamPort {
             return IoResult::Ok;
         }
 
-        if *bus == *bus_range.start() {
-            // Perform type-0 access to the child device's config space.
-            if *device_function == 0 {
-                if let Some((_, device)) = &mut self.link {
-                    let result = device.pci_cfg_read(cfg_offset, value);
-
-                    if let Some(result) = result {
-                        match result {
-                            IoResult::Ok => (),
-                            res => return res,
-                        }
-                    }
-                }
-            } else {
-                tracelimit::warn_ratelimited!(
-                    "invalid access: multi-function device access not supported for now"
-                );
-                return IoResult::Ok;
-            }
-        } else if bus_range.contains(bus) {
+        if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                // Forward access to the linked device.
-                let result = device.pci_cfg_read_forward(*bus, *device_function, cfg_offset, value);
+                let secondary_bus = *bus_range.start();
+                let result = device.pci_cfg_read_with_routing(
+                    secondary_bus,
+                    *bus,
+                    *function,
+                    cfg_offset,
+                    value,
+                );
 
                 if let Some(result) = result {
                     match result {
@@ -126,7 +113,7 @@ impl PcieDownstreamPort {
                         res => return res,
                     }
                 }
-            } else {
+            } else if *bus != *bus_range.start() {
                 tracelimit::warn_ratelimited!(
                     "invalid access: bus number to access not within port's bus number range"
                 );
@@ -141,7 +128,7 @@ impl PcieDownstreamPort {
     pub fn forward_cfg_write_with_routing(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
@@ -153,30 +140,16 @@ impl PcieDownstreamPort {
             return IoResult::Ok;
         }
 
-        if *bus == *bus_range.start() {
-            // Perform type-0 access to the child device's config space.
-            if *device_function == 0 {
-                if let Some((_, device)) = &mut self.link {
-                    let result = device.pci_cfg_write(cfg_offset, value);
-
-                    if let Some(result) = result {
-                        match result {
-                            IoResult::Ok => (),
-                            res => return res,
-                        }
-                    }
-                }
-            } else {
-                tracelimit::warn_ratelimited!(
-                    "invalid access: multi-function device access not supported for now"
-                );
-                return IoResult::Ok;
-            }
-        } else if bus_range.contains(bus) {
+        if bus_range.contains(bus) {
             if let Some((_, device)) = &mut self.link {
-                // Forward access to the linked device.
-                let result =
-                    device.pci_cfg_write_forward(*bus, *device_function, cfg_offset, value);
+                let secondary_bus = *bus_range.start();
+                let result = device.pci_cfg_write_with_routing(
+                    secondary_bus,
+                    *bus,
+                    *function,
+                    cfg_offset,
+                    value,
+                );
 
                 if let Some(result) = result {
                     match result {
@@ -184,7 +157,7 @@ impl PcieDownstreamPort {
                         res => return res,
                     }
                 }
-            } else {
+            } else if *bus != *bus_range.start() {
                 tracelimit::warn_ratelimited!(
                     "invalid access: bus number to access not within port's bus number range"
                 );
@@ -226,8 +199,10 @@ impl PcieDownstreamPort {
 mod tests {
     use super::*;
     use chipset_device::io::IoResult;
+    use parking_lot::Mutex;
     use pci_bus::GenericPciBusDevice;
     use pci_core::spec::hwid::HardwareIds;
+    use std::sync::Arc;
 
     // Mock device for testing
     struct MockDevice;
@@ -240,25 +215,60 @@ mod tests {
         fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
             None
         }
+    }
 
-        fn pci_cfg_read_forward(
-            &mut self,
-            _bus: u8,
-            _device_function: u8,
-            _offset: u16,
-            _value: &mut u32,
-        ) -> Option<IoResult> {
-            None
+    #[derive(Default, Debug, Clone, PartialEq, Eq)]
+    struct RoutingStats {
+        direct_reads: usize,
+        forward_reads: Vec<(u8, u8, u16)>,
+        direct_writes: usize,
+        forward_writes: Vec<(u8, u8, u16, u32)>,
+    }
+
+    struct MultiFunctionMockDevice {
+        stats: Arc<Mutex<RoutingStats>>,
+    }
+
+    impl GenericPciBusDevice for MultiFunctionMockDevice {
+        fn pci_cfg_read(&mut self, _offset: u16, _value: &mut u32) -> Option<IoResult> {
+            self.stats.lock().direct_reads += 1;
+            Some(IoResult::Ok)
         }
 
-        fn pci_cfg_write_forward(
+        fn pci_cfg_write(&mut self, _offset: u16, _value: u32) -> Option<IoResult> {
+            self.stats.lock().direct_writes += 1;
+            Some(IoResult::Ok)
+        }
+
+        fn pci_cfg_read_with_routing(
             &mut self,
-            _bus: u8,
-            _device_function: u8,
-            _offset: u16,
-            _value: u32,
+            _secondary_bus: u8,
+            target_bus: u8,
+            function: u8,
+            offset: u16,
+            value: &mut u32,
         ) -> Option<IoResult> {
-            None
+            self.stats
+                .lock()
+                .forward_reads
+                .push((target_bus, function, offset));
+            *value = 0x1234_5678;
+            Some(IoResult::Ok)
+        }
+
+        fn pci_cfg_write_with_routing(
+            &mut self,
+            _secondary_bus: u8,
+            target_bus: u8,
+            function: u8,
+            offset: u16,
+            value: u32,
+        ) -> Option<IoResult> {
+            self.stats
+                .lock()
+                .forward_writes
+                .push((target_bus, function, offset, value));
+            Some(IoResult::Ok)
         }
     }
 
@@ -341,6 +351,114 @@ mod tests {
         assert!(
             result.is_ok(),
             "Adding device should succeed even without hotplug support"
+        );
+    }
+
+    #[test]
+    fn test_direct_child_bus_reads_use_forward_for_multifunction_devices() {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+        );
+
+        port.cfg_space
+            .write_u32(0x18, (1u32 << 16) | (1u32 << 8))
+            .unwrap();
+
+        let stats = Arc::new(Mutex::new(RoutingStats::default()));
+        port.link = Some((
+            "mf-device".into(),
+            Box::new(MultiFunctionMockDevice {
+                stats: Arc::clone(&stats),
+            }),
+        ));
+
+        let mut value = 0;
+        // All accesses on the secondary bus go through
+        // pci_cfg_read_with_routing — the linked device is responsible
+        // for dispatching function 0 to its own config space.
+        assert!(matches!(
+            port.forward_cfg_read_with_routing(&1, &0, 0x10, &mut value),
+            IoResult::Ok
+        ));
+        assert!(matches!(
+            port.forward_cfg_read_with_routing(&1, &3, 0x14, &mut value),
+            IoResult::Ok
+        ));
+
+        let stats = stats.lock().clone();
+        assert_eq!(stats.direct_reads, 0);
+        assert_eq!(stats.forward_reads, vec![(1, 0, 0x10), (1, 3, 0x14)]);
+    }
+
+    #[test]
+    fn test_direct_child_bus_writes_use_forward_for_multifunction_devices() {
+        use pci_core::spec::hwid::{ClassCode, ProgrammingInterface, Subclass};
+
+        let hardware_ids = HardwareIds {
+            vendor_id: 0x1234,
+            device_id: 0x5678,
+            revision_id: 0,
+            prog_if: ProgrammingInterface::NONE,
+            sub_class: Subclass::BRIDGE_PCI_TO_PCI,
+            base_class: ClassCode::BRIDGE,
+            type0_sub_vendor_id: 0,
+            type0_sub_system_id: 0,
+        };
+
+        let mut port = PcieDownstreamPort::new(
+            "test-port",
+            hardware_ids,
+            DevicePortType::RootPort,
+            false,
+            None,
+        );
+
+        port.cfg_space
+            .write_u32(0x18, (1u32 << 16) | (1u32 << 8))
+            .unwrap();
+
+        let stats = Arc::new(Mutex::new(RoutingStats::default()));
+        port.link = Some((
+            "mf-device".into(),
+            Box::new(MultiFunctionMockDevice {
+                stats: Arc::clone(&stats),
+            }),
+        ));
+
+        // All accesses on the secondary bus go through
+        // pci_cfg_write_with_routing — the linked device is responsible
+        // for dispatching function 0 to its own config space.
+        assert!(matches!(
+            port.forward_cfg_write_with_routing(&1, &0, 0x10, 0xAAAA_0000),
+            IoResult::Ok
+        ));
+        assert!(matches!(
+            port.forward_cfg_write_with_routing(&1, &2, 0x14, 0xBBBB_0000),
+            IoResult::Ok
+        ));
+
+        let stats = stats.lock().clone();
+        assert_eq!(stats.direct_writes, 0);
+        assert_eq!(
+            stats.forward_writes,
+            vec![(1, 0, 0x10, 0xAAAA_0000), (1, 2, 0x14, 0xBBBB_0000)]
         );
     }
 }

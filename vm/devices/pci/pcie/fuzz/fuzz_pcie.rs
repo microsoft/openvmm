@@ -66,26 +66,32 @@ impl GenericPciBusDevice for SwitchAdapter {
         Some(self.0.pci_cfg_write(offset, value))
     }
 
-    fn pci_cfg_read_forward(
+    fn pci_cfg_read_with_routing(
         &mut self,
-        bus: u8,
-        device_function: u8,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
         offset: u16,
         value: &mut u32,
     ) -> Option<IoResult> {
-        self.0
-            .pci_cfg_read_forward(bus, device_function, offset, value)
+        Some(
+            self.0
+                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
     }
 
-    fn pci_cfg_write_forward(
+    fn pci_cfg_write_with_routing(
         &mut self,
-        bus: u8,
-        device_function: u8,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
         offset: u16,
         value: u32,
     ) -> Option<IoResult> {
-        self.0
-            .pci_cfg_write_forward(bus, device_function, offset, value)
+        Some(
+            self.0
+                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
     }
 }
 
