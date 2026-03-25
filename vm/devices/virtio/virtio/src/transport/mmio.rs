@@ -572,7 +572,51 @@ impl ChangeDeviceState for VirtioMmioDevice {
         // Drain ignoring result — reset_status() below clears everything.
         let _ = self.state.drain(&self.device_sender).await;
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
+
+        // reset_status() handles device_status, config_generation,
+        // doorbells, and interrupt_state.
         self.reset_status();
+
+        // Destructure to ensure every field is handled; the compiler will
+        // flag new fields that are not addressed here.
+        let Self {
+            fixed_mmio_region: _,
+            device_sender: _,
+            _device_task,
+            state: _,
+            device_id: _,
+            vendor_id: _,
+            device_feature: _,
+            device_feature_select,
+            driver_feature,
+            driver_feature_select,
+            queue_select,
+            events: _,
+            queues,
+            // Handled by reset_status() above.
+            device_status: _,
+            poll_waker: _,
+            config_generation: _,
+            doorbells: _,
+            interrupt_state: _,
+            saved_queue_states,
+            supports_save_restore: _,
+            guest_memory: _,
+        } = self;
+
+        *device_feature_select = 0;
+        *driver_feature = VirtioDeviceFeatures::new();
+        *driver_feature_select = 0;
+        *queue_select = 0;
+        for q in queues {
+            *q = QueueParams {
+                size: QUEUE_MAX_SIZE,
+                ..Default::default()
+            };
+        }
+        for s in saved_queue_states {
+            *s = None;
+        }
     }
 }
 

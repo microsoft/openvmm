@@ -18,8 +18,6 @@ use crate::SavedStateRequest;
 use crate::channels::SavedState;
 use crate::channels::SavedStateData;
 use crate::channels::saved_state::GpadlState;
-use crate::event::MaybeWrappedEvent;
-use crate::event::WrappedEvent;
 use anyhow::Context;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -63,6 +61,7 @@ use vmbus_proxy::Gpadl;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
+use vmcore::interrupt::EventProxy;
 use vmcore::interrupt::Interrupt;
 use windows::Win32::Foundation::ERROR_NOT_FOUND;
 use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
@@ -221,7 +220,7 @@ impl ProxyIntegration {
 
 struct ChannelOpenState {
     worker_result: mesh::OneshotReceiver<()>,
-    _wrapped_event: Option<WrappedEvent>,
+    _event_proxy: Option<EventProxy>,
 }
 
 #[derive(Default)]
@@ -340,8 +339,7 @@ impl ProxyTask {
     }
 
     async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
-        let maybe_wrapped =
-            MaybeWrappedEvent::new(&TpPool::system(), open_request.interrupt.clone())?;
+        let (call_event, event_proxy) = open_request.interrupt.event_or_proxy(&TpPool::system())?;
 
         self.proxy
             .open(
@@ -354,7 +352,7 @@ impl ProxyTask {
                         .get_numa_node(open_request.open_data.target_vp.unwrap_or_default()),
                     Padding: 0,
                 },
-                maybe_wrapped.event(),
+                &call_event,
             )
             .await
             .context("failed to open channel")?;
@@ -367,7 +365,7 @@ impl ProxyTask {
         let recv = self.create_worker_thread(proxy_id);
         channel.open_state = Some(ChannelOpenState {
             worker_result: recv,
-            _wrapped_event: maybe_wrapped.into_wrapped(),
+            _event_proxy: event_proxy,
         });
 
         Ok(())
@@ -478,11 +476,13 @@ impl ProxyTask {
             return Ok(None);
         };
 
-        let maybe_wrapped =
-            MaybeWrappedEvent::new(&TpPool::system(), open_request.interrupt.clone()).unwrap();
+        let (call_event, event_proxy) = open_request
+            .interrupt
+            .event_or_proxy(&TpPool::system())
+            .unwrap();
 
         self.proxy
-            .set_interrupt(proxy_id, maybe_wrapped.event())
+            .set_interrupt(proxy_id, &call_event)
             .await
             .unwrap_or_else(|e| {
                 panic!("failed to set interrupt in proxy for channel {offer_key}: {e:?}")
@@ -492,7 +492,7 @@ impl ProxyTask {
 
         Ok(Some(ChannelOpenState {
             worker_result: recv,
-            _wrapped_event: maybe_wrapped.into_wrapped(),
+            _event_proxy: event_proxy,
         }))
     }
 

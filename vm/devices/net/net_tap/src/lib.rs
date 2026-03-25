@@ -155,7 +155,7 @@ impl Endpoint for TapEndpoint {
 
     async fn get_queues(
         &mut self,
-        mut config: Vec<QueueConfig<'_>>,
+        mut config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -165,8 +165,6 @@ impl Endpoint for TapEndpoint {
         queues.push(Box::new(TapQueue::new(
             config.driver.as_ref(),
             self.tap.clone(),
-            config.pool,
-            config.initial_rx,
         )?));
         Ok(())
     }
@@ -197,7 +195,6 @@ struct TapQueue {
 }
 
 struct Inner {
-    pool: Box<dyn BufferAccess>,
     rx_free: VecDeque<RxId>,
     rx_ready: VecDeque<RxId>,
 }
@@ -217,20 +214,14 @@ impl Drop for TapQueue {
 }
 
 impl TapQueue {
-    fn new(
-        driver: &dyn Driver,
-        slot: Arc<Mutex<Option<tap::Tap>>>,
-        pool: Box<dyn BufferAccess>,
-        initial_rx: &[RxId],
-    ) -> anyhow::Result<Self> {
+    fn new(driver: &dyn Driver, slot: Arc<Mutex<Option<tap::Tap>>>) -> anyhow::Result<Self> {
         let tap = slot.lock().take().expect("queue is already in use");
         let tap = tap.polled(driver)?;
         Ok(Self {
             slot,
             tap: Some(tap),
             inner: Inner {
-                pool,
-                rx_free: initial_rx.iter().copied().collect(),
+                rx_free: VecDeque::new(),
                 rx_ready: VecDeque::new(),
             },
             buffer: vec![0; 65535 + size_of::<VirtioNetHdr>()].into_boxed_slice(),
@@ -239,7 +230,7 @@ impl TapQueue {
 }
 
 impl Queue for TapQueue {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
         if !self.inner.rx_ready.is_empty() {
             return Poll::Ready(());
         }
@@ -262,7 +253,7 @@ impl Queue for TapQueue {
                     let rx_meta = parse_vnet_hdr(&hdr);
                     let frame_start = size_of::<VirtioNetHdr>();
                     let frame_len = read_len - size_of::<VirtioNetHdr>();
-                    self.inner.pool.write_packet(
+                    pool.write_packet(
                         rx,
                         &RxMetadata {
                             offset: 0,
@@ -290,11 +281,15 @@ impl Queue for TapQueue {
         }
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
         self.inner.rx_free.extend(done);
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         // Send to the guest any packets that might have been read during poll_ready().
         let n = std::cmp::min(self.inner.rx_ready.len(), packets.len());
         for (done, id) in packets[..n].iter_mut().zip(self.inner.rx_ready.drain(..n)) {
@@ -303,7 +298,11 @@ impl Queue for TapQueue {
         Ok(n)
     }
 
-    fn tx_avail(&mut self, mut segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        mut segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         let n = segments.len();
         // Synchronously send packets received from the guest to host's network.
         if let Some(tap) = self.tap.as_mut() {
@@ -311,7 +310,7 @@ impl Queue for TapQueue {
                 let (meta, _segs, _rest) = next_packet(segments);
                 let hdr = build_vnet_hdr(meta);
                 let hdr_bytes = hdr.as_bytes();
-                let mut packet = linearize(self.inner.pool.as_ref(), &mut segments)?;
+                let mut packet = linearize(pool, &mut segments)?;
                 // The virtio net header has no mechanism for IPv4 header
                 // checksum offload, and in bridged configurations the kernel
                 // won't recompute it. Compute it in software for non-TSO
@@ -363,14 +362,14 @@ impl Queue for TapQueue {
         Ok((completed_synchronously, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        _done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         // Packets are sent synchronously so there is no no need to check here if
         // sending has been completed.
         Ok(0)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        Some(self.inner.pool.as_mut())
     }
 }
 

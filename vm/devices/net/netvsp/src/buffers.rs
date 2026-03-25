@@ -4,9 +4,7 @@
 //! Implementation of [`RxBufferAccess`] and friends on top of the receive
 //! buffers.
 
-use crate::MAX_MTU;
 use crate::rndisprot;
-use arrayvec::ArrayVec;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::LockedPages;
@@ -43,15 +41,11 @@ pub struct GuestBuffers {
 /// suballocations.
 pub struct BufferPool {
     buffers: Arc<GuestBuffers>,
-    buffer_segments: ArrayVec<RxBufferSegment, MAX_RX_SEGMENTS>,
 }
 
 impl BufferPool {
     pub fn new(buffers: Arc<GuestBuffers>) -> Self {
-        Self {
-            buffers,
-            buffer_segments: ArrayVec::new(),
-        }
+        Self { buffers }
     }
 
     fn offset(&self, id: RxId) -> u32 {
@@ -105,16 +99,8 @@ pub const fn sub_allocation_size_for_mtu(mtu: u32) -> u32 {
     RX_HEADER_LEN + mtu + BROKEN_CO_NETVSC_FOOTER_LEN
 }
 
-const MAX_RX_SEGMENTS: usize =
-    ((sub_allocation_size_for_mtu(MAX_MTU) + (PAGE_SIZE32 - 1) * 2) / PAGE_SIZE32) as usize;
-
-/// Comutes the buffer segments for accessing
-fn compute_buffer_segments(
-    v: &mut ArrayVec<RxBufferSegment, MAX_RX_SEGMENTS>,
-    gpns: &[u64],
-    mut range: Range<u32>,
-) {
-    v.clear();
+/// Computes the buffer segments for accessing a range of the receive buffer.
+fn compute_buffer_segments(v: &mut Vec<RxBufferSegment>, gpns: &[u64], mut range: Range<u32>) {
     while !range.is_empty() {
         let start_page = range.start / PAGE_SIZE32;
         let start_offset = range.start % PAGE_SIZE32;
@@ -141,14 +127,13 @@ impl BufferAccess for BufferPool {
         &self.buffers.mem
     }
 
-    fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment] {
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let offset = self.offset(id);
         compute_buffer_segments(
-            &mut self.buffer_segments,
+            buf,
             &self.buffers.gpns,
             offset + RX_HEADER_LEN..offset + RX_HEADER_LEN + self.buffers.mtu,
         );
-        &self.buffer_segments
     }
 
     fn capacity(&self, _id: RxId) -> u32 {
@@ -238,7 +223,6 @@ impl BufferAccess for BufferPool {
 #[cfg(test)]
 mod tests {
     use crate::buffers::compute_buffer_segments;
-    use arrayvec::ArrayVec;
     use net_backend::RxBufferSegment;
 
     #[test]
@@ -257,7 +241,7 @@ mod tests {
             (0x1001..0x5000, &[(0x3001, 0x2fff), (0x8000, 0x1000)]),
         ];
         for (range, data) in cases {
-            let mut v = ArrayVec::new();
+            let mut v = Vec::new();
             compute_buffer_segments(&mut v, &gpns, range);
             check(&v, data);
         }

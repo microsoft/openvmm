@@ -69,7 +69,7 @@ use zerocopy::IntoBytes;
 pub struct GuestBuffers {
     gm: GuestMemory,
     rx_packets: Arc<Mutex<Slab<RxPacket>>>,
-    buffer_segments: Vec<RxBufferSegment>,
+    scratch_segments: Vec<RxBufferSegment>,
 }
 
 struct RxPacket {
@@ -85,8 +85,9 @@ impl BufferAccess for GuestBuffers {
     }
 
     fn write_data(&mut self, id: RxId, mut data: &[u8]) {
-        self.guest_addresses(id);
-        let mut addrs = self.buffer_segments.iter();
+        self.scratch_segments
+            .clone_from(&self.rx_packets.lock()[id.0 as usize].segments);
+        let mut addrs = self.scratch_segments.iter();
         while !data.is_empty() {
             let addr = addrs.next().expect("packet too large");
             let len = data.len().min(addr.len as usize);
@@ -103,10 +104,8 @@ impl BufferAccess for GuestBuffers {
         }
     }
 
-    fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment] {
-        self.buffer_segments
-            .clone_from(&self.rx_packets.lock()[id.0 as usize].segments);
-        &self.buffer_segments
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
+        buf.extend_from_slice(&self.rx_packets.lock()[id.0 as usize].segments);
     }
 
     fn capacity(&self, id: RxId) -> u32 {
@@ -362,12 +361,6 @@ impl BasicNic {
                                 .endpoint
                                 .get_queues(
                                     vec![QueueConfig {
-                                        pool: Box::new(GuestBuffers {
-                                            gm: state.queues.gm.clone(),
-                                            rx_packets: Arc::clone(&rx_packets),
-                                            buffer_segments: Vec::new(),
-                                        }),
-                                        initial_rx: &[],
                                         driver: Box::new(state.queues.driver.clone()),
                                     }],
                                     None,
@@ -381,6 +374,11 @@ impl BasicNic {
                                 TxRxTask {
                                     queues: state.queues.clone(),
                                     epqueue: queues.drain(..).next().unwrap(),
+                                    pool: GuestBuffers {
+                                        gm: state.queues.gm.clone(),
+                                        rx_packets: Arc::clone(&rx_packets),
+                                        scratch_segments: Vec::new(),
+                                    },
                                     rx_packets,
                                     sq_id,
                                     sq_cq_id,
@@ -460,6 +458,7 @@ impl BasicNic {
 pub struct TxRxTask {
     queues: Arc<Queues>,
     epqueue: Box<dyn Queue>,
+    pool: GuestBuffers,
     rx_packets: Arc<Mutex<Slab<RxPacket>>>,
     sq_id: u32,
     sq_cq_id: u32,
@@ -491,16 +490,18 @@ impl TxRxTask {
 
         loop {
             let event = poll_fn(|cx| {
-                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
-                    return Poll::Ready(Event::Sqe(wqe));
-                }
+                // Fill rx before transmitting to avoid rx buffer starvation
+                // (particularly in tests, but seems reasonable in general).
                 if self.rx_buf_count < max_rx_buf {
                     if let Poll::Ready((wqe_offset, wqe)) = self.queues.poll_rq(self.rq_id, cx) {
                         self.rx_buf_count += 1;
                         return Poll::Ready(Event::Rqe(wqe_offset, wqe));
                     }
                 }
-                if self.epqueue.poll_ready(cx).is_ready() {
+                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
+                    return Poll::Ready(Event::Sqe(wqe));
+                }
+                if self.epqueue.poll_ready(cx, &mut self.pool).is_ready() {
                     return Poll::Ready(Event::Ready);
                 }
                 Poll::Pending
@@ -593,7 +594,7 @@ impl TxRxTask {
                 len: sge.size,
             });
         }
-        let (sync, count) = self.epqueue.tx_avail(tx_segments)?;
+        let (sync, count) = self.epqueue.tx_avail(&mut self.pool, tx_segments)?;
         if sync || count == 0 {
             tracing::trace!("tx sync complete");
             self.post_tx_completion();
@@ -647,13 +648,13 @@ impl TxRxTask {
             oob: FromZeros::new_zeroed(),
         };
         let id = RxId(self.rx_packets.lock().insert(packet) as u32);
-        self.epqueue.rx_avail(&[id]);
+        self.epqueue.rx_avail(&mut self.pool, &[id]);
         Ok(())
     }
 
     fn process_backend(&mut self) -> anyhow::Result<()> {
         let mut packets = [RxId(0)];
-        if self.epqueue.rx_poll(&mut packets)? > 0 {
+        if self.epqueue.rx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("rx complete");
             let packet = self
                 .rx_packets
@@ -668,7 +669,7 @@ impl TxRxTask {
         }
 
         let mut packets = [TxId(0)];
-        if self.epqueue.tx_poll(&mut packets)? > 0 {
+        if self.epqueue.tx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("tx async complete");
             self.post_tx_completion();
         }

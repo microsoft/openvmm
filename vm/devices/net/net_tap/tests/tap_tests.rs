@@ -205,11 +205,7 @@ mod tap_tests {
     /// Validates that `get_queues` returns exactly one queue.
     async fn test_tap_get_queues(driver: DefaultDriver) {
         let mut endpoint = new_endpoint("tap0").unwrap();
-        let (pool, _mem) = make_pool();
-        let initial_rx: Vec<_> = (1..128).map(RxId).collect();
         let config = vec![QueueConfig {
-            pool: Box::new(pool),
-            initial_rx: &initial_rx,
             driver: Box::new(driver.clone()),
         }];
         let mut queues = Vec::new();
@@ -229,11 +225,8 @@ mod tap_tests {
         let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
-        let (pool, mem) = make_pool();
-        let initial_rx: Vec<_> = (1..128).map(RxId).collect();
+        let (mut pool, mem) = make_pool();
         let config = vec![QueueConfig {
-            pool: Box::new(pool),
-            initial_rx: &initial_rx,
             driver: Box::new(driver.clone()),
         }];
         let mut queues = Vec::new();
@@ -266,7 +259,7 @@ mod tap_tests {
             len: frame_len,
         }];
 
-        let (completed, count) = queue.tx_avail(&segments).unwrap();
+        let (completed, count) = queue.tx_avail(&mut pool, &segments).unwrap();
         assert!(completed, "tx should complete synchronously");
         assert_eq!(count, 1, "should have processed 1 segment");
     }
@@ -277,11 +270,9 @@ mod tap_tests {
         let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
-        let (pool, mem) = make_pool();
+        let (mut pool, mem) = make_pool();
         let initial_rx: Vec<_> = (1..128).map(RxId).collect();
         let config = vec![QueueConfig {
-            pool: Box::new(pool),
-            initial_rx: &initial_rx,
             driver: Box::new(driver.clone()),
         }];
         let mut queues = Vec::new();
@@ -291,6 +282,9 @@ mod tap_tests {
             .unwrap();
         let queue = &mut queues[0];
 
+        // Post initial RX buffers.
+        queue.rx_avail(&mut pool, &initial_rx);
+
         // Send a UDP datagram to an address on the TAP subnet. The kernel will
         // generate an ARP request out the TAP interface.
         let sock = std::net::UdpSocket::bind("10.0.0.1:0").unwrap();
@@ -299,10 +293,10 @@ mod tap_tests {
         // Poll until a packet arrives, then scan for an ARP frame. The kernel
         // may emit other L2 traffic (e.g., IPv6 Neighbor Discovery) before the
         // ARP request we triggered, so we cannot assume it is the first packet.
-        poll_fn(|cx| queue.poll_ready(cx)).await;
+        poll_fn(|cx| queue.poll_ready(cx, &mut pool)).await;
 
         let mut packets = [RxId(0); 128];
-        let n = queue.rx_poll(&mut packets).unwrap();
+        let n = queue.rx_poll(&mut pool, &mut packets).unwrap();
         assert!(n >= 1, "should have received at least one packet");
 
         let mut found_arp = false;
@@ -330,11 +324,8 @@ mod tap_tests {
         let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
-        let (pool, mem) = make_pool();
-        let initial_rx: Vec<_> = (1..128).map(RxId).collect();
+        let (mut pool, mem) = make_pool();
         let config = vec![QueueConfig {
-            pool: Box::new(pool),
-            initial_rx: &initial_rx,
             driver: Box::new(driver.clone()),
         }];
         let mut queues = Vec::new();
@@ -368,7 +359,7 @@ mod tap_tests {
 
         // Flood with packets — should never error.
         for _ in 0..10000 {
-            let (completed, count) = queue.tx_avail(&segments).unwrap();
+            let (completed, count) = queue.tx_avail(&mut pool, &segments).unwrap();
             assert!(completed, "tx should always complete synchronously");
             assert_eq!(count, 1);
         }
@@ -379,11 +370,8 @@ mod tap_tests {
         let mut endpoint = new_endpoint("tap0").unwrap();
         configure_tap("tap0", "10.0.0.1/24");
 
-        let (pool, mem) = make_pool();
-        let initial_rx: Vec<_> = (1..128).map(RxId).collect();
+        let (mut pool, mem) = make_pool();
         let config = vec![QueueConfig {
-            pool: Box::new(pool),
-            initial_rx: &initial_rx,
             driver: Box::new(driver.clone()),
         }];
         let mut queues = Vec::new();
@@ -437,7 +425,7 @@ mod tap_tests {
             len: frame_len,
         }];
 
-        let (completed, count) = queue.tx_avail(&segments).unwrap();
+        let (completed, count) = queue.tx_avail(&mut pool, &segments).unwrap();
         assert!(completed, "tx should complete synchronously");
         assert_eq!(count, 1, "should have processed 1 segment");
     }

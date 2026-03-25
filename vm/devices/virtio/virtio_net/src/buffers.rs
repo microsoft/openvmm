@@ -29,8 +29,6 @@ pub struct VirtioWorkPool {
     mem: GuestMemory,
     #[inspect(skip)]
     rx_packets: Arc<Vec<Mutex<RxPacket>>>,
-    #[inspect(skip)]
-    buffer_segments: Vec<RxBufferSegment>,
 }
 
 impl VirtioWorkPool {
@@ -53,7 +51,6 @@ impl VirtioWorkPool {
                     .map(|_| Mutex::new(RxPacket::default()))
                     .collect(),
             ),
-            buffer_segments: Vec::new(),
         }
     }
 
@@ -110,20 +107,18 @@ impl BufferAccess for VirtioWorkPool {
         locked_packet.len = (header_size() + data.len()) as u32;
     }
 
-    fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment] {
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let locked_packet = self.rx_packets[id.0 as usize].lock();
         let work = locked_packet.work.as_ref().expect("invalid buffer index");
-        self.buffer_segments = work
-            .payload
-            .iter()
-            .filter(|x| x.writeable)
-            .map(|p| RxBufferSegment {
-                gpa: p.address,
-                len: p.length,
-            })
-            .collect();
-
-        &self.buffer_segments
+        buf.extend(
+            work.payload
+                .iter()
+                .filter(|x| x.writeable)
+                .map(|p| RxBufferSegment {
+                    gpa: p.address,
+                    len: p.length,
+                }),
+        );
     }
 
     fn capacity(&self, id: RxId) -> u32 {

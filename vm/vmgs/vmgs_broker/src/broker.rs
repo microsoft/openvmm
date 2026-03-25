@@ -49,7 +49,7 @@ pub enum VmgsBrokerRpc {
     GetFileInfo(Rpc<BrokerFileId, Result<VmgsFileInfo, VmgsBrokerError>>),
     ReadFile(Rpc<BrokerFileId, Result<Vec<u8>, VmgsBrokerError>>),
     WriteFile(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
-    #[cfg(with_encryption)]
+    #[cfg(feature = "encryption")]
     WriteFileEncrypted(Rpc<(BrokerFileId, Vec<u8>), Result<(), VmgsBrokerError>>),
     Save(Rpc<(), vmgs::save_restore::state::SavedVmgsState>),
 }
@@ -98,7 +98,7 @@ impl VmgsBrokerTask {
                 })
                 .await
             }
-            #[cfg(with_encryption)]
+            #[cfg(feature = "encryption")]
             VmgsBrokerRpc::WriteFileEncrypted(rpc) => {
                 rpc.handle(async |(file_id, buf)| {
                     self.vmgs

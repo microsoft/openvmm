@@ -175,6 +175,8 @@ pub struct PetriVmBuilder<T: PetriVmmBackend> {
     pipette_binary: Option<ResolvedArtifact>,
     // Enable serial output even in minimal mode (for diagnostics).
     enable_serial: bool,
+    // Enable periodic framebuffer screenshots.
+    enable_screenshots: bool,
     // Pre-built initrd with pipette already injected (skips runtime injection).
     prebuilt_initrd: Option<PathBuf>,
 }
@@ -195,6 +197,7 @@ impl<T: PetriVmmBackend> Debug for PetriVmBuilder<T> {
             .field("boot_device_type", &self.boot_device_type)
             .field("minimal_mode", &self.minimal_mode)
             .field("enable_serial", &self.enable_serial)
+            .field("enable_screenshots", &self.enable_screenshots)
             .field("prebuilt_initrd", &self.prebuilt_initrd)
             .finish()
     }
@@ -412,6 +415,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             minimal_mode: false,
             pipette_binary: artifacts.pipette_binary,
             enable_serial: true,
+            enable_screenshots: true,
             prebuilt_initrd: None,
         }
         .add_petri_scsi_controllers()
@@ -483,6 +487,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             minimal_mode: true,
             pipette_binary: artifacts.pipette_binary,
             enable_serial: false,
+            enable_screenshots: true,
             prebuilt_initrd: None,
         })
     }
@@ -558,6 +563,24 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     /// and emulated serial backends). UEFI paths are unaffected.
     pub fn with_serial_output(mut self) -> Self {
         self.enable_serial = true;
+        self
+    }
+
+    /// Disable serial port output.
+    ///
+    /// Suppresses serial device creation, eliminating the `[uefi]` / `[openhcl]`
+    /// log lines. Useful for performance tests where serial noise is unwanted.
+    pub fn without_serial_output(mut self) -> Self {
+        self.enable_serial = false;
+        self
+    }
+
+    /// Disable periodic framebuffer screenshots.
+    ///
+    /// Suppresses the watchdog task that takes screenshots every 2 seconds,
+    /// eliminating the "No change in framebuffer" debug log lines.
+    pub fn without_screenshots(mut self) -> Self {
+        self.enable_screenshots = false;
         self
     }
 
@@ -902,7 +925,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             )
             .await?;
         let openhcl_diag_handler = runtime.openhcl_diag();
-        let watchdog_tasks = Self::start_watchdog_tasks(&self.resources, &mut runtime)?;
+        let watchdog_tasks =
+            Self::start_watchdog_tasks(&self.resources, &mut runtime, self.enable_screenshots)?;
 
         let mut vm = PetriVm {
             resources: self.resources,
@@ -954,6 +978,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     fn start_watchdog_tasks(
         resources: &PetriVmResources,
         runtime: &mut T::VmRuntime,
+        enable_screenshots: bool,
     ) -> anyhow::Result<Vec<Task<()>>> {
         let mut tasks = Vec::new();
 
@@ -996,45 +1021,46 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
             }));
         }
 
-        if let Some(mut framebuffer_access) = runtime.take_framebuffer_access() {
-            let mut timer = PolledTimer::new(&resources.driver);
-            let log_source = resources.log_source.clone();
+        if enable_screenshots {
+            if let Some(mut framebuffer_access) = runtime.take_framebuffer_access() {
+                let mut timer = PolledTimer::new(&resources.driver);
+                let log_source = resources.log_source.clone();
 
-            tasks.push(
-                resources
-                    .driver
-                    .spawn("petri-watchdog-screenshot", async move {
-                        let mut image = Vec::new();
-                        let mut last_image = Vec::new();
-                        loop {
-                            timer.sleep(Duration::from_secs(2)).await;
-                            tracing::trace!("Taking screenshot.");
+                tasks.push(
+                    resources
+                        .driver
+                        .spawn("petri-watchdog-screenshot", async move {
+                            let mut image = Vec::new();
+                            let mut last_image = Vec::new();
+                            loop {
+                                timer.sleep(Duration::from_secs(2)).await;
+                                tracing::trace!("Taking screenshot.");
 
-                            let VmScreenshotMeta {
-                                color,
-                                width,
-                                height,
-                            } = match framebuffer_access.screenshot(&mut image).await {
-                                Ok(Some(meta)) => meta,
-                                Ok(None) => {
-                                    tracing::debug!("VM off, skipping screenshot.");
+                                let VmScreenshotMeta {
+                                    color,
+                                    width,
+                                    height,
+                                } = match framebuffer_access.screenshot(&mut image).await {
+                                    Ok(Some(meta)) => meta,
+                                    Ok(None) => {
+                                        tracing::debug!("VM off, skipping screenshot.");
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(?e, "Failed to take screenshot");
+                                        continue;
+                                    }
+                                };
+
+                                if image == last_image {
+                                    tracing::debug!(
+                                        "No change in framebuffer, skipping screenshot."
+                                    );
                                     continue;
                                 }
-                                Err(e) => {
-                                    tracing::error!(?e, "Failed to take screenshot");
-                                    continue;
-                                }
-                            };
 
-                            if image == last_image {
-                                tracing::debug!("No change in framebuffer, skipping screenshot.");
-                                continue;
-                            }
-
-                            let r =
-                                log_source
-                                    .create_attachment("screenshot.png")
-                                    .and_then(|mut f| {
+                                let r = log_source.create_attachment("screenshot.png").and_then(
+                                    |mut f| {
                                         image::write_buffer_with_format(
                                             &mut f,
                                             &image,
@@ -1044,18 +1070,20 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                                             image::ImageFormat::Png,
                                         )
                                         .map_err(Into::into)
-                                    });
+                                    },
+                                );
 
-                            if let Err(e) = r {
-                                tracing::error!(?e, "Failed to save screenshot");
-                            } else {
-                                tracing::info!("Screenshot saved.");
+                                if let Err(e) = r {
+                                    tracing::error!(?e, "Failed to save screenshot");
+                                } else {
+                                    tracing::info!("Screenshot saved.");
+                                }
+
+                                std::mem::swap(&mut image, &mut last_image);
                             }
-
-                            std::mem::swap(&mut image, &mut last_image);
-                        }
-                    }),
-            );
+                        }),
+                );
+            }
         }
 
         Ok(tasks)

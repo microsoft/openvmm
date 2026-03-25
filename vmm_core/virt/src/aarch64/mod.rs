@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 pub mod gic_software_device;
+pub mod gic_v2m;
 pub mod vm;
 pub mod vp;
 
@@ -30,7 +31,10 @@ impl Aarch64InitialRegs {
 }
 
 #[derive(Debug, Inspect)]
-pub struct Aarch64PartitionCapabilities {}
+pub struct Aarch64PartitionCapabilities {
+    /// Whether the processor supports aarch32 execution at EL0.
+    pub supports_aarch32_el0: bool,
+}
 
 #[derive(Error, Debug)]
 pub enum Aarch64PartitionCapabilitiesError {}

@@ -747,7 +747,61 @@ impl ChangeDeviceState for VirtioPciDevice {
         // Drain ignoring result — reset_status() below clears everything.
         let _ = self.state.drain(&self.device_sender).await;
         let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
+
+        // reset_status() handles device_status, config_generation,
+        // interrupt_status, doorbells, and interrupt line level.
         self.reset_status();
+
+        // Destructure to ensure every field is handled; the compiler will
+        // flag new fields that are not addressed here.
+        let Self {
+            device_sender: _,
+            _device_task,
+            state: _,
+            device_feature: _,
+            device_feature_select,
+            driver_feature,
+            driver_feature_select,
+            msix_config_vector,
+            queue_select,
+            events: _,
+            queues,
+            msix_vectors,
+            // Handled by reset_status() above.
+            interrupt_status: _,
+            device_status: _,
+            poll_waker: _,
+            config_generation: _,
+            interrupt_kind: _,
+            doorbells: _,
+            config_space,
+            shared_memory_size: _,
+            saved_queue_states,
+            supports_save_restore: _,
+            guest_memory: _,
+        } = self;
+
+        // Reset PCI config space so BARs and command register return to
+        // their power-on defaults.
+        config_space.reset();
+
+        *device_feature_select = 0;
+        *driver_feature = VirtioDeviceFeatures::new();
+        *driver_feature_select = 0;
+        *msix_config_vector = 0;
+        *queue_select = 0;
+        for q in queues {
+            *q = QueueParams {
+                size: QUEUE_MAX_SIZE,
+                ..Default::default()
+            };
+        }
+        for v in msix_vectors {
+            *v = 0;
+        }
+        for s in saved_queue_states {
+            *s = None;
+        }
     }
 }
 
