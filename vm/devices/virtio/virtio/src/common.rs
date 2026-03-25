@@ -19,7 +19,6 @@ use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
-use parking_lot::Mutex;
 use std::io::Error;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -96,33 +95,6 @@ fn read_from_payload_at_offset(
         remaining = next;
     }
     Ok(read_bytes)
-}
-
-#[derive(Debug)]
-pub(crate) struct VirtioQueueUsedHandler {
-    core: QueueCoreCompleteWork,
-    notify_guest: Interrupt,
-}
-
-impl VirtioQueueUsedHandler {
-    pub(crate) fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
-        Self { core, notify_guest }
-    }
-
-    pub(crate) fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
-        match self.core.complete_descriptor(work, bytes_written) {
-            Ok(true) => {
-                self.notify_guest.deliver();
-            }
-            Ok(false) => {}
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to complete descriptor"
-                );
-            }
-        }
-    }
 }
 
 /// A descriptor chain popped from a [`VirtioQueue`].
@@ -283,7 +255,9 @@ pub struct VirtioQueue {
     #[inspect(flatten)]
     core: QueueCoreGetWork,
     #[inspect(skip)]
-    used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
+    complete: QueueCoreCompleteWork,
+    #[inspect(skip)]
+    notify_guest: Interrupt,
     #[inspect(skip)]
     queue_event: PolledWait<Event>,
 }
@@ -298,13 +272,10 @@ impl VirtioQueue {
         initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
         let (get_work, complete_work) = new_queue(features, mem, params, initial_state)?;
-        let used_handler = Arc::new(Mutex::new(VirtioQueueUsedHandler::new(
-            complete_work,
-            notify,
-        )));
         Ok(Self {
             core: get_work,
-            used_handler,
+            complete: complete_work,
+            notify_guest: notify,
             queue_event,
         })
     }
@@ -313,7 +284,7 @@ impl VirtioQueue {
     pub fn queue_state(&self) -> QueueState {
         QueueState {
             avail_index: self.core.avail_index(),
-            used_index: self.used_handler.lock().core.used_index(),
+            used_index: self.complete.used_index(),
         }
     }
 
@@ -388,9 +359,18 @@ impl VirtioQueue {
     /// Writes `bytes_written` to the used ring and delivers an interrupt
     /// to the guest (unless interrupt suppression is active).
     pub fn complete(&mut self, work: &mut VirtioQueueCallbackWork, bytes_written: u32) {
-        self.used_handler
-            .lock()
-            .complete_descriptor(&work.work, bytes_written);
+        match self.complete.complete_descriptor(&work.work, bytes_written) {
+            Ok(true) => {
+                self.notify_guest.deliver();
+            }
+            Ok(false) => {}
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to complete descriptor"
+                );
+            }
+        }
     }
 
     fn poll_next_buffer(
