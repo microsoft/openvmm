@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
 #![cfg(target_os = "linux")]
 
 //! vhost-user frontend: a [`VirtioDevice`] implementation that forwards
