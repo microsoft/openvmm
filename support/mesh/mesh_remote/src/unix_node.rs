@@ -12,9 +12,6 @@
 //! of Unix sockets.
 
 #![cfg(unix)]
-// UNSAFETY: Calls to libc send/recvmsg fns and the work to prepare their inputs
-// and handle their outputs (mem::zeroed, transmutes, from_raw_fds).
-#![expect(unsafe_code)]
 
 #[cfg(target_os = "linux")]
 mod memfd;

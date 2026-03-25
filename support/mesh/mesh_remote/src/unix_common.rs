@@ -26,9 +26,11 @@ const MAX_FDS_PER_MSG: usize = 64;
 
 /// Sends a packet, including the specified file descriptors. May fail with
 /// ErrorKind::WouldBlock.
-// x86_64-unknown-linux-musl targets have a different type defn for
-// `libc::cmsghdr`, hence why these lints are being suppressed.
-#[allow(clippy::needless_update, clippy::useless_conversion)]
+#[allow(
+    clippy::needless_update,
+    clippy::useless_conversion,
+    reason = "libc::cmsghdr has different type defs on different platforms"
+)]
 pub(crate) fn try_send(
     fd: BorrowedFd<'_>,
     msg: &[IoSlice<'_>],
