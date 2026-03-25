@@ -131,8 +131,8 @@ impl TestHarness {
     }
 
     /// Post a FUSE request with a readable descriptor (header + args) and a
-    /// writable descriptor (response buffer). Returns the GPA of the
-    /// response buffer.
+    /// writable descriptor (response buffer). Returns `(unique, resp_gpa)` —
+    /// the request's unique ID and the GPA of the response buffer.
     fn post_fuse_request(
         &mut self,
         head_desc: u16,
@@ -378,7 +378,7 @@ async fn forget_completes_descriptor(driver: DefaultDriver) {
 }
 
 /// A malformed FUSE request (header too short) should complete the
-/// descriptor with 0 bytes rather than hanging.
+/// descriptor rather than hanging the queue.
 #[async_test]
 async fn malformed_request_completes_descriptor(driver: DefaultDriver) {
     let mut harness = TestHarness::new(&driver);

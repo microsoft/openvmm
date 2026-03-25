@@ -161,7 +161,7 @@ impl TestHarness {
         init_avail_ring(&mem, AVAIL_ADDR);
         init_used_ring(&mem, USED_ADDR);
 
-        let fs = Plan9FileSystem::new(tmpdir.path().to_str().unwrap(), false).unwrap();
+        let fs = Plan9FileSystem::new(tmpdir.path(), false).unwrap();
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
         let device = VirtioPlan9Device::new(&driver_source, "test9p", fs);
 
@@ -266,7 +266,7 @@ impl TestHarness {
         );
         self.queue_event.signal();
 
-        let (_used_id, used_len) = wait_for_used(
+        let (used_id, used_len) = wait_for_used(
             &self.driver,
             &self.interrupt_event,
             &self.mem,
@@ -275,6 +275,15 @@ impl TestHarness {
             &mut self.used_idx,
         )
         .await;
+
+        assert_eq!(
+            used_id, head_desc,
+            "used ring entry should reference the head descriptor"
+        );
+        assert!(
+            used_len <= resp_buf_size,
+            "used_len ({used_len}) exceeds response buffer size ({resp_buf_size})"
+        );
 
         let mut resp = vec![0u8; used_len as usize];
         self.mem.read_at(resp_gpa, &mut resp).unwrap();
