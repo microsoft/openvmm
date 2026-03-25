@@ -783,7 +783,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                     .with_pci_addr(bus, slot, function);
             }
 
-            let dev = device_builder
+            device_builder
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
@@ -804,8 +804,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         .map(|dev| dev.0)
                 })
                 .await?;
-
-            let _ = dev;
         }
 
         Ok(BaseChipsetBuilderOutput {

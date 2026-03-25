@@ -434,7 +434,7 @@ impl VmChipsetResult {
 
         self
     }
-    
+
     fn attach_pit(&mut self) -> &mut Self {
         const PIT_ID: &str = PitDeviceHandle::ID;
 

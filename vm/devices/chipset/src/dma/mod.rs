@@ -221,7 +221,7 @@ impl ChipsetDevice for DmaController {
 
 impl IsaDmaController for DmaController {
     fn check_transfer_size(&mut self, channel_number: usize) -> u16 {
-        self.check_transfer_size(channel_number)
+        DmaController::check_transfer_size(self, channel_number)
     }
 
     fn request(
@@ -234,12 +234,12 @@ impl IsaDmaController for DmaController {
             IsaDmaTransferDirection::Read => IsaDmaDirection::Read,
         };
 
-        self.request(channel_number, direction)
+        DmaController::request(self, channel_number, direction)
             .map(|IsaDmaBuffer { address, size }| IsaDmaTransferBuffer { address, size })
     }
 
     fn complete(&mut self, channel_number: usize) {
-        self.complete(channel_number)
+        DmaController::complete(self, channel_number)
     }
 }
 
