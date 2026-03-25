@@ -23,6 +23,9 @@ mod ring;
 mod spec;
 mod unix_relay;
 
+#[cfg(test)]
+mod integration_tests;
+
 use crate::connection::ConnectionInstanceId;
 use crate::connection::RxWork;
 use crate::spec::VSOCK_HEADER_SIZE;

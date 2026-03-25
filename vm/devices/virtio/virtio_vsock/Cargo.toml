@@ -31,5 +31,12 @@ tracelimit.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+mesh.workspace = true
+pal_async.workspace = true
+pal_event.workspace = true
+tempfile.workspace = true
+test_with_tracing.workspace = true
+
 [lints]
 workspace = true
