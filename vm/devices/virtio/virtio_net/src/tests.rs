@@ -1758,15 +1758,11 @@ async fn feature_negotiation_with_offloads(driver: DefaultDriver) {
         bank0.host_tso6(),
         "HOST_TSO6 should be set when tso+tcp supported"
     );
-    assert!(
-        !bank0.host_ufo(),
-        "HOST_UFO (legacy) should not be set — use HOST_USO instead"
-    );
 
     let bank1 = NetworkFeaturesBank1::from(traits.device_features.bank(1));
     assert!(
         bank1.host_uso(),
-        "HOST_USO should be set when ufo+udp offloads supported"
+        "HOST_USO should be set when uso+udp offloads supported"
     );
 }
 

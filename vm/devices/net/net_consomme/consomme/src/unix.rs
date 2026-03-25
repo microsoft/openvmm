@@ -25,7 +25,7 @@ use std::os::unix::io::AsRawFd;
 /// On Linux this calls `setsockopt(IPPROTO_UDP, UDP_SEGMENT, size)`, which
 /// persists for the lifetime of the connection. When `size` is 0 the option
 /// is cleared and normal (non-GSO) sends resume.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     // SAFETY: setsockopt with a valid u16 optval per Linux udp(7) documentation
     // for UDP_SEGMENT.
@@ -59,7 +59,7 @@ pub fn set_udp_gso_size(_socket: &UdpSocket, _size: u16) -> std::io::Result<()> 
 /// [`set_udp_gso_size`]. The kernel then automatically splits the outgoing
 /// buffer into datagrams of that size, so this is just a plain `send_to`
 /// regardless of the `gso` value.
-#[cfg(target_os = "linux")]
+#[cfg(not(target_os = "macos"))]
 pub fn send_to(
     socket: &UdpSocket,
     data: &[u8],
