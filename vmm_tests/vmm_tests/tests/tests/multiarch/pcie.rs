@@ -4,10 +4,7 @@
 use crate::multiarch::OsFlavor;
 use crate::multiarch::cmd;
 use guid::Guid;
-use memory_range::MemoryRange;
 use net_backend_resources::mac_address::MacAddress;
-use openvmm_defs::config::PcieRootComplexConfig;
-use openvmm_defs::config::PcieRootPortConfig;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
@@ -325,44 +322,9 @@ async fn pcie_hotplug(
     _: (),
     driver: DefaultDriver,
 ) -> anyhow::Result<()> {
-    const ECAM_SIZE: u64 = 256 * 1024 * 1024;
-    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
-    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
-
     let os_flavor = config.os_flavor();
     let (mut vm, agent) = config
-        .modify_backend(|b| {
-            b.with_custom_config(|c| {
-                let low_mmio_start = c.memory.mmio_gaps[0].start();
-                let high_mmio_end = c.memory.mmio_gaps[1].end();
-                let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
-                let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
-                let ecam_range = MemoryRange::new(pcie_low.start() - ECAM_SIZE..pcie_low.start());
-                c.memory.pci_ecam_gaps.push(ecam_range);
-                c.memory.pci_mmio_gaps.push(pcie_low);
-                c.memory.pci_mmio_gaps.push(pcie_high);
-                c.pcie_root_complexes.push(PcieRootComplexConfig {
-                    index: 0,
-                    name: "rc0".into(),
-                    segment: 0,
-                    start_bus: 0,
-                    end_bus: 255,
-                    ecam_range,
-                    low_mmio: pcie_low,
-                    high_mmio: pcie_high,
-                    ports: vec![
-                        PcieRootPortConfig {
-                            name: "rp0".into(),
-                            hotplug: true,
-                        },
-                        PcieRootPortConfig {
-                            name: "rp1".into(),
-                            hotplug: false,
-                        },
-                    ],
-                })
-            })
-        })
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 2))
         .run()
         .await?;
 
@@ -377,13 +339,13 @@ async fn pcie_hotplug(
 
     // Hot-add an NVMe controller (no namespaces) to rp0
     let nvme_resource = vm_resource::Resource::new(nvme_resources::NvmeControllerHandle {
-        subsystem_id: guid::Guid::ZERO,
+        subsystem_id: PCIE_NVME_SUBSYSTEM_IDS[0],
         msix_count: 2,
         max_io_queues: 1,
         namespaces: vec![],
         requests: None,
     });
-    vm.add_pcie_device("rp0".into(), nvme_resource).await?;
+    vm.add_pcie_device("s0rc0rp0".into(), nvme_resource).await?;
 
     // Wait for the guest to enumerate the device (poll with retries)
     let mut timer = PolledTimer::new(&driver);
@@ -404,7 +366,7 @@ async fn pcie_hotplug(
     timer.sleep(Duration::from_secs(5)).await;
 
     // Hot-remove the device
-    vm.remove_pcie_device("rp0".into()).await?;
+    vm.remove_pcie_device("s0rc0rp0".into()).await?;
 
     // Verify the device is gone. Both Linux (pciehp) and Windows (pci.sys)
     // process native PCIe hotplug surprise-removal through their respective
