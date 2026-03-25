@@ -1487,6 +1487,11 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self.config.arch
     }
 
+    /// Get the log source for creating additional log files.
+    pub fn log_source(&self) -> &PetriLogSource {
+        &self.resources.log_source
+    }
+
     /// Get the default OpenHCL servicing flags for this config
     pub fn default_servicing_flags(&self) -> OpenHclServicingFlags {
         T::default_servicing_flags()

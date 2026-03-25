@@ -310,6 +310,7 @@ fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
 }
 
 /// Path to the output location of the openvmm_vhost executable.
+#[cfg(target_os = "linux")]
 fn openvmm_vhost_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm_vhost")
 }

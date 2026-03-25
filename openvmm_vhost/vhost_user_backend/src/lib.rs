@@ -62,10 +62,10 @@ impl VhostUserDeviceServer {
         }
     }
 
-    /// Listen on `path` and serve one connection at a time.
+    /// Listen on `path` and serve a single client connection.
     ///
-    /// After a client disconnects, the server resets the device and waits
-    /// for a new connection. This method runs indefinitely.
+    /// After the client disconnects, the server resets the device and
+    /// returns `Ok(())`.
     pub async fn run(
         mut self,
         driver: &(impl SpawnDriver + ?Sized),

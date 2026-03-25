@@ -244,6 +244,12 @@ fn build_remaining_iov<'a>(original: &'a [IoSlice<'a>], skip: usize) -> Vec<IoSl
 /// Send data with optional file descriptors via sendmsg. May return WouldBlock.
 #[allow(clippy::needless_update, clippy::useless_conversion)]
 fn try_send(socket: &UnixStream, msg: &[IoSlice<'_>], fds: &[RawFd]) -> io::Result<usize> {
+    assert!(
+        fds.len() <= VHOST_USER_MAX_FDS,
+        "too many fds: {} > {}",
+        fds.len(),
+        VHOST_USER_MAX_FDS
+    );
     let fds_data_len = size_of_val(fds);
     let mut cmsg = CmsgScmRights {
         hdr: libc::cmsghdr {
@@ -329,8 +335,9 @@ fn try_recv(
             && cmsg.hdr.cmsg_type == libc::SCM_RIGHTS
         {
             #[allow(clippy::unnecessary_cast)]
-            let fd_count =
-                (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>();
+            let fd_count = ((cmsg.hdr.cmsg_len as usize).saturating_sub(size_of_val(&cmsg.hdr))
+                / size_of::<RawFd>())
+            .min(VHOST_USER_MAX_FDS);
             for &raw_fd in &cmsg.fds[..fd_count] {
                 // SAFETY: the kernel transferred ownership of these fds to us.
                 drop(unsafe { OwnedFd::from_raw_fd(raw_fd) });
@@ -346,7 +353,9 @@ fn try_recv(
             return Err(io::ErrorKind::InvalidData.into());
         }
         #[allow(clippy::unnecessary_cast)]
-        let fd_count = (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>();
+        let fd_count = ((cmsg.hdr.cmsg_len as usize).saturating_sub(size_of_val(&cmsg.hdr))
+            / size_of::<RawFd>())
+        .min(VHOST_USER_MAX_FDS);
         if let Some(fds) = fds {
             fds.extend(cmsg.fds[..fd_count].iter().map(|&raw_fd| {
                 // SAFETY: the kernel transferred ownership of these fds to us.

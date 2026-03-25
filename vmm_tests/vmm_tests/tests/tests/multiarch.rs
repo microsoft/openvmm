@@ -487,12 +487,20 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 /// virtio-blk device → disk file.
 #[cfg(target_os = "linux")]
 #[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
-async fn vhost_user_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+async fn vhost_user_blk_device(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _extra_deps: (),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
     use openvmm_defs::config::VirtioBus;
+    use pal_async::pipe::PolledPipe;
+    use pal_async::task::Spawn;
     use virtio_resources::vhost_user::VhostUserDeviceHandle;
 
     let openvmm_vhost_path =
         petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("openvmm_vhost")?;
+
+    let log_file = config.log_source().log_file("openvmm_vhost")?;
 
     // Create a temporary directory for the socket and disk file.
     let tmp_dir = tempfile::tempdir().context("create temp dir")?;
@@ -506,17 +514,30 @@ async fn vhost_user_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
         f.set_len(disk_size).context("set disk length")?;
     }
 
-    // Spawn the openvmm_vhost backend process.
+    // Spawn the openvmm_vhost backend process. Pipe stderr so we can
+    // forward it to the petri log system.
+    let (stderr_read, stderr_write) = pal::pipe_pair()?;
     let mut backend_child = std::process::Command::new(&openvmm_vhost_path)
         .arg("--socket")
         .arg(&socket_path)
         .arg("blk")
         .arg("--disk")
         .arg(&disk_path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .env("RUST_LOG", "debug")
+        .stdout(stderr_write.try_clone()?)
+        .stderr(stderr_write)
         .spawn()
         .context("spawn openvmm_vhost")?;
+
+    // Forward backend stderr to a petri log file.
+    let _log_task = driver.spawn(
+        "openvmm_vhost stderr",
+        petri::log_task(
+            log_file,
+            PolledPipe::new(&driver, stderr_read)?,
+            "openvmm_vhost",
+        ),
+    );
 
     // Wait for the socket to appear (the server creates it on listen).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -530,7 +551,9 @@ async fn vhost_user_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
                 socket_path.display()
             );
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(50))
+            .await;
     }
 
     // Connect to the backend and build the VM config.
@@ -591,7 +614,6 @@ async fn vhost_user_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> a
     vm.wait_for_clean_teardown().await?;
 
     // The backend serves one connection and exits.
-    tracing::info!("waiting for openvmm_vhost to exit");
     let status = backend_child.wait().context("wait for openvmm_vhost")?;
     assert!(
         status.success(),

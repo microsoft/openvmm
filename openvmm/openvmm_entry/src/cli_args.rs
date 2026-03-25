@@ -244,14 +244,20 @@ options:
     /// Attach a vhost-user device via a Unix socket.
     ///
     /// The first positional argument is the socket path. Options:
+    ///
+    /// ```text
     ///   type=blk|net|rng|console|fs|pmem  — device type (shorthand)
     ///   device_id=N                        — numeric virtio device ID
-    ///   pcie_port=<name>                   — present on PCIe under the specified port
+    ///   pcie_port=NAME                     — present on PCIe under the specified port
+    /// ```
     ///
     /// Examples:
+    ///
+    /// ```text
     ///   --vhost-user /tmp/vhost.sock,type=blk
     ///   --vhost-user /tmp/vhost.sock,device_id=2
     ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
+    /// ```
     #[cfg(target_os = "linux")]
     #[clap(long = "vhost-user")]
     pub vhost_user: Vec<VhostUserCli>,

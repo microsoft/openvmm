@@ -641,6 +641,13 @@ async fn send_set_mem_table(
     regions: &[ShareableRegion],
     reply_ack: bool,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        regions.len() <= VHOST_USER_MAX_FDS,
+        "too many memory regions ({}) for SET_MEM_TABLE (max {})",
+        regions.len(),
+        VHOST_USER_MAX_FDS,
+    );
+
     // Payload: { nregions: u32, padding: u32, regions: [VhostUserMemoryRegion] }
     let nregions = regions.len() as u32;
     let mut payload = Vec::new();
