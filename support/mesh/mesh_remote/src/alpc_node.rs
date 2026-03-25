@@ -161,7 +161,7 @@ pub struct InvitationCredentials {
 
 /// Invitation for connecting already-running processes — pure data.
 /// Composes `InvitationCredentials` with a directory path.
-/// Derives `Protobuf` for direct wire serialization over named pipe.
+/// Derives `Protobuf` for wire serialization over the invitation socket.
 #[derive(Debug, Protobuf)]
 pub struct NamedInvitation {
     credentials: InvitationCredentials,
@@ -344,7 +344,7 @@ impl AlpcNode {
     /// is generated for ALPC connection authentication.
     ///
     /// Use this when other already-running processes need to connect to this
-    /// mesh (via named pipe invitations). For child process spawning, use
+    /// mesh (via socket invitations). For child process spawning, use
     /// `new()` instead.
     pub fn new_named(driver: impl Driver + Spawn + Clone) -> Result<Self, NewNodeError> {
         let node_id = NodeId::new();
@@ -878,9 +878,10 @@ impl AlpcNode {
 
     /// Joins the ALPC mesh using a named invitation.
     ///
-    /// `expected_server_sid` is the SID of the process that served the
-    /// invitation (queried from the named pipe). All ALPC connections
-    /// will use `RequiredServerSid` for mutual auth.
+    /// `expected_server_sid` is the SID of the expected ALPC server process.
+    /// When non-empty, all ALPC connections will use `RequiredServerSid` for
+    /// mutual auth. Pass an empty `Vec` to skip SID validation (e.g., when
+    /// filesystem permissions on the invitation socket are sufficient).
     pub fn join_named(
         driver: impl Driver + Spawn + Clone,
         invitation: NamedInvitation,
@@ -1421,9 +1422,8 @@ mod tests {
         let (invitation, handle) = inviter.invite_named(recv.into()).await.unwrap();
 
         let (send2, mut recv2) = channel::<u32>();
-        // In same-process tests, we don't have a real pipe server SID to
-        // query, so pass an empty SID (RequiredServerSid won't be checked
-        // for same-process connections).
+        // In same-process tests, pass an empty SID (RequiredServerSid
+        // won't be checked for same-process connections).
         let node2 = AlpcNode::join_named(driver, invitation, Vec::new(), send2.into()).unwrap();
         handle.await;
 

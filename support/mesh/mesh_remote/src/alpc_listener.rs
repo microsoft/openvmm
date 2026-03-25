@@ -1,11 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Named pipe listener for distributing ALPC mesh invitations.
+//! Unix socket listener for distributing ALPC mesh invitations.
 //!
 //! This module provides [`AlpcMeshListener`] for servers and
-//! [`AlpcNode::join_by_pipe`] for clients. The named pipe is used only for the
-//! invitation handshake — mesh communication happens over ALPC.
+//! [`AlpcNode::join_by_socket`] for clients. The Unix socket is used only for
+//! the invitation handshake — mesh communication happens over ALPC.
+//!
+//! Security is enforced by the filesystem: the socket file inherits the
+//! permissions of its parent directory, so placing it in a user-owned directory
+//! prevents other users from connecting.
 
 #![cfg(windows)]
 
@@ -18,20 +22,25 @@ use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use mesh_node::local_node::Port;
 use pal_async::driver::Driver;
-use pal_async::pipe::PolledPipe;
+use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
-use pal_async::windows::pipe::NamedPipeServer;
-use std::fs::OpenOptions;
 use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+use unix_socket::UnixListener;
+use unix_socket::UnixStream;
 
-/// A listener that accepts mesh connections over a named pipe.
+/// A listener that accepts mesh connections over a Unix socket.
 ///
-/// The server listens on `\\.\pipe\<pipe_name>`. When a client connects, the
-/// server creates a mesh invitation and sends it over the pipe. The client
+/// The server listens on the given socket path. When a client connects, the
+/// server creates a mesh invitation and sends it over the socket. The client
 /// deserializes the invitation and calls [`AlpcNode::join_named()`].
+///
+/// The socket file is removed when the listener is dropped.
 pub struct AlpcMeshListener {
-    server: NamedPipeServer,
+    listener: PolledSocket<UnixListener>,
     inviter: AlpcMeshInviter,
+    path: PathBuf,
 }
 
 /// A pending mesh connection that has been accepted but not yet handshaked.
@@ -42,24 +51,36 @@ pub struct AlpcMeshListener {
 /// This type exists so that the accept loop is never blocked by a slow or
 /// malicious client. The caller should spawn `finish()` as a separate task.
 pub struct PendingMeshConnection {
-    pipe: PolledPipe,
+    stream: PolledSocket<UnixStream>,
     inviter: AlpcMeshInviter,
 }
 
 impl AlpcMeshListener {
-    /// Create a named pipe listener.
+    /// Create a Unix socket listener.
     ///
-    /// `pipe_name` is the pipe name (e.g., `openvmm-<vm-name>`).
-    /// The full path will be `\\.\pipe\<pipe_name>`.
-    fn create(inviter: AlpcMeshInviter, pipe_name: &str) -> io::Result<Self> {
-        let path = format!(r"\\.\pipe\{pipe_name}");
-        let server = NamedPipeServer::create(&path)?;
-        Ok(Self { server, inviter })
+    /// `path` is the filesystem path for the socket (e.g.,
+    /// `C:\Users\<user>\AppData\Local\openvmm\<vm-name>.sock`).
+    ///
+    /// Any existing socket file at `path` is removed before binding.
+    fn create(
+        driver: &(impl Driver + ?Sized),
+        inviter: AlpcMeshInviter,
+        path: &Path,
+    ) -> io::Result<Self> {
+        // Remove stale socket file if it exists.
+        let _ = std::fs::remove_file(path);
+        let listener = UnixListener::bind(path)?;
+        let listener = PolledSocket::new(driver, listener)?;
+        Ok(Self {
+            listener,
+            inviter,
+            path: path.to_owned(),
+        })
     }
 
-    /// Accept a new connection on the named pipe.
+    /// Accept a new connection on the Unix socket.
     ///
-    /// Returns a [`PendingMeshConnection`] immediately after the pipe-level
+    /// Returns a [`PendingMeshConnection`] immediately after the socket-level
     /// accept. The handshake (invitation creation + send) has NOT happened
     /// yet — call `pending.finish()` to complete it.
     ///
@@ -69,13 +90,18 @@ impl AlpcMeshListener {
         &mut self,
         driver: &(impl Driver + ?Sized),
     ) -> io::Result<PendingMeshConnection> {
-        let listening = self.server.accept(driver)?;
-        let file = listening.await?;
-        let pipe = PolledPipe::new(driver, file)?;
+        let (stream, _addr) = self.listener.accept().await?;
+        let stream = PolledSocket::new(driver, stream)?;
         Ok(PendingMeshConnection {
-            pipe,
+            stream,
             inviter: self.inviter.clone(),
         })
+    }
+}
+
+impl Drop for AlpcMeshListener {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -83,7 +109,7 @@ impl PendingMeshConnection {
     /// Complete the handshake: create a mesh invitation and send it to the
     /// connecting client.
     ///
-    /// The handshake pipe is dropped after sending — mesh communication
+    /// The handshake socket is dropped after sending — mesh communication
     /// happens over ALPC.
     ///
     /// This may block if the client is slow to read. Callers should spawn this
@@ -98,9 +124,9 @@ impl PendingMeshConnection {
         let data = mesh_protobuf::encode(invitation);
 
         let len = data.len() as u32;
-        self.pipe.write_all(&len.to_le_bytes()).await?;
-        self.pipe.write_all(&data).await?;
-        self.pipe.flush().await?;
+        self.stream.write_all(&len.to_le_bytes()).await?;
+        self.stream.write_all(&data).await?;
+        self.stream.flush().await?;
 
         // Wait for the client to join the mesh via the invitation.
         handle.await;
@@ -109,64 +135,68 @@ impl PendingMeshConnection {
 }
 
 impl AlpcNode {
-    /// Listen for mesh connections on a named pipe.
+    /// Listen for mesh connections on a Unix socket.
     ///
     /// This is a convenience method that extracts an inviter and creates an
-    /// [`AlpcMeshListener`] in one step. Only works for named-directory nodes
-    /// (created with [`AlpcNode::new_named`]).
-    pub fn listen(&self, pipe_name: &str) -> io::Result<AlpcMeshListener> {
-        AlpcMeshListener::create(self.inviter(), pipe_name)
+    /// [`AlpcMeshListener`] in one step.
+    ///
+    /// It is primarily intended for nodes created with [`AlpcNode::new_named`],
+    /// since the listener hands out named invitations during the handshake.
+    /// If used with other kinds of nodes, pending connections may later fail
+    /// during the handshake phase when a named invitation cannot be created.
+    pub fn listen(
+        &self,
+        driver: &(impl Driver + ?Sized),
+        path: &Path,
+    ) -> io::Result<AlpcMeshListener> {
+        AlpcMeshListener::create(driver, self.inviter(), path)
     }
 
-    /// Connect to a mesh listener at `pipe_name` and join the mesh.
+    /// Connect to a mesh listener at `path` and join the mesh.
     ///
     /// This is a convenience method that connects to an [`AlpcMeshListener`],
     /// receives an invitation, and joins the mesh in one step.
-    pub async fn join_by_pipe(
+    pub async fn join_by_socket(
         driver: impl Driver + Spawn + Clone,
-        pipe_name: &str,
+        path: &Path,
         port: Port,
-    ) -> Result<Self, JoinByPipeError> {
-        let path = format!(r"\\.\pipe\{pipe_name}");
-
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(JoinByPipeError::Connect)?;
-
-        let mut pipe = PolledPipe::new(&driver, file).map_err(JoinByPipeError::Connect)?;
+    ) -> Result<Self, JoinBySocketError> {
+        let mut stream = PolledSocket::<UnixStream>::connect_unix(&driver, path)
+            .await
+            .map_err(JoinBySocketError::Connect)?;
 
         // Read the framed invitation: [4 bytes LE: data_len][data_len bytes]
         let mut len_buf = [0u8; 4];
-        pipe.read_exact(&mut len_buf)
+        stream
+            .read_exact(&mut len_buf)
             .await
-            .map_err(JoinByPipeError::Connect)?;
+            .map_err(JoinBySocketError::Connect)?;
         let data_len = u32::from_le_bytes(len_buf) as usize;
 
         const MAX_INVITATION_SIZE: usize = 64 * 1024;
         if data_len > MAX_INVITATION_SIZE {
-            return Err(JoinByPipeError::InvitationTooLarge { len: data_len });
+            return Err(JoinBySocketError::InvitationTooLarge { len: data_len });
         }
 
         let mut data = vec![0u8; data_len];
-        pipe.read_exact(&mut data)
+        stream
+            .read_exact(&mut data)
             .await
-            .map_err(JoinByPipeError::Connect)?;
-        drop(pipe);
+            .map_err(JoinBySocketError::Connect)?;
+        drop(stream);
 
         let invitation: NamedInvitation =
-            mesh_protobuf::decode(&data).map_err(JoinByPipeError::Decode)?;
+            mesh_protobuf::decode(&data).map_err(JoinBySocketError::Decode)?;
 
-        AlpcNode::join_named(driver, invitation, Vec::new(), port).map_err(JoinByPipeError::Join)
+        AlpcNode::join_named(driver, invitation, Vec::new(), port).map_err(JoinBySocketError::Join)
     }
 }
 
-/// Errors from [`AlpcNode::join_by_pipe`].
+/// Errors from [`AlpcNode::join_by_socket`].
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs)]
-pub enum JoinByPipeError {
-    #[error("failed to connect to mesh pipe")]
+pub enum JoinBySocketError {
+    #[error("failed to connect to mesh socket")]
     Connect(#[source] io::Error),
     #[error("invitation too large ({len} bytes)")]
     InvitationTooLarge { len: usize },
@@ -182,7 +212,7 @@ pub enum JoinByPipeError {
 pub enum FinishError {
     #[error("failed to create invitation")]
     Invite(#[source] InviteError),
-    #[error("failed to send invitation over pipe")]
+    #[error("failed to send invitation over socket")]
     Io(#[from] io::Error),
 }
 
@@ -201,18 +231,19 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_named_pipe_end_to_end(driver: DefaultDriver) {
+    async fn test_unix_socket_end_to_end(driver: DefaultDriver) {
         let mut name_bytes = [0u8; 16];
         getrandom::fill(&mut name_bytes).unwrap();
-        let pipe_name = format!("mesh-test-{:0x}", u128::from_ne_bytes(name_bytes));
+        let socket_name = format!("mesh-test-{:0x}.sock", u128::from_ne_bytes(name_bytes));
+        let socket_path = std::env::temp_dir().join(&socket_name);
 
         // Create the leader node and listen for connections.
         let leader = AlpcNode::new_named(driver.clone()).unwrap();
-        let mut listener = leader.listen(&pipe_name).unwrap();
+        let mut listener = leader.listen(&driver, &socket_path).unwrap();
 
         // Use join! to drive accept and connect concurrently.
         let client_driver = driver.clone();
-        let client_pipe_name = pipe_name.clone();
+        let client_socket_path = socket_path.clone();
 
         let (mut recv, client_node) = futures::join!(
             async {
@@ -223,9 +254,10 @@ mod tests {
             },
             async {
                 let (send, recv) = mesh_channel::channel::<TestMessage>();
-                let node = AlpcNode::join_by_pipe(client_driver, &client_pipe_name, recv.into())
-                    .await
-                    .unwrap();
+                let node =
+                    AlpcNode::join_by_socket(client_driver, &client_socket_path, recv.into())
+                        .await
+                        .unwrap();
                 send.send(TestMessage { value: 12345 });
                 node
             }

@@ -21,7 +21,7 @@ pub mod windows {
     use super::alpc_node;
     pub use alpc_listener::AlpcMeshListener;
     pub use alpc_listener::FinishError as AlpcFinishError;
-    pub use alpc_listener::JoinByPipeError as AlpcJoinByPipeError;
+    pub use alpc_listener::JoinBySocketError as AlpcJoinBySocketError;
     pub use alpc_listener::PendingMeshConnection as AlpcPendingMeshConnection;
     pub use alpc_node::AlpcMeshInviter;
     pub use alpc_node::AlpcNode;
