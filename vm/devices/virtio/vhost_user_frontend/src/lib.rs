@@ -9,7 +9,7 @@
 //! frontend connects to that server and presents it to the VMM as a
 //! standard virtio device.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 pub mod resolver;
 

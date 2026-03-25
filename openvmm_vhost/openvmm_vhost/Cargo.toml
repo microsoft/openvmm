@@ -7,6 +7,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 disk_backend_resources.workspace = true

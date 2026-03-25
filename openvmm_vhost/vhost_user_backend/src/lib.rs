@@ -8,7 +8,7 @@
 //! a Unix domain socket, accepts one connection at a time, and translates
 //! vhost-user protocol messages into `VirtioDevice` trait calls.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 
 pub mod memory;

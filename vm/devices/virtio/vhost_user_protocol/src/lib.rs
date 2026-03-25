@@ -6,7 +6,7 @@
 //! This crate is used by both the vhost-user backend (`vhost_user_backend`)
 //! and the vhost-user frontend (`vhost_user_frontend`).
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 // UNSAFETY: socket.rs uses libc sendmsg/recvmsg and handling cmsg ancillary data.
 #![expect(unsafe_code)]

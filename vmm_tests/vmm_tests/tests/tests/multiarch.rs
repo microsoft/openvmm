@@ -16,7 +16,6 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -496,6 +495,7 @@ async fn vhost_user_blk_device(
     use pal_async::pipe::PolledPipe;
     use pal_async::task::Spawn;
     use virtio_resources::vhost_user::VhostUserDeviceHandle;
+    use vm_resource::IntoResource;
 
     let openvmm_vhost_path =
         petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("openvmm_vhost")?;

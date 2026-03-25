@@ -37,6 +37,7 @@ pub mod artifacts {
         petri_artifacts_core::ArtifactHandle::new();
     // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    /// openvmm_vhost "native" executable — the vhost-user backend binary.
     pub const OPENVMM_VHOST_NATIVE: petri_artifacts_core::ArtifactHandle<
         OPENVMM_VHOST_LINUX_AARCH64,
     > = petri_artifacts_core::ArtifactHandle::new();
