@@ -6,10 +6,6 @@ name = "openvmm_vhost"
 edition.workspace = true
 rust-version.workspace = true
 
-[[bin]]
-name = "openvmm-vhost"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }

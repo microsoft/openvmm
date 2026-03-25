@@ -7,12 +7,8 @@ default-members = ["openvmm/openvmm"]
 members = [
   # openvmm
   "openvmm/openvmm",
-  # openvmm-vhost
+  # openvmm_vhost
   "openvmm_vhost/openvmm_vhost",
-  "openvmm_vhost/vhost_user_backend",
-  # vhost-user shared crates (under vm/devices/virtio/)
-  "vm/devices/virtio/vhost_user_frontend",
-  "vm/devices/virtio/vhost_user_protocol",
   # repo tooling
   "flowey/flowey_hvlite",
   "xtask",

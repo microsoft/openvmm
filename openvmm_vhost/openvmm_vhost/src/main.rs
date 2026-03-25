@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! openvmm-vhost: a vhost-user backend binary that hosts OpenVMM virtio
+//! openvmm_vhost: a vhost-user backend binary that hosts OpenVMM virtio
 //! devices over a Unix domain socket.
 //!
 //! This is primarily a test vehicle at this time, but it could be extended to support
@@ -29,9 +29,9 @@ vm_resource::register_static_resolvers! {
     disk_file::FileDiskResolver,
 }
 
-/// openvmm-vhost: vhost-user backend for OpenVMM virtio devices.
+/// openvmm_vhost: vhost-user backend for OpenVMM virtio devices.
 #[derive(Parser)]
-#[command(name = "openvmm-vhost")]
+#[command(name = "openvmm_vhost")]
 struct Cli {
     /// Path to the Unix domain socket.
     #[arg(long)]
