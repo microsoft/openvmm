@@ -48,7 +48,7 @@ pub(crate) fn try_send(
         hdr: libc::cmsghdr {
             cmsg_level: libc::SOL_SOCKET,
             cmsg_type: libc::SCM_RIGHTS,
-            cmsg_len: (size_of::<libc::cmsghdr>() + size_of_val(fds))
+            cmsg_len: (size_of::<libc::cmsghdr>() + fds.len() * size_of::<RawFd>())
                 .try_into()
                 .unwrap(),
 
