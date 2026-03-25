@@ -5,6 +5,8 @@
 #![forbid(unsafe_code)]
 #![cfg(any(windows, target_os = "linux"))]
 
+#[cfg(test)]
+mod integration_tests;
 pub mod resolver;
 
 use anyhow::Context as _;
