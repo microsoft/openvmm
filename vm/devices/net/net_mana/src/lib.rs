@@ -49,6 +49,7 @@ use net_backend::MultiQueueSupport;
 use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
+use net_backend::RxBufferSegment;
 use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
@@ -297,8 +298,6 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
     async fn new_queue(
         &mut self,
         tx_config: &TxConfig,
-        pool: Box<dyn BufferAccess>,
-        initial_rx: &[RxId],
         arena: &mut ResourceArena,
         cpu: u32,
     ) -> anyhow::Result<(ManaQueue<T>, QueueResources)> {
@@ -353,9 +352,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             None
         };
 
-        let mut queue = ManaQueue {
-            guest_memory: pool.guest_memory().clone(),
-            pool,
+        let queue = ManaQueue {
             rx_bounce_buffer,
             tx_bounce_buffer,
             vport: Arc::downgrade(&self.vport),
@@ -378,13 +375,12 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
             dropped_tx: VecDeque::new(),
             tx_max: tx_max as usize,
             force_tx_header_bounce: false,
+            rx_buffer_segments: Vec::new(),
             stats: QueueStats::default(),
             #[cfg(test)]
             test_configuration: self.test_configuration,
         };
         self.queue_tracker.0.fetch_add(1, Ordering::AcqRel);
-        queue.rx_avail(initial_rx);
-        queue.rx_wq.commit();
 
         let resources = QueueResources {
             _eq: eq,
@@ -397,7 +393,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
     async fn get_queues_inner(
         &mut self,
         arena: &mut ResourceArena,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -411,13 +407,11 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
 
         let mut queue_resources = Vec::new();
 
-        for config in config {
+        for _config in config {
             // Start the queue interrupt on CPU 0, which is already used by the
             // HWC so this is cheap. The actual interrupt will be allocated
             // later when `update_target_vp` is first called.
-            let (queue, resources) = self
-                .new_queue(&tx_config, config.pool, config.initial_rx, arena, 0)
-                .await?;
+            let (queue, resources) = self.new_queue(&tx_config, arena, 0).await?;
 
             queues.push(Box::new(queue));
             queue_resources.push(resources);
@@ -468,7 +462,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -570,8 +564,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
 }
 
 pub struct ManaQueue<T: DeviceBacking> {
-    pool: Box<dyn BufferAccess>,
-    guest_memory: GuestMemory,
     rx_bounce_buffer: Option<ContiguousBufferManager>,
     tx_bounce_buffer: ContiguousBufferManager,
 
@@ -602,6 +594,9 @@ pub struct ManaQueue<T: DeviceBacking> {
     tx_max: usize,
 
     force_tx_header_bounce: bool,
+
+    /// Scratch buffer for push_guest_addresses calls, reused across push_rqe invocations.
+    rx_buffer_segments: Vec<RxBufferSegment>,
 
     stats: QueueStats,
 
@@ -679,16 +674,16 @@ pub const MAX_RWQE_SIZE: u32 = 256;
 pub const MAX_SWQE_SIZE: u32 = 512;
 
 impl<T: DeviceBacking> ManaQueue<T> {
-    fn push_rqe(&mut self) -> bool {
+    fn push_rqe(&mut self, pool: &mut dyn BufferAccess) -> bool {
         // Make sure there is enough room for an entry of the maximum size. This
         // is conservative, but it simplifies the logic.
         if self.rx_wq.available() < MAX_RWQE_SIZE {
             return false;
         }
         if let Some(id) = self.avail_rx.pop_front() {
-            let rx = if let Some(pool) = &mut self.rx_bounce_buffer {
-                let size = self.pool.capacity(id);
-                let mut pool_tx = pool.start_allocation();
+            let rx = if let Some(bounce) = &mut self.rx_bounce_buffer {
+                let size = pool.capacity(id);
+                let mut pool_tx = bounce.start_allocation();
                 let Ok(buffer) = pool_tx.allocate(size) else {
                     self.avail_rx.push_front(id);
                     return false;
@@ -708,8 +703,11 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     bounced_len_with_padding: pool_tx.commit(),
                 }
             } else {
-                let sgl = self.pool.guest_addresses(id).iter().map(|seg| Sge {
-                    address: self.guest_memory.iova(seg.gpa).unwrap(),
+                self.rx_buffer_segments.clear();
+                pool.push_guest_addresses(id, &mut self.rx_buffer_segments);
+                let gm = pool.guest_memory();
+                let sgl = self.rx_buffer_segments.iter().map(|seg| Sge {
+                    address: gm.iova(seg.gpa).unwrap(),
                     mem_key: self.mem_key,
                     size: seg.len,
                 });
@@ -862,7 +860,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         }
     }
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
         if !self.tx_cq_armed || !self.rx_cq_armed {
             return Poll::Ready(());
         }
@@ -907,10 +905,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         }
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, pool: &mut dyn BufferAccess, done: &[RxId]) {
         self.avail_rx.extend(done);
         let mut commit = false;
-        while self.posted_rx.len() < self.rx_max && self.push_rqe() {
+        while self.posted_rx.len() < self.rx_max && self.push_rqe(pool) {
             commit = true;
         }
         if commit {
@@ -918,7 +916,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         }
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         let mut i = 0;
         let mut commit = false;
         while i < packets.len() {
@@ -946,7 +948,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             (L4Protocol::Unknown, RxChecksumState::Unknown)
                         };
                         let len = rx_oob.ppi[0].pkt_len.into();
-                        self.pool.write_header(
+                        pool.write_header(
                             rx.id,
                             &RxMetadata {
                                 offset: 0,
@@ -963,7 +965,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                             self.rx_bounce_buffer.as_mut().unwrap().as_slice()
                                 [rx.bounce_offset as usize..][..len]
                                 .atomic_read(&mut data);
-                            self.pool.write_data(rx.id, &data);
+                            pool.write_data(rx.id, &data);
                         }
                         self.stats.rx_packets.increment();
                         packets[i] = rx.id;
@@ -990,7 +992,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         .free(rx.bounced_len_with_padding);
                 }
                 // Replenish the rq, if possible.
-                commit |= self.push_rqe();
+                commit |= self.push_rqe(pool);
             } else {
                 if !self.rx_cq_armed {
                     self.rx_cq.arm();
@@ -1005,7 +1007,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Ok(i)
     }
 
-    fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         let mut i = 0;
         let mut commit = false;
         while i < segments.len()
@@ -1017,7 +1023,10 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 unreachable!()
             };
 
-            if let Some(tx) = self.handle_tx(&segments[i..i + meta.segment_count as usize])? {
+            if let Some(tx) = self.handle_tx(
+                &segments[i..i + meta.segment_count as usize],
+                pool.guest_memory(),
+            )? {
                 commit = true;
                 self.posted_tx.push_back(tx);
             } else {
@@ -1032,7 +1041,11 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Ok((false, i))
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         let mut i = 0;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
@@ -1088,10 +1101,6 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Ok(i)
     }
 
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        Some(self.pool.as_mut())
-    }
-
     fn queue_stats(&self) -> Option<&dyn BackendQueueStats> {
         Some(&self.stats)
     }
@@ -1113,7 +1122,11 @@ impl BackendQueueStats for QueueStats {
 }
 
 impl<T: DeviceBacking> ManaQueue<T> {
-    fn handle_tx(&mut self, segments: &[TxSegment]) -> anyhow::Result<Option<PostedTx>> {
+    fn handle_tx(
+        &mut self,
+        segments: &[TxSegment],
+        guest_memory: &GuestMemory,
+    ) -> anyhow::Result<Option<PostedTx>> {
         let head = &segments[0];
         let TxSegmentType::Head(meta) = &head.ty else {
             unreachable!()
@@ -1167,7 +1180,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             let mut next = buf.as_slice();
             for seg in segments {
                 let len = seg.len as usize;
-                self.guest_memory.read_to_atomic(seg.gpa, &next[..len])?;
+                guest_memory.read_to_atomic(seg.gpa, &next[..len])?;
                 next = &next[len..];
             }
             let buf = buf.reserve();
@@ -1212,7 +1225,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         let mut used_segments_len = 0;
                         for segment in segments {
                             let (this, rest) = data.split_at(data.len().min(segment.len as usize));
-                            self.guest_memory.read_to_atomic(segment.gpa, this)?;
+                            guest_memory.read_to_atomic(segment.gpa, this)?;
                             data = rest;
                             if this.len() < segment.len as usize {
                                 break;
@@ -1232,9 +1245,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         let ContiguousBufferInUse { gpa, .. } = copy.reserve();
                         (gpa, used_segments, used_segments_len)
                     } else if header_len < head.len {
-                        (self.guest_memory.iova(head.gpa).unwrap(), 0, 0)
+                        (guest_memory.iova(head.gpa).unwrap(), 0, 0)
                     } else {
-                        (self.guest_memory.iova(head.gpa).unwrap(), 1, header_len)
+                        (guest_memory.iova(head.gpa).unwrap(), 1, header_len)
                     };
 
                 // Drop the LSO packet if it only has a header segment.
@@ -1270,8 +1283,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 let mut segment_offset = segment_offset;
                 for tail in segments {
                     builder.push_sge(Sge {
-                        address: self
-                            .guest_memory
+                        address: guest_memory
                             .iova(tail.gpa.wrapping_add(segment_offset.into()))
                             .unwrap(),
                         mem_key: self.mem_key,
@@ -1282,7 +1294,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
             } else {
                 let gpa0 = segments[0].gpa.wrapping_add(segment_offset.into());
                 let mut sge = Sge {
-                    address: self.guest_memory.iova(gpa0).unwrap(),
+                    address: guest_memory.iova(gpa0).unwrap(),
                     mem_key: self.mem_key,
                     size: segments[0].len.wrapping_sub(segment_offset),
                 };
@@ -1308,8 +1320,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                             // segment with the previous. The previous segment
                             // is not yet bounced, so bounce it now.
                             let mut copy = bounce_buffer.allocate(sge.size).unwrap();
-                            self.guest_memory
-                                .read_to_atomic(last_segment_gpa, copy.as_slice())?;
+                            guest_memory.read_to_atomic(last_segment_gpa, copy.as_slice())?;
                             let ContiguousBufferInUse { gpa, .. } = copy.reserve();
                             sge.address = gpa;
                             last_segment_bounced = true;
@@ -1317,8 +1328,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         if last_segment_bounced {
                             if let Some(mut copy) = bounce_buffer.try_extend(tail.len) {
                                 // Combine current segment with previous one using bounce buffer.
-                                self.guest_memory
-                                    .read_to_atomic(tail.gpa, copy.as_slice())?;
+                                guest_memory.read_to_atomic(tail.gpa, copy.as_slice())?;
                                 let ContiguousBufferInUse {
                                     len_with_padding, ..
                                 } = copy.reserve();
@@ -1343,7 +1353,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     }
 
                     sge = Sge {
-                        address: self.guest_memory.iova(tail.gpa).unwrap(),
+                        address: guest_memory.iova(tail.gpa).unwrap(),
                         mem_key: self.mem_key,
                         size: tail.len,
                     };

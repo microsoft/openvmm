@@ -177,6 +177,18 @@ impl PetriVmRuntime for PetriVmOpenVmm {
     ) -> anyhow::Result<()> {
         todo!("openvmm set vmbus drive")
     }
+
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        Self::add_pcie_device(self, port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        Self::remove_pcie_device(self, port_name).await
+    }
 }
 
 pub(super) struct PetriVmInner {
@@ -272,6 +284,22 @@ impl PetriVmOpenVmm {
         pub async fn update_command_line(
             &mut self,
             command_line: &str
+        ) -> anyhow::Result<()>
+    );
+
+    petri_vm_fn!(
+        /// Hot-add a PCIe device to a named port at runtime.
+        pub async fn add_pcie_device(
+            &mut self,
+            port_name: String,
+            resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>
+        ) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Hot-remove a PCIe device from a named port at runtime.
+        pub async fn remove_pcie_device(
+            &mut self,
+            port_name: String
         ) -> anyhow::Result<()>
     );
     petri_vm_fn!(
@@ -460,6 +488,18 @@ impl PetriVmInner {
 
     async fn update_command_line(&mut self, command_line: &str) -> anyhow::Result<()> {
         self.worker.update_command_line(command_line).await
+    }
+
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.worker.add_pcie_device(port_name, resource).await
+    }
+
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        self.worker.remove_pcie_device(port_name).await
     }
 
     async fn restore_openhcl(&self) -> anyhow::Result<()> {

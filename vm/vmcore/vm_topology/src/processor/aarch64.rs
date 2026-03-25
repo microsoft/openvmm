@@ -17,10 +17,7 @@ use aarch64defs::MpidrEl1;
 #[derive(Debug, Copy, Clone)]
 #[non_exhaustive]
 pub struct Aarch64Topology {
-    gic: GicInfo,
-    /// Performance Interrupt GSIV (PMU)
-    #[cfg_attr(feature = "inspect", inspect(hex))]
-    pmu_gsiv: u32,
+    platform: Aarch64PlatformConfig,
 }
 
 impl ArchTopology for Aarch64Topology {
@@ -38,23 +35,29 @@ impl ArchTopology for Aarch64Topology {
 
 /// Aarch64-specific [`TopologyBuilder`] state.
 pub struct Aarch64TopologyBuilderState {
-    gic: GicInfo,
-    pmu_gsiv: u32,
+    platform: Aarch64PlatformConfig,
 }
 
-/// GIC information
+/// ARM64 platform interrupt and GIC configuration.
+///
+/// Groups GIC base addresses, MSI frame info, and platform interrupt
+/// assignments (PMU, virtual timer) into a single struct so that the
+/// topology builder takes one value instead of several positional `u32`s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
-pub struct GicInfo {
-    /// GIC distributor base
+pub struct Aarch64PlatformConfig {
+    /// GIC distributor base address.
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub gic_distributor_base: u64,
-    /// GIC redistributors base
+    /// GIC redistributors base address.
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub gic_redistributors_base: u64,
-    /// GIC v2m MSI frame base address, and the SPI range it owns.
-    /// `None` if MSIs via v2m are not supported.
+    /// GIC v2m MSI frame, if MSIs via v2m are supported.
     pub gic_v2m: Option<GicV2mInfo>,
+    /// Performance Monitor Unit GSIV (GIC INTID). `None` if not available.
+    pub pmu_gsiv: Option<u32>,
+    /// Virtual timer PPI (GIC INTID, e.g. 20 for PPI 4).
+    pub virt_timer_ppi: u32,
 }
 
 /// GIC v2m MSI frame parameters.
@@ -85,7 +88,7 @@ pub struct Aarch64VpInfo {
     pub gicr: u64,
     /// Performance Interrupt GSIV (PMU)
     #[cfg_attr(feature = "inspect", inspect(hex))]
-    pub pmu_gsiv: u32,
+    pub pmu_gsiv: Option<u32>,
 }
 
 impl AsRef<VpInfo> for Aarch64VpInfo {
@@ -95,12 +98,12 @@ impl AsRef<VpInfo> for Aarch64VpInfo {
 }
 
 impl TopologyBuilder<Aarch64Topology> {
-    /// Returns a builder for creating an x86 processor topology.
-    pub fn new_aarch64(gic: GicInfo, pmu_gsiv: u32) -> Self {
+    /// Returns a builder for creating an aarch64 processor topology.
+    pub fn new_aarch64(platform: Aarch64PlatformConfig) -> Self {
         Self {
             vps_per_socket: 1,
             smt_enabled: false,
-            arch: Aarch64TopologyBuilderState { gic, pmu_gsiv },
+            arch: Aarch64TopologyBuilderState { platform },
         }
     }
 
@@ -114,6 +117,16 @@ impl TopologyBuilder<Aarch64Topology> {
                 requested: proc_count,
                 max: u8::MAX.into(),
             });
+        }
+        if !(16..32).contains(&self.arch.platform.virt_timer_ppi) {
+            return Err(InvalidTopology::InvalidPpiIntid(
+                self.arch.platform.virt_timer_ppi,
+            ));
+        }
+        if let Some(gsiv) = self.arch.platform.pmu_gsiv {
+            if !(16..32).contains(&gsiv) {
+                return Err(InvalidTopology::InvalidPpiIntid(gsiv));
+            }
         }
         let mpidrs = (0..proc_count).map(|vp_index| {
             // TODO: construct mpidr appropriately for the specified
@@ -134,9 +147,9 @@ impl TopologyBuilder<Aarch64Topology> {
                 vnode: 0,
             },
             mpidr,
-            gicr: self.arch.gic.gic_redistributors_base
+            gicr: self.arch.platform.gic_redistributors_base
                 + id as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
-            pmu_gsiv: self.arch.pmu_gsiv,
+            pmu_gsiv: self.arch.platform.pmu_gsiv,
         }))
     }
 
@@ -162,8 +175,7 @@ impl TopologyBuilder<Aarch64Topology> {
             smt_enabled,
             vps_per_socket: self.vps_per_socket,
             arch: Aarch64Topology {
-                gic: self.arch.gic,
-                pmu_gsiv: self.arch.pmu_gsiv,
+                platform: self.arch.platform,
             },
         })
     }
@@ -172,21 +184,26 @@ impl TopologyBuilder<Aarch64Topology> {
 impl ProcessorTopology<Aarch64Topology> {
     /// Returns the GIC distributor base
     pub fn gic_distributor_base(&self) -> u64 {
-        self.arch.gic.gic_distributor_base
+        self.arch.platform.gic_distributor_base
     }
 
     /// Returns the GIC redistributors base
     pub fn gic_redistributors_base(&self) -> u64 {
-        self.arch.gic.gic_redistributors_base
+        self.arch.platform.gic_redistributors_base
     }
 
     /// Returns the PMU GSIV
-    pub fn pmu_gsiv(&self) -> u32 {
-        self.arch.pmu_gsiv
+    pub fn pmu_gsiv(&self) -> Option<u32> {
+        self.arch.platform.pmu_gsiv
     }
 
     /// Returns the GIC v2m MSI frame info, if present.
     pub fn gic_v2m(&self) -> Option<GicV2mInfo> {
-        self.arch.gic.gic_v2m
+        self.arch.platform.gic_v2m
+    }
+
+    /// Returns the virtual timer PPI (GIC INTID).
+    pub fn virt_timer_ppi(&self) -> u32 {
+        self.arch.platform.virt_timer_ppi
     }
 }

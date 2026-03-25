@@ -19,6 +19,7 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::aarch64::Aarch64Topology;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 #[error("device tree error: {0:?}")]
@@ -32,6 +33,16 @@ pub enum Error {
     Loader(#[source] loader::linux::Error),
     #[error("device tree error")]
     Dt(#[source] DtError),
+    #[error("failed to write EFI/ACPI tables to guest memory")]
+    Efi(#[source] guestmem::GuestMemoryError),
+}
+
+struct Aarch64EfiInfo {
+    systab_addr: u64,
+    mmap_addr: u64,
+    mmap_size: u32,
+    mmap_desc_size: u32,
+    mmap_desc_ver: u32,
 }
 
 #[derive(Debug)]
@@ -164,7 +175,7 @@ fn build_dt(
             && !(gic_redist_base..gic_redist_base + gic_redist_size).contains(&gic_dist_base)
     );
 
-    let mut buffer = vec![0u8; hvdef::HV_PAGE_SIZE as usize * 256];
+    let mut buffer = vec![0u8; 0x200000];
 
     let builder_config = fdt::builder::BuilderConfig {
         blob_buffer: &mut buffer,
@@ -217,8 +228,9 @@ fn build_dt(
     const GIC_PPI: u32 = 1;
     const IRQ_TYPE_LEVEL_LOW: u32 = 8;
     const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
-    const IRQ_TYPE_EDGE_FALLING: u32 = 2;
-    const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
+    const IRQ_TYPE_EDGE_RISING: u32 = 1;
+    /// VMBus PPI offset for the DT `interrupts` property.
+    const VMBUS_PPI_OFFSET: u32 = openvmm_defs::config::DEFAULT_VMBUS_PPI - 16;
 
     let mut root_builder = builder
         .start_node("")?
@@ -323,7 +335,9 @@ fn build_dt(
     };
 
     // ARM64 Architectural Timer.
-    const HYPERV_VIRT_TIMER_PPI: u32 = 4; // relative to PPI base of 16
+    // The DT `interrupts` property uses the PPI offset (INTID - 16).
+    assert!((16..32).contains(&processor_topology.virt_timer_ppi()));
+    let virt_timer_ppi_offset = processor_topology.virt_timer_ppi() - 16;
     let timer = root_builder
         .start_node("timer")?
         .add_str(p_compatible, "arm,armv8-timer")?
@@ -331,16 +345,13 @@ fn build_dt(
         .add_str(p_interrupt_names, "virt")?
         .add_u32_array(
             p_interrupts,
-            &[GIC_PPI, HYPERV_VIRT_TIMER_PPI, IRQ_TYPE_LEVEL_LOW],
+            &[GIC_PPI, virt_timer_ppi_offset, IRQ_TYPE_LEVEL_LOW],
         )?
         .add_null(p_always_on)?;
     root_builder = timer.end_node()?;
 
-    // Add PMU, if the interrupt is non-zero.
-    let pmu_gsiv = processor_topology.pmu_gsiv();
-    if pmu_gsiv != 0 {
-        // TODO: This assumes the GSIV is a PPI. On all platforms, that seems to
-        // be the case today.
+    // Add PMU, if the interrupt is configured.
+    if let Some(pmu_gsiv) = processor_topology.pmu_gsiv() {
         assert!((16..32).contains(&pmu_gsiv));
         let ppi_index = pmu_gsiv - 16;
         let pmu = root_builder
@@ -471,7 +482,7 @@ fn build_dt(
             p_interrupts,
             // Here 3 parameters are used as the "#interrupt-cells"
             // above specifies.
-            &[GIC_PPI, VMBUS_INTID, IRQ_TYPE_EDGE_FALLING],
+            &[GIC_PPI, VMBUS_PPI_OFFSET, IRQ_TYPE_EDGE_RISING],
         )?
         .end_node()?;
 
@@ -492,7 +503,241 @@ fn build_dt(
     root_builder = chosen.end_node()?;
 
     let boot_cpu_id = 0;
-    root_builder.end_node()?.build(boot_cpu_id)?;
+    let dt_size = root_builder.end_node()?.build(boot_cpu_id)?;
+    buffer.truncate(dt_size);
+
+    Ok(buffer)
+}
+
+/// Write synthesized EFI and ACPI structures into guest memory.
+///
+/// On ARM64, the Linux kernel can discover devices via ACPI instead of a
+/// device tree, but it still needs to enter via the EFI stub to find the
+/// RSDP. We synthesize:
+///   - An `EFI_SYSTEM_TABLE` pointing to an ACPI 2.0 configuration table
+///     entry (the RSDP) and an RT Properties table (advertising no runtime
+///     services).
+///   - An EFI memory map describing the metadata, ACPI tables, and
+///     conventional RAM regions.
+///   - The ACPI tables themselves (RSDP, XSDT, FADT, MADT, GTDT, DSDT, etc.).
+///
+/// The companion [`build_stub_dt`] function then builds a minimal device tree
+/// whose `/chosen` node carries `linux,uefi-system-table` and the memory map
+/// pointers so that the kernel's EFI stub can locate these structures.
+fn write_efi_and_acpi_tables(
+    gm: &GuestMemory,
+    efi_base: u64,
+    rsdp_addr: u64,
+    mem_layout: &MemoryLayout,
+    acpi_tables: &vmm_core::acpi_builder::BuiltAcpiTables,
+) -> Result<Aarch64EfiInfo, Error> {
+    use memory_range::MemoryRange;
+    use uefi_specs::uefi::boot::ACPI_20_TABLE_GUID;
+    use uefi_specs::uefi::boot::EFI_2_70_SYSTEM_TABLE_REVISION;
+    use uefi_specs::uefi::boot::EFI_MEMORY_DESCRIPTOR_VERSION;
+    use uefi_specs::uefi::boot::EFI_MEMORY_WB;
+    use uefi_specs::uefi::boot::EFI_RT_PROPERTIES_TABLE_GUID;
+    use uefi_specs::uefi::boot::EFI_SYSTEM_TABLE_SIGNATURE;
+    use uefi_specs::uefi::boot::EfiMemoryDescriptor;
+    use uefi_specs::uefi::boot::EfiMemoryType;
+    use uefi_specs::uefi::boot::EfiRtPropertiesTable;
+    use uefi_specs::uefi::boot::EfiSystemTable;
+
+    // Helper to align a value up to the given power-of-two alignment.
+    fn align_up(val: u64, align: u64) -> u64 {
+        (val + align - 1) & !(align - 1)
+    }
+
+    // --- ACPI tables ---
+    let tables_addr = rsdp_addr + 0x1000;
+    gm.write_at(rsdp_addr, &acpi_tables.rdsp)
+        .map_err(Error::Efi)?;
+    gm.write_at(tables_addr, &acpi_tables.tables)
+        .map_err(Error::Efi)?;
+
+    // --- EFI metadata (page 1): systab, config table, vendor, rt props ---
+    // Page 0 is reserved for the memory map (written last).
+    let mut cursor = efi_base + 0x1000;
+
+    // EFI System Table
+    let systab_addr = cursor;
+    cursor += size_of::<EfiSystemTable>() as u64;
+
+    // Configuration table entries (24 bytes each: 16-byte GUID + 8-byte pointer)
+    const CONFIG_ENTRY_SIZE: u64 = 24;
+    let num_config_entries: u64 = 2;
+    let config_table_addr = cursor;
+    cursor += num_config_entries * CONFIG_ENTRY_SIZE;
+
+    // Firmware vendor string — NUL-terminated UTF-16LE
+    let fw_vendor_addr = cursor;
+    let fw_vendor: Vec<u8> = "OpenVMM\0"
+        .encode_utf16()
+        .flat_map(|c| c.to_le_bytes())
+        .collect();
+    cursor += fw_vendor.len() as u64;
+    cursor = align_up(cursor, 8);
+
+    // EFI RT Properties Table — tells the OS no runtime services are available.
+    let rt_props_addr = cursor;
+    let rt_props = EfiRtPropertiesTable::NONE_SUPPORTED;
+    cursor += size_of::<EfiRtPropertiesTable>() as u64;
+
+    // Compute how many pages the metadata region spans.
+    let metadata_end = align_up(cursor, 0x1000);
+    let metadata_pages = (metadata_end - efi_base) / 0x1000;
+    assert!(
+        cursor <= rsdp_addr,
+        "EFI metadata ({cursor:#x}) overflows into ACPI tables region ({rsdp_addr:#x})",
+    );
+
+    // Now write everything.
+    gm.write_at(rt_props_addr, rt_props.as_bytes())
+        .map_err(Error::Efi)?;
+
+    let mut config_entries = [0u8; 48];
+    config_entries[0..16].copy_from_slice(ACPI_20_TABLE_GUID.as_bytes());
+    config_entries[16..24].copy_from_slice(&rsdp_addr.to_le_bytes());
+    config_entries[24..40].copy_from_slice(EFI_RT_PROPERTIES_TABLE_GUID.as_bytes());
+    config_entries[40..48].copy_from_slice(&rt_props_addr.to_le_bytes());
+    gm.write_at(config_table_addr, &config_entries)
+        .map_err(Error::Efi)?;
+
+    gm.write_at(fw_vendor_addr, &fw_vendor)
+        .map_err(Error::Efi)?;
+
+    let mut systab = EfiSystemTable {
+        signature: EFI_SYSTEM_TABLE_SIGNATURE,
+        revision: EFI_2_70_SYSTEM_TABLE_REVISION,
+        header_size: size_of::<EfiSystemTable>() as u32,
+        firmware_vendor: fw_vendor_addr,
+        firmware_revision: 1,
+        number_of_table_entries: num_config_entries,
+        configuration_table: config_table_addr,
+        ..Default::default()
+    };
+    // UEFI spec 4.2: CRC32 is computed over header_size bytes with crc32 zeroed.
+    systab.crc32 = crc32fast::hash(systab.as_bytes());
+    gm.write_at(systab_addr, systab.as_bytes())
+        .map_err(Error::Efi)?;
+
+    // --- Memory map (page 0) ---
+    let mut mmap_entries: Vec<EfiMemoryDescriptor> = Vec::new();
+
+    // EFI metadata region
+    mmap_entries.push(EfiMemoryDescriptor {
+        typ: EfiMemoryType::EFI_BOOT_SERVICES_DATA,
+        _pad: 0,
+        physical_start: efi_base,
+        virtual_start: 0,
+        number_of_pages: metadata_pages,
+        attribute: EFI_MEMORY_WB,
+    });
+
+    // ACPI tables region
+    let acpi_region_pages = {
+        let total = 0x1000 + acpi_tables.tables.len() as u64;
+        total.div_ceil(0x1000)
+    };
+    mmap_entries.push(EfiMemoryDescriptor {
+        typ: EfiMemoryType::EFI_ACPI_RECLAIM_MEMORY,
+        _pad: 0,
+        physical_start: rsdp_addr,
+        virtual_start: 0,
+        number_of_pages: acpi_region_pages,
+        attribute: EFI_MEMORY_WB,
+    });
+
+    // Conventional memory — one entry per RAM range, excluding the
+    // EFI/ACPI reserved region to avoid overlapping memory map entries.
+    let reserved_start = efi_base;
+    let reserved_end = align_up(rsdp_addr + 0x1000 + acpi_tables.tables.len() as u64, 0x1000);
+    let reserved = [MemoryRange::new(reserved_start..reserved_end)];
+    for range in memory_range::subtract_ranges(mem_layout.ram().iter().map(|r| r.range), reserved) {
+        mmap_entries.push(EfiMemoryDescriptor {
+            typ: EfiMemoryType::EFI_CONVENTIONAL_MEMORY,
+            _pad: 0,
+            physical_start: range.start(),
+            virtual_start: 0,
+            number_of_pages: range.len() / 0x1000,
+            attribute: EFI_MEMORY_WB,
+        });
+    }
+
+    let mmap_addr = efi_base;
+    let mmap_bytes: Vec<u8> = mmap_entries
+        .iter()
+        .flat_map(|e| e.as_bytes())
+        .copied()
+        .collect();
+    let mmap_size = mmap_bytes.len() as u32;
+
+    gm.write_at(mmap_addr, &mmap_bytes).map_err(Error::Efi)?;
+
+    Ok(Aarch64EfiInfo {
+        systab_addr,
+        mmap_addr,
+        mmap_size,
+        mmap_desc_size: size_of::<EfiMemoryDescriptor>() as u32,
+        mmap_desc_ver: EFI_MEMORY_DESCRIPTOR_VERSION,
+    })
+}
+
+/// Build a "stub" device tree for ACPI-mode ARM64 direct boot.
+///
+/// Unlike the full device tree built by [`build_dt`], this DT contains no
+/// hardware descriptions — no CPU nodes, no GIC, no timer, no devices.
+/// Its only purpose is a `/chosen` node that tells the Linux EFI stub
+/// where to find the EFI system table and memory map written by
+/// [`write_efi_and_acpi_tables`]. The kernel then uses those EFI
+/// structures to locate the ACPI RSDP and discovers all hardware through
+/// ACPI tables instead of DT nodes.
+fn build_stub_dt(
+    cmdline: &str,
+    initrd_start: u64,
+    initrd_end: u64,
+    efi_info: &Aarch64EfiInfo,
+) -> Result<Vec<u8>, fdt::builder::Error> {
+    let mut buffer = vec![0u8; 0x4000];
+
+    let builder_config = fdt::builder::BuilderConfig {
+        blob_buffer: &mut buffer,
+        string_table_cap: 256,
+        memory_reservations: &[],
+    };
+    let mut builder = fdt::builder::Builder::new(builder_config)?;
+    let p_address_cells = builder.add_string("#address-cells")?;
+    let p_size_cells = builder.add_string("#size-cells")?;
+    let p_bootargs = builder.add_string("bootargs")?;
+    let p_initrd_start = builder.add_string("linux,initrd-start")?;
+    let p_initrd_end = builder.add_string("linux,initrd-end")?;
+    let p_uefi_system_table = builder.add_string("linux,uefi-system-table")?;
+    let p_uefi_mmap_start = builder.add_string("linux,uefi-mmap-start")?;
+    let p_uefi_mmap_size = builder.add_string("linux,uefi-mmap-size")?;
+    let p_uefi_mmap_desc_size = builder.add_string("linux,uefi-mmap-desc-size")?;
+    let p_uefi_mmap_desc_ver = builder.add_string("linux,uefi-mmap-desc-ver")?;
+
+    let root_builder = builder
+        .start_node("")?
+        .add_u32(p_address_cells, 2)?
+        .add_u32(p_size_cells, 2)?;
+
+    let chosen = root_builder
+        .start_node("chosen")?
+        .add_str(p_bootargs, cmdline)?
+        .add_u64(p_initrd_start, initrd_start)?
+        .add_u64(p_initrd_end, initrd_end)?
+        .add_u64(p_uefi_system_table, efi_info.systab_addr)?
+        .add_u64(p_uefi_mmap_start, efi_info.mmap_addr)?
+        .add_u32(p_uefi_mmap_size, efi_info.mmap_size)?
+        .add_u32(p_uefi_mmap_desc_size, efi_info.mmap_desc_size)?
+        .add_u32(p_uefi_mmap_desc_ver, efi_info.mmap_desc_ver)?;
+
+    let root_builder = chosen.end_node()?;
+
+    let boot_cpu_id = 0;
+    let dt_size = root_builder.end_node()?.build(boot_cpu_id)?;
+    buffer.truncate(dt_size);
 
     Ok(buffer)
 }
@@ -504,6 +749,7 @@ pub fn load_linux_arm64(
     enable_serial: bool,
     processor_topology: &ProcessorTopology<Aarch64Topology>,
     pcie_host_bridges: &[PcieHostBridge],
+    build_acpi: Option<impl FnOnce(u64) -> vmm_core::acpi_builder::BuiltAcpiTables>,
 ) -> Result<Vec<Aarch64Register>, Error> {
     let mut loader = Loader::new(gm.clone(), cfg.mem_layout, hvdef::Vtl::Vtl0);
     let mut kernel_file = cfg.kernel;
@@ -526,22 +772,37 @@ pub fn load_linux_arm64(
     // Thus, we first start with planning the memory layout where
     // some space at the loader bottom is reserved for the initrd.
 
-    let load_bottom_addr: u64 = 16 << 20;
-    let initrd_start: u64 = load_bottom_addr;
+    const INITRD_BASE: u64 = 16 << 20; // 16 MB
+    let initrd_start: u64 = INITRD_BASE;
     let initrd_end: u64 = initrd_start + initrd_size;
     // Align the kernel to 2MB
     let kernel_minimum_start_address: u64 = (initrd_end + 0x1fffff) & !0x1fffff;
 
-    let device_tree = build_dt(
-        cfg,
-        gm,
-        enable_serial,
-        processor_topology,
-        pcie_host_bridges,
-        initrd_start,
-        initrd_end,
-    )
-    .map_err(|e| Error::Dt(DtError(e)))?;
+    let device_tree = if let Some(build_acpi) = build_acpi {
+        // ACPI mode: write EFI + ACPI tables into guest memory, then build a
+        // minimal "stub" DT that points the kernel's EFI stub at them. The
+        // kernel discovers all devices through ACPI, not the DT.
+        const EFI_BASE: u64 = 0x0080_0000; // 8 MB
+        const ACPI_TABLES_OFFSET: u64 = 0x2000;
+        const { assert!(EFI_BASE < INITRD_BASE) };
+        let rsdp_addr = EFI_BASE + ACPI_TABLES_OFFSET;
+        let acpi_tables = build_acpi(rsdp_addr);
+        let efi_info =
+            write_efi_and_acpi_tables(gm, EFI_BASE, rsdp_addr, cfg.mem_layout, &acpi_tables)?;
+        build_stub_dt(cfg.cmdline, initrd_start, initrd_end, &efi_info)
+            .map_err(|e| Error::Dt(DtError(e)))?
+    } else {
+        build_dt(
+            cfg,
+            gm,
+            enable_serial,
+            processor_topology,
+            pcie_host_bridges,
+            initrd_start,
+            initrd_end,
+        )
+        .map_err(|e| Error::Dt(DtError(e)))?
+    };
 
     let initrd_config = initrd_reader.as_mut().map(|r| InitrdConfig {
         initrd_address: InitrdAddressType::Address(initrd_start),

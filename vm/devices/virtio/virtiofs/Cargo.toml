@@ -39,3 +39,9 @@ windows-sys = { workspace = true, features = [
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+pal_async.workspace = true
+pal_event.workspace = true
+tempfile.workspace = true
+test_with_tracing.workspace = true

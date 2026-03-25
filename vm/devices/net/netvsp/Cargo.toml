@@ -29,7 +29,6 @@ safeatomic.workspace = true
 task_control.workspace = true
 
 anyhow.workspace = true
-arrayvec.workspace = true
 async-trait.workspace = true
 bitfield-struct.workspace = true
 futures.workspace = true
