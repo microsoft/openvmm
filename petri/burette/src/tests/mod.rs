@@ -5,5 +5,6 @@
 
 pub mod boot_time;
 pub mod memory;
+pub mod network;
 pub mod platform;
 pub mod scale_boot;

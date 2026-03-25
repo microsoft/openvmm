@@ -1274,7 +1274,7 @@ impl VtlPartition {
                     } else {
                         1
                     },
-                    GicPpiOverflowInterruptFromCntv: 0x14,
+                    GicPpiOverflowInterruptFromCntv: config.processor_topology.virt_timer_ppi(),
                     GicPpiPerformanceMonitorsInterrupt: 0x17,
                     Reserved1: [0; 6],
                 },

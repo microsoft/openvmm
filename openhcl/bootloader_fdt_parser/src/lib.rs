@@ -18,7 +18,7 @@ use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
 use vm_topology::memory::MemoryRangeWithNode;
-use vm_topology::processor::aarch64::GicInfo;
+use vm_topology::processor::aarch64::Aarch64PlatformConfig;
 
 /// A parsed cpu.
 #[derive(Debug, Inspect, Clone, Copy, PartialEq, Eq)]
@@ -173,10 +173,8 @@ pub struct ParsedBootDtInfo {
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
 
-    /// GIC information, on AArch64.
-    pub gic: Option<GicInfo>,
-    /// PMU GSIV, on AArch64.
-    pub pmu_gsiv: Option<u32>,
+    /// GIC and platform interrupt configuration, on AArch64.
+    pub gic: Option<Aarch64PlatformConfig>,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -526,17 +524,20 @@ fn parse_memory(node: &Node<'_>) -> anyhow::Result<MemoryRangeWithNode> {
 }
 
 /// Parse GIC config
-fn parse_gic(node: &Node<'_>) -> anyhow::Result<GicInfo> {
+fn parse_gic(node: &Node<'_>) -> anyhow::Result<Aarch64PlatformConfig> {
     let reg = property_to_u64_vec(node, "reg")?;
 
     if reg.len() != 4 {
         bail!("gic node {} does not have 4 u64s", node.name);
     }
 
-    Ok(GicInfo {
+    Ok(Aarch64PlatformConfig {
         gic_distributor_base: reg[0],
         gic_redistributors_base: reg[2],
         gic_v2m: None,
+        pmu_gsiv: None,
+        // TODO: parse from the DT timer node instead of hardcoding.
+        virt_timer_ppi: 20,
     })
 }
 
@@ -662,6 +663,11 @@ impl ParsedBootDtInfo {
 
         vtl2_memory.sort_by_key(|r| r.range.start());
 
+        // Merge PMU GSIV into the GIC platform config if both were parsed.
+        if let (Some(gic), Some(pmu_gsiv)) = (&mut gic, pmu_gsiv) {
+            gic.pmu_gsiv = Some(pmu_gsiv);
+        }
+
         Ok(Self {
             cpus,
             vtl0_mmio,
@@ -671,7 +677,6 @@ impl ParsedBootDtInfo {
             vtl0_alias_map,
             accepted_ranges,
             gic,
-            pmu_gsiv,
             memory_allocation_mode,
             isolation,
             vtl2_reserved_range,
@@ -841,15 +846,20 @@ mod tests {
         }
 
         // PMU
-        if let Some(pmu_gsiv) = info.pmu_gsiv {
-            assert!((16..32).contains(&pmu_gsiv));
-            const GIC_PPI: u32 = 1;
-            const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
-            root_builder = root_builder
-                .start_node("pmu")?
-                .add_str(p_compatible, "arm,armv8-pmuv3")?
-                .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv - 16, IRQ_TYPE_LEVEL_HIGH])?
-                .end_node()?;
+        if let Some(gic) = &info.gic {
+            if let Some(pmu_gsiv) = gic.pmu_gsiv {
+                anyhow::ensure!(
+                    (16..32).contains(&pmu_gsiv),
+                    "PMU GSIV {pmu_gsiv} is not a valid PPI (expected 16..32)"
+                );
+                const GIC_PPI: u32 = 1;
+                const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+                root_builder = root_builder
+                    .start_node("pmu")?
+                    .add_str(p_compatible, "arm,armv8-pmuv3")?
+                    .add_u32_array(p_interrupts, &[GIC_PPI, pmu_gsiv - 16, IRQ_TYPE_LEVEL_HIGH])?
+                    .end_node()?;
+            }
         }
 
         let mut openhcl_builder = root_builder.start_node("openhcl")?;
@@ -1054,12 +1064,13 @@ mod tests {
                 MemoryRange::new(0x30000..0x40000),
             ],
             vtl0_alias_map: Some(1 << 48),
-            gic: Some(GicInfo {
+            gic: Some(Aarch64PlatformConfig {
                 gic_distributor_base: 0x10000,
                 gic_redistributors_base: 0x20000,
                 gic_v2m: None,
+                pmu_gsiv: Some(0x17),
+                virt_timer_ppi: 20,
             }),
-            pmu_gsiv: Some(0x17),
             accepted_ranges: vec![
                 MemoryRange::new(0x10000..0x20000),
                 MemoryRange::new(0x1000000..0x1500000),

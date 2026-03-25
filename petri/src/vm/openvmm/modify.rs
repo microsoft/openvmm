@@ -15,9 +15,13 @@ use chipset_resources::battery::HostBatteryUpdate;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::IgvmAttestTestConfig;
+use memory_range::MemoryRange;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::LoadMode;
+use openvmm_defs::config::PcieDeviceConfig;
+use openvmm_defs::config::PcieRootComplexConfig;
+use openvmm_defs::config::PcieRootPortConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use vm_resource::IntoResource;
@@ -111,6 +115,60 @@ impl PetriVmConfigOpenVmm {
                 .into_resource(),
             ));
         }
+
+        self
+    }
+
+    /// Enable a virtio-net NIC for the VM backed by Consomme.
+    ///
+    /// This exposes a virtio-net device on a PCIe root port, suitable for
+    /// guests running virtio drivers (e.g. Linux with UEFI boot).
+    pub fn with_virtio_nic(mut self) -> Self {
+        let endpoint =
+            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+
+        // Set up PCIe topology if not already present.
+        if self.config.pcie_root_complexes.is_empty() {
+            const ECAM_SIZE: u64 = 256 * 1024 * 1024;
+            const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+            const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+
+            let low_mmio_start = self.config.memory.mmio_gaps[0].start();
+            let high_mmio_end = self.config.memory.mmio_gaps[1].end();
+            let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
+            let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
+            let ecam_range = MemoryRange::new(pcie_low.start() - ECAM_SIZE..pcie_low.start());
+            self.config.memory.pci_ecam_gaps.push(ecam_range);
+            self.config.memory.pci_mmio_gaps.push(pcie_low);
+            self.config.memory.pci_mmio_gaps.push(pcie_high);
+            self.config.pcie_root_complexes.push(PcieRootComplexConfig {
+                index: 0,
+                name: "rc0".into(),
+                segment: 0,
+                start_bus: 0,
+                end_bus: 255,
+                ecam_range,
+                low_mmio: pcie_low,
+                high_mmio: pcie_high,
+                ports: vec![PcieRootPortConfig {
+                    name: "rp0".into(),
+                    hotplug: false,
+                }],
+            });
+        }
+
+        self.config.pcie_devices.push(PcieDeviceConfig {
+            port_name: "rp0".into(),
+            resource: virtio_resources::VirtioPciDeviceHandle(
+                virtio_resources::net::VirtioNetHandle {
+                    max_queues: None,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                }
+                .into_resource(),
+            )
+            .into_resource(),
+        });
 
         self
     }

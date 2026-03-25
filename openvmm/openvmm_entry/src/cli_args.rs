@@ -100,6 +100,12 @@ pub struct Options {
     #[clap(long)]
     pub hv: bool,
 
+    /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
+    /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
+    /// This flag selects the legacy DT-only path. Rejected on x86.
+    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
+    pub device_tree: bool,
+
     /// enable vtl2 - only supported in WHP and simulated without hypervisor support currently
     ///
     /// Currently implies --get.

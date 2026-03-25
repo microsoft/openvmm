@@ -108,9 +108,7 @@ struct MockQueue {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<RxId>>>,
-    #[expect(dead_code)] // kept alive for the MockQueueHandle's Arc clone
-    pool: Arc<Mutex<Option<Box<dyn net_backend::BufferAccess>>>>,
+    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Sender<()>,
     tx_avail_notify: mesh::Sender<()>,
@@ -124,7 +122,11 @@ impl InspectMut for MockQueue {
 
 #[async_trait]
 impl net_backend::Queue for MockQueue {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut Context<'_>,
+        _pool: &mut dyn net_backend::BufferAccess,
+    ) -> Poll<()> {
         let completions = self.tx_completions.lock();
         if !completions.is_empty() {
             return Poll::Ready(());
@@ -139,23 +141,33 @@ impl net_backend::Queue for MockQueue {
         Poll::Pending
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, _pool: &mut dyn net_backend::BufferAccess, done: &[RxId]) {
         self.rx_pending.lock().extend(done.iter().copied());
         for _ in done {
             self.rx_avail_notify.send(());
         }
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn net_backend::BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         let mut ready = self.rx_ready.lock();
         let n = ready.len().min(packets.len());
         for packet in packets.iter_mut().take(n) {
-            *packet = ready.pop_front().unwrap();
+            let (rx_id, data, metadata) = ready.pop_front().unwrap();
+            pool.write_packet(rx_id, &metadata, &data);
+            *packet = rx_id;
         }
         Ok(n)
     }
 
-    fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        _pool: &mut dyn net_backend::BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         // Log the segments
         let infos: Vec<TxSegmentInfo> = segments
             .iter()
@@ -187,7 +199,11 @@ impl net_backend::Queue for MockQueue {
         Ok((behavior.sync, consumed))
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn net_backend::BufferAccess,
+        done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         let mut completions = self.tx_completions.lock();
         if let Some(batch) = completions.pop_front() {
             let n = batch.len().min(done.len());
@@ -196,10 +212,6 @@ impl net_backend::Queue for MockQueue {
         } else {
             Ok(0)
         }
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn net_backend::BufferAccess> {
-        None
     }
 }
 
@@ -210,8 +222,7 @@ struct MockQueueHandle {
     tx_avail_log: Arc<Mutex<Vec<Vec<TxSegmentInfo>>>>,
     tx_completions: Arc<Mutex<VecDeque<Vec<TxId>>>>,
     rx_pending: Arc<Mutex<VecDeque<RxId>>>,
-    rx_ready: Arc<Mutex<VecDeque<RxId>>>,
-    pool: Arc<Mutex<Option<Box<dyn net_backend::BufferAccess>>>>,
+    rx_ready: Arc<Mutex<VecDeque<(RxId, Vec<u8>, RxMetadata)>>>,
     ready_waker: Arc<Mutex<Option<Waker>>>,
     rx_avail_notify: mesh::Receiver<()>,
     tx_avail_notify: mesh::Receiver<()>,
@@ -253,11 +264,9 @@ impl MockQueueHandle {
             .lock()
             .pop_front()
             .expect("no pending RX buffer available");
-        let mut pool_guard = self.pool.lock();
-        let pool = pool_guard.as_mut().expect("pool not set");
-        pool.write_packet(rx_id, metadata, data);
-        drop(pool_guard);
-        self.rx_ready.lock().push_back(rx_id);
+        self.rx_ready
+            .lock()
+            .push_back((rx_id, data.to_vec(), *metadata));
         if let Some(waker) = self.ready_waker.lock().take() {
             waker.wake();
         }
@@ -284,13 +293,12 @@ impl MockQueueHandle {
     }
 }
 
-fn new_mock_queue(pool: Box<dyn net_backend::BufferAccess>) -> (MockQueue, MockQueueHandle) {
+fn new_mock_queue() -> (MockQueue, MockQueueHandle) {
     let tx_avail_behavior = Arc::new(Mutex::new(TxAvailBehavior::default()));
     let tx_avail_log = Arc::new(Mutex::new(Vec::new()));
     let tx_completions = Arc::new(Mutex::new(VecDeque::new()));
     let rx_pending = Arc::new(Mutex::new(VecDeque::new()));
     let rx_ready = Arc::new(Mutex::new(VecDeque::new()));
-    let pool = Arc::new(Mutex::new(Some(pool)));
     let ready_waker = Arc::new(Mutex::new(None));
     let (rx_avail_tx, rx_avail_rx) = mesh::channel();
     let (tx_avail_tx, tx_avail_rx) = mesh::channel();
@@ -301,7 +309,6 @@ fn new_mock_queue(pool: Box<dyn net_backend::BufferAccess>) -> (MockQueue, MockQ
         tx_completions: tx_completions.clone(),
         rx_pending: rx_pending.clone(),
         rx_ready: rx_ready.clone(),
-        pool: pool.clone(),
         ready_waker: ready_waker.clone(),
         rx_avail_notify: rx_avail_tx,
         tx_avail_notify: tx_avail_tx,
@@ -312,7 +319,6 @@ fn new_mock_queue(pool: Box<dyn net_backend::BufferAccess>) -> (MockQueue, MockQ
         tx_completions,
         rx_pending,
         rx_ready,
-        pool,
         ready_waker,
         rx_avail_notify: rx_avail_rx,
         tx_avail_notify: tx_avail_rx,
@@ -340,12 +346,11 @@ impl Endpoint for MockEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        _config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
-        let pool = config.into_iter().next().unwrap().pool;
-        let (queue, handle) = new_mock_queue(pool);
+        let (queue, handle) = new_mock_queue();
         self.queue_tx.send(handle);
         queues.push(Box::new(queue));
         Ok(())
@@ -1708,7 +1713,7 @@ impl Endpoint for MockEndpointWithOffloads {
 
     async fn get_queues(
         &mut self,
-        _config: Vec<QueueConfig<'_>>,
+        _config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         _queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {

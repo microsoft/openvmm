@@ -6,9 +6,6 @@
 // TODO: continue to remove these hardcoded deps
 use acpi::dsdt;
 use acpi::ssdt::Ssdt;
-use acpi_spec::fadt::AddressSpaceId;
-use acpi_spec::fadt::AddressWidth;
-use acpi_spec::fadt::GenericAddress;
 use acpi_spec::madt::InterruptPolarity;
 use acpi_spec::madt::InterruptTriggerMode;
 use cache_topology::CacheTopology;
@@ -50,18 +47,35 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     ///
     /// If and only if this has root complexes, then an MCFG will be generated.
     pub pcie_host_bridges: &'a Vec<PcieHostBridge>,
-    /// If an ioapic is present.
-    pub with_ioapic: bool,
-    /// If a PIC is present.
-    pub with_pic: bool,
-    /// If a PIT is present.
-    pub with_pit: bool,
-    /// If a psp is present.
-    pub with_psp: bool,
-    /// base address of dynamic power management device registers
-    pub pm_base: u16,
-    /// ACPI IRQ number
-    pub acpi_irq: u32,
+    /// Architecture-specific ACPI configuration.
+    pub arch: AcpiArchConfig,
+}
+
+/// Architecture-specific ACPI configuration carried by [`AcpiTablesBuilder`].
+pub enum AcpiArchConfig {
+    /// x86-specific settings (IOAPIC, PIC, PIT, PSP, PM base, SCI IRQ).
+    X86 {
+        /// If an IOAPIC is present.
+        with_ioapic: bool,
+        /// If a PIC is present.
+        with_pic: bool,
+        /// If a PIT is present.
+        with_pit: bool,
+        /// If a PSP is present.
+        with_psp: bool,
+        /// Base address of dynamic power management device registers.
+        pm_base: u16,
+        /// ACPI IRQ number.
+        acpi_irq: u32,
+    },
+    /// ARM64-specific settings (HW_REDUCED_ACPI FADT).
+    Aarch64 {
+        /// Hypervisor vendor identity for the FADT.
+        /// Zero when not running under a hypervisor.
+        hypervisor_vendor_identity: u64,
+        /// Virtual timer PPI (GIC INTID).
+        virt_timer_ppi: u32,
+    },
 }
 
 pub const OEM_INFO: acpi::builder::OemInfo = acpi::builder::OemInfo {
@@ -151,9 +165,22 @@ impl AcpiTopology for Aarch64Topology {
             let mpidr = u64::from(vp.mpidr) & u64::from(aarch64defs::MpidrEl1::AFFINITY_MASK);
             let gicr = topology.gic_redistributors_base()
                 + vp.base.vp_index.index() as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE;
-            let pmu_gsiv = topology.pmu_gsiv();
+            let pmu_gsiv = topology.pmu_gsiv().unwrap_or(0);
             madt.extend_from_slice(
                 acpi_spec::madt::MadtGicc::new(uid, mpidr, gicr, pmu_gsiv).as_bytes(),
+            );
+        }
+
+        // GIC v2m MSI frame for PCIe MSI support.
+        if let Some(v2m) = topology.gic_v2m() {
+            madt.extend_from_slice(
+                acpi_spec::madt::MadtGicMsiFrame::new(
+                    0,
+                    v2m.frame_base,
+                    v2m.spi_base as u16,
+                    v2m.spi_count as u16,
+                )
+                .as_bytes(),
             );
         }
     }
@@ -190,50 +217,62 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         F: FnOnce(&acpi::builder::Table<'_>) -> R,
     {
         let mut madt_extra: Vec<u8> = Vec::new();
-        if self.with_ioapic {
+
+        if let AcpiArchConfig::X86 {
+            with_ioapic,
+            acpi_irq,
+            with_pit,
+            ..
+        } = self.arch
+        {
+            if with_ioapic {
+                madt_extra.extend_from_slice(
+                    acpi_spec::madt::MadtIoApic {
+                        io_apic_id: 0,
+                        io_apic_address: ioapic::IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS as u32,
+                        ..acpi_spec::madt::MadtIoApic::new()
+                    }
+                    .as_bytes(),
+                );
+            }
+
+            // Add override for ACPI interrupt to be level triggered, active high.
             madt_extra.extend_from_slice(
-                acpi_spec::madt::MadtIoApic {
-                    io_apic_id: 0,
-                    io_apic_address: ioapic::IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS as u32,
-                    ..acpi_spec::madt::MadtIoApic::new()
-                }
+                acpi_spec::madt::MadtInterruptSourceOverride::new(
+                    acpi_irq.try_into().expect("should be in range"),
+                    acpi_irq,
+                    Some(InterruptPolarity::ActiveHigh),
+                    Some(InterruptTriggerMode::Level),
+                )
                 .as_bytes(),
             );
-        }
 
-        // Add override for ACPI interrupt to be level triggered, active high.
-        madt_extra.extend_from_slice(
-            acpi_spec::madt::MadtInterruptSourceOverride::new(
-                self.acpi_irq.try_into().expect("should be in range"),
-                self.acpi_irq,
-                Some(InterruptPolarity::ActiveHigh),
-                Some(InterruptTriggerMode::Level),
-            )
-            .as_bytes(),
-        );
-
-        if self.with_pit {
-            // IO-APIC IRQ0 is interrupt 2, which the PIT is attached to.
-            madt_extra.extend_from_slice(
-                acpi_spec::madt::MadtInterruptSourceOverride::new(0, 2, None, None).as_bytes(),
-            );
+            if with_pit {
+                // IO-APIC IRQ0 is interrupt 2, which the PIT is attached to.
+                madt_extra.extend_from_slice(
+                    acpi_spec::madt::MadtInterruptSourceOverride::new(0, 2, None, None).as_bytes(),
+                );
+            }
         }
 
         T::extend_madt(self.processor_topology, &mut madt_extra);
 
-        let flags = if self.with_pic {
-            acpi_spec::madt::MADT_PCAT_COMPAT
-        } else {
-            0
+        let (apic_addr, flags) = match self.arch {
+            AcpiArchConfig::X86 { with_pic, .. } => (
+                APIC_BASE_ADDRESS,
+                if with_pic {
+                    acpi_spec::madt::MADT_PCAT_COMPAT
+                } else {
+                    0
+                },
+            ),
+            AcpiArchConfig::Aarch64 { .. } => (0u32, 0u32),
         };
 
         (f)(&acpi::builder::Table::new_dyn(
             5,
             None,
-            &acpi_spec::madt::Madt {
-                apic_addr: APIC_BASE_ADDRESS,
-                flags,
-            },
+            &acpi_spec::madt::Madt { apic_addr, flags },
             &[madt_extra.as_slice()],
         ))
     }
@@ -465,68 +504,96 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         let dsdt = b.append_raw(dsdt);
 
-        b.append(&acpi::builder::Table::new(
-            6,
-            None,
-            &acpi_spec::fadt::Fadt {
-                flags: acpi_spec::fadt::FADT_WBINVD
-                    | acpi_spec::fadt::FADT_PROC_C1
-                    | acpi_spec::fadt::FADT_PWR_BUTTON
-                    | acpi_spec::fadt::FADT_SLP_BUTTON
-                    | acpi_spec::fadt::FADT_RTC_S4
-                    | acpi_spec::fadt::FADT_TMR_VAL_EXT
-                    | acpi_spec::fadt::FADT_RESET_REG_SUP
-                    | acpi_spec::fadt::FADT_USE_PLATFORM_CLOCK,
-                x_dsdt: dsdt,
-                sci_int: self.acpi_irq as u16,
-                p_lvl2_lat: 101,  // disable C2
-                p_lvl3_lat: 1001, // disable C3
-                pm1_evt_len: 4,
-                x_pm1a_evt_blk: GenericAddress {
-                    addr_space_id: AddressSpaceId::SystemIo,
-                    register_bit_width: 32,
-                    register_bit_offset: 0,
-                    access_size: AddressWidth::Word,
-                    address: (self.pm_base + chipset::pm::DynReg::STATUS.0 as u16).into(),
-                },
-                pm1_cnt_len: 2,
-                x_pm1a_cnt_blk: GenericAddress {
-                    addr_space_id: AddressSpaceId::SystemIo,
-                    register_bit_width: 16,
-                    register_bit_offset: 0,
-                    access_size: AddressWidth::Word,
-                    address: (self.pm_base + chipset::pm::DynReg::CONTROL.0 as u16).into(),
-                },
-                gpe0_blk_len: 4,
-                x_gpe0_blk: GenericAddress {
-                    addr_space_id: AddressSpaceId::SystemIo,
-                    register_bit_width: 32,
-                    register_bit_offset: 0,
-                    access_size: AddressWidth::Word,
-                    address: (self.pm_base + chipset::pm::DynReg::GEN_PURPOSE_STATUS.0 as u16)
-                        .into(),
-                },
-                reset_reg: GenericAddress {
-                    addr_space_id: AddressSpaceId::SystemIo,
-                    register_bit_width: 8,
-                    register_bit_offset: 0,
-                    access_size: AddressWidth::Byte,
-                    address: (self.pm_base + chipset::pm::DynReg::RESET.0 as u16).into(),
-                },
-                reset_value: chipset::pm::RESET_VALUE,
-                pm_tmr_len: 4,
-                x_pm_tmr_blk: GenericAddress {
-                    addr_space_id: AddressSpaceId::SystemIo,
-                    register_bit_width: 32,
-                    register_bit_offset: 0,
-                    access_size: AddressWidth::Dword,
-                    address: (self.pm_base + chipset::pm::DynReg::TIMER.0 as u16).into(),
-                },
-                ..Default::default()
-            },
-        ));
+        if let AcpiArchConfig::X86 {
+            pm_base, acpi_irq, ..
+        } = self.arch
+        {
+            use acpi_spec::fadt::AddressSpaceId;
+            use acpi_spec::fadt::AddressWidth;
+            use acpi_spec::fadt::GenericAddress;
 
-        if self.with_psp {
+            b.append(&acpi::builder::Table::new(
+                6,
+                None,
+                &acpi_spec::fadt::Fadt {
+                    flags: acpi_spec::fadt::FADT_WBINVD
+                        | acpi_spec::fadt::FADT_PROC_C1
+                        | acpi_spec::fadt::FADT_PWR_BUTTON
+                        | acpi_spec::fadt::FADT_SLP_BUTTON
+                        | acpi_spec::fadt::FADT_RTC_S4
+                        | acpi_spec::fadt::FADT_TMR_VAL_EXT
+                        | acpi_spec::fadt::FADT_RESET_REG_SUP
+                        | acpi_spec::fadt::FADT_USE_PLATFORM_CLOCK,
+                    x_dsdt: dsdt,
+                    sci_int: acpi_irq as u16,
+                    p_lvl2_lat: 101,  // disable C2
+                    p_lvl3_lat: 1001, // disable C3
+                    pm1_evt_len: 4,
+                    x_pm1a_evt_blk: GenericAddress {
+                        addr_space_id: AddressSpaceId::SystemIo,
+                        register_bit_width: 32,
+                        register_bit_offset: 0,
+                        access_size: AddressWidth::Word,
+                        address: (pm_base + chipset::pm::DynReg::STATUS.0 as u16).into(),
+                    },
+                    pm1_cnt_len: 2,
+                    x_pm1a_cnt_blk: GenericAddress {
+                        addr_space_id: AddressSpaceId::SystemIo,
+                        register_bit_width: 16,
+                        register_bit_offset: 0,
+                        access_size: AddressWidth::Word,
+                        address: (pm_base + chipset::pm::DynReg::CONTROL.0 as u16).into(),
+                    },
+                    gpe0_blk_len: 4,
+                    x_gpe0_blk: GenericAddress {
+                        addr_space_id: AddressSpaceId::SystemIo,
+                        register_bit_width: 32,
+                        register_bit_offset: 0,
+                        access_size: AddressWidth::Word,
+                        address: (pm_base + chipset::pm::DynReg::GEN_PURPOSE_STATUS.0 as u16)
+                            .into(),
+                    },
+                    reset_reg: GenericAddress {
+                        addr_space_id: AddressSpaceId::SystemIo,
+                        register_bit_width: 8,
+                        register_bit_offset: 0,
+                        access_size: AddressWidth::Byte,
+                        address: (pm_base + chipset::pm::DynReg::RESET.0 as u16).into(),
+                    },
+                    reset_value: chipset::pm::RESET_VALUE,
+                    pm_tmr_len: 4,
+                    x_pm_tmr_blk: GenericAddress {
+                        addr_space_id: AddressSpaceId::SystemIo,
+                        register_bit_width: 32,
+                        register_bit_offset: 0,
+                        access_size: AddressWidth::Dword,
+                        address: (pm_base + chipset::pm::DynReg::TIMER.0 as u16).into(),
+                    },
+                    ..Default::default()
+                },
+            ));
+        }
+
+        if let AcpiArchConfig::Aarch64 {
+            hypervisor_vendor_identity,
+            ..
+        } = self.arch
+        {
+            b.append(&acpi::builder::Table::new(
+                6,
+                None,
+                &acpi_spec::fadt::Fadt {
+                    flags: acpi_spec::fadt::FADT_HW_REDUCED_ACPI,
+                    arm_boot_arch: 0x0003, // PSCI_COMPLIANT | PSCI_USE_HVC
+                    minor_version: 3,
+                    hypervisor_vendor_identity,
+                    x_dsdt: dsdt,
+                    ..Default::default()
+                },
+            ));
+        }
+
+        if let AcpiArchConfig::X86 { with_psp: true, .. } = self.arch {
             use acpi_spec::aspt;
             use acpi_spec::aspt::Aspt;
             use acpi_spec::aspt::AsptStructHeader;
@@ -594,6 +661,10 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             self.with_pptt(|t| b.append(t));
         }
 
+        if matches!(self.arch, AcpiArchConfig::Aarch64 { .. }) {
+            self.with_gtdt(|t| b.append(t));
+        }
+
         let (rdsp, tables) = b.build();
 
         BuiltAcpiTables { rdsp, tables }
@@ -624,6 +695,29 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// Panics if `self.cache_topology` is not set.
     pub fn build_pptt(&self) -> Vec<u8> {
         self.with_pptt(|t| t.to_vec(&OEM_INFO))
+    }
+
+    fn with_gtdt<R>(&self, f: impl FnOnce(&acpi::builder::Table<'_>) -> R) -> R {
+        let virt_timer_ppi = if let AcpiArchConfig::Aarch64 { virt_timer_ppi, .. } = self.arch {
+            virt_timer_ppi
+        } else {
+            0
+        };
+        (f)(&acpi::builder::Table::new(
+            3,
+            None,
+            &acpi_spec::gtdt::Gtdt {
+                cnt_control_base: 0xFFFF_FFFF_FFFF_FFFF,
+                virtual_el1_timer_gsiv: virt_timer_ppi,
+                virtual_el1_timer_flags: acpi_spec::gtdt::GTDT_TIMER_ACTIVE_LOW,
+                cnt_read_base: 0xFFFF_FFFF_FFFF_FFFF,
+                ..Default::default()
+            },
+        ))
+    }
+
+    pub fn build_gtdt(&self) -> Vec<u8> {
+        self.with_gtdt(|t| t.to_vec(&OEM_INFO))
     }
 }
 
@@ -662,12 +756,14 @@ mod test {
             mem_layout,
             cache_topology: None,
             pcie_host_bridges,
-            with_ioapic: true,
-            with_pic: false,
-            with_pit: false,
-            with_psp: false,
-            pm_base: 1234,
-            acpi_irq: 2,
+            arch: AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: false,
+                with_pit: false,
+                with_psp: false,
+                pm_base: 1234,
+                acpi_irq: 2,
+            },
         }
     }
 
