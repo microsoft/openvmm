@@ -396,8 +396,10 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
     if !(20..=60).contains(&ihl_bytes) {
         return;
     }
-    let l3_len = ihl_bytes.min(packet.len() - l2_len);
-    let ip_hdr = &mut packet[l2_len..l2_len + l3_len];
+    if packet.len() < l2_len + ihl_bytes {
+        return;
+    }
+    let ip_hdr = &mut packet[l2_len..l2_len + ihl_bytes];
     // Zero the checksum field (bytes 10-11) before computing.
     ip_hdr[10] = 0;
     ip_hdr[11] = 0;
