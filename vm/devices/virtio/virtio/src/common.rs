@@ -402,6 +402,21 @@ impl VirtioQueue {
         Ok(PeekedWork::new(self, work))
     }
 
+    /// Complete a descriptor previously obtained from this queue.
+    ///
+    /// Writes `bytes_written` to the used ring and delivers an interrupt
+    /// to the guest (unless interrupt suppression is active).
+    ///
+    /// This is the preferred completion path — it avoids the per-work-item
+    /// `Arc<Mutex>` clone that [`VirtioQueueCallbackWork::complete`] requires.
+    pub fn complete(&mut self, work: &mut VirtioQueueCallbackWork, bytes_written: u32) {
+        assert!(!work.completed);
+        self.used_handler
+            .lock()
+            .complete_descriptor(&work.work, bytes_written);
+        work.completed = true;
+    }
+
     fn poll_next_buffer(
         &mut self,
         cx: &mut Context<'_>,
