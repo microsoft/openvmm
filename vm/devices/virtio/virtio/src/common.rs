@@ -127,38 +127,19 @@ impl VirtioQueueUsedHandler {
 
 /// A descriptor chain popped from a [`VirtioQueue`].
 ///
-/// The device must call [`complete`](Self::complete) exactly once to post a
+/// The device must call [`VirtioQueue::complete`] exactly once to post a
 /// completion to the guest's used ring. Dropping without completing is a bug
 /// and will not automatically post a completion.
 #[must_use]
 pub struct VirtioQueueCallbackWork {
-    used_queue_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     work: QueueWork,
     pub payload: Vec<VirtioQueuePayload>,
-    completed: bool,
 }
 
 impl VirtioQueueCallbackWork {
-    pub(crate) fn new(
-        mut work: QueueWork,
-        used_queue_handler: &Arc<Mutex<VirtioQueueUsedHandler>>,
-    ) -> Self {
-        let used_queue_handler = used_queue_handler.clone();
+    pub(crate) fn new(mut work: QueueWork) -> Self {
         let payload = std::mem::take(&mut work.payload);
-        Self {
-            work,
-            payload,
-            used_queue_handler,
-            completed: false,
-        }
-    }
-
-    pub fn complete(&mut self, bytes_written: u32) {
-        assert!(!self.completed);
-        self.used_queue_handler
-            .lock()
-            .complete_descriptor(&self.work, bytes_written);
-        self.completed = true;
+        Self { work, payload }
     }
 
     pub fn descriptor_index(&self) -> u16 {
@@ -290,10 +271,10 @@ impl<'a> PeekedWork<'a> {
     /// Consume this peeked work, advancing the queue's available index.
     ///
     /// Returns a [`VirtioQueueCallbackWork`] that must be explicitly
-    /// completed via [`VirtioQueueCallbackWork::complete`].
+    /// completed via [`VirtioQueue::complete`].
     pub fn consume(self) -> VirtioQueueCallbackWork {
         self.queue.core.advance(&self.work);
-        VirtioQueueCallbackWork::new(self.work, &self.queue.used_handler)
+        VirtioQueueCallbackWork::new(self.work)
     }
 }
 
@@ -362,7 +343,7 @@ impl VirtioQueue {
             .core
             .try_next_work()
             .map_err(Error::other)?
-            .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
+            .map(VirtioQueueCallbackWork::new))
     }
 
     /// Peek at the next available descriptor without advancing the available
@@ -406,15 +387,10 @@ impl VirtioQueue {
     ///
     /// Writes `bytes_written` to the used ring and delivers an interrupt
     /// to the guest (unless interrupt suppression is active).
-    ///
-    /// This is the preferred completion path — it avoids the per-work-item
-    /// `Arc<Mutex>` clone that [`VirtioQueueCallbackWork::complete`] requires.
     pub fn complete(&mut self, work: &mut VirtioQueueCallbackWork, bytes_written: u32) {
-        assert!(!work.completed);
         self.used_handler
             .lock()
             .complete_descriptor(&work.work, bytes_written);
-        work.completed = true;
     }
 
     fn poll_next_buffer(
@@ -426,14 +402,6 @@ impl VirtioQueue {
                 return Poll::Ready(Ok(work));
             }
             ready!(self.poll_kick(cx));
-        }
-    }
-}
-
-impl Drop for VirtioQueue {
-    fn drop(&mut self) {
-        if Arc::get_mut(&mut self.used_handler).is_none() {
-            tracing::error!("Virtio queue dropped with outstanding work pending")
         }
     }
 }
