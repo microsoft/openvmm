@@ -57,9 +57,7 @@ enum DeviceCommand {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_ansi(false)
-        .init();
+    tracing_subscriber::fmt().with_ansi(false).init();
 
     let cli = Cli::parse();
 

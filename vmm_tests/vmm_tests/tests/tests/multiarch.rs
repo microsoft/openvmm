@@ -517,7 +517,7 @@ async fn vhost_user_blk_device(
     // Spawn the openvmm_vhost backend process. Pipe stderr so we can
     // forward it to the petri log system.
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
-    let mut backend_child = std::process::Command::new(&openvmm_vhost_path)
+    let backend_child = std::process::Command::new(&openvmm_vhost_path)
         .arg("--socket")
         .arg(&socket_path)
         .arg("blk")
@@ -528,6 +528,18 @@ async fn vhost_user_blk_device(
         .stderr(stderr_write)
         .spawn()
         .context("spawn openvmm_vhost")?;
+
+    // Guard that kills the backend if the test exits early.
+    struct ChildGuard(Option<std::process::Child>);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let mut backend_guard = ChildGuard(Some(backend_child));
 
     // Forward backend stderr to a petri log file.
     let _log_task = driver.spawn(
@@ -543,7 +555,7 @@ async fn vhost_user_blk_device(
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !socket_path.exists() {
         if std::time::Instant::now() > deadline {
-            if let Some(status) = backend_child.try_wait()? {
+            if let Some(status) = backend_guard.0.as_mut().unwrap().try_wait()? {
                 anyhow::bail!("openvmm_vhost exited early with status: {status}");
             }
             anyhow::bail!(
@@ -613,7 +625,9 @@ async fn vhost_user_blk_device(
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
 
-    // The backend serves one connection and exits.
+    // The backend serves one connection and exits. Take the child out
+    // of the guard so we can wait for clean exit.
+    let mut backend_child = backend_guard.0.take().unwrap();
     let status = backend_child.wait().context("wait for openvmm_vhost")?;
     assert!(
         status.success(),
