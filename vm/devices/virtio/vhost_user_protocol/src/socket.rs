@@ -28,10 +28,6 @@ pub enum SocketError {
     Io(#[source] io::Error),
     #[error("connection closed")]
     Closed,
-    #[error("message truncated")]
-    Truncated,
-    #[error("invalid ancillary data")]
-    InvalidAncillary,
     #[error("payload too large: {0} bytes")]
     PayloadTooLarge(u32),
 }
@@ -282,11 +278,18 @@ fn try_send(socket: &UnixStream, msg: &[IoSlice<'_>], fds: &[RawFd]) -> io::Resu
         cmsg_space(fds_data_len) as _
     };
 
-    // SAFETY: calling with appropriately initialized buffers.
-    let n = unsafe { libc::sendmsg(socket.as_raw_fd(), &hdr, libc::MSG_NOSIGNAL) };
-    if n < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let n = loop {
+        // SAFETY: calling with appropriately initialized buffers.
+        let n = unsafe { libc::sendmsg(socket.as_raw_fd(), &hdr, libc::MSG_NOSIGNAL) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        break n;
+    };
     Ok(n as usize)
 }
 
@@ -316,11 +319,18 @@ fn try_recv(
     hdr.msg_control = std::ptr::from_mut(&mut cmsg).cast::<libc::c_void>();
     hdr.msg_controllen = size_of_val(&cmsg) as _;
 
-    // SAFETY: calling with properly initialized buffers.
-    let n = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut hdr, libc::MSG_CMSG_CLOEXEC) };
-    if n < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let n = loop {
+        // SAFETY: calling with properly initialized buffers.
+        let n = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut hdr, libc::MSG_CMSG_CLOEXEC) };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        break n;
+    };
     if n == 0 {
         return Ok(0);
     }

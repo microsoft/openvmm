@@ -15,7 +15,10 @@
 
 fn main() {
     #[cfg(target_os = "linux")]
-    linux::main().unwrap();
+    if let Err(e) = linux::main() {
+        eprintln!("openvmm_vhost failed: {e:#}");
+        std::process::exit(1);
+    }
 
     #[cfg(not(target_os = "linux"))]
     {
