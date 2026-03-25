@@ -393,7 +393,7 @@ fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
     // Derive header length from the IHL field in the packet, not from
     // guest-provided metadata.
     let ihl_bytes = ((packet[l2_len] & 0x0f) as usize) * 4;
-    if ihl_bytes < 20 || ihl_bytes > 60 {
+    if !(20..=60).contains(&ihl_bytes) {
         return;
     }
     let l3_len = ihl_bytes.min(packet.len() - l2_len);
