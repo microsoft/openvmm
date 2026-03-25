@@ -127,6 +127,28 @@ pub struct ChipsetDeviceHandle {
     pub name: String,
     /// The device resource handle.
     pub resource: Resource<ChipsetDeviceHandleKind>,
-    /// Optional static PCI placement owned by the top-level chipset builder.
-    pub pci_placement: Option<ChipsetDevicePciPlacement>,
+    /// Optional explicit static PCI placement override.
+    ///
+    /// When absent, vmotherboard may use device-provided placement hints.
+    pub(crate) pci_placement: Option<ChipsetDevicePciPlacement>,
+}
+
+impl ChipsetDeviceHandle {
+    /// Create a chipset device handle with no explicit PCI placement override.
+    pub fn new(name: impl Into<String>, resource: Resource<ChipsetDeviceHandleKind>) -> Self {
+        Self {
+            name: name.into(),
+            resource,
+            pci_placement: None,
+        }
+    }
+
+    /// Set an explicit static PCI placement override for this device.
+    pub fn with_pci_placement(mut self, bus_name: impl Into<String>, bdf: (u8, u8, u8)) -> Self {
+        self.pci_placement = Some(ChipsetDevicePciPlacement {
+            bus_name: bus_name.into(),
+            bdf,
+        });
+        self
+    }
 }

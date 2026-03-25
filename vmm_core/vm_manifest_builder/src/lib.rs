@@ -33,7 +33,6 @@ use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
-use vmotherboard::ChipsetDevicePciPlacement;
 use vmotherboard::options::BaseChipsetManifest;
 
 /// Builder for a VM manifest.
@@ -364,14 +363,13 @@ impl VmManifestBuilder {
 
 impl VmChipsetResult {
     fn attach_i8042(&mut self) -> &mut Self {
-        self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "i8042".to_owned(),
-            resource: I8042DeviceHandle {
+        self.chipset_devices.push(ChipsetDeviceHandle::new(
+            "i8042",
+            I8042DeviceHandle {
                 keyboard_input: MultiplexedInputHandle { elevation: 0 }.into_resource(),
             }
             .into_resource(),
-            pci_placement: None,
-        });
+        ));
         self
     }
 
@@ -380,9 +378,9 @@ impl VmChipsetResult {
         arch: MachineArch,
         battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
     ) -> &mut Self {
-        self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "battery".to_owned(),
-            resource: match arch {
+        self.chipset_devices.push(ChipsetDeviceHandle::new(
+            "battery",
+            match arch {
                 MachineArch::X86_64 => BatteryDeviceHandleX64 {
                     battery_status_recv,
                 }
@@ -392,21 +390,16 @@ impl VmChipsetResult {
                 }
                 .into_resource(),
             },
-            pci_placement: None,
-        });
+        ));
 
         self
     }
 
     fn attach_piix4_pci_usb_uhci_stub(&mut self) -> &mut Self {
-        self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "piix4-usb-uhci-stub".to_owned(),
-            resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
-            pci_placement: Some(ChipsetDevicePciPlacement {
-                bus_name: "i440bx".to_owned(),
-                bdf: (0, 7, 2),
-            }),
-        });
+        self.chipset_devices.push(ChipsetDeviceHandle::new(
+            "piix4-usb-uhci-stub",
+            Piix4PciUsbUhciStubDeviceHandle.into_resource(),
+        ));
         self
     }
 
@@ -430,26 +423,24 @@ impl VmChipsetResult {
                 }
             }
         } else if register_missing && arch == MachineArch::X86_64 {
-            self.chipset_devices.push(ChipsetDeviceHandle {
-                name: "missing-serial".to_owned(),
-                resource: MissingDevHandle::new()
+            self.chipset_devices.push(ChipsetDeviceHandle::new(
+                "missing-serial",
+                MissingDevHandle::new()
                     .claim_pio("com1", 0x3f8..=0x3ff)
                     .claim_pio("com2", 0x2f8..=0x2ff)
                     .claim_pio("com3", 0x3e8..=0x3ef)
                     .claim_pio("com4", 0x2e8..=0x2ef)
                     .into_resource(),
-                pci_placement: None,
-            });
+            ));
         }
         Ok(self)
     }
 
     fn attach_debugcon(&mut self, port: u16, backend: Resource<SerialBackendHandle>) -> &mut Self {
-        self.chipset_devices.push(ChipsetDeviceHandle {
-            name: format!("debugcon-{port:#x?}"),
-            resource: SerialDebugconDeviceHandle { port, io: backend }.into_resource(),
-            pci_placement: None,
-        });
+        self.chipset_devices.push(ChipsetDeviceHandle::new(
+            format!("debugcon-{port:#x?}"),
+            SerialDebugconDeviceHandle { port, io: backend }.into_resource(),
+        ));
         self
     }
 
@@ -474,11 +465,7 @@ impl VmChipsetResult {
                 ["serial-com1", "serial-com2", "serial-com3", "serial-com4"],
                 devices,
             )
-            .map(|(name, device)| ChipsetDeviceHandle {
-                name: name.to_string(),
-                resource: device.into_resource(),
-                pci_placement: None,
-            }),
+            .map(|(name, device)| ChipsetDeviceHandle::new(name, device.into_resource())),
         );
         self
     }
@@ -497,26 +484,24 @@ impl VmChipsetResult {
             return Err(ErrorInner::UnsupportedSerialCount);
         }
         self.chipset_devices.extend([
-            ChipsetDeviceHandle {
-                name: "com1".to_string(),
-                resource: SerialPl011DeviceHandle {
+            ChipsetDeviceHandle::new(
+                "com1",
+                SerialPl011DeviceHandle {
                     base: PL011_SERIAL0_BASE,
                     irq: PL011_SERIAL0_IRQ,
                     io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
                 }
                 .into_resource(),
-                pci_placement: None,
-            },
-            ChipsetDeviceHandle {
-                name: "com2".to_string(),
-                resource: SerialPl011DeviceHandle {
+            ),
+            ChipsetDeviceHandle::new(
+                "com2",
+                SerialPl011DeviceHandle {
                     base: PL011_SERIAL1_BASE,
                     irq: PL011_SERIAL1_IRQ,
                     io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
                 }
                 .into_resource(),
-                pci_placement: None,
-            },
+            ),
         ]);
         Ok(self)
     }
@@ -528,66 +513,59 @@ impl VmChipsetResult {
 
         self.chipset_devices.extend([
             // Some linux versions write to port 0xED as an IO delay mechanims.
-            ChipsetDeviceHandle {
-                name: "io-delay-0xed".to_owned(),
-                resource: MissingDevHandle::new()
+            ChipsetDeviceHandle::new(
+                "io-delay-0xed",
+                MissingDevHandle::new()
                     .claim_pio("delay", 0xed..=0xed)
                     .into_resource(),
-                pci_placement: None,
-            },
+            ),
             // some windows versions try to unconditionally access these IO ports.
-            ChipsetDeviceHandle {
-                name: "missing-vmware-backdoor".to_owned(),
-                resource: MissingDevHandle::new()
+            ChipsetDeviceHandle::new(
+                "missing-vmware-backdoor",
+                MissingDevHandle::new()
                     .claim_pio("backdoor", 0x5658..=0x5659)
                     .into_resource(),
-                pci_placement: None,
-            },
+            ),
             // DOS games often unconditionally poll the gameport (e.g: Duke Nukem 1)
-            ChipsetDeviceHandle {
-                name: "missing-gameport".to_owned(),
-                resource: MissingDevHandle::new()
+            ChipsetDeviceHandle::new(
+                "missing-gameport",
+                MissingDevHandle::new()
                     .claim_pio("gameport", 0x201..=0x201)
                     .into_resource(),
-                pci_placement: None,
-            },
+            ),
         ]);
 
         if pcat_missing {
             self.chipset_devices.extend([
-                ChipsetDeviceHandle {
-                    name: "missing-pic".to_owned(),
-                    resource: MissingDevHandle::new()
+                ChipsetDeviceHandle::new(
+                    "missing-pic",
+                    MissingDevHandle::new()
                         .claim_pio("primary", 0x20..=0x21)
                         .claim_pio("secondary", 0xa0..=0xa1)
                         .into_resource(),
-                    pci_placement: None,
-                },
-                ChipsetDeviceHandle {
-                    name: "missing-pit".to_owned(),
-                    resource: MissingDevHandle::new()
+                ),
+                ChipsetDeviceHandle::new(
+                    "missing-pit",
+                    MissingDevHandle::new()
                         .claim_pio("main", 0x40..=0x43)
                         .claim_pio("port61", 0x61..=0x61)
                         .into_resource(),
-                    pci_placement: None,
-                },
-                ChipsetDeviceHandle {
-                    name: "missing-pci".to_owned(),
-                    resource: MissingDevHandle::new()
+                ),
+                ChipsetDeviceHandle::new(
+                    "missing-pci",
+                    MissingDevHandle::new()
                         .claim_pio("address", 0xcf8..=0xcfb)
                         .claim_pio("data", 0xcfc..=0xcff)
                         .into_resource(),
-                    pci_placement: None,
-                },
+                ),
                 // Linux will probe 0x87 during boot to determine if there the DMA
                 // device is present
-                ChipsetDeviceHandle {
-                    name: "missing-dma".to_owned(),
-                    resource: MissingDevHandle::new()
+                ChipsetDeviceHandle::new(
+                    "missing-dma",
+                    MissingDevHandle::new()
                         .claim_pio("io", 0x87..=0x87)
                         .into_resource(),
-                    pci_placement: None,
-                },
+                ),
             ]);
         }
         self

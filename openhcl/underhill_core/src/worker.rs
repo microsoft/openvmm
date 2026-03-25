@@ -2945,9 +2945,9 @@ async fn new_underhill_vm(
             TpmRegisterLayout::Mmio
         };
 
-        chipset_devices.push(ChipsetDeviceHandle {
-            name: "tpm".to_owned(),
-            resource: RemoteChipsetDeviceHandle {
+        chipset_devices.push(ChipsetDeviceHandle::new(
+            "tpm",
+            RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
                     ppi_store,
                     nvram_store,
@@ -2968,8 +2968,7 @@ async fn new_underhill_vm(
                     .await?,
             }
             .into_resource(),
-            pci_placement: None,
-        });
+        ));
     };
 
     let deps_hyperv_power_management =
