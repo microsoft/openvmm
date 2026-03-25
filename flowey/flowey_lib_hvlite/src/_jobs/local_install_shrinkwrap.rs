@@ -7,6 +7,7 @@ use flowey::node::prelude::RustRuntimeServices;
 use std::path::Path;
 use std::path::PathBuf;
 use super::local_openvmm_repo::get_openvmm_tmk_repo;
+use std::time::SystemTime;
 
 const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
@@ -87,10 +88,11 @@ fn enable_kernel_configs(rt: &RustRuntimeServices<'_>, group: &str, configs: &[&
 fn build_rust_binary(
     rt: &RustRuntimeServices<'_>,
     binary_path: &Path,
+    source_roots: &[PathBuf],
     package: &str,
     build_args: &[&str],
 ) -> anyhow::Result<()> {
-    if binary_path.exists() {
+    if !should_rebuild_binary(binary_path, source_roots)? {
         log::info!("{} binary already exists at {}", package, binary_path.display());
         return Ok(());
     }
@@ -112,6 +114,58 @@ fn build_rust_binary(
 
     log::info!("{} built successfully at: {}", package, binary_path.display());
     Ok(())
+}
+
+fn should_rebuild_binary(binary_path: &Path, source_roots: &[PathBuf]) -> anyhow::Result<bool> {
+    if !binary_path.exists() {
+        return Ok(true);
+    }
+
+    let binary_mtime = std::fs::metadata(binary_path)
+        .with_context(|| format!("failed to stat binary {}", binary_path.display()))?
+        .modified()
+        .with_context(|| format!("failed to read mtime for {}", binary_path.display()))?;
+
+    for root in source_roots {
+        if !root.exists() {
+            continue;
+        }
+
+        let newest_source = newest_mtime(root)?;
+        if newest_source > binary_mtime {
+            log::info!(
+                "source changed after binary was built: source={} binary={}",
+                root.display(),
+                binary_path.display()
+            );
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn newest_mtime(path: &Path) -> anyhow::Result<SystemTime> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?;
+
+    let mut newest = metadata
+        .modified()
+        .with_context(|| format!("failed to read mtime for {}", path.display()))?;
+
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)
+            .with_context(|| format!("failed to read directory {}", path.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to read entry in {}", path.display()))?;
+            let child_newest = newest_mtime(&entry.path())?;
+            if child_newest > newest {
+                newest = child_newest;
+            }
+        }
+    }
+
+    Ok(newest)
 }
 
 fn make_target(rt: &RustRuntimeServices<'_>, arch: &str, cross_compile: &str, target: &str, jobs: &str) -> anyhow::Result<()> {
@@ -285,6 +339,12 @@ impl SimpleFlowNode for Node {
                     build_rust_binary(
                         &rt,
                         &simple_tmk_binary,
+                        &[
+                            tmk_kernel_dir.join("tmk/simple_tmk/src"),
+                            tmk_kernel_dir.join("tmk/simple_tmk/Cargo.toml"),
+                            tmk_kernel_dir.join("Cargo.toml"),
+                            tmk_kernel_dir.join("Cargo.lock"),
+                        ],
                         "simple_tmk",
                         &["--config", "openhcl/minimal_rt/aarch64-config.toml"],
                     )?;
@@ -298,6 +358,12 @@ impl SimpleFlowNode for Node {
                     build_rust_binary(
                         &rt,
                         &tmk_vmm_binary,
+                        &[
+                            tmk_kernel_dir.join("tmk/tmk_vmm/src"),
+                            tmk_kernel_dir.join("tmk/tmk_vmm/Cargo.toml"),
+                            tmk_kernel_dir.join("Cargo.toml"),
+                            tmk_kernel_dir.join("Cargo.lock"),
+                        ],
                         "tmk_vmm",
                         &["--target", "aarch64-unknown-linux-gnu"],
                     )?;
