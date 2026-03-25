@@ -2416,15 +2416,6 @@ impl LoadedVmInner {
                 },
                 virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
             },
-            #[cfg(guest_arch = "aarch64")]
-            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
-                hypervisor_vendor_identity: if self.hypervisor_cfg.with_hv {
-                    u64::from_le_bytes(*b"MsHyperV")
-                } else {
-                    0
-                },
-                virt_timer_ppi: self.processor_topology.virt_timer_ppi(),
-            },
         };
 
         if vtl2_only {
