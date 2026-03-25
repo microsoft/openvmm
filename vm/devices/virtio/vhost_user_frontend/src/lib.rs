@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg(target_os = "linux")]
+
 //! vhost-user frontend: a [`VirtioDevice`] implementation that forwards
 //! device operations to an external vhost-user backend over a Unix socket.
 //!
@@ -8,8 +10,6 @@
 //! `vhost_user_backend` crate: the server hosts a device, while this
 //! frontend connects to that server and presents it to the VMM as a
 //! standard virtio device.
-
-#![cfg(target_os = "linux")]
 
 pub mod resolver;
 

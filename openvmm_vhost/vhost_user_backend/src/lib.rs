@@ -4,7 +4,7 @@
 //! vhost-user backend device server.
 //!
 //! Implements the vhost-user backend protocol, driving a
-//! [`VirtioDevice`](virtio::VirtioDevice) implementation. The server listens on
+//! `VirtioDevice` implementation. The server listens on
 //! a Unix domain socket, accepts one connection at a time, and translates
 //! vhost-user protocol messages into `VirtioDevice` trait calls.
 
