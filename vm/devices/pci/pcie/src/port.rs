@@ -462,12 +462,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
+            msi_conn.target(),
         );
 
         port.cfg_space
@@ -515,12 +517,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "test-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
+            msi_conn.target(),
         );
 
         port.cfg_space

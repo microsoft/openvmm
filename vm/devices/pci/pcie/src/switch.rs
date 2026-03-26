@@ -1034,12 +1034,14 @@ mod tests {
             type0_sub_system_id: 0,
         };
 
+        let msi_conn = pci_core::msi::MsiConnection::new();
         let mut port = PcieDownstreamPort::new(
             "root-port",
             hardware_ids,
             DevicePortType::RootPort,
             false,
             None,
+            msi_conn.target(),
         );
 
         // Configure the root port's bus range: secondary=1, subordinate=10
