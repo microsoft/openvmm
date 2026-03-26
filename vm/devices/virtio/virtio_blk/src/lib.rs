@@ -309,7 +309,13 @@ impl VirtioDevice for VirtioBlkDevice {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::BLK,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank0(VirtioDeviceFeaturesBank0::new().with_device_specific(features)),
+                .with_bank0(
+                    VirtioDeviceFeaturesBank0::new()
+                        .with_device_specific(features)
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 1,
             // Config space is 60 bytes (size_of minus 4 bytes of struct padding).
             device_register_length: (size_of::<VirtioBlkConfig>() - 4) as u32,

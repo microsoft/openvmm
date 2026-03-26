@@ -430,6 +430,180 @@ mod tap_tests {
         assert_eq!(count, 1, "should have processed 1 segment");
     }
 
+    /// Validates that TSO packets with zeroed IPv4 header checksums (the NDIS
+    /// LSO convention) are delivered correctly through the kernel's IP stack.
+    ///
+    /// NDIS Large Send Offload packets arrive from hv_netvsc with the IPv4
+    /// header checksum set to zero, because NDIS expects the NIC hardware to
+    /// recompute it per-segment during TCP segmentation. When net_tap writes
+    /// these packets to the TAP fd, the kernel's `ip_rcv_core` validates the
+    /// IPv4 header checksum and silently drops packets that fail.
+    ///
+    /// This test sends a TSO packet with zeroed IPv4 header checksum through
+    /// `tx_avail` and verifies via a raw socket that the kernel actually
+    /// accepted it (i.e., the checksum was fixed up before writing to TAP).
+    async fn test_tap_tso_ipv4_checksum(driver: DefaultDriver) {
+        let mut endpoint = new_endpoint("tap0").unwrap();
+        configure_tap("tap0", "10.0.0.1/24");
+
+        let (mut pool, mem) = make_pool();
+        let config = vec![QueueConfig {
+            driver: Box::new(driver.clone()),
+        }];
+        let mut queues = Vec::new();
+        endpoint
+            .get_queues(config, None, &mut queues)
+            .await
+            .unwrap();
+        let queue = &mut queues[0];
+
+        // Open a raw socket to observe whether the kernel's IP stack accepts
+        // the packet. SOCK_RAW + IPPROTO_TCP delivers a copy of every inbound
+        // TCP packet that passes ip_rcv_core (which validates the IPv4 header
+        // checksum). If the checksum is invalid, the packet is silently
+        // dropped and recv() returns EAGAIN.
+        //
+        // SAFETY: Creating a raw socket; we have CAP_NET_RAW inside the user
+        // namespace created by enter_test_netns().
+        let raw_fd = unsafe {
+            libc::socket(
+                libc::AF_INET,
+                libc::SOCK_RAW | libc::SOCK_NONBLOCK,
+                libc::IPPROTO_TCP,
+            )
+        };
+        assert!(
+            raw_fd >= 0,
+            "raw socket: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: raw_fd is a valid, newly created file descriptor.
+        let raw_sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw_fd) };
+
+        // Set a receive timeout so we don't hang forever if the packet is
+        // dropped (the expected behavior before the fix).
+        let tv = libc::timeval {
+            tv_sec: 1,
+            tv_usec: 0,
+        };
+        // SAFETY: setsockopt with SO_RCVTIMEO and a valid timeval.
+        unsafe {
+            let ret = libc::setsockopt(
+                raw_sock.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                std::ptr::from_ref(&tv).cast::<libc::c_void>(),
+                size_of_val(&tv) as libc::socklen_t,
+            );
+            assert_eq!(ret, 0, "SO_RCVTIMEO: {}", std::io::Error::last_os_error());
+        }
+
+        // Build a TSO packet: Ethernet (14) + IPv4 (20) + TCP (20) + 2920
+        // bytes of payload (2 * MSS). The IPv4 header checksum is zeroed
+        // per NDIS LSO convention.
+        let mut frame = Vec::new();
+        // Ethernet header
+        frame.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]); // dst: broadcast
+        frame.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x01]); // src
+        frame.extend_from_slice(&[0x08, 0x00]); // ethertype: IPv4
+        // IPv4 header (20 bytes) — checksum = 0 (NDIS LSO convention)
+        let ip_total_len: u16 = 20 + 20 + 2920;
+        let tl = ip_total_len.to_be_bytes();
+        frame.extend_from_slice(&[
+            0x45, 0x00, tl[0], tl[1], // IHL=5, total_len
+            0x00, 0x01, 0x40, 0x00, // id=1, DF
+            0x40, 0x06, 0x00, 0x00, // TTL=64, proto=TCP, checksum=0
+            0x0a, 0x00, 0x00, 0x02, // src: 10.0.0.2
+            0x0a, 0x00, 0x00, 0x01, // dst: 10.0.0.1 (our TAP IP)
+        ]);
+        // TCP header (20 bytes) — use a distinctive src port for matching.
+        // The pseudo-header checksum is pre-filled in the TCP checksum field
+        // as required by VIRTIO_NET_HDR_F_NEEDS_CSUM.
+        let tcp_len: u32 = 20 + 2920;
+        let pseudo_sum: u32 = 0x0a000002u32.wrapping_shr(16) // src hi
+            + (0x0a000002u32 & 0xffff)             // src lo
+            + 0x0a000001u32.wrapping_shr(16)        // dst hi
+            + (0x0a000001u32 & 0xffff)              // dst lo
+            + 6u32                                          // protocol (TCP)
+            + tcp_len; // TCP length
+        let mut pseudo_sum = pseudo_sum;
+        while pseudo_sum >> 16 != 0 {
+            pseudo_sum = (pseudo_sum & 0xffff) + (pseudo_sum >> 16);
+        }
+        let pseudo_csum = (pseudo_sum as u16).to_be_bytes();
+        frame.extend_from_slice(&[
+            0xab,
+            0xcd,
+            0x00,
+            0x50, // src port 0xABCD, dst port 80
+            0x00,
+            0x00,
+            0x00,
+            0x01, // seq = 1
+            0x00,
+            0x00,
+            0x00,
+            0x00, // ack = 0
+            0x50,
+            0x02,
+            0x20,
+            0x00, // data offset=5, SYN, window=8192
+            pseudo_csum[0],
+            pseudo_csum[1], // checksum = pseudo-header sum
+            0x00,
+            0x00, // urgent = 0
+        ]);
+        // Payload: 2 MSS worth of data.
+        frame.extend_from_slice(&[0x42; 2920]);
+
+        let frame_len = frame.len() as u32;
+        mem.write_at(0, &frame).unwrap();
+
+        let segments = [TxSegment {
+            ty: TxSegmentType::Head(TxMetadata {
+                id: TxId(0),
+                segment_count: 1,
+                flags: TxFlags::new()
+                    .with_offload_tcp_segmentation(true)
+                    .with_offload_tcp_checksum(true)
+                    .with_offload_ip_header_checksum(true)
+                    .with_is_ipv4(true),
+                len: frame_len,
+                l2_len: 14,
+                l3_len: 20,
+                l4_len: 20,
+                max_tcp_segment_size: 1460,
+            }),
+            gpa: 0,
+            len: frame_len,
+        }];
+
+        let (completed, count) = queue.tx_avail(&mut pool, &segments).unwrap();
+        assert!(completed, "tx should complete synchronously");
+        assert_eq!(count, 1);
+
+        // Try to receive on the raw socket. If the IPv4 header checksum
+        // was not fixed up, the kernel drops the packet in ip_rcv_core
+        // and recv() returns EAGAIN/EWOULDBLOCK after the timeout.
+        let mut buf = [0u8; 4096];
+        // SAFETY: recv on a valid raw socket fd with a valid buffer.
+        let n = unsafe {
+            libc::recv(
+                raw_sock.as_raw_fd(),
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len(),
+                0,
+            )
+        };
+        assert!(
+            n > 0,
+            "expected to receive TCP segment(s) from TSO packet; \
+             kernel likely dropped the packet due to invalid IPv4 header \
+             checksum (recv returned {n}, errno={})",
+            std::io::Error::last_os_error()
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // Harness
     // ---------------------------------------------------------------------------
@@ -459,6 +633,7 @@ mod tap_tests {
             async_trial("tap_rx_receives_packet", test_tap_rx_receives_packet),
             async_trial("tap_tx_wouldblock_drops", test_tap_tx_wouldblock_drops),
             async_trial("tap_tx_with_offloads", test_tap_tx_with_offloads),
+            async_trial("tap_tso_ipv4_checksum", test_tap_tso_ipv4_checksum),
         ]
         .map(|t| t.with_ignored_flag(ignored))
         .into();

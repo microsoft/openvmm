@@ -136,20 +136,7 @@ impl VirtioMmioDevice {
         let device_feature = traits
             .device_features
             .clone()
-            .with_bank0(
-                traits
-                    .device_features
-                    .bank0()
-                    .with_ring_event_idx(true)
-                    .with_ring_indirect_desc(true),
-            )
-            .with_bank1(
-                traits
-                    .device_features
-                    .bank1()
-                    .with_version_1(true)
-                    .with_ring_packed(true),
-            );
+            .with_bank1(traits.device_features.bank1().with_version_1(true));
 
         let supports_save_restore = device.supports_save_restore();
         let (sender, receiver) = mesh::channel();

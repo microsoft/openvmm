@@ -84,8 +84,14 @@ impl VirtioConsoleDevice {
 
 impl VirtioDevice for VirtioConsoleDevice {
     fn traits(&self) -> DeviceTraits {
-        let mut features = VirtioDeviceFeatures::new();
-        features.set_bank(0, 1 << VIRTIO_CONSOLE_F_SIZE);
+        let features = VirtioDeviceFeatures::new()
+            .with_bank0(
+                virtio::spec::VirtioDeviceFeaturesBank0::new()
+                    .with_device_specific(1 << VIRTIO_CONSOLE_F_SIZE)
+                    .with_ring_event_idx(true)
+                    .with_ring_indirect_desc(true),
+            )
+            .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true));
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::CONSOLE,
             device_features: features,

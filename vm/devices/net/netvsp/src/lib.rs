@@ -1140,7 +1140,10 @@ impl NicBuilder {
                 udp4: tx_offloads.udp,
                 udp6: tx_offloads.udp,
             },
-            lso4: tx_offloads.tso,
+            // LSOv4 requires both TSO and IPv4 header checksum support,
+            // because the TAP/virtio GSO engine needs a valid IPv4 header
+            // checksum that NDIS LSO packets don't provide.
+            lso4: tx_offloads.tso && tx_offloads.ipv4_header,
             lso6: tx_offloads.tso,
         };
 

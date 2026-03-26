@@ -125,6 +125,12 @@ impl VirtioQueueUsedHandler {
     }
 }
 
+/// A descriptor chain popped from a [`VirtioQueue`].
+///
+/// The device must call [`complete`](Self::complete) exactly once to post a
+/// completion to the guest's used ring. Dropping without completing is a bug
+/// and will not automatically post a completion.
+#[must_use]
 pub struct VirtioQueueCallbackWork {
     used_queue_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     work: QueueWork,
@@ -225,14 +231,6 @@ pub enum VirtioWriteError {
     NotAllWritten(usize),
 }
 
-impl Drop for VirtioQueueCallbackWork {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.complete(0);
-        }
-    }
-}
-
 /// A descriptor that has been peeked from a [`VirtioQueue`] without advancing
 /// the available index.
 ///
@@ -280,8 +278,8 @@ impl<'a> PeekedWork<'a> {
 
     /// Consume this peeked work, advancing the queue's available index.
     ///
-    /// Returns a [`VirtioQueueCallbackWork`] that must be completed (or will
-    /// auto-complete with 0 bytes on drop).
+    /// Returns a [`VirtioQueueCallbackWork`] that must be explicitly
+    /// completed via [`VirtioQueueCallbackWork::complete`].
     pub fn consume(self) -> VirtioQueueCallbackWork {
         self.queue.core.advance(&self.work);
         VirtioQueueCallbackWork::new(self.work, &self.queue.used_handler)
