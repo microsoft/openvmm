@@ -134,13 +134,6 @@ pub struct Lints;
 
 impl FmtPass for Lints {
     fn run(self, ctx: FmtCtx) -> anyhow::Result<()> {
-        // Determine which files are diffed, if applicable.
-        let diffed_files = if ctx.only_diffed {
-            Some(git_diffed(ctx.ctx.in_git_hook)?)
-        } else {
-            None
-        };
-
         // Walk tree once to discover all Cargo.toml files and non-Rust,
         // non-manifest files.
         let mut workspace_dirs = Vec::new();
@@ -201,9 +194,19 @@ impl FmtPass for Lints {
                 .collect();
 
             // If only_diffed, filter crate dirs and non-crate files.
-            if let Some(ref diffed) = diffed_files {
-                crate_dirs.retain(|crate_dir| diffed.iter().any(|f| f.starts_with(crate_dir)));
-                non_crate_files.retain(|f| diffed.contains(f));
+            if ctx.only_diffed {
+                let diffed = git_diffed(ctx.ctx.in_git_hook)?;
+                // git diff outputs paths relative to the repo root, so strip
+                // the root from our other full paths before checking for a match
+                crate_dirs.retain(|crate_dir| {
+                    let crate_dir = crate_dir.strip_prefix(&ctx.ctx.root).unwrap();
+                    diffed.iter().any(|f| f.starts_with(crate_dir))
+                });
+                log::debug!("{:?}|{:?}", non_crate_files, diffed);
+                non_crate_files.retain(|f| {
+                    let f = f.strip_prefix(&ctx.ctx.root).unwrap().to_owned();
+                    diffed.contains(&f)
+                });
             }
 
             any_failed |= lint_workspace(workspace_dir, &crate_dirs, &non_crate_files, &ctx)?;
