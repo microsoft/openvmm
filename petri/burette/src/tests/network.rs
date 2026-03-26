@@ -14,8 +14,11 @@ use crate::report::MetricResult;
 use anyhow::Context as _;
 use petri::pipette::cmd;
 
-const ARCH: petri_artifacts_common::tags::MachineArch =
-    petri_artifacts_common::tags::MachineArch::X86_64;
+use petri_artifacts_common::tags::MachineArch;
+
+fn arch() -> MachineArch {
+    MachineArch::host()
+}
 
 /// Which NIC backend to use for the network test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -57,18 +60,28 @@ pub struct NetworkTestState {
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
+    use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64;
     use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64;
 
-    let vhd = resolver.require(ALPINE_3_23_X64);
-    let guest = petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(vhd));
-    petri::Firmware::uefi(resolver, ARCH, guest)
+    let arch = arch();
+    let boot_image = match arch {
+        MachineArch::X86_64 => petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_X64)),
+        MachineArch::Aarch64 => {
+            petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_AARCH64))
+        }
+    };
+    let guest = petri::UefiGuest::Vhd(boot_image);
+    petri::Firmware::uefi(resolver, arch, guest)
 }
 
 /// Register artifacts needed by the network test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        arch(),
+        true,
     );
 }
 
@@ -105,7 +118,10 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         let firmware = build_firmware(resolver);
 
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
+            resolver,
+            firmware,
+            arch(),
+            true,
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
 
