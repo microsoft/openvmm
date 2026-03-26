@@ -37,7 +37,9 @@ use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::ArtifactSource;
 use petri_artifacts_core::ResolvedArtifact;
+use petri_artifacts_core::ResolvedArtifactSource;
 use petri_artifacts_core::ResolvedOptionalArtifact;
 use pipette_client::PipetteClient;
 use std::collections::BTreeMap;
@@ -1333,7 +1335,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
     /// Use the specified backing VMGS file
     pub fn with_initial_vmgs(self, disk: ResolvedArtifact<impl IsTestVmgs>) -> Self {
-        self.with_backing_vmgs(Disk::Differencing(disk.into()))
+        self.with_backing_vmgs(Disk::Differencing(DiskPath::Local(disk.into())))
     }
 
     /// Use the specified backing VMGS file
@@ -2688,18 +2690,13 @@ impl Firmware {
         match self {
             Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
             Firmware::Pcat { guest, .. } | Firmware::OpenhclPcat { guest, .. } => {
-                Some((guest.artifact().to_owned(), guest.is_dvd()))
+                Some((guest.disk_path(), guest.is_dvd()))
             }
             Firmware::Uefi { guest, .. } | Firmware::OpenhclUefi { guest, .. } => {
-                guest.artifact().map(|a| (a.to_owned(), false))
+                guest.disk_path().map(|dp| (dp, false))
             }
         }
-        .map(|(artifact, is_dvd)| {
-            Drive::new(
-                Some(Disk::Differencing(artifact.get().to_path_buf())),
-                is_dvd,
-            )
-        })
+        .map(|(disk_path, is_dvd)| Drive::new(Some(Disk::Differencing(disk_path)), is_dvd))
     }
 
     fn vtl2_settings(&mut self) -> Option<&mut Vtl2Settings> {
@@ -2737,10 +2734,10 @@ pub enum PcatGuest {
 }
 
 impl PcatGuest {
-    fn artifact(&self) -> &ResolvedArtifact {
+    fn disk_path(&self) -> DiskPath {
         match self {
-            PcatGuest::Vhd(disk) => &disk.artifact,
-            PcatGuest::Iso(disk) => &disk.artifact,
+            PcatGuest::Vhd(disk) => disk.disk_path(),
+            PcatGuest::Iso(disk) => disk.disk_path(),
         }
     }
 
@@ -2772,10 +2769,10 @@ impl UefiGuest {
         UefiGuest::GuestTestUefi(artifact)
     }
 
-    fn artifact(&self) -> Option<&ResolvedArtifact> {
+    fn disk_path(&self) -> Option<DiskPath> {
         match self {
-            UefiGuest::Vhd(vhd) => Some(&vhd.artifact),
-            UefiGuest::GuestTestUefi(p) => Some(p),
+            UefiGuest::Vhd(vhd) => Some(vhd.disk_path()),
+            UefiGuest::GuestTestUefi(p) => Some(DiskPath::Local(p.get().to_path_buf())),
             UefiGuest::None => None,
         }
     }
@@ -2808,8 +2805,8 @@ pub mod boot_image_type {
 /// Configuration information for the boot drive of the VM.
 #[derive(Debug)]
 pub struct BootImageConfig<T: boot_image_type::BootImageType> {
-    /// Artifact handle corresponding to the boot media.
-    artifact: ResolvedArtifact,
+    /// Artifact source corresponding to the boot media (local or remote).
+    artifact: ResolvedArtifactSource,
     /// The OS flavor.
     os_flavor: OsFlavor,
     /// Any quirks needed to boot the guest.
@@ -2820,9 +2817,19 @@ pub struct BootImageConfig<T: boot_image_type::BootImageType> {
     _type: core::marker::PhantomData<T>,
 }
 
+impl<T: boot_image_type::BootImageType> BootImageConfig<T> {
+    /// Get a [`DiskPath`] from the artifact source.
+    fn disk_path(&self) -> DiskPath {
+        match self.artifact.get() {
+            ArtifactSource::Local(p) => DiskPath::Local(p.clone()),
+            ArtifactSource::Remote { url } => DiskPath::Remote { url: url.clone() },
+        }
+    }
+}
+
 impl BootImageConfig<boot_image_type::Vhd> {
-    /// Create a new BootImageConfig from a VHD artifact handle
-    pub fn from_vhd<A>(artifact: ResolvedArtifact<A>) -> Self
+    /// Create a new BootImageConfig from a VHD artifact source
+    pub fn from_vhd<A>(artifact: ResolvedArtifactSource<A>) -> Self
     where
         A: petri_artifacts_common::tags::IsTestVhd,
     {
@@ -2836,8 +2843,8 @@ impl BootImageConfig<boot_image_type::Vhd> {
 }
 
 impl BootImageConfig<boot_image_type::Iso> {
-    /// Create a new BootImageConfig from an ISO artifact handle
-    pub fn from_iso<A>(artifact: ResolvedArtifact<A>) -> Self
+    /// Create a new BootImageConfig from an ISO artifact source
+    pub fn from_iso<A>(artifact: ResolvedArtifactSource<A>) -> Self
     where
         A: petri_artifacts_common::tags::IsTestIso,
     {
@@ -2875,13 +2882,31 @@ pub struct OpenHclServicingFlags {
     pub stop_timeout_hint_secs: Option<u16>,
 }
 
+/// Where a disk image is located.
+#[derive(Debug, Clone)]
+pub enum DiskPath {
+    /// A local file path.
+    Local(PathBuf),
+    /// A remote URL (fetched on demand via HTTP Range requests).
+    Remote {
+        /// The URL where the disk can be fetched.
+        url: String,
+    },
+}
+
+impl From<PathBuf> for DiskPath {
+    fn from(path: PathBuf) -> Self {
+        DiskPath::Local(path)
+    }
+}
+
 /// Petri disk
 #[derive(Debug, Clone)]
 pub enum Disk {
     /// Memory backed with specified size
     Memory(u64),
-    /// Memory differencing disk backed by a VHD
-    Differencing(PathBuf),
+    /// Memory differencing disk backed by a VHD (local or remote)
+    Differencing(DiskPath),
     /// Persistent VHD
     Persistent(PathBuf),
     /// Disk backed by a temporary VHD
@@ -3159,6 +3184,37 @@ impl VmbusStorageController {
 
         lun
     }
+}
+
+/// Returns the cache directory for lazy-fetched disk artifacts.
+pub(crate) fn petri_disk_cache_dir() -> String {
+    if let Ok(dir) = std::env::var("PETRI_CACHE_DIR") {
+        return dir;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            return format!("{home}/Library/Caches/petri");
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            return format!("{local}\\petri\\cache");
+        }
+    }
+
+    // Linux / fallback: XDG
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        return format!("{xdg}/petri");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return format!("{home}/.cache/petri");
+    }
+
+    ".cache/petri".to_string()
 }
 
 #[cfg(test)]
