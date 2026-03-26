@@ -381,7 +381,7 @@ pub fn validate_cose_sign1_nil_payload(data: &[u8]) -> anyhow::Result<()> {
         if CborMajorType(data[off] >> 5) == CborMajorType::BYTE_STRING {
             anyhow::bail!(
                 "CoRIM signature: payload is an embedded bstr, but must be nil (detached). \
-                 Use `igvmfilegen patch-corim --corim-signed ...` or the `split_cose_sign1` helper \
+                 Use `igvmfilegen patch-corim --corim-bundle ...` or the `split_cose_sign1` helper \
                  to extract the payload and create a detached signature"
             );
         }
