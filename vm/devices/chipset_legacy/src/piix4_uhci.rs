@@ -42,6 +42,19 @@ impl ChipsetDevice for Piix4UsbUhciStub {
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
     }
+
+    fn supports_pci_placement(&mut self) -> Option<&mut dyn chipset_device::pci::PciPlacement> {
+        Some(self)
+    }
+}
+
+impl chipset_device::pci::PciPlacement for Piix4UsbUhciStub {
+    fn static_pci_placement(&mut self) -> chipset_device::pci::PciPlacementHint {
+        chipset_device::pci::PciPlacementHint {
+            bus_name: "i440bx",
+            bdf: Some((0, 7, 2)),
+        }
+    }
 }
 
 /// Sidestep the config space emulator, and match legacy stub behavior directly

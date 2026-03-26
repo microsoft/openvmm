@@ -111,15 +111,6 @@ pub type BusIdPcieEnumerator = BusId<bus_kind::PcieEnumerator>;
 /// Type-safe ID for a downstream PCIe port.
 pub type BusIdPcieDownstreamPort = BusId<bus_kind::PcieDownstreamPort>;
 
-/// Static PCI placement metadata for a chipset device handle.
-#[derive(MeshPayload, Debug)]
-pub struct ChipsetDevicePciPlacement {
-    /// Name of the PCI bus to attach this device to.
-    pub bus_name: String,
-    /// Static PCI bus/device/function tuple.
-    pub bdf: (u8, u8, u8),
-}
-
 /// A handle to instantiate a chipset device.
 #[derive(MeshPayload, Debug)]
 pub struct ChipsetDeviceHandle {
@@ -127,6 +118,4 @@ pub struct ChipsetDeviceHandle {
     pub name: String,
     /// The device resource handle.
     pub resource: Resource<ChipsetDeviceHandleKind>,
-    /// Optional static PCI placement owned by the top-level chipset builder.
-    pub pci_placement: Option<ChipsetDevicePciPlacement>,
 }

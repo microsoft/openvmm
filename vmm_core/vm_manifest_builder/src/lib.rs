@@ -35,7 +35,6 @@ use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
-use vmotherboard::ChipsetDevicePciPlacement;
 use vmotherboard::options::BaseChipsetManifest;
 
 /// Builder for a VM manifest.
@@ -380,7 +379,6 @@ impl VmChipsetResult {
                 keyboard_input: MultiplexedInputHandle { elevation: 0 }.into_resource(),
             }
             .into_resource(),
-            pci_placement: None,
         });
         self
     }
@@ -417,7 +415,6 @@ impl VmChipsetResult {
                 }
                 .into_resource(),
             },
-            pci_placement: None,
         });
 
         self
@@ -425,12 +422,8 @@ impl VmChipsetResult {
 
     fn attach_piix4_pci_usb_uhci_stub(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "piix4-usb-uhci-stub".to_owned(),
+            name: "piix4-usb-uhci-stub".to_string(),
             resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
-            pci_placement: Some(ChipsetDevicePciPlacement {
-                bus_name: "i440bx".to_owned(),
-                bdf: (0, 7, 2),
-            }),
         });
         self
     }
@@ -463,7 +456,6 @@ impl VmChipsetResult {
                     .claim_pio("com3", 0x3e8..=0x3ef)
                     .claim_pio("com4", 0x2e8..=0x2ef)
                     .into_resource(),
-                pci_placement: None,
             });
         }
         Ok(self)
@@ -473,7 +465,6 @@ impl VmChipsetResult {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: format!("debugcon-{port:#x?}"),
             resource: SerialDebugconDeviceHandle { port, io: backend }.into_resource(),
-            pci_placement: None,
         });
         self
     }
@@ -502,7 +493,6 @@ impl VmChipsetResult {
             .map(|(name, device)| ChipsetDeviceHandle {
                 name: name.to_string(),
                 resource: device.into_resource(),
-                pci_placement: None,
             }),
         );
         self
@@ -530,7 +520,6 @@ impl VmChipsetResult {
                     io: backend0.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
                 }
                 .into_resource(),
-                pci_placement: None,
             },
             ChipsetDeviceHandle {
                 name: "com2".to_string(),
@@ -540,7 +529,6 @@ impl VmChipsetResult {
                     io: backend1.unwrap_or_else(|| DisconnectedSerialBackendHandle.into_resource()),
                 }
                 .into_resource(),
-                pci_placement: None,
             },
         ]);
         Ok(self)
@@ -558,7 +546,6 @@ impl VmChipsetResult {
                 resource: MissingDevHandle::new()
                     .claim_pio("delay", 0xed..=0xed)
                     .into_resource(),
-                pci_placement: None,
             },
             // some windows versions try to unconditionally access these IO ports.
             ChipsetDeviceHandle {
@@ -566,7 +553,6 @@ impl VmChipsetResult {
                 resource: MissingDevHandle::new()
                     .claim_pio("backdoor", 0x5658..=0x5659)
                     .into_resource(),
-                pci_placement: None,
             },
             // DOS games often unconditionally poll the gameport (e.g: Duke Nukem 1)
             ChipsetDeviceHandle {
@@ -574,7 +560,6 @@ impl VmChipsetResult {
                 resource: MissingDevHandle::new()
                     .claim_pio("gameport", 0x201..=0x201)
                     .into_resource(),
-                pci_placement: None,
             },
         ]);
 
@@ -586,7 +571,6 @@ impl VmChipsetResult {
                         .claim_pio("primary", 0x20..=0x21)
                         .claim_pio("secondary", 0xa0..=0xa1)
                         .into_resource(),
-                    pci_placement: None,
                 },
                 ChipsetDeviceHandle {
                     name: "missing-pit".to_owned(),
@@ -594,7 +578,6 @@ impl VmChipsetResult {
                         .claim_pio("main", 0x40..=0x43)
                         .claim_pio("port61", 0x61..=0x61)
                         .into_resource(),
-                    pci_placement: None,
                 },
                 ChipsetDeviceHandle {
                     name: "missing-pci".to_owned(),
@@ -602,7 +585,6 @@ impl VmChipsetResult {
                         .claim_pio("address", 0xcf8..=0xcfb)
                         .claim_pio("data", 0xcfc..=0xcff)
                         .into_resource(),
-                    pci_placement: None,
                 },
                 // Linux will probe 0x87 during boot to determine if there the DMA
                 // device is present
@@ -611,7 +593,6 @@ impl VmChipsetResult {
                     resource: MissingDevHandle::new()
                         .claim_pio("io", 0x87..=0x87)
                         .into_resource(),
-                    pci_placement: None,
                 },
             ]);
         }
