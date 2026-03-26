@@ -4,15 +4,15 @@
 //! Support for patching CoRIM (Concise Reference Integrity Manifest) headers
 //! into an existing IGVM file.
 //!
-//! CoRIM headers allow embedding signed measurement payloads that can be
-//! verified by the platform's attestation infrastructure.
+//! CoRIM headers allow embedding signed endorsement for the IGVM file that
+//! can be verified by the attestation service.
 //!
 //! # Module structure
 //!
 //! - [`cose`] — CBOR and COSE_Sign1 parsing/manipulation utilities.
 //!   These are format-level operations with no IGVM dependency and are
 //!   candidates for extraction into a standalone `support/corim` crate
-//!   once a second consumer exists (e.g., OpenHCL paravisor attestation).
+//!   once a second consumer exists (e.g., local verification for TDISP devices).
 
 mod cose;
 
@@ -46,11 +46,6 @@ fn igvm_revision_from_binary(data: &[u8]) -> anyhow::Result<IgvmRevision> {
 }
 
 /// Patch CoRIM headers into an existing IGVM file.
-///
-/// This function uses the `igvm` crate's structured API to parse the IGVM
-/// file, modify the directive headers, and re-serialize. This delegates all
-/// offset management, alignment, and checksum calculation to the `igvm`
-/// crate.
 ///
 /// If a CoRIM document or signature already exists for the target platform,
 /// it will be replaced with the new data. This ensures there is at most one
@@ -93,13 +88,13 @@ pub fn patch_corim(
         .map_err(|e| anyhow::anyhow!("Failed to parse IGVM file: {e}"))?;
 
     // Look up the compatibility mask for the requested platform from the
-    // file's actual platform headers, rather than assuming a hardcoded mapping.
+    // file's actual platform headers.
     let compatibility_mask = crate::lookup_compatibility_mask(igvm_file.platforms(), platform)?;
 
     // Build new initialization headers:
     // - Keep all non-CoRIM initialization headers unchanged
     // - Keep CoRIM headers for other platforms unchanged
-    // - Drop ALL CoRIM headers for our target platform (both document
+    // - Drop all CoRIM headers for our target platform (both document
     //   and signature), preserving their data so we can re-append any
     //   that the caller did not provide a replacement for. This ensures
     //   the (document, signature) pair is always emitted in the correct
@@ -167,16 +162,16 @@ pub fn patch_corim(
     let final_sig_size = final_sig.as_ref().map(|s| s.len()).unwrap_or(0);
 
     // Append CoRIM headers in the required order (document before signature).
-    if let Some(doc) = final_doc {
+    if let Some(document) = final_doc {
         new_initializations.push(IgvmInitializationHeader::CorimDocument {
             compatibility_mask,
-            document: doc,
+            document,
         });
     }
-    if let Some(sig) = final_sig {
+    if let Some(signature) = final_sig {
         new_initializations.push(IgvmInitializationHeader::CorimSignature {
             compatibility_mask,
-            signature: sig,
+            signature,
         });
     }
 
@@ -853,5 +848,199 @@ mod tests {
             2,
             "re-parsed file should still have 2 CoRIM init headers"
         );
+    }
+
+    /// Helper: build a multi-platform IGVM file with CoRIM headers for both
+    /// VBS (mask=0x1) and SNP (mask=0x2).
+    fn build_multi_platform_with_corim() -> Vec<u8> {
+        let data = vec![0x55; 4096];
+        let igvm_data = build_igvm(
+            vec![
+                new_platform(0x1, IgvmPlatformType::VSM_ISOLATION),
+                new_platform(0x2, IgvmPlatformType::SEV_SNP),
+            ],
+            vec![new_page_data(0, 0x1, &data), new_page_data(0, 0x2, &data)],
+        );
+
+        // Add CoRIM to VBS first
+        let with_vbs = patch_corim(
+            &igvm_data,
+            Some(b"vbs-doc"),
+            Some(COSE_SIGN1_NIL),
+            IgvmPlatformType::VSM_ISOLATION,
+        )
+        .expect("VBS CoRIM patch");
+
+        // Add CoRIM to SNP
+        patch_corim(
+            &with_vbs,
+            Some(b"snp-doc"),
+            Some(COSE_SIGN1_NIL),
+            IgvmPlatformType::SEV_SNP,
+        )
+        .expect("SNP CoRIM patch")
+    }
+
+    #[test]
+    fn test_multi_platform_corim_interleaved_ordering_is_valid() {
+        // When CoRIM headers exist for multiple platforms, the initialization
+        // header order is: Doc(mask_a), Sig(mask_a), Doc(mask_b), Sig(mask_b).
+        // This interleaves type 0x104 and 0x105 across masks. The igvm crate
+        // allows this because it validates doc-before-sig per mask, not global
+        // type ordering.
+        let with_both = build_multi_platform_with_corim();
+
+        // Verify both platform CoRIM pairs are present
+        let (docs, sigs) = extract_corim_headers(&with_both);
+        assert_eq!(docs.len(), 2, "should have docs for both platforms");
+        assert_eq!(sigs.len(), 2, "should have sigs for both platforms");
+
+        // Verify the output is valid and can be re-parsed
+        let reparsed = IgvmFile::new_from_binary(&with_both, None)
+            .expect("interleaved CoRIM ordering should be parseable");
+
+        let corim_count = reparsed
+            .initializations()
+            .iter()
+            .filter(|h| {
+                matches!(
+                    h,
+                    IgvmInitializationHeader::CorimDocument { .. }
+                        | IgvmInitializationHeader::CorimSignature { .. }
+                )
+            })
+            .count();
+        assert_eq!(corim_count, 4, "should have 4 CoRIM init headers total");
+    }
+
+    #[test]
+    fn test_multi_platform_update_document_preserves_other_platform() {
+        // Update VBS document while SNP CoRIM is also present.
+        // SNP headers must be completely unchanged.
+        let with_both = build_multi_platform_with_corim();
+
+        let updated = patch_corim(
+            &with_both,
+            Some(b"vbs-doc-updated"),
+            None,
+            IgvmPlatformType::VSM_ISOLATION,
+        )
+        .expect("update VBS document");
+
+        let (docs, sigs) = extract_corim_headers(&updated);
+        assert_eq!(docs.len(), 2, "both platform docs present");
+        assert_eq!(sigs.len(), 2, "both platform sigs present");
+
+        // Find VBS and SNP by mask
+        let vbs_doc = docs.iter().find(|d| d.compatibility_mask == 0x1).unwrap();
+        let snp_doc = docs.iter().find(|d| d.compatibility_mask == 0x2).unwrap();
+        let vbs_sig = sigs.iter().find(|s| s.compatibility_mask == 0x1).unwrap();
+        let snp_sig = sigs.iter().find(|s| s.compatibility_mask == 0x2).unwrap();
+
+        assert_eq!(vbs_doc.payload, b"vbs-doc-updated");
+        assert_eq!(snp_doc.payload, b"snp-doc", "SNP doc must be unchanged");
+        assert_eq!(vbs_sig.payload, COSE_SIGN1_NIL, "VBS sig preserved");
+        assert_eq!(snp_sig.payload, COSE_SIGN1_NIL, "SNP sig must be unchanged");
+
+        // Must round-trip
+        IgvmFile::new_from_binary(&updated, None).expect("output should be valid IGVM");
+    }
+
+    #[test]
+    fn test_multi_platform_update_signature_preserves_other_platform() {
+        // Update SNP signature while VBS CoRIM is also present.
+        // VBS headers must be completely unchanged.
+        let with_both = build_multi_platform_with_corim();
+
+        let new_sig: &[u8] = &[0xD2, 0x84, 0x40, 0xA0, 0xF6, 0x41, 0x00];
+        let updated = patch_corim(&with_both, None, Some(new_sig), IgvmPlatformType::SEV_SNP)
+            .expect("update SNP signature");
+
+        let (docs, sigs) = extract_corim_headers(&updated);
+        assert_eq!(docs.len(), 2);
+        assert_eq!(sigs.len(), 2);
+
+        let vbs_doc = docs.iter().find(|d| d.compatibility_mask == 0x1).unwrap();
+        let snp_doc = docs.iter().find(|d| d.compatibility_mask == 0x2).unwrap();
+        let vbs_sig = sigs.iter().find(|s| s.compatibility_mask == 0x1).unwrap();
+        let snp_sig = sigs.iter().find(|s| s.compatibility_mask == 0x2).unwrap();
+
+        assert_eq!(vbs_doc.payload, b"vbs-doc", "VBS doc must be unchanged");
+        assert_eq!(snp_doc.payload, b"snp-doc", "SNP doc preserved");
+        assert_eq!(vbs_sig.payload, COSE_SIGN1_NIL, "VBS sig must be unchanged");
+        assert_eq!(snp_sig.payload, new_sig, "SNP sig must be the new one");
+
+        IgvmFile::new_from_binary(&updated, None).expect("output should be valid IGVM");
+    }
+
+    #[test]
+    fn test_multi_platform_update_both_for_one_platform() {
+        // Replace both document and signature for VBS while leaving SNP
+        // completely intact.
+        let with_both = build_multi_platform_with_corim();
+
+        let new_sig: &[u8] = &[0xD2, 0x84, 0x40, 0xA0, 0xF6, 0x41, 0x00];
+        let updated = patch_corim(
+            &with_both,
+            Some(b"vbs-doc-v2"),
+            Some(new_sig),
+            IgvmPlatformType::VSM_ISOLATION,
+        )
+        .expect("update both VBS headers");
+
+        let (docs, sigs) = extract_corim_headers(&updated);
+        assert_eq!(docs.len(), 2);
+        assert_eq!(sigs.len(), 2);
+
+        let vbs_doc = docs.iter().find(|d| d.compatibility_mask == 0x1).unwrap();
+        let snp_doc = docs.iter().find(|d| d.compatibility_mask == 0x2).unwrap();
+        let vbs_sig = sigs.iter().find(|s| s.compatibility_mask == 0x1).unwrap();
+        let snp_sig = sigs.iter().find(|s| s.compatibility_mask == 0x2).unwrap();
+
+        assert_eq!(vbs_doc.payload, b"vbs-doc-v2");
+        assert_eq!(snp_doc.payload, b"snp-doc", "SNP doc unchanged");
+        assert_eq!(vbs_sig.payload, new_sig);
+        assert_eq!(snp_sig.payload, COSE_SIGN1_NIL, "SNP sig unchanged");
+
+        IgvmFile::new_from_binary(&updated, None).expect("output should be valid IGVM");
+    }
+
+    #[test]
+    fn test_multi_platform_sequential_updates_both_platforms() {
+        // Update VBS first, then SNP. Verify both updates are reflected
+        // and the file remains valid after each step.
+        let with_both = build_multi_platform_with_corim();
+
+        // Step 1: update VBS document
+        let after_vbs = patch_corim(
+            &with_both,
+            Some(b"vbs-doc-step1"),
+            None,
+            IgvmPlatformType::VSM_ISOLATION,
+        )
+        .expect("VBS update");
+
+        IgvmFile::new_from_binary(&after_vbs, None).expect("valid after VBS update");
+
+        // Step 2: update SNP signature
+        let new_sig: &[u8] = &[0xD2, 0x84, 0x40, 0xA0, 0xF6, 0x41, 0x00];
+        let after_snp = patch_corim(&after_vbs, None, Some(new_sig), IgvmPlatformType::SEV_SNP)
+            .expect("SNP update");
+
+        let (docs, sigs) = extract_corim_headers(&after_snp);
+        assert_eq!(docs.len(), 2);
+        assert_eq!(sigs.len(), 2);
+
+        let vbs_doc = docs.iter().find(|d| d.compatibility_mask == 0x1).unwrap();
+        let snp_doc = docs.iter().find(|d| d.compatibility_mask == 0x2).unwrap();
+        let vbs_sig = sigs.iter().find(|s| s.compatibility_mask == 0x1).unwrap();
+        let snp_sig = sigs.iter().find(|s| s.compatibility_mask == 0x2).unwrap();
+
+        assert_eq!(vbs_doc.payload, b"vbs-doc-step1", "VBS doc from step 1");
+        assert_eq!(snp_doc.payload, b"snp-doc", "SNP doc preserved");
+        assert_eq!(vbs_sig.payload, COSE_SIGN1_NIL, "VBS sig preserved");
+        assert_eq!(snp_sig.payload, new_sig, "SNP sig from step 2");
+
+        IgvmFile::new_from_binary(&after_snp, None).expect("valid after both updates");
     }
 }

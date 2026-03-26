@@ -31,10 +31,12 @@
 //! verification. The scope is intentionally limited to the CoRIM format
 //! since that is the only endorsement format we currently support.
 
+use anyhow::Context;
 use open_enum::open_enum;
 
 open_enum! {
     /// CBOR major type (3-bit value in bits 7–5 of the initial byte).
+    /// See RFC 8949 Section 3.1 for details.
     pub enum CborMajorType: u8 {
         /// Unsigned integer (major type 0).
         UNSIGNED_INT = 0,
@@ -58,6 +60,7 @@ open_enum! {
 open_enum! {
     /// CBOR additional info encoding (low 5 bits of the initial byte)
     /// for multi-byte argument lengths.
+    /// See RFC 8949 Section 3 for details.
     pub enum CborAdditionalInfo: u8 {
         /// 1-byte unsigned integer argument follows.
         ONE_BYTE = 24,
@@ -69,17 +72,23 @@ open_enum! {
 }
 
 /// CBOR simple value nil (major type 7, additional info 22) — encoded as `0xF6`.
+/// See RFC 8949 Appendix A for examples of value encodings.
 const CBOR_NIL: u8 = 0xF6;
 
-/// COSE_Sign1 tag number (CBOR Tag 18), per RFC 9052 § 4.2.
-const COSE_SIGN1_TAG: u8 = 18;
-
-/// Compact single-byte encoding of CBOR Tag(18): `0xD2`.
-const COSE_SIGN1_TAG_COMPACT: u8 = 0xD2;
-
-/// Two-byte tag prefix first byte: major type 6, additional info 24
-/// (1-byte tag number follows). The full prefix is `[0xD8, 18]`.
-const CBOR_TAG_ONE_BYTE_PREFIX: u8 = 0xD8;
+/// Canonical single-byte encoding of CBOR Tag(18) for COSE_Sign1: `0xD2`.
+///
+/// CBOR tags use major type 6 (bits 7–5 = `0b110`). For tag values
+/// 0–23 the value fits in the 5-bit additional info field, so the
+/// entire tag is one byte: `0xC0 | value`.
+///
+/// Tag(18) → `0xC0 | 0x12` = `0xD2`.
+///
+/// This is the *preferred serialization* per RFC 8949 Section 4.1
+/// ("deterministic encoding"). We enforce this canonical form and
+/// reject the non-preferred two-byte encoding `[0xD8, 18]`.
+///
+/// See also RFC 9052 Section 4.2 for the COSE_Sign1 structure definition.
+const COSE_SIGN1_TAG: u8 = 0xD2;
 
 /// Number of elements in a COSE_Sign1 array.
 const COSE_SIGN1_ARRAY_LEN: u32 = 4;
@@ -87,6 +96,97 @@ const COSE_SIGN1_ARRAY_LEN: u32 = 4;
 /// Mask to extract the additional info field (low 5 bits) from a CBOR
 /// initial byte.
 const CBOR_ADDITIONAL_INFO_MASK: u8 = 0x1F;
+
+/// Parsed structural offsets within a COSE_Sign1 message.
+///
+/// Returned by [`parse_cose_sign1_prefix`] after validating the common
+/// prefix shared by all COSE_Sign1 operations.
+struct CoseSign1Layout {
+    /// Whether the canonical CBOR Tag(18) prefix (`0xD2`) was present.
+    has_tag: bool,
+    /// Byte offset of element \[2\] (payload) within the input slice.
+    payload_offset: usize,
+}
+
+/// Parse the common prefix of a COSE_Sign1 message.
+///
+/// Validates and skips:
+/// 1. Optional CBOR Tag(18) in canonical form (`0xD2`)
+/// 2. 4-element CBOR array header
+/// 3. Element \[0\] — protected headers (must be a bstr)
+/// 4. Element \[1\] — unprotected headers (must be a map)
+///
+/// Only the canonical single-byte Tag(18) encoding (`0xD2`) is accepted.
+/// The non-preferred two-byte form (`0xD8, 0x12`) is rejected per
+/// RFC 8949 §4.1 (preferred serialization).
+///
+/// Returns a [`CoseSign1Layout`] with offsets so the caller can inspect
+/// element \[2\] (payload) and beyond.
+fn parse_cose_sign1_prefix(data: &[u8]) -> anyhow::Result<CoseSign1Layout> {
+    if data.is_empty() {
+        anyhow::bail!("COSE_Sign1 data is empty");
+    }
+
+    let mut off: usize = 0;
+
+    // Optional CBOR Tag(18) — only the canonical single-byte encoding
+    // (0xD2) is accepted. The tag is optional per RFC 9052 §4.2.
+    let has_tag = if data[off] == COSE_SIGN1_TAG {
+        off += 1;
+        true
+    } else {
+        false
+    };
+
+    // Array header — must be a 4-element CBOR array.
+    if off >= data.len() {
+        anyhow::bail!("truncated before array header");
+    }
+    let initial = data[off];
+    let major = CborMajorType(initial >> 5);
+    if major != CborMajorType::ARRAY {
+        anyhow::bail!("expected CBOR array (major type 4), got major type {major:?}");
+    }
+    let additional_info = initial & CBOR_ADDITIONAL_INFO_MASK;
+    let (array_len, mut off) = cbor_decode_argument(data, off + 1, additional_info)?;
+    if array_len != COSE_SIGN1_ARRAY_LEN {
+        anyhow::bail!("COSE_Sign1 array must have 4 elements, got {array_len}");
+    }
+
+    // [0] protected headers — must be a bstr (major type 2).
+    if off >= data.len() {
+        anyhow::bail!("truncated before protected header");
+    }
+    if CborMajorType(data[off] >> 5) != CborMajorType::BYTE_STRING {
+        anyhow::bail!(
+            "element [0] (protected) must be a bstr, got major type {:?}",
+            CborMajorType(data[off] >> 5)
+        );
+    }
+    off = cbor_skip_item(data, off)?;
+
+    // [1] unprotected headers — must be a map (major type 5).
+    if off >= data.len() {
+        anyhow::bail!("truncated before unprotected header");
+    }
+    if CborMajorType(data[off] >> 5) != CborMajorType::MAP {
+        anyhow::bail!(
+            "element [1] (unprotected) must be a map, got major type {:?}",
+            CborMajorType(data[off] >> 5)
+        );
+    }
+    off = cbor_skip_item(data, off)?;
+
+    // Ensure there's data for the payload element.
+    if off >= data.len() {
+        anyhow::bail!("truncated before payload");
+    }
+
+    Ok(CoseSign1Layout {
+        has_tag,
+        payload_offset: off,
+    })
+}
 
 /// Decode a CBOR additional info field to get the argument value and advance
 /// past any extra length bytes.
@@ -201,73 +301,10 @@ pub(crate) fn cbor_skip_item(data: &[u8], offset: usize) -> anyhow::Result<usize
 /// Returns an error if the input is not a valid COSE_Sign1 with an
 /// embedded bstr payload.
 pub fn split_cose_sign1(data: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    if data.is_empty() {
-        anyhow::bail!("Signed CoRIM is empty");
-    }
-
-    let mut off: usize = 0;
-    let tag_prefix_end;
-
-    // Optional CBOR Tag(18) — compact (0xD2) or two-byte (0xD8, 18)
-    if data[off] == COSE_SIGN1_TAG_COMPACT {
-        off += 1;
-        tag_prefix_end = 1;
-    } else if off + 1 < data.len()
-        && data[off] == CBOR_TAG_ONE_BYTE_PREFIX
-        && data[off + 1] == COSE_SIGN1_TAG
-    {
-        off += 2;
-        tag_prefix_end = 2;
-    } else {
-        tag_prefix_end = 0;
-    }
-
-    // Array header — must be CBOR array
-    if off >= data.len() {
-        anyhow::bail!("Signed CoRIM truncated before array header");
-    }
-    let initial = data[off];
-    let major = CborMajorType(initial >> 5);
-    if major != CborMajorType::ARRAY {
-        anyhow::bail!("Signed CoRIM: expected CBOR array (major type 4), got major type {major:?}",);
-    }
-    let additional_info = initial & CBOR_ADDITIONAL_INFO_MASK;
-    let (array_len, arr_off) = cbor_decode_argument(data, off + 1, additional_info)?;
-    if array_len != COSE_SIGN1_ARRAY_LEN {
-        anyhow::bail!("Signed CoRIM: COSE_Sign1 array must have 4 elements, got {array_len}");
-    }
-
-    let array_header_end = arr_off; // offset after the array header
-
-    // [0] protected — skip
-    let elem0_start = array_header_end;
-    if elem0_start >= data.len() {
-        anyhow::bail!("Signed CoRIM truncated before protected header");
-    }
-    if CborMajorType(data[elem0_start] >> 5) != CborMajorType::BYTE_STRING {
-        anyhow::bail!(
-            "Signed CoRIM: element [0] (protected) must be a bstr, got major type {:?}",
-            CborMajorType(data[elem0_start] >> 5)
-        );
-    }
-    let elem1_start = cbor_skip_item(data, elem0_start)?;
-
-    // [1] unprotected — skip
-    if elem1_start >= data.len() {
-        anyhow::bail!("Signed CoRIM truncated before unprotected header");
-    }
-    if CborMajorType(data[elem1_start] >> 5) != CborMajorType::MAP {
-        anyhow::bail!(
-            "Signed CoRIM: element [1] (unprotected) must be a map, got major type {:?}",
-            CborMajorType(data[elem1_start] >> 5)
-        );
-    }
-    let payload_start = cbor_skip_item(data, elem1_start)?;
+    let layout = parse_cose_sign1_prefix(data).context("Signed CoRIM")?;
+    let payload_start = layout.payload_offset;
 
     // [2] payload — must be a bstr (embedded), not nil
-    if payload_start >= data.len() {
-        anyhow::bail!("Signed CoRIM truncated before payload");
-    }
     if data[payload_start] == CBOR_NIL {
         anyhow::bail!(
             "Signed CoRIM: payload is nil (already detached). \
@@ -309,7 +346,7 @@ pub fn split_cose_sign1(data: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         input_size = data.len(),
         document_size = document.len(),
         detached_signature_size = detached_sig.len(),
-        had_tag = tag_prefix_end > 0,
+        had_tag = layout.has_tag,
         "Split signed CoRIM into document payload and detached COSE_Sign1 signature"
     );
 
@@ -323,75 +360,19 @@ pub fn split_cose_sign1(data: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
 /// bstr / nil, signature : bstr \]
 ///
 /// The function checks:
-/// 1. Optional CBOR tag 18 prefix
+/// 1. Optional CBOR Tag(18) prefix (canonical `0xD2` only)
 /// 2. 4-element CBOR array
 /// 3. Element 0 is a bstr (protected headers)
 /// 4. Element 1 is a map (unprotected headers)
 /// 5. Element 2 is nil (0xF6) — i.e. payload is detached
 /// 6. Element 3 is a bstr (signature)
+///
+/// TODO: should live in the igvm crate
 pub fn validate_cose_sign1_nil_payload(data: &[u8]) -> anyhow::Result<()> {
-    if data.is_empty() {
-        anyhow::bail!("CoRIM signature is empty");
-    }
-
-    let mut off: usize = 0;
-
-    // Optional CBOR Tag(18) — compact (0xD2) or two-byte (0xD8, 18)
-    if data[off] == COSE_SIGN1_TAG_COMPACT {
-        off += 1;
-    } else if off + 1 < data.len()
-        && data[off] == CBOR_TAG_ONE_BYTE_PREFIX
-        && data[off + 1] == COSE_SIGN1_TAG
-    {
-        off += 2;
-    }
-    // Tag is optional per RFC 9052 § 4.2
-
-    // Array header — must be CBOR array
-    if off >= data.len() {
-        anyhow::bail!("CoRIM signature truncated before array header");
-    }
-    let initial = data[off];
-    let major = CborMajorType(initial >> 5);
-    if major != CborMajorType::ARRAY {
-        anyhow::bail!(
-            "CoRIM signature: expected CBOR array (major type 4), got major type {major:?}",
-        );
-    }
-    let additional_info = initial & CBOR_ADDITIONAL_INFO_MASK;
-    let (array_len, mut off) = cbor_decode_argument(data, off + 1, additional_info)?;
-    if array_len != COSE_SIGN1_ARRAY_LEN {
-        anyhow::bail!("CoRIM signature: COSE_Sign1 array must have 4 elements, got {array_len}");
-    }
-
-    // [0] protected headers — must be a bstr (major type 2)
-    if off >= data.len() {
-        anyhow::bail!("CoRIM signature truncated before protected header");
-    }
-    if CborMajorType(data[off] >> 5) != CborMajorType::BYTE_STRING {
-        anyhow::bail!(
-            "CoRIM signature: element [0] (protected) must be a bstr, got major type {:?}",
-            CborMajorType(data[off] >> 5)
-        );
-    }
-    off = cbor_skip_item(data, off)?;
-
-    // [1] unprotected headers — must be a map
-    if off >= data.len() {
-        anyhow::bail!("CoRIM signature truncated before unprotected header");
-    }
-    if CborMajorType(data[off] >> 5) != CborMajorType::MAP {
-        anyhow::bail!(
-            "CoRIM signature: element [1] (unprotected) must be a map, got major type {:?}",
-            CborMajorType(data[off] >> 5)
-        );
-    }
-    off = cbor_skip_item(data, off)?;
+    let layout = parse_cose_sign1_prefix(data).context("CoRIM signature")?;
+    let mut off = layout.payload_offset;
 
     // [2] payload — must be nil (0xF6) for detached signature
-    if off >= data.len() {
-        anyhow::bail!("CoRIM signature truncated before payload");
-    }
     if data[off] != CBOR_NIL {
         if CborMajorType(data[off] >> 5) == CborMajorType::BYTE_STRING {
             anyhow::bail!(
@@ -451,9 +432,23 @@ mod tests {
 
     #[test]
     fn test_validate_cose_sign1_nil_payload_no_tag() {
-        // Valid COSE_Sign1 without Tag(18) prefix
+        // Valid COSE_Sign1 without Tag(18) prefix — tag is optional per
+        // RFC 9052 §4.2.
         let valid_no_tag = [0x84, 0x40, 0xA0, 0xF6, 0x40];
         assert!(validate_cose_sign1_nil_payload(&valid_no_tag).is_ok());
+    }
+
+    #[test]
+    fn test_validate_cose_sign1_two_byte_tag_rejected() {
+        // Two-byte Tag(18) encoding [0xD8, 0x12] is valid CBOR but not
+        // canonical (RFC 8949 §4.1). We reject it.
+        let two_byte_tag = [0xD8, 0x12, 0x84, 0x40, 0xA0, 0xF6, 0x40];
+        let err = validate_cose_sign1_nil_payload(&two_byte_tag).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("CBOR array") || msg.contains("major type"),
+            "Should fail parsing because 0xD8 is not recognized as a tag: {msg}"
+        );
     }
 
     #[test]
@@ -477,19 +472,18 @@ mod tests {
         // Array(3) instead of Array(4)
         let wrong_len = [0xD2, 0x83, 0x40, 0xA0, 0xF6];
         let err = validate_cose_sign1_nil_payload(&wrong_len).unwrap_err();
+        let msg = format!("{err:#}");
         assert!(
-            err.to_string().contains("4 elements"),
-            "Error should mention 4 elements: {err}"
+            msg.contains("4 elements"),
+            "Error should mention 4 elements: {msg}"
         );
     }
 
     #[test]
     fn test_validate_cose_sign1_empty() {
         let err = validate_cose_sign1_nil_payload(&[]).unwrap_err();
-        assert!(
-            err.to_string().contains("empty"),
-            "Error should mention empty: {err}"
-        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("empty"), "Error should mention empty: {msg}");
     }
 
     #[test]
@@ -542,7 +536,8 @@ mod tests {
 
     #[test]
     fn test_split_cose_sign1_no_tag() {
-        // COSE_Sign1 without Tag(18) prefix
+        // COSE_Sign1 without Tag(18) prefix — tag is optional per
+        // RFC 9052 §4.2.
         let signed: Vec<u8> = vec![
             0x84, // Array(4)
             0x40, // bstr(0)
@@ -563,6 +558,21 @@ mod tests {
         ];
         assert_eq!(detached, expected_detached);
         assert!(validate_cose_sign1_nil_payload(&detached).is_ok());
+    }
+
+    #[test]
+    fn test_split_cose_sign1_two_byte_tag_rejected() {
+        // Two-byte Tag(18) encoding [0xD8, 0x12] is rejected — only
+        // canonical 0xD2 is accepted.
+        let signed: Vec<u8> = vec![
+            0xD8, 0x12, // Two-byte Tag(18) — non-canonical
+            0x84, // Array(4)
+            0x40, // bstr(0)
+            0xA0, // map(0)
+            0x42, 0x01, 0x02, // bstr(2) — payload
+            0x41, 0xFF, // bstr(1) — signature
+        ];
+        assert!(split_cose_sign1(&signed).is_err());
     }
 
     #[test]
@@ -609,10 +619,8 @@ mod tests {
     #[test]
     fn test_split_cose_sign1_empty_errors() {
         let err = split_cose_sign1(&[]).unwrap_err();
-        assert!(
-            err.to_string().contains("empty"),
-            "Error should mention empty: {err}"
-        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("empty"), "Error should mention empty: {msg}");
     }
 
     #[test]
