@@ -87,11 +87,10 @@ pub struct ConnectionInstanceId {
 
 #[bitfield(u32)]
 struct PendingReply {
-    reset: bool,
     respond: bool,
     credit_request: bool,
     credit_update: bool,
-    #[bits(28)]
+    #[bits(29)]
     _reserved: u32,
 }
 
@@ -257,9 +256,7 @@ impl Connection {
 
         self.fwd_cnt += sent as u32;
         if ring.is_empty() {
-            // TODO: Check if I do this when shutdown is received.
-            // Check if the peer has already sent a shutdown that we can forward to the host now
-            // that the buffer is empty.
+            // Check if the peer sent a shutdown while we were waiting to flush data.
             if self.send_shutdown {
                 self.socket
                     .shutdown(std::net::Shutdown::Write)
@@ -316,6 +313,89 @@ impl Connection {
         }
 
         Ok(PendingWork::NONE)
+    }
+
+    fn get_rx_packet(
+        &mut self,
+        driver: &VmTaskDriver,
+        mem: &GuestMemory,
+        guest_cid: u64,
+        payload: &[VirtioQueuePayload],
+    ) -> anyhow::Result<(Option<VsockPacketBuf>, PendingWork)> {
+        if let Some(timeout) = self.timeout {
+            if Instant::now() >= timeout {
+                anyhow::bail!("connection timed out");
+            }
+        }
+
+        let header = if self.pending_reply.respond() {
+            self.pending_reply.set_respond(false);
+            self.state = ConnectionState::Connected;
+            self.last_sent_fwd_count = self.fwd_cnt.0;
+
+            Some(new_reply_packet(
+                self.key,
+                Operation::RESPONSE,
+                guest_cid,
+                self.fwd_cnt.0,
+            ))
+        } else if self.peer_needs_credit_update() || self.pending_reply.credit_update() {
+            let fwd_cnt = self.fwd_cnt.0;
+            self.last_sent_fwd_count = fwd_cnt;
+
+            self.pending_reply.set_credit_update(false);
+            tracing::info!(?self.key, fwd_cnt, "sending credit update");
+            Some(new_reply_packet(
+                self.key,
+                Operation::CREDIT_UPDATE,
+                guest_cid,
+                fwd_cnt,
+            ))
+        } else if self.pending_reply.credit_request() {
+            self.pending_reply.set_credit_request(false);
+            Some(new_reply_packet(
+                self.key,
+                Operation::CREDIT_REQUEST,
+                guest_cid,
+                self.fwd_cnt.0,
+            ))
+        } else if self.socket.has_data() {
+            assert_eq!(self.pending_reply.into_bits(), 0);
+            self.handle_host_data(mem, payload, guest_cid)?
+        } else {
+            assert_eq!(self.pending_reply.into_bits(), 0);
+            None
+        };
+
+        let pending_work = if self.pending_reply.into_bits() != 0 {
+            // More replies pending, so handle that the next time around.
+            PendingWork::simple_rx(RxWork::Connection(self.instance_id()))
+        } else if self.socket.is_closed() && self.local_send_shutdown {
+            self.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
+        } else if self.state == ConnectionState::Connected {
+            if self.peer_credit_available() > 0 {
+                // No replies pending, so make sure we're waiting for data.
+                // N.B. This is done even if the socket was shutdown or closed because we
+                //      need to keep reading until we read 0 or an error.
+                PendingWork::rx(
+                    self.socket
+                        .await_read_ready(RxWork::Connection(self.instance_id())),
+                )
+            } else if !self.waiting_for_credit {
+                // The peer has no space left, so request an update.
+                tracing::info!(?self.key, "need credit request");
+                self.pending_reply.set_credit_request(true);
+                self.waiting_for_credit = true;
+                PendingWork::simple_rx(RxWork::Connection(self.instance_id()))
+            } else {
+                // Already waiting for a credit update.
+                PendingWork::NONE
+            }
+        } else {
+            PendingWork::NONE
+        };
+
+        Ok((header, pending_work))
     }
 
     fn handle_host_data(
@@ -617,89 +697,84 @@ impl ConnectionManager {
         driver: &VmTaskDriver,
         packet: VsockPacket<'_>,
     ) -> PendingWork {
+        match self.handle_guest_tx_inner(driver, packet) {
+            Ok(pending) => pending,
+            Err(err) => {
+                tracelimit::warn_ratelimited!(%err, "error handling guest packet, sending reset");
+                if err.remove {
+                    self.remove_connection(&err.key);
+                }
+                PendingWork::simple_rx(RxWork::SendReset(err.key))
+            }
+        }
+    }
+
+    /// Handle a packet received from the guest on the tx virtqueue.
+    fn handle_guest_tx_inner(
+        &mut self,
+        driver: &VmTaskDriver,
+        packet: VsockPacket<'_>,
+    ) -> Result<PendingWork, SendResetError> {
         let key = ConnKey::from_tx_packet(&packet.header);
 
         // Validate the packet. Only stream sockets are supported currently.
-        if SocketType(packet.header.socket_type) != SocketType::STREAM
-            || packet.header.src_cid != self.guest_cid
+        let src_cid = packet.header.src_cid;
+        if SocketType(packet.header.socket_type) != SocketType::STREAM || src_cid != self.guest_cid
         {
-            tracing::debug!(
-                header = ?packet.header,
-                guest_cid = self.guest_cid,
-                "invalid source CID"
-            );
-
-            return PendingWork::simple_rx(RxWork::SendReset(key));
+            return Err(SendResetError::new(
+                key,
+                format!("invalid source CID {src_cid}"),
+            ));
         }
 
         let op = Operation(packet.header.op);
-        match op {
+        let pending = match op {
             Operation::REQUEST => {
                 tracing::info!(?packet.header, "connect request");
                 // Guest is initiating a connection to a port on the host.
-                match self.relay.connect(driver, key.local_port) {
-                    Ok(socket) => {
-                        // TODO: Handle existing connection
-                        let seq = self.get_next_seq();
-                        match self.conns.entry(key) {
-                            std::collections::hash_map::Entry::Occupied(entry) => {
-                                // The guest is using a port combo that's already in use. Since that
-                                // indicates issues on the guest side, send a reset and drop the old
-                                // connection.
-                                tracelimit::warn_ratelimited!(
-                                    ?key,
-                                    "connect request for existing connection"
-                                );
-                                entry.remove();
-                                return PendingWork::simple_rx(RxWork::SendReset(key));
-                            }
-                            std::collections::hash_map::Entry::Vacant(entry) => {
-                                entry.insert(Connection::new(
-                                    key,
-                                    seq,
-                                    packet.header.buf_alloc,
-                                    packet.header.fwd_cnt,
-                                    PendingReply::new().with_respond(true),
-                                    socket,
-                                ))
-                            }
-                        };
+                let socket = self.relay.connect(driver, key.local_port).map_err(|err| {
+                    SendResetError::new(
+                        key,
+                        format!("failed to connect to host socket for vsock request: {err}"),
+                    )
+                    .with_inner(err)
+                })?;
 
-                        PendingWork::simple_rx(RxWork::Connection(ConnectionInstanceId {
+                let seq = self.get_next_seq();
+                match self.conns.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(entry) => {
+                        // The guest is using a port combo that's already in use. Since that
+                        // indicates issues on the guest side, send a reset and drop the old
+                        // connection.
+                        entry.remove();
+                        return Err(SendResetError::new(
+                            key,
+                            "connect request for existing connection",
+                        ));
+                    }
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(Connection::new(
                             key,
                             seq,
-                        }))
+                            packet.header.buf_alloc,
+                            packet.header.fwd_cnt,
+                            PendingReply::new().with_respond(true),
+                            socket,
+                        ))
                     }
-                    Err(err) => {
-                        tracelimit::warn_ratelimited!(
-                            error = err.as_ref() as &dyn std::error::Error,
-                            port = key.local_port,
-                            "failed to connect to host socket for vsock request"
-                        );
-                        PendingWork::simple_rx(RxWork::SendReset(key))
-                    }
-                }
+                };
+
+                PendingWork::simple_rx(RxWork::Connection(ConnectionInstanceId { key, seq }))
             }
             Operation::RESPONSE => {
                 // Guest is accepting a host-initiated connection.
                 // Update credit info and mark connection as established.
-                let Some(conn) = self.conns.get_mut(&key) else {
-                    tracelimit::warn_ratelimited!(?key, "RESPONSE for unknown connection");
-                    return PendingWork::simple_rx(RxWork::SendReset(key));
-                };
-
-                match conn.handle_response(&packet.header) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        tracelimit::warn_ratelimited!(
-                            error = err.as_ref() as &dyn std::error::Error,
-                            ?key,
-                            "failed to handle RESPONSE from guest"
-                        );
-                        self.remove_connection(&key);
-                        PendingWork::simple_rx(RxWork::SendReset(key))
-                    }
-                }
+                let conn = self.get_connection_mut(&key)?;
+                conn.handle_response(&packet.header).map_err(|err| {
+                    SendResetError::new(key, "failed to handle RESPONSE from guest")
+                        .with_inner(err)
+                        .with_remove(true)
+                })?
             }
             Operation::RST => {
                 if self.remove_connection(&key).is_some() {
@@ -708,10 +783,7 @@ impl ConnectionManager {
                 PendingWork::NONE
             }
             Operation::SHUTDOWN => {
-                let Some(conn) = self.conns.get_mut(&key) else {
-                    tracelimit::warn_ratelimited!(?key, "SHUTDOWN for unknown connection");
-                    return PendingWork::simple_rx(RxWork::SendReset(key));
-                };
+                let conn = self.get_connection_mut(&key)?;
 
                 if let Err(err) = conn.shutdown(ShutdownFlags::from_bits(packet.header.flags)) {
                     tracelimit::warn_ratelimited!(
@@ -733,33 +805,23 @@ impl ConnectionManager {
             }
             Operation::RW => {
                 // Guest is sending data.
-                // TODO: Use a custom error type so handle reset can be more easily propagated.
-                let Some(conn) = self.conns.get_mut(&key) else {
-                    tracelimit::warn_ratelimited!(?key, "RW for unknown connection");
-                    return PendingWork::simple_rx(RxWork::SendReset(key));
-                };
+                let conn = self.get_connection_mut(&key)?;
+                let future = conn
+                    .handle_guest_data(packet.data, packet.header.len as usize)
+                    .map_err(|err| {
+                        SendResetError::new(key, "failed to handle RESPONSE from guest")
+                            .with_inner(err)
+                            .with_remove(true)
+                    })?;
 
-                match conn.handle_guest_data(packet.data, packet.header.len as usize) {
-                    Ok(future) => PendingWork::new(
-                        future,
-                        conn.peer_needs_credit_update()
-                            .then_some(RxWork::Connection(conn.instance_id())),
-                    ),
-                    Err(err) => {
-                        tracelimit::warn_ratelimited!(
-                            error = err.as_ref() as &dyn std::error::Error,
-                            ?key,
-                            "failed to write guest data to host socket"
-                        );
-                        PendingWork::simple_rx(RxWork::SendReset(key))
-                    }
-                }
+                PendingWork::new(
+                    future,
+                    conn.peer_needs_credit_update()
+                        .then_some(RxWork::Connection(conn.instance_id())),
+                )
             }
             Operation::CREDIT_UPDATE => {
-                let Some(conn) = self.conns.get_mut(&key) else {
-                    tracelimit::warn_ratelimited!(?key, "CREDIT_UPDATE for unknown connection");
-                    return PendingWork::simple_rx(RxWork::SendReset(key));
-                };
+                let conn = self.get_connection_mut(&key)?;
 
                 conn.peer_buf_alloc = packet.header.buf_alloc;
                 conn.peer_fwd_cnt = packet.header.fwd_cnt;
@@ -777,20 +839,20 @@ impl ConnectionManager {
                 }
             }
             Operation::CREDIT_REQUEST => {
-                let Some(conn) = self.conns.get_mut(&key) else {
-                    tracelimit::warn_ratelimited!(?key, "CREDIT_REQUEST for unknown connection");
-                    return PendingWork::simple_rx(RxWork::SendReset(key));
-                };
+                let conn = self.get_connection_mut(&key)?;
 
                 conn.pending_reply.set_credit_update(true);
                 PendingWork::simple_rx(RxWork::Connection(conn.instance_id()))
             }
             _ => {
-                tracing::debug!(header = ?packet.header, "unknown vsock operation");
-                // TODO: Send RST for unknown operations?
-                PendingWork::NONE
+                return Err(
+                    SendResetError::new(key, format!("unsupported operation {op:?}"))
+                        .with_remove(true),
+                );
             }
-        }
+        };
+
+        Ok(pending)
     }
 
     pub fn handle_write_ready(&mut self, id: ConnectionInstanceId) -> PendingWork {
@@ -821,23 +883,10 @@ impl ConnectionManager {
 
         match conn.write_from_buffer() {
             Ok(future) => {
-                if conn.send_shutdown && conn.is_recv_buf_empty() {
-                    if let Err(err) = conn.socket.shutdown(std::net::Shutdown::Write) {
-                        tracelimit::warn_ratelimited!(
-                            error = &err as &dyn std::error::Error,
-                            ?id,
-                            "failed to shutdown write side of socket after flushing buffer"
-                        );
-
-                        self.remove_connection(&id.key);
-                        return PendingWork::simple_rx(RxWork::SendReset(id.key));
-                    }
-
-                    if conn.receive_shutdown {
-                        tracing::info!(?id, "connection fully shutdown after write, removing");
-                        self.remove_connection(&id.key);
-                        return PendingWork::simple_rx(RxWork::SendReset(id.key));
-                    }
+                if conn.send_shutdown && conn.receive_shutdown && conn.is_recv_buf_empty() {
+                    tracing::info!(?id, "connection fully shutdown after write, removing");
+                    self.remove_connection(&id.key);
+                    return PendingWork::simple_rx(RxWork::SendReset(id.key));
                 }
 
                 PendingWork::new(
@@ -857,42 +906,6 @@ impl ConnectionManager {
         }
     }
 
-    // fn handle_connect_request(
-    //     &mut self,
-    //     key: ConnKey,
-    //     peer_buf_alloc: u32,
-    //     peer_fwd_cnt: u32,
-    // ) -> VsockHeader {
-    //     // TODO: Actually connect.
-    //     // // Check if we can connect to a Unix socket for this port.
-    //     // let path = match self.host_uds_path(key.local_port) {
-    //     //     Ok(p) => p,
-    //     //     Err(err) => {
-    //     //         tracelimit::warn_ratelimited!(
-    //     //             error = err.as_ref() as &dyn std::error::Error,
-    //     //             key.local_port,
-    //     //             "no host socket for vsock port"
-    //     //         );
-    //     //         self.queue_reply(conn, key, PendingReply::new().with_reset(true));
-    //     //         return;
-    //     //     }
-    //     // };
-
-    //     // TODO: Check for collission
-    //     self.conns.insert(
-    //         key,
-    //         Connection {
-    //             key,
-    //             peer_buf_alloc,
-    //             peer_fwd_cnt,
-    //             pending_reply: PendingReply::new()
-    //         },
-    //     );
-
-    //     // Send RESPONSE to accept the connection.
-    //     self.new_reply_packet(key, Operation::RESPONSE)
-    // }
-
     pub fn get_rx_packet(
         &mut self,
         mem: &GuestMemory,
@@ -910,105 +923,21 @@ impl ConnectionManager {
                     return (None, PendingWork::NONE);
                 }
 
-                if let Some(timeout) = conn.timeout {
-                    if Instant::now() >= timeout {
-                        tracing::info!(?id, "connection timed out");
+                match conn.get_rx_packet(driver, mem, self.guest_cid, payload) {
+                    Ok((packet, pending_work)) => (packet, pending_work),
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = err.as_ref() as &dyn std::error::Error,
+                            ?id,
+                            "packet rx error"
+                        );
                         self.remove_connection(&id.key);
-                        return (
+                        (
                             Some(new_rst_packet(self.guest_cid, id.key)),
                             PendingWork::NONE,
-                        );
+                        )
                     }
                 }
-
-                // TODO: Make a function in Connection for this.
-                let header = if conn.pending_reply.reset() {
-                    // Remove the connection immediately on reset.
-                    self.remove_connection(&id.key);
-                    return (
-                        Some(new_rst_packet(self.guest_cid, id.key)),
-                        PendingWork::NONE,
-                    );
-                } else if conn.pending_reply.respond() {
-                    conn.pending_reply.set_respond(false);
-                    conn.state = ConnectionState::Connected;
-                    conn.last_sent_fwd_count = conn.fwd_cnt.0;
-
-                    Some(new_reply_packet(
-                        id.key,
-                        Operation::RESPONSE,
-                        self.guest_cid,
-                        conn.fwd_cnt.0,
-                    ))
-                } else if conn.peer_needs_credit_update() || conn.pending_reply.credit_update() {
-                    conn.last_sent_fwd_count = conn.fwd_cnt.0;
-                    let fwd_cnt = conn.fwd_cnt.0;
-
-                    conn.pending_reply.set_credit_update(false);
-                    tracing::info!(?id.key, fwd_cnt, "sending credit update");
-                    Some(new_reply_packet(
-                        id.key,
-                        Operation::CREDIT_UPDATE,
-                        self.guest_cid,
-                        conn.fwd_cnt.0,
-                    ))
-                } else if conn.pending_reply.credit_request() {
-                    conn.pending_reply.set_credit_request(false);
-                    Some(new_reply_packet(
-                        id.key,
-                        Operation::CREDIT_REQUEST,
-                        self.guest_cid,
-                        conn.fwd_cnt.0,
-                    ))
-                } else if conn.socket.has_data() {
-                    assert_eq!(conn.pending_reply.into_bits(), 0);
-                    match conn.handle_host_data(mem, payload, self.guest_cid) {
-                        Ok(header) => header,
-                        Err(err) => {
-                            tracelimit::warn_ratelimited!(
-                                error = err.as_ref() as &dyn std::error::Error,
-                                ?id.key,
-                                "failed to read data from host socket"
-                            );
-                            self.remove_connection(&id.key);
-                            return (
-                                Some(new_rst_packet(self.guest_cid, id.key)),
-                                PendingWork::NONE,
-                            );
-                        }
-                    }
-                } else {
-                    assert_eq!(conn.pending_reply.into_bits(), 0);
-                    None
-                };
-
-                let pending_work = if conn.pending_reply.into_bits() != 0 {
-                    // More replies pending, so handle that the next time around.
-                    PendingWork::simple_rx(RxWork::Connection(id))
-                } else if conn.socket.is_closed() && conn.local_send_shutdown {
-                    conn.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
-                } else if conn.state == ConnectionState::Connected {
-                    if conn.peer_credit_available() > 0 {
-                        // No replies pending, so make sure we're waiting for data.
-                        // N.B. This is done even if the socket was shutdown or closed because we
-                        //      need to keep reading until we read 0 or an error.
-                        PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(id)))
-                    } else if !conn.waiting_for_credit {
-                        // The peer has no space left, so request an update.
-                        tracing::info!(?id.key, "need credit request");
-                        conn.pending_reply.set_credit_request(true);
-                        conn.waiting_for_credit = true;
-                        PendingWork::simple_rx(RxWork::Connection(id))
-                    } else {
-                        // Already waiting for a credit update.
-                        PendingWork::NONE
-                    }
-                } else {
-                    PendingWork::NONE
-                };
-
-                // TODO: Check for socket data
-                (header, pending_work)
             }
             RxWork::PendingConnection(seq) => {
                 let Some(conn) = self.pending_conns.get_mut(&seq) else {
@@ -1035,6 +964,7 @@ impl ConnectionManager {
                     }
                 };
 
+                // Check if the entire CONNECT message was received.
                 if ready {
                     // Do not use remove_pending_connection because the port should stay allocated.
                     let conn = self.pending_conns.remove(&seq).unwrap();
@@ -1070,7 +1000,10 @@ impl ConnectionManager {
                 }
             }
             RxWork::SendReset(key) => {
-                // TODO: Check if the connection exists and remove it?
+                assert!(
+                    !self.conns.contains_key(&key),
+                    "connection should have been removed"
+                );
                 (Some(new_rst_packet(self.guest_cid, key)), PendingWork::NONE)
             }
         }
@@ -1116,6 +1049,12 @@ impl ConnectionManager {
     fn remove_pending_connection(&mut self, seq: u64) {
         let conn = self.pending_conns.remove(&seq);
         self.free_local_port(conn.as_ref());
+    }
+
+    fn get_connection_mut(&mut self, key: &ConnKey) -> Result<&mut Connection, SendResetError> {
+        self.conns
+            .get_mut(key)
+            .ok_or_else(|| SendResetError::new(*key, "connection not found"))
     }
 }
 
@@ -1198,4 +1137,44 @@ fn new_rst_packet(guest_cid: u64, key: ConnKey) -> VsockPacketBuf {
         buf_alloc: 0,
         fwd_cnt: 0,
     })
+}
+
+#[derive(Debug)]
+struct SendResetError {
+    key: ConnKey,
+    message: String,
+    inner: Option<anyhow::Error>,
+    remove: bool,
+}
+
+impl std::fmt::Display for SendResetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}; key = {:?}", self.message, self.key)?;
+        if let Some(inner) = &self.inner {
+            write!(f, "; inner = {}", inner)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl SendResetError {
+    fn new(key: ConnKey, message: impl Into<String>) -> Self {
+        Self {
+            key,
+            message: message.into(),
+            inner: None,
+            remove: true,
+        }
+    }
+
+    fn with_inner(mut self, inner: anyhow::Error) -> Self {
+        self.inner = Some(inner);
+        self
+    }
+
+    fn with_remove(mut self, remove: bool) -> Self {
+        self.remove = remove;
+        self
+    }
 }
