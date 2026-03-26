@@ -65,10 +65,12 @@ fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
 
     let arch = arch();
     let boot_image = match arch {
-        MachineArch::X86_64 => petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_X64)),
-        MachineArch::Aarch64 => {
-            petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_AARCH64))
-        }
+        MachineArch::X86_64 => petri::BootImageConfig::from_vhd(
+            resolver.require_source(ALPINE_3_23_X64, petri::RemoteAccess::Allow),
+        ),
+        MachineArch::Aarch64 => petri::BootImageConfig::from_vhd(
+            resolver.require_source(ALPINE_3_23_AARCH64, petri::RemoteAccess::Allow),
+        ),
     };
     let guest = petri::UefiGuest::Vhd(boot_image);
     petri::Firmware::uefi(resolver, arch, guest)

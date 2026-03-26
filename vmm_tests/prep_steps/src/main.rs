@@ -53,7 +53,7 @@ fn build(
                 &resolver,
                 MachineArch::X86_64,
                 UefiGuest::Vhd(BootImageConfig::from_vhd(
-                    resolver.require(petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64),
+                    resolver.require_source(petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64, petri::RemoteAccess::Allow),
                 )),
             ),
             MachineArch::X86_64,

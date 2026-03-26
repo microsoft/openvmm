@@ -18,6 +18,7 @@ pub use runtime::OpenVmmInspector;
 pub use runtime::PetriVmOpenVmm;
 
 use crate::Disk;
+use crate::DiskPath;
 use crate::Firmware;
 use crate::ModifyFn;
 use crate::OpenHclServicingFlags;
@@ -34,9 +35,11 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::vm::PetriVmProperties;
 use anyhow::Context;
 use async_trait::async_trait;
+use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
@@ -206,6 +209,49 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
     .into_resource())
 }
 
+fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
+    let format = if url.ends_with(".vhd") || url.ends_with(".vmgs") {
+        disk_backend_resources::BlobDiskFormat::FixedVhd1
+    } else {
+        disk_backend_resources::BlobDiskFormat::Flat
+    };
+
+    let cache_dir = super::petri_disk_cache_dir();
+
+    // Use the URL's filename as the cache key for a readable cache directory name.
+    let cache_key = url.rsplit('/').next().unwrap_or(url).to_owned();
+
+    Ok(LayeredDiskHandle {
+        layers: vec![
+            RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }
+            .into_resource()
+            .into(),
+            DiskLayerDescription {
+                read_cache: true,
+                write_through: false,
+                layer: SqliteAutoCacheDiskLayerHandle {
+                    cache_path: cache_dir,
+                    cache_key: Some(cache_key),
+                }
+                .into_resource(),
+            },
+            DiskLayerHandle(
+                disk_backend_resources::BlobDiskHandle {
+                    url: url.to_owned(),
+                    format,
+                }
+                .into_resource(),
+            )
+            .into_resource()
+            .into(),
+        ],
+    }
+    .into_resource())
+}
+
 fn memdiff_vmgs(vmgs: &PetriVmgsResource) -> anyhow::Result<VmgsResource> {
     let convert_disk = |disk: &PetriVmgsDisk| -> anyhow::Result<VmgsDisk> {
         Ok(VmgsDisk {
@@ -231,7 +277,8 @@ fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>
             sector_size: None,
         })
         .into_resource(),
-        Disk::Differencing(path) => memdiff_disk(path)?,
+        Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path)?,
+        Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
         Disk::Persistent(path) => open_disk_type(path.as_ref(), false)?,
         Disk::Temporary(path) => open_disk_type(path.as_ref(), false)?,
     })

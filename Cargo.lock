@@ -5934,7 +5934,6 @@ dependencies = [
  "petri_artifacts_common",
  "petri_artifacts_core",
  "petri_artifacts_vmm_test",
- "vmm_test_images",
 ]
 
 [[package]]
