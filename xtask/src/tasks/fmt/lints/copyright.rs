@@ -25,14 +25,14 @@ const HEADER_MIT_FIRST: &str = "Copyright (c) Microsoft Corporation.";
 const HEADER_MIT_SECOND: &str = "Licensed under the MIT License.";
 
 const CHECKED_EXTENSIONS: &[&str] = &[
-    "c", "config", "css", "html", "js", "proto", "ps1", "py", "rs", "toml", "ts", "tsx",
+    "c", "css", "html", "js", "proto", "ps1", "py", "rs", "toml", "ts", "tsx",
 ];
 
 /// Returns the comment prefix and suffix for a given file extension.
 fn comment_delimiters(ext: &str) -> (&'static str, &'static str) {
     match ext {
         "rs" | "c" | "proto" | "ts" | "tsx" | "js" => ("//", ""),
-        "toml" | "py" | "ps1" | "config" => ("#", ""),
+        "toml" | "py" | "ps1" => ("#", ""),
         "css" => ("/*", " */"),
         "html" => ("<!--", " -->"),
         _ => unreachable!(),
