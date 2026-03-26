@@ -12,7 +12,6 @@ mod unsafe_code_comment;
 use crate::fs_helpers::git_diffed;
 use crate::tasks::fmt::FmtCtx;
 use crate::tasks::fmt::FmtPass;
-use std::collections::BTreeSet;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::path::Path;
@@ -134,145 +133,80 @@ pub struct Lints;
 
 impl FmtPass for Lints {
     fn run(self, ctx: FmtCtx) -> anyhow::Result<()> {
-        let lint_ctx = LintCtx {
-            only_diffed: ctx.only_diffed,
-        };
-
-        let mut lints: Vec<Box<dyn Lint>> = vec![
-            Box::new(cfg_target_arch::CfgTargetArch::new(&lint_ctx)),
-            Box::new(copyright::Copyright::new(&lint_ctx)),
-            Box::new(crate_name_nodash::CrateNameNoDash::new(&lint_ctx)),
-            Box::new(package_info::PackageInfo::new(&lint_ctx)),
-            Box::new(repr_packed::ReprPacked::new(&lint_ctx)),
-            Box::new(trailing_newline::TrailingNewline::new(&lint_ctx)),
-            Box::new(unsafe_code_comment::UnsafeCodeComment::new(&lint_ctx)),
-        ];
-
         // Determine which files are diffed, if applicable.
-        let diffed_files: Option<Vec<PathBuf>> = if ctx.only_diffed {
+        let diffed_files = if ctx.only_diffed {
             Some(git_diffed(ctx.ctx.in_git_hook)?)
         } else {
             None
         };
 
-        // Load the workspace root manifest.
-        let workspace_manifest_path = ctx.ctx.root.join("Cargo.toml");
-        let mut workspace_manifest =
-            Lintable::<DocumentMut>::from_file(&workspace_manifest_path, &ctx)?;
-
-        for lint in lints.iter_mut() {
-            lint.enter_workspace(&workspace_manifest);
-        }
-
-        // Discover crate directories by walking for Cargo.toml files.
-        let mut crate_dirs: BTreeSet<PathBuf> = BTreeSet::new();
-        // Collect all non-crate files for later processing.
-        let mut non_crate_files: Vec<PathBuf> = Vec::new();
+        // Walk tree once to discover all Cargo.toml files and non-Rust,
+        // non-manifest files.
+        let mut workspace_dirs = Vec::new();
+        let mut all_crate_dirs = Vec::new();
+        let mut all_other_files = Vec::new();
         for entry in ignore::Walk::new(&ctx.ctx.root) {
             let entry = entry?;
             if entry.file_name() == "Cargo.toml" {
-                let path = entry.into_path();
-                if path == workspace_manifest.path {
-                    continue;
+                // Identify workspace roots (Cargo.toml files with a [workspace] key).
+                let raw = fs_err::read_to_string(entry.path())?;
+                let doc: DocumentMut = raw.parse()?;
+                if doc.contains_key("workspace") {
+                    workspace_dirs.push(entry.path().parent().unwrap().to_owned());
+                } else {
+                    // Build the set of all crate directories (every Cargo.toml parent
+                    // that is not itself a workspace root).
+                    all_crate_dirs.push(entry.path().parent().unwrap().to_owned());
                 }
-                crate_dirs.insert(path.parent().unwrap().to_owned());
             } else if entry.file_type().is_some_and(|ft| ft.is_file())
                 && entry.path().extension().and_then(|e| e.to_str()) != Some("rs")
             {
-                non_crate_files.push(entry.into_path());
+                all_other_files.push(entry.into_path());
             }
-        }
-
-        // Filter non-crate files: keep only files not inside any crate dir
-        // and not the root Cargo.toml.
-        non_crate_files.retain(|f| {
-            f != &workspace_manifest.path
-                && !crate_dirs.iter().any(|crate_dir| f.starts_with(crate_dir))
-        });
-
-        // If only_diffed, filter both crate dirs and non-crate files.
-        if let Some(ref diffed) = diffed_files {
-            crate_dirs.retain(|crate_dir| diffed.iter().any(|f| f.starts_with(crate_dir)));
-            non_crate_files.retain(|f| diffed.contains(f));
         }
 
         let mut any_failed = false;
 
-        for crate_dir in &crate_dirs {
-            let manifest_path = crate_dir.join("Cargo.toml");
-            let mut crate_manifest = Lintable::<DocumentMut>::from_file(&manifest_path, &ctx)?;
-
-            for lint in lints.iter_mut() {
-                lint.enter_crate(&crate_manifest);
-            }
-
-            // Collect nested crate dirs within this crate to avoid
-            // processing files that belong to a child crate.
-            let nested_crate_dirs: Vec<&PathBuf> = crate_dirs
+        // Run a fresh set of lints over each workspace.
+        for workspace_dir in &workspace_dirs {
+            // Nested workspace dirs that are children of this workspace.
+            let nested_workspace_dirs: Vec<_> = workspace_dirs
                 .iter()
-                .filter(|other| *other != crate_dir && other.starts_with(crate_dir))
+                .filter(|other| *other != workspace_dir && other.starts_with(workspace_dir))
                 .collect();
 
-            // Walk all files in the crate directory.
-            for entry in ignore::Walk::new(crate_dir) {
-                let entry = entry?;
-                if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-                    continue;
-                }
-                let path = entry.into_path();
+            // Crate dirs belonging to this workspace: under workspace_dir
+            // but not under any deeper nested workspace.
+            let mut crate_dirs: Vec<_> = all_crate_dirs
+                .iter()
+                .filter(|crate_dir| {
+                    crate_dir.starts_with(workspace_dir)
+                        && !nested_workspace_dirs
+                            .iter()
+                            .any(|nested| crate_dir.starts_with(*nested))
+                })
+                .collect();
 
-                // Skip Cargo.toml—already handled via enter_crate/exit_crate.
-                if path == manifest_path {
-                    continue;
-                }
+            // Non-crate files belonging to this workspace.
+            let mut non_crate_files: Vec<_> = all_other_files
+                .iter()
+                .filter(|f| {
+                    f.starts_with(workspace_dir)
+                        && !nested_workspace_dirs
+                            .iter()
+                            .any(|nested| f.starts_with(*nested))
+                        && !crate_dirs.iter().any(|crate_dir| f.starts_with(crate_dir))
+                })
+                .collect();
 
-                // Skip files that belong to a nested crate.
-                if nested_crate_dirs
-                    .iter()
-                    .any(|nested| path.starts_with(nested))
-                {
-                    continue;
-                }
-
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                let Some(mut file) = Lintable::<String>::from_file(&path, &ctx)? else {
-                    // Skip binary files
-                    continue;
-                };
-
-                for lint in lints.iter_mut() {
-                    if ext == "rs" {
-                        lint.visit_file(&mut file);
-                    } else {
-                        lint.visit_nonrust_file(ext, &mut file);
-                    }
-                }
-                any_failed |= file.finalize()?;
+            // If only_diffed, filter crate dirs and non-crate files.
+            if let Some(ref diffed) = diffed_files {
+                crate_dirs.retain(|crate_dir| diffed.iter().any(|f| f.starts_with(crate_dir)));
+                non_crate_files.retain(|f| diffed.contains(f));
             }
 
-            for lint in lints.iter_mut() {
-                lint.exit_crate(&mut crate_manifest);
-            }
-            any_failed |= crate_manifest.finalize()?;
+            any_failed |= lint_workspace(workspace_dir, &crate_dirs, &non_crate_files, &ctx)?;
         }
-
-        // Process non-crate files (e.g. scripts, Guide).
-        for path in &non_crate_files {
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let Some(mut file) = Lintable::<String>::from_file(path, &ctx)? else {
-                // Skip binary files
-                continue;
-            };
-            for lint in lints.iter_mut() {
-                lint.visit_nonrust_file(ext, &mut file);
-            }
-            any_failed |= file.finalize()?;
-        }
-
-        for lint in lints.iter_mut() {
-            lint.exit_workspace(&mut workspace_manifest);
-        }
-        any_failed |= workspace_manifest.finalize()?;
 
         if any_failed {
             anyhow::bail!("one or more lint checks failed");
@@ -280,4 +214,122 @@ impl FmtPass for Lints {
 
         Ok(())
     }
+}
+
+/// Run a fresh set of lints over a single workspace and its member crates.
+fn lint_workspace(
+    workspace_dir: &Path,
+    crate_dirs: &[&PathBuf],
+    non_crate_files: &[&PathBuf],
+    ctx: &FmtCtx,
+) -> anyhow::Result<bool> {
+    let lint_ctx = LintCtx {
+        only_diffed: ctx.only_diffed,
+    };
+
+    let mut lints: Vec<Box<dyn Lint>> = vec![
+        Box::new(cfg_target_arch::CfgTargetArch::new(&lint_ctx)),
+        Box::new(copyright::Copyright::new(&lint_ctx)),
+        Box::new(crate_name_nodash::CrateNameNoDash::new(&lint_ctx)),
+        Box::new(package_info::PackageInfo::new(&lint_ctx)),
+        Box::new(repr_packed::ReprPacked::new(&lint_ctx)),
+        Box::new(trailing_newline::TrailingNewline::new(&lint_ctx)),
+        Box::new(unsafe_code_comment::UnsafeCodeComment::new(&lint_ctx)),
+    ];
+
+    let workspace_manifest_path = workspace_dir.join("Cargo.toml");
+    let mut workspace_manifest = Lintable::<DocumentMut>::from_file(&workspace_manifest_path, ctx)?;
+
+    log::debug!(
+        "Linting workspace {} with {} crates and {} non-crate files",
+        workspace_dir.display(),
+        crate_dirs.len(),
+        non_crate_files.len()
+    );
+    for lint in lints.iter_mut() {
+        lint.enter_workspace(&workspace_manifest);
+    }
+
+    let mut any_failed = false;
+
+    for crate_dir in crate_dirs {
+        let manifest_path = crate_dir.join("Cargo.toml");
+        let mut crate_manifest = Lintable::<DocumentMut>::from_file(&manifest_path, ctx)?;
+
+        log::debug!("Linting crate {}", crate_dir.display());
+        for lint in lints.iter_mut() {
+            lint.enter_crate(&crate_manifest);
+        }
+
+        // Collect nested crate dirs within this crate to avoid
+        // processing files that belong to a child crate.
+        let nested_crate_dirs: Vec<_> = crate_dirs
+            .iter()
+            .filter(|other| *other != crate_dir && other.starts_with(crate_dir))
+            .collect();
+
+        // Walk all files in the crate directory.
+        for entry in ignore::Walk::new(crate_dir) {
+            let entry = entry?;
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
+            }
+            let path = entry.into_path();
+
+            // Skip Cargo.toml—already handled via enter_crate/exit_crate.
+            if path == manifest_path {
+                continue;
+            }
+
+            // Skip files that belong to a nested crate.
+            if nested_crate_dirs
+                .iter()
+                .any(|nested| path.starts_with(nested))
+            {
+                continue;
+            }
+
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let Some(mut file) = Lintable::<String>::from_file(&path, ctx)? else {
+                // Skip binary files
+                continue;
+            };
+
+            for lint in lints.iter_mut() {
+                if ext == "rs" {
+                    lint.visit_file(&mut file);
+                } else {
+                    lint.visit_nonrust_file(ext, &mut file);
+                }
+            }
+            any_failed |= file.finalize()?;
+        }
+
+        for lint in lints.iter_mut() {
+            lint.exit_crate(&mut crate_manifest);
+        }
+        any_failed |= crate_manifest.finalize()?;
+    }
+
+    // Process non-crate files (e.g. scripts, Guide).
+    for path in non_crate_files {
+        log::debug!("Linting non-crate file {}", path.display());
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let Some(mut file) = Lintable::<String>::from_file(path, ctx)? else {
+            // Skip binary files
+            log::debug!("Skipping binary file {}", path.display());
+            continue;
+        };
+        for lint in lints.iter_mut() {
+            lint.visit_nonrust_file(ext, &mut file);
+        }
+        any_failed |= file.finalize()?;
+    }
+
+    for lint in lints.iter_mut() {
+        lint.exit_workspace(&mut workspace_manifest);
+    }
+    any_failed |= workspace_manifest.finalize()?;
+
+    Ok(any_failed)
 }
