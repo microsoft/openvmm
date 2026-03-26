@@ -60,19 +60,33 @@ enum Options {
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
     },
-    /// Dump CoRIM (Concise Reference Integrity Manifest) headers from an IGVM file
+    /// Dump CoRIM (Concise Reference Integrity Manifest) headers and payloads from an IGVM file.
+    ///
+    /// This command scans the IGVM variable headers for CoRIM-related entries and prints or
+    /// extracts their contents. By default, all supported CoRIM headers for all platforms found
+    /// in the file are dumped. Use `--header-type` and `--platform` to narrow the selection.
+    ///
+    /// When `--output` is not specified, a human-readable summary of the selected CoRIM headers
+    /// is written to stdout. When `--output <dir>` is provided, the CoRIM payloads are written
+    /// to files in the given directory and the file paths are reported.
     DumpCorim {
-        /// Input IGVM file path
+        /// Input IGVM file path to read CoRIM headers and payloads from.
         #[clap(short, long = "filepath")]
         file_path: PathBuf,
-        /// Filter by header type (document or signature). If not specified, dumps both.
+        /// Filter by CoRIM header type (e.g. document or signature). If not specified,
+        /// all supported CoRIM header types in the IGVM file are included.
         #[clap(long, value_enum)]
         header_type: Option<CorimHeaderType>,
-        /// Filter by platform type. If not specified, dumps all platforms.
+        /// Filter by platform type for which the CoRIM applies (see `Platform` enum).
+        /// If not specified, CoRIM entries for all platforms present in the IGVM file
+        /// are considered.
         #[clap(long, value_enum)]
         platform: Option<Platform>,
-        /// Output directory to extract CoRIM payload data. Files will be named
-        /// `corim_document_<N>.cbor` and `corim_signature_<N>.cose`
+        /// Output directory to extract CoRIM payload data. For each matching CoRIM header,
+        /// the payload is written to a file named `corim_document_<N>.cbor` or
+        /// `corim_signature_<N>.cose`, where `<N>` is a zero-based index for that type.
+        /// If omitted, payload contents are not written as files and are instead described
+        /// in the textual output on stdout.
         #[clap(short, long)]
         output: Option<PathBuf>,
     },
