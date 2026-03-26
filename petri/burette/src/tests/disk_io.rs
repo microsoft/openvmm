@@ -13,11 +13,9 @@
 use crate::report::MetricResult;
 use anyhow::Context as _;
 use petri::pipette::cmd;
+use petri_artifacts_common::tags::MachineArch;
 use std::path::PathBuf;
 use vm_resource::IntoResource;
-
-const ARCH: petri_artifacts_common::tags::MachineArch =
-    petri_artifacts_common::tags::MachineArch::X86_64;
 
 /// Which disk backend to use for the fio test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -68,14 +66,17 @@ fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
 
     let vhd = resolver.require(ALPINE_3_23_X64);
     let guest = petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(vhd));
-    petri::Firmware::uefi(resolver, ARCH, guest)
+    petri::Firmware::uefi(resolver, MachineArch::host(), guest)
 }
 
 /// Register artifacts needed by the disk I/O test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        MachineArch::host(),
+        true,
     );
 }
 
@@ -132,7 +133,10 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         let firmware = build_firmware(resolver);
 
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
+            resolver,
+            firmware,
+            MachineArch::host(),
+            true,
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
 

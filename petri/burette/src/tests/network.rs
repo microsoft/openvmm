@@ -16,10 +16,6 @@ use petri::pipette::cmd;
 
 use petri_artifacts_common::tags::MachineArch;
 
-fn arch() -> MachineArch {
-    MachineArch::host()
-}
-
 /// Which NIC backend to use for the network test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum NicBackend {
@@ -63,7 +59,7 @@ fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
     use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64;
     use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64;
 
-    let arch = arch();
+    let arch = MachineArch::host();
     let boot_image = match arch {
         MachineArch::X86_64 => petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_X64)),
         MachineArch::Aarch64 => {
@@ -80,7 +76,7 @@ pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
         resolver,
         firmware,
-        arch(),
+        MachineArch::host(),
         true,
     );
 }
@@ -120,7 +116,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
             resolver,
             firmware,
-            arch(),
+            MachineArch::host(),
             true,
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
