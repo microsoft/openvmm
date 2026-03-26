@@ -146,7 +146,9 @@ impl crate::harness::WarmPerfTest for NetworkTest {
                 let nic = self.nic;
                 move |c| match nic {
                     NicBackend::Vmbus => c.with_nic(),
-                    NicBackend::VirtioNet => c.with_virtio_nic(),
+                    NicBackend::VirtioNet => c
+                        .with_pcie_root_topology(1, 1, 1)
+                        .with_virtio_nic("s0rc0rp0"),
                 }
             });
 
