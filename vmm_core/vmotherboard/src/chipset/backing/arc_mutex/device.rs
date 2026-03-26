@@ -214,9 +214,8 @@ where
                             override_bdf
                         }
                         (None, Some(hinted_bdf), _) => hinted_bdf,
-                        (None, None, Some(suggested_bdf)) | (Some(suggested_bdf), None, None) => {
-                            suggested_bdf
-                        }
+                        (None, None, Some(suggested_bdf)) => suggested_bdf,
+                        (Some(override_bdf), None, None) => override_bdf,
                         (None, None, None) => {
                             return Err(
                                 AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
