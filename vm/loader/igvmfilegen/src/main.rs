@@ -83,8 +83,8 @@ enum Options {
         #[clap(long, value_enum)]
         platform: Option<Platform>,
         /// Output directory to extract CoRIM payload data. For each matching CoRIM header,
-        /// the payload is written to a file named `corim_document_<N>.cbor` or
-        /// `corim_signature_<N>.cose`, where `<N>` is a zero-based index for that type.
+        /// the payload is written to a file named `corim_document_<platform>.<ext>`,
+        /// e.g. `corim_document_vbs.cbor` or `corim_signature_snp.cose`.
         /// If omitted, payload contents are not written as files and are instead described
         /// in the textual output on stdout.
         #[clap(short, long)]
@@ -486,6 +486,27 @@ fn format_platform_mask(platforms: &[IgvmPlatformHeader], mask: u32) -> String {
     }
 }
 
+/// Map a compatibility mask to a short lowercase platform name suitable for
+/// use in file names. Returns e.g. `"vbs"`, `"snp"`, `"tdx"`, or
+/// `"mask_0x3"` if the mask doesn't match a known platform.
+fn platform_name_for_mask(platforms: &[IgvmPlatformHeader], mask: u32) -> String {
+    for header in platforms {
+        match header {
+            IgvmPlatformHeader::SupportedPlatform(info) => {
+                if info.compatibility_mask == mask {
+                    return match info.platform_type {
+                        IgvmPlatformType::SEV_SNP => "snp".to_string(),
+                        IgvmPlatformType::TDX => "tdx".to_string(),
+                        IgvmPlatformType::VSM_ISOLATION => "vbs".to_string(),
+                        other => format!("platform_{:?}", other),
+                    };
+                }
+            }
+        }
+    }
+    format!("mask_0x{mask:X}")
+}
+
 /// Dump CoRIM headers from an IGVM file.
 fn dump_corim_headers(
     file_path: &std::path::Path,
@@ -571,18 +592,14 @@ fn dump_corim_headers(
             continue;
         }
 
-        let count = match kind {
-            CorimHeaderType::Document => {
-                document_count += 1;
-                document_count
-            }
-            CorimHeaderType::Signature => {
-                signature_count += 1;
-                signature_count
-            }
+        match kind {
+            CorimHeaderType::Document => document_count += 1,
+            CorimHeaderType::Signature => signature_count += 1,
         };
 
-        println!("CoRIM {label} Header #{count}:");
+        let platform_name = platform_name_for_mask(platforms, compatibility_mask);
+
+        println!("CoRIM {label} ({platform_name}):");
         println!(
             "  Compatibility Mask: 0x{compatibility_mask:X} ({})",
             format_platform_mask(platforms, compatibility_mask)
@@ -591,7 +608,7 @@ fn dump_corim_headers(
 
         if let Some(ref dir) = output_dir {
             let file_prefix = label.to_lowercase();
-            let output_file = dir.join(format!("corim_{file_prefix}_{count}.{extension}"));
+            let output_file = dir.join(format!("corim_{file_prefix}_{platform_name}.{extension}"));
             fs_err::write(&output_file, payload).context(format!(
                 "writing {label} payload to {}",
                 output_file.display()
@@ -688,14 +705,25 @@ fn patch_corim_headers(
         platform_type,
     )?;
 
-    // Write output file
+    // Write output file atomically: write to a temporary file in the same
+    // directory, then rename into place. This prevents a crash or
+    // interruption during the write from corrupting the output (which may
+    // be the same file as the input for in-place edits).
+    let temp_path = output.with_extension("igvm.tmp");
     tracing::info!(
         path = %output.display(),
         size = patched_igvm.len(),
         "Writing patched IGVM file"
     );
-    fs_err::write(&output, &patched_igvm)
-        .context(format!("writing output IGVM file at {}", output.display()))?;
+    fs_err::write(&temp_path, &patched_igvm).context(format!(
+        "writing temporary IGVM file at {}",
+        temp_path.display()
+    ))?;
+    fs_err::rename(&temp_path, &output).context(format!(
+        "renaming temporary file {} to {}",
+        temp_path.display(),
+        output.display()
+    ))?;
 
     Ok(())
 }

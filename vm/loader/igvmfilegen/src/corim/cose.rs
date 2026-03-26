@@ -97,6 +97,13 @@ const COSE_SIGN1_ARRAY_LEN: u32 = 4;
 /// initial byte.
 const CBOR_ADDITIONAL_INFO_MASK: u8 = 0x1F;
 
+/// Maximum CBOR nesting depth allowed by [`cbor_skip_item`].
+///
+/// COSE_Sign1 structures are shallow (depth ~2–3), so a limit of 16 is
+/// generous for legitimate inputs while protecting against stack overflow
+/// from maliciously crafted deeply-nested CBOR.
+const MAX_CBOR_NESTING_DEPTH: usize = 16;
+
 /// Parsed structural offsets within a COSE_Sign1 message.
 ///
 /// Returned by [`parse_cose_sign1_prefix`] after validating the common
@@ -237,9 +244,23 @@ pub(crate) fn cbor_decode_argument(
 /// materializing its value. Handles all major types including nested
 /// arrays, maps, and tagged items.
 ///
+/// Nesting depth is limited to [`MAX_CBOR_NESTING_DEPTH`] to prevent
+/// stack overflow on maliciously crafted inputs.
+///
 /// Returns the offset immediately after the item, or an error if the
 /// encoding is invalid or the data is truncated.
 pub(crate) fn cbor_skip_item(data: &[u8], offset: usize) -> anyhow::Result<usize> {
+    cbor_skip_item_depth(data, offset, 0)
+}
+
+/// Inner recursive implementation of [`cbor_skip_item`] with depth tracking.
+fn cbor_skip_item_depth(data: &[u8], offset: usize, depth: usize) -> anyhow::Result<usize> {
+    if depth > MAX_CBOR_NESTING_DEPTH {
+        anyhow::bail!(
+            "CBOR nesting depth exceeds maximum of {MAX_CBOR_NESTING_DEPTH} at offset {offset}"
+        );
+    }
+
     if offset >= data.len() {
         anyhow::bail!("CBOR truncated at offset {offset}");
     }
@@ -264,18 +285,18 @@ pub(crate) fn cbor_skip_item(data: &[u8], offset: usize) -> anyhow::Result<usize
         }
         CborMajorType::ARRAY => {
             for _ in 0..arg {
-                off = cbor_skip_item(data, off)?;
+                off = cbor_skip_item_depth(data, off, depth + 1)?;
             }
             Ok(off)
         }
         CborMajorType::MAP => {
             for _ in 0..arg {
-                off = cbor_skip_item(data, off)?; // key
-                off = cbor_skip_item(data, off)?; // value
+                off = cbor_skip_item_depth(data, off, depth + 1)?; // key
+                off = cbor_skip_item_depth(data, off, depth + 1)?; // value
             }
             Ok(off)
         }
-        CborMajorType::TAG => cbor_skip_item(data, off),
+        CborMajorType::TAG => cbor_skip_item_depth(data, off, depth + 1),
         CborMajorType::SIMPLE => Ok(off),
         _ => anyhow::bail!("Unknown CBOR major type {major:?}"),
     }
@@ -655,5 +676,22 @@ mod tests {
         // The detached version ends with: 0x58 0x40 <64 bytes>
         let sig_start = detached.len() - 64;
         assert_eq!(&detached[sig_start..], &signature[..]);
+    }
+
+    #[test]
+    fn test_cbor_skip_item_excessive_nesting_rejected() {
+        // Build a CBOR payload with nesting depth exceeding MAX_CBOR_NESTING_DEPTH.
+        // Each 0x81 byte is Array(1), wrapping the next level. After
+        // MAX_CBOR_NESTING_DEPTH+1 levels, the innermost item is uint(0).
+        let depth = MAX_CBOR_NESTING_DEPTH + 2;
+        let mut data = vec![0x81u8; depth]; // Array(1) repeated
+        data.push(0x00); // uint(0) at the deepest level
+
+        let err = cbor_skip_item(&data, 0).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("nesting depth"),
+            "Error should mention nesting depth: {msg}"
+        );
     }
 }
