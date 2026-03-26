@@ -302,18 +302,31 @@ impl VsockWorker {
         tracing::trace!(?header, "got tx packet from guest");
         let pending_work = {
             // TODO: Avoid allocating.
-            let locked = lock_payload_data(
+            if let Some(locked) = lock_payload_data(
                 &state.memory,
                 &work.payload,
                 header.len as u64,
                 true,
                 false,
                 LockedIoSlice(Vec::new()),
-            )?;
-
-            // Process through the relay.
-            self.connections
-                .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
+            )? {
+                // Process through the relay.
+                self.connections
+                    .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
+            } else {
+                let buf_len: usize = work
+                    .payload
+                    .iter()
+                    .map(|p| if p.writeable { 0 } else { p.length as usize })
+                    .sum();
+                // No data buffer could be locked; read into a temp buffer and process through the relay.
+                let mut temp_buf = vec![0u8; buf_len.min(header.len as usize)];
+                work.read_at_offset(VSOCK_HEADER_SIZE as u64, &state.memory, &mut temp_buf)?;
+                self.connections.handle_guest_tx(
+                    &self.driver,
+                    VsockPacket::new(header, &[IoSlice::new(&temp_buf)]),
+                )
+            }
         };
 
         self.queue_pending_work(pending_work);
@@ -352,16 +365,24 @@ impl VsockWorker {
             .expect("peek already succeeded before")
             .expect("queue was already checked to have items");
 
-        let (header, pending_work) =
+        let (packet, pending_work) =
             self.connections
                 .get_rx_packet(&state.memory, &self.driver, work.payload(), rx_work);
 
-        if let Some(header) = header {
+        if let Some(packet) = packet {
             let mut work = work.consume();
-            tracing::info!(?header, "sending reply");
-            let header_bytes = header.as_bytes();
+            tracing::info!(?packet.header, "sending reply");
+            let header_bytes = packet.header.as_bytes();
             work.write(&state.memory, header_bytes).expect("TODO");
-            work.complete(header_bytes.len() as u32 + header.len);
+
+            // The data buffer is present if this is an RW packet and the data could not be read
+            // directly into the guest buffer.
+            if !packet.data.is_empty() {
+                work.write_at_offset(header_bytes.len() as u64, &state.memory, &packet.data)
+                    .expect("TODO");
+            }
+
+            work.complete(header_bytes.len() as u32 + packet.header.len);
         }
 
         self.queue_pending_work(pending_work);
@@ -702,7 +723,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     require_exact_len: bool,
     writable: bool,
     locked_range: T,
-) -> anyhow::Result<LockedRangeImpl<'a, T>> {
+) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
     let regions = data_regions(payload, writable, VSOCK_HEADER_SIZE as u64, data_len);
     let gpn_list = try_build_gpn_list(&regions);
     let locked = if let Some((gpns, offset, len)) = &gpn_list {
@@ -711,9 +732,9 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
         }
         let paged_range =
             PagedRange::new(*offset, *len, gpns).expect("offset and len should be valid");
-        mem.lock_range(paged_range, locked_range)?
+        Some(mem.lock_range(paged_range, locked_range)?)
     } else {
-        todo!("use temp buffer");
+        None
     };
 
     Ok(locked)

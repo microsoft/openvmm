@@ -66,6 +66,24 @@ impl<'a> VsockPacket<'a> {
     }
 }
 
+pub struct VsockPacketBuf {
+    pub header: VsockHeader,
+    pub data: Vec<u8>,
+}
+
+impl VsockPacketBuf {
+    pub fn new(header: VsockHeader, data: Vec<u8>) -> Self {
+        Self { header, data }
+    }
+
+    pub fn header_only(header: VsockHeader) -> Self {
+        Self {
+            header,
+            data: Vec::new(),
+        }
+    }
+}
+
 open_enum! {
     /// Socket types for the `type` field.
     #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]

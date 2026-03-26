@@ -178,6 +178,17 @@ impl VirtioQueueCallbackWork {
         read_from_payload(&self.payload, mem, target)
     }
 
+    /// Read readable payload into `target`, skipping the first `offset`
+    /// bytes of readable data.
+    pub fn read_at_offset(
+        &self,
+        offset: u64,
+        mem: &GuestMemory,
+        target: &mut [u8],
+    ) -> Result<usize, GuestMemoryError> {
+        read_from_payload_at_offset(&self.payload, offset, mem, target)
+    }
+
     // Write the specified buffer to the payload buffers.
     pub fn write_at_offset(
         &self,

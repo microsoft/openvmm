@@ -1515,6 +1515,247 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
     assert_eq!(rx_bytes, sent_bytes);
 }
 
+/// Host sends data to the guest through an established connection using a
+/// fragmented RX descriptor chain that forces the bounce buffer fallback.
+///
+/// The bounce buffer path is exercised when the writable descriptors in the
+/// RX queue form a non-contiguous, non-page-aligned memory layout that cannot
+/// be directly mapped. This test splits the RX buffer into two fragments
+/// separated by a gap at non-page-aligned offsets.
+///
+/// This test is expected to fail until bounce buffer support is implemented
+/// for the vsock RX path.
+#[async_test]
+async fn bounce_buffer_rx_fragmented_descriptor(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5040);
+    harness.enable().await;
+
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5040)
+        .await;
+
+    // Build a fragmented RX descriptor chain:
+    //   desc N   (writable): first fragment  — header + part of data
+    //   desc N+1 (writable): second fragment — rest of data
+    //
+    // Place fragments at non-page-aligned GPAs separated by a gap so they
+    // cannot be combined into a single contiguous mapping.
+
+    let frag1_size: u32 = HDR_SIZE + 128; // header + 128 bytes of data
+    let frag2_size: u32 = 128; // remaining 128 bytes
+
+    let frag1_gpa = harness.alloc_data(frag1_size);
+    // Skip 100 bytes to create a non-page-aligned gap.
+    let _gap = harness.alloc_data(100);
+    let frag2_gpa = harness.alloc_data(frag2_size);
+
+    // Verify the fragments are at non-contiguous GPAs.
+    assert_ne!(
+        frag1_gpa + frag1_size as u64,
+        frag2_gpa,
+        "fragments must not be contiguous"
+    );
+    assert_ne!(frag1_gpa % 4096, 0, "frag1 should not be page-aligned");
+
+    // Zero both fragments.
+    harness
+        .mem
+        .write_at(frag1_gpa, &vec![0u8; frag1_size as usize])
+        .unwrap();
+    harness
+        .mem
+        .write_at(frag2_gpa, &vec![0u8; frag2_size as usize])
+        .unwrap();
+
+    // Build the descriptor chain: frag1 → frag2
+    let head_desc = harness.next_rx_desc;
+    harness.next_rx_desc += 2;
+
+    write_descriptor(
+        &harness.mem,
+        RX_DESC_ADDR,
+        head_desc,
+        frag1_gpa,
+        frag1_size,
+        DescriptorFlags::new().with_write(true).with_next(true),
+        head_desc + 1,
+    );
+    write_descriptor(
+        &harness.mem,
+        RX_DESC_ADDR,
+        head_desc + 1,
+        frag2_gpa,
+        frag2_size,
+        DescriptorFlags::new().with_write(true),
+        0,
+    );
+
+    make_available(
+        &harness.mem,
+        RX_AVAIL_ADDR,
+        head_desc,
+        &mut harness.rx_avail_idx,
+        QUEUE_SIZE,
+    );
+    harness.rx_queue_event.signal();
+
+    // Write data from the host side. The payload is 256 bytes, which should
+    // be split across the two fragments (128 in frag1 after the header,
+    // 128 in frag2).
+    let payload: Vec<u8> = (0..256).map(|i| (i % 251) as u8).collect();
+    stream.write_all(&payload).unwrap();
+
+    // Wait for the device to deliver the data to the guest rx queue.
+    let (_rx_id, rx_len) = harness.wait_for_rx_used().await;
+    assert!(
+        rx_len >= HDR_SIZE + payload.len() as u32,
+        "used len {rx_len} too small for header + payload"
+    );
+
+    // Verify the header in the first fragment.
+    let rx_hdr = harness.read_header(frag1_gpa);
+    let rx_op = rx_hdr.op;
+    let rx_data_len = rx_hdr.len;
+    assert_eq!(Operation(rx_op), Operation::RW, "expected RW data packet");
+    assert_eq!(rx_data_len, payload.len() as u32);
+
+    // Read data from frag1 (128 bytes after the header).
+    let mut data1 = vec![0u8; 128];
+    harness
+        .mem
+        .read_at(frag1_gpa + HDR_SIZE as u64, &mut data1)
+        .unwrap();
+
+    // Read data from frag2 (remaining 128 bytes).
+    let mut data2 = vec![0u8; 128];
+    harness.mem.read_at(frag2_gpa, &mut data2).unwrap();
+
+    // Reassemble and verify.
+    let mut received = Vec::with_capacity(256);
+    received.extend_from_slice(&data1);
+    received.extend_from_slice(&data2);
+    assert_eq!(
+        received, payload,
+        "bounce buffer RX data mismatch: fragmented descriptor chain did not round-trip correctly"
+    );
+}
+
+/// Guest sends data to the host using a fragmented TX descriptor chain that
+/// forces the bounce buffer fallback.
+///
+/// The bounce buffer path is exercised when the readable descriptors in the
+/// TX queue form a non-contiguous, non-page-aligned memory layout that cannot
+/// be directly mapped. This test splits the TX packet's data payload into two
+/// fragments separated by a gap at non-page-aligned offsets (the header is in
+/// its own descriptor).
+///
+/// This test is expected to fail until bounce buffer support is implemented
+/// for the vsock TX path.
+#[async_test]
+async fn bounce_buffer_tx_fragmented_descriptor(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5041);
+    harness.enable().await;
+
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5041)
+        .await;
+
+    // Build a fragmented TX descriptor chain:
+    //   desc N   (readable): VsockHeader
+    //   desc N+1 (readable): first data fragment  (128 bytes)
+    //   desc N+2 (readable): second data fragment (128 bytes)
+    //
+    // Place the data fragments at non-page-aligned GPAs separated by a gap
+    // so they cannot be combined into a single contiguous mapping.
+
+    let frag_size: u32 = 128;
+    let total_data: u32 = frag_size * 2;
+
+    let header_gpa = harness.alloc_data(HDR_SIZE);
+    let frag1_gpa = harness.alloc_data(frag_size);
+    // Skip 100 bytes to create a non-page-aligned gap.
+    let _gap = harness.alloc_data(100);
+    let frag2_gpa = harness.alloc_data(frag_size);
+
+    // Verify the fragments are at non-contiguous GPAs.
+    assert_ne!(
+        frag1_gpa + frag_size as u64,
+        frag2_gpa,
+        "fragments must not be contiguous"
+    );
+    assert_ne!(frag1_gpa % 4096, 0, "frag1 should not be page-aligned");
+
+    // Write the vsock header.
+    let header = harness.guest_header(1024, 5041, Operation::RW, total_data, 0);
+    harness.mem.write_at(header_gpa, header.as_bytes()).unwrap();
+
+    // Write recognizable patterns into the two data fragments.
+    let pattern1: Vec<u8> = (0..frag_size).map(|i| (i % 251) as u8).collect();
+    let pattern2: Vec<u8> = (0..frag_size).map(|i| ((i + 100) % 251) as u8).collect();
+    harness.mem.write_at(frag1_gpa, &pattern1).unwrap();
+    harness.mem.write_at(frag2_gpa, &pattern2).unwrap();
+
+    // Build descriptor chain: header → frag1 → frag2
+    let head_desc = harness.next_tx_desc;
+    harness.next_tx_desc += 3;
+
+    write_descriptor(
+        &harness.mem,
+        TX_DESC_ADDR,
+        head_desc,
+        header_gpa,
+        HDR_SIZE,
+        DescriptorFlags::new().with_next(true),
+        head_desc + 1,
+    );
+    write_descriptor(
+        &harness.mem,
+        TX_DESC_ADDR,
+        head_desc + 1,
+        frag1_gpa,
+        frag_size,
+        DescriptorFlags::new().with_next(true),
+        head_desc + 2,
+    );
+    write_descriptor(
+        &harness.mem,
+        TX_DESC_ADDR,
+        head_desc + 2,
+        frag2_gpa,
+        frag_size,
+        DescriptorFlags::new(),
+        0,
+    );
+
+    make_available(
+        &harness.mem,
+        TX_AVAIL_ADDR,
+        head_desc,
+        &mut harness.tx_avail_idx,
+        QUEUE_SIZE,
+    );
+    harness.tx_queue_event.signal();
+
+    // Wait for the TX descriptor to be consumed.
+    let (_tx_id, _tx_len) = harness.wait_for_tx_used().await;
+
+    // Read the data on the host side — should be pattern1 ++ pattern2.
+    let mut received = vec![0u8; total_data as usize];
+    stream.read_exact(&mut received).unwrap();
+
+    let mut expected = Vec::with_capacity(total_data as usize);
+    expected.extend_from_slice(&pattern1);
+    expected.extend_from_slice(&pattern2);
+    assert_eq!(
+        received, expected,
+        "bounce buffer TX data mismatch: fragmented descriptor chain did not round-trip correctly"
+    );
+}
+
 /// Host-initiated shutdown: the host closes the write side of its socket, and the device forwards a
 /// SHUTDOWN packet to the guest. After the graceful shutdown timeout, a RST packet is sent to tear
 /// down the connection.

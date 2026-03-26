@@ -26,8 +26,10 @@ use crate::spec::Operation;
 use crate::spec::ShutdownFlags;
 use crate::spec::SocketType;
 use crate::spec::VSOCK_CID_HOST;
+use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockHeader;
 use crate::spec::VsockPacket;
+use crate::spec::VsockPacketBuf;
 use crate::unix_relay::RelaySocket;
 use crate::unix_relay::UnixSocketRelay;
 use anyhow::Context;
@@ -314,7 +316,7 @@ impl Connection {
         mem: &GuestMemory,
         payload: &[VirtioQueuePayload],
         guest_cid: u64,
-    ) -> anyhow::Result<Option<VsockHeader>> {
+    ) -> anyhow::Result<Option<VsockPacketBuf>> {
         let peer_free = self.peer_credit_available();
         if peer_free == 0 {
             tracing::info!("peer has no buffer credit available, waiting for credit update");
@@ -341,11 +343,30 @@ impl Connection {
             LockedIoSliceMut(Vec::new()),
         )?;
 
-        let Some(bytes_read) = self
-            .socket
-            .read_vectored(locked.get_mut().0.as_mut())
-            .context("failed to read from host socket")?
-        else {
+        let (bytes_read, temp_buf) = if let Some(locked) = &mut locked {
+            // We can read directly into the guest buffer.
+            let bytes_read = self
+                .socket
+                .read_vectored(locked.get_mut().0.as_mut())
+                .context("failed to read from host socket")?;
+
+            (bytes_read, Vec::new())
+        } else {
+            // A temp buffer is needed since the guest buffer couldn't be locked.
+            let buf_len: usize = payload
+                .iter()
+                .map(|p| if p.writeable { p.length as usize } else { 0 })
+                .sum();
+
+            let mut temp_buf = vec![0u8; buf_len - VSOCK_HEADER_SIZE];
+            let bytes_read = self
+                .socket
+                .read(&mut temp_buf)
+                .context("failed to read from host socket")?;
+            (bytes_read, temp_buf)
+        };
+
+        let Some(bytes_read) = bytes_read else {
             // No data available (would block).
             return Ok(None);
         };
@@ -366,7 +387,13 @@ impl Connection {
         } else {
             tracing::trace!(bytes_read, "read data from host socket");
             self.tx_cnt += bytes_read as u32;
-            new_rw_packet(self.key, guest_cid, self.fwd_cnt.0, bytes_read as u32)
+            new_rw_packet(
+                self.key,
+                guest_cid,
+                self.fwd_cnt.0,
+                bytes_read as u32,
+                temp_buf,
+            )
         };
 
         Ok(Some(packet))
@@ -851,7 +878,7 @@ impl ConnectionManager {
         driver: &VmTaskDriver,
         payload: &[VirtioQueuePayload],
         work: RxWork,
-    ) -> (Option<VsockHeader>, PendingWork) {
+    ) -> (Option<VsockPacketBuf>, PendingWork) {
         match work {
             RxWork::Connection(id) => {
                 let Some(conn) = self.conns.get_mut(&id.key) else {
@@ -1063,8 +1090,8 @@ pub enum RxWork {
     SendReset(ConnKey),
 }
 
-fn new_reply_packet(key: ConnKey, op: Operation, guest_cid: u64, fwd_cnt: u32) -> VsockHeader {
-    VsockHeader {
+fn new_reply_packet(key: ConnKey, op: Operation, guest_cid: u64, fwd_cnt: u32) -> VsockPacketBuf {
+    VsockPacketBuf::header_only(VsockHeader {
         src_cid: VSOCK_CID_HOST,
         dst_cid: guest_cid,
         src_port: key.local_port,
@@ -1075,22 +1102,31 @@ fn new_reply_packet(key: ConnKey, op: Operation, guest_cid: u64, fwd_cnt: u32) -
         flags: ShutdownFlags::new().into(),
         buf_alloc: TX_BUF_SIZE,
         fwd_cnt,
-    }
+    })
 }
 
-fn new_rw_packet(key: ConnKey, guest_cid: u64, fwd_cnt: u32, len: u32) -> VsockHeader {
-    VsockHeader {
-        src_cid: VSOCK_CID_HOST,
-        dst_cid: guest_cid,
-        src_port: key.local_port,
-        dst_port: key.peer_port,
-        len,
-        socket_type: SocketType::STREAM.0,
-        op: Operation::RW.0,
-        flags: ShutdownFlags::new().into(),
-        buf_alloc: TX_BUF_SIZE,
-        fwd_cnt,
-    }
+fn new_rw_packet(
+    key: ConnKey,
+    guest_cid: u64,
+    fwd_cnt: u32,
+    len: u32,
+    data: Vec<u8>,
+) -> VsockPacketBuf {
+    VsockPacketBuf::new(
+        VsockHeader {
+            src_cid: VSOCK_CID_HOST,
+            dst_cid: guest_cid,
+            src_port: key.local_port,
+            dst_port: key.peer_port,
+            len,
+            socket_type: SocketType::STREAM.0,
+            op: Operation::RW.0,
+            flags: ShutdownFlags::new().into(),
+            buf_alloc: TX_BUF_SIZE,
+            fwd_cnt,
+        },
+        data,
+    )
 }
 
 fn new_shutdown_packet(
@@ -1098,8 +1134,8 @@ fn new_shutdown_packet(
     guest_cid: u64,
     fwd_cnt: u32,
     flags: ShutdownFlags,
-) -> VsockHeader {
-    VsockHeader {
+) -> VsockPacketBuf {
+    VsockPacketBuf::header_only(VsockHeader {
         src_cid: VSOCK_CID_HOST,
         dst_cid: guest_cid,
         src_port: key.local_port,
@@ -1110,11 +1146,11 @@ fn new_shutdown_packet(
         flags: flags.into(),
         buf_alloc: TX_BUF_SIZE,
         fwd_cnt,
-    }
+    })
 }
 
-fn new_rst_packet(guest_cid: u64, key: ConnKey) -> VsockHeader {
-    VsockHeader {
+fn new_rst_packet(guest_cid: u64, key: ConnKey) -> VsockPacketBuf {
+    VsockPacketBuf::header_only(VsockHeader {
         src_cid: VSOCK_CID_HOST,
         dst_cid: guest_cid,
         src_port: key.local_port,
@@ -1125,5 +1161,5 @@ fn new_rst_packet(guest_cid: u64, key: ConnKey) -> VsockHeader {
         flags: ShutdownFlags::new().into(),
         buf_alloc: 0,
         fwd_cnt: 0,
-    }
+    })
 }
