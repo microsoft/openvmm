@@ -59,6 +59,8 @@ use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
 use virtio::queue::VirtioQueuePayload;
+use virtio::regions::data_regions;
+use virtio::regions::try_build_gpn_list;
 use virtio::spec::VirtioDeviceFeatures;
 use virtio::spec::VirtioDeviceType;
 use vmcore::vm_task::VmTaskDriver;
@@ -578,116 +580,6 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         {}
         Ok(())
     }
-}
-
-/// TODO: Share with virtio_blk
-struct DataRegion {
-    addr: u64,
-    len: u64,
-}
-
-/// Extract the data-carrying regions from a descriptor chain.
-///
-/// Filters descriptors by direction (`writable`), skips `skip_bytes`
-/// (the request header for writes), and limits the total to `data_len`
-/// (which excludes the status byte for reads).
-fn data_regions(
-    payloads: &[VirtioQueuePayload],
-    writable: bool,
-    skip_bytes: u64,
-    data_len: u64,
-) -> Vec<DataRegion> {
-    let mut result = Vec::new();
-    let mut skip = skip_bytes;
-    let mut remaining = data_len;
-    for payload in payloads {
-        if payload.writeable != writable || remaining == 0 {
-            continue;
-        }
-        let mut addr = payload.address;
-        let mut plen = payload.length as u64;
-        if skip > 0 {
-            let s = skip.min(plen);
-            addr += s;
-            plen -= s;
-            skip -= s;
-        }
-        if plen == 0 {
-            continue;
-        }
-        let chunk = plen.min(remaining);
-        remaining -= chunk;
-        result.push(DataRegion { addr, len: chunk });
-    }
-    result
-}
-
-/// Try to build a single `PagedRange` GPN list from the data regions.
-///
-/// Returns `Some((gpns, offset, len))` if every region boundary falls on
-/// a page boundary (or regions are GPA-contiguous), so the whole chain
-/// can be expressed as one [`PagedRange`]. Returns `None` if any
-/// interior boundary violates the constraint.
-fn try_build_gpn_list(regions: &[DataRegion]) -> Option<(Vec<u64>, usize, usize)> {
-    const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
-
-    let mut gpns = Vec::new();
-    let mut total_len: u64 = 0;
-    let mut first_offset: Option<usize> = None;
-    let mut prev_end: Option<u64> = None;
-
-    for region in regions {
-        let addr = region.addr;
-        let len = region.len;
-        if len == 0 {
-            continue;
-        }
-
-        let first_gpn = addr / PAGE_SIZE;
-        let last_gpn = (addr + len - 1) / PAGE_SIZE;
-
-        if let Some(pe) = prev_end {
-            if addr == pe {
-                // GPA-contiguous with the previous region.
-                // The shared page (if any) is already in gpns.
-                let last_gpn_in_list = *gpns.last().unwrap();
-                if first_gpn == last_gpn_in_list {
-                    // Same page — just add any new pages beyond it.
-                    for gpn in (first_gpn + 1)..=last_gpn {
-                        gpns.push(gpn);
-                    }
-                } else {
-                    // Previous region ended exactly at a page boundary,
-                    // so first_gpn is the next page.
-                    for gpn in first_gpn..=last_gpn {
-                        gpns.push(gpn);
-                    }
-                }
-            } else {
-                // Not GPA-contiguous. Both the previous end and this
-                // start must be page-aligned to avoid a gap or overlap
-                // within a page slot.
-                if pe % PAGE_SIZE != 0 || addr % PAGE_SIZE != 0 {
-                    return None;
-                }
-                for gpn in first_gpn..=last_gpn {
-                    gpns.push(gpn);
-                }
-            }
-        } else {
-            // First region.
-            first_offset = Some((addr % PAGE_SIZE) as usize);
-            for gpn in first_gpn..=last_gpn {
-                gpns.push(gpn);
-            }
-        }
-
-        prev_end = Some(addr + len);
-        total_len += len;
-    }
-
-    let offset = first_offset.unwrap_or(0);
-    Some((gpns, offset, total_len as usize))
 }
 
 // TODO: Use SmallVec.
