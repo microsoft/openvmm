@@ -111,15 +111,6 @@ pub type BusIdPcieEnumerator = BusId<bus_kind::PcieEnumerator>;
 /// Type-safe ID for a downstream PCIe port.
 pub type BusIdPcieDownstreamPort = BusId<bus_kind::PcieDownstreamPort>;
 
-/// Static PCI placement metadata for a chipset device handle.
-#[derive(MeshPayload, Debug)]
-pub struct ChipsetDevicePciPlacement {
-    /// Name of the PCI bus to attach this device to.
-    pub bus_name: String,
-    /// Static PCI bus/device/function tuple.
-    pub bdf: (u8, u8, u8),
-}
-
 /// A handle to instantiate a chipset device.
 #[derive(MeshPayload, Debug)]
 pub struct ChipsetDeviceHandle {
@@ -127,28 +118,4 @@ pub struct ChipsetDeviceHandle {
     pub name: String,
     /// The device resource handle.
     pub resource: Resource<ChipsetDeviceHandleKind>,
-    /// Optional explicit static PCI placement override.
-    ///
-    /// When absent, vmotherboard may use device-provided placement hints.
-    pub(crate) pci_placement: Option<ChipsetDevicePciPlacement>,
-}
-
-impl ChipsetDeviceHandle {
-    /// Create a chipset device handle with no explicit PCI placement override.
-    pub fn new(name: impl Into<String>, resource: Resource<ChipsetDeviceHandleKind>) -> Self {
-        Self {
-            name: name.into(),
-            resource,
-            pci_placement: None,
-        }
-    }
-
-    /// Set an explicit static PCI placement override for this device.
-    pub fn with_pci_placement(mut self, bus_name: impl Into<String>, bdf: (u8, u8, u8)) -> Self {
-        self.pci_placement = Some(ChipsetDevicePciPlacement {
-            bus_name: bus_name.into(),
-            bdf,
-        });
-        self
-    }
 }

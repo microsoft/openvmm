@@ -45,9 +45,9 @@ impl PetriVmConfigOpenVmm {
         if self.resources.properties.is_openhcl {
             self.ged.as_mut().unwrap().enable_battery = true;
         } else {
-            self.config.chipset_devices.push(ChipsetDeviceHandle::new(
-                "battery",
-                BatteryDeviceHandleX64 {
+            self.config.chipset_devices.push(ChipsetDeviceHandle {
+                name: "battery".to_string(),
+                resource: BatteryDeviceHandleX64 {
                     battery_status_recv: {
                         let (tx, rx) = mesh::channel();
                         tx.send(HostBatteryUpdate::default_present());
@@ -55,7 +55,7 @@ impl PetriVmConfigOpenVmm {
                     },
                 }
                 .into_resource(),
-            ));
+            });
             if let LoadMode::Uefi { enable_battery, .. } = &mut self.config.load_mode {
                 *enable_battery = true;
             }

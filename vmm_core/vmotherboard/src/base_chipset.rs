@@ -4,7 +4,6 @@
 //! A flexible chipset builder that pre-populates a [`Chipset`](super::Chipset)
 //! with a customizable configuration of semi-standardized device.
 
-use crate::BusId;
 use crate::ChipsetDeviceHandle;
 use crate::PowerEvent;
 use crate::chipset::ChipsetBuilder;
@@ -730,21 +729,10 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in device_handles {
-            let ChipsetDeviceHandle {
-                name,
-                resource,
-                pci_placement,
-            } = device;
+            let ChipsetDeviceHandle { name, resource } = device;
 
-            let mut device_builder = builder.arc_mutex_device(name.as_ref());
-            if let Some(pci_placement) = pci_placement {
-                let (bus, slot, function) = pci_placement.bdf;
-                device_builder = device_builder
-                    .on_pci_bus(BusId::new(pci_placement.bus_name.as_str()))
-                    .with_pci_addr(bus, slot, function);
-            }
-
-            device_builder
+            builder
+                .arc_mutex_device(name.as_ref())
                 .try_add_async(async |services| {
                     resolver
                         .resolve(

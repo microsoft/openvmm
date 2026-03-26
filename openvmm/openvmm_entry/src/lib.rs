@@ -1313,9 +1313,9 @@ async fn vm_config_from_command_line(
             )
         };
 
-        chipset_devices.push(ChipsetDeviceHandle::new(
-            "tpm",
-            chipset_device_worker_defs::RemoteChipsetDeviceHandle {
+        chipset_devices.push(ChipsetDeviceHandle {
+            name: "tpm".to_string(),
+            resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
                     ppi_store,
                     nvram_store,
@@ -1332,7 +1332,7 @@ async fn vm_config_from_command_line(
                 worker_host: mesh.make_host("tpm", None).await?,
             }
             .into_resource(),
-        ));
+        });
     }
 
     let custom_uefi_vars = {

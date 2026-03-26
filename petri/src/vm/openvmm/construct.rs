@@ -1000,9 +1000,9 @@ impl PetriVmConfigSetupCore<'_> {
                 )
             };
 
-            Ok(Some(ChipsetDeviceHandle::new(
-                "tpm",
-                chipset_device_worker_defs::RemoteChipsetDeviceHandle {
+            Ok(Some(ChipsetDeviceHandle {
+                name: "tpm".to_string(),
+                resource: chipset_device_worker_defs::RemoteChipsetDeviceHandle {
                     device: TpmDeviceHandle {
                         ppi_store,
                         nvram_store,
@@ -1020,7 +1020,7 @@ impl PetriVmConfigSetupCore<'_> {
                     worker_host: self.make_device_worker("tpm").await?,
                 }
                 .into_resource(),
-            )))
+            }))
         } else {
             Ok(None)
         }
