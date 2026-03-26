@@ -20,6 +20,7 @@ use std::sync::atomic::AtomicBool;
 use toml_edit::DocumentMut;
 
 pub struct LintCtx {
+    #[expect(dead_code)]
     /// When true we are linting a subset of repo files, so some lints may want
     /// to skip checks that require whole-repo analysis.
     only_diffed: bool,
@@ -61,7 +62,7 @@ impl<T> Deref for Lintable<T> {
 
 impl Lintable<String> {
     /// Returns `None` for binary (non-UTF-8) files.
-    fn from_file(path: &Path, ctx: &FmtCtx) -> anyhow::Result<Option<Self>> {
+    fn from_file(path: &Path, ctx: &FmtCtx, workspace_dir: &Path) -> anyhow::Result<Option<Self>> {
         let bytes = fs_err::read(path)?;
         let content = match String::from_utf8(bytes) {
             Ok(s) => s,
@@ -71,7 +72,7 @@ impl Lintable<String> {
             content,
             raw: None,
             fix: ctx.fix,
-            path: path.strip_prefix(&ctx.ctx.root).unwrap().to_owned(),
+            path: path.strip_prefix(workspace_dir).unwrap().to_owned(),
             modified: false,
             failed: AtomicBool::new(false),
         }))
@@ -79,13 +80,13 @@ impl Lintable<String> {
 }
 
 impl Lintable<DocumentMut> {
-    fn from_file(path: &Path, ctx: &FmtCtx) -> anyhow::Result<Self> {
+    fn from_file(path: &Path, ctx: &FmtCtx, workspace_dir: &Path) -> anyhow::Result<Self> {
         let raw = fs_err::read_to_string(path)?;
         Ok(Self {
             content: raw.parse()?,
             raw: Some(raw),
             fix: ctx.fix,
-            path: path.strip_prefix(&ctx.ctx.root).unwrap().to_owned(),
+            path: path.strip_prefix(workspace_dir).unwrap().to_owned(),
             modified: false,
             failed: AtomicBool::new(false),
         })
@@ -238,7 +239,8 @@ fn lint_workspace(
     ];
 
     let workspace_manifest_path = workspace_dir.join("Cargo.toml");
-    let mut workspace_manifest = Lintable::<DocumentMut>::from_file(&workspace_manifest_path, ctx)?;
+    let mut workspace_manifest =
+        Lintable::<DocumentMut>::from_file(&workspace_manifest_path, ctx, workspace_dir)?;
 
     log::debug!(
         "Linting workspace {} with {} crates and {} non-crate files",
@@ -254,7 +256,8 @@ fn lint_workspace(
 
     for crate_dir in crate_dirs {
         let manifest_path = crate_dir.join("Cargo.toml");
-        let mut crate_manifest = Lintable::<DocumentMut>::from_file(&manifest_path, ctx)?;
+        let mut crate_manifest =
+            Lintable::<DocumentMut>::from_file(&manifest_path, ctx, workspace_dir)?;
 
         log::debug!("Linting crate {}", crate_dir.display());
         for lint in lints.iter_mut() {
@@ -290,7 +293,7 @@ fn lint_workspace(
             }
 
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            let Some(mut file) = Lintable::<String>::from_file(&path, ctx)? else {
+            let Some(mut file) = Lintable::<String>::from_file(&path, ctx, workspace_dir)? else {
                 // Skip binary files
                 continue;
             };
@@ -315,7 +318,7 @@ fn lint_workspace(
     for path in non_crate_files {
         log::debug!("Linting non-crate file {}", path.display());
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let Some(mut file) = Lintable::<String>::from_file(path, ctx)? else {
+        let Some(mut file) = Lintable::<String>::from_file(path, ctx, workspace_dir)? else {
             // Skip binary files
             log::debug!("Skipping binary file {}", path.display());
             continue;
