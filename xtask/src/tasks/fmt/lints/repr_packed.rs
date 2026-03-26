@@ -28,7 +28,9 @@ impl Lint for ReprPacked {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed == "#[repr(packed)]"
-                || trimmed.starts_with("#[repr(packed(") && trimmed.ends_with(")]")
+                || (trimmed.starts_with("#[repr(packed(")
+                    && trimmed.ends_with(")]")
+                    && !trimmed.contains("C"))
             {
                 let repr_off = line.find("repr(packed").unwrap();
                 offsets.push(pos + repr_off);
