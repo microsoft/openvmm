@@ -617,7 +617,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
     locked_range: T,
 ) -> anyhow::Result<Option<LockedRangeImpl<'a, T>>> {
     let regions = data_regions(payload, writable, VSOCK_HEADER_SIZE as u64, data_len);
-    let gpn_list = try_build_gpn_list(&regions);
+    let gpn_list = try_build_gpn_list(regions);
     let locked = if let Some((gpns, offset, len)) = &gpn_list {
         if require_exact_len && *len != data_len as usize {
             anyhow::bail!("data length mismatch in vsock tx packet");

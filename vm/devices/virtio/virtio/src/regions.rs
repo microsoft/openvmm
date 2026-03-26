@@ -3,6 +3,8 @@
 
 //! Helpers for working with data regions defined by virtio descriptors.
 
+use std::borrow::Borrow;
+
 /// A data-carrying region extracted from a descriptor chain.
 ///
 /// Each entry represents one contiguous GPA range that carries IO data,
@@ -14,38 +16,59 @@ pub struct DataRegion {
 
 /// Extract the data-carrying regions from a descriptor chain.
 ///
-/// Filters descriptors by direction (`writable`), skips `skip_bytes`
-/// (the request header for writes), and limits the total to `data_len`
-/// (which excludes the status byte for reads).
+/// Returns an iterator that filters descriptors by direction (`writable`),
+/// skips `skip_bytes` (the request header for writes), and limits the
+/// total to `data_len` (which excludes the status byte for reads).
 pub fn data_regions(
     payloads: &[crate::queue::VirtioQueuePayload],
     writable: bool,
     skip_bytes: u64,
     data_len: u64,
-) -> Vec<DataRegion> {
-    let mut result = Vec::new();
-    let mut skip = skip_bytes;
-    let mut remaining = data_len;
-    for payload in payloads {
-        if payload.writeable != writable || remaining == 0 {
-            continue;
-        }
-        let mut addr = payload.address;
-        let mut plen = payload.length as u64;
-        if skip > 0 {
-            let s = skip.min(plen);
-            addr += s;
-            plen -= s;
-            skip -= s;
-        }
-        if plen == 0 {
-            continue;
-        }
-        let chunk = plen.min(remaining);
-        remaining -= chunk;
-        result.push(DataRegion { addr, len: chunk });
+) -> DataRegions<'_> {
+    DataRegions {
+        payloads: payloads.iter(),
+        writable,
+        skip: skip_bytes,
+        remaining: data_len,
     }
-    result
+}
+
+/// Iterator over data-carrying regions from a descriptor chain.
+///
+/// Created by [`data_regions`].
+pub struct DataRegions<'a> {
+    payloads: core::slice::Iter<'a, crate::queue::VirtioQueuePayload>,
+    writable: bool,
+    skip: u64,
+    remaining: u64,
+}
+
+impl Iterator for DataRegions<'_> {
+    type Item = DataRegion;
+
+    fn next(&mut self) -> Option<DataRegion> {
+        while self.remaining > 0 {
+            let payload = self.payloads.next()?;
+            if payload.writeable != self.writable {
+                continue;
+            }
+            let mut addr = payload.address;
+            let mut plen = payload.length as u64;
+            if self.skip > 0 {
+                let s = self.skip.min(plen);
+                addr += s;
+                plen -= s;
+                self.skip -= s;
+            }
+            if plen == 0 {
+                continue;
+            }
+            let chunk = plen.min(self.remaining);
+            self.remaining -= chunk;
+            return Some(DataRegion { addr, len: chunk });
+        }
+        None
+    }
 }
 
 /// Try to build a single `PagedRange` GPN list from the data regions.
@@ -54,7 +77,9 @@ pub fn data_regions(
 /// a page boundary (or regions are GPA-contiguous), so the whole chain
 /// can be expressed as one [`PagedRange`]. Returns `None` if any
 /// interior boundary violates the constraint.
-pub fn try_build_gpn_list(regions: &[DataRegion]) -> Option<(Vec<u64>, usize, usize)> {
+pub fn try_build_gpn_list(
+    regions: impl IntoIterator<Item = impl Borrow<DataRegion>>,
+) -> Option<(Vec<u64>, usize, usize)> {
     const PAGE_SIZE: u64 = guestmem::PAGE_SIZE as u64;
 
     let mut gpns = Vec::new();
@@ -63,6 +88,7 @@ pub fn try_build_gpn_list(regions: &[DataRegion]) -> Option<(Vec<u64>, usize, us
     let mut prev_end: Option<u64> = None;
 
     for region in regions {
+        let region = region.borrow();
         let addr = region.addr;
         let len = region.len;
         if len == 0 {
@@ -136,7 +162,7 @@ mod tests {
     fn data_regions_read_single_descriptor() {
         // Read: writable descriptors carry data, skip=0, exclude 1 byte for status.
         let payloads = vec![payload(true, 0x1000, 4097)];
-        let regions = data_regions(&payloads, true, 0, 4096);
+        let regions: Vec<_> = data_regions(&payloads, true, 0, 4096).collect();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].addr, 0x1000);
         assert_eq!(regions[0].len, 4096);
@@ -149,7 +175,7 @@ mod tests {
             payload(false, 0x1000, 16),  // header
             payload(false, 0x2000, 512), // data
         ];
-        let regions = data_regions(&payloads, false, 16, 512);
+        let regions: Vec<_> = data_regions(&payloads, false, 16, 512).collect();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].addr, 0x2000);
         assert_eq!(regions[0].len, 512);
@@ -162,7 +188,7 @@ mod tests {
             payload(false, 0x1000, 8),   // first 8 bytes of header
             payload(false, 0x2000, 520), // remaining 8 header + 512 data
         ];
-        let regions = data_regions(&payloads, false, 16, 512);
+        let regions: Vec<_> = data_regions(&payloads, false, 16, 512).collect();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].addr, 0x2008); // 0x2000 + 8 skipped
         assert_eq!(regions[0].len, 512);
@@ -176,7 +202,7 @@ mod tests {
             payload(true, 0x3000, 4097), // writable: data + status
         ];
         // Extract writable regions (read path).
-        let regions = data_regions(&payloads, true, 0, 4096);
+        let regions: Vec<_> = data_regions(&payloads, true, 0, 4096).collect();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].addr, 0x3000);
         assert_eq!(regions[0].len, 4096);
@@ -185,7 +211,7 @@ mod tests {
     #[test]
     fn data_regions_empty_payload() {
         let payloads: Vec<VirtioQueuePayload> = vec![];
-        let regions = data_regions(&payloads, true, 0, 4096);
+        let regions: Vec<_> = data_regions(&payloads, true, 0, 4096).collect();
         assert!(regions.is_empty());
     }
 

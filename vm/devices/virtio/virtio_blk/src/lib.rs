@@ -657,7 +657,7 @@ async fn do_io(
         return Err(VIRTIO_BLK_S_IOERR);
     }
 
-    let regions = data_regions(&work.payload, writable, skip_bytes, data_len);
+    let regions: Vec<_> = data_regions(&work.payload, writable, skip_bytes, data_len).collect();
 
     let (mut io_mem, io_range, bounced) =
         if let Some((gpns, offset, len)) = try_build_gpn_list(&regions) {
