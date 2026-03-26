@@ -1,3 +1,14 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+mod cfg_target_arch;
+mod copyright;
+mod crate_name_nodash;
+mod package_info;
+mod repr_packed;
+mod trailing_newline;
+mod unsafe_code_comment;
+
 use crate::fs_helpers::git_diffed;
 use crate::tasks::fmt::FmtCtx;
 use crate::tasks::fmt::FmtPass;
@@ -6,6 +17,7 @@ use std::fmt::Display;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use toml_edit::DocumentMut;
 
 pub struct LintCtx {
@@ -31,10 +43,13 @@ pub trait Lint {
 
 pub struct Lintable<T> {
     content: T,
+    raw: Option<String>,
     fix: bool,
     path: PathBuf,
     modified: bool,
-    failed: bool,
+    // This doesn't really need to be atomic, but it lets `unfixable` only take
+    // `&self` which is more convenient.
+    failed: AtomicBool,
 }
 
 impl<T> Deref for Lintable<T> {
@@ -55,38 +70,53 @@ impl Lintable<String> {
         };
         Ok(Some(Self {
             content,
+            raw: None,
             fix: ctx.fix,
-            path: path.to_owned(),
+            path: path.strip_prefix(&ctx.ctx.root).unwrap().to_owned(),
             modified: false,
-            failed: false,
+            failed: AtomicBool::new(false),
         }))
     }
 }
 
 impl Lintable<DocumentMut> {
     fn from_file(path: &Path, ctx: &FmtCtx) -> anyhow::Result<Self> {
+        let raw = fs_err::read_to_string(path)?;
         Ok(Self {
-            content: fs_err::read_to_string(path)?.parse::<DocumentMut>()?,
+            content: raw.parse()?,
+            raw: Some(raw),
             fix: ctx.fix,
-            path: path.to_owned(),
+            path: path.strip_prefix(&ctx.ctx.root).unwrap().to_owned(),
             modified: false,
-            failed: false,
+            failed: AtomicBool::new(false),
         })
     }
 }
 
 impl<T> Lintable<T> {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn raw(&self) -> Option<&str> {
+        self.raw.as_deref()
+    }
+
     pub fn fix(&mut self, description: &str, op: impl FnOnce(&mut T)) {
         if self.fix {
             op(&mut self.content);
             self.modified = true;
         } else {
-            self.failed = true;
+            log::error!("{}: {}", self.path.display(), description);
+            self.failed
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
-    pub fn unfixable(&mut self, description: &str) {
-        self.failed = true;
+    pub fn unfixable(&self, description: &str) {
+        log::error!("{}: {}", self.path.display(), description);
+        self.failed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn finalize(self) -> anyhow::Result<bool>
@@ -96,10 +126,7 @@ impl<T> Lintable<T> {
         if self.modified {
             fs_err::write(&self.path, self.content.to_string())?;
         }
-        if self.failed {
-            log::error!("lint failure in {}", self.path.display());
-        }
-        Ok(self.failed)
+        Ok(self.failed.into_inner())
     }
 }
 
@@ -112,7 +139,13 @@ impl FmtPass for Lints {
         };
 
         let mut lints: Vec<Box<dyn Lint>> = vec![
-            // add lints here
+            Box::new(cfg_target_arch::CfgTargetArch::new(&lint_ctx)),
+            Box::new(copyright::Copyright::new(&lint_ctx)),
+            Box::new(crate_name_nodash::CrateNameNoDash::new(&lint_ctx)),
+            Box::new(package_info::PackageInfo::new(&lint_ctx)),
+            Box::new(repr_packed::ReprPacked::new(&lint_ctx)),
+            Box::new(trailing_newline::TrailingNewline::new(&lint_ctx)),
+            Box::new(unsafe_code_comment::UnsafeCodeComment::new(&lint_ctx)),
         ];
 
         // Determine which files are diffed, if applicable.
