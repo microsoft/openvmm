@@ -1005,7 +1005,7 @@ async fn servicing_keepalive_slow_create_io_queue(
         .with_timeout(TOTAL_SAVE_TIMEOUT)
         .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
         .await
-        .expect("VM save did not complete within 60 seconds, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
+        .expect("VM save did not complete within the given timeout, even though it should have. Save is stuck when draining after restore with slow create_io_queue.")
         .expect("Save failed");
 
     fault_start_updater.set(false).await;
