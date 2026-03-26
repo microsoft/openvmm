@@ -117,13 +117,17 @@ impl SplitQueueGetWork {
     }
 
     pub fn get_available_descriptor_index(&self, wrapped_index: u16) -> Result<u16, QueueError> {
-        Ok(self
+        let desc_index = self
             .queue_avail
             .read_plain::<u16_le>(
                 spec::AVAIL_OFFSET_RING + spec::AVAIL_ELEMENT_SIZE * wrapped_index as u64,
             )
             .map_err(QueueError::Memory)?
-            .get())
+            .get();
+        if desc_index >= self.queue_size {
+            return Err(QueueError::InvalidDescriptorIndex(desc_index));
+        }
+        Ok(desc_index)
     }
 
     fn set_available_event(&self, index: u16) -> Result<(), QueueError> {

@@ -62,6 +62,8 @@ pub enum QueueError {
     TooLong,
     #[error("Invalid queue size {0}. Must be a power of 2.")]
     InvalidQueueSize(u16),
+    #[error("descriptor index {0} is out of range")]
+    InvalidDescriptorIndex(u16),
 }
 
 pub struct QueueDescriptor {
