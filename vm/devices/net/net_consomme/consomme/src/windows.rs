@@ -111,7 +111,7 @@ pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
             raw,
             WinSock::IPPROTO_UDP,
             UDP_SEND_MSG_SIZE,
-            std::ptr::from_ref(&size_dword).cast::<core::ffi::c_char>(),
+            std::ptr::from_ref(&size_dword).cast::<u8>(),
             size_of::<u32>() as i32,
         )
     };
