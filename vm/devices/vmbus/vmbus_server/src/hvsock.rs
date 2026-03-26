@@ -272,6 +272,7 @@ async fn read_hybrid_vsock_connect(
 
     let rest = buf[..i - 1]
         .strip_prefix(b"CONNECT ")
+        .or_else(|| buf[..i - 1].strip_prefix(b"connect "))
         .context("invalid connect request")?;
 
     let rest = std::str::from_utf8(rest).context("invalid connect request")?;
