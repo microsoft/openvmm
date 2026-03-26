@@ -101,6 +101,24 @@ impl Worker {
         Ok(())
     }
 
+    pub(crate) async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemovePcieDevice, port_name)
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn inspect_all(&self) -> inspect::Node {
         let mut inspection = inspect::inspect("", &self.handle);
         inspection.resolve().await;

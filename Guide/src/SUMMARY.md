@@ -116,6 +116,8 @@
       - [Floppy](./reference/emulated/legacy_x86/floppy.md)
       - [PCI]()
       - [VGA]()
+    - [PCIe]()
+      - [Overview](./reference/emulated/pcie/overview.md)
   - [Direct Assigned]()
 - [Device Backends]()
   - [Serial]()

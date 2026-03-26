@@ -1765,6 +1765,20 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         self.runtime.update_command_line(command_line).await
     }
 
+    /// Hot-add a PCIe device to a named port at runtime.
+    pub async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.runtime.add_pcie_device(port_name, resource).await
+    }
+
+    /// Hot-remove a PCIe device from a named port at runtime.
+    pub async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        self.runtime.remove_pcie_device(port_name).await
+    }
+
     /// Instruct the OpenHCL to save the state of the VTL2 paravisor. Will fail if the VM
     /// is not running OpenHCL. Will also fail if the VM is not running or if this is called twice in succession
     pub async fn save_openhcl(
@@ -1945,6 +1959,20 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
         controller_id: &Guid,
         controller_location: u32,
     ) -> anyhow::Result<()>;
+    /// Hot-add a PCIe device to a named port at runtime.
+    async fn add_pcie_device(
+        &mut self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        let _ = (port_name, resource);
+        anyhow::bail!("PCIe hotplug not supported by this backend")
+    }
+    /// Hot-remove a PCIe device from a named port at runtime.
+    async fn remove_pcie_device(&mut self, port_name: String) -> anyhow::Result<()> {
+        let _ = port_name;
+        anyhow::bail!("PCIe hotplug not supported by this backend")
+    }
 }
 
 /// Interface for getting information about the state of the VM

@@ -6,10 +6,13 @@ use crate::multiarch::cmd;
 use memory_range::MemoryRange;
 use openvmm_defs::config::PcieRootComplexConfig;
 use openvmm_defs::config::PcieRootPortConfig;
+use pal_async::DefaultDriver;
+use pal_async::timer::PolledTimer;
 use petri::PetriVmBuilder;
 use petri::openvmm::OpenVmmPetriBackend;
 use pipette_client::PipetteClient;
 use std::fmt;
+use std::time::Duration;
 use vmm_test_macros::openvmm_test;
 
 struct ParsedPciDevice {
@@ -43,14 +46,43 @@ async fn parse_guest_pci_devices(
             for ls_device in ls_devices {
                 let device_sysfs_path = format!("{PCI_SYSFS_PATH}/{ls_device}");
 
-                let vendor_output = cmd!(sh, "cat {device_sysfs_path}/vendor").read().await?;
-                let vendor_id = u16::from_str_radix(vendor_output.strip_prefix("0x").unwrap(), 16)?;
+                // Device may disappear between ls and cat (e.g., during hotplug
+                // removal), so skip devices whose sysfs files can't be read.
+                let Ok(vendor_output) = cmd!(sh, "cat {device_sysfs_path}/vendor").read().await
+                else {
+                    continue;
+                };
+                let vendor_output = vendor_output.trim();
+                let Ok(vendor_id) = u16::from_str_radix(
+                    vendor_output.strip_prefix("0x").unwrap_or(vendor_output),
+                    16,
+                ) else {
+                    continue;
+                };
 
-                let device_output = cmd!(sh, "cat {device_sysfs_path}/device").read().await?;
-                let device_id = u16::from_str_radix(device_output.strip_prefix("0x").unwrap(), 16)?;
+                let Ok(device_output) = cmd!(sh, "cat {device_sysfs_path}/device").read().await
+                else {
+                    continue;
+                };
+                let device_output = device_output.trim();
+                let Ok(device_id) = u16::from_str_radix(
+                    device_output.strip_prefix("0x").unwrap_or(device_output),
+                    16,
+                ) else {
+                    continue;
+                };
 
-                let class_output = cmd!(sh, "cat {device_sysfs_path}/class").read().await?;
-                let class_code = u32::from_str_radix(class_output.strip_prefix("0x").unwrap(), 16)?;
+                let Ok(class_output) = cmd!(sh, "cat {device_sysfs_path}/class").read().await
+                else {
+                    continue;
+                };
+                let class_output = class_output.trim();
+                let Ok(class_code) = u32::from_str_radix(
+                    class_output.strip_prefix("0x").unwrap_or(class_output),
+                    16,
+                ) else {
+                    continue;
+                };
 
                 devs.push(ParsedPciDevice {
                     vendor_id,
@@ -71,6 +103,16 @@ async fn parse_guest_pci_devices(
             let lines = output.as_str().lines();
             let mut parsing_hwids = false;
             for line in lines {
+                // Reset state when we hit a new DEVPKEY section, even if we
+                // were still looking for hardware IDs.
+                if line.contains("DEVPKEY_Device_HardwareIds") {
+                    parsing_hwids = true;
+                    continue;
+                } else if line.contains("DEVPKEY") {
+                    parsing_hwids = false;
+                    continue;
+                }
+
                 if parsing_hwids {
                     // Find one matching PCI\VEN_XXXX&DEV_YYYY&CC_ZZZZZZ
                     let mut toks = line.trim().split('_');
@@ -82,21 +124,20 @@ async fn parse_guest_pci_devices(
                             && tok2.ends_with("CC")
                             && tok3.len() == 6
                         {
-                            let vendor_id = u16::from_str_radix(&tok1[..4], 16)?;
-                            let device_id = u16::from_str_radix(&tok2[..4], 16)?;
-                            let class_code = u32::from_str_radix(&tok3[..6], 16)?;
-                            devs.push(ParsedPciDevice {
-                                vendor_id,
-                                device_id,
-                                class_code,
-                            });
+                            if let (Ok(vendor_id), Ok(device_id), Ok(class_code)) = (
+                                u16::from_str_radix(&tok1[..4], 16),
+                                u16::from_str_radix(&tok2[..4], 16),
+                                u32::from_str_radix(&tok3[..6], 16),
+                            ) {
+                                devs.push(ParsedPciDevice {
+                                    vendor_id,
+                                    device_id,
+                                    class_code,
+                                });
+                            }
                             parsing_hwids = false;
                         }
                     }
-                } else if line.contains("DEVPKEY_Device_HardwareIds") {
-                    parsing_hwids = true;
-                } else if line.contains("DEVPKEY") {
-                    parsing_hwids = false;
                 }
             }
         }
@@ -172,6 +213,116 @@ async fn pcie_root_emulation(config: PetriVmBuilder<OpenVmmPetriBackend>) -> any
         .count();
 
     assert_eq!(root_port_count, 4);
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Test PCIe hotplug: hot-add a device to a hotplug-capable port, verify the
+/// guest sees it, then hot-remove it and verify it's gone.
+#[openvmm_test(linux_direct_x64, uefi_x64(vhd(windows_datacenter_core_2022_x64)))]
+async fn pcie_hotplug(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    _: (),
+    driver: DefaultDriver,
+) -> anyhow::Result<()> {
+    const ECAM_SIZE: u64 = 256 * 1024 * 1024;
+    const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
+    const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
+
+    let os_flavor = config.os_flavor();
+    let (mut vm, agent) = config
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                let low_mmio_start = c.memory.mmio_gaps[0].start();
+                let high_mmio_end = c.memory.mmio_gaps[1].end();
+                let pcie_low = MemoryRange::new(low_mmio_start - LOW_MMIO_SIZE..low_mmio_start);
+                let pcie_high = MemoryRange::new(high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE);
+                let ecam_range = MemoryRange::new(pcie_low.start() - ECAM_SIZE..pcie_low.start());
+                c.memory.pci_ecam_gaps.push(ecam_range);
+                c.memory.pci_mmio_gaps.push(pcie_low);
+                c.memory.pci_mmio_gaps.push(pcie_high);
+                c.pcie_root_complexes.push(PcieRootComplexConfig {
+                    index: 0,
+                    name: "rc0".into(),
+                    segment: 0,
+                    start_bus: 0,
+                    end_bus: 255,
+                    ecam_range,
+                    low_mmio: pcie_low,
+                    high_mmio: pcie_high,
+                    ports: vec![
+                        PcieRootPortConfig {
+                            name: "rp0".into(),
+                            hotplug: true,
+                        },
+                        PcieRootPortConfig {
+                            name: "rp1".into(),
+                            hotplug: false,
+                        },
+                    ],
+                })
+            })
+        })
+        .run()
+        .await?;
+
+    // Verify initial state: only root ports, no endpoints
+    let initial_devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+    let initial_endpoints = initial_devices
+        .iter()
+        .filter(|d| d.class_code != 0x060400) // filter out PCI-to-PCI bridges (root ports)
+        .count();
+    tracing::info!(?initial_devices, "initial PCI devices");
+    assert_eq!(initial_endpoints, 0, "expected no endpoints initially");
+
+    // Hot-add an NVMe controller (no namespaces) to rp0
+    let nvme_resource = vm_resource::Resource::new(nvme_resources::NvmeControllerHandle {
+        subsystem_id: guid::Guid::ZERO,
+        msix_count: 2,
+        max_io_queues: 1,
+        namespaces: vec![],
+        requests: None,
+    });
+    vm.add_pcie_device("rp0".into(), nvme_resource).await?;
+
+    // Wait for the guest to enumerate the device (poll with retries)
+    let mut timer = PolledTimer::new(&driver);
+    let mut found = false;
+    for attempt in 0..30 {
+        let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+        let endpoints = devices.iter().filter(|d| d.class_code != 0x060400).count();
+        if endpoints >= 1 {
+            tracing::info!(?devices, attempt, "device appeared after hotplug");
+            found = true;
+            break;
+        }
+        timer.sleep(Duration::from_millis(500)).await;
+    }
+    assert!(found, "expected NVMe endpoint to appear after hot-add");
+
+    // Wait for the guest to fully process the add event before removing.
+    timer.sleep(Duration::from_secs(5)).await;
+
+    // Hot-remove the device
+    vm.remove_pcie_device("rp0".into()).await?;
+
+    // Verify the device is gone. Both Linux (pciehp) and Windows (pci.sys)
+    // process native PCIe hotplug surprise-removal through their respective
+    // hotplug state machines within a few seconds.
+    let mut removed = false;
+    for attempt in 0..30 {
+        let devices = parse_guest_pci_devices(os_flavor, &agent).await?;
+        let endpoints = devices.iter().filter(|d| d.class_code != 0x060400).count();
+        if endpoints == 0 {
+            tracing::info!(attempt, "device removed after hot-remove");
+            removed = true;
+            break;
+        }
+        timer.sleep(Duration::from_millis(500)).await;
+    }
+    assert!(removed, "expected endpoint to disappear after hot-remove");
 
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;

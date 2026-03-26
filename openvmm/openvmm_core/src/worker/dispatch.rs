@@ -10,6 +10,7 @@ use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_resources::pit::PitDeviceHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -99,6 +100,7 @@ use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::Resource;
+use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
@@ -157,6 +159,7 @@ const SYSTEM_IRQ_ACPI: u32 = 9;
 const WDAT_PORT: u16 = 0x30;
 
 #[derive(Copy, Clone)]
+#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 struct ChipsetCapabilities {
     with_ioapic: bool,
     with_pic: bool,
@@ -166,7 +169,7 @@ struct ChipsetCapabilities {
 
 impl ChipsetCapabilities {
     fn from_parts(chipset: &BaseChipsetManifest, chipset_devices: &[ChipsetDeviceHandle]) -> Self {
-        const PIT_RESOURCE_ID: &str = "pit";
+        const PIT_RESOURCE_ID: &str = PitDeviceHandle::ID;
 
         Self {
             with_ioapic: chipset.with_generic_ioapic,
@@ -580,7 +583,7 @@ struct LoadedVmInner {
     hypervisor: Hypervisor,
     partition_unit: PartitionUnit,
     partition: Arc<dyn HvlitePartition>,
-    _chipset_devices: ChipsetDevices,
+    chipset_devices: ChipsetDevices,
     _vmtime: SpawnedUnit<VmTimeKeeper>,
     _scsi_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     memory_manager: GuestMemoryManager,
@@ -604,6 +607,7 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
     chipset_caps: ChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
@@ -626,6 +630,12 @@ struct LoadedVmInner {
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
     pcie_host_bridges: Vec<PcieHostBridge>,
+    pcie_root_complexes: Vec<Arc<closeable_mutex::CloseableMutex<GenericPcieRootComplex>>>,
+    pcie_hotplug_devices: Vec<(
+        String,
+        vmotherboard::DynamicDeviceUnit,
+        Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
+    )>,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -1795,11 +1805,13 @@ impl InitializedVm {
 
         // PCI Express topology
 
-        let pcie_host_bridges = {
+        let (pcie_host_bridges, pcie_root_complexes) = {
             let mut pcie_host_bridges = Vec::new();
+            let mut pcie_root_complexes = Vec::new();
 
             for rc in cfg.pcie_root_complexes {
                 let device_name = format!("pcie-root:{}", rc.name);
+                let msi_conn = pci_core::msi::MsiConnection::new();
                 let root_complex =
                     chipset_builder
                         .arc_mutex_device(device_name)
@@ -1819,8 +1831,13 @@ impl InitializedVm {
                                 rc.end_bus,
                                 rc.ecam_range,
                                 root_port_definitions,
+                                msi_conn.target(),
                             )
                         })?;
+
+                if let Some(signal_msi) = partition.clone().into_signal_msi(Vtl::Vtl0) {
+                    msi_conn.connect(signal_msi);
+                }
 
                 pcie_host_bridges.push(PcieHostBridge {
                     index: rc.index,
@@ -1832,11 +1849,13 @@ impl InitializedVm {
                     high_mmio: rc.high_mmio,
                 });
 
+                pcie_root_complexes.push(root_complex.clone());
+
                 let bus_id = vmotherboard::BusId::new(&rc.name);
                 chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(root_complex));
             }
 
-            pcie_host_bridges
+            (pcie_host_bridges, pcie_root_complexes)
         };
 
         for switch in cfg.pcie_switches {
@@ -2322,7 +2341,7 @@ impl InitializedVm {
                 hypervisor,
                 partition_unit,
                 partition,
-                _chipset_devices: devices,
+                chipset_devices: devices,
                 _vmtime: vmtime,
                 _scsi_devices: scsi_devices,
                 memory_manager,
@@ -2358,6 +2377,8 @@ impl InitializedVm {
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
                 pcie_host_bridges,
+                pcie_root_complexes,
+                pcie_hotplug_devices: Vec::new(),
             },
         };
 
@@ -2374,6 +2395,7 @@ impl InitializedVm {
 }
 
 impl LoadedVmInner {
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     fn chipset_capabilities(&self) -> ChipsetCapabilities {
         self.chipset_caps
     }
@@ -2870,6 +2892,104 @@ impl LoadedVm {
                             ),
                         })
                     }
+                    VmRpc::AddPcieDevice(rpc) => {
+                        rpc.handle_failable(async |(port_name, resource)| {
+                            // Validate the port exists before creating the device
+                            // to avoid leaking a DynamicDeviceUnit on error.
+                            let rc = self.inner.pcie_root_complexes.iter()
+                                .find(|rc| {
+                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
+                                })
+                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
+
+                            let msi_conn = pci_core::msi::MsiConnection::new();
+                            let signal_msi = self.inner.partition.clone().into_signal_msi(Vtl::Vtl0);
+
+                            let (unit, device) = self.inner.chipset_devices.add_dyn_device(
+                                &self.inner.driver_source,
+                                &self.state_units,
+                                format!("pcie-hotplug:{}", port_name),
+                                async |register_mmio| {
+                                    self.inner.resolver
+                                        .resolve(
+                                            resource,
+                                            pci_resources::ResolvePciDeviceHandleParams {
+                                                msi_target: msi_conn.target(),
+                                                register_mmio,
+                                                driver_source: &self.inner.driver_source,
+                                                guest_memory: &self.inner.gm,
+                                                doorbell_registration: self.inner.partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                                                shared_mem_mapper: None,
+                                            },
+                                        )
+                                        .await
+                                        .map(|r| r.0)
+                                        .map_err(|e| anyhow::anyhow!(e))
+                                },
+                            ).await?;
+
+                            if let Some(target) = signal_msi {
+                                msi_conn.connect(target);
+                            }
+
+                            // Wrap the device as a GenericPciBusDevice for the port.
+                            // Keep a strong Arc to the device so the Weak stays valid.
+                            let weak_dev: std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>> = Arc::downgrade(&(device.clone() as Arc<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>));
+                            let bus_device = Box::new(WeakMutexPciBusDevice(weak_dev));
+
+                            self.inner.pcie_hotplug_devices.push((port_name.clone(), unit, device));
+
+                            // Start the device unit before firing the hotplug
+                            // MSI. The guest may begin probing config space
+                            // immediately after receiving the interrupt, so
+                            // the device must be ready first.
+                            self.state_units.start_stopped_units().await;
+
+                            // Now attach the device and notify the guest.
+                            if let Err(e) = rc.lock().hotplug_add_device(
+                                &port_name,
+                                "hotplug-device",
+                                bus_device,
+                            ) {
+                                // Clean up the device unit on failure
+                                let (_, unit, _) = self.inner.pcie_hotplug_devices.pop().unwrap();
+                                unit.remove().await;
+                                return Err(e);
+                            }
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
+                    VmRpc::RemovePcieDevice(rpc) => {
+                        rpc.handle_failable(async |port_name: String| {
+                            // Only allow removing dynamically hot-added devices.
+                            // Statically-attached devices don't have a tracked unit
+                            // and removing them would leave their state unit/MMIO
+                            // registrations running.
+                            let idx = self.inner.pcie_hotplug_devices.iter()
+                                .position(|(name, _, _)| name == &port_name)
+                                .ok_or_else(|| anyhow::anyhow!(
+                                    "no hot-added device on port '{}' (only dynamically added devices can be hot-removed)",
+                                    port_name
+                                ))?;
+
+                            // Find the root complex containing the target port
+                            let rc = self.inner.pcie_root_complexes.iter()
+                                .find(|rc| {
+                                    rc.lock().downstream_ports().iter().any(|(_, name)| name.as_ref() == port_name.as_str())
+                                })
+                                .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
+
+                            rc.lock().hotplug_remove_device(&port_name)?;
+
+                            // Remove and stop the device unit
+                            let (_, unit, _device) = self.inner.pcie_hotplug_devices.remove(idx);
+                            unit.remove().await;
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {
@@ -3250,4 +3370,70 @@ impl chipset_device_worker::RemoteDynamicResolvers for OpenVmmRemoteDynamicResol
 
 mesh_worker::register_workers! {
     chipset_device_worker::worker::RemoteChipsetDeviceWorker<OpenVmmRemoteDynamicResolvers>
+}
+
+/// Wrapper around `Weak<CloseableMutex<dyn ChipsetDevice>>` that implements
+/// [`GenericPciBusDevice`] for PCIe hotplug devices.
+struct WeakMutexPciBusDevice(
+    std::sync::Weak<closeable_mutex::CloseableMutex<dyn chipset_device::ChipsetDevice>>,
+);
+
+impl pci_bus::GenericPciBusDevice for WeakMutexPciBusDevice {
+    fn pci_cfg_read(
+        &mut self,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_read(offset, value),
+        )
+    }
+
+    fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_write(offset, value),
+        )
+    }
+
+    fn pci_cfg_read_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: &mut u32,
+    ) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_read_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
+    }
+
+    fn pci_cfg_write_with_routing(
+        &mut self,
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: u32,
+    ) -> Option<chipset_device::io::IoResult> {
+        Some(
+            self.0
+                .upgrade()?
+                .lock()
+                .supports_pci()?
+                .pci_cfg_write_with_routing(secondary_bus, target_bus, function, offset, value),
+        )
+    }
 }
