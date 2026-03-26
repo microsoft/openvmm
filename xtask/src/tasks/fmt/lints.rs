@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! A harness for running custom text-based lints over repository files.
+
 mod cfg_target_arch;
 mod copyright;
 mod crate_name_nodash;
@@ -19,28 +21,50 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use toml_edit::DocumentMut;
 
+/// Context passed to each lint, containing configuration options.
 pub struct LintCtx {
-    #[expect(dead_code)]
+    #[expect(dead_code)] // Will be used in the near future
     /// When true we are linting a subset of repo files, so some lints may want
     /// to skip checks that require whole-repo analysis.
     only_diffed: bool,
 }
 
+/// A trait representing a single lint check.
 pub trait Lint {
+    /// Create a new instance of this lint for a workspace.
     fn new(ctx: &LintCtx) -> Self
     where
         Self: Sized;
+
+    /// Begin processing a workspace, given the parsed Cargo.toml of the workspace root.
     fn enter_workspace(&mut self, content: &Lintable<DocumentMut>);
+
+    /// Begin processing a crate, given the parsed Cargo.toml of the crate root.
     fn enter_crate(&mut self, content: &Lintable<DocumentMut>);
+
+    /// Process a Rust source file in the current crate.
     fn visit_file(&mut self, content: &mut Lintable<String>);
+
+    /// Finish processing a crate, given the parsed Cargo.toml of the crate root.
     fn exit_crate(&mut self, content: &mut Lintable<DocumentMut>);
+
+    /// Finish processing a workspace, given the parsed Cargo.toml of the workspace root.
     fn exit_workspace(&mut self, content: &mut Lintable<DocumentMut>);
 
+    /// Process a non-Rust file in the current crate or workspace.
+    ///
+    /// For files within the directory of a crate this is called during crate processing.
+    /// For files outside of any crate this is called during workspace processing after
+    /// all crates have been processed.
     fn visit_nonrust_file(&mut self, extension: &str, content: &mut Lintable<String>) {
         let _ = (extension, content);
     }
 }
 
+/// A wrapper around file content for linting.
+///
+/// Most lints will want to use the `Deref` impl to access the content directly,
+/// but this also provides utilities for reporting errors and making fixes.
 pub struct Lintable<T> {
     content: T,
     raw: Option<String>,
@@ -62,6 +86,8 @@ impl<T> Deref for Lintable<T> {
 }
 
 impl Lintable<String> {
+    /// Read a text file into a `Lintable<String>`.
+    ///
     /// Returns `None` for binary (non-UTF-8) files.
     fn from_file(path: &Path, ctx: &FmtCtx, workspace_dir: &Path) -> anyhow::Result<Option<Self>> {
         let bytes = fs_err::read(path)?;
@@ -82,6 +108,9 @@ impl Lintable<String> {
 }
 
 impl Lintable<DocumentMut> {
+    /// Read a Cargo.toml file into a `Lintable<DocumentMut>`.
+    ///
+    /// This can be from a crate or a workspace.
     fn from_file(path: &Path, ctx: &FmtCtx, workspace_dir: &Path) -> anyhow::Result<Self> {
         let raw = fs_err::read_to_string(path)?;
         Ok(Self {
@@ -97,14 +126,21 @@ impl Lintable<DocumentMut> {
 }
 
 impl<T> Lintable<T> {
+    /// Get the path of this file relative to the workspace root, for use in error messages.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Get the original raw file content as a string, for lints that need to do their own parsing.
+    ///
+    /// If the file content is already a string this will be None.
+    /// This field is not modified when fixes are made.
     pub fn raw(&self) -> Option<&str> {
         self.raw.as_deref()
     }
 
+    /// If fix is enabled, apply the given fix operation to the content and mark it modified.
+    /// If fix is not enabled, report an error with the given description.
     pub fn fix(&mut self, description: &str, op: impl FnOnce(&mut T)) {
         if self.fix {
             op(&mut self.content);
@@ -120,6 +156,7 @@ impl<T> Lintable<T> {
         }
     }
 
+    /// Report an error with the given description that cannot be automatically fixed.
     pub fn unfixable(&self, description: &str) {
         log::error!(
             "{}: {}",
@@ -130,6 +167,7 @@ impl<T> Lintable<T> {
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// If modified, write the content back to the file. Return whether any errors were reported.
     fn finalize(self) -> anyhow::Result<bool>
     where
         T: Display,
