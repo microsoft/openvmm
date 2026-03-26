@@ -830,10 +830,66 @@ async fn guest_shutdown(driver: DefaultDriver) {
 
     // The host socket should see EOF when reading.
     let mut buf = [0u8; 64];
-    // Give the device a moment to process.
-    std::thread::sleep(Duration::from_millis(50));
     let n = stream.read(&mut buf).unwrap();
     assert_eq!(n, 0, "expected EOF after guest shutdown");
+}
+
+/// Guest-initiated graceful shutdown (send only).
+#[async_test]
+async fn guest_shutdown_send_only(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5010);
+    harness.enable().await;
+
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5010)
+        .await;
+
+    // Guest sends SHUTDOWN with send only flag.
+    let flags = ShutdownFlags::new().with_send(true);
+    let header = harness.guest_header(1024, 5010, Operation::SHUTDOWN, 0, flags.into());
+    harness.post_tx_packet(&header, &[]);
+    harness.wait_for_tx_used().await;
+
+    // The host socket should see EOF when reading.
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).unwrap();
+    assert_eq!(n, 0, "expected EOF after guest shutdown");
+}
+
+/// Guest-initiated graceful shutdown (receive only).
+#[async_test]
+async fn guest_shutdown_receive_only(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5010);
+    harness.enable().await;
+
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5010)
+        .await;
+
+    // Guest sends SHUTDOWN with receive only flag.
+    let flags = ShutdownFlags::new().with_receive(true);
+    let header = harness.guest_header(1024, 5010, Operation::SHUTDOWN, 0, flags.into());
+    harness.post_tx_packet(&header, &[]);
+    harness.wait_for_tx_used().await;
+
+    // Post some data from the guest for the host to read.
+    let payload = b"data after shutdown";
+    let data_hdr = harness.guest_header(1024, 5010, Operation::RW, payload.len() as u32, 0);
+    harness.post_tx_packet(&data_hdr, payload);
+    harness.wait_for_tx_used().await;
+
+    // The host socket should not see EOF when reading.
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).unwrap();
+    assert_eq!(
+        n,
+        payload.len(),
+        "read should succeed after receive-only shutdown"
+    );
 }
 
 /// Sending a large payload (multiple KB) from guest to host.
