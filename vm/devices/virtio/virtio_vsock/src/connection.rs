@@ -595,9 +595,7 @@ impl ConnectionManager {
     ) -> anyhow::Result<(PendingWork, PendingWork)> {
         let socket = RelaySocket::new(driver, stream)
             .context("Failed to create relay socket for incoming host connection")?;
-        let seq = self.next_seq;
-        // TODO: Allocate a local port.
-
+        let seq = self.get_next_seq();
         let conn = Connection::new_pending(self.allocate_local_port(), seq, socket);
 
         let read_work =
@@ -643,17 +641,29 @@ impl ConnectionManager {
                     Ok(socket) => {
                         // TODO: Handle existing connection
                         let seq = self.get_next_seq();
-                        self.conns.insert(
-                            key,
-                            Connection::new(
-                                key,
-                                seq,
-                                packet.header.buf_alloc,
-                                packet.header.fwd_cnt,
-                                PendingReply::new().with_respond(true),
-                                socket,
-                            ),
-                        );
+                        match self.conns.entry(key) {
+                            std::collections::hash_map::Entry::Occupied(entry) => {
+                                // The guest is using a port combo that's already in use. Since that
+                                // indicates issues on the guest side, send a reset and drop the old
+                                // connection.
+                                tracelimit::warn_ratelimited!(
+                                    ?key,
+                                    "connect request for existing connection"
+                                );
+                                entry.remove();
+                                return PendingWork::simple_rx(RxWork::SendReset(key));
+                            }
+                            std::collections::hash_map::Entry::Vacant(entry) => {
+                                entry.insert(Connection::new(
+                                    key,
+                                    seq,
+                                    packet.header.buf_alloc,
+                                    packet.header.fwd_cnt,
+                                    PendingReply::new().with_respond(true),
+                                    socket,
+                                ))
+                            }
+                        };
 
                         PendingWork::simple_rx(RxWork::Connection(ConnectionInstanceId {
                             key,
@@ -1029,11 +1039,26 @@ impl ConnectionManager {
                     // Do not use remove_pending_connection because the port should stay allocated.
                     let conn = self.pending_conns.remove(&seq).unwrap();
                     let key = conn.key;
-                    self.conns.insert(conn.key, conn);
-                    (
-                        Some(new_reply_packet(key, Operation::REQUEST, self.guest_cid, 0)),
-                        PendingWork::NONE,
-                    )
+                    match self.conns.entry(conn.key) {
+                        std::collections::hash_map::Entry::Occupied(_) => {
+                            // I don't think this can't normally happen since it would require for
+                            // the guest to accept a connection on a port that it has also used to
+                            // connect to a host listener. If it does, we reject this connection so
+                            // the host socket will close, and keep the existing connection.
+                            tracelimit::warn_ratelimited!(
+                                ?conn.key,
+                                "pending connection for existing connection"
+                            );
+                            (None, PendingWork::NONE)
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(conn);
+                            (
+                                Some(new_reply_packet(key, Operation::REQUEST, self.guest_cid, 0)),
+                                PendingWork::NONE,
+                            )
+                        }
+                    }
                 } else {
                     // Not ready yet, so wait for more data.
                     (

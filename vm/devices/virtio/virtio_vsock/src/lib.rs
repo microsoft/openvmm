@@ -303,7 +303,6 @@ impl VsockWorker {
 
         tracing::trace!(?header, "got tx packet from guest");
         let pending_work = {
-            // TODO: Avoid allocating.
             if let Some(locked) = lock_payload_data(
                 &state.memory,
                 &work.payload,
