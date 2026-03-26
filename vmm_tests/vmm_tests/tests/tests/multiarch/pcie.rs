@@ -158,6 +158,8 @@ async fn parse_guest_pci_devices(
     Ok(devs)
 }
 
+/// Test PCIe root complex discovery and root port enumeration by
+/// guest software in a single segment topology.
 #[openvmm_test(
     linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -189,6 +191,8 @@ async fn pcie_root_emulation_single_segment(
     Ok(())
 }
 
+/// Test PCIe root complex discovery and root port enumeration by
+/// guest software in a topology with multiple segments.
 #[openvmm_test(
     linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -220,6 +224,8 @@ async fn pcie_root_emulation_multi_segment(
     Ok(())
 }
 
+/// Test PCIe switch enumeration when attached to both root
+/// ports and the downstream switch ports of other switches.
 #[openvmm_test(
     linux_direct_x64,
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -259,6 +265,12 @@ async fn pcie_switches(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::R
     Ok(())
 }
 
+/// Test PCIe device enumeration using a selection of device
+/// emulators, when attached to both root ports and downstream
+/// switch ports.
+///
+/// NOTE: This test relies on device specific software (drivers,
+/// tooling) within the guest OS to perform the validation.
 #[openvmm_test(linux_direct_x64)]
 async fn pcie_devices(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
