@@ -108,7 +108,7 @@ enum Options {
     },
     /// Patch CoRIM (Concise Reference Integrity Manifest) headers into an existing IGVM file.
     ///
-    /// Either provide a single bundled/signed CoRIM file via --corim-signed, or
+    /// Either provide a single bundled/signed CoRIM file via --corim-bundle, or
     /// provide the document and detached signature separately via --corim-document
     /// and --corim-signature.
     PatchCorim {
