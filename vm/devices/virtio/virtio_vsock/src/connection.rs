@@ -68,6 +68,13 @@ impl ConnKey {
             peer_port: hdr.src_port,
         }
     }
+
+    pub fn from_rx_packet(hdr: &VsockHeader) -> Self {
+        Self {
+            local_port: hdr.src_port,
+            peer_port: hdr.dst_port,
+        }
+    }
 }
 
 /// A connection key combined with a sequence number to distinguish connections when a port is
@@ -340,7 +347,7 @@ impl Connection {
             peer_free.into(),
             false,
             true,
-            LockedIoSliceMut(Vec::new()),
+            LockedIoSliceMut::new(),
         )?;
 
         let (bytes_read, temp_buf) = if let Some(locked) = &mut locked {
@@ -575,6 +582,10 @@ impl ConnectionManager {
             local_ports: HashSet::new(),
             last_local_port: (1u32 << 30) - 1,
         }
+    }
+
+    pub fn remove(&mut self, key: &ConnKey) {
+        self.remove_connection(key);
     }
 
     pub fn handle_host_connect(

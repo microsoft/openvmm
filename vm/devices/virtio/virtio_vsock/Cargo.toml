@@ -26,6 +26,7 @@ futures.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
 parking_lot.workspace = true
+smallvec.workspace = true
 tracing.workspace = true
 tracelimit.workspace = true
 unicycle.workspace = true

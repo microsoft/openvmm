@@ -9204,6 +9204,7 @@ dependencies = [
  "pal_async",
  "pal_event",
  "parking_lot",
+ "smallvec",
  "socket2",
  "task_control",
  "tempfile",

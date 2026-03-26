@@ -26,10 +26,12 @@ mod unix_relay;
 #[cfg(test)]
 mod integration_tests;
 
+use crate::connection::ConnKey;
 use crate::connection::ConnectionInstanceId;
 use crate::connection::RxWork;
 use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockPacket;
+use crate::spec::VsockPacketBuf;
 use anyhow::Context;
 use connection::ConnectionManager;
 use futures::StreamExt;
@@ -40,6 +42,7 @@ use guestmem::ranges::PagedRange;
 use inspect::InspectMut;
 use pal_async::socket::PolledSocket;
 use pal_async::wait::PolledWait;
+use smallvec::SmallVec;
 use spec::VsockConfig;
 use spec::VsockHeader;
 use std::io;
@@ -83,7 +86,8 @@ pub struct VirtioVsockDevice {
     worker: TaskControl<VsockWorker, VsockWorkerState>,
     #[inspect(skip)]
     started_queues: [Option<VirtioQueue>; QUEUE_COUNT],
-    stopped_queue_count: usize,
+    #[inspect(skip)]
+    base_path: PathBuf,
 }
 
 impl VirtioVsockDevice {
@@ -113,11 +117,10 @@ impl VirtioVsockDevice {
                 work: FuturesUnordered::new(),
                 write_ready_work: FuturesUnordered::new(),
                 driver,
-                connections: ConnectionManager::new(guest_cid, base_path),
                 listener,
             }),
             started_queues: [const { None }; QUEUE_COUNT],
-            stopped_queue_count: 0,
+            base_path,
         })
     }
 }
@@ -186,6 +189,7 @@ impl VirtioDevice for VirtioVsockDevice {
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap(),
                 event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
                 memory: resources.guest_memory.clone(),
+                connections: ConnectionManager::new(self.guest_cid, self.base_path.clone()),
             };
 
             self.worker
@@ -204,11 +208,8 @@ impl VirtioDevice for VirtioVsockDevice {
             self.started_queues[TX_QUEUE_INDEX] = Some(state.tx_queue);
             self.started_queues[EVENT_QUEUE_INDEX] = Some(state.event_queue);
 
-            // Drain in-flight IOs to completion. The FuturesUnordered lives in
-            // BlkWorker and survives the stop — its pending disk IO futures are
-            // polled here until all descriptors are completed in the used ring.
-            // TODO?
-            //poll_fn(|cx| self.worker.task_mut().poll_drain(cx)).await;
+            // Drain any pending IO
+            self.worker.task_mut().drain().await;
         }
 
         // Remove the queue state (drops VirtioQueue).
@@ -219,6 +220,7 @@ impl VirtioDevice for VirtioVsockDevice {
 }
 
 struct VsockWorkerState {
+    connections: ConnectionManager,
     rx_queue: VirtioQueue,
     tx_queue: VirtioQueue,
     #[allow(dead_code)] // Required by the spec but not actively polled.
@@ -263,12 +265,10 @@ impl PendingWork {
     }
 }
 
-// TODO: Only put immutable state in here.
 struct VsockWorker {
     work: RxWorkQueue,
     write_ready_work: FuturesUnordered<WriteReadyItem>,
     driver: VmTaskDriver,
-    connections: ConnectionManager,
     listener: PolledSocket<UnixListener>,
 }
 
@@ -310,10 +310,11 @@ impl VsockWorker {
                 header.len as u64,
                 true,
                 false,
-                LockedIoSlice(Vec::new()),
+                LockedIoSlice::new(),
             )? {
                 // Process through the relay.
-                self.connections
+                state
+                    .connections
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
             } else {
                 let buf_len: usize = work
@@ -324,7 +325,7 @@ impl VsockWorker {
                 // No data buffer could be locked; read into a temp buffer and process through the relay.
                 let mut temp_buf = vec![0u8; buf_len.min(header.len as usize)];
                 work.read_at_offset(VSOCK_HEADER_SIZE as u64, &state.memory, &mut temp_buf)?;
-                self.connections.handle_guest_tx(
+                state.connections.handle_guest_tx(
                     &self.driver,
                     VsockPacket::new(header, &[IoSlice::new(&temp_buf)]),
                 )
@@ -342,6 +343,27 @@ impl VsockWorker {
         if let Some(work) = pending.write_ready_work {
             self.write_ready_work.push(work);
         }
+    }
+
+    fn write_packet(
+        state: &mut VsockWorkerState,
+        work: &mut VirtioQueueCallbackWork,
+        packet: &VsockPacketBuf,
+    ) -> anyhow::Result<()> {
+        tracing::info!(?packet.header, "sending reply");
+        let header_bytes = packet.header.as_bytes();
+        work.write(&state.memory, header_bytes)
+            .context("failed to write vsock header to guest rx")?;
+
+        // The data buffer is present if this is an RW packet and the data could not be read
+        // directly into the guest buffer.
+        if !packet.data.is_empty() {
+            work.write_at_offset(header_bytes.len() as u64, &state.memory, &packet.data)
+                .context("failed to write vsock data to guest rx")?;
+        }
+
+        work.complete(header_bytes.len() as u32 + packet.header.len);
+        Ok(())
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
@@ -368,80 +390,38 @@ impl VsockWorker {
             .expect("queue was already checked to have items");
 
         let (packet, pending_work) =
-            self.connections
+            state
+                .connections
                 .get_rx_packet(&state.memory, &self.driver, work.payload(), rx_work);
 
         if let Some(packet) = packet {
             let mut work = work.consume();
-            tracing::info!(?packet.header, "sending reply");
-            let header_bytes = packet.header.as_bytes();
-            work.write(&state.memory, header_bytes).expect("TODO");
+            if let Err(err) = Self::write_packet(state, &mut work, &packet) {
+                tracelimit::error_ratelimited!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to write vsock packet"
+                );
 
-            // The data buffer is present if this is an RW packet and the data could not be read
-            // directly into the guest buffer.
-            if !packet.data.is_empty() {
-                work.write_at_offset(header_bytes.len() as u64, &state.memory, &packet.data)
-                    .expect("TODO");
+                // We can't recover from this. Remove the connection so any future attempst to use
+                // it will fail.
+                state
+                    .connections
+                    .remove(&ConnKey::from_rx_packet(&packet.header));
             }
-
-            work.complete(header_bytes.len() as u32 + packet.header.len);
         }
 
         self.queue_pending_work(pending_work);
-
-        // while !state.pending_rx.is_empty() {
-        //     match state.rx_queue.try_next() {
-        //         Ok(Some(mut work)) => {
-        //             let (hdr, data) = state.pending_rx.remove(0);
-        //             let hdr_bytes = hdr.as_bytes();
-        //             let total = hdr_bytes.len() + data.len();
-
-        //             // Write header to the writeable descriptors.
-        //             if let Err(err) = work.write(&self.mem, hdr_bytes) {
-        //                 tracing::error!(
-        //                     error = &err as &dyn std::error::Error,
-        //                     "failed to write vsock header to guest rx"
-        //                 );
-        //                 // Put the packet back.
-        //                 state.pending_rx.insert(0, (hdr, data));
-        //                 work.complete(0);
-        //                 break;
-        //             }
-
-        //             // Write data payload after the header.
-        //             if !data.is_empty() {
-        //                 if let Err(err) =
-        //                     work.write_at_offset(hdr_bytes.len() as u64, &self.mem, &data)
-        //                 {
-        //                     tracing::error!(
-        //                         error = &err as &dyn std::error::Error,
-        //                         "failed to write vsock data to guest rx"
-        //                     );
-        //                     work.complete(hdr_bytes.len() as u32);
-        //                     continue;
-        //                 }
-        //             }
-
-        //             work.complete(total as u32);
-        //         }
-        //         Ok(None) => {
-        //             // No buffers available right now; will retry on next kick.
-        //             break;
-        //         }
-        //         Err(err) => {
-        //             tracing::error!(
-        //                 error = &err as &dyn std::error::Error,
-        //                 "vsock rx queue error"
-        //             );
-        //             break;
-        //         }
-        //     }
-        // }
     }
 
-    fn handle_write_ready(&mut self, id: ConnectionInstanceId) {
-        let pending = self.connections.handle_write_ready(id);
-        self.queue_pending_work(pending);
+    async fn drain(&mut self) {
+        // Wait for all pending work to complete. This is used during shutdown to ensure all in-flight
+        // packets are processed before the device is stopped and queues are dropped.
+        while !self.work.is_empty() || !self.write_ready_work.is_empty() {
+            futures::select! {
+                _ = self.work.next() => (),
+                _ = self.write_ready_work.next() => (),
+            }
+        }
     }
 }
 
@@ -517,7 +497,8 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                             self.handle_rx_work(state, work);
                         }
                         Event::WriteReady(id) => {
-                            self.handle_write_ready(id);
+                            let pending = state.connections.handle_write_ready(id);
+                            self.queue_pending_work(pending);
                         }
                         Event::Accept(Err(err)) => {
                             tracing::error!(
@@ -529,7 +510,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                         }
                         Event::Accept(Ok(stream)) => {
                             tracing::trace!("host unix socket accepted");
-                            match self.connections.handle_host_connect(&self.driver, stream) {
+                            match state.connections.handle_host_connect(&self.driver, stream) {
                                 Err(err) => {
                                     tracing::error!(
                                         error = err.as_ref() as &dyn std::error::Error,
@@ -582,8 +563,14 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
     }
 }
 
-// TODO: Use SmallVec.
-struct LockedIoSlice<'a>(Vec<IoSlice<'a>>);
+// Use SmallVec since this will nearly always have one item.
+struct LockedIoSlice<'a>(SmallVec<[IoSlice<'a>; 4]>);
+
+impl LockedIoSlice<'_> {
+    fn new() -> Self {
+        Self(SmallVec::new())
+    }
+}
 
 impl<'a> LockedRange<'a> for LockedIoSlice<'a> {
     fn push_sub_range(&mut self, sub_range: &'a [std::sync::atomic::AtomicU8]) {
@@ -595,7 +582,13 @@ impl<'a> LockedRange<'a> for LockedIoSlice<'a> {
     }
 }
 
-struct LockedIoSliceMut<'a>(Vec<IoSliceMut<'a>>);
+struct LockedIoSliceMut<'a>(SmallVec<[IoSliceMut<'a>; 4]>);
+
+impl LockedIoSliceMut<'_> {
+    fn new() -> Self {
+        Self(SmallVec::new())
+    }
+}
 
 impl<'a> LockedRange<'a> for LockedIoSliceMut<'a> {
     fn push_sub_range(&mut self, sub_range: &'a [std::sync::atomic::AtomicU8]) {
