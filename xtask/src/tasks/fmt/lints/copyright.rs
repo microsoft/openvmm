@@ -80,7 +80,25 @@ impl Copyright {
             .prefix()
             .and_then(|x| x.as_str())
             .unwrap_or("");
-        if !(prefix.starts_with("# ")
+
+        // TEMP: until we have more robust infrastructure for distinct
+        // microsoft-internal checks, include this "escape hatch" for preserving
+        // non-MIT licensed files when running `xtask fmt` in the msft internal
+        // repo. This uses a job-specific env var, instead of being properly plumbed
+        // through via `clap`, to make it easier to remove in the future.
+        if self.is_msft_internal {
+            // Support both new and existing copyright banner styles
+            if !(prefix.contains("Copyright") && prefix.contains("Microsoft")) {
+                let prefix = prefix.trim().to_owned();
+                content.fix("missing or incorrect internal copyright header", |content| {
+                    let table = content[section_name].as_table_mut().unwrap();
+                    let new_prefix = format!(
+                        "# Copyright (C) Microsoft Corporation. All rights reserved.\n\n{prefix}",
+                    );
+                    table.decor_mut().set_prefix(new_prefix);
+                });
+            }
+        } else if !(prefix.starts_with("# ")
             && prefix[2..].starts_with(HEADER_MIT_FIRST)
             && prefix[3 + HEADER_MIT_FIRST.len()..].starts_with("# ")
             && prefix[5 + HEADER_MIT_FIRST.len()..].contains(HEADER_MIT_SECOND))
