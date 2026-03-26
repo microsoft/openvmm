@@ -118,6 +118,7 @@ struct Connection {
     receive_shutdown: bool,
     local_send_shutdown: bool,
     allocated_local_port: bool,
+    waiting_for_credit: bool,
 }
 
 impl Connection {
@@ -146,6 +147,7 @@ impl Connection {
             receive_shutdown: false,
             local_send_shutdown: false,
             allocated_local_port: false,
+            waiting_for_credit: false,
         }
     }
 
@@ -175,6 +177,7 @@ impl Connection {
             receive_shutdown: false,
             local_send_shutdown: false,
             allocated_local_port: true,
+            waiting_for_credit: false,
         }
     }
 
@@ -371,7 +374,6 @@ impl Connection {
             panic!("handle_read_connect called in invalid state");
         };
 
-        // TODO: Use the read that handles WouldBlock.
         let Some(n) = self.socket.read(&mut buffer[*bytes_received..])? else {
             // No data available (would block).
             return Ok(false);
@@ -472,7 +474,7 @@ impl Connection {
         } else {
             // Peer sent a response message with zero bytes available for some reason, so request
             // an update.
-            self.pending_reply.with_credit_request(true);
+            self.pending_reply.set_credit_request(true);
             PendingWork::simple_rx(RxWork::Connection(self.instance_id()))
         };
 
@@ -706,6 +708,7 @@ impl ConnectionManager {
                 conn.peer_buf_alloc = packet.header.buf_alloc;
                 conn.peer_fwd_cnt = packet.header.fwd_cnt;
                 if conn.peer_credit_available() > 0 {
+                    conn.waiting_for_credit = false;
                     PendingWork::rx(
                         conn.socket
                             .await_read_ready(RxWork::Connection(conn.instance_id())),
@@ -713,7 +716,7 @@ impl ConnectionManager {
                 } else {
                     // Peer sent an update with zero bytes available for some reason, so request
                     // another update.
-                    conn.pending_reply.with_credit_request(true);
+                    conn.pending_reply.set_credit_request(true);
                     PendingWork::simple_rx(RxWork::Connection(conn.instance_id()))
                 }
             }
@@ -930,17 +933,30 @@ impl ConnectionManager {
                     if conn.local_send_shutdown {
                         conn.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
                     } else {
+                        tracelimit::warn_ratelimited!(
+                            ?id.key,
+                            "host socket closed without graceful shutdown, resetting connection"
+                        );
                         // Socket closed without us shutting down the write side, so reset immediately.
                         self.remove_connection(&id.key);
                         PendingWork::simple_rx(RxWork::SendReset(id.key))
                     }
-                } else if conn.state == ConnectionState::Connected
-                    && conn.peer_credit_available() > 0
-                {
-                    // No replies pending, so make sure we're waiting for data.
-                    // N.B. This is done even if the socket was shutdown because this is how we find
-                    //      out if it was closed or has an error if there is no write pending.
-                    PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(id)))
+                } else if conn.state == ConnectionState::Connected {
+                    if conn.peer_credit_available() > 0 {
+                        // No replies pending, so make sure we're waiting for data.
+                        // N.B. This is done even if the socket was shutdown because this is how we find
+                        //      out if it was closed or has an error if there is no write pending.
+                        PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(id)))
+                    } else if !conn.waiting_for_credit {
+                        // The peer has no space left, so request an update.
+                        tracing::info!(?id.key, "need credit request");
+                        conn.pending_reply.set_credit_request(true);
+                        conn.waiting_for_credit = true;
+                        PendingWork::simple_rx(RxWork::Connection(id))
+                    } else {
+                        // Already waiting for a credit update.
+                        PendingWork::NONE
+                    }
                 } else {
                     PendingWork::NONE
                 };

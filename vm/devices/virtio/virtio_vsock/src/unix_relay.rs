@@ -154,9 +154,8 @@ impl RelaySocket {
 
                     if events.has_in() | events.has_err() | events.has_rdhup() {
                         inner.has_data.store(true, Ordering::Release);
-                    }
-
-                    if events.has_hup() {
+                    } else if events.has_hup() {
+                        tracing::trace!("got read HUP");
                         inner.closed.store(true, Ordering::Release);
                     }
 
@@ -181,6 +180,7 @@ impl RelaySocket {
                         .await;
 
                     if events.has_hup() {
+                        tracing::trace!("got write HUP");
                         inner.closed.store(true, Ordering::Release);
                     }
 

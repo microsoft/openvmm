@@ -11,12 +11,16 @@
 use crate::VirtioVsockDevice;
 use crate::spec::*;
 use core::mem::offset_of;
+use core::panic;
 use guestmem::GuestMemory;
+use mesh::CancelContext;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::socket::PolledSocket;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
+use std::collections::HashMap;
+use std::future::poll_fn;
 use std::io::Read;
 use std::io::Write;
 use std::time::Duration;
@@ -175,6 +179,21 @@ fn read_used(mem: &GuestMemory, used_addr: u64, used_idx: &mut u16) -> Option<(u
     let (id, len) = read_used_entry(mem, used_addr, *used_idx);
     *used_idx = used_idx.wrapping_add(1);
     Some((id as u16, len))
+}
+
+/// Yield execution to the async executor, allowing spawned tasks to run.
+async fn yield_now() {
+    let mut yielded = false;
+    poll_fn(|cx| {
+        if !yielded {
+            cx.waker().wake_by_ref();
+            yielded = true;
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await
 }
 
 // --- Test Harness ---
@@ -429,7 +448,7 @@ impl TestHarness {
     /// Wait for the tx queue to consume a descriptor (used ring entry).
     async fn wait_for_tx_used(&mut self) -> (u16, u32) {
         let mut wait = PolledWait::new(&self.driver, self.tx_interrupt_event.clone()).unwrap();
-        mesh::CancelContext::new()
+        CancelContext::new()
             .with_timeout(Duration::from_secs(5))
             .until_cancelled(async {
                 loop {
@@ -446,7 +465,7 @@ impl TestHarness {
     /// Wait for the rx queue to produce a response (used ring entry).
     async fn wait_for_rx_used(&mut self) -> (u16, u32) {
         let mut wait = PolledWait::new(&self.driver, self.rx_interrupt_event.clone()).unwrap();
-        mesh::CancelContext::new()
+        CancelContext::new()
             .with_timeout(Duration::from_secs(5))
             .until_cancelled(async {
                 loop {
@@ -504,7 +523,7 @@ impl TestHarness {
 
         // Accept the connection on the host side using async polling so the
         // device worker can make progress on the same async executor.
-        let (stream, _) = mesh::CancelContext::new()
+        let (stream, _) = CancelContext::new()
             .with_timeout(Duration::from_secs(5))
             .until_cancelled(listener.accept())
             .await
@@ -1249,7 +1268,7 @@ async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
     // Use non-blocking reads in a poll loop so the async executor can
     // process the device's write-ready events concurrently.
     let mut polled_stream = PolledSocket::new(&driver, stream).unwrap();
-    mesh::CancelContext::new()
+    CancelContext::new()
         .with_timeout(Duration::from_secs(10))
         .until_cancelled(async {
             use futures::AsyncReadExt;
@@ -1282,4 +1301,159 @@ async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
         fwd_cnt, TOTAL_BYTES as u32,
         "final credit update should reflect all forwarded data"
     );
+}
+
+/// Host sends data to the guest through an established connection.
+#[async_test]
+async fn host_send_respects_credit(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5002);
+    harness.enable().await;
+
+    let mut stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5002)
+        .await;
+
+    stream.set_nonblocking(true).unwrap();
+
+    // Post rx buffers for the incoming data.
+    const RX_BUFFER_COUNT: usize = 128;
+    let gpas: HashMap<_, _> = (0..RX_BUFFER_COUNT)
+        .map(|_| harness.post_rx_buffer(HDR_SIZE + 4096))
+        .collect();
+
+    const CHUNK_SIZE: usize = 6144;
+    const NUM_CHUNKS: usize = 64;
+    const TOTAL_BYTES: usize = CHUNK_SIZE * NUM_CHUNKS;
+    let mut sent_bytes = Vec::with_capacity(TOTAL_BYTES);
+    let mut rx_bytes = Vec::with_capacity(TOTAL_BYTES);
+    let mut remaining_chunk = None;
+    let mut i = 0;
+    while i < NUM_CHUNKS {
+        let chunk = remaining_chunk.take().unwrap_or_else(|| {
+            (0..CHUNK_SIZE)
+                .map(|j| ((i * 7 + j * 3) % 251) as u8)
+                .collect::<Vec<_>>()
+        });
+
+        let size = match stream.write(&chunk) {
+            Ok(n) => {
+                assert_ne!(n, 0);
+                n
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::WouldBlock {
+                    0
+                } else {
+                    panic!("host write failed: {e}");
+                }
+            }
+        };
+
+        yield_now().await;
+        // let (_, _rx_len) = CancelContext::new()
+        //     .with_timeout(Duration::from_secs(5))
+        //     .until_cancelled(async { harness.wait_for_rx_used().await })
+        //     .await
+        //     .expect("timed out waiting for rx used");
+
+        if size < chunk.len() {
+            // Once the guest has no credit remaining, the host should post a credit request and
+            // stop sending data. The presence of the credit request also proves that it didn't
+            // stop sending data because it ran out of RX buffers.
+            tracing::info!("chunk {i}: host sent {size} bytes, waiting for credit request");
+            loop {
+                let (rx_id, _rx_len) = CancelContext::new()
+                    .with_timeout(Duration::from_secs(5))
+                    .until_cancelled(async { harness.wait_for_rx_used().await })
+                    .await
+                    .expect("timed out waiting for rx used");
+                let hdr = harness.read_header(gpas[&rx_id]);
+                let op = hdr.op;
+                if Operation(op) == Operation::CREDIT_REQUEST {
+                    break;
+                }
+
+                assert_eq!(Operation(op), Operation::RW);
+                let data = harness.read_rx_data(gpas[&rx_id], hdr.len);
+                rx_bytes.extend_from_slice(&data);
+            }
+
+            tracing::info!("received credit request after: {}", rx_bytes.len());
+            assert_eq!(&rx_bytes, &sent_bytes[..rx_bytes.len()]);
+            CancelContext::new()
+                .with_timeout(Duration::from_millis(100))
+                .until_cancelled(async { harness.wait_for_rx_used().await })
+                .await
+                .expect_err("no more RX packets expected");
+
+            // Send a credit update to allow the host to send more data.
+            let mut hdr = harness.guest_header(1024, 5002, Operation::CREDIT_UPDATE, 0, 0);
+            hdr.fwd_cnt = rx_bytes.len() as u32;
+            harness.post_tx_packet(&hdr, &[]);
+            remaining_chunk = Some(chunk[size..].to_vec());
+        } else {
+            i += 1;
+        }
+
+        sent_bytes.extend_from_slice(&chunk[..size]);
+    }
+
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+
+    // Consume remaining data.
+    loop {
+        let (rx_id, _rx_len) = CancelContext::new()
+            .with_timeout(Duration::from_secs(5))
+            .until_cancelled(async { harness.wait_for_rx_used().await })
+            .await
+            .expect("timed out waiting for rx used");
+        let hdr = harness.read_header(gpas[&rx_id]);
+        let op = hdr.op;
+        match Operation(op) {
+            Operation::CREDIT_REQUEST => {
+                // The host may still run out of credit while draining the unix socket buffer.
+                let mut hdr = harness.guest_header(1024, 5002, Operation::CREDIT_UPDATE, 0, 0);
+                hdr.fwd_cnt = rx_bytes.len() as u32;
+                harness.post_tx_packet(&hdr, &[]);
+            }
+            Operation::RW => {
+                let data = harness.read_rx_data(gpas[&rx_id], hdr.len);
+                rx_bytes.extend_from_slice(&data);
+            }
+            Operation::SHUTDOWN => {
+                break;
+            }
+            op => panic!("unexpected operation: {:?}", op),
+        }
+        if Operation(op) == Operation::CREDIT_REQUEST {
+            let mut hdr = harness.guest_header(1024, 5002, Operation::CREDIT_UPDATE, 0, 0);
+            hdr.fwd_cnt = rx_bytes.len() as u32;
+            harness.post_tx_packet(&hdr, &[]);
+            continue;
+        }
+    }
+
+    CancelContext::new()
+        .with_timeout(Duration::from_millis(100))
+        .until_cancelled(async { harness.wait_for_rx_used().await })
+        .await
+        .expect_err("no more RX packets expected");
+
+    if rx_bytes.len() != sent_bytes.len() {
+        let count = rx_bytes.len().min(sent_bytes.len());
+        // Find the first byte that differs.
+        for i in 0..count {
+            if rx_bytes[i] != sent_bytes[i] {
+                panic!(
+                    "data mismatch at byte {i}: sent {}, received {}",
+                    sent_bytes[i], rx_bytes[i]
+                );
+            }
+        }
+    }
+
+    assert_eq!(rx_bytes.len(), sent_bytes.len());
+    assert_eq!(rx_bytes, sent_bytes);
 }
