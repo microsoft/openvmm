@@ -59,11 +59,18 @@ pub struct DiskIoTestState {
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
+    use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64;
     use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64;
 
-    let vhd = resolver.require(ALPINE_3_23_X64);
-    let guest = petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(vhd));
-    petri::Firmware::uefi(resolver, MachineArch::host(), guest)
+    let arch = MachineArch::host();
+    let boot_image = match arch {
+        MachineArch::X86_64 => petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_X64)),
+        MachineArch::Aarch64 => {
+            petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_AARCH64))
+        }
+    };
+    let guest = petri::UefiGuest::Vhd(boot_image);
+    petri::Firmware::uefi(resolver, arch, guest)
 }
 
 /// Register artifacts needed by the disk I/O test.
@@ -281,19 +288,27 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
         let dev = &state.disk_device;
 
         // Each fio job: 10s runtime + 5s ramp = 15s.
-        let fio_jobs: &[(&str, &str, &str)] = &[
-            // (metric_suffix, fio_rw_mode, primary_field)
-            ("seq_read_bw", "read", "read"),
-            ("seq_write_bw", "write", "write"),
-            ("rand_read_iops", "randread", "read"),
-            ("rand_write_iops", "randwrite", "write"),
-            ("rand_read_bw", "randread", "read"),
-            ("rand_write_bw", "randwrite", "write"),
+        // For sequential modes we only extract BW; for random modes we extract
+        // both BW and IOPS from a single fio run to avoid redundant work.
+        let fio_jobs: &[(&str, &str)] = &[
+            // (fio_rw_mode, primary_field)
+            ("read", "read"),
+            ("write", "write"),
+            ("randread", "read"),
+            ("randwrite", "write"),
         ];
 
-        for &(suffix, rw_mode, field) in fio_jobs {
-            let metric_name = format!("fio_{label}_{suffix}");
-            recorder.start(&metric_name)?;
+        for &(rw_mode, field) in fio_jobs {
+            let is_random = rw_mode.starts_with("rand");
+            let phase = if is_random {
+                rw_mode.strip_prefix("rand").unwrap()
+            } else {
+                rw_mode
+            };
+            let prefix = if is_random { "rand" } else { "seq" };
+
+            let perf_label = format!("fio_{label}_{prefix}_{phase}");
+            recorder.start(&perf_label)?;
 
             let json = run_fio_job(&state.agent, dev, rw_mode)
                 .await
@@ -301,12 +316,13 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 
             recorder.stop()?;
 
-            let m = if suffix.ends_with("_iops") {
-                parse_fio_iops(&json, &metric_name, field)?
-            } else {
-                parse_fio_bw(&json, &metric_name, field)?
-            };
-            metrics.push(m);
+            let bw_name = format!("fio_{label}_{prefix}_{phase}_bw");
+            metrics.push(parse_fio_bw(&json, &bw_name, field)?);
+
+            if is_random {
+                let iops_name = format!("fio_{label}_{prefix}_{phase}_iops");
+                metrics.push(parse_fio_iops(&json, &iops_name, field)?);
+            }
         }
 
         Ok(metrics)
