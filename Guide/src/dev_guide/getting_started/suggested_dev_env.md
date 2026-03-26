@@ -160,7 +160,7 @@ As the repo is hosted on GitHub, you might find convenient to use the
 VSCode extension. That allows working through the PR feedback and
 issues without leaving the comfort of VSCode.
 
-### (Possibly Useful) Enabling 'lint' formatting on-save
+### (Possibly Useful) Enabling 'lints' formatting on-save
 
 Aside from using `rustfmt`, the OpenVMM project also relies on a handful of
 extra formatting custom lints. e.g: enforcing the presence of copyright headers,
@@ -190,7 +190,7 @@ extension, and add the following configuration to `.vscode/settings.json`:
             {
                 "match": ".*",
                 "isAsync": true,
-                "cmd": "$(cat ./target/xtask-path) --run-on-save fmt --pass lints --fix"
+                "cmd": "$(cat ./target/xtask-path) --run-on-save fmt --pass lints --fix --only-diffed"
             }
         ]
     },

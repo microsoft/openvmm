@@ -110,14 +110,22 @@ impl<T> Lintable<T> {
             op(&mut self.content);
             self.modified = true;
         } else {
-            log::error!("{}: {}", self.path.display(), description);
+            log::error!(
+                "{}: {}",
+                self.workspace_dir.join(&self.path).display(),
+                description
+            );
             self.failed
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
     pub fn unfixable(&self, description: &str) {
-        log::error!("{}: {}", self.path.display(), description);
+        log::error!(
+            "{}: {}",
+            self.workspace_dir.join(&self.path).display(),
+            description
+        );
         self.failed
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -206,7 +214,6 @@ impl FmtPass for Lints {
                     let crate_dir = crate_dir.strip_prefix(&ctx.ctx.root).unwrap();
                     diffed.iter().any(|f| f.starts_with(crate_dir))
                 });
-                log::debug!("{:?}|{:?}", non_crate_files, diffed);
                 non_crate_files.retain(|f| {
                     let f = f.strip_prefix(&ctx.ctx.root).unwrap().to_owned();
                     diffed.contains(&f)
