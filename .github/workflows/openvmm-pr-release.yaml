@@ -29,9 +29,9 @@ jobs:
     name: quick check [fmt, clippy x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -386,9 +386,9 @@ jobs:
     name: clippy [x64-windows], unit tests [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -629,9 +629,9 @@ jobs:
     name: clippy [macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -843,9 +843,9 @@ jobs:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -1069,9 +1069,9 @@ jobs:
     name: clippy [aarch64-windows], unit tests [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-ARM64
-    - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - ARM64
+    - Baremetal
     permissions:
       contents: read
       id-token: write
@@ -1310,11 +1310,7 @@ jobs:
       shell: bash
   job14:
     name: clippy [aarch64-linux], unit tests [aarch64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64
-    - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
@@ -1569,11 +1565,7 @@ jobs:
       shell: bash
   job15:
     name: clippy [aarch64-linux-musl, misc nostd], unit tests [aarch64-linux-musl]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64
-    - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
@@ -1841,9 +1833,9 @@ jobs:
     name: run vmm-tests [x64-windows-intel]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -2377,9 +2369,9 @@ jobs:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job18-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -2913,9 +2905,9 @@ jobs:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -3130,9 +3122,9 @@ jobs:
     name: run vmm-tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job20-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -3756,9 +3748,9 @@ jobs:
     name: build artifacts (for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4076,9 +4068,9 @@ jobs:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4297,9 +4289,9 @@ jobs:
     name: build artifacts (for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4625,9 +4617,9 @@ jobs:
     name: build artifacts [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4903,9 +4895,9 @@ jobs:
     name: build artifacts [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -5237,9 +5229,9 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -5520,9 +5512,9 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write

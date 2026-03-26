@@ -95,3 +95,21 @@ pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
         "Baremetal".to_string(),
     ])
 }
+
+pub fn windows_self_hosted_vm() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Windows".to_string(),
+        "X64".to_string(),
+        "VM".to_string(),
+    ])
+}
+
+pub fn linux_self_hosted_vm() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Linux".to_string(),
+        "X64".to_string(),
+        "VM".to_string(),
+    ])
+}
