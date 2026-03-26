@@ -22,16 +22,14 @@ pub enum NicBackend {
     /// VMBus synthetic NIC (NETVSP).
     Vmbus,
     /// Virtio-net on PCIe.
+    #[value(name = "virtio-net")]
     VirtioNet,
 }
 
-impl NicBackend {
-    /// Short label used in metric names.
-    fn label(self) -> &'static str {
-        match self {
-            NicBackend::Vmbus => "vmbus",
-            NicBackend::VirtioNet => "virtio",
-        }
+impl std::fmt::Display for NicBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use clap::ValueEnum;
+        f.write_str(self.to_possible_value().unwrap().get_name())
     }
 }
 
@@ -181,7 +179,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
 
     async fn run_once(&self, state: &mut NetworkTestState) -> anyhow::Result<Vec<MetricResult>> {
         let mut metrics = Vec::new();
-        let label = self.nic.label();
+        let label = self.nic;
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let mut timer = pal_async::timer::PolledTimer::new(&state.driver);

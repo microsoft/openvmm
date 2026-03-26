@@ -27,13 +27,10 @@ pub enum DiskBackend {
     Storvsc,
 }
 
-impl DiskBackend {
-    /// Short label used in metric names.
-    fn label(self) -> &'static str {
-        match self {
-            DiskBackend::VirtioBlk => "virtioblk",
-            DiskBackend::Storvsc => "storvsc",
-        }
+impl std::fmt::Display for DiskBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use clap::ValueEnum;
+        f.write_str(self.to_possible_value().unwrap().get_name())
     }
 }
 
@@ -278,7 +275,7 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 
     async fn run_once(&self, state: &mut DiskIoTestState) -> anyhow::Result<Vec<MetricResult>> {
         let mut metrics = Vec::new();
-        let label = self.backend.label();
+        let label = self.backend;
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let dev = &state.disk_device;
