@@ -1322,7 +1322,10 @@ impl Worker {
             .get_mut(id.0 as usize)
             .and_then(|p| p.take())
         else {
-            tracelimit::error_ratelimited!(tx_id = id.0, "unexpected tx completion for unknown packet");
+            tracelimit::error_ratelimited!(
+                tx_id = id.0,
+                "unexpected tx completion for unknown packet"
+            );
             return Ok(());
         };
         tx_packet.work.complete(0);
