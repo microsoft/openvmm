@@ -152,10 +152,15 @@ impl RelaySocket {
                         )
                         .await;
 
-                    if events.has_in() | events.has_err() | events.has_rdhup() {
+                    // RDHUP means the write side of the socket was shutdown by the peer, so the
+                    // next read will return 0, which is handled there.
+                    if events.has_in() || events.has_err() || events.has_rdhup() {
                         inner.has_data.store(true, Ordering::Release);
-                    } else if events.has_hup() {
-                        tracing::trace!("got read HUP");
+                    }
+
+                    // HUP means either both sides were shutdown or the socket was closed.
+                    if events.has_hup() {
+                        tracing::trace!("got read HUP: {events:?}");
                         inner.closed.store(true, Ordering::Release);
                     }
 

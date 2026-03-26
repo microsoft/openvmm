@@ -14,6 +14,7 @@ use core::mem::offset_of;
 use core::panic;
 use guestmem::GuestMemory;
 use mesh::CancelContext;
+use mesh::CancelReason;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::socket::PolledSocket;
@@ -462,11 +463,22 @@ impl TestHarness {
             .expect("timed out waiting for tx used ring entry")
     }
 
-    /// Wait for the rx queue to produce a response (used ring entry).
+    /// Wait for the rx queue to produce a response (used ring entry), or fail if it times out.
     async fn wait_for_rx_used(&mut self) -> (u16, u32) {
+        self.wait_for_rx_used_timeout(Duration::from_secs(5))
+            .await
+            .expect("timed out waiting for rx used ring entry")
+    }
+
+    /// Wait for the rx queue to produce a response with a custom timeout, allowing the caller to
+    /// handle the timeout error if desired.
+    async fn wait_for_rx_used_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(u16, u32), CancelReason> {
         let mut wait = PolledWait::new(&self.driver, self.rx_interrupt_event.clone()).unwrap();
         CancelContext::new()
-            .with_timeout(Duration::from_secs(5))
+            .with_timeout(timeout)
             .until_cancelled(async {
                 loop {
                     if let Some(entry) = read_used(&self.mem, RX_USED_ADDR, &mut self.rx_used_idx) {
@@ -476,7 +488,6 @@ impl TestHarness {
                 }
             })
             .await
-            .expect("timed out waiting for rx used ring entry")
     }
 
     /// Read a VsockHeader from a guest memory address.
@@ -1364,11 +1375,7 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
             // stop sending data because it ran out of RX buffers.
             tracing::info!("chunk {i}: host sent {size} bytes, waiting for credit request");
             loop {
-                let (rx_id, _rx_len) = CancelContext::new()
-                    .with_timeout(Duration::from_secs(5))
-                    .until_cancelled(async { harness.wait_for_rx_used().await })
-                    .await
-                    .expect("timed out waiting for rx used");
+                let (rx_id, _rx_len) = harness.wait_for_rx_used().await;
                 let hdr = harness.read_header(gpas[&rx_id]);
                 let op = hdr.op;
                 if Operation(op) == Operation::CREDIT_REQUEST {
@@ -1382,9 +1389,8 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
 
             tracing::info!("received credit request after: {}", rx_bytes.len());
             assert_eq!(&rx_bytes, &sent_bytes[..rx_bytes.len()]);
-            CancelContext::new()
-                .with_timeout(Duration::from_millis(100))
-                .until_cancelled(async { harness.wait_for_rx_used().await })
+            harness
+                .wait_for_rx_used_timeout(Duration::from_millis(100))
                 .await
                 .expect_err("no more RX packets expected");
 
@@ -1404,11 +1410,7 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
 
     // Consume remaining data.
     loop {
-        let (rx_id, _rx_len) = CancelContext::new()
-            .with_timeout(Duration::from_secs(5))
-            .until_cancelled(async { harness.wait_for_rx_used().await })
-            .await
-            .expect("timed out waiting for rx used");
+        let (rx_id, _rx_len) = harness.wait_for_rx_used().await;
         let hdr = harness.read_header(gpas[&rx_id]);
         let op = hdr.op;
         match Operation(op) {
@@ -1435,9 +1437,8 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
         }
     }
 
-    CancelContext::new()
-        .with_timeout(Duration::from_millis(100))
-        .until_cancelled(async { harness.wait_for_rx_used().await })
+    harness
+        .wait_for_rx_used_timeout(Duration::from_millis(100))
         .await
         .expect_err("no more RX packets expected");
 
@@ -1456,4 +1457,80 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
 
     assert_eq!(rx_bytes.len(), sent_bytes.len());
     assert_eq!(rx_bytes, sent_bytes);
+}
+
+/// Host-initiated shutdown: the host closes the write side of its socket, and the device forwards a
+/// SHUTDOWN packet to the guest. After the graceful shutdown timeout, a RST packet is sent to tear
+/// down the connection.
+/// N.B. This test takes a few seconds because it has to wait for the shutdown timeout twice.
+#[async_test]
+async fn host_shutdown(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    let mut listener = harness.create_port_listener(5030);
+    harness.enable().await;
+
+    let stream = harness
+        .connect_guest_to_host(&mut listener, 1024, 5030)
+        .await;
+
+    // Post rx buffers so the device can deliver SHUTDOWN and RST packets.
+    let mut rx_gpas = Vec::new();
+    for _ in 0..4 {
+        let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 4096);
+        rx_gpas.push(gpa);
+    }
+
+    // Close the host socket. The device detects EOF on the socket read and
+    // sends a SHUTDOWN to the guest, then starts the graceful shutdown timer.
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+
+    // Wait for the SHUTDOWN packet, skipping any control packets.
+    let mut rx_buf_idx = 0;
+    loop {
+        let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+
+        let hdr = harness.read_header(gpa);
+        let op = hdr.op;
+        if Operation(op) == Operation::SHUTDOWN {
+            let dst_cid = hdr.dst_cid;
+            let dst_port = hdr.dst_port;
+            let src_port = hdr.src_port;
+            let flags = ShutdownFlags::from(hdr.flags);
+            assert_eq!(dst_cid, GUEST_CID);
+            assert_eq!(dst_port, 1024);
+            assert_eq!(src_port, 5030);
+            assert!(flags.send(), "SHUTDOWN should have the send flag set");
+            break;
+        }
+    }
+
+    // Since only read was shutdown, we should NOT yet get an RST packet.
+    // N.B. The graceful shutdown timeout is 2 seconds.
+    harness
+        .wait_for_rx_used_timeout(Duration::from_secs(3))
+        .await
+        .expect_err("unexpected RX packet before graceful shutdown timeout");
+
+    // Shutting down the read side too should trigger the timeout.
+    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    loop {
+        let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        let gpa = rx_gpas[rx_buf_idx];
+        rx_buf_idx += 1;
+
+        let hdr = harness.read_header(gpa);
+        let op = hdr.op;
+        if Operation(op) == Operation::RST {
+            let dst_cid = hdr.dst_cid;
+            let dst_port = hdr.dst_port;
+            let src_port = hdr.src_port;
+            assert_eq!(dst_cid, GUEST_CID);
+            assert_eq!(dst_port, 1024);
+            assert_eq!(src_port, 5030);
+            break;
+        }
+    }
 }

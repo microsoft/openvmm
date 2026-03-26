@@ -49,7 +49,7 @@ use virtio::queue::VirtioQueuePayload;
 use vmcore::vm_task::VmTaskDriver;
 
 const TX_BUF_SIZE: u32 = 65536;
-const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A key that uniquely identifies a vsock connection.
@@ -318,6 +318,11 @@ impl Connection {
         let peer_free = self.peer_credit_available();
         if peer_free == 0 {
             tracing::info!("peer has no buffer credit available, waiting for credit update");
+            if self.waiting_for_credit {
+                return Ok(None);
+            }
+
+            self.waiting_for_credit = true;
             return Ok(Some(new_reply_packet(
                 self.key,
                 Operation::CREDIT_REQUEST,
@@ -348,12 +353,15 @@ impl Connection {
         let packet = if bytes_read == 0 {
             tracing::debug!("host socket shutdown");
             self.local_send_shutdown = true;
+            // Clear the slot so we can detect HUP if the socket wasn't closed yet.
             self.socket.clear_ready(InterestSlot::Read);
             new_shutdown_packet(
                 self.key,
                 guest_cid,
                 self.fwd_cnt.0,
-                ShutdownFlags::new().with_send(true),
+                ShutdownFlags::new()
+                    .with_send(true)
+                    .with_receive(self.socket.is_closed()),
             )
         } else {
             tracing::trace!(bytes_read, "read data from host socket");
@@ -929,23 +937,13 @@ impl ConnectionManager {
                 let pending_work = if conn.pending_reply.into_bits() != 0 {
                     // More replies pending, so handle that the next time around.
                     PendingWork::simple_rx(RxWork::Connection(id))
-                } else if conn.socket.is_closed() {
-                    if conn.local_send_shutdown {
-                        conn.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
-                    } else {
-                        tracelimit::warn_ratelimited!(
-                            ?id.key,
-                            "host socket closed without graceful shutdown, resetting connection"
-                        );
-                        // Socket closed without us shutting down the write side, so reset immediately.
-                        self.remove_connection(&id.key);
-                        PendingWork::simple_rx(RxWork::SendReset(id.key))
-                    }
+                } else if conn.socket.is_closed() && conn.local_send_shutdown {
+                    conn.set_timeout(driver, GRACEFUL_SHUTDOWN_TIMEOUT)
                 } else if conn.state == ConnectionState::Connected {
                     if conn.peer_credit_available() > 0 {
                         // No replies pending, so make sure we're waiting for data.
-                        // N.B. This is done even if the socket was shutdown because this is how we find
-                        //      out if it was closed or has an error if there is no write pending.
+                        // N.B. This is done even if the socket was shutdown or closed because we
+                        //      need to keep reading until we read 0 or an error.
                         PendingWork::rx(conn.socket.await_read_ready(RxWork::Connection(id)))
                     } else if !conn.waiting_for_credit {
                         // The peer has no space left, so request an update.
