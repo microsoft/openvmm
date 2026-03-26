@@ -113,15 +113,15 @@ struct CoseSign1Layout {
 /// Validates and skips:
 /// 1. Optional CBOR Tag(18) in canonical form (`0xD2`)
 /// 2. 4-element CBOR array header
-/// 3. Element \[0\] — protected headers (must be a bstr)
-/// 4. Element \[1\] — unprotected headers (must be a map)
+/// 3. Element [0] — protected headers (must be a bstr)
+/// 4. Element [1] — unprotected headers (must be a map)
 ///
 /// Only the canonical single-byte Tag(18) encoding (`0xD2`) is accepted.
 /// The non-preferred two-byte form (`0xD8, 0x12`) is rejected per
-/// RFC 8949 §4.1 (preferred serialization).
+/// RFC 8949 Section 4.1 (preferred serialization).
 ///
 /// Returns a [`CoseSign1Layout`] with offsets so the caller can inspect
-/// element \[2\] (payload) and beyond.
+/// element [2] (payload) and beyond.
 fn parse_cose_sign1_prefix(data: &[u8]) -> anyhow::Result<CoseSign1Layout> {
     if data.is_empty() {
         anyhow::bail!("COSE_Sign1 data is empty");
@@ -252,7 +252,11 @@ pub(crate) fn cbor_skip_item(data: &[u8], offset: usize) -> anyhow::Result<usize
     match major {
         CborMajorType::UNSIGNED_INT | CborMajorType::NEGATIVE_INT => Ok(off),
         CborMajorType::BYTE_STRING | CborMajorType::TEXT_STRING => {
-            let end = off + arg as usize;
+            let Some(end) = off.checked_add(arg as usize) else {
+                anyhow::bail!(
+                    "CBOR string length {arg} at offset {offset} overflows usize when added to offset"
+                );
+            };
             if end > data.len() {
                 anyhow::bail!("CBOR string length {arg} exceeds data at offset {offset}");
             }

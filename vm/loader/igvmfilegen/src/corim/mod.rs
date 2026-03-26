@@ -216,15 +216,10 @@ mod tests {
     use igvm::IgvmDirectiveHeader;
     use igvm::IgvmPlatformHeader;
     use igvm_defs::IGVM_FIXED_HEADER;
-    use igvm_defs::IGVM_VHS_CORIM_DOCUMENT;
     use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
-    use igvm_defs::IGVM_VHS_VARIABLE_HEADER;
     use igvm_defs::IgvmPageDataFlags;
     use igvm_defs::IgvmPageDataType;
-    use igvm_defs::IgvmVariableHeaderType;
-    use std::mem::size_of;
     use test_with_tracing::test;
-    use zerocopy::IntoBytes;
 
     /// Minimal COSE_Sign1 with nil payload (detached signature).
     const COSE_SIGN1_NIL: &[u8] = &[0xD2, 0x84, 0x40, 0xA0, 0xF6, 0x40];
@@ -264,138 +259,63 @@ mod tests {
         output
     }
 
-    /// Extracted CoRIM header info from raw binary for test assertions.
+    /// Extracted CoRIM header info for test assertions.
     struct CorimHeaderInfo {
         compatibility_mask: u32,
         payload: Vec<u8>,
     }
 
-    /// Walk the raw IGVM binary and extract CoRIM document and signature
-    /// headers. This avoids using `IgvmFile::new_from_binary()` which
-    /// cannot parse CoRIM headers.
+    /// Parse an IGVM binary and extract CoRIM document and signature headers
+    /// using the structured `IgvmFile` API.
     fn extract_corim_headers(data: &[u8]) -> (Vec<CorimHeaderInfo>, Vec<CorimHeaderInfo>) {
-        let fixed = IGVM_FIXED_HEADER::read_from_prefix(data)
-            .expect("fixed header")
-            .0;
-        let var_offset = fixed.variable_header_offset as usize;
-        let var_size = fixed.variable_header_size as usize;
-        let var_headers = &data[var_offset..var_offset + var_size];
-
+        let igvm = IgvmFile::new_from_binary(data, None).expect("valid IGVM file");
         let mut documents = Vec::new();
         let mut signatures = Vec::new();
-        let mut offset = 0;
 
-        while offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
-            let hdr = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[offset..])
-                .expect("var header")
-                .0;
-
-            let data_offset = offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
-            let aligned_len = (hdr.length as usize + 7) & !7;
-            let next_offset = data_offset + aligned_len;
-
-            let is_doc = hdr.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT;
-            let is_sig = hdr.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE;
-
-            if (is_doc || is_sig)
-                && data_offset + size_of::<IGVM_VHS_CORIM_DOCUMENT>() <= var_headers.len()
-            {
-                // IGVM_VHS_CORIM_DOCUMENT and IGVM_VHS_CORIM_SIGNATURE have
-                // identical binary layouts.
-                let corim_hdr =
-                    IGVM_VHS_CORIM_DOCUMENT::read_from_prefix(&var_headers[data_offset..])
-                        .expect("corim header")
-                        .0;
-
-                let payload_start = corim_hdr.file_offset as usize;
-                let payload_end = payload_start + corim_hdr.size_bytes as usize;
-                let payload = data[payload_start..payload_end].to_vec();
-
-                let info = CorimHeaderInfo {
-                    compatibility_mask: corim_hdr.compatibility_mask,
-                    payload,
-                };
-
-                if is_doc {
-                    documents.push(info);
-                } else {
-                    signatures.push(info);
+        for header in igvm.initializations() {
+            match header {
+                IgvmInitializationHeader::CorimDocument {
+                    compatibility_mask,
+                    document,
+                } => {
+                    documents.push(CorimHeaderInfo {
+                        compatibility_mask: *compatibility_mask,
+                        payload: document.clone(),
+                    });
                 }
+                IgvmInitializationHeader::CorimSignature {
+                    compatibility_mask,
+                    signature,
+                } => {
+                    signatures.push(CorimHeaderInfo {
+                        compatibility_mask: *compatibility_mask,
+                        payload: signature.clone(),
+                    });
+                }
+                _ => {}
             }
-
-            offset = next_offset;
         }
 
         (documents, signatures)
     }
 
-    /// Count the non-CoRIM variable headers (platform + init + regular
-    /// directives) in the raw binary.
+    /// Count directive headers (excluding CoRIM) in the IGVM binary.
     fn count_non_corim_directive_headers(data: &[u8]) -> usize {
-        let fixed = IGVM_FIXED_HEADER::read_from_prefix(data)
-            .expect("fixed header")
-            .0;
-        let var_offset = fixed.variable_header_offset as usize;
-        let var_size = fixed.variable_header_size as usize;
-        let var_headers = &data[var_offset..var_offset + var_size];
-
-        let mut count = 0;
-        let mut offset = 0;
-
-        while offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
-            let hdr = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[offset..])
-                .expect("var header")
-                .0;
-
-            let data_offset = offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
-            let aligned_len = (hdr.length as usize + 7) & !7;
-
-            // Count directive-range headers that are not CoRIM
-            let is_corim = hdr.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT
-                || hdr.typ == IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE;
-            let is_platform = hdr.typ == IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM;
-            if !is_corim && !is_platform {
-                count += 1;
-            }
-
-            offset = data_offset + aligned_len;
-        }
-
-        count
+        let igvm = IgvmFile::new_from_binary(data, None).expect("valid IGVM file");
+        igvm.directives().len()
     }
 
-    /// Verify the raw platform headers are preserved in the output.
+    /// Extract platform types and masks from the IGVM binary.
     fn extract_platform_types(data: &[u8]) -> Vec<(IgvmPlatformType, u32)> {
-        let fixed = IGVM_FIXED_HEADER::read_from_prefix(data)
-            .expect("fixed header")
-            .0;
-        let var_offset = fixed.variable_header_offset as usize;
-        let var_size = fixed.variable_header_size as usize;
-        let var_headers = &data[var_offset..var_offset + var_size];
-
-        let mut platforms = Vec::new();
-        let mut offset = 0;
-
-        while offset + size_of::<IGVM_VHS_VARIABLE_HEADER>() <= var_headers.len() {
-            let hdr = IGVM_VHS_VARIABLE_HEADER::read_from_prefix(&var_headers[offset..])
-                .expect("var header")
-                .0;
-
-            let data_offset = offset + size_of::<IGVM_VHS_VARIABLE_HEADER>();
-            let aligned_len = (hdr.length as usize + 7) & !7;
-
-            if hdr.typ == IgvmVariableHeaderType::IGVM_VHT_SUPPORTED_PLATFORM {
-                let plat =
-                    IGVM_VHS_SUPPORTED_PLATFORM::read_from_prefix(&var_headers[data_offset..])
-                        .expect("platform header")
-                        .0;
-                platforms.push((plat.platform_type, plat.compatibility_mask));
-            }
-
-            offset = data_offset + aligned_len;
-        }
-
-        platforms
+        let igvm = IgvmFile::new_from_binary(data, None).expect("valid IGVM file");
+        igvm.platforms()
+            .iter()
+            .map(|p| match p {
+                IgvmPlatformHeader::SupportedPlatform(plat) => {
+                    (plat.platform_type, plat.compatibility_mask)
+                }
+            })
+            .collect()
     }
 
     #[test]
@@ -583,7 +503,7 @@ mod tests {
         .expect("patch_corim should succeed");
 
         // Verify the fixed header is valid
-        let fixed = IGVM_FIXED_HEADER::read_from_prefix(patched.as_bytes())
+        let fixed = IGVM_FIXED_HEADER::read_from_prefix(&patched)
             .expect("valid fixed header")
             .0;
         assert_eq!(fixed.magic, igvm_defs::IGVM_MAGIC_VALUE);
