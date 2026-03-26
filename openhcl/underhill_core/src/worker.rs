@@ -2946,7 +2946,7 @@ async fn new_underhill_vm(
         };
 
         chipset_devices.push(ChipsetDeviceHandle {
-            name: "tpm".to_string(),
+            name: "tpm".to_owned(),
             resource: RemoteChipsetDeviceHandle {
                 device: TpmDeviceHandle {
                     ppi_store,

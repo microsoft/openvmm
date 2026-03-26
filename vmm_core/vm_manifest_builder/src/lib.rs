@@ -466,7 +466,7 @@ impl VmChipsetResult {
                 devices,
             )
             .map(|(name, device)| ChipsetDeviceHandle {
-                name: name.to_owned(),
+                name: name.to_string(),
                 resource: device.into_resource(),
             }),
         );
