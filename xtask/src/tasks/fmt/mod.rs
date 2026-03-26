@@ -96,6 +96,8 @@ impl Xtask for Fmt {
                 vec![
                     PassName::Rustfmt,
                     PassName::Lints,
+                    PassName::UnusedDeps,
+                    PassName::VerifyWorkspace,
                     PassName::VerifyFuzzers,
                     PassName::VerifyFlowey,
                 ]

@@ -46,6 +46,7 @@ pub struct Lintable<T> {
     raw: Option<String>,
     fix: bool,
     path: PathBuf,
+    workspace_dir: PathBuf,
     modified: bool,
     // This doesn't really need to be atomic, but it lets `unfixable` only take
     // `&self` which is more convenient.
@@ -73,6 +74,7 @@ impl Lintable<String> {
             raw: None,
             fix: ctx.fix,
             path: path.strip_prefix(workspace_dir).unwrap().to_owned(),
+            workspace_dir: workspace_dir.to_owned(),
             modified: false,
             failed: AtomicBool::new(false),
         }))
@@ -87,6 +89,7 @@ impl Lintable<DocumentMut> {
             raw: Some(raw),
             fix: ctx.fix,
             path: path.strip_prefix(workspace_dir).unwrap().to_owned(),
+            workspace_dir: workspace_dir.to_owned(),
             modified: false,
             failed: AtomicBool::new(false),
         })
@@ -124,7 +127,8 @@ impl<T> Lintable<T> {
         T: Display,
     {
         if self.modified {
-            fs_err::write(&self.path, self.content.to_string())?;
+            let full_path = self.workspace_dir.join(&self.path);
+            fs_err::write(full_path, self.content.to_string())?;
         }
         Ok(self.failed.into_inner())
     }
