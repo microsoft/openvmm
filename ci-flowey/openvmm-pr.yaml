@@ -3077,8 +3077,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-igvmfilegen" | $FLOWEY_BIN v 4 'artifact_publish_from_x64-windows-igvmfilegen' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-windows-ohcldiag-dev"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-ohcldiag-dev" | $FLOWEY_BIN v 4 'artifact_publish_from_x64-windows-ohcldiag-dev' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/x64-windows-vmgs_lib"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmgs_lib" | $FLOWEY_BIN v 4 'artifact_publish_from_x64-windows-vmgs_lib' --is-raw-string update
     displayName: 🌼🛫 Initialize job
   - bash: $(FLOWEY_BIN) e 4 flowey_lib_common::install_rust 0
     displayName: install Rust
@@ -3139,7 +3137,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 1
+      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 0
     displayName: symlink protoc
   - bash: |-
       set -e
@@ -3147,35 +3145,22 @@ jobs:
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 0
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_hypestv 0
       $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 0
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 1
     displayName: cargo build hypestv
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 4 flowey_lib_common::run_cargo_build 3
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 3
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 0
-    displayName: cargo build vmgs_lib
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 1
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 2
-      $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 1
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 2
-    displayName: test vmgs_lib
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 4 flowey_lib_common::run_cargo_build 1
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_igvmfilegen 0
-      $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 2
-      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 3
+      $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 1
+      $(FLOWEY_BIN) e 4 flowey_lib_hvlite::init_cross_build 2
     displayName: cargo build igvmfilegen
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 4 flowey_lib_common::run_cargo_build 2
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 4 flowey_lib_hvlite::build_ohcldiag_dev 0
-      $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 3
+      $(FLOWEY_BIN) e 4 flowey_core::pipeline::artifact::publish 2
     displayName: cargo build ohcldiag-dev
   - bash: $(FLOWEY_BIN) e 4 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
@@ -3188,9 +3173,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-ohcldiag-dev
     displayName: 🌼📦 Publish x64-windows-ohcldiag-dev
     artifact: x64-windows-ohcldiag-dev
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/x64-windows-vmgs_lib
-    displayName: 🌼📦 Publish x64-windows-vmgs_lib
-    artifact: x64-windows-vmgs_lib
 - job: job3
   displayName: build artifacts (for VMM tests) [aarch64-windows]
   pool: HvLite-CI-Win-Pool
@@ -3345,22 +3327,14 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 2
-    displayName: symlink protoc
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 4
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 6
-      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_tmk_vmm 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 4
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 7
-    displayName: cargo build tmk_vmm
+    displayName: symlink protoc
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 2
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_prep_steps 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 5
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 4
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 4
     displayName: cargo build prep_steps
   - bash: |-
@@ -3368,7 +3342,7 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 6
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 10
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_vmgstool 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 6
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 5
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 3
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 7
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 8
@@ -3378,7 +3352,7 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 5
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 9
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_tpm_guest_tests 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 7
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 6
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 1
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 3
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 4
@@ -3388,7 +3362,7 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 3
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 5
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_test_igvm_agent_rpc_server 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 0
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 7
     displayName: cargo build test_igvm_agent_rpc_server
   - bash: |-
       set -e
@@ -3429,7 +3403,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_nextest_archive 0
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_nextest_vmm_tests 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 1
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 0
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 5
     displayName: build + archive 'vmm_tests' nextests
   - bash: |-
@@ -3437,7 +3411,7 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 0
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 0
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_openvmm 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 2
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 1
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 6
     displayName: cargo build openvmm
   - bash: |-
@@ -3445,8 +3419,16 @@ jobs:
       $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 1
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_pipette 0
-      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 3
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 2
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::init_cross_build 2
     displayName: cargo build pipette
+  - bash: |-
+      set -e
+      $(FLOWEY_BIN) e 3 flowey_lib_common::run_cargo_build 4
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::run_cargo_build 6
+      $(FLOWEY_BIN) e 3 flowey_lib_hvlite::build_tmk_vmm 0
+      $(FLOWEY_BIN) e 3 flowey_core::pipeline::artifact::publish 3
+    displayName: cargo build tmk_vmm
   - bash: $(FLOWEY_BIN) e 3 flowey_lib_common::cache 3
     displayName: 'validate cache entry: cargo-nextest'
   - bash: $(FLOWEY_BIN) e 3 flowey_lib_common::cache 7
@@ -3559,8 +3541,6 @@ jobs:
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-igvmfilegen" | $FLOWEY_BIN v 2 'artifact_publish_from_aarch64-windows-igvmfilegen' --is-raw-string update
       mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-windows-ohcldiag-dev"
       echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-ohcldiag-dev" | $FLOWEY_BIN v 2 'artifact_publish_from_aarch64-windows-ohcldiag-dev' --is-raw-string update
-      mkdir -p "$(AgentTempDirNormal)/publish_artifacts/aarch64-windows-vmgs_lib"
-      echo "$(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmgs_lib" | $FLOWEY_BIN v 2 'artifact_publish_from_aarch64-windows-vmgs_lib' --is-raw-string update
     displayName: 🌼🛫 Initialize job
   - bash: $(FLOWEY_BIN) e 2 flowey_lib_common::install_rust 0
     displayName: install Rust
@@ -3621,7 +3601,7 @@ jobs:
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 1
+      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 0
     displayName: symlink protoc
   - bash: |-
       set -e
@@ -3629,31 +3609,22 @@ jobs:
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::run_cargo_build 0
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::build_hypestv 0
       $(FLOWEY_BIN) e 2 flowey_core::pipeline::artifact::publish 0
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 0
+      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 1
     displayName: cargo build hypestv
-  - bash: |-
-      set -e
-      $(FLOWEY_BIN) e 2 flowey_lib_common::run_cargo_build 3
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::run_cargo_build 3
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::build_and_test_vmgs_lib 0
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::build_and_test_vmgs_lib 1
-      $(FLOWEY_BIN) e 2 flowey_core::pipeline::artifact::publish 1
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 2
-    displayName: cargo build vmgs_lib
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 2 flowey_lib_common::run_cargo_build 1
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::run_cargo_build 1
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::build_igvmfilegen 0
-      $(FLOWEY_BIN) e 2 flowey_core::pipeline::artifact::publish 2
-      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 3
+      $(FLOWEY_BIN) e 2 flowey_core::pipeline::artifact::publish 1
+      $(FLOWEY_BIN) e 2 flowey_lib_hvlite::init_cross_build 2
     displayName: cargo build igvmfilegen
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 2 flowey_lib_common::run_cargo_build 2
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::run_cargo_build 2
       $(FLOWEY_BIN) e 2 flowey_lib_hvlite::build_ohcldiag_dev 0
-      $(FLOWEY_BIN) e 2 flowey_core::pipeline::artifact::publish 3
+      $(FLOWEY_BIN) e 2 flowey_core::pipeline::artifact::publish 2
     displayName: cargo build ohcldiag-dev
   - bash: $(FLOWEY_BIN) e 2 flowey_lib_common::cache 3
     displayName: 'validate cache entry: gh-release-download'
@@ -3666,9 +3637,6 @@ jobs:
   - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-ohcldiag-dev
     displayName: 🌼📦 Publish aarch64-windows-ohcldiag-dev
     artifact: aarch64-windows-ohcldiag-dev
-  - publish: $(FLOWEY_TEMP_DIR)/publish_artifacts/aarch64-windows-vmgs_lib
-    displayName: 🌼📦 Publish aarch64-windows-vmgs_lib
-    artifact: aarch64-windows-vmgs_lib
 - job: job1
   displayName: xtask fmt (windows)
   pool: HvLite-CI-Win-Pool
