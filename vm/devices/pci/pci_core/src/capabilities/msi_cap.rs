@@ -267,6 +267,14 @@ impl PciCapability for MsiCapability {
             state.pending_bits = 0;
         }
     }
+
+    fn as_msi_cap(&self) -> Option<&MsiCapability> {
+        Some(self)
+    }
+
+    fn as_msi_cap_mut(&mut self) -> Option<&mut MsiCapability> {
+        Some(self)
+    }
 }
 
 mod save_restore {

@@ -29,7 +29,6 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 disklayer_ram.workspace = true
-mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
 parking_lot.workspace = true

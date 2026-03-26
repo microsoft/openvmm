@@ -10,7 +10,6 @@
 use crate::VirtioBlkDevice;
 use crate::spec::VirtioBlkDiscardWriteZeroes;
 use crate::spec::*;
-use core::mem::offset_of;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -20,27 +19,20 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
-use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
-use virtio::spec::queue::AVAIL_ELEMENT_SIZE;
-use virtio::spec::queue::AVAIL_OFFSET_FLAGS;
-use virtio::spec::queue::AVAIL_OFFSET_IDX;
-use virtio::spec::queue::AVAIL_OFFSET_RING;
 use virtio::spec::queue::DescriptorFlags;
-use virtio::spec::queue::SplitDescriptor;
-use virtio::spec::queue::USED_ELEMENT_SIZE;
-use virtio::spec::queue::USED_OFFSET_FLAGS;
-use virtio::spec::queue::USED_OFFSET_IDX;
-use virtio::spec::queue::USED_OFFSET_RING;
-use virtio::spec::queue::UsedElement;
+use virtio::test_helpers::init_avail_ring;
+use virtio::test_helpers::init_used_ring;
+use virtio::test_helpers::make_available;
+use virtio::test_helpers::wait_for_used;
+use virtio::test_helpers::write_descriptor;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -61,105 +53,6 @@ const TOTAL_MEM_SIZE: usize = 0x40000;
 
 // VirtioBlkReqHeader is 16 bytes (u32 type, u32 reserved, u64 sector)
 const REQ_HEADER_SIZE: u32 = 16;
-
-// --- Guest memory helpers ---
-
-/// Write a split virtio descriptor at the given descriptor table base.
-fn write_descriptor(
-    mem: &GuestMemory,
-    desc_table_base: u64,
-    index: u16,
-    addr: u64,
-    len: u32,
-    flags: DescriptorFlags,
-    next: u16,
-) {
-    let base = desc_table_base + size_of::<SplitDescriptor>() as u64 * index as u64;
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, address) as u64,
-        &addr.to_le_bytes(),
-    )
-    .unwrap();
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, length) as u64,
-        &len.to_le_bytes(),
-    )
-    .unwrap();
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, flags_raw) as u64,
-        &u16::from(flags).to_le_bytes(),
-    )
-    .unwrap();
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, next) as u64,
-        &next.to_le_bytes(),
-    )
-    .unwrap();
-}
-
-/// Initialize avail ring (flags=0, idx=0).
-fn init_avail_ring(mem: &GuestMemory, avail_addr: u64) {
-    mem.write_at(avail_addr + AVAIL_OFFSET_FLAGS, &0u16.to_le_bytes())
-        .unwrap();
-    mem.write_at(avail_addr + AVAIL_OFFSET_IDX, &0u16.to_le_bytes())
-        .unwrap();
-}
-
-/// Initialize used ring (flags=0, idx=0).
-fn init_used_ring(mem: &GuestMemory, used_addr: u64) {
-    mem.write_at(used_addr + USED_OFFSET_FLAGS, &0u16.to_le_bytes())
-        .unwrap();
-    mem.write_at(used_addr + USED_OFFSET_IDX, &0u16.to_le_bytes())
-        .unwrap();
-}
-
-/// Make a descriptor index available in the avail ring and bump the index.
-fn make_available(mem: &GuestMemory, avail_addr: u64, desc_index: u16, avail_idx: &mut u16) {
-    let ring_offset =
-        avail_addr + AVAIL_OFFSET_RING + AVAIL_ELEMENT_SIZE * (*avail_idx % QUEUE_SIZE) as u64;
-    mem.write_at(ring_offset, &desc_index.to_le_bytes())
-        .unwrap();
-    *avail_idx = avail_idx.wrapping_add(1);
-    mem.write_at(avail_addr + AVAIL_OFFSET_IDX, &avail_idx.to_le_bytes())
-        .unwrap();
-}
-
-/// Read the used ring index.
-fn read_used_idx(mem: &GuestMemory, used_addr: u64) -> u16 {
-    let mut buf = [0u8; 2];
-    mem.read_at(used_addr + USED_OFFSET_IDX, &mut buf).unwrap();
-    u16::from_le_bytes(buf)
-}
-
-/// Read a used ring entry (id, len).
-fn read_used_entry(mem: &GuestMemory, used_addr: u64, index: u16) -> (u32, u32) {
-    let entry_offset =
-        used_addr + USED_OFFSET_RING + USED_ELEMENT_SIZE * (index % QUEUE_SIZE) as u64;
-    let mut id_buf = [0u8; 4];
-    let mut len_buf = [0u8; 4];
-    mem.read_at(
-        entry_offset + offset_of!(UsedElement, id) as u64,
-        &mut id_buf,
-    )
-    .unwrap();
-    mem.read_at(
-        entry_offset + offset_of!(UsedElement, len) as u64,
-        &mut len_buf,
-    )
-    .unwrap();
-    (u32::from_le_bytes(id_buf), u32::from_le_bytes(len_buf))
-}
-
-/// Read the next used ring entry, returning (desc_id, bytes_written) or None.
-fn read_used(mem: &GuestMemory, used_idx: &mut u16) -> Option<(u16, u32)> {
-    let current_used_idx = read_used_idx(mem, USED_ADDR);
-    if current_used_idx == *used_idx {
-        return None;
-    }
-    let (id, len) = read_used_entry(mem, USED_ADDR, *used_idx);
-    *used_idx = used_idx.wrapping_add(1);
-    Some((id as u16, len))
-}
 
 // --- Test Harness ---
 
@@ -284,7 +177,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         data_gpa
@@ -353,7 +252,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
     }
 
@@ -394,7 +299,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
     }
 
@@ -437,7 +348,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         id_gpa
@@ -505,7 +422,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         status_gpa
@@ -548,7 +471,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         status_gpa
@@ -556,19 +485,15 @@ impl TestHarness {
 
     /// Wait for the next used ring entry with a timeout.
     async fn wait_for_used(&mut self) -> (u16, u32) {
-        let mut wait = PolledWait::new(&self.driver, self.interrupt_event.clone()).unwrap();
-        mesh::CancelContext::new()
-            .with_timeout(Duration::from_secs(5))
-            .until_cancelled(async {
-                loop {
-                    if let Some(entry) = read_used(&self.mem, &mut self.used_idx) {
-                        return entry;
-                    }
-                    wait.wait().await.unwrap();
-                }
-            })
-            .await
-            .expect("timed out waiting for used ring entry")
+        wait_for_used(
+            &self.driver,
+            &self.interrupt_event,
+            &self.mem,
+            USED_ADDR,
+            QUEUE_SIZE,
+            &mut self.used_idx,
+        )
+        .await
     }
 
     /// Read a status byte from guest memory at the given GPA.
@@ -672,7 +597,13 @@ async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
     let flags2 = DescriptorFlags::new().with_write(true);
     write_descriptor(&harness.mem, DESC_ADDR, 2, status_gpa, 1, flags2, 0);
 
-    make_available(&harness.mem, AVAIL_ADDR, 0, &mut harness.avail_idx);
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        0,
+        &mut harness.avail_idx,
+    );
     harness.queue_event.signal();
 
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -1253,7 +1184,13 @@ async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
         DescriptorFlags::new().with_write(true),
         0,
     );
-    make_available(&harness.mem, AVAIL_ADDR, d, &mut harness.avail_idx);
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        d,
+        &mut harness.avail_idx,
+    );
     harness.queue_event.signal();
 
     let (_id, used_len) = harness.wait_for_used().await;
@@ -1319,7 +1256,13 @@ async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
         DescriptorFlags::new().with_write(true),
         0,
     );
-    make_available(&harness.mem, AVAIL_ADDR, d, &mut harness.avail_idx);
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        d,
+        &mut harness.avail_idx,
+    );
     harness.queue_event.signal();
 
     let (_id, used_len) = harness.wait_for_used().await;

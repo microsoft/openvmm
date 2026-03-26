@@ -179,6 +179,9 @@ impl Endpoint for TapEndpoint {
 
     fn tx_offload_support(&self) -> TxOffloadSupport {
         TxOffloadSupport {
+            // TAP does not support IPv4 header checksum offload, but netvsp
+            // (NDIS/TAP) guests require it for LSOv4. It's relatively cheap for
+            // us to compute in software, so report it. Virtio-net won't use it.
             ipv4_header: true,
             tcp: true,
             udp: true,
@@ -311,22 +314,20 @@ impl Queue for TapQueue {
                 let hdr = build_vnet_hdr(meta);
                 let hdr_bytes = hdr.as_bytes();
                 let mut packet = linearize(pool, &mut segments)?;
-                // The virtio net header has no mechanism for IPv4 header
-                // checksum offload, and in bridged configurations the kernel
-                // won't recompute it. Compute it in software for non-TSO
-                // packets when the guest (netvsp/NDIS) requested it. TSO
-                // packets don't need this because the kernel's GSO engine
-                // rewrites each segment's IPv4 header including the checksum.
-                if meta.flags.offload_ip_header_checksum()
-                    && meta.flags.is_ipv4()
-                    && !meta.flags.offload_tcp_segmentation()
-                {
-                    fixup_ipv4_header_checksum(
-                        &mut packet,
-                        meta.l2_len as usize,
-                        meta.l3_len as usize,
-                    );
+
+                // Fix up the IPv4 header checksum when the frontend
+                // requested IPv4 header checksum offload.
+                //
+                // The virtio vnet header has no mechanism for IPv4 header
+                // checksum offload, so we compute it in software. This
+                // also covers NDIS/netvsp LSO packets, where the guest
+                // driver zeroes ip_check (NDIS convention); the kernel's
+                // TAP GSO engine requires a valid checksum to segment
+                // the packet correctly.
+                if meta.flags.offload_ip_header_checksum() && meta.flags.is_ipv4() {
+                    fixup_ipv4_header_checksum(&mut packet, meta.l2_len as usize);
                 }
+
                 let bufs = [
                     std::io::IoSlice::new(hdr_bytes),
                     std::io::IoSlice::new(&packet),
@@ -375,16 +376,30 @@ impl Queue for TapQueue {
 
 /// Compute and write the IPv4 header checksum in place.
 ///
+/// The IPv4 header length is derived from the IHL field in the packet itself
+/// rather than trusting guest-provided metadata (`l3_len`), since that value
+/// crosses a trust boundary. The IHL value is clamped to 20..60 bytes (the
+/// valid range per RFC 791) and bounded by the packet length.
+///
 /// The virtio net header has no way to request IPv4 header checksum offload,
 /// and in bridged configurations the kernel does not recompute it. When
 /// netvsp (Windows/NDIS guests) sets `offload_ip_header_checksum`, we must
 /// compute it in software before handing the frame to TAP.
-fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize, l3_len: usize) {
-    let ip_end = l2_len + l3_len;
-    if packet.len() < ip_end || l3_len < 20 {
+fn fixup_ipv4_header_checksum(packet: &mut [u8], l2_len: usize) {
+    // Need at least the minimum IPv4 header to read IHL.
+    if packet.len() < l2_len + 20 {
         return;
     }
-    let ip_hdr = &mut packet[l2_len..ip_end];
+    // Derive header length from the IHL field in the packet, not from
+    // guest-provided metadata.
+    let ihl_bytes = ((packet[l2_len] & 0x0f) as usize) * 4;
+    if !(20..=60).contains(&ihl_bytes) {
+        return;
+    }
+    if packet.len() < l2_len + ihl_bytes {
+        return;
+    }
+    let ip_hdr = &mut packet[l2_len..l2_len + ihl_bytes];
     // Zero the checksum field (bytes 10-11) before computing.
     ip_hdr[10] = 0;
     ip_hdr[11] = 0;
@@ -633,7 +648,7 @@ mod tests {
             0x0a, 0x00, 0x00, 0x01, // src: 10.0.0.1
             0x0a, 0x00, 0x00, 0x02, // dst: 10.0.0.2
         ];
-        fixup_ipv4_header_checksum(&mut packet, 14, 20);
+        fixup_ipv4_header_checksum(&mut packet, 14);
         let csum = u16::from_be_bytes([packet[24], packet[25]]);
         // Verify by summing all 16-bit words of the IP header;
         // the result (with checksum included) should fold to 0xffff.

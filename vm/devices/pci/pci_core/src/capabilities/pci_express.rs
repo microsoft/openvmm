@@ -297,11 +297,25 @@ impl PciExpressCapability {
         // Enable slot implemented in PCIe capabilities when hotplug is enabled
         self.pcie_capabilities = self.pcie_capabilities.with_slot_implemented(true);
 
-        // Enable hotplug capabilities in slot capabilities register
+        // Enable hotplug capabilities in slot capabilities register.
+        //
+        // We advertise no_command_completed_support because our emulation
+        // applies Slot Control changes instantly (no hardware delay). This
+        // tells the guest's pciehp driver to skip waiting for command_completed
+        // after writing Slot Control (PCIe spec §7.5.3.9).
+        //
+        // Without this, a naive command_completed implementation that sets
+        // the bit on every Slot Control write creates an interrupt storm:
+        // the guest clears command_completed via RW1C (which is itself a
+        // Slot Control write), re-triggering command_completed in a loop.
+        // A correct implementation for ports with real delay would need to
+        // diff old vs new Slot Control values and only signal completion
+        // when control bits actually change, not on RW1C status clears.
         self.slot_capabilities = self
             .slot_capabilities
             .with_hot_plug_surprise(true)
             .with_hot_plug_capable(true)
+            .with_no_command_completed_support(true)
             .with_physical_slot_number(slot_number);
 
         // Enable Data Link Layer Link Active Reporting when hotplug is enabled
@@ -331,6 +345,61 @@ impl PciExpressCapability {
             state
                 .slot_status
                 .with_presence_detect_state(if present { 1 } else { 0 });
+
+        // Update Data Link Layer Link Active in Link Status to match presence.
+        // The pciehp driver checks this (via DLLLA) when LLActRep is advertised.
+        state.link_status = state.link_status.with_data_link_layer_link_active(present);
+    }
+
+    /// Set the RW1C changed bits in Slot Status to signal a hotplug event.
+    /// Call this only for runtime hotplug events, not build-time device attachment.
+    pub fn set_hotplug_changed_bits(&self) {
+        let mut state = self.state.lock();
+        state.slot_status.set_presence_detect_changed(true);
+        state.slot_status.set_data_link_layer_state_changed(true);
+    }
+
+    /// Atomically update presence detect state, link active state, and
+    /// changed bits for a hotplug event.
+    pub fn set_hotplug_state(&self, present: bool) {
+        if !self.pcie_capabilities.slot_implemented() {
+            return;
+        }
+
+        let mut state = self.state.lock();
+        state.slot_status =
+            state
+                .slot_status
+                .with_presence_detect_state(if present { 1 } else { 0 });
+        state.link_status = state.link_status.with_data_link_layer_link_active(present);
+
+        // Update link speed/width to reflect link state. When a device is
+        // removed, the link goes down and these fields reset to 0. When a
+        // device is added, the link trains and reports its negotiated speed.
+        if present {
+            state.link_status = state
+                .link_status
+                .with_current_link_speed(LinkSpeed::Speed32_0GtS.into_bits() as u16)
+                .with_negotiated_link_width(LinkWidth::X16.into_bits() as u16);
+        } else {
+            state.link_status = state
+                .link_status
+                .with_current_link_speed(0)
+                .with_negotiated_link_width(0);
+        }
+
+        state.slot_status.set_presence_detect_changed(true);
+        state.slot_status.set_data_link_layer_state_changed(true);
+    }
+
+    /// Returns whether the hot plug interrupt is enabled in Slot Control.
+    pub fn hot_plug_interrupt_enabled(&self) -> bool {
+        self.state.lock().slot_control.hot_plug_interrupt_enable()
+    }
+
+    /// Returns a reference to the slot capabilities register.
+    pub fn slot_capabilities(&self) -> &pci_express::SlotCapabilities {
+        &self.slot_capabilities
     }
 }
 

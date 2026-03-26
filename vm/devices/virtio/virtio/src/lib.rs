@@ -10,6 +10,7 @@ pub mod device;
 pub mod queue;
 pub mod resolve;
 pub mod resolver;
+pub mod test_helpers;
 mod tests;
 pub mod transport;
 
