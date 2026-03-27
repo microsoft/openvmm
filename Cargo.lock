@@ -10769,6 +10769,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "guid",
+ "heck 0.5.0",
  "ignore",
  "log",
  "object 0.37.3",

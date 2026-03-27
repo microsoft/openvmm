@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-mod house_rules;
+mod lints;
 mod rustfmt;
 mod unused_deps;
 mod verify_flowey;
@@ -10,19 +10,11 @@ mod workspace;
 use crate::Xtask;
 use anyhow::Context;
 use clap::Parser;
+use heck::ToKebabCase;
 
 /// Xtask to run various repo-specific formatting checks
 #[derive(Parser)]
-#[clap(
-    about = "Run various formatting checks",
-    disable_help_subcommand = true,
-    subcommand_value_name = "PASS",
-    subcommand_help_heading = "PASSES",
-    after_help = r#"NOTES:
-
-    For documentation on how each pass works, see the corresponding pass's help page.
-"#
-)]
+#[clap(about = "Run various formatting checks")]
 pub struct Fmt {
     /// Attempt to fix any formatting issues
     ///
@@ -38,77 +30,47 @@ pub struct Fmt {
     #[clap(long)]
     only_diffed: bool,
 
-    /// Run multiple formatting passes at once
+    /// Run only certain formatting passes
     #[clap(long)]
     pass: Vec<PassName>,
-
-    /// Run a single specific formatting pass
-    #[clap(subcommand)]
-    passes: Option<Passes>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+/// Common trait implemented by all Fmt passes.
+pub trait FmtPass {
+    /// Run the pass.
+    ///
+    /// For consistency and simplicity, `FmtPass` implementations are allowed to
+    /// assume that they are being run from the root of the repo's filesystem.
+    fn run(self, ctx: FmtCtx) -> anyhow::Result<()>;
+}
+
+#[derive(Clone)]
+pub struct FmtCtx {
+    ctx: crate::XtaskCtx,
+    fix: bool,
+    only_diffed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 enum PassName {
-    HouseRules,
+    // Keep Rustfmt first since some lints may depend on proper formatting
     Rustfmt,
+    Lints,
     UnusedDeps,
     VerifyWorkspace,
     VerifyFuzzers,
     VerifyFlowey,
 }
 
-impl PassName {
-    fn kebab_case(self) -> &'static str {
-        match self {
-            PassName::HouseRules => "house-rules",
-            PassName::Rustfmt => "rustfmt",
-            PassName::UnusedDeps => "unused-deps",
-            PassName::VerifyWorkspace => "verify-workspace",
-            PassName::VerifyFuzzers => "verify-fuzzers",
-            PassName::VerifyFlowey => "verify-flowey",
-        }
-    }
-}
-
-#[derive(clap::Subcommand)]
-enum Passes {
-    HouseRules(house_rules::HouseRules),
-    Rustfmt(rustfmt::Rustfmt),
-    UnusedDeps(unused_deps::UnusedDeps),
-    VerifyWorkspace(workspace::VerifyWorkspace),
-    VerifyFuzzers(crate::tasks::fuzz::VerifyFuzzers),
-    VerifyFlowey(verify_flowey::VerifyFlowey),
-}
-
 impl Xtask for Fmt {
     fn run(self, ctx: crate::XtaskCtx) -> anyhow::Result<()> {
-        // short-circuit if a specific pass was requested
-        if let Some(pass) = self.passes {
-            if !self.pass.is_empty() {
-                anyhow::bail!("cannot use `--pass` when invoking pass directly")
-            }
-
-            match pass {
-                Passes::UnusedDeps(cmd) => cmd.run(ctx)?,
-                Passes::Rustfmt(cmd) => cmd.run(ctx)?,
-                Passes::HouseRules(cmd) => cmd.run(ctx)?,
-                Passes::VerifyWorkspace(cmd) => cmd.run(ctx)?,
-                Passes::VerifyFuzzers(cmd) => cmd.run(ctx)?,
-                Passes::VerifyFlowey(cmd) => cmd.run(ctx)?,
-            }
-
-            return Ok(());
-        }
-
-        // otherwise, run all the formatting passes
         let tasks: Vec<Box<dyn FnOnce() -> anyhow::Result<()> + Send>> = {
             fn wrapper(
-                ctx: &crate::XtaskCtx,
-                name: &str,
-                func: impl FnOnce(crate::XtaskCtx) -> anyhow::Result<()> + Send + 'static,
+                ctx: &FmtCtx,
+                name: String,
+                func: impl FnOnce(FmtCtx) -> anyhow::Result<()> + Send + 'static,
             ) -> Box<dyn FnOnce() -> anyhow::Result<()> + Send> {
                 let ctx = ctx.clone();
-                let name = name.to_string();
 
                 Box::new(move || {
                     let start_time = std::time::Instant::now();
@@ -123,19 +85,17 @@ impl Xtask for Fmt {
                 })
             }
 
-            let fix = self.fix;
-            let only_diffed = self.only_diffed;
-
             let passes = if !self.pass.is_empty() {
                 let mut passes = self.pass.clone();
                 passes.sort();
                 passes.dedup_by(|a, b| a == b);
                 passes
             } else {
-                // run all of them by default
+                // Run all of them by default.
+                // Run rustfmt first since lints may depend on proper formatting
                 vec![
-                    PassName::HouseRules,
                     PassName::Rustfmt,
+                    PassName::Lints,
                     PassName::UnusedDeps,
                     PassName::VerifyWorkspace,
                     PassName::VerifyFuzzers,
@@ -143,30 +103,32 @@ impl Xtask for Fmt {
                 ]
             };
 
+            let ctx = FmtCtx {
+                ctx,
+                fix: self.fix,
+                only_diffed: self.only_diffed,
+            };
+
             passes
                 .into_iter()
                 .map(|pass| {
-                    let name = pass.kebab_case();
+                    let name = format!("{:?}", pass).to_kebab_case();
                     match pass {
-                        PassName::HouseRules => wrapper(&ctx, name, {
-                            move |ctx| {
-                                house_rules::HouseRules::all_passes(fix, only_diffed).run(ctx)
-                            }
-                        }),
-                        PassName::Rustfmt => wrapper(&ctx, name, {
-                            move |ctx| rustfmt::Rustfmt::new(fix, only_diffed).run(ctx)
-                        }),
-                        PassName::UnusedDeps => wrapper(&ctx, name, {
-                            move |ctx| unused_deps::UnusedDeps { fix }.run(ctx)
-                        }),
-                        PassName::VerifyWorkspace => wrapper(&ctx, name, {
-                            move |ctx| workspace::VerifyWorkspace.run(ctx)
-                        }),
+                        PassName::Rustfmt => {
+                            wrapper(&ctx, name, move |ctx| rustfmt::Rustfmt.run(ctx))
+                        }
+                        PassName::Lints => wrapper(&ctx, name, move |ctx| lints::Lints.run(ctx)),
                         PassName::VerifyFuzzers => wrapper(&ctx, name, {
-                            move |ctx| crate::tasks::fuzz::VerifyFuzzers.run(ctx)
+                            move |ctx| crate::tasks::fuzz::VerifyFuzzers.run(ctx.ctx)
                         }),
                         PassName::VerifyFlowey => wrapper(&ctx, name, {
-                            move |ctx| verify_flowey::VerifyFlowey::new(fix).run(ctx)
+                            move |ctx| verify_flowey::VerifyFlowey.run(ctx)
+                        }),
+                        PassName::UnusedDeps => wrapper(&ctx, name, {
+                            move |ctx| unused_deps::UnusedDeps { fix: ctx.fix }.run(ctx.ctx)
+                        }),
+                        PassName::VerifyWorkspace => wrapper(&ctx, name, {
+                            move |ctx| workspace::VerifyWorkspace.run(ctx.ctx)
                         }),
                     }
                 })
@@ -202,7 +164,7 @@ impl Xtask for Fmt {
                 if !self.pass.is_empty() {
                     self.pass
                         .into_iter()
-                        .map(|pass| format!(" --pass {}", pass.kebab_case()))
+                        .map(|pass| format!(" --pass {}", format!("{:?}", pass).to_kebab_case()))
                         .collect::<Vec<_>>()
                         .join("")
                 } else {
