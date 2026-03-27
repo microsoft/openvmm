@@ -25,6 +25,8 @@ pub(crate) enum AddDeviceErrorKind {
 
     #[error("no pci bus address provided")]
     NoPciBusAddress,
+    #[error("no pci bus specified")]
+    NoPciBusSpecified,
     #[error("error finalizing device")]
     Finalize(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
@@ -229,7 +231,7 @@ where
                         BusIdPci::new(placement.bus_name)
                     } else {
                         return Err(
-                            AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
+                            AddDeviceErrorKind::NoPciBusSpecified.with_dev_name(self.dev_name)
                         );
                     };
 
