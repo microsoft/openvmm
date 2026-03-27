@@ -6,11 +6,30 @@
 #![forbid(unsafe_code)]
 
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_core::AsArtifactHandle;
 use petri_artifacts_core::ErasedArtifactHandle;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
 use std::path::PathBuf;
 use vmm_test_images::KnownTestArtifacts;
+
+/// Returns the Cargo build profile directory name for cross-compiled
+/// artifacts (e.g., pipette).
+///
+/// Infers the profile from the currently running binary's path (looking
+/// for a `release` component in the executable path). Defaults to `"debug"`.
+// DEVNOTE: `pub` in order to re-use in perf_tests and other crates.
+pub fn cargo_build_profile() -> &'static str {
+    static PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PROFILE.get_or_init(|| {
+        if let Ok(exe) = std::env::current_exe() {
+            if exe.components().any(|c| c.as_os_str() == "release") {
+                return "release".to_string();
+            }
+        }
+        "debug".to_string()
+    })
+}
 
 /// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
 /// that resolves artifacts to various "known paths" within the context of
@@ -103,6 +122,49 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             }
 
             _ => anyhow::bail!("no support for given artifact type"),
+        }
+    }
+}
+
+/// Returns the bundle-relative file name for the given artifact.
+///
+/// This is the `file_name` argument that [`get_path`] would use when
+/// resolving this artifact. When creating a self-contained bundle for
+/// deployment, place the artifact at this relative path within the
+/// bundle directory, then set `VMM_TESTS_CONTENT_DIR` to the bundle
+/// directory at runtime.
+///
+/// Returns `None` for artifacts that don't have a fixed bundle name
+/// (e.g., log directories).
+pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
+    use petri_artifacts_common::artifacts as common;
+    use petri_artifacts_vmm_test::artifacts::*;
+
+    match id {
+        _ if id == common::PIPETTE_LINUX_X64 => Some("pipette"),
+        _ if id == common::PIPETTE_LINUX_AARCH64 => Some("pipette"),
+        _ if id == common::PIPETTE_WINDOWS_X64 => Some("pipette.exe"),
+        _ if id == common::PIPETTE_WINDOWS_AARCH64 => Some("pipette.exe"),
+        _ if id == OPENVMM_NATIVE => Some(if cfg!(windows) {
+            "openvmm.exe"
+        } else {
+            "openvmm"
+        }),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => Some("x64/vmlinux"),
+        _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
+        _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
+        _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
+        _ if id == loadable::UEFI_FIRMWARE_X64 => {
+            Some("hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd")
+        }
+        _ if id == loadable::UEFI_FIRMWARE_AARCH64 => {
+            Some("hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd")
+        }
+        _ => {
+            // For test VHDs, the bundle name is the artifact filename from
+            // IsHostedOnHvliteAzureBlobStore. Use resolve_test_vhd_bundle_name
+            // for those.
+            None
         }
     }
 }
@@ -216,7 +278,7 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
     for (index, target_suffix) in target_suffixes.iter().enumerate() {
         let target = format!("{}-{}", target_arch_path(arch), target_suffix);
         match get_path(
-            format!("target/{target}/debug"),
+            format!("target/{target}/{}", cargo_build_profile()),
             binary,
             MissingCommand::Build {
                 package: "pipette",
@@ -336,9 +398,10 @@ fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
 
 /// Path to our packaged linux direct test kernel.
 fn linux_direct_x64_test_kernel_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
     get_path(
         ".packages/underhill-deps-private",
-        "x64/vmlinux",
+        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test kernel",
         },
@@ -347,15 +410,14 @@ fn linux_direct_x64_test_kernel_path() -> anyhow::Result<PathBuf> {
 
 /// Path to our packaged linux direct test initrd.
 fn linux_direct_test_initrd_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
+    let id = match arch {
+        MachineArch::X86_64 => loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
+        MachineArch::Aarch64 => loadable::LINUX_DIRECT_TEST_INITRD_AARCH64.erase(),
+    };
     get_path(
         ".packages/underhill-deps-private",
-        format!(
-            "{}/initrd",
-            match arch {
-                MachineArch::X86_64 => "x64",
-                MachineArch::Aarch64 => "aarch64",
-            }
-        ),
+        resolve_bundle_name(id).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test initrd",
         },
@@ -364,9 +426,10 @@ fn linux_direct_test_initrd_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
 
 /// Path to our packaged linux direct test kernel.
 fn linux_direct_arm_image_path() -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
     get_path(
         ".packages/underhill-deps-private",
-        "aarch64/Image",
+        resolve_bundle_name(loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase()).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test kernel",
         },
@@ -397,16 +460,14 @@ fn svga_firmware_path() -> anyhow::Result<PathBuf> {
 
 /// Path to our packaged UEFI firmware image.
 fn uefi_firmware_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::loadable;
+    let id = match arch {
+        MachineArch::X86_64 => loadable::UEFI_FIRMWARE_X64.erase(),
+        MachineArch::Aarch64 => loadable::UEFI_FIRMWARE_AARCH64.erase(),
+    };
     get_path(
         ".packages",
-        match arch {
-            MachineArch::X86_64 => {
-                "hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd"
-            }
-            MachineArch::Aarch64 => {
-                "hyperv.uefi.mscoreuefi.AARCH64.RELEASE/MsvmAARCH64/RELEASE_VS2022/FV/MSVM.fd"
-            }
-        },
+        resolve_bundle_name(id).unwrap(),
         MissingCommand::Restore {
             description: "UEFI firmware binary",
         },

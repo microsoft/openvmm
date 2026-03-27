@@ -19,6 +19,8 @@ pub struct GhReleaseParams<C = VarNotClaimed> {
     ///
     /// e.g: the "bar" in "github.com/foo/bar"
     pub repo_name: String,
+    /// Commit hash to target
+    pub target: ReadVar<String, C>,
     /// Tag associated with the release artifact.
     pub tag: ReadVar<String, C>,
     /// Title associated with the release artifact.
@@ -36,6 +38,7 @@ impl GhReleaseParams {
         let GhReleaseParams {
             repo_owner,
             repo_name,
+            target,
             tag,
             title,
             files,
@@ -46,6 +49,7 @@ impl GhReleaseParams {
         GhReleaseParams {
             repo_owner,
             repo_name,
+            target: target.claim(ctx),
             tag: tag.claim(ctx),
             title: title.claim(ctx),
             files: files.claim(ctx),
@@ -86,6 +90,7 @@ impl FlowNode for Node {
                     let GhReleaseParams {
                         repo_owner,
                         repo_name,
+                        target,
                         tag,
                         title,
                         files,
@@ -94,6 +99,7 @@ impl FlowNode for Node {
                     } = req;
 
                     let repo = format!("{repo_owner}/{repo_name}");
+                    let target = rt.read(target);
                     let tag = rt.read(tag);
 
                     // check if the release already exists
@@ -128,7 +134,7 @@ impl FlowNode for Node {
                         .collect::<Vec<_>>();
                     let draft = draft.then_some("--draft");
 
-                    flowey::shell_cmd!(rt, "{gh_cli} release create --repo {repo} {tag} --title {title} --notes TODO {draft...} {files...}").run()?;
+                    flowey::shell_cmd!(rt, "{gh_cli} release create --repo {repo} --target {target} {tag} --title {title} --notes TODO {draft...} {files...}").run()?;
                 }
 
                 Ok(())

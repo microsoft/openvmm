@@ -22,6 +22,8 @@ members = [
   # VMM tests
   "vmm_tests/prep_steps",
   "vmm_tests/vmm_tests",
+  # Performance tests
+  "petri/burette",
   # hyper-v tooling
   "hyperv/tools/hypestv",
   # fuzzing
@@ -30,6 +32,7 @@ members = [
   "support/sparse_mmap/fuzz",
   "support/ucs2/fuzz",
   "vm/devices/chipset/fuzz",
+  "vm/devices/pci/pcie/fuzz",
   "vm/devices/firmware/firmware_uefi/fuzz",
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
@@ -51,6 +54,8 @@ members = [
   "vm/vmgs/vmgstool",
   # opentmk
   "opentmk",
+  # support crates consumed by closed-source only
+  "support/debug_output_tracing",
 ]
 exclude = [
   "xsync",
@@ -58,7 +63,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.93"
+rust-version = "1.94"
 edition = "2024"
 
 [workspace.dependencies]
@@ -97,14 +102,14 @@ pipette_protocol = { path = "petri/pipette_protocol" }
 address_filter = { path = "support/address_filter" }
 arc_cyclic_builder = { path = "support/arc_cyclic_builder" }
 atomic_ringbuf = { path = "support/atomic_ringbuf" }
+build_rs_git_info = { path = "support/build_rs_git_info" }
 cache_topology = { path = "support/cache_topology" }
-closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
 clap_dyn_complete = { path = "support/clap_dyn_complete" }
+closeable_mutex = { path = "support/closeable_mutex" }
 console_relay = { path = "support/console_relay" }
-safe_intrinsics = { path = "support/safe_intrinsics" }
+crypto = { path = "support/crypto" }
 debug_ptr = { path = "support/debug_ptr" }
-user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
 fast_memcpy = { path = "support/fast_memcpy" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
@@ -130,13 +135,13 @@ mesh_process = { path = "support/mesh/mesh_process" }
 mesh_protobuf = { path = "support/mesh/mesh_protobuf" }
 mesh_remote = { path = "support/mesh/mesh_remote" }
 mesh_rpc = { path = "support/mesh/mesh_rpc" }
-mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
+mesh_worker = { path = "support/mesh/mesh_worker" }
 minircu = { path = "support/minircu" }
 nostd_spin_channel = { path = "support/nostd_spin_channel"}
 open_enum = { path = "support/open_enum" }
-openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
+openssl_kdf = { path = "support/openssl_kdf" }
 oversized_box = { path = "support/oversized_box" }
 pal = { path = "support/pal" }
 pal_async = { path = "support/pal/pal_async" }
@@ -145,6 +150,7 @@ pal_event = { path = "support/pal/pal_event" }
 pal_uring = { path = "support/pal/pal_uring" }
 powershell_builder = { path = "support/powershell_builder" }
 resource_dll_parser = { path = "support/resource_dll_parser" }
+safe_intrinsics = { path = "support/safe_intrinsics" }
 safeatomic = { path = "support/safeatomic" }
 serde_helpers = { path = "support/serde_helpers" }
 sev_guest_device = { path = "support/sev_guest_device" }
@@ -162,6 +168,7 @@ trycopy = { path = "support/trycopy" }
 ucs2 = { path = "support/ucs2" }
 uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
+user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
 vmsocket = { path = "support/vmsocket" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
@@ -206,7 +213,6 @@ aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
 acpi = { path = "vm/acpi" }
 acpi_spec = { path = "vm/acpi_spec" }
-block_crypto = { path = "vm/devices/storage/block_crypto" }
 chipset_arc_mutex_device = { path = "vm/chipset_arc_mutex_device" }
 chipset_device = { path = "vm/chipset_device" }
 chipset_device_fuzz = { path = "vm/chipset_device_fuzz" }
@@ -336,10 +342,14 @@ video_core = { path = "vm/devices/video_core" }
 vga = { path = "vm/devices/vga" }
 vga_proxy = { path = "vm/devices/vga_proxy" }
 virtio = { path = "vm/devices/virtio/virtio" }
+virtio_spec = { path = "vm/devices/virtio/virtio_spec" }
+virtio_blk = { path = "vm/devices/virtio/virtio_blk" }
+virtio_console = { path = "vm/devices/virtio/virtio_console" }
 virtio_p9 = { path = "vm/devices/virtio/virtio_p9" }
 virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
+virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
 vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
@@ -424,7 +434,6 @@ arrayvec = { version = "0.7", default-features = false }
 async-channel = "2.3"
 async-task = "4.4"
 async-trait = "0.1"
-awaitgroup = "0.7"
 base64 = "0.22.1"
 base64-serde = "0.8"
 bitfield-struct = "0.11.0"
@@ -442,21 +451,18 @@ ctrlc = "3.4.0"
 der = "0.7"
 dhat = "0.3.3"
 dirs = "6.0"
-elfcore = "1.1.5"
+elfcore = "2.0.1"
 embed-resource = "3.0.2"
 env_logger = "0.11.7"
 event-listener = "5.3"
 expect-test = "1.5"
 fatfs = { version = "0.3.6", default-features = false }
 filepath = "0.2"
+flate2 = "1.1"
 fs-err = "3.1"
 fscommon = "0.1.1"
 futures = "0.3.31"
 futures-concurrency = "7.6.3"
-futures-executor = "0.3"
-futures-core = "0.3"
-futures-channel = "0.3"
-futures-io = "0.3"
 gdbstub = "0.6"
 gdbstub_arch = "0.2"
 getrandom = "0.3"
@@ -490,7 +496,6 @@ jiff = "0.2.14"
 kvm-bindings = "0.14.0"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.4.1"
-lazy_static = "1.4.0"
 libc = "0.2"
 libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
@@ -498,7 +503,6 @@ linked_list_allocator = "0.10.5"
 linkme = "0.3.9"
 log = "0.4"
 loom = "0.7.2"
-macaddr = "1.0"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"
@@ -525,6 +529,7 @@ range_map_vec = "0.2.0"
 rayon = "1.5"
 resolv-conf = "0.7"
 rlimit = "0.10.1"
+roxmltree = "0.20.0"
 rsa = "0.9.10"
 rusqlite = "0.37"
 rustc-hash = "2.1.1"
@@ -548,7 +553,6 @@ syn = "2"
 target-lexicon = "0.13.2"
 tempfile = "3.2"
 thiserror = { version = "2", default-features = false }
-time = "0.3.47"
 toml_edit = "0.23"
 tracing = "0.1"
 tracing-subscriber = "0.3.20"
@@ -556,7 +560,6 @@ typed-path = "0.11"
 uefi = "0.35.0"
 unicycle = "0.10.2"
 urlencoding = "2.1.3"
-vergen = "8.2"
 vfio-bindings = "0.4.0"
 walkdir = "2.3"
 wchar = "0.11"

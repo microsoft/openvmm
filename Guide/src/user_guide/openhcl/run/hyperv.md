@@ -128,7 +128,7 @@ Add-VMHardDiskDrive -VMName $VmName -Path "<VHDX path>" -ControllerType SCSI -Co
 This is a brief description to help you get started. Devs have their own scripts stashed away to make some of this easier. As we make this less tedious, we'll update this with more details.
 ```
 
-As briefly described in the [architecture overview](../../../reference/architecture.md), OpenHCL can relay (a.k.a translate) storage. It can take storage that the host presents as NVMe and show that to a guest as SCSI.
+As briefly described in the [architecture overview](../../../reference/architecture/openhcl.md), OpenHCL can relay (a.k.a translate) storage. It can take storage that the host presents as NVMe and show that to a guest as SCSI. For architectural details, see [Storage Translation](../../../reference/architecture/openhcl/storage_translation.md).
 
 Because the core support in OpenHCL is relatively backend-agnostic, you can also show a SCSI device to VTL2 (OpenHCL) and then re-emulate that device in OpenHCL to show it again to VTL0. This is useful for test cases primarily.
 
@@ -194,6 +194,9 @@ Add-VMHardDiskDrive -VM $vm -ControllerType SCSI -ControllerNumber $controller.C
 # * 1 disk at guest LUN $guestLun
 #   * Backed by a single PhysicalDevice of type vscsi with vsid $controllerId
 #     and sub_device_path (host LUN) $hostLun
+#
+# For field definitions, see the Storage Configuration Model:
+#   ../../../reference/architecture/openhcl/storage_configuration.md
 $settings = @{
     version = "V1"
     dynamic = @{

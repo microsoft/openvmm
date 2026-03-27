@@ -690,8 +690,8 @@ impl Rtc {
                         "get_status_byte"
                     );
 
-                    let elapsed: time::Duration = elapsed.into();
-                    if elapsed > time::Duration::seconds(1) {
+                    let elapsed_millis = elapsed.as_millis();
+                    if elapsed_millis > 1000 {
                         // Update the date/time and note that we set the update bit now.
                         data.set_update(true);
                         self.sync_clock_to_cmos();
@@ -726,7 +726,7 @@ impl Rtc {
         }
     }
 
-    fn read_cmos_date_time(&self) -> Result<time::PrimitiveDateTime, time::error::ComponentRange> {
+    fn read_cmos_date_time(&self) -> Result<jiff::civil::DateTime, jiff::Error> {
         let mut sec = self.state.cmos[CmosReg::SECOND];
         let mut min = self.state.cmos[CmosReg::MINUTE];
         let mut hour = self.state.cmos[CmosReg::HOUR];
@@ -748,14 +748,15 @@ impl Rtc {
             );
         }
 
-        Ok(time::PrimitiveDateTime::new(
-            time::Date::from_calendar_date(
-                year as i32 + century as i32 * 100,
-                month.try_into()?,
-                day,
-            )?,
-            time::Time::from_hms(hour, min, sec)?,
-        ))
+        jiff::civil::DateTime::new(
+            year as i16 + century as i16 * 100,
+            month as i8,
+            day as i8,
+            hour as i8,
+            min as i8,
+            sec as i8,
+            0,
+        )
     }
 
     /// Update the CMOS RTC registers with the current time from the backing
@@ -774,7 +775,7 @@ impl Rtc {
         }
 
         let real_time = self.real_time_source.get_time();
-        let Ok(clock_time): Result<time::OffsetDateTime, _> = real_time.try_into() else {
+        let Ok(clock_time): Result<jiff::Timestamp, _> = real_time.try_into() else {
             tracelimit::warn_ratelimited!(
                 ?real_time,
                 "invalid date/time in real_time_source, skipping sync"
@@ -782,12 +783,14 @@ impl Rtc {
             return;
         };
 
+        let clock_time = clock_time.to_zoned(jiff::tz::TimeZone::UTC).datetime();
+
         let status_b = StatusRegB::from(self.state.cmos[CmosReg::STATUS_B]);
 
-        self.state.cmos[CmosReg::SECOND] = clock_time.second();
-        self.state.cmos[CmosReg::MINUTE] = clock_time.minute();
+        self.state.cmos[CmosReg::SECOND] = clock_time.second() as u8;
+        self.state.cmos[CmosReg::MINUTE] = clock_time.minute() as u8;
         self.state.cmos[CmosReg::HOUR] = {
-            let hour = clock_time.hour();
+            let hour = clock_time.hour() as u8;
             if status_b.h24_mode() {
                 hour
             } else {
@@ -798,8 +801,9 @@ impl Rtc {
                 }
             }
         };
-        self.state.cmos[CmosReg::DAY_OF_WEEK] = clock_time.weekday().number_from_sunday();
-        self.state.cmos[CmosReg::DAY_OF_MONTH] = clock_time.day();
+        self.state.cmos[CmosReg::DAY_OF_WEEK] =
+            clock_time.date().weekday().to_sunday_one_offset() as u8;
+        self.state.cmos[CmosReg::DAY_OF_MONTH] = clock_time.day() as u8;
         self.state.cmos[CmosReg::MONTH] = clock_time.month() as u8;
         self.state.cmos[CmosReg::YEAR] = (clock_time.year() % 100) as u8;
         self.state.cmos[self.century_reg] = (clock_time.year() / 100) as u8;
@@ -839,8 +843,11 @@ impl Rtc {
     /// Write-back the current contents of the CMOS RTC registers into the
     /// backing `real_time_source`
     fn sync_cmos_to_clock(&mut self) {
-        let cmos_time: time::OffsetDateTime = match self.read_cmos_date_time() {
-            Ok(cmos_time) => cmos_time.assume_utc(),
+        let cmos_time: jiff::Timestamp = match self.read_cmos_date_time() {
+            Ok(cmos_time) => cmos_time
+                .to_zoned(jiff::tz::TimeZone::UTC)
+                .unwrap()
+                .timestamp(),
             Err(e) => {
                 tracelimit::warn_ratelimited!(?e, "invalid date/time in RTC registers!");
                 return;
@@ -850,9 +857,7 @@ impl Rtc {
     }
 
     #[cfg(test)]
-    fn get_cmos_date_time(
-        &mut self,
-    ) -> Result<time::PrimitiveDateTime, time::error::ComponentRange> {
+    fn get_cmos_date_time(&mut self) -> Result<jiff::civil::DateTime, jiff::Error> {
         self.sync_clock_to_cmos();
         self.read_cmos_date_time()
     }
@@ -1192,7 +1197,7 @@ mod tests {
                 && wait_for_edge(&mut rtc, true, time.clone())
         );
         if let Ok(start) = rtc.get_cmos_date_time() {
-            let seconds_to_wait: i64 = 10;
+            let seconds_to_wait: i64 = 65;
             for _i in 0..seconds_to_wait {
                 assert!(
                     wait_for_edge(&mut rtc, false, time.clone())
@@ -1201,14 +1206,18 @@ mod tests {
             }
 
             if let Ok(end) = rtc.get_cmos_date_time() {
-                let elapsed = end - start;
-                let expected = Duration::from_secs(seconds_to_wait as u64);
-                let allowance = Duration::from_secs(1);
+                let elapsed_secs =
+                    end.since(start).unwrap().total(jiff::Unit::Second).unwrap() as i64;
+                let expected_secs = seconds_to_wait;
+                let allowance_secs: i64 = 1;
                 println!(
-                    "Expected: {:?} Start: {:?} End: {:?} Elapsed: {:?} Allowance: {:?}, RTC generates update strobe at expected rate.",
-                    expected, start, end, elapsed, allowance
+                    "Expected: {}s Start: {:?} End: {:?} Elapsed: {}s Allowance: {}s, RTC generates update strobe at expected rate.",
+                    expected_secs, start, end, elapsed_secs, allowance_secs
                 );
-                assert!(elapsed <= (expected + allowance) && elapsed >= (expected - allowance));
+                assert!(
+                    elapsed_secs <= (expected_secs + allowance_secs)
+                        && elapsed_secs >= (expected_secs - allowance_secs)
+                );
             } else {
                 panic!("get_cmos_date_time failed");
             }
@@ -1270,7 +1279,8 @@ mod tests {
             set_12hour(&mut rtc);
         }
 
-        let init: time::OffsetDateTime = time.get_time().try_into().unwrap();
+        let init_ts: jiff::Timestamp = time.get_time().try_into().unwrap();
+        let init = init_ts.to_zoned(jiff::tz::TimeZone::UTC).datetime();
         println!("init: {:?}", init);
         set_rtc_data(&mut rtc, CmosReg::HOUR, 11, bcd, hour24);
         set_rtc_data(&mut rtc, CmosReg::MINUTE, 59, bcd, hour24);
@@ -1281,11 +1291,11 @@ mod tests {
         assert_eq!(get_rtc_data(&mut rtc, CmosReg::HOUR, bcd, hour24), 12);
         assert_eq!(
             get_rtc_data(&mut rtc, CmosReg::DAY_OF_MONTH, bcd, hour24),
-            init.day()
+            init.day() as u8
         );
         assert_eq!(
             get_rtc_data(&mut rtc, CmosReg::DAY_OF_WEEK, bcd, hour24),
-            init.weekday().number_from_sunday()
+            init.date().weekday().to_sunday_one_offset() as u8
         );
 
         set_rtc_data(&mut rtc, CmosReg::HOUR, 23, bcd, hour24);
@@ -1295,14 +1305,18 @@ mod tests {
         assert_eq!(get_rtc_data(&mut rtc, CmosReg::SECOND, bcd, hour24), 1);
         assert_eq!(get_rtc_data(&mut rtc, CmosReg::MINUTE, bcd, hour24), 0);
         assert_eq!(get_rtc_data(&mut rtc, CmosReg::HOUR, bcd, hour24), 0);
-        let temp = init + time::Duration::days(1);
+        let temp = init_ts
+            .checked_add(jiff::SignedDuration::from_hours(24))
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .datetime();
         assert_eq!(
             get_rtc_data(&mut rtc, CmosReg::DAY_OF_MONTH, bcd, hour24),
-            temp.day()
+            temp.day() as u8
         );
         assert_eq!(
             get_rtc_data(&mut rtc, CmosReg::DAY_OF_WEEK, bcd, hour24),
-            temp.weekday().number_from_sunday()
+            temp.date().weekday().to_sunday_one_offset() as u8
         );
 
         set_rtc_data(&mut rtc, CmosReg::MINUTE, 59, bcd, hour24);

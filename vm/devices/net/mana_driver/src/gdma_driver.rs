@@ -17,7 +17,9 @@ use futures::FutureExt;
 use gdma_defs::Cqe;
 use gdma_defs::DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE;
 use gdma_defs::DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG;
+use gdma_defs::DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION;
 use gdma_defs::DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT;
+use gdma_defs::DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE;
 use gdma_defs::EqeDataReconfig;
 use gdma_defs::EstablishHwc;
 use gdma_defs::GDMA_EQE_COMPLETION;
@@ -1252,7 +1254,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
                 * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
             .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
-            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
+            .min(
+                self.hwc_timeout_in_ms
+                    .saturating_sub(eqe_wait_result.elapsed as u32),
+            );
             let before_wait = std::time::Instant::now();
             eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
@@ -1396,24 +1401,55 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
+        let ver = &build_info::OPENHCL_VERSION;
+
+        let mut req = GdmaVerifyVerReq {
+            protocol_ver_min: 1,
+            protocol_ver_max: 1,
+            gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
+                | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
+                | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
+                | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
+                | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
+            os_type: gdma_defs::OS_TYPE_OHCL,
+            os_ver_major: ver.major(),
+            os_ver_minor: ver.minor(),
+            os_ver_build: ver.build(),
+            os_ver_platform: ver.platform(),
+            ..FromZeros::new_zeroed()
+        };
+
+        // Identify the driver and build to the SOC
+        // str1 = "OpenHCL", str2 = build identity.
+        let name = ver.product_name().as_bytes();
+        let len = name.len().min(req.os_ver_str1.len().saturating_sub(1));
+        req.os_ver_str1[..len].copy_from_slice(&name[..len]);
+
+        let revision = build_info::get().scm_revision().as_bytes();
+        let len = revision.len().min(req.os_ver_str2.len().saturating_sub(1));
+        req.os_ver_str2[..len].copy_from_slice(&revision[..len]);
+
         let resp: GdmaVerifyVerResp = self
             .request(
                 GdmaRequestType::GDMA_VERIFY_VF_DRIVER_VERSION.0,
                 HWC_DEV_ID,
-                GdmaVerifyVerReq {
-                    protocol_ver_min: 1,
-                    protocol_ver_max: 1,
-                    gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
-                        | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
-                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG,
-                    ..FromZeros::new_zeroed()
-                },
+                req,
             )
             .await?;
 
         if resp.gdma_protocol_ver != 1 {
             anyhow::bail!("invalid protocol version");
         }
+
+        tracing::info!(
+            gdma_protocol_ver = resp.gdma_protocol_ver,
+            pf_cap_flags1 = format_args!("{:#x}", resp.pf_cap_flags1),
+            pf_cap_flags2 = format_args!("{:#x}", resp.pf_cap_flags2),
+            pf_cap_flags3 = format_args!("{:#x}", resp.pf_cap_flags3),
+            pf_cap_flags4 = format_args!("{:#x}", resp.pf_cap_flags4),
+            "GDMA PF capability flags",
+        );
+
         Ok(())
     }
 

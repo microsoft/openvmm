@@ -1,5 +1,12 @@
 # Doorbells
-The doorbell notification system in the NVMe emulator is built around two core structures: `DoorbellMemory` and `DoorbellState`. These components work together to coordinate doorbell updates between the guest and the device, following a server-client like model.
+
+The doorbell notification system in the NVMe emulator is built around
+two core structures: `DoorbellMemory` and `DoorbellState`.
+These components work together to coordinate doorbell updates between
+the guest and the device, following a server-client like model. For
+how the NVMe emulator fits into the broader storage pipeline, see the
+[storage pipeline](../../architecture/devices/storage.md) page and the
+[`nvme` rustdoc](https://openvmm.dev/rustdoc/linux/nvme/index.html).
 
 ![Figure that shows the basic layout of the doorbell memory and doorbell state. There is 1 doorbell memory struct containing a vector of registered wakers and a pointer in to guest memory at "offset". There are 3 doorbell state structs that each track a different doorbell but all have pointers to the doorbell memory struct](images/Doorbell%20Setup.png "Doorbell Setup")
 Fig: Basic layout of DoorbellMemory and DoorbellStates.

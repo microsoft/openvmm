@@ -36,6 +36,7 @@ anyhow.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
+jiff.workspace = true
 parking_lot.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true

@@ -64,6 +64,9 @@ impl FlowNode for Node {
             ctx.req(crate::install_rust::Request::InstallTargetTriple(
                 target.clone(),
             ));
+            ctx.req(crate::install_rust::Request::InstallComponent(
+                "clippy".into(),
+            ));
 
             ctx.emit_rust_step("cargo clippy", |ctx| {
                 pre_build_deps.claim(ctx);

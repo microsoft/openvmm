@@ -69,12 +69,15 @@ vm_resource::register_static_resolvers! {
     scsidisk::resolver::SimpleScsiResolver,
 
     // Virtio devices
+    virtio_blk::resolver::VirtioBlkResolver,
+    virtio_console::resolver::VirtioConsoleResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtiofs::resolver::VirtioFsResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtio_p9::resolver::VirtioPlan9Resolver,
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
+    virtio_rng::resolver::VirtioRngResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,

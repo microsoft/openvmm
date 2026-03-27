@@ -517,41 +517,49 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
         .await
     }
 
-    /// Stops the task, waiting for it to be cancelled.
+    /// Poll variant of [`stop`](Self::stop). Signals the task to stop and polls
+    /// for completion.
     ///
-    /// Returns true if the task was previously running. Returns false if the
-    /// task was not running, not inserted, or had already completed.
-    pub async fn stop(&mut self) -> bool {
+    /// Returns `Poll::Ready(true)` if the task was previously running and has
+    /// now stopped. Returns `Poll::Ready(false)` if the task was not running,
+    /// not inserted, or had already completed. Returns `Poll::Pending` if the
+    /// task has not yet stopped.
+    pub fn poll_stop(&mut self, cx: &mut Context<'_>) -> Poll<bool> {
         match &mut self.inner {
             Inner::WithState {
                 activity, shared, ..
             } => match activity {
                 Activity::Running => {
-                    let task_and_state = poll_fn(|cx| {
-                        let mut shared = shared.lock();
-                        shared.stop = true;
-                        if shared.task_and_state.is_none() || !shared.calls.is_empty() {
-                            shared.outer_waker = Some(cx.waker().clone());
-                            let waker = shared.inner_waker.take();
-                            drop(shared);
-                            if let Some(waker) = waker {
-                                waker.wake();
-                            }
-                            return Poll::Pending;
+                    let mut shared = shared.lock();
+                    shared.stop = true;
+                    if shared.task_and_state.is_none() || !shared.calls.is_empty() {
+                        shared.outer_waker = Some(cx.waker().clone());
+                        let waker = shared.inner_waker.take();
+                        drop(shared);
+                        if let Some(waker) = waker {
+                            waker.wake();
                         }
-                        Poll::Ready(shared.task_and_state.take().unwrap())
-                    })
-                    .await;
-
+                        return Poll::Pending;
+                    }
+                    let task_and_state = shared.task_and_state.take().unwrap();
+                    drop(shared);
                     let done = task_and_state.done;
                     *activity = Activity::Stopped(task_and_state);
-                    !done
+                    Poll::Ready(!done)
                 }
-                _ => false,
+                _ => Poll::Ready(false),
             },
-            Inner::NoState(_) => false,
+            Inner::NoState(_) => Poll::Ready(false),
             Inner::Invalid => unreachable!(),
         }
+    }
+
+    /// Stops the task, waiting for it to be cancelled.
+    ///
+    /// Returns true if the task was previously running. Returns false if the
+    /// task was not running, not inserted, or had already completed.
+    pub async fn stop(&mut self) -> bool {
+        poll_fn(|cx| self.poll_stop(cx)).await
     }
 
     /// Removes the task state.
@@ -654,5 +662,38 @@ mod tests {
         t.update_with(|t, _| t.0 += 1);
         assert!(t.stop().await);
         assert_eq!(t.task_mut().0, 8);
+    }
+
+    #[async_test]
+    async fn test_poll_stop(driver: DefaultDriver) {
+        let mut t = TaskControl::new(Foo(5));
+
+        // poll_stop on a task without state returns Ready(false).
+        assert_eq!(
+            std::future::poll_fn(|cx| Poll::Ready(t.poll_stop(cx))).await,
+            Poll::Ready(false)
+        );
+
+        t.insert(&driver, "test", false);
+
+        // poll_stop on a stopped (not started) task returns Ready(false).
+        assert_eq!(
+            std::future::poll_fn(|cx| Poll::Ready(t.poll_stop(cx))).await,
+            Poll::Ready(false)
+        );
+
+        assert!(t.start());
+        yield_once().await;
+
+        // poll_stop drives the task to stop, equivalent to stop().await.
+        let result = std::future::poll_fn(|cx| t.poll_stop(cx)).await;
+        assert!(result); // was running
+        assert_eq!(t.task().0, 6);
+
+        // poll_stop after already stopped returns Ready(false).
+        assert_eq!(
+            std::future::poll_fn(|cx| Poll::Ready(t.poll_stop(cx))).await,
+            Poll::Ready(false)
+        );
     }
 }

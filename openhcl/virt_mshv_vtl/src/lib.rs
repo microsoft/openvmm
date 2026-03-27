@@ -649,6 +649,11 @@ impl UhProcessorBox {
         self.vp_info.base.vp_index
     }
 
+    /// Returns whether sidecar support is enabled.
+    pub fn sidecar_enabled(&self) -> bool {
+        self.partition.hcl.sidecar_enabled()
+    }
+
     /// Returns the base CPU that manages this processor, when it is a sidecar
     /// VP.
     pub fn sidecar_base_cpu(&self) -> Option<u32> {
@@ -1826,7 +1831,10 @@ impl<'a> UhProtoPartition<'a> {
         let software_devices = None;
 
         #[cfg(guest_arch = "aarch64")]
-        let caps = virt::aarch64::Aarch64PartitionCapabilities {};
+        let caps = virt::aarch64::Aarch64PartitionCapabilities {
+            // TODO: query aarch32 support from the hypervisor.
+            supports_aarch32_el0: false,
+        };
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = UhPartition::construct_cpuid_results(

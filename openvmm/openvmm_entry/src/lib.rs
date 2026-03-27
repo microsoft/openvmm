@@ -63,6 +63,7 @@ use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
+use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::CellUpdater;
 use mesh::error::RemoteError;
@@ -81,7 +82,6 @@ use openvmm_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86;
 use openvmm_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
-use openvmm_defs::config::DEFAULT_PCIE_ECAM_BASE;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::HypervisorConfig;
@@ -117,6 +117,7 @@ use serial_16550_resources::ComPort;
 use serial_core::resources::DisconnectedSerialBackendHandle;
 use sparse_mmap::alloc_shared_memory;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::future::pending;
 use std::io;
@@ -562,6 +563,12 @@ async fn vm_config_from_command_line(
         "debugcon",
     )?;
 
+    let virtio_console_backend = if let Some(serial_cfg) = opt.virtio_console.clone() {
+        setup_serial("virtio-console", serial_cfg, "hvc0")?
+    } else {
+        None
+    };
+
     let mut resources = VmResources::default();
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
@@ -652,6 +659,28 @@ async fn vm_config_from_command_line(
         )?;
     }
 
+    for &cli_args::DiskCli {
+        vtl,
+        ref kind,
+        read_only,
+        is_dvd,
+        ref underhill,
+        ref pcie_port,
+    } in &opt.virtio_blk
+    {
+        if underhill.is_some() {
+            anyhow::bail!("underhill not supported with virtio-blk");
+        }
+        storage.add(
+            vtl,
+            None,
+            storage_builder::DiskLocation::VirtioBlk(pcie_port.clone()),
+            kind,
+            is_dvd,
+            read_only,
+        )?;
+    }
+
     let floppy_disks: Vec<_> = opt
         .floppy
         .iter()
@@ -667,18 +696,22 @@ async fn vm_config_from_command_line(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut mana_nics = [(); 3].map(|()| None);
+    let mut vpci_mana_nics = [(); 3].map(|()| None);
+    let mut pcie_mana_nics = BTreeMap::<String, GdmaDeviceHandle>::new();
     let mut underhill_nics = Vec::new();
     let mut vpci_devices = Vec::new();
 
     let mut nic_index = 0;
     for cli_cfg in &opt.net {
+        if cli_cfg.pcie_port.is_some() {
+            anyhow::bail!("`--net` does not support PCIe");
+        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
         if cli_cfg.underhill {
             if !opt.no_alias_map {
                 anyhow::bail!("must specify --no-alias-map to offer NICs to VTL2");
             }
-            let mana = mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
+            let mana = vpci_mana_nics[openhcl_vtl as usize].get_or_insert_with(|| {
                 let vpci_instance_id = Guid::new_random();
                 underhill_nics.push(vtl2_settings_proto::NicDeviceLegacy {
                     instance_id: vpci_instance_id.to_string(),
@@ -703,6 +736,7 @@ async fn vm_config_from_command_line(
                 endpoint: EndpointConfigCli::Consomme { cidr: None },
                 max_queues: None,
                 underhill: false,
+                pcie_port: None,
             },
             &mut nic_index,
             &mut resources,
@@ -732,7 +766,7 @@ async fn vm_config_from_command_line(
     for (index, cli_cfg) in opt.pcie_remote.iter().enumerate() {
         tracing::info!(
             port_name = %cli_cfg.port_name,
-            socket_path = ?cli_cfg.socket_path,
+            socket_addr = ?cli_cfg.socket_addr,
             "instantiating PCIe remote device"
         );
 
@@ -748,7 +782,7 @@ async fn vm_config_from_command_line(
             port_name: cli_cfg.port_name.clone(),
             resource: pcie_remote_resources::PcieRemoteHandle {
                 instance_id,
-                socket_path: cli_cfg.socket_path.clone(),
+                socket_addr: cli_cfg.socket_addr.clone(),
                 hu: cli_cfg.hu,
                 controller: cli_cfg.controller,
             }
@@ -788,58 +822,138 @@ async fn vm_config_from_command_line(
 
     for vport in &opt.mana {
         let vport = parse_endpoint(vport, &mut nic_index, &mut resources)?;
-        mana_nics[vport.vtl as usize]
-            .get_or_insert_with(|| (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() }))
-            .1
-            .vports
-            .push(VportDefinition {
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            });
+        let vport_array = match (vport.vtl as usize, vport.pcie_port) {
+            (vtl, None) => {
+                &mut vpci_mana_nics[vtl]
+                    .get_or_insert_with(|| {
+                        (Guid::new_random(), GdmaDeviceHandle { vports: Vec::new() })
+                    })
+                    .1
+                    .vports
+            }
+            (0, Some(pcie_port)) => {
+                &mut pcie_mana_nics
+                    .entry(pcie_port)
+                    .or_insert(GdmaDeviceHandle { vports: Vec::new() })
+                    .vports
+            }
+            _ => anyhow::bail!("PCIe NICs only supported to VTL0"),
+        };
+        vport_array.push(VportDefinition {
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        });
     }
 
-    vpci_devices.extend(mana_nics.into_iter().enumerate().filter_map(|(vtl, nic)| {
-        nic.map(|(instance_id, handle)| VpciDeviceConfig {
-            vtl: match vtl {
-                0 => DeviceVtl::Vtl0,
-                1 => DeviceVtl::Vtl1,
-                2 => DeviceVtl::Vtl2,
-                _ => unreachable!(),
-            },
-            instance_id,
-            resource: handle.into_resource(),
-        })
-    }));
+    vpci_devices.extend(
+        vpci_mana_nics
+            .into_iter()
+            .enumerate()
+            .filter_map(|(vtl, nic)| {
+                nic.map(|(instance_id, handle)| VpciDeviceConfig {
+                    vtl: match vtl {
+                        0 => DeviceVtl::Vtl0,
+                        1 => DeviceVtl::Vtl1,
+                        2 => DeviceVtl::Vtl2,
+                        _ => unreachable!(),
+                    },
+                    instance_id,
+                    resource: handle.into_resource(),
+                })
+            }),
+    );
+
+    pcie_devices.extend(
+        pcie_mana_nics
+            .into_iter()
+            .map(|(pcie_port, handle)| PcieDeviceConfig {
+                port_name: pcie_port,
+                resource: handle.into_resource(),
+            }),
+    );
+
+    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
+    // mmio gap for VTL2.
+    let use_vtl2_gap = opt.vtl2
+        && !matches!(
+            opt.igvm_vtl2_relocation_type,
+            Vtl2BaseAddressType::Vtl2Allocate { .. },
+        );
+
+    #[cfg(guest_arch = "aarch64")]
+    let arch = MachineArch::Aarch64;
+    #[cfg(guest_arch = "x86_64")]
+    let arch = MachineArch::X86_64;
+
+    let mmio_gaps: Vec<MemoryRange> = match (use_vtl2_gap, arch) {
+        (true, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+        (true, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+        (false, MachineArch::X86_64) => DEFAULT_MMIO_GAPS_X86.into(),
+        (false, MachineArch::Aarch64) => DEFAULT_MMIO_GAPS_AARCH64.into(),
+    };
+
+    let mut pci_ecam_gaps = Vec::new();
+    let mut pci_mmio_gaps = Vec::new();
+
+    let mut low_mmio_start = mmio_gaps.first().context("expected mmio gap")?.start();
+    let mut high_mmio_end = mmio_gaps.last().context("expected second mmio gap")?.end();
+
+    let mut pcie_root_complexes = Vec::new();
+    for (i, rc_cli) in opt.pcie_root_complex.iter().enumerate() {
+        let ports = opt
+            .pcie_root_port
+            .iter()
+            .filter(|port_cli| port_cli.root_complex_name == rc_cli.name)
+            .map(|port_cli| PcieRootPortConfig {
+                name: port_cli.name.clone(),
+                hotplug: port_cli.hotplug,
+            })
+            .collect();
+
+        const ONE_MB: u64 = 1024 * 1024;
+        let low_mmio_size = (rc_cli.low_mmio as u64).next_multiple_of(ONE_MB);
+        let high_mmio_size = rc_cli
+            .high_mmio
+            .checked_next_multiple_of(ONE_MB)
+            .context("high mmio rounding error")?;
+        let ecam_size = (((rc_cli.end_bus - rc_cli.start_bus) as u64) + 1) * 256 * 4096;
+
+        let low_pci_mmio_start = low_mmio_start
+            .checked_sub(low_mmio_size)
+            .context("pci low mmio underflow")?;
+        let ecam_start = low_pci_mmio_start
+            .checked_sub(ecam_size)
+            .context("pci ecam underflow")?;
+        low_mmio_start = ecam_start;
+        high_mmio_end = high_mmio_end
+            .checked_add(high_mmio_size)
+            .context("pci high mmio overflow")?;
+
+        let ecam_range = MemoryRange::new(ecam_start..ecam_start + ecam_size);
+        let low_mmio = MemoryRange::new(low_pci_mmio_start..low_pci_mmio_start + low_mmio_size);
+        let high_mmio = MemoryRange::new(high_mmio_end - high_mmio_size..high_mmio_end);
+
+        pci_ecam_gaps.push(ecam_range);
+        pci_mmio_gaps.push(low_mmio);
+        pci_mmio_gaps.push(high_mmio);
+
+        pcie_root_complexes.push(PcieRootComplexConfig {
+            index: i as u32,
+            name: rc_cli.name.clone(),
+            segment: rc_cli.segment,
+            start_bus: rc_cli.start_bus,
+            end_bus: rc_cli.end_bus,
+            ecam_range,
+            low_mmio,
+            high_mmio,
+            ports,
+        });
+    }
+
+    pci_ecam_gaps.sort();
+    pci_mmio_gaps.sort();
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
-
-    let pcie_root_complexes = opt
-        .pcie_root_complex
-        .iter()
-        .enumerate()
-        .map(|(i, cli)| {
-            let ports = opt
-                .pcie_root_port
-                .iter()
-                .filter(|port_cli| port_cli.root_complex_name == cli.name)
-                .map(|port_cli| PcieRootPortConfig {
-                    name: port_cli.name.clone(),
-                    hotplug: port_cli.hotplug,
-                })
-                .collect();
-
-            PcieRootComplexConfig {
-                index: i as u32,
-                name: cli.name.clone(),
-                segment: cli.segment,
-                start_bus: cli.start_bus,
-                end_bus: cli.end_bus,
-                low_mmio_size: cli.low_mmio,
-                high_mmio_size: cli.high_mmio,
-                ports,
-            }
-        })
-        .collect();
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
@@ -866,7 +980,7 @@ async fn vm_config_from_command_line(
     };
 
     let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc || opt.pcat {
-        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE)?;
+        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vram")?;
         let (fb, fba) =
             framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).context("creating framebuffer")?;
         resources.framebuffer_access = Some(fba);
@@ -874,9 +988,6 @@ async fn vm_config_from_command_line(
     } else {
         None
     };
-
-    let is_arm = cfg!(guest_arch = "aarch64");
-    let is_x86 = cfg!(guest_arch = "x86_64");
 
     let load_mode;
     let with_hv;
@@ -900,11 +1011,7 @@ async fn vm_config_from_command_line(
         } else {
             BaseChipsetType::UnenlightenedLinuxDirect
         },
-        if is_x86 {
-            MachineArch::X86_64
-        } else {
-            MachineArch::Aarch64
-        },
+        arch,
     );
 
     if framebuffer.is_some() {
@@ -938,7 +1045,12 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
-    if let Some(path) = &opt.igvm {
+    if opt.restore_snapshot.is_some() {
+        // Snapshot restore: skip firmware loading entirely. Device state and
+        // memory come from the snapshot directory.
+        load_mode = LoadMode::None;
+        with_hv = true;
+    } else if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -956,7 +1068,7 @@ async fn vm_config_from_command_line(
         };
     } else if opt.pcat {
         // Emit a nice error early instead of complaining about missing firmware.
-        if !is_x86 {
+        if arch != MachineArch::X86_64 {
             anyhow::bail!("pcat not supported on this architecture");
         }
         with_hv = true;
@@ -1006,13 +1118,14 @@ async fn vm_config_from_command_line(
         let mut cmdline = "panic=-1 debug".to_string();
 
         with_hv = opt.hv;
-        if with_hv {
+        if with_hv && opt.pcie_root_complex.is_empty() {
             cmdline += " pci=off";
         }
 
         if !console_str.is_empty() {
             let _ = write!(&mut cmdline, " console={}", console_str);
         }
+
         if opt.gfx {
             cmdline += " console=tty";
         }
@@ -1050,6 +1163,11 @@ async fn vm_config_from_command_line(
             cmdline,
             custom_dsdt,
             enable_serial: any_serial_configured,
+            boot_mode: if opt.device_tree {
+                openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+            } else {
+                openvmm_defs::config::LinuxDirectBootMode::Acpi
+            },
         };
     }
 
@@ -1223,29 +1341,20 @@ async fn vm_config_from_command_line(
         // load base vars from specified template, or use an empty set of base
         // vars if none was specified.
         let base_vars = match opt.secure_boot_template {
-            Some(template) => {
-                if is_x86 {
-                    match template {
-                        SecureBootTemplateCli::Windows => {
-                            hyperv_secure_boot_templates::x64::microsoft_windows()
-                        }
-                        SecureBootTemplateCli::UefiCa => {
-                            hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
-                        }
-                    }
-                } else if is_arm {
-                    match template {
-                        SecureBootTemplateCli::Windows => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_windows()
-                        }
-                        SecureBootTemplateCli::UefiCa => {
-                            hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
-                        }
-                    }
-                } else {
-                    anyhow::bail!("no secure boot template for current guest_arch")
+            Some(template) => match (arch, template) {
+                (MachineArch::X86_64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::x64::microsoft_windows()
                 }
-            }
+                (MachineArch::X86_64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::x64::microsoft_uefi_ca()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::Windows) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_windows()
+                }
+                (MachineArch::Aarch64, SecureBootTemplateCli::UefiCa) => {
+                    hyperv_secure_boot_templates::aarch64::microsoft_uefi_ca()
+                }
+            },
             None => CustomVars::default(),
         };
 
@@ -1321,24 +1430,6 @@ async fn vm_config_from_command_line(
 
     let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
     let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
-
-    // If VTL2 is enabled, and we are not in VTL2 self allocate mode, provide an
-    // mmio gap for VTL2.
-    let mmio_gaps = if opt.vtl2
-        && !matches!(
-            opt.igvm_vtl2_relocation_type,
-            Vtl2BaseAddressType::Vtl2Allocate { .. },
-        ) {
-        if is_x86 {
-            DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into()
-        } else {
-            DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into()
-        }
-    } else if is_x86 {
-        DEFAULT_MMIO_GAPS_X86.into()
-    } else {
-        DEFAULT_MMIO_GAPS_AARCH64.into()
-    };
 
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
@@ -1437,61 +1528,115 @@ async fn vm_config_from_command_line(
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::net::VirtioNetHandle {
-                max_queues: vport.max_queues,
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            }
-            .into_resource(),
-        );
+        let resource = virtio_resources::net::VirtioNetHandle {
+            max_queues: vport.max_queues,
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &cli_cfg.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     for args in &opt.virtio_fs {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                    root_path: args.path.clone(),
-                    mount_options: args.options.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                root_path: args.path.clone(),
+                mount_options: args.options.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_fs_shmem {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
-                    root_path: args.path.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
+                root_path: args.path.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_9p {
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::p9::VirtioPlan9Handle {
-                tag: args.tag.clone(),
-                root_path: args.path.clone(),
-                debug: opt.virtio_9p_debug,
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::p9::VirtioPlan9Handle {
+            tag: args.tag.clone(),
+            root_path: args.path.clone(),
+            debug: opt.virtio_9p_debug,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
-    if let Some(path) = &opt.virtio_pmem {
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::pmem::VirtioPmemHandle { path: path.clone() }.into_resource(),
-        );
+    if let Some(pmem_args) = &opt.virtio_pmem {
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
+            path: pmem_args.path.clone(),
+        }
+        .into_resource();
+        if let Some(pcie_port) = &pmem_args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if opt.virtio_rng {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rng::VirtioRngHandle.into_resource();
+        if let Some(pcie_port) = &opt.virtio_rng_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_rng_bus, resource);
+        }
+    }
+
+    if let Some(backend) = virtio_console_backend {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+        if let Some(pcie_port) = &opt.virtio_console_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     let mut cfg = Config {
@@ -1507,7 +1652,10 @@ async fn vm_config_from_command_line(
             mem_size: opt.memory,
             mmio_gaps,
             prefetch_memory: opt.prefetch,
-            pcie_ecam_base: DEFAULT_PCIE_ECAM_BASE,
+            private_memory: opt.private_memory,
+            transparent_hugepages: opt.thp,
+            pci_ecam_gaps,
+            pci_mmio_gaps,
         },
         processor_topology: ProcessorTopologyConfig {
             proc_count: opt.processors,
@@ -1682,6 +1830,7 @@ fn parse_endpoint(
         endpoint,
         mac_address: mac_address.into(),
         max_queues: cli_cfg.max_queues,
+        pcie_port: cli_cfg.pcie_port.clone(),
     })
 }
 
@@ -1692,6 +1841,7 @@ struct NicConfig {
     mac_address: MacAddress,
     endpoint: Resource<NetEndpointHandleKind>,
     max_queues: Option<u16>,
+    pcie_port: Option<String>,
 }
 
 impl NicConfig {
@@ -1752,7 +1902,10 @@ fn disk_open_inner(
     }
     match disk_cli {
         &DiskCliKind::Memory(len) => {
-            layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: Some(len),
+                sector_size: None,
+            }));
         }
         DiskCliKind::File {
             path,
@@ -1774,7 +1927,10 @@ fn disk_open_inner(
             }))
         }
         DiskCliKind::MemoryDiff(inner) => {
-            layers.push(layer(RamDiskLayerHandle { len: None }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }));
             disk_open_inner(inner, true, layers)?;
         }
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
@@ -1873,6 +2029,124 @@ fn disk_open_inner(
             disk_open_inner(disk, read_only, layers)?;
         }
     }
+    Ok(())
+}
+
+/// Get the system page size.
+fn system_page_size() -> u32 {
+    sparse_mmap::SparseMapping::page_size() as u32
+}
+
+/// The guest architecture string, derived from the compile-time `guest_arch` cfg.
+const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
+    "x86_64"
+} else {
+    "aarch64"
+};
+
+/// Open a snapshot directory and validate it against the current VM config.
+/// Returns the shared memory fd (from memory.bin) and the saved device state.
+fn prepare_snapshot_restore(
+    snapshot_dir: &Path,
+    opt: &Options,
+) -> anyhow::Result<(
+    openvmm_defs::worker::SharedMemoryFd,
+    mesh::payload::message::ProtobufMessage,
+)> {
+    let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
+
+    // Validate manifest against current VM config.
+    openvmm_helpers::snapshot::validate_manifest(
+        &manifest,
+        GUEST_ARCH,
+        opt.memory,
+        opt.processors,
+        system_page_size(),
+    )?;
+
+    // Open memory.bin (existing file, no create, no resize).
+    let memory_file = fs_err::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(snapshot_dir.join("memory.bin"))?;
+
+    // Validate file size matches expected memory size.
+    let file_size = memory_file.metadata()?.len();
+    if file_size != manifest.memory_size_bytes {
+        anyhow::bail!(
+            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
+            manifest.memory_size_bytes,
+        );
+    }
+
+    let shared_memory_fd =
+        openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
+
+    // Reconstruct ProtobufMessage from the saved state bytes.
+    // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
+    // back to ProtobufMessage.
+    let state_msg: mesh::payload::message::ProtobufMessage = mesh::payload::decode(&state_bytes)
+        .context("failed to decode saved state from snapshot")?;
+
+    Ok((shared_memory_fd, state_msg))
+}
+
+/// Save a VM snapshot to the given directory.
+///
+/// Pauses the VM, saves device state, fsyncs the memory backing file,
+/// and writes the snapshot directory. The VM remains paused after this
+/// call — resuming would corrupt the snapshot.
+async fn save_snapshot(
+    vm_rpc: &mesh::Sender<VmRpc>,
+    opt: &Options,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let memory_file_path = opt
+        .memory_backing_file
+        .as_ref()
+        .context("save-snapshot requires --memory-backing-file")?;
+
+    // Pause the VM.
+    vm_rpc
+        .call(VmRpc::Pause, ())
+        .await
+        .context("failed to pause VM")?;
+
+    // Get device state via existing VmRpc::Save.
+    let saved_state_msg = vm_rpc
+        .call_failable(VmRpc::Save, ())
+        .await
+        .context("failed to save state")?;
+
+    // Serialize the ProtobufMessage to bytes for writing to disk.
+    let saved_state_bytes = mesh::payload::encode(saved_state_msg);
+
+    // Fsync the memory backing file.
+    let memory_file = fs_err::File::open(memory_file_path)?;
+    memory_file
+        .sync_all()
+        .context("failed to fsync memory backing file")?;
+
+    // Build manifest.
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
+        created_at: std::time::SystemTime::now().into(),
+        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_size_bytes: opt.memory,
+        vp_count: opt.processors,
+        page_size: system_page_size(),
+        architecture: GUEST_ARCH.to_string(),
+    };
+
+    // Write snapshot directory.
+    openvmm_helpers::snapshot::write_snapshot(
+        dir,
+        &manifest,
+        &saved_state_bytes,
+        memory_file_path,
+    )?;
+
+    // VM stays paused. Do NOT resume.
     Ok(())
 }
 
@@ -1980,6 +2254,13 @@ enum InteractiveCommand {
     /// Resume the VM.
     #[clap(visible_alias = "r")]
     Resume,
+
+    /// Save a snapshot to a directory (requires --memory-backing-file).
+    #[clap(visible_alias = "snap")]
+    SaveSnapshot {
+        /// Directory to write the snapshot to.
+        dir: PathBuf,
+    },
 
     /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
     #[clap(visible_alias = "psr")]
@@ -2331,10 +2612,25 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
+        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
+            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+            (Some(fd), Some(state_msg))
+        } else {
+            let shared_memory = opt
+                .memory_backing_file
+                .as_ref()
+                .map(|path| {
+                    openvmm_helpers::shared_memory::open_memory_backing_file(path, opt.memory)
+                })
+                .transpose()?;
+            (shared_memory, None)
+        };
+
         let params = VmWorkerParameters {
             hypervisor: opt.hypervisor,
             cfg: vm_config,
-            saved_state: None,
+            saved_state,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -2343,6 +2639,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .await
             .context("failed to launch vm worker")?
     };
+
+    if opt.restore_snapshot.is_some() {
+        tracing::info!("restoring VM from snapshot");
+    }
 
     if !opt.paused {
         vm_rpc.call(VmRpc::Resume, ()).await?;
@@ -2506,6 +2806,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
     let mut pending_shutdown = None;
+    let mut snapshot_saved = false;
 
     enum StateChange {
         Pause(bool),
@@ -2801,13 +3102,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 );
             }
             InteractiveCommand::Resume => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Resume,
-                    StateChange::Resume,
-                );
+                if snapshot_saved {
+                    eprintln!(
+                        "error: cannot resume after snapshot save — resuming would corrupt the snapshot. Use 'shutdown' to exit."
+                    );
+                } else {
+                    state_change(
+                        driver,
+                        &vm_rpc,
+                        &mut state_change_task,
+                        VmRpc::Resume,
+                        StateChange::Resume,
+                    );
+                }
             }
             InteractiveCommand::Reset => {
                 state_change(
@@ -2817,6 +3124,22 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     VmRpc::Reset,
                     StateChange::Reset,
                 );
+            }
+            InteractiveCommand::SaveSnapshot { dir } => {
+                match save_snapshot(&vm_rpc, &opt, &dir).await {
+                    Ok(()) => {
+                        snapshot_saved = true;
+                        tracing::info!(
+                            dir = %dir.display(),
+                            "snapshot saved; VM is paused. \
+                             Resume is blocked to prevent snapshot corruption. \
+                             Use 'shutdown' to exit."
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("error: save-snapshot failed: {err:#}");
+                    }
+                }
             }
             InteractiveCommand::PulseSaveRestore => {
                 state_change(
@@ -2885,7 +3208,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         }
                         Some(size) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                     };
@@ -3052,7 +3378,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                         (None, None) => {

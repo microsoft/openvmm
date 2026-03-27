@@ -600,6 +600,11 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             }
         }
 
+        // Merge adjacent accepted ranges with the same tag and acceptance
+        // to undo fragmentation from chunked imports.
+        self.accepted_ranges
+            .merge_adjacent(range_map_vec::u64_is_adjacent);
+
         // Put list of accepted pages into the config region, if there
         if let Some(page_base) = self.imported_regions_config_page {
             let mut imported_regions_data: Vec<_> = self.imported_regions();
@@ -744,8 +749,10 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
     }
 
     fn imported_regions(&self) -> Vec<loader_defs::paravisor::ImportedRegionDescriptor> {
-        let regions: Vec<_> = self
-            .accepted_ranges
+        // N.B. If the imported regions page grows too large, contiguous
+        // regions with the same acceptance type (but different tags) could
+        // be coalesced here to reduce the descriptor count.
+        self.accepted_ranges
             .iter()
             .map(|(r, info)| {
                 loader_defs::paravisor::ImportedRegionDescriptor::new(
@@ -754,8 +761,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
                     info.acceptance != BootPageAcceptance::Shared,
                 )
             })
-            .collect();
-        regions
+            .collect()
     }
 
     /// The guest architecture used by this loader.

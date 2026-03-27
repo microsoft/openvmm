@@ -5,16 +5,21 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-#![allow(unused_qualifications)]
+#![expect(
+    unused_qualifications,
+    reason = "generated code contains fully qualified paths"
+)]
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.
-use crate::guest_to_host_command::Command;
-use crate::guest_to_host_response::Response;
 use inspect as _;
 use prost as _;
+
 mod errorcode;
 pub use errorcode::*;
+
+use crate::guest_to_host_command::Command;
+use crate::guest_to_host_response::Response;
 
 include!(concat!(env!("OUT_DIR"), "/tdisp.rs"));
 

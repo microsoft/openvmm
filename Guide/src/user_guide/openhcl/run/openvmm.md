@@ -70,6 +70,7 @@ configured to allow consoles for OpenHCL.
 
 OpenHCL run under OpenVMM can act as the VMBus server to VTL0. Additionally,
 OpenHCL can be configured to forward offers made by OpenVMM to VTL0.
+For architectural background, see [VMBus Relay and Device Interception](../../../reference/architecture/openhcl/vmbus.md).
 
 To run OpenVMM and OpenHCL with VMBus host relay support:
 
@@ -97,7 +98,7 @@ You can assign a SCSI disk to VTL2 and have OpenHCL reassign it to VTL0:
 ### Assigning NVME devices to VTL2
 
 You can assign an NVME disk to VTL2 and have OpenHCL relay it to VTL0 as a
-VMBus scsi device:
+VMBus scsi device (see [Storage Translation](../../../reference/architecture/openhcl/storage_translation.md)):
 
 ```bash
 --disk mem:1G,uh-nvme --vmbus-redirect

@@ -453,7 +453,7 @@ impl TestMapper {
     /// Create a new test mapper that holds an internal buffer of `size_pages`.
     pub fn new(size_pages: u64) -> anyhow::Result<Self> {
         let len = (size_pages * PAGE_SIZE) as usize;
-        let fd = alloc_shared_memory(len).context("creating shared mem")?;
+        let fd = alloc_shared_memory(len, "page-pool").context("creating shared mem")?;
 
         Ok(Self { mem: fd, len })
     }

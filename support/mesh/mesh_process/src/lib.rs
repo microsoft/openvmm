@@ -379,7 +379,7 @@ struct MeshHostInner {
 }
 
 enum MeshRequest {
-    NewHost(Rpc<NewHostParams, anyhow::Result<()>>),
+    NewHost(Rpc<NewHostParams, anyhow::Result<i32>>),
     Inspect(inspect::Deferred),
     Crash(i32),
 }
@@ -442,11 +442,13 @@ impl Mesh {
     ///
     /// The initial message will be provided to the closure passed to
     /// [`try_run_mesh_host()`].
+    ///
+    /// Returns the process ID of the launched host.
     pub async fn launch_host<T: 'static + MeshField + Send>(
         &self,
         config: ProcessConfig,
         initial_message: T,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<i32> {
         let (request_send, request_recv) = mesh::channel();
 
         let (init_send, init_recv) = mesh::oneshot::<InitialMessage<T>>();
@@ -610,7 +612,7 @@ impl MeshInner {
 
     /// Spawns a new process with a mesh channel associated with this `Mesh` instance.
     #[instrument(name = "mesh_spawn_process", skip(self, params), fields(mesh_name = self.mesh_name.as_str(), pid = tracing::field::Empty))]
-    async fn spawn_process(&mut self, params: NewHostParams) -> anyhow::Result<()> {
+    async fn spawn_process(&mut self, params: NewHostParams) -> anyhow::Result<i32> {
         let NewHostParams {
             config,
             recv,
@@ -770,6 +772,6 @@ impl MeshInner {
             .unwrap();
 
         self.waiters.push(wait_recv);
-        Ok(())
+        Ok(pid)
     }
 }

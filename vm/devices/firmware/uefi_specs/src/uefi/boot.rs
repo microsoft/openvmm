@@ -4,6 +4,7 @@
 //! Definitions related to UEFI boot entries
 
 use guid::Guid;
+use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -178,6 +179,88 @@ pub struct EfiHardDriveDevice {
 pub struct EfiScsiDevice {
     pub target_id: u16,
     pub logical_unit_num: u16,
+}
+
+/// From UEFI spec 4.6 — EFI_SYSTEM_TABLE
+///
+/// Minimal layout covering header fields and the pointers needed by
+/// the Linux EFI stub (firmware vendor, configuration table).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, IntoBytes, Immutable, KnownLayout)]
+pub struct EfiSystemTable {
+    // EFI_TABLE_HEADER (UEFI spec 4.2)
+    pub signature: u64,
+    pub revision: u32,
+    pub header_size: u32,
+    pub crc32: u32,
+    pub reserved: u32,
+    // Body
+    pub firmware_vendor: u64,
+    pub firmware_revision: u32,
+    pub _pad0: u32,
+    pub console_in_handle: u64,
+    pub con_in: u64,
+    pub console_out_handle: u64,
+    pub con_out: u64,
+    pub standard_error_handle: u64,
+    pub std_err: u64,
+    pub runtime_services: u64,
+    pub boot_services: u64,
+    pub number_of_table_entries: u64,
+    pub configuration_table: u64,
+}
+
+/// From UEFI spec 4.6
+pub const EFI_SYSTEM_TABLE_SIGNATURE: u64 = 0x5453595320494249; // "IBI SYST"
+/// EFI 2.70 system table revision.
+pub const EFI_2_70_SYSTEM_TABLE_REVISION: u32 = 0x0002_0046;
+
+/// From UEFI spec 7.2 — EFI_MEMORY_DESCRIPTOR
+#[repr(C)]
+#[derive(Clone, Copy, Debug, IntoBytes, Immutable, KnownLayout)]
+pub struct EfiMemoryDescriptor {
+    pub typ: EfiMemoryType,
+    pub _pad: u32,
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+}
+
+const_assert_eq!(size_of::<EfiMemoryDescriptor>(), 40);
+
+/// From UEFI spec 7.2
+pub const EFI_MEMORY_DESCRIPTOR_VERSION: u32 = 1;
+
+/// From UEFI spec 7.2 — EFI_MEMORY_WB attribute
+pub const EFI_MEMORY_WB: u64 = 0x8;
+
+/// ACPI 2.0 table GUID for EFI configuration table entries.
+pub const ACPI_20_TABLE_GUID: Guid = guid::guid!("8868e871-e4f1-11d3-bc22-0080c73c8881");
+
+/// EFI RT Properties Table GUID (UEFI spec 4.6).
+pub const EFI_RT_PROPERTIES_TABLE_GUID: Guid = guid::guid!("eb66918a-7eef-402a-842e-931d21c38ae9");
+
+/// From UEFI spec 4.6 — EFI_RT_PROPERTIES_TABLE
+///
+/// Installed in the EFI Configuration Table to tell the OS which runtime
+/// services are supported. Setting `runtime_services_supported` to zero
+/// means no runtime services are backed by real code.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, IntoBytes, Immutable, KnownLayout)]
+pub struct EfiRtPropertiesTable {
+    pub version: u16,
+    pub length: u16,
+    pub runtime_services_supported: u32,
+}
+
+impl EfiRtPropertiesTable {
+    /// A table advertising that no runtime services are supported.
+    pub const NONE_SUPPORTED: Self = Self {
+        version: 1,
+        length: size_of::<Self>() as u16,
+        runtime_services_supported: 0,
+    };
 }
 
 #[repr(C, packed)]

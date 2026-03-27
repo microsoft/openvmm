@@ -20,6 +20,8 @@ membacking.workspace = true
 memory_range = { workspace = true, features = ["mesh"] }
 vm_topology = { workspace = true, features = ["mesh"] }
 guestmem.workspace = true
+uefi_specs.workspace = true
+crc32fast.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 vmgs_resources.workspace = true
@@ -47,8 +49,10 @@ vmotherboard = { workspace = true, features = [
     "dev_winbond_super_io_and_floppy_full",
 ] }
 chipset_legacy.workspace = true
+chipset_device.workspace = true
 chipset_device_resources.workspace = true
 chipset_device_worker.workspace = true
+closeable_mutex.workspace = true
 disk_backend.workspace = true
 firmware_pcat.workspace = true
 firmware_uefi_custom_vars.workspace = true
@@ -63,6 +67,7 @@ input_core.workspace = true
 missing_dev.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
+pci_resources.workspace = true
 pcie.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
@@ -97,18 +102,19 @@ getrandom.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
 [target.'cfg(windows)'.dependencies]
+vmgs_broker = { workspace = true, features = ["encryption"] }
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
-vmgs_broker = { workspace = true, features = ["encryption_win"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 virt_hvf = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+vmgs_broker = { workspace = true, features = ["encryption"] }
 virt_kvm = { workspace = true, optional = true }
 virt_mshv = { workspace = true, optional = true }
-vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

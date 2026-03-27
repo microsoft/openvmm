@@ -53,6 +53,13 @@ impl std::os::windows::io::AsHandle for Mappable {
     }
 }
 
+impl Mappable {
+    /// Returns a clone of the inner `Arc`, avoiding an OS-level `dup()`.
+    pub fn inner_arc(&self) -> Arc<OwnedType> {
+        self.0.clone()
+    }
+}
+
 impl DefaultEncoding for Mappable {
     type Encoding = ResourceField<OwnedType>;
 }

@@ -91,6 +91,9 @@ pub enum InvalidTopology {
     /// VpInfo indices must be linear and start at 0
     #[error("vp indices don't start at 0 or don't count up")]
     InvalidVpIndices,
+    /// A PPI INTID is not in the valid range (16..32).
+    #[error("PPI INTID {0} is not in the valid range 16..32")]
+    InvalidPpiIntid(u32),
     /// Failed to query the topology information from Device Tree.
     #[error("failed to query memory topology from device tree")]
     StdIoError(#[source] std::io::Error),

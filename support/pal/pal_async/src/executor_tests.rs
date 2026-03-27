@@ -213,7 +213,8 @@ pub mod windows {
     use std::fs::OpenOptions;
     use std::os::windows::prelude::*;
     use unicycle::FuturesUnordered;
-    use winapi::um::winbase::FILE_FLAG_OVERLAPPED;
+    use windows_sys::Win32::Foundation::ERROR_OPERATION_ABORTED;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
     /// Runs overlapped file tests.
     pub async fn overlapped_file_tests(driver: impl Driver) {
@@ -274,7 +275,7 @@ pub mod windows {
             read.cancel();
             assert_eq!(
                 read.await.0.unwrap_err().raw_os_error(),
-                Some(winapi::shared::winerror::ERROR_OPERATION_ABORTED as i32)
+                Some(ERROR_OPERATION_ABORTED as i32)
             );
 
             // Success case.

@@ -199,6 +199,40 @@ impl IntoPipeline for CheckinGatesCli {
         // <https://github.com/orgs/community/discussions/12395>
         let mut all_jobs = Vec::new();
 
+        // ── Phase 1: quick-check gate ──────────────────────────────────────
+        // Combined fmt + clippy on one self-hosted linux machine.
+        // Catches the most common failures quickly before fanning out expensive jobs.
+        let quick_check_job = if matches!(config, PipelineConfig::Pr | PipelineConfig::PrRelease) {
+            let job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "quick check [fmt, clippy x64-linux]",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                // 1. xtask fmt (linux)
+                .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
+                    target: CommonTriple::X86_64_LINUX_GNU,
+                    done: ctx.new_done_handle(),
+                })
+                // 2. clippy for x64-linux-gnu
+                .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_clippy::Request {
+                    target: target_lexicon::triple!("x86_64-unknown-linux-gnu"),
+                    profile: CommonProfile::from_release(release),
+                    done: ctx.new_done_handle(),
+                    also_check_misc_nostd_crates: false,
+                })
+                .finish();
+
+            Some(job)
+        } else {
+            // CI (post-merge) keeps full fan-out — no phase-1 gate
+            None
+        };
+
         // emit xtask fmt job
         {
             let windows_fmt_job = pipeline
@@ -217,28 +251,35 @@ impl IntoPipeline for CheckinGatesCli {
                 })
                 .finish();
 
-            let linux_fmt_job = pipeline
-                .new_job(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                    FlowArch::X86_64,
-                    "xtask fmt (linux)",
-                )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
-                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
-                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                ))
-                .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
-                    target: CommonTriple::X86_64_LINUX_GNU,
-                    done: ctx.new_done_handle(),
-                })
-                .finish();
+            let linux_fmt_job = if let Some(ref qc) = quick_check_job {
+                // PR/PrRelease: linux fmt is handled by the quick-check job
+                qc.clone()
+            } else {
+                // CI mode: keep standalone linux fmt job
+                let job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowArch::X86_64,
+                        "xtask fmt (linux)",
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::gh_hosted_x64_linux())
+                    .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    ))
+                    .dep_on(|ctx| flowey_lib_hvlite::_jobs::check_xtask_fmt::Request {
+                        target: CommonTriple::X86_64_LINUX_GNU,
+                        done: ctx.new_done_handle(),
+                    })
+                    .finish();
+                all_jobs.push(job.clone());
+                job
+            };
 
             // cut down on extra noise by having the linux check run first, and
             // then if it passes, run the windows checks just in case there is a
             // difference between the two.
             pipeline.non_artifact_dep(&windows_fmt_job, &linux_fmt_job);
 
-            all_jobs.push(linux_fmt_job);
             all_jobs.push(windows_fmt_job);
         }
 
@@ -806,6 +847,12 @@ impl IntoPipeline for CheckinGatesCli {
             unit_test_target: Option<(&'a str, Triple)>,
         }
 
+        let macos_clippy_targets = [(target_lexicon::triple!("aarch64-apple-darwin"), false)];
+        let x64_linux_macos_clippy_targets = [
+            (target_lexicon::triple!("x86_64-unknown-linux-gnu"), false),
+            (target_lexicon::triple!("aarch64-apple-darwin"), false),
+        ];
+
         for ClippyUnitTestJobParams {
             platform,
             arch,
@@ -836,13 +883,16 @@ impl IntoPipeline for CheckinGatesCli {
                 // This job fails on github runners for an unknown reason, so
                 // use self-hosted runners for now.
                 gh_pool: crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk(),
-                clippy_targets: Some((
-                    "x64-linux, macos",
-                    &[
-                        (target_lexicon::triple!("x86_64-unknown-linux-gnu"), false),
-                        (target_lexicon::triple!("aarch64-apple-darwin"), false),
-                    ],
-                )),
+                clippy_targets: if quick_check_job.is_some() {
+                    // Phase 1 already ran clippy for x64-linux;
+                    // still need macos cross-clippy here.
+                    Some(("macos", macos_clippy_targets.as_slice()))
+                } else {
+                    Some((
+                        "x64-linux, macos",
+                        x64_linux_macos_clippy_targets.as_slice(),
+                    ))
+                },
                 unit_test_target: Some((
                     "x64-linux",
                     target_lexicon::triple!("x86_64-unknown-linux-gnu"),
@@ -1296,6 +1346,14 @@ impl IntoPipeline for CheckinGatesCli {
                     .finish();
                 all_jobs.push(job);
             }
+        }
+
+        // ── Wire phase 2: all jobs depend on the quick-check gate ──────────
+        if let Some(ref quick_check) = quick_check_job {
+            for job in all_jobs.iter() {
+                pipeline.non_artifact_dep(job, quick_check);
+            }
+            all_jobs.push(quick_check.clone());
         }
 
         if matches!(config, PipelineConfig::Pr)

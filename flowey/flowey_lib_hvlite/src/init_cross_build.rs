@@ -75,6 +75,11 @@ impl FlowNode for Node {
                                         FlowPlatformLinuxDistro::Ubuntu => {
                                             Some("gcc-x86-64-linux-gnu")
                                         }
+                                        FlowPlatformLinuxDistro::AzureLinux => {
+                                            // Azure Linux doesn't have an x86_64 cross-gcc;
+                                            // the native `gcc` package is used on x86_64 hosts.
+                                            match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
+                                        }
                                         FlowPlatformLinuxDistro::Arch => {
                                             match_arch!(host_arch, FlowArch::X86_64, Some("gcc"))
                                         }
@@ -91,7 +96,8 @@ impl FlowNode for Node {
                                 FlowPlatform::Linux(linux_distribution) => {
                                     let pkg = match linux_distribution {
                                         FlowPlatformLinuxDistro::Fedora
-                                        | FlowPlatformLinuxDistro::Ubuntu => {
+                                        | FlowPlatformLinuxDistro::Ubuntu
+                                        | FlowPlatformLinuxDistro::AzureLinux => {
                                             Some("gcc-aarch64-linux-gnu")
                                         }
                                         FlowPlatformLinuxDistro::Arch => match_arch!(

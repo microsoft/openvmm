@@ -5,20 +5,18 @@ use crate::queue::QueueCoreCompleteWork;
 use crate::queue::QueueCoreGetWork;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
+use crate::queue::QueueState;
 use crate::queue::QueueWork;
 use crate::queue::VirtioQueuePayload;
 use crate::queue::new_queue;
 use crate::spec::VirtioDeviceFeatures;
-use async_trait::async_trait;
+use crate::spec::VirtioDeviceType;
 use futures::FutureExt;
 use futures::Stream;
-use futures::StreamExt;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
-use guestmem::MappedMemoryRegion;
-use pal_async::DefaultPool;
-use pal_async::driver::Driver;
+use inspect::Inspect;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -28,39 +26,90 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
-use task_control::AsyncRun;
-use task_control::StopTask;
-use task_control::TaskControl;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 
-#[async_trait]
-pub trait VirtioQueueWorkerContext {
-    async fn process_work(&mut self, work: anyhow::Result<VirtioQueueCallbackWork>) -> bool;
+/// Read all readable payload buffers into `target`. Returns the number of bytes read.
+fn read_from_payload(
+    payload: &[VirtioQueuePayload],
+    mem: &GuestMemory,
+    target: &mut [u8],
+) -> Result<usize, GuestMemoryError> {
+    let mut remaining = target;
+    let mut read_bytes: usize = 0;
+    for payload in payload {
+        if payload.writeable {
+            continue;
+        }
+        let size = std::cmp::min(payload.length as usize, remaining.len());
+        let (current, next) = remaining.split_at_mut(size);
+        mem.read_at(payload.address, current)?;
+        read_bytes += size;
+        if next.is_empty() {
+            break;
+        }
+        remaining = next;
+    }
+    Ok(read_bytes)
+}
+
+/// Total length of all readable (non-writeable) payload buffers.
+fn readable_payload_length(payload: &[VirtioQueuePayload]) -> u64 {
+    payload
+        .iter()
+        .filter(|p| !p.writeable)
+        .fold(0, |acc, p| acc + p.length as u64)
+}
+
+/// Read readable payload buffers into `target`, skipping the first `offset`
+/// bytes of readable data. Returns the number of bytes read.
+fn read_from_payload_at_offset(
+    payload: &[VirtioQueuePayload],
+    offset: u64,
+    mem: &GuestMemory,
+    target: &mut [u8],
+) -> Result<usize, GuestMemoryError> {
+    let mut skip = offset;
+    let mut remaining = target;
+    let mut read_bytes: usize = 0;
+    for payload in payload {
+        if payload.writeable {
+            continue;
+        }
+        let payload_len = payload.length as u64;
+        if skip >= payload_len {
+            skip -= payload_len;
+            continue;
+        }
+        let usable = (payload_len - skip) as usize;
+        let size = std::cmp::min(usable, remaining.len());
+        let (current, next) = remaining.split_at_mut(size);
+        // Use saturating add so that an overflowing guest-provided address
+        // is guaranteed to land out of range rather than wrapping to a low
+        // GPA.
+        mem.read_at(payload.address.saturating_add(skip), current)?;
+        read_bytes += size;
+        skip = 0;
+        if next.is_empty() {
+            break;
+        }
+        remaining = next;
+    }
+    Ok(read_bytes)
 }
 
 #[derive(Debug)]
-pub struct VirtioQueueUsedHandler {
+pub(crate) struct VirtioQueueUsedHandler {
     core: QueueCoreCompleteWork,
-    outstanding_desc_count: Arc<Mutex<(u16, event_listener::Event)>>,
     notify_guest: Interrupt,
 }
 
 impl VirtioQueueUsedHandler {
-    fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
-        Self {
-            core,
-            outstanding_desc_count: Arc::new(Mutex::new((0, event_listener::Event::new()))),
-            notify_guest,
-        }
+    pub(crate) fn new(core: QueueCoreCompleteWork, notify_guest: Interrupt) -> Self {
+        Self { core, notify_guest }
     }
 
-    pub fn add_outstanding_descriptor(&self) {
-        let (count, _) = &mut *self.outstanding_desc_count.lock();
-        *count += 1;
-    }
-
-    pub fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
+    pub(crate) fn complete_descriptor(&mut self, work: &QueueWork, bytes_written: u32) {
         match self.core.complete_descriptor(work, bytes_written) {
             Ok(true) => {
                 self.notify_guest.deliver();
@@ -73,16 +122,15 @@ impl VirtioQueueUsedHandler {
                 );
             }
         }
-        {
-            let (count, event) = &mut *self.outstanding_desc_count.lock();
-            *count -= 1;
-            if *count == 0 {
-                event.notify(usize::MAX);
-            }
-        }
     }
 }
 
+/// A descriptor chain popped from a [`VirtioQueue`].
+///
+/// The device must call [`complete`](Self::complete) exactly once to post a
+/// completion to the guest's used ring. Dropping without completing is a bug
+/// and will not automatically post a completion.
+#[must_use]
 pub struct VirtioQueueCallbackWork {
     used_queue_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     work: QueueWork,
@@ -91,13 +139,12 @@ pub struct VirtioQueueCallbackWork {
 }
 
 impl VirtioQueueCallbackWork {
-    pub fn new(
+    pub(crate) fn new(
         mut work: QueueWork,
         used_queue_handler: &Arc<Mutex<VirtioQueueUsedHandler>>,
     ) -> Self {
         let used_queue_handler = used_queue_handler.clone();
         let payload = std::mem::take(&mut work.payload);
-        used_queue_handler.lock().add_outstanding_descriptor();
         Self {
             work,
             payload,
@@ -128,25 +175,7 @@ impl VirtioQueueCallbackWork {
 
     // Read all payload into a buffer.
     pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
-        let mut remaining = target;
-        let mut read_bytes: usize = 0;
-        for payload in &self.payload {
-            if payload.writeable {
-                continue;
-            }
-
-            let size = std::cmp::min(payload.length as usize, remaining.len());
-            let (current, next) = remaining.split_at_mut(size);
-            mem.read_at(payload.address, current)?;
-            read_bytes += size;
-            if next.is_empty() {
-                break;
-            }
-
-            remaining = next;
-        }
-
-        Ok(read_bytes)
+        read_from_payload(&self.payload, mem, target)
     }
 
     // Write the specified buffer to the payload buffers.
@@ -202,18 +231,68 @@ pub enum VirtioWriteError {
     NotAllWritten(usize),
 }
 
-impl Drop for VirtioQueueCallbackWork {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.complete(0);
-        }
+/// A descriptor that has been peeked from a [`VirtioQueue`] without advancing
+/// the available index.
+///
+/// The descriptor remains in the available ring until [`consume`](Self::consume)
+/// is called, which advances the index and returns a normal
+/// [`VirtioQueueCallbackWork`] for completion.
+///
+/// Dropping a `PeekedWork` without consuming is a no-op — the descriptor stays
+/// available for the next peek/next call.
+pub struct PeekedWork<'a> {
+    queue: &'a mut VirtioQueue,
+    work: QueueWork,
+}
+
+impl<'a> PeekedWork<'a> {
+    fn new(queue: &'a mut VirtioQueue, work: QueueWork) -> Self {
+        Self { queue, work }
+    }
+
+    /// Returns the payload descriptors.
+    pub fn payload(&self) -> &[VirtioQueuePayload] {
+        &self.work.payload
+    }
+
+    /// Total length of all readable (guest-written) payload buffers.
+    pub fn readable_length(&self) -> u64 {
+        readable_payload_length(&self.work.payload)
+    }
+
+    /// Read all readable payload into `target`.
+    pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
+        read_from_payload(&self.work.payload, mem, target)
+    }
+
+    /// Read readable payload into `target`, skipping the first `offset`
+    /// bytes of readable data.
+    pub fn read_at_offset(
+        &self,
+        offset: u64,
+        mem: &GuestMemory,
+        target: &mut [u8],
+    ) -> Result<usize, GuestMemoryError> {
+        read_from_payload_at_offset(&self.work.payload, offset, mem, target)
+    }
+
+    /// Consume this peeked work, advancing the queue's available index.
+    ///
+    /// Returns a [`VirtioQueueCallbackWork`] that must be explicitly
+    /// completed via [`VirtioQueueCallbackWork::complete`].
+    pub fn consume(self) -> VirtioQueueCallbackWork {
+        self.queue.core.advance(&self.work);
+        VirtioQueueCallbackWork::new(self.work, &self.queue.used_handler)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct VirtioQueue {
+    #[inspect(flatten)]
     core: QueueCoreGetWork,
+    #[inspect(skip)]
     used_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
+    #[inspect(skip)]
     queue_event: PolledWait<Event>,
 }
 
@@ -224,8 +303,9 @@ impl VirtioQueue {
         mem: GuestMemory,
         notify: Interrupt,
         queue_event: PolledWait<Event>,
+        initial_state: Option<QueueState>,
     ) -> Result<Self, QueueError> {
-        let (get_work, complete_work) = new_queue(features, mem, params)?;
+        let (get_work, complete_work) = new_queue(features, mem, params, initial_state)?;
         let used_handler = Arc::new(Mutex::new(VirtioQueueUsedHandler::new(
             complete_work,
             notify,
@@ -237,20 +317,82 @@ impl VirtioQueue {
         })
     }
 
+    /// Returns the current queue progress state.
+    pub fn queue_state(&self) -> QueueState {
+        QueueState {
+            avail_index: self.core.avail_index(),
+            used_index: self.used_handler.lock().core.used_index(),
+        }
+    }
+
+    /// Polls until the queue is kicked by the guest, indicating new work may be available.
+    pub fn poll_kick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        Poll::Ready(())
+    }
+
+    /// Try to get the next work item from the queue. Returns `Ok(None)` if no
+    /// work is currently available, or an error if there was an issue accessing
+    /// the queue.
+    ///
+    /// If `None` is returned, then the queue will be armed so that the guest
+    /// will kick it when new work is available; the caller can use
+    /// [`poll_kick`](Self::poll_kick) to wait for this.
+    pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
+        Ok(self
+            .core
+            .try_next_work()
+            .map_err(Error::other)?
+            .map(|work| VirtioQueueCallbackWork::new(work, &self.used_handler)))
+    }
+
+    /// Peek at the next available descriptor without advancing the available
+    /// index. Returns a [`PeekedWork`] that holds the descriptor payload and
+    /// a mutable reference to this queue.
+    ///
+    /// The descriptor stays in the available ring. Call
+    /// [`PeekedWork::consume`] to advance the index and get a normal
+    /// [`VirtioQueueCallbackWork`] for completion.
+    ///
+    /// Dropping the [`PeekedWork`] without consuming is a no-op — the
+    /// descriptor remains available.
+    ///
+    /// Calling `try_peek` again without consuming returns the **same**
+    /// descriptor (the descriptor metadata is captured at peek time), but
+    /// note that the guest may have modified the underlying buffer contents
+    /// in the meantime.
+    pub fn try_peek(&mut self) -> Result<Option<PeekedWork<'_>>, Error> {
+        let work = self.core.try_peek_work().map_err(Error::other)?;
+        Ok(work.map(|w| PeekedWork::new(self, w)))
+    }
+
+    /// Waits until a descriptor is available for peeking, without advancing
+    /// the available index. See [`try_peek`](Self::try_peek).
+    ///
+    /// Note that descriptor metadata is captured at peek time, but the guest
+    /// may modify the underlying buffer contents between a peek and a
+    /// subsequent consume or re-peek, so callers must not assume the buffer
+    /// data is stable.
+    pub async fn peek(&mut self) -> Result<PeekedWork<'_>, Error> {
+        let work = loop {
+            if let Some(work) = self.core.try_peek_work().map_err(Error::other)? {
+                break work;
+            }
+            std::future::poll_fn(|cx| self.poll_kick(cx)).await;
+        };
+        Ok(PeekedWork::new(self, work))
+    }
+
     fn poll_next_buffer(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<Option<VirtioQueueCallbackWork>, QueueError>> {
-        let work = loop {
-            if let Some(work) = self.core.try_next_work()? {
-                break work;
-            };
-            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
-        };
-        Poll::Ready(Ok(Some(VirtioQueueCallbackWork::new(
-            work,
-            &self.used_handler,
-        ))))
+    ) -> Poll<Result<VirtioQueueCallbackWork, Error>> {
+        loop {
+            if let Some(work) = self.try_next()? {
+                return Poll::Ready(Ok(work));
+            }
+            ready!(self.poll_kick(cx));
+        }
     }
 }
 
@@ -266,132 +408,7 @@ impl Stream for VirtioQueue {
     type Item = Result<VirtioQueueCallbackWork, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let Some(r) = ready!(self.get_mut().poll_next_buffer(cx)).transpose() else {
-            return Poll::Ready(None);
-        };
-
-        Poll::Ready(Some(r.map_err(Error::other)))
-    }
-}
-
-enum VirtioQueueStateInner {
-    Initializing {
-        mem: GuestMemory,
-        features: VirtioDeviceFeatures,
-        params: QueueParams,
-        event: Event,
-        notify: Interrupt,
-        exit_event: event_listener::EventListener,
-    },
-    InitializationInProgress,
-    Running {
-        queue: VirtioQueue,
-        exit_event: event_listener::EventListener,
-    },
-}
-
-pub struct VirtioQueueState {
-    inner: VirtioQueueStateInner,
-}
-
-pub struct VirtioQueueWorker {
-    driver: Box<dyn Driver>,
-    context: Box<dyn VirtioQueueWorkerContext + Send>,
-}
-
-impl VirtioQueueWorker {
-    pub fn new(driver: impl Driver, context: Box<dyn VirtioQueueWorkerContext + Send>) -> Self {
-        Self {
-            driver: Box::new(driver),
-            context,
-        }
-    }
-
-    pub fn into_running_task(
-        self,
-        name: impl Into<String>,
-        mem: GuestMemory,
-        features: VirtioDeviceFeatures,
-        queue_resources: QueueResources,
-        exit_event: event_listener::EventListener,
-    ) -> TaskControl<VirtioQueueWorker, VirtioQueueState> {
-        let name = name.into();
-        let (_, driver) = DefaultPool::spawn_on_thread(&name);
-
-        let mut task = TaskControl::new(self);
-        task.insert(
-            driver,
-            name,
-            VirtioQueueState {
-                inner: VirtioQueueStateInner::Initializing {
-                    mem,
-                    features,
-                    params: queue_resources.params,
-                    event: queue_resources.event,
-                    notify: queue_resources.notify,
-                    exit_event,
-                },
-            },
-        );
-        task.start();
-        task
-    }
-
-    async fn run_queue(&mut self, state: &mut VirtioQueueState) -> bool {
-        match &mut state.inner {
-            VirtioQueueStateInner::InitializationInProgress => unreachable!(),
-            VirtioQueueStateInner::Initializing { .. } => {
-                let VirtioQueueStateInner::Initializing {
-                    mem,
-                    features,
-                    params,
-                    event,
-                    notify,
-                    exit_event,
-                } = std::mem::replace(
-                    &mut state.inner,
-                    VirtioQueueStateInner::InitializationInProgress,
-                )
-                else {
-                    unreachable!()
-                };
-                let queue_event = PolledWait::new(&self.driver, event).unwrap();
-                let queue = VirtioQueue::new(features, params, mem, notify, queue_event);
-                if let Err(err) = queue {
-                    tracing::error!(
-                        err = &err as &dyn std::error::Error,
-                        "Failed to start queue"
-                    );
-                    false
-                } else {
-                    state.inner = VirtioQueueStateInner::Running {
-                        queue: queue.unwrap(),
-                        exit_event,
-                    };
-                    true
-                }
-            }
-            VirtioQueueStateInner::Running { queue, exit_event } => {
-                let mut exit = exit_event.fuse();
-                let mut queue_ready = queue.next().fuse();
-                let work = futures::select_biased! {
-                    _ = exit => return false,
-                    work = queue_ready => work.expect("queue will never complete").map_err(anyhow::Error::from),
-                };
-                self.context.process_work(work).await
-            }
-        }
-    }
-}
-
-impl AsyncRun<VirtioQueueState> for VirtioQueueWorker {
-    async fn run(
-        &mut self,
-        stop: &mut StopTask<'_>,
-        state: &mut VirtioQueueState,
-    ) -> Result<(), task_control::Cancelled> {
-        while stop.until_stopped(self.run_queue(state)).await? {}
-        Ok(())
+        Some(ready!(self.get_mut().poll_next_buffer(cx))).into()
     }
 }
 
@@ -428,32 +445,30 @@ pub struct DeviceTraitsSharedMemory {
     pub size: u64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct DeviceTraits {
-    pub device_id: u16,
+    pub device_id: VirtioDeviceType,
     pub device_features: VirtioDeviceFeatures,
     pub max_queues: u16,
     pub device_register_length: u32,
     pub shared_memory: DeviceTraitsSharedMemory,
 }
 
-pub trait VirtioDevice: Send {
-    fn traits(&self) -> DeviceTraits;
-    fn read_registers_u32(&self, offset: u16) -> u32;
-    fn write_registers_u32(&mut self, offset: u16, val: u32);
-    fn enable(&mut self, resources: Resources);
-    fn disable(&mut self);
+impl Default for DeviceTraits {
+    fn default() -> Self {
+        Self {
+            device_id: VirtioDeviceType(0),
+            device_features: Default::default(),
+            max_queues: 0,
+            device_register_length: 0,
+            shared_memory: Default::default(),
+        }
+    }
 }
 
 pub struct QueueResources {
     pub params: QueueParams,
     pub notify: Interrupt,
     pub event: Event,
-}
-
-pub struct Resources {
-    pub features: VirtioDeviceFeatures,
-    pub queues: Vec<QueueResources>,
-    pub shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
-    pub shared_memory_size: u64,
+    pub guest_memory: GuestMemory,
 }
