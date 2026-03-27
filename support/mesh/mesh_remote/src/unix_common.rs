@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Shared helpers for Unix socket communication with SCM_RIGHTS.
+//! Low-level `sendmsg`/`recvmsg` helpers with SCM_RIGHTS fd passing.
+//!
+//! These are shared by [`crate::unix_node`] (seqpacket mesh transport) and
+//! [`crate::unix_listener`] (stream-based listener/handshake transport).
 
 #![cfg(unix)]
 // UNSAFETY: Calls to libc send/recvmsg fns and the work to prepare their inputs
@@ -139,7 +142,10 @@ pub(crate) fn try_recv(
             // that was populated by recvmsg.
             let raw_fds = unsafe { std::slice::from_raw_parts(data_ptr.cast::<RawFd>(), fd_count) };
             fds.extend(raw_fds.iter().map(|&raw_fd| {
-                // SAFETY: per the kernel contract, this fd is now owned by the process.
+                // SAFETY: SCM_RIGHTS delivers file descriptors that the
+                // receiving process now owns (see unix(7) / cmsg(3)). Each
+                // fd returned by recvmsg is a fresh descriptor in our table
+                // and must be closed exactly once.
                 OsResource::Fd(unsafe { OwnedFd::from_raw_fd(raw_fd) })
             }));
         }
@@ -166,6 +172,8 @@ pub(crate) fn try_recv(
             "control message truncated: sender sent too many file descriptors",
         ));
     }
+    // MSG_TRUNC: the data portion of the message was larger than the
+    // receive buffer (applicable to seqpacket/datagram sockets).
     if hdr.msg_flags & libc::MSG_TRUNC != 0 {
         fds.drain(start..);
         return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));

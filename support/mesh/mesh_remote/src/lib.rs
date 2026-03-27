@@ -11,7 +11,6 @@ mod test_common;
 mod unix_common;
 mod unix_listener;
 mod unix_node;
-mod unix_payload;
 
 #[cfg(windows)]
 pub mod windows {
