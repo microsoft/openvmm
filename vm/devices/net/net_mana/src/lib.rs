@@ -331,7 +331,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         let tx_max = tx_cq_size / size_of::<Cqe>() as u32;
 
         let tx_bounce_buffer = ContiguousBufferManager::new(
-            self.vport.dma_client().await,
+            self.vport.dma_client().await?,
             if self.bounce_buffer {
                 TX_BOUNCE_BUFFER_PAGE_LIMIT
             } else {
@@ -343,7 +343,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         let rx_bounce_buffer = if self.bounce_buffer {
             Some(
                 ContiguousBufferManager::new(
-                    self.vport.dma_client().await,
+                    self.vport.dma_client().await?,
                     RX_BOUNCE_BUFFER_PAGE_LIMIT,
                 )
                 .context("failed to allocate rx bounce buffer")?,

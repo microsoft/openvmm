@@ -177,19 +177,29 @@ impl<T: DeviceBacking> ManaDevice<T> {
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
         }
-        let inner = Arc::into_inner(self.inner).unwrap();
-        let mut driver = inner.gdma.into_inner();
 
-        if let Ok(saved_state) = driver.save().await {
-            let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
+        // Perform save and extract the device through the Mutex. Avoid exclusive
+        // Arc ownership, which can fail if a Vport reference exists.
+        let mut gdma = self.inner.gdma.lock().await;
+        let save_result = gdma.save().await;
+        let device = gdma
+            .take_device()
+            .expect("device should not have been taken yet");
+        drop(gdma);
+        drop(self.inner);
 
-            (Ok(mana_saved_state), driver.into_device())
-        } else {
-            tracing::error!("Failed to save MANA device state");
-            (
-                Err(anyhow::anyhow!("Failed to save MANA device state")),
-                driver.into_device(),
-            )
+        match save_result {
+            Ok(saved_state) => {
+                let mana_saved_state = ManaDeviceSavedState { gdma: saved_state };
+                (Ok(mana_saved_state), device)
+            }
+            Err(err) => {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "Failed to save MANA device state"
+                );
+                (Err(err), device)
+            }
         }
     }
 
@@ -304,10 +314,19 @@ impl<T: DeviceBacking> ManaDevice<T> {
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
         }
-        let inner = Arc::into_inner(self.inner).unwrap();
-        let mut driver = inner.gdma.into_inner();
-        let result = driver.deregister_device(inner.dev_id).await;
-        (result, driver.into_device())
+
+        // Perform deregister and extract the device through the Mutex. Avoid exclusive
+        // Arc ownership, which can fail if a Vport reference exists.
+        let dev_id = self.inner.dev_id;
+        let mut gdma = self.inner.gdma.lock().await;
+        let result = gdma.deregister_device(dev_id).await;
+        let device = gdma
+            .take_device()
+            .expect("device should not have been taken yet");
+        drop(gdma);
+        drop(self.inner);
+
+        (result, device)
     }
     /// Queries the configuration of a specific vport.
     pub async fn query_vport_config(&self, vport: u32) -> anyhow::Result<ManaQueryVportCfgResp> {
@@ -398,7 +417,10 @@ impl<T: DeviceBacking> Vport<T> {
         cpu: u32,
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
-        let dma_client = gdma.device().dma_client_for(DmaPool::Ephemeral)?;
+        let dma_client = gdma
+            .try_device()
+            .context("device has been taken")?
+            .dma_client_for(DmaPool::Ephemeral)?;
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
@@ -440,7 +462,10 @@ impl<T: DeviceBacking> Vport<T> {
         assert!(cq_size >= PAGE_SIZE as u32 && cq_size.is_power_of_two());
         let mut gdma = self.inner.gdma.lock().await;
 
-        let dma_client = gdma.device().dma_client_for(DmaPool::Ephemeral)?;
+        let dma_client = gdma
+            .try_device()
+            .context("device has been taken")?
+            .dma_client_for(DmaPool::Ephemeral)?;
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)
@@ -605,8 +630,12 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
-    pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.inner.gdma.lock().await.device().dma_client()
+    pub async fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
+        let gdma = self.inner.gdma.lock().await;
+        Ok(gdma
+            .try_device()
+            .context("device has been taken")?
+            .dma_client())
     }
 }
 
