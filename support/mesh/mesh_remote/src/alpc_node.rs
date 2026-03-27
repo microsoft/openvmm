@@ -256,8 +256,7 @@ impl InviteContext {
             match request {
                 AlpcInviteRequest::Invite(rpc) => {
                     rpc.handle_sync(|port| {
-                        let (creds, dup_dir, handle) =
-                            self.process_invite(&driver, port, true)?;
+                        let (creds, dup_dir, handle) = self.process_invite(&driver, port, true)?;
                         Ok((
                             Invitation {
                                 credentials: creds,
@@ -274,8 +273,7 @@ impl InviteContext {
                     };
                     let dir_path = dir_path.clone();
                     rpc.handle_sync(|port| {
-                        let (creds, _, handle) =
-                            self.process_invite(&driver, port, false)?;
+                        let (creds, _, handle) = self.process_invite(&driver, port, false)?;
                         Ok((
                             NamedInvitation {
                                 credentials: creds,
@@ -819,7 +817,8 @@ impl AlpcNode {
     /// `port` with the initial port.
     pub fn invite(&self, port: Port) -> Result<(Invitation, InvitationHandle), InviteError> {
         let (creds, dup_dir, invite_handle) =
-            self.invite_ctx.process_invite(self.driver.as_ref(), port, true)?;
+            self.invite_ctx
+                .process_invite(self.driver.as_ref(), port, true)?;
         Ok((
             Invitation {
                 credentials: creds,
