@@ -19,8 +19,6 @@ use std::ptr::NonNull;
 use std::ptr::null_mut;
 use std::time::Duration;
 use winapi::shared::ntstatus::STATUS_TIMEOUT;
-use windows_sys::Win32::System::SystemServices::SID_MAX_SUB_AUTHORITIES;
-use windows_sys::Win32::System::SystemServices::SID_REVISION;
 
 mod ntlpcapi {
     #![expect(non_snake_case)]
@@ -99,103 +97,10 @@ mod ntlpcapi {
     }
 }
 
-/// Maximum size in bytes of a valid SID:
-/// `8 + 4 * SID_MAX_SUB_AUTHORITIES` = 68.
-const SECURITY_MAX_SID_SIZE: usize = 8 + 4 * SID_MAX_SUB_AUTHORITIES as usize;
-
-/// Error returned when a byte slice is not a valid Windows SID.
-#[derive(Debug, thiserror::Error)]
-pub enum InvalidSidError {
-    #[error("SID too short ({len} bytes, minimum 8)")]
-    TooShort { len: usize },
-    #[error("SID revision {actual} != expected {SID_REVISION}")]
-    BadRevision { actual: u8 },
-    #[error("SID SubAuthorityCount {count} exceeds max {SID_MAX_SUB_AUTHORITIES}")]
-    TooManySubAuthorities { count: u8 },
-    #[error("SID length {len} != expected {expected} (SubAuthorityCount={sub_authority_count})")]
-    WrongLength {
-        len: usize,
-        expected: usize,
-        sub_authority_count: u8,
-    },
-}
-
-impl From<InvalidSidError> for io::Error {
-    fn from(e: InvalidSidError) -> Self {
-        io::Error::new(io::ErrorKind::InvalidData, e)
-    }
-}
-
-/// A 4-byte-aligned buffer for storing a validated Windows SID.
-///
-/// Windows SIDs contain `DWORD SubAuthority[]` at offset 8, so the
-/// buffer must be at least 4-byte aligned. This type guarantees that
-/// invariant and also guarantees the contents are a structurally valid
-/// SID (validated at construction time).
-#[derive(Clone)]
-#[repr(C, align(4))]
-struct SidBuffer {
-    bytes: [u8; SECURITY_MAX_SID_SIZE],
-    len: u8,
-}
-
-impl std::fmt::Debug for SidBuffer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("SidBuffer").field(&self.as_bytes()).finish()
-    }
-}
-
-impl SidBuffer {
-    /// Create a `SidBuffer` from a byte slice, validating it is a
-    /// structurally valid Windows SID.
-    fn new(sid: &[u8]) -> Result<Self, InvalidSidError> {
-        validate_sid(sid)?;
-        let mut bytes = [0u8; SECURITY_MAX_SID_SIZE];
-        bytes[..sid.len()].copy_from_slice(sid);
-        Ok(Self {
-            bytes,
-            len: sid.len() as u8,
-        })
-    }
-
-    fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..self.len as usize]
-    }
-
-    fn as_ptr(&self) -> *const u8 {
-        self.bytes.as_ptr()
-    }
-}
-
-fn validate_sid(sid: &[u8]) -> Result<(), InvalidSidError> {
-    if sid.len() < 8 {
-        return Err(InvalidSidError::TooShort { len: sid.len() });
-    }
-    if sid[0] != SID_REVISION as u8 {
-        return Err(InvalidSidError::BadRevision { actual: sid[0] });
-    }
-    let sub_authority_count = sid[1];
-    if sub_authority_count > SID_MAX_SUB_AUTHORITIES as u8 {
-        return Err(InvalidSidError::TooManySubAuthorities {
-            count: sub_authority_count,
-        });
-    }
-    let expected = 8 + 4 * sub_authority_count as usize;
-    if sid.len() != expected {
-        return Err(InvalidSidError::WrongLength {
-            len: sid.len(),
-            expected,
-            sub_authority_count,
-        });
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone)]
 pub struct PortConfig {
     waitable: bool,
     max_message_len: usize,
-    required_server_sid: Option<SidBuffer>,
 }
 
 impl PortConfig {
@@ -203,7 +108,6 @@ impl PortConfig {
         PortConfig {
             waitable: false,
             max_message_len: 512,
-            required_server_sid: None,
         }
     }
 
@@ -215,17 +119,6 @@ impl PortConfig {
     pub fn max_message_len(mut self, n: usize) -> Self {
         self.max_message_len = n;
         self
-    }
-
-    /// Set the required server SID for mutual authentication.
-    ///
-    /// When set, the kernel will reject the ALPC connection if the server
-    /// process's primary token SID doesn't match this SID.
-    ///
-    /// Returns an error if `sid` is not a valid SID structure.
-    pub fn required_server_sid(mut self, sid: &[u8]) -> io::Result<Self> {
-        self.required_server_sid = Some(SidBuffer::new(sid)?);
-        Ok(self)
     }
 
     fn port_attributes(&self) -> ALPC_PORT_ATTRIBUTES {
@@ -275,11 +168,6 @@ impl PortConfig {
             .expect("message too large");
         message.extend_tail_from_slice(data);
 
-        let sid_ptr = self
-            .required_server_sid
-            .as_ref()
-            .map_or(null_mut(), |sid| sid.as_ptr() as *mut _);
-
         // SAFETY: calling API and getting the handle result according to the NT API
         let port = unsafe {
             chk_status(NtAlpcConnectPortEx(
@@ -288,7 +176,7 @@ impl PortConfig {
                 null_mut(),
                 &mut port_attr,
                 0, // flags
-                sid_ptr,
+                null_mut(),
                 if data.is_empty() {
                     null_mut()
                 } else {

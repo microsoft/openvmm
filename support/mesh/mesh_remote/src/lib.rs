@@ -23,7 +23,6 @@ pub mod windows {
     pub use alpc_listener::FinishError as AlpcFinishError;
     pub use alpc_listener::JoinBySocketError as AlpcJoinBySocketError;
     pub use alpc_listener::PendingMeshConnection as AlpcPendingMeshConnection;
-    pub use alpc_node::AlpcMeshInviter;
     pub use alpc_node::AlpcNode;
     pub use alpc_node::Invitation as AlpcInvitation;
     pub use alpc_node::InvitationCredentials as AlpcInvitationCredentials;

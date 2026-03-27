@@ -127,6 +127,169 @@ pub enum InviteError {
 type InvitationMap =
     Arc<Mutex<HashMap<NodeId, (RemoteNodeHandle, mesh_channel::OneshotSender<()>)>>>;
 
+/// Shared state needed to create invitations.
+#[derive(Clone)]
+struct InviteContext {
+    directory: Arc<OwnedHandle>,
+    local_node: Arc<LocalNode>,
+    invitations: InvitationMap,
+    mesh_secret: [u8; 32],
+}
+
+impl InviteContext {
+    /// Shared setup for creating an invitation (without spawning).
+    ///
+    /// Returns the invitation address, an `InvitationHandle`, and the
+    /// init port receiver.
+    fn invite_setup(
+        &self,
+    ) -> Result<
+        (
+            InvitationAddress,
+            InvitationHandle,
+            mesh_channel::OneshotReceiver<InitialMessage>,
+        ),
+        InviteError,
+    > {
+        let local_addr = Address {
+            node: self.local_node.id(),
+            port: PortId::new(),
+        };
+        let remote_addr = Address {
+            node: NodeId::new(),
+            port: PortId::new(),
+        };
+        let (invitation_done_send, invitation_done_recv) = mesh_channel::oneshot();
+        let handle = self.local_node.add_remote(remote_addr.node);
+        self.invitations
+            .lock()
+            .insert(remote_addr.node, (handle, invitation_done_send));
+
+        let init_recv = <mesh_channel::OneshotReceiver<InitialMessage>>::from(
+            self.local_node.add_port(local_addr.port, remote_addr),
+        );
+
+        let address = InvitationAddress {
+            local_addr: remote_addr,
+            remote_addr: local_addr,
+        };
+        let invitation_handle = InvitationHandle {
+            local_id: local_addr.node,
+            remote_id: remote_addr.node,
+            invitations: self.invitations.clone(),
+            invitation_done: invitation_done_recv,
+        };
+
+        Ok((address, invitation_handle, init_recv))
+    }
+
+    /// Common logic for creating an invitation: runs `invite_setup`, spawns
+    /// the `wait_for_invite` task, and builds `InvitationCredentials`.
+    ///
+    /// If `dup_directory` is true, an inheritable copy of the directory handle
+    /// is returned (needed for handle-based invitations). Otherwise `None`.
+    fn process_invite(
+        &self,
+        driver: &(impl Spawn + ?Sized),
+        port: Port,
+        dup_directory: bool,
+    ) -> Result<(InvitationCredentials, Option<OwnedHandle>, InvitationHandle), InviteError> {
+        let (addr, handle, init_recv) = self.invite_setup()?;
+        let dir = if dup_directory {
+            Some(self.directory.as_handle().duplicate(true, Some(0))?)
+        } else {
+            None
+        };
+        driver
+            .spawn(
+                "mesh alpc invitation",
+                Self::wait_for_invite(init_recv, addr.remote_addr, addr.local_addr, port),
+            )
+            .detach();
+        Ok((
+            InvitationCredentials {
+                address: addr,
+                mesh_secret: self.mesh_secret.to_vec(),
+            },
+            dir,
+            handle,
+        ))
+    }
+
+    /// Async task that waits for the init message and bridges ports.
+    async fn wait_for_invite(
+        mut init_recv: mesh_channel::OneshotReceiver<InitialMessage>,
+        local_addr: Address,
+        remote_addr: Address,
+        port: Port,
+    ) {
+        match (&mut init_recv).await {
+            Ok(init_message) => {
+                tracing::trace!(
+                    node = ?local_addr.node,
+                    remote_node = ?remote_addr.node,
+                    "received initial message",
+                );
+                init_message.user_port.bridge(port);
+            }
+            Err(err) => {
+                tracing::error!(
+                    node = ?local_addr.node,
+                    remote_node = ?remote_addr.node,
+                    error = err.as_error(),
+                    "invitation initial message failed",
+                );
+                Port::from(init_recv).bridge(port);
+            }
+        }
+    }
+
+    /// Runs the invite handler task, processing invite requests from
+    /// `AlpcMeshInviter` handles.
+    async fn run_invite_handler(
+        self,
+        mut invite_request_recv: mesh_channel::Receiver<AlpcInviteRequest>,
+        directory_path: Option<String>,
+        driver: impl Spawn,
+    ) {
+        while let Ok(request) = invite_request_recv.recv().await {
+            match request {
+                AlpcInviteRequest::Invite(rpc) => {
+                    rpc.handle_sync(|port| {
+                        let (creds, dup_dir, handle) =
+                            self.process_invite(&driver, port, true)?;
+                        Ok((
+                            Invitation {
+                                credentials: creds,
+                                directory: dup_dir.expect("requested"),
+                            },
+                            handle,
+                        ))
+                    });
+                }
+                AlpcInviteRequest::InviteNamed(rpc) => {
+                    let Some(ref dir_path) = directory_path else {
+                        rpc.complete(Err(InviteError::NamedInvitationNotSupported));
+                        continue;
+                    };
+                    let dir_path = dir_path.clone();
+                    rpc.handle_sync(|port| {
+                        let (creds, _, handle) =
+                            self.process_invite(&driver, port, false)?;
+                        Ok((
+                            NamedInvitation {
+                                credentials: creds,
+                                directory_path: dir_path,
+                            },
+                            handle,
+                        ))
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// The maximum ALPC message size to use. Messages larger than this will be
 /// transferred in secure views.
 ///
@@ -182,15 +345,11 @@ pub struct NamedInvitation {
 /// mesh.
 pub struct AlpcNode {
     driver: Box<dyn InvitationDriver>,
-    local_node: Arc<LocalNode>,
-    directory: Arc<OwnedHandle>,
-    invitations: InvitationMap,
+    invite_ctx: InviteContext,
     recv_abort: AbortHandle,
     recv_task: Task<()>,
     connect_task: Task<()>,
     connect_send: mpsc::UnboundedSender<(NodeId, RemoteNodeHandle)>,
-    /// The mesh-wide secret for ALPC connection authentication.
-    mesh_secret: [u8; 32],
     /// Sender for invite requests (used by `AlpcMeshInviter`).
     invite_request_send: mesh_channel::Sender<AlpcInviteRequest>,
 }
@@ -216,7 +375,7 @@ enum AlpcInviteRequest {
 /// This allows creating invitations from any async task without holding a
 /// reference to the node.
 #[derive(Clone)]
-pub struct AlpcMeshInviter {
+pub(crate) struct AlpcMeshInviter {
     request_send: mesh_channel::Sender<AlpcInviteRequest>,
 }
 
@@ -280,10 +439,8 @@ impl Drop for InvitationHandle {
 /// For child process spawning — credentials + directory handle.
 #[derive(Debug)]
 pub struct Invitation {
-    /// The invitation credentials (address + mesh secret).
-    pub(crate) credentials: InvitationCredentials,
-    /// The Ob directory that contains the mesh's ALPC server ports.
-    pub directory: OwnedHandle,
+    credentials: InvitationCredentials,
+    directory: OwnedHandle,
 }
 
 impl Invitation {
@@ -323,18 +480,7 @@ impl AlpcNode {
     /// The directory handle is inherited by child processes. A mesh secret
     /// is generated for ALPC connection authentication.
     pub fn new(driver: impl Driver + Spawn + Clone) -> Result<Self, NewNodeError> {
-        let directory = create_object_directory(&ObjectAttributes::new(), DIRECTORY_ALL_ACCESS)
-            .map_err(NewNodeError::CreateDirectory)?;
-        let mut secret = [0u8; 32];
-        getrandom::fill(&mut secret).unwrap();
-        Ok(Self::with_id(
-            driver,
-            NodeId::new(),
-            directory,
-            secret,
-            None,
-            None,
-        )?)
+        Self::new_mesh(driver, None)
     }
 
     /// Creates a node within a new mesh, with a named Ob directory.
@@ -347,29 +493,44 @@ impl AlpcNode {
     /// mesh (via socket invitations). For child process spawning, use
     /// `new()` instead.
     pub fn new_named(driver: impl Driver + Spawn + Clone) -> Result<Self, NewNodeError> {
-        let node_id = NodeId::new();
-        let path_string = format!(r"\BaseNamedObjects\mesh-{node_id:?}");
-        let path: UnicodeString = path_string
-            .as_str()
-            .try_into()
-            .map_err(|_| NewNodeError::InvalidDirectoryPath)?;
-        let directory =
-            create_object_directory(ObjectAttributes::new().name(&path), DIRECTORY_ALL_ACCESS)
-                .map_err(NewNodeError::CreateDirectory)?;
+        let id = NodeId::new();
+        let path_string = format!(r"\BaseNamedObjects\mesh-{id:?}");
+        Self::new_mesh(driver, Some(path_string))
+    }
+
+    /// Shared implementation for `new` and `new_named`: creates the Ob
+    /// directory, generates a mesh secret, and creates the node.
+    fn new_mesh(
+        driver: impl Driver + Spawn + Clone,
+        directory_path: Option<String>,
+    ) -> Result<Self, NewNodeError> {
+        let path;
+        let attr = if let Some(ref dir_path) = directory_path {
+            path = UnicodeString::try_from(dir_path.as_str())
+                .map_err(|_| NewNodeError::InvalidDirectoryPath)?;
+            ObjectAttributes::new().name(&path)
+        } else {
+            ObjectAttributes::new()
+        };
+        let directory = create_object_directory(&attr, DIRECTORY_ALL_ACCESS)
+            .map_err(NewNodeError::CreateDirectory)?;
+
+        // Generate a 256-bit mesh secret for ALPC connection authentication.
+        // Every connecting node must present this secret to be accepted.
         let mut secret = [0u8; 32];
         getrandom::fill(&mut secret).unwrap();
         Ok(Self::with_id(
             driver,
-            node_id,
+            NodeId::new(),
             directory,
             secret,
-            Some(path_string),
+            directory_path,
         )?)
     }
 
     /// Gets the node ID. This is mostly useful for diagnostics.
     pub fn id(&self) -> NodeId {
-        self.local_node.id()
+        self.invite_ctx.local_node.id()
     }
 
     /// Extract an [`AlpcMeshInviter`] handle. Cheap — clones the sender.
@@ -416,9 +577,16 @@ impl AlpcNode {
             }),
         ));
 
+        let invite_ctx = InviteContext {
+            directory,
+            local_node,
+            invitations,
+            mesh_secret,
+        };
+
         // Start the connect task for handling connecting to remote nodes.
         let connect_task = driver.spawn("mesh alpc connect", {
-            let directory = directory.clone();
+            let directory = invite_ctx.directory.clone();
             let driver = driver.clone();
             async move {
                 Self::process_connects(&driver, local_id, directory, connect_recv, mesh_secret)
@@ -429,102 +597,35 @@ impl AlpcNode {
         // Start a receive task, which will be aborted in shutdown().
         let (fut, recv_abort) = abortable(Self::process_recv(
             local_id,
-            local_node.clone(),
+            invite_ctx.local_node.clone(),
             port,
-            Arc::clone(&invitations),
+            Arc::clone(&invite_ctx.invitations),
             connect_send.clone(),
             mesh_secret,
         ));
         let recv_task = driver.spawn("mesh alpc recv", fut.map(drop));
 
         // Create the invite handler channel and task.
-        let (invite_request_send, mut invite_request_recv) =
+        let (invite_request_send, invite_request_recv) =
             mesh_channel::channel::<AlpcInviteRequest>();
         {
-            let directory = directory.clone();
-            let local_node = local_node.clone();
-            let invitations = invitations.clone();
-            let directory_path = directory_path.clone();
+            let ctx = invite_ctx.clone();
             let driver_clone = driver.clone();
             driver
-                .spawn("mesh alpc invite handler", async move {
-                    while let Ok(request) = invite_request_recv.recv().await {
-                        match request {
-                            AlpcInviteRequest::Invite(rpc) => {
-                                rpc.handle_sync(|port| {
-                                    let (addr, dup_dir, handle, init_recv) =
-                                        Self::invite_setup(&directory, &local_node, &invitations)?;
-                                    driver_clone
-                                        .spawn(
-                                            "mesh alpc invitation",
-                                            Self::wait_for_invite(
-                                                init_recv,
-                                                addr.remote_addr,
-                                                addr.local_addr,
-                                                port,
-                                            ),
-                                        )
-                                        .detach();
-                                    Ok((
-                                        Invitation {
-                                            credentials: InvitationCredentials {
-                                                address: addr,
-                                                mesh_secret: mesh_secret.to_vec(),
-                                            },
-                                            directory: dup_dir,
-                                        },
-                                        handle,
-                                    ))
-                                });
-                            }
-                            AlpcInviteRequest::InviteNamed(rpc) => {
-                                let Some(ref dir_path) = directory_path else {
-                                    rpc.complete(Err(InviteError::NamedInvitationNotSupported));
-                                    continue;
-                                };
-                                let dir_path = dir_path.clone();
-                                rpc.handle_sync(|port| {
-                                    let (addr, _dup_dir, handle, init_recv) =
-                                        Self::invite_setup(&directory, &local_node, &invitations)?;
-                                    driver_clone
-                                        .spawn(
-                                            "mesh alpc invitation",
-                                            Self::wait_for_invite(
-                                                init_recv,
-                                                addr.remote_addr,
-                                                addr.local_addr,
-                                                port,
-                                            ),
-                                        )
-                                        .detach();
-                                    Ok((
-                                        NamedInvitation {
-                                            credentials: InvitationCredentials {
-                                                address: addr,
-                                                mesh_secret: mesh_secret.to_vec(),
-                                            },
-                                            directory_path: dir_path,
-                                        },
-                                        handle,
-                                    ))
-                                });
-                            }
-                        }
-                    }
-                })
+                .spawn(
+                    "mesh alpc invite handler",
+                    ctx.run_invite_handler(invite_request_recv, directory_path, driver_clone),
+                )
                 .detach();
         }
 
         Ok(Self {
             driver: Box::new(driver),
-            local_node,
-            directory,
-            invitations,
+            invite_ctx,
             recv_abort,
             recv_task,
             connect_task,
             connect_send,
-            mesh_secret,
             invite_request_send,
         })
     }
@@ -713,106 +814,16 @@ impl AlpcNode {
         }
     }
 
-    /// Shared implementation for creating invitations.
-    /// Shared setup for creating an invitation (without spawning).
-    ///
-    /// Returns the invitation address, a duplicated directory handle,
-    /// an `InvitationHandle`, and the init port receiver.
-    fn invite_setup(
-        directory: &Arc<OwnedHandle>,
-        local_node: &Arc<LocalNode>,
-        invitations: &InvitationMap,
-    ) -> Result<
-        (
-            InvitationAddress,
-            OwnedHandle,
-            InvitationHandle,
-            mesh_channel::OneshotReceiver<InitialMessage>,
-        ),
-        InviteError,
-    > {
-        // Get an inheritable handle for the invitation.
-        let dup_directory = directory.as_handle().duplicate(true, Some(0))?;
-
-        let local_addr = Address {
-            node: local_node.id(),
-            port: PortId::new(),
-        };
-        let remote_addr = Address {
-            node: NodeId::new(),
-            port: PortId::new(),
-        };
-        let (invitation_done_send, invitation_done_recv) = mesh_channel::oneshot();
-        let handle = local_node.add_remote(remote_addr.node);
-        invitations
-            .lock()
-            .insert(remote_addr.node, (handle, invitation_done_send));
-
-        let init_recv = <mesh_channel::OneshotReceiver<InitialMessage>>::from(
-            local_node.add_port(local_addr.port, remote_addr),
-        );
-
-        let address = InvitationAddress {
-            local_addr: remote_addr,
-            remote_addr: local_addr,
-        };
-        let invitation_handle = InvitationHandle {
-            local_id: local_addr.node,
-            remote_id: remote_addr.node,
-            invitations: invitations.clone(),
-            invitation_done: invitation_done_recv,
-        };
-
-        Ok((address, dup_directory, invitation_handle, init_recv))
-    }
-
-    /// Async task that waits for the init message and bridges ports.
-    async fn wait_for_invite(
-        mut init_recv: mesh_channel::OneshotReceiver<InitialMessage>,
-        local_addr: Address,
-        remote_addr: Address,
-        port: Port,
-    ) {
-        match (&mut init_recv).await {
-            Ok(init_message) => {
-                tracing::trace!(
-                    node = ?local_addr.node,
-                    remote_node = ?remote_addr.node,
-                    "received initial message",
-                );
-                init_message.user_port.bridge(port);
-            }
-            Err(err) => {
-                tracing::error!(
-                    node = ?local_addr.node,
-                    remote_node = ?remote_addr.node,
-                    error = err.as_error(),
-                    "invitation initial message failed",
-                );
-                Port::from(init_recv).bridge(port);
-            }
-        }
-    }
-
     /// Invites a new node to join the mesh, returning information to be passed
     /// to the new process and to be passed to [`AlpcNode::join`]. Bridges
     /// `port` with the initial port.
     pub fn invite(&self, port: Port) -> Result<(Invitation, InvitationHandle), InviteError> {
-        let (addr, dup_dir, invite_handle, init_recv) =
-            Self::invite_setup(&self.directory, &self.local_node, &self.invitations)?;
-        self.driver
-            .spawn(
-                "mesh alpc invitation",
-                Self::wait_for_invite(init_recv, addr.remote_addr, addr.local_addr, port),
-            )
-            .detach();
+        let (creds, dup_dir, invite_handle) =
+            self.invite_ctx.process_invite(self.driver.as_ref(), port, true)?;
         Ok((
             Invitation {
-                credentials: InvitationCredentials {
-                    address: addr,
-                    mesh_secret: self.mesh_secret.to_vec(),
-                },
-                directory: dup_dir,
+                credentials: creds,
+                directory: dup_dir.expect("requested"),
             },
             invite_handle,
         ))
@@ -837,13 +848,13 @@ impl AlpcNode {
             invitation.directory,
             mesh_secret,
             None,
-            None,
         )?;
-        let init_port =
-            mesh_channel::OneshotSender::<InitialMessage>::from(node.local_node.add_port(
+        let init_port = mesh_channel::OneshotSender::<InitialMessage>::from(
+            node.invite_ctx.local_node.add_port(
                 invitation.credentials.address.local_addr.port,
                 invitation.credentials.address.remote_addr,
-            ));
+            ),
+        );
 
         // Notify the inviter that this node is ready by sending the initial port.
         init_port.send(InitialMessage { user_port: port });
@@ -882,11 +893,12 @@ impl AlpcNode {
             mesh_secret,
             Some(invitation.directory_path),
         )?;
-        let init_port =
-            mesh_channel::OneshotSender::<InitialMessage>::from(node.local_node.add_port(
+        let init_port = mesh_channel::OneshotSender::<InitialMessage>::from(
+            node.invite_ctx.local_node.add_port(
                 invitation.credentials.address.local_addr.port,
                 invitation.credentials.address.remote_addr,
-            ));
+            ),
+        );
 
         // Notify the inviter that this node is ready by sending the initial port.
         init_port.send(InitialMessage { user_port: port });
@@ -902,7 +914,7 @@ impl AlpcNode {
     /// It is essential to call this before exiting a mesh process; until this
     /// returns, data loss could occur for other mesh nodes.
     pub async fn shutdown(self) {
-        self.local_node.wait_for_ports(false).await;
+        self.invite_ctx.local_node.wait_for_ports(false).await;
         self.connect_send.close_channel();
         self.connect_task.await;
         self.recv_abort.abort();

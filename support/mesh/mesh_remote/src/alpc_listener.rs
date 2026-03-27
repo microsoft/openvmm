@@ -165,7 +165,7 @@ impl AlpcNode {
             .await
             .map_err(JoinBySocketError::Connect)?;
 
-        // Read the framed invitation: [4 bytes LE: data_len][data_len bytes]
+        // Read the length-prefixed invitation: [4 bytes LE length][data].
         let mut len_buf = [0u8; 4];
         stream
             .read_exact(&mut len_buf)
