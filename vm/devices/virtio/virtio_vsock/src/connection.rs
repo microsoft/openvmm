@@ -377,10 +377,18 @@ impl Connection {
                 // No replies pending, so make sure we're waiting for data.
                 // N.B. This is done even if the socket was shutdown or closed because we
                 //      need to keep reading until we read 0 or an error.
-                PendingWork::rx(
-                    self.socket
-                        .await_read_ready(RxWork::Connection(self.instance_id())),
-                )
+                if self.local_send_shutdown {
+                    tracing::info!(?self.key, "waiting for connection close after local shutdown");
+                    PendingWork::rx(
+                        self.socket
+                            .await_close(RxWork::Connection(self.instance_id())),
+                    )
+                } else {
+                    PendingWork::rx(
+                        self.socket
+                            .await_read_ready(RxWork::Connection(self.instance_id())),
+                    )
+                }
             } else if !self.waiting_for_credit {
                 // The peer has no space left, so request an update.
                 tracing::info!(?self.key, "need credit request");
@@ -437,6 +445,10 @@ impl Connection {
                 .read_vectored(locked.get_mut().0.as_mut())
                 .context("failed to read from host socket")?;
 
+            tracing::trace!(
+                ?bytes_read,
+                "read data from host socket directly into guest buffer"
+            );
             (bytes_read, Vec::new())
         } else {
             // A temp buffer is needed since the guest buffer couldn't be locked.

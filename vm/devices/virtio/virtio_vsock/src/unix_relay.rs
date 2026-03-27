@@ -24,6 +24,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+#[cfg(windows)]
+use tracing::event;
 use unix_socket::UnixStream;
 use vmcore::vm_task::VmTaskDriver;
 
@@ -126,6 +128,7 @@ impl RelaySocket {
         match result {
             Ok(size) => Ok(Some(size)),
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                tracing::trace!("would block");
                 self.clear_ready(slot);
                 Ok(None)
             }
@@ -141,16 +144,32 @@ impl RelaySocket {
         &self,
         result: T,
     ) -> Option<Pin<Box<dyn Future<Output = T> + Send>>> {
+        self.await_read_ready_inner(
+            result,
+            PollEvents::IN | PollEvents::RDHUP | PollEvents::HUP | PollEvents::ERR,
+        )
+    }
+
+    pub fn await_close<T: 'static + Send>(
+        &self,
+        result: T,
+    ) -> Option<Pin<Box<dyn Future<Output = T> + Send>>> {
+        self.clear_ready(InterestSlot::Read);
+        self.await_read_ready_inner(result, PollEvents::HUP | PollEvents::ERR)
+    }
+
+    pub fn await_read_ready_inner<T: 'static + Send>(
+        &self,
+        result: T,
+        events: PollEvents,
+    ) -> Option<Pin<Box<dyn Future<Output = T> + Send>>> {
         self.await_read_ready_needed()
             .then(|| -> Pin<Box<dyn Future<Output = T> + Send>> {
                 let inner = self.inner.clone();
                 Box::pin(async move {
-                    let events = inner
-                        .await_ready(
-                            InterestSlot::Read,
-                            PollEvents::IN | PollEvents::RDHUP | PollEvents::HUP | PollEvents::ERR,
-                        )
-                        .await;
+                    let events = inner.await_ready(InterestSlot::Read, events).await;
+
+                    tracing::info!(?events, "got read events");
 
                     // RDHUP means the write side of the socket was shutdown by the peer, so the
                     // next read will return 0, which is handled there.
@@ -158,8 +177,16 @@ impl RelaySocket {
                         inner.has_data.store(true, Ordering::Release);
                     }
 
+                    // On Windows, HUP is only sent on abortive disconnect, so RDHUP is also used
+                    // to for full shutdown. This means write and read shutdown cannot be
+                    // distinguished.
+                    #[cfg(windows)]
+                    let is_closed = events.has_hup() || events.has_rdhup();
+                    #[cfg(not(windows))]
+                    let is_closed = events.has_hup() || events.has_err();
+
                     // HUP means either both sides were shutdown or the socket was closed.
-                    if events.has_hup() {
+                    if is_closed {
                         tracing::trace!("got read HUP: {events:?}");
                         inner.closed.store(true, Ordering::Release);
                     }

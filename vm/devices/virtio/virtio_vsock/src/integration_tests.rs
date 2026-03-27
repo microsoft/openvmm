@@ -12,6 +12,7 @@ use crate::VirtioVsockDevice;
 use crate::spec::*;
 use core::mem::offset_of;
 use core::panic;
+use futures::AsyncWriteExt;
 use guestmem::GuestMemory;
 use mesh::CancelContext;
 use mesh::CancelReason;
@@ -1378,11 +1379,11 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
     let mut listener = harness.create_port_listener(5002);
     harness.enable().await;
 
-    let mut stream = harness
+    let stream = harness
         .connect_guest_to_host(&mut listener, 1024, 5002)
         .await;
 
-    stream.set_nonblocking(true).unwrap();
+    let mut stream = PolledSocket::new(&driver, stream).unwrap();
 
     // Post rx buffers for the incoming data.
     const RX_BUFFER_COUNT: usize = 128;
@@ -1404,18 +1405,21 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
                 .collect::<Vec<_>>()
         });
 
-        let size = match stream.write(&chunk) {
+        // Depending on how the buffers are drained, the host write may block because the socket's
+        // buffer is full even though the guest has credit. So make sure we're blocked for a bit
+        // before determining we can't write more data.
+        let result = CancelContext::new()
+            .with_timeout(Duration::from_millis(200))
+            .until_cancelled(async { stream.write(&chunk).await })
+            .await;
+
+        let size = match result {
             Ok(n) => {
+                let n = n.unwrap();
                 assert_ne!(n, 0);
                 n
             }
-            Err(e) => {
-                if e.kind() == std::io::ErrorKind::WouldBlock {
-                    0
-                } else {
-                    panic!("host write failed: {e}");
-                }
-            }
+            Err(_) => 0,
         };
 
         yield_now().await;
@@ -1462,7 +1466,7 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
         sent_bytes.extend_from_slice(&chunk[..size]);
     }
 
-    stream.shutdown(std::net::Shutdown::Both).unwrap();
+    stream.get().shutdown(std::net::Shutdown::Both).unwrap();
 
     // Consume remaining data.
     loop {
@@ -1786,6 +1790,7 @@ async fn host_shutdown(driver: DefaultDriver) {
     let mut rx_buf_idx = 0;
     loop {
         let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
+        tracing::info!(_rx_id, "Used");
         let gpa = rx_gpas[rx_buf_idx];
         rx_buf_idx += 1;
 
@@ -1804,15 +1809,28 @@ async fn host_shutdown(driver: DefaultDriver) {
         }
     }
 
-    // Since only read was shutdown, we should NOT yet get an RST packet.
-    // N.B. The graceful shutdown timeout is 2 seconds.
-    harness
-        .wait_for_rx_used_timeout(Duration::from_secs(3))
-        .await
-        .expect_err("unexpected RX packet before graceful shutdown timeout");
+    // On Windows, we cannot distinguish read and write shutdown so even just write will trigger the
+    // timeout.
+    #[cfg(not(windows))]
+    {
+        // Since only read was shutdown, we should NOT yet get an RST packet.
+        // N.B. The graceful shutdown timeout is 2 seconds.
+        if let Ok((rx_id, _rx_len)) = harness
+            .wait_for_rx_used_timeout(Duration::from_secs(3))
+            .await
+        {
+            tracing::info!(rx_id, "Used");
+            let hdr = harness.read_header(rx_gpas[rx_id as usize]);
+            panic!(
+                "unexpected RX packet before graceful shutdown timeout: {:?}",
+                hdr
+            );
+        }
 
-    // Shutting down the read side too should trigger the timeout.
-    stream.shutdown(std::net::Shutdown::Both).unwrap();
+        // Shutting down the read side too should trigger the timeout.
+        stream.shutdown(std::net::Shutdown::Both).unwrap();
+    }
+
     loop {
         let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
         let gpa = rx_gpas[rx_buf_idx];

@@ -453,6 +453,9 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     };
 
                     let has_rx_work = peeked.is_some();
+                    if !has_rx_work {
+                        tracing::trace!("no rx work ready");
+                    }
                     let event = std::future::poll_fn(|cx| {
                         if let Poll::Ready(Some(item)) = self.write_ready_work.poll_next_unpin(cx) {
                             return Poll::Ready(Event::WriteReady(item));
