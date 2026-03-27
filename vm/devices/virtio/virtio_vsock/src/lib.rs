@@ -1,23 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Virtio vsock device implementation.
-//!
-//! Implements section 5.10 of the virtio specification: the socket device
-//! provides a guest-to-host communication channel over virtqueues, using the
-//! AF_VSOCK address family.
-//!
-//! The device uses three virtqueues:
-//! - Queue 0 (rx): packets from host to guest
-//! - Queue 1 (tx): packets from guest to host
-//! - Queue 2 (event): asynchronous events (e.g., transport reset)
-//!
-//! Host-side connectivity is provided through a Unix socket relay, similar to
-//! the hybrid vsock model used for Hyper-V sockets. See [`relay`] for details.
+//! Virtio vsock device implementation, per section 5.10 of the virtio specification.
 
 #![allow(unsafe_code)]
 
-mod connection;
+mod connections;
 pub mod resolver;
 mod ring;
 mod spec;
@@ -26,14 +14,13 @@ mod unix_relay;
 #[cfg(test)]
 mod integration_tests;
 
-use crate::connection::ConnKey;
-use crate::connection::ConnectionInstanceId;
-use crate::connection::RxWork;
+use crate::connections::ConnectionInstanceId;
+use crate::connections::ConnectionKey;
 use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockPacket;
 use crate::spec::VsockPacketBuf;
 use anyhow::Context;
-use connection::ConnectionManager;
+use connections::ConnectionManager;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::OptionFuture;
@@ -72,7 +59,6 @@ use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-/// The number of virtqueues: rx, tx, event.
 const QUEUE_COUNT: usize = 3;
 const RX_QUEUE_INDEX: usize = 0;
 const TX_QUEUE_INDEX: usize = 1;
@@ -114,12 +100,7 @@ impl VirtioVsockDevice {
         Ok(Self {
             guest_cid,
             driver: driver.clone(),
-            worker: TaskControl::new(VsockWorker {
-                work: FuturesUnordered::new(),
-                write_ready_work: FuturesUnordered::new(),
-                driver,
-                listener,
-            }),
+            worker: TaskControl::new(VsockWorker { driver, listener }),
             started_queues: [const { None }; QUEUE_COUNT],
             base_path,
         })
@@ -152,7 +133,7 @@ impl VirtioDevice for VirtioVsockDevice {
     }
 
     async fn write_registers_u32(&mut self, offset: u16, val: u32) {
-        tracing::warn!(offset, val, "vsock: unexpected config write");
+        tracelimit::warn_ratelimited!(offset, val, "vsock: unexpected config write");
     }
 
     async fn start_queue(
@@ -162,11 +143,12 @@ impl VirtioDevice for VirtioVsockDevice {
         features: &VirtioDeviceFeatures,
         initial_state: Option<virtio::queue::QueueState>,
     ) -> anyhow::Result<()> {
-        if idx >= QUEUE_COUNT as u16 {
-            anyhow::bail!("invalid virtio queue index");
-        }
-
-        if self.started_queues[idx as usize].is_some() {
+        if self
+            .started_queues
+            .get(idx as usize)
+            .ok_or_else(|| anyhow::anyhow!("invalid queue index {idx}"))?
+            .is_some()
+        {
             anyhow::bail!("virtio queue already started");
         }
 
@@ -184,13 +166,17 @@ impl VirtioDevice for VirtioVsockDevice {
         .context("failed to create virtio queue")?;
 
         self.started_queues[idx as usize] = Some(queue);
+
+        // Start the worker if all queues are started.
         if self.started_queues.iter().all(|q| q.is_some()) {
             let state = VsockWorkerState {
                 rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
                 tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap().fuse(),
-                event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
+                _event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
                 memory: resources.guest_memory.clone(),
                 connections: ConnectionManager::new(self.guest_cid, self.base_path.clone()),
+                rx_ready: FuturesUnordered::new(),
+                write_ready: FuturesUnordered::new(),
             };
 
             self.worker
@@ -205,12 +191,12 @@ impl VirtioDevice for VirtioVsockDevice {
         // Stop the worker task (cancels the run loop via until_stopped).
         if self.worker.stop().await {
             let state = self.worker.remove();
+
+            // Transfer the queues back, so we can return the state as each one is stopped
+            // individually.
             self.started_queues[RX_QUEUE_INDEX] = Some(state.rx_queue);
             self.started_queues[TX_QUEUE_INDEX] = Some(state.tx_queue.into_inner());
-            self.started_queues[EVENT_QUEUE_INDEX] = Some(state.event_queue);
-
-            // Drain any pending IO
-            self.worker.task_mut().drain().await;
+            self.started_queues[EVENT_QUEUE_INDEX] = Some(state._event_queue);
         }
 
         // Remove the queue state (drops VirtioQueue).
@@ -220,62 +206,100 @@ impl VirtioDevice for VirtioVsockDevice {
     }
 }
 
+/// Indicates a connection that is read to put data on the rx queue to send to the guest.
+/// N.B. When a future returns an item, it's not always guaranteed that a packet is ready to be
+///      sent. It could be a spurious wake from a poll, or a pending connection that's still reading
+///      its connect request, etc.
+pub enum RxReady {
+    /// A connection has data or a control packet to send.
+    Connection(ConnectionInstanceId),
+    /// A pending connection has data.
+    PendingConnection(u64),
+    /// A RST packet should be sent for a connection that was removed or invalid.
+    SendReset(ConnectionKey),
+}
+
+/// A pinned future that resolves to an `RxReady` item.
+type RxReadyItem = Pin<Box<dyn Future<Output = RxReady> + Send>>;
+
+/// A pinned future that resolves to a `ConnectionInstanceId` for a connection that's ready to write
+/// buffered data to the unix socket.
+type WriteReadyItem = Pin<Box<dyn Future<Output = ConnectionInstanceId> + Send>>;
+
+/// Represents futures returned from a function that the worker should wait on.
+struct PendingFutures {
+    rx_ready: Option<RxReadyItem>,
+    write_ready: Option<WriteReadyItem>,
+}
+
+impl PendingFutures {
+    /// A value holding no pending futures.
+    const NONE: Self = Self {
+        rx_ready: None,
+        write_ready: None,
+    };
+
+    /// Create a new `PendingFutures` with the given RxReady future, and no WriteReady future.
+    fn rx(future: Option<RxReadyItem>) -> Self {
+        Self {
+            rx_ready: future,
+            write_ready: None,
+        }
+    }
+
+    /// Create a new `PendingFutures` with a future that is immediately ready with the given RxReady
+    /// item.
+    fn simple_rx(work: RxReady) -> Self {
+        Self {
+            rx_ready: Some(Box::pin(async move { work })),
+            write_ready: None,
+        }
+    }
+
+    /// Create a new `PendingFutures` with the given WriteReady future and RxReady futures.
+    fn new(work: Option<WriteReadyItem>, rx_work: Option<RxReady>) -> Self {
+        Self {
+            rx_ready: rx_work.map(|w| -> RxReadyItem { Box::pin(async move { w }) }),
+            write_ready: work,
+        }
+    }
+}
+
+/// Transient worker state for all three queues.
 struct VsockWorkerState {
     connections: ConnectionManager,
     rx_queue: VirtioQueue,
     tx_queue: Fuse<VirtioQueue>,
-    #[allow(dead_code)] // Required by the spec but not actively polled.
-    event_queue: VirtioQueue,
+    // The event queue is not used by this implementation.
+    _event_queue: VirtioQueue,
     memory: GuestMemory,
+    rx_ready: FuturesUnordered<RxReadyItem>,
+    write_ready: FuturesUnordered<WriteReadyItem>,
 }
 
-type RxWorkItem = Pin<Box<dyn Future<Output = RxWork> + Send>>;
-type WriteReadyItem = Pin<Box<dyn Future<Output = ConnectionInstanceId> + Send>>;
-type RxWorkQueue = FuturesUnordered<RxWorkItem>;
-
-struct PendingWork {
-    rx_work: Option<RxWorkItem>,
-    write_ready_work: Option<WriteReadyItem>,
-}
-
-impl PendingWork {
-    const NONE: Self = Self {
-        rx_work: None,
-        write_ready_work: None,
-    };
-
-    fn rx(work: Option<RxWorkItem>) -> Self {
-        Self {
-            rx_work: work,
-            write_ready_work: None,
+impl VsockWorkerState {
+    /// Queue pending futures returned from the connection manager to be processed by the worker run
+    /// loop.
+    fn queue_pending(&mut self, pending: PendingFutures) {
+        if let Some(work) = pending.rx_ready {
+            self.rx_ready.push(work);
         }
-    }
-
-    fn simple_rx(work: RxWork) -> Self {
-        Self {
-            rx_work: Some(Box::pin(async move { work })),
-            write_ready_work: None,
-        }
-    }
-
-    fn new(work: Option<WriteReadyItem>, rx_work: Option<RxWork>) -> Self {
-        Self {
-            rx_work: rx_work.map(|w| -> RxWorkItem { Box::pin(async move { w }) }),
-            write_ready_work: work,
+        if let Some(work) = pending.write_ready {
+            self.write_ready.push(work);
         }
     }
 }
 
+/// The main worker for the virtio-vsock device.
 struct VsockWorker {
-    work: RxWorkQueue,
-    write_ready_work: FuturesUnordered<WriteReadyItem>,
     driver: VmTaskDriver,
     listener: PolledSocket<UnixListener>,
 }
 
 impl VsockWorker {
-    fn handle_tx_work(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
-        if let Err(err) = self.handle_tx_work_inner(state, work) {
+    /// Handle a work item from the tx virtqueue (guest -> host).
+    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
+        if let Err(err) = self.handle_guest_tx_inner(state, work) {
             tracelimit::error_ratelimited!(
                 error = err.as_ref() as &dyn std::error::Error,
                 "error handling vsock tx work"
@@ -283,27 +307,18 @@ impl VsockWorker {
         }
     }
 
-    /// Handle a work item from the tx virtqueue (guest -> host).
-    fn handle_tx_work_inner(
+    /// Handle a work item from the TX virtqueue (guest -> host).
+    fn handle_guest_tx_inner(
         &mut self,
         state: &mut VsockWorkerState,
         work: VirtioQueueCallbackWork,
     ) -> anyhow::Result<()> {
-        let readable_len = work.get_payload_length(false) as usize;
-
-        if readable_len < VSOCK_HEADER_SIZE {
-            tracing::warn!(readable_len, "vsock tx packet too small for header");
-            anyhow::bail!("vsock tx packet too small for header");
-        }
-
         let mut header = VsockHeader::new_zeroed();
-        work.read(
-            &state.memory,
-            &mut header.as_mut_bytes()[..VSOCK_HEADER_SIZE],
-        )?;
+        work.read(&state.memory, header.as_mut_bytes())?;
 
         tracing::trace!(?header, "got tx packet from guest");
-        let pending_work = {
+        let pending = {
+            // Attempt to lock the payload buffers so we can read from them directly.
             if let Some(locked) = lock_payload_data(
                 &state.memory,
                 &work.payload,
@@ -312,17 +327,12 @@ impl VsockWorker {
                 false,
                 LockedIoSlice::new(),
             )? {
-                // Process through the relay.
                 state
                     .connections
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
             } else {
-                let buf_len: usize = work
-                    .payload
-                    .iter()
-                    .map(|p| if p.writeable { 0 } else { p.length as usize })
-                    .sum();
-                // No data buffer could be locked; read into a temp buffer and process through the relay.
+                // Use a temp bounce buffer if the payload couldn't be locked.
+                let buf_len = work.get_payload_length(false) as usize;
                 let mut temp_buf = vec![0u8; buf_len.min(header.len as usize)];
                 work.read_at_offset(VSOCK_HEADER_SIZE as u64, &state.memory, &mut temp_buf)?;
                 state.connections.handle_guest_tx(
@@ -332,100 +342,74 @@ impl VsockWorker {
             }
         };
 
-        self.queue_pending_work(pending_work);
+        state.queue_pending(pending);
         Ok(())
     }
 
-    fn queue_pending_work(&mut self, pending: PendingWork) {
-        if let Some(work) = pending.rx_work {
-            self.work.push(work);
-        }
-        if let Some(work) = pending.write_ready_work {
-            self.write_ready_work.push(work);
-        }
-    }
-
+    /// Helper to write a packet to the RX queue.
     fn write_packet(
         state: &mut VsockWorkerState,
-        work: &mut VirtioQueueCallbackWork,
+        mut queue_work: VirtioQueueCallbackWork,
         packet: &VsockPacketBuf,
     ) -> anyhow::Result<()> {
         tracing::info!(?packet.header, "sending reply");
         let header_bytes = packet.header.as_bytes();
-        work.write(&state.memory, header_bytes)
+        queue_work
+            .write(&state.memory, header_bytes)
             .context("failed to write vsock header to guest rx")?;
 
-        // The data buffer is present if this is an RW packet and the data could not be read
+        // The data buffer is present if only this is an RW packet and the data could not be read
         // directly into the guest buffer.
         if !packet.data.is_empty() {
-            work.write_at_offset(header_bytes.len() as u64, &state.memory, &packet.data)
+            queue_work
+                .write_at_offset(header_bytes.len() as u64, &state.memory, &packet.data)
                 .context("failed to write vsock data to guest rx")?;
         }
 
-        work.complete(header_bytes.len() as u32 + packet.header.len);
+        queue_work.complete(header_bytes.len() as u32 + packet.header.len);
         Ok(())
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
-    fn handle_rx_work(&mut self, state: &mut VsockWorkerState, rx_work: RxWork) {
-        // let work = poll_fn(|cx| state.rx_queue.poll_next_unpin(cx))
-        //     .await
-        //     .expect("vsock rx queue never ends");
-
-        // let work = match work {
-        //     Ok(w) => w,
-        //     Err(err) => {
-        //         tracing::error!(
-        //             error = &err as &dyn std::error::Error,
-        //             "error reading from vsock rx queue"
-        //         );
-        //         return;
-        //     }
-        // };
-
-        let work = state
+    fn handle_host_rx(&mut self, state: &mut VsockWorkerState, rx_ready: RxReady) {
+        // Due to lifetime issues the PeekedWork cannot be passed into this function so get it
+        // back here.
+        let peeked_work = state
             .rx_queue
             .try_peek()
             .expect("peek already succeeded before")
             .expect("queue was already checked to have items");
 
-        let (packet, pending_work) =
-            state
-                .connections
-                .get_rx_packet(&state.memory, &self.driver, work.payload(), rx_work);
+        let (packet, pending) = state.connections.get_rx_packet(
+            &state.memory,
+            &self.driver,
+            peeked_work.payload(),
+            rx_ready,
+        );
 
+        // If there's a packet to send, write it to the guest.
         if let Some(packet) = packet {
-            let mut work = work.consume();
-            if let Err(err) = Self::write_packet(state, &mut work, &packet) {
+            let queue_work = peeked_work.consume();
+            if let Err(err) = Self::write_packet(state, queue_work, &packet) {
                 tracelimit::error_ratelimited!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "failed to write vsock packet"
                 );
 
-                // We can't recover from this. Remove the connection so any future attempst to use
+                // We can't recover from this. Remove the connection so any future attempts to use
                 // it will fail.
                 state
                     .connections
-                    .remove(&ConnKey::from_rx_packet(&packet.header));
+                    .remove(&ConnectionKey::from_rx_packet(&packet.header));
             }
         }
 
-        self.queue_pending_work(pending_work);
-    }
-
-    async fn drain(&mut self) {
-        // Wait for all pending work to complete. This is used during shutdown to ensure all in-flight
-        // packets are processed before the device is stopped and queues are dropped.
-        while !self.work.is_empty() || !self.write_ready_work.is_empty() {
-            futures::select! {
-                _ = self.work.next() => (),
-                _ = self.write_ready_work.next() => (),
-            }
-        }
+        state.queue_pending(pending);
     }
 }
 
 impl AsyncRun<VsockWorkerState> for VsockWorker {
+    /// The main worker loop.
     async fn run(
         &mut self,
         stop: &mut StopTask<'_>,
@@ -446,7 +430,7 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
 
                 let has_rx_work = peeked.is_some();
                 let mut rx_ready =
-                    OptionFuture::from(has_rx_work.then(|| self.work.select_next_some()));
+                    OptionFuture::from(has_rx_work.then(|| state.rx_ready.select_next_some()));
 
                 // This future unfortunately borrows state.rx_queue, which means peeked cannot be
                 // used below.
@@ -454,14 +438,15 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     (!has_rx_work).then(|| poll_fn(|cx| state.rx_queue.poll_kick(cx)).fuse()),
                 );
 
+                // Wait for work to do from either host or guest.
                 futures::select! {
-                    id = self.write_ready_work.select_next_some() => {
+                    id = state.write_ready.select_next_some() => {
                         let pending = state.connections.handle_write_ready(id);
-                        self.queue_pending_work(pending);
+                        state.queue_pending(pending);
                     }
                     r = state.tx_queue.select_next_some() => {
                         match r {
-                            Ok(work) => self.handle_tx_work(state, work),
+                            Ok(work) => self.handle_guest_tx(state, work),
                             Err(err) => tracing::error!(
                                 error = &err as &dyn std::error::Error,
                                 "error reading from virtio tx queue"
@@ -470,11 +455,10 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                     }
                     r = rx_ready => {
                         let work = r.unwrap();
-                        self.handle_rx_work(state, work);
+                        self.handle_host_rx(state, work);
                     }
                     _ = rx_queue_kick => {
-                        // New buffers are available in the rx queue; try to peek again to trigger
-                        // processing.
+                        // New buffers are available in the rx queue; repeat the loop to peek again.
                     }
                     r = self.listener.accept().fuse() => {
                         match r {
@@ -488,8 +472,8 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
                                         );
                                     }
                                     Ok((read_work, timeout_work)) => {
-                                        self.queue_pending_work(read_work);
-                                        self.queue_pending_work(timeout_work);
+                                        state.queue_pending(read_work);
+                                        state.queue_pending(timeout_work);
                                     }
                                 }
                             }
@@ -507,7 +491,8 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
     }
 }
 
-// Use SmallVec since this will nearly always have one item.
+// Implementation of LockedRange that collects IoSlice items for use with socket vectored IO.
+// Uses SmallVec since this will nearly always have one item.
 struct LockedIoSlice<'a>(SmallVec<[IoSlice<'a>; 4]>);
 
 impl LockedIoSlice<'_> {
@@ -526,6 +511,7 @@ impl<'a> LockedRange<'a> for LockedIoSlice<'a> {
     }
 }
 
+// Same as LockedIoSlice but for mutable buffers.
 struct LockedIoSliceMut<'a>(SmallVec<[IoSliceMut<'a>; 4]>);
 
 impl LockedIoSliceMut<'_> {
@@ -545,6 +531,11 @@ impl<'a> LockedRange<'a> for LockedIoSliceMut<'a> {
     }
 }
 
+/// Attempts to lock the payload buffers for a virtio request.
+///
+/// Returns `Ok(Some(...))` if every region boundary falls on a page boundary (or regions are
+/// GPA-contiguous), so the whole chain can be expressed as one [`PagedRange`]. Returns `Ok(None)`
+/// if any interior boundary violates the constraint.
 fn lock_payload_data<'a, T: LockedRange<'a>>(
     mem: &'a GuestMemory,
     payload: &[VirtioQueuePayload],

@@ -221,7 +221,7 @@ impl RelaySocket {
         self.inner.poll.lock().clear_socket_ready(slot);
     }
 
-    pub fn has_data(&self) -> bool {
+    pub fn check_and_clear_has_data(&self) -> bool {
         self.inner.has_data.swap(false, Ordering::AcqRel)
     }
 
