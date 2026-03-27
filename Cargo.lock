@@ -5180,7 +5180,6 @@ dependencies = [
  "chipset_device_resources",
  "chipset_device_worker",
  "chipset_legacy",
- "chipset_resources",
  "closeable_mutex",
  "crc32fast",
  "debug_ptr",

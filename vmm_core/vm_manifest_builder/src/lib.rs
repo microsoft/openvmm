@@ -86,6 +86,21 @@ pub struct VmChipsetResult {
     pub chipset: BaseChipsetManifest,
     /// The list of chipset devices present in the VM.
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
+    /// Derived chipset capabilities needed by firmware and table generation.
+    pub capabilities: VmChipsetCapabilities,
+}
+
+/// Derived capabilities for the configured chipset devices.
+#[derive(Debug, Copy, Clone)]
+pub struct VmChipsetCapabilities {
+    /// Whether the VM exposes an IOAPIC.
+    pub with_ioapic: bool,
+    /// Whether the VM exposes a legacy PIC.
+    pub with_pic: bool,
+    /// Whether the VM exposes a PIT.
+    pub with_pit: bool,
+    /// Whether the VM exposes a PSP.
+    pub with_psp: bool,
 }
 
 /// Error type for building a VM manifest.
@@ -212,6 +227,12 @@ impl VmManifestBuilder {
         let mut result = VmChipsetResult {
             chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
+            capabilities: VmChipsetCapabilities {
+                with_ioapic: false,
+                with_pic: false,
+                with_pit: false,
+                with_psp: false,
+            },
         };
 
         if let Some((backend, port)) = self.debugcon {
@@ -361,13 +382,24 @@ impl VmManifestBuilder {
                 }
             }
         }
+        result.capabilities = result.compute_capabilities();
+
         Ok(result)
     }
 }
 
 impl VmChipsetResult {
+    fn compute_capabilities(&self) -> VmChipsetCapabilities {
+        VmChipsetCapabilities {
+            with_ioapic: self.chipset.with_generic_ioapic,
+            with_pic: self.chipset.with_generic_pic,
+            with_pit: self.has_pit(),
+            with_psp: self.chipset.with_generic_psp,
+        }
+    }
+
     /// Returns true when the chipset device list contains a PIT handle.
-    pub fn has_pit(&self) -> bool {
+    fn has_pit(&self) -> bool {
         self.chipset_devices
             .iter()
             .any(|d| d.resource.id() == PitDeviceHandle::ID)
@@ -601,6 +633,12 @@ mod tests {
         let mut result = VmChipsetResult {
             chipset: BaseChipsetManifest::empty(),
             chipset_devices: Vec::new(),
+            capabilities: VmChipsetCapabilities {
+                with_ioapic: false,
+                with_pic: false,
+                with_pit: false,
+                with_psp: false,
+            },
         };
 
         result.attach_pit();
