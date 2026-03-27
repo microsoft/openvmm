@@ -769,19 +769,13 @@ impl HclNetworkVFManagerWorker {
                     // Prior behavior treats any uevent with a valid device path as an arrival, as long
                     // as the VTL2 device is currently missing. Otherwise, uevents are silently ignored.
                     // It would be more correct to check that the uevent action is 'add'.
-                    // While Reconfiguring, ignore uevents during shutdown and remove uevents.
+                    // While Reconfiguring, ignore uevents.
+                    // Rescan events don't reliably indicate device readiness.
+                    // If FHR occurs during Reconfiguring, ManaDeviceRemoved will transition state
+                    // to Missing, allowing the subsequent add uevent to trigger ManaDeviceArrived.
                     let exists = Path::new(&device_path).exists();
                     match (vtl2_device_state, exists) {
                         (Vtl2DeviceState::Missing, true) => NextWorkItem::ManaDeviceArrived,
-                        (Vtl2DeviceState::Reconfiguring, true) => {
-                            if self.is_shutdown_active || action == UeventAction::Remove {
-                                // Ignore arrival when sequence is: Reconfiguration -> Shutdown -> DeviceArrived
-                                // During Reconfiguration, don't treat uevent Remove as device arrival.
-                                NextWorkItem::Continue
-                            } else {
-                                NextWorkItem::ManaDeviceArrived
-                            }
-                        }
                         (state, false) => {
                             // Tracing to diagnose add that is not acted on due to missing device.
                             if action == UeventAction::Add {
@@ -1165,11 +1159,10 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
-                    if vf_reconfig_backoff.take().is_some() {
-                        tracing::warn!(vtl2_vfid, "device arrived, abandoning vf reconfiguration");
-                        // In case startup fails, state should not be Reconfiguring.
-                        vtl2_device_state = Vtl2DeviceState::Missing;
-                    }
+                    assert!(
+                        vf_reconfig_backoff.is_none(),
+                        "device arrival should only occur after device removal, not during vf reconfiguration"
+                    );
                     tracing::info!(vtl2_vfid, "VTL2 VF arrived");
                     let mut ctx =
                         mesh::CancelContext::new().with_timeout(std::time::Duration::from_secs(1));
