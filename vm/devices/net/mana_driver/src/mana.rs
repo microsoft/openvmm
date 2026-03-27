@@ -178,7 +178,6 @@ impl<T: DeviceBacking> ManaDevice<T> {
             hwc_task.cancel().await;
         }
 
-        // Ideally this would be Arc::into_i.nner(); we're unable to
         let inner = Arc::into_inner(self.inner)
             .expect("MANA device save failed, multiple references remain.");
         let mut driver = inner.gdma.into_inner();
