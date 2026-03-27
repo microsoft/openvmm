@@ -207,7 +207,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
             deps_generic_ioapic,
-            deps_generic_isa_dma: _,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_pic,
@@ -304,30 +303,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         }
 
         let mut dma: Option<Arc<CloseableMutex<ErasedChipsetDevice>>> = None;
-
-        if let Some(options::dev::Piix4PciIsaBridgeDeps { attached_to }) = deps_piix4_pci_isa_bridge
-        {
-            // TODO: use PowerRequestHandleKind
-            let reset = {
-                let power = foundation.power_event_handler.clone();
-                Box::new(move || power.on_power_event(PowerEvent::Reset))
-            };
-
-            let set_a20_signal = Box::new(move |active| {
-                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
-            });
-
-            builder
-                .arc_mutex_device("piix4-pci-isa-bridge")
-                .on_pci_bus(attached_to)
-                .add(|_| {
-                    chipset_legacy::piix4_pci_isa_bridge::PciIsaBridge::new(
-                        reset.clone(),
-                        set_a20_signal,
-                    )
-                })?;
-        }
-
         // Resolve generic ISA DMA early so floppy wiring can bind channels.
         let mut pending_device_handles = Vec::new();
         for device in device_handles {
@@ -346,21 +321,10 @@ impl<'a> BaseChipsetBuilder<'a> {
                 continue;
             }
 
-            let ChipsetDeviceHandle {
-                name,
-                resource,
-                pci_placement,
-            } = device;
+            let ChipsetDeviceHandle { name, resource } = device;
 
-            let mut device_builder = builder.arc_mutex_device(name.as_ref());
-            if let Some(pci_placement) = pci_placement {
-                let (bus, slot, function) = pci_placement.bdf;
-                device_builder = device_builder
-                    .on_pci_bus(BusId::new(pci_placement.bus_name.as_str()))
-                    .with_pci_addr(bus, slot, function);
-            }
-
-            let dev = device_builder
+            let dev = builder
+                .arc_mutex_device(name.as_ref())
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
@@ -383,6 +347,29 @@ impl<'a> BaseChipsetBuilder<'a> {
                 .await?;
 
             dma = Some(dev);
+        }
+
+        if let Some(options::dev::Piix4PciIsaBridgeDeps { attached_to }) = deps_piix4_pci_isa_bridge
+        {
+            // TODO: use PowerRequestHandleKind
+            let reset = {
+                let power = foundation.power_event_handler.clone();
+                Box::new(move || power.on_power_event(PowerEvent::Reset))
+            };
+
+            let set_a20_signal = Box::new(move |active| {
+                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
+            });
+
+            builder
+                .arc_mutex_device("piix4-pci-isa-bridge")
+                .on_pci_bus(attached_to)
+                .add(|_| {
+                    chipset_legacy::piix4_pci_isa_bridge::PciIsaBridge::new(
+                        reset.clone(),
+                        set_a20_signal,
+                    )
+                })?;
         }
 
         let _ = dma;
@@ -769,21 +756,10 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in pending_device_handles {
-            let ChipsetDeviceHandle {
-                name,
-                resource,
-                pci_placement,
-            } = device;
+            let ChipsetDeviceHandle { name, resource } = device;
 
-            let mut device_builder = builder.arc_mutex_device(name.as_ref());
-            if let Some(pci_placement) = pci_placement {
-                let (bus, slot, function) = pci_placement.bdf;
-                device_builder = device_builder
-                    .on_pci_bus(BusId::new(pci_placement.bus_name.as_str()))
-                    .with_pci_addr(bus, slot, function);
-            }
-
-            device_builder
+            builder
+                .arc_mutex_device(name.as_ref())
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
@@ -1210,7 +1186,6 @@ pub mod options {
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps => 1,
             generic_ioapic:              dev::GenericIoApicDeps => 2,
-            generic_isa_dma:             dev::GenericIsaDmaDeps => 3,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps => 4,
             generic_pci_bus:             dev::GenericPciBusDeps => 5,
             generic_pic:                 dev::GenericPicDeps => 6,
@@ -1288,9 +1263,6 @@ pub mod options {
             /// Interface to enable/disable PM timer assist
             pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
         }
-
-        /// Generic dual 8237A ISA DMA controllers
-        pub struct GenericIsaDmaDeps;
 
         /// Hyper-V specific ACPI-compatible power management device
         pub struct HyperVPowerManagementDeps {

@@ -261,7 +261,6 @@ impl VmManifestBuilder {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
                     with_generic_ioapic: true,
-                    with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_pic: true,
@@ -293,7 +292,6 @@ impl VmManifestBuilder {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
                     with_generic_ioapic: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_pic: is_x86,
@@ -334,7 +332,6 @@ impl VmManifestBuilder {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
                     with_generic_ioapic: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_pic: false,
@@ -429,7 +426,6 @@ impl VmChipsetResult {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "dma".to_owned(),
             resource: GenericIsaDmaDeviceHandle.into_resource(),
-            pci_placement: None,
         });
 
         self
@@ -445,7 +441,6 @@ impl VmChipsetResult {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: PIT_ID.to_owned(),
             resource: PitDeviceHandle.into_resource(),
-            pci_placement: None,
         });
         self
     }
