@@ -10,11 +10,9 @@ use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
-use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device_resources::BSP_LINT_LINE_SET;
 use chipset_device_resources::ConfigureChipsetDevice;
-use chipset_device_resources::ErasedChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
@@ -80,7 +78,7 @@ pub struct BaseChipsetBuilder<'a> {
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
     expected_manifest: Option<options::BaseChipsetManifest>,
-    fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
+    fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
 }
 
@@ -158,7 +156,7 @@ impl<'a> BaseChipsetBuilder<'a> {
     /// address range.
     pub fn with_fallback_mmio_device(
         mut self,
-        fallback_mmio_device: Option<Arc<CloseableMutex<dyn ChipsetDevice>>>,
+        fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
     ) -> Self {
         self.fallback_mmio_device = fallback_mmio_device;
         self
@@ -302,7 +300,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                 })?;
         }
 
-        let mut dma: Option<Arc<CloseableMutex<ErasedChipsetDevice>>> = None;
+        let mut dma: Option<Arc<CloseableMutex<dma::DmaController>>> = None;
         // Resolve generic ISA DMA early so floppy wiring can bind channels.
         let mut pending_device_handles = Vec::new();
         for device in device_handles {
@@ -321,30 +319,11 @@ impl<'a> BaseChipsetBuilder<'a> {
                 continue;
             }
 
-            let ChipsetDeviceHandle { name, resource } = device;
+            let ChipsetDeviceHandle { name, resource: _ } = device;
 
             let dev = builder
                 .arc_mutex_device(name.as_ref())
-                .try_add_async(async |services| {
-                    resolver
-                        .resolve(
-                            resource,
-                            ResolveChipsetDeviceHandleParams {
-                                device_name: name.as_ref(),
-                                guest_memory: &foundation.untrusted_dma_memory,
-                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
-                                vmtime: foundation.vmtime,
-                                is_restoring: foundation.is_restoring,
-                                task_driver_source: driver_source,
-                                register_mmio: &mut services.register_mmio(),
-                                register_pio: &mut services.register_pio(),
-                                configure: services,
-                            },
-                        )
-                        .await
-                        .map(|dev| dev.0)
-                })
-                .await?;
+                .add(|_| dma::DmaController::new())?;
 
             dma = Some(dev);
         }
@@ -989,70 +968,30 @@ mod weak_mutex_pci {
 
 pub struct ArcMutexIsaDmaChannel {
     channel_num: u8,
-    dma: Arc<CloseableMutex<ErasedChipsetDevice>>,
+    dma: Arc<CloseableMutex<dma::DmaController>>,
 }
 
 impl ArcMutexIsaDmaChannel {
     #[allow(dead_code)] // use is feature dependent
-    pub fn new(dma: Arc<CloseableMutex<ErasedChipsetDevice>>, channel_num: u8) -> Self {
+    pub fn new(dma: Arc<CloseableMutex<dma::DmaController>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
 }
 
 impl vmcore::isa_dma_channel::IsaDmaChannel for ArcMutexIsaDmaChannel {
     fn check_transfer_size(&mut self) -> u16 {
-        let mut dma = self.dma.lock();
-        let Some(dma) = dma.supports_isa_dma_controller() else {
-            tracelimit::error_ratelimited!(
-                channel = self.channel_num,
-                "resolved ISA DMA device had unexpected concrete type"
-            );
-            return 0;
-        };
-
-        dma.check_transfer_size(self.channel_num.into())
+        self.dma.lock().check_transfer_size(self.channel_num.into())
     }
 
     fn request(
         &mut self,
         direction: vmcore::isa_dma_channel::IsaDmaDirection,
     ) -> Option<vmcore::isa_dma_channel::IsaDmaBuffer> {
-        let mut dma = self.dma.lock();
-        let Some(dma) = dma.supports_isa_dma_controller() else {
-            tracelimit::error_ratelimited!(
-                channel = self.channel_num,
-                "resolved ISA DMA device had unexpected concrete type"
-            );
-            return None;
-        };
-
-        let direction = match direction {
-            vmcore::isa_dma_channel::IsaDmaDirection::Write => {
-                chipset_device::isa_dma::IsaDmaTransferDirection::Write
-            }
-            vmcore::isa_dma_channel::IsaDmaDirection::Read => {
-                chipset_device::isa_dma::IsaDmaTransferDirection::Read
-            }
-        };
-
-        dma.request(self.channel_num.into(), direction).map(
-            |chipset_device::isa_dma::IsaDmaTransferBuffer { address, size }| {
-                vmcore::isa_dma_channel::IsaDmaBuffer { address, size }
-            },
-        )
+        self.dma.lock().request(self.channel_num.into(), direction)
     }
 
     fn complete(&mut self) {
-        let mut dma = self.dma.lock();
-        let Some(dma) = dma.supports_isa_dma_controller() else {
-            tracelimit::error_ratelimited!(
-                channel = self.channel_num,
-                "resolved ISA DMA device had unexpected concrete type"
-            );
-            return;
-        };
-
-        dma.complete(self.channel_num.into())
+        self.dma.lock().complete(self.channel_num.into())
     }
 }
 
