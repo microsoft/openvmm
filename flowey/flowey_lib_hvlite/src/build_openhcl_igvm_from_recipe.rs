@@ -456,9 +456,14 @@ impl SimpleFlowNode for Node {
             let path = path.clone();
             ctx.emit_rust_stepv("set custom_openvmm_hcl", |_ctx| {
                 |_rt| {
+                    let fake_dbg_path = std::env::current_dir()?
+                        .join("fake_openvmm_hcl.dbg")
+                        .absolute()?;
+                    fs_err::write(&fake_dbg_path, "")?;
+
                     Ok(crate::build_openvmm_hcl::OpenvmmHclOutput {
                         bin: path,
-                        dbg: None,
+                        dbg: Some(fake_dbg_path),
                     })
                 }
             })
@@ -500,7 +505,9 @@ impl SimpleFlowNode for Node {
         let openhcl_boot_bin = if let Some(path) = custom_openhcl_boot {
             ctx.emit_rust_stepv("set custom_openhcl_boot", |_ctx| {
                 |_rt| {
-                    let fake_dbg_path = std::env::current_dir()?.join("fake.dbg").absolute()?;
+                    let fake_dbg_path = std::env::current_dir()?
+                        .join("fake_openhcl_boot.dbg")
+                        .absolute()?;
                     fs_err::write(&fake_dbg_path, "")?;
 
                     Ok(crate::build_openhcl_boot::OpenhclBootOutput {
