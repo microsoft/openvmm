@@ -10,6 +10,7 @@ rust-version.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 guestmem.workspace = true
+memory_range.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true
 pal_event.workspace = true

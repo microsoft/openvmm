@@ -19,6 +19,7 @@ pub use vhost_user_protocol::protocol;
 /// Re-export socket types from the shared crate.
 pub use vhost_user_protocol::socket;
 
+use anyhow::Context as _;
 use crate::memory::MemoryRegionInfo;
 use crate::memory::build_guest_memory;
 use crate::protocol::*;
@@ -170,11 +171,10 @@ impl VhostUserDeviceServer {
             VhostUserRequestCode::SET_FEATURES => {
                 let msg = parse_payload::<VhostUserU64Msg>(payload)?;
                 tracing::trace!(features = %format!("0x{:x}", msg.value), "SET_FEATURES");
-                // The frontend sends SET_FEATURES multiple times: once
-                // during init (may include VHOST_USER_F_PROTOCOL_FEATURES)
-                // and again with guest-negotiated features (which won't
-                // include bit 30 since it's a vhost-user transport bit,
-                // not a real virtio feature). Both are normal.
+                // SET_FEATURES may be sent while queues are active (e.g.,
+                // VHOST_F_LOG_ALL may be toggled). We don't currently support
+                // any features that require restarting queues on change, so
+                // just storing the new value is correct.
                 state.negotiated_features = features_from_u64(msg.value);
                 maybe_ack(socket, hdr, state).await?;
             }
@@ -205,7 +205,10 @@ impl VhostUserDeviceServer {
             }
 
             VhostUserRequestCode::SET_OWNER => {
-                // No-op for single-user backend.
+                // Required by the vhost-user spec — the frontend must send
+                // SET_OWNER before using any data-path messages. For a
+                // single-connection backend like this one, there is no
+                // ownership state to track, so we just ACK it.
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -285,28 +288,12 @@ impl VhostUserDeviceServer {
                     "SET_VRING_ADDR",
                 );
                 if let Some(q) = state.queues.get_mut(idx) {
-                    // Translate userspace VAs to GPAs.
                     let desc_gpa = memory::va_to_gpa(&self.region_info, msg.desc_user_addr)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "SET_VRING_ADDR: desc VA {:#x} not in any SET_MEM_TABLE region",
-                                msg.desc_user_addr
-                            )
-                        })?;
+                        .context("SET_VRING_ADDR desc")?;
                     let avail_gpa = memory::va_to_gpa(&self.region_info, msg.avail_user_addr)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "SET_VRING_ADDR: avail VA {:#x} not in any SET_MEM_TABLE region",
-                                msg.avail_user_addr
-                            )
-                        })?;
+                        .context("SET_VRING_ADDR avail")?;
                     let used_gpa = memory::va_to_gpa(&self.region_info, msg.used_user_addr)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "SET_VRING_ADDR: used VA {:#x} not in any SET_MEM_TABLE region",
-                                msg.used_user_addr
-                            )
-                        })?;
+                        .context("SET_VRING_ADDR used")?;
                     q.set_addr(desc_gpa, avail_gpa, used_gpa);
                 } else {
                     tracelimit::warn_ratelimited!(idx, "SET_VRING_ADDR: invalid queue index");
@@ -388,7 +375,7 @@ impl VhostUserDeviceServer {
             }
 
             VhostUserRequestCode::SET_VRING_ERR => {
-                // Low priority — store for error signaling but not critical for MVP.
+                // TODO: store the error eventfd and signal it on device errors.
                 maybe_ack(socket, hdr, state).await?;
             }
 
@@ -458,15 +445,10 @@ impl VhostUserDeviceServer {
             }
 
             VhostUserRequestCode::RESET_DEVICE => {
-                // Send the ACK before resetting state, since the
-                // device-level state (negotiated_features, queues) is
-                // about to be cleared. Protocol-level state
-                // (protocol_features, including REPLY_ACK) is preserved
-                // because it was negotiated for the connection.
-                maybe_ack(socket, hdr, state).await?;
                 self.stop_all_queues().await;
                 self.device.reset().await;
                 state.reset(&self.device.traits());
+                maybe_ack(socket, hdr, state).await?;
             }
 
             _ => {
@@ -488,14 +470,8 @@ impl VhostUserDeviceServer {
         payload: &[u8],
         fds: Vec<OwnedFd>,
     ) -> anyhow::Result<()> {
-        // Payload starts with a u32 region count (within the padding of
-        // VhostUserMemory struct), then an array of VhostUserMemoryRegion.
-        //
-        // The vhost-user spec packs: { u32 nregions, u32 padding, regions[] }.
-        if payload.len() < 8 {
-            anyhow::bail!("SET_MEM_TABLE payload too small");
-        }
-        let nregions = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+        let mem_hdr = parse_payload::<VhostUserMemoryHeader>(payload)?;
+        let nregions = mem_hdr.nregions as usize;
         if nregions > VHOST_USER_MAX_FDS {
             anyhow::bail!(
                 "SET_MEM_TABLE: nregions {} exceeds maximum {}",
@@ -503,7 +479,7 @@ impl VhostUserDeviceServer {
                 VHOST_USER_MAX_FDS
             );
         }
-        let region_bytes = &payload[8..];
+        let region_bytes = &payload[size_of::<VhostUserMemoryHeader>()..];
         let region_size = size_of::<VhostUserMemoryRegion>();
 
         if region_bytes.len() < nregions * region_size {
@@ -533,18 +509,12 @@ impl VhostUserDeviceServer {
             let fd = fd_iter.next().unwrap();
             tracing::trace!(
                 idx = i,
-                gpa = %format!("0x{:x}", region.guest_phys_addr),
-                size = %format!("0x{:x}", region.memory_size),
-                mmap_offset = %format!("0x{:x}", region.mmap_offset),
+                gpa = region.guest_phys_addr,
+                size = region.memory_size,
+                mmap_offset = region.mmap_offset,
                 "SET_MEM_TABLE region",
             );
-            regions.push((
-                region.guest_phys_addr,
-                region.memory_size,
-                region.userspace_addr,
-                region.mmap_offset,
-                fd,
-            ));
+            regions.push((region, fd));
         }
 
         // Build the new GuestMemory first (non-destructive).
@@ -558,9 +528,6 @@ impl VhostUserDeviceServer {
         self.region_info = new_memory.regions;
 
         // Restart the queues that were active, with the new GuestMemory.
-        // QEMU does NOT re-enable queues after SET_MEM_TABLE — it sends
-        // a bare SET_MEM_TABLE with queues still running and expects the
-        // backend to handle it, so we must restart them ourselves.
         for (idx, queue_state) in stopped {
             if let Some(q) = state.queues.get_mut(idx) {
                 if let Some((resources, _raw_base)) = q.try_activate(self.guest_memory.clone()) {

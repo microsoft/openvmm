@@ -120,6 +120,14 @@ impl VhostUserMsgHeader {
     }
 }
 
+/// Fixed header for SET_MEM_TABLE payload: region count + padding.
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct VhostUserMemoryHeader {
+    pub nregions: u32,
+    pub padding: u32,
+}
+
 /// Payload for SET_MEM_TABLE — variable-length, preceded by region count.
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]

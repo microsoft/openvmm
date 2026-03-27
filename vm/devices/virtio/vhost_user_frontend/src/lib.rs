@@ -120,44 +120,43 @@ impl VhostUserFrontend {
         let device_features_raw = send_get_u64(&socket, VhostUserRequestCode::GET_FEATURES).await?;
         tracing::trace!(features = %format!("0x{device_features_raw:x}"), "GET_FEATURES");
 
-        // 2. SET_FEATURES — include PROTOCOL_FEATURES bit
-        //    (no REPLY_ACK yet — not negotiated until step 3)
-        send_set_u64(
-            &socket,
-            VhostUserRequestCode::SET_FEATURES,
-            device_features_raw | VHOST_USER_F_PROTOCOL_FEATURES,
-            false,
-        )
-        .await?;
+        // 2. Negotiate protocol features (only if the backend advertises them).
+        let negotiated_proto = if device_features_raw & VHOST_USER_F_PROTOCOL_FEATURES != 0 {
+            let proto_features_raw =
+                send_get_u64(&socket, VhostUserRequestCode::GET_PROTOCOL_FEATURES).await?;
+            let wanted = VhostUserProtocolFeatures::new()
+                .with_mq(true)
+                .with_reply_ack(true)
+                .with_config(true)
+                .with_reset_device(true);
+            let negotiated =
+                VhostUserProtocolFeatures::from_bits(proto_features_raw & wanted.into_bits());
+            send_set_u64(
+                &socket,
+                VhostUserRequestCode::SET_PROTOCOL_FEATURES,
+                negotiated.into_bits(),
+                false, // REPLY_ACK just negotiated — not yet active
+            )
+            .await?;
+            negotiated
+        } else {
+            VhostUserProtocolFeatures::new()
+        };
 
-        // 3. GET_PROTOCOL_FEATURES → SET_PROTOCOL_FEATURES
-        let proto_features_raw =
-            send_get_u64(&socket, VhostUserRequestCode::GET_PROTOCOL_FEATURES).await?;
-        let wanted = VhostUserProtocolFeatures::new()
-            .with_mq(true)
-            .with_reply_ack(true)
-            .with_config(true)
-            .with_reset_device(true);
-        let negotiated_proto =
-            VhostUserProtocolFeatures::from_bits(proto_features_raw & wanted.into_bits());
-        send_set_u64(
-            &socket,
-            VhostUserRequestCode::SET_PROTOCOL_FEATURES,
-            negotiated_proto.into_bits(),
-            false, // REPLY_ACK just negotiated — not yet active
-        )
-        .await?;
-
-        // 4. SET_OWNER
+        // 3. SET_OWNER
         send_simple(&socket, VhostUserRequestCode::SET_OWNER, false).await?;
 
-        // 5. GET_QUEUE_NUM
-        let max_queues = send_get_u64(&socket, VhostUserRequestCode::GET_QUEUE_NUM)
-            .await
-            .unwrap_or(1) as u16;
+        // 4. GET_QUEUE_NUM (requires MQ protocol feature)
+        let max_queues = if negotiated_proto.mq() {
+            send_get_u64(&socket, VhostUserRequestCode::GET_QUEUE_NUM)
+                .await
+                .unwrap_or(1) as u16
+        } else {
+            1
+        };
         tracing::trace!(max_queues, "GET_QUEUE_NUM");
 
-        // 6. GET_CONFIG (cache)
+        // 5. GET_CONFIG (requires CONFIG protocol feature)
         let config_cache = if negotiated_proto.config() {
             send_get_config(&socket, 0, 256).await.unwrap_or_default()
         } else {
