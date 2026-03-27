@@ -169,8 +169,6 @@ impl RelaySocket {
                 Box::pin(async move {
                     let events = inner.await_ready(InterestSlot::Read, events).await;
 
-                    tracing::info!(?events, "got read events");
-
                     // RDHUP means the write side of the socket was shutdown by the peer, so the
                     // next read will return 0, which is handled there.
                     if events.has_in() || events.has_err() || events.has_rdhup() {
@@ -180,14 +178,13 @@ impl RelaySocket {
                     // On Windows, HUP is only sent on abortive disconnect, so RDHUP is also used
                     // to for full shutdown. This means write and read shutdown cannot be
                     // distinguished.
+                    // On Linux, HUP means either both sides were shutdown or the socket was closed.
                     #[cfg(windows)]
                     let is_closed = events.has_hup() || events.has_rdhup();
                     #[cfg(not(windows))]
                     let is_closed = events.has_hup() || events.has_err();
 
-                    // HUP means either both sides were shutdown or the socket was closed.
                     if is_closed {
-                        tracing::trace!("got read HUP: {events:?}");
                         inner.closed.store(true, Ordering::Release);
                     }
 
@@ -212,7 +209,6 @@ impl RelaySocket {
                         .await;
 
                     if events.has_hup() {
-                        tracing::trace!("got write HUP");
                         inner.closed.store(true, Ordering::Release);
                     }
 

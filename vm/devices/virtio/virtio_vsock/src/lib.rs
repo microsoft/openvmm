@@ -34,7 +34,11 @@ use crate::spec::VsockPacket;
 use crate::spec::VsockPacketBuf;
 use anyhow::Context;
 use connection::ConnectionManager;
+use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::OptionFuture;
+use futures::future::poll_fn;
+use futures::stream::Fuse;
 use guestmem::GuestMemory;
 use guestmem::LockedRange;
 use guestmem::LockedRangeImpl;
@@ -45,18 +49,15 @@ use pal_async::wait::PolledWait;
 use smallvec::SmallVec;
 use spec::VsockConfig;
 use spec::VsockHeader;
-use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::StopTask;
 use task_control::TaskControl;
 use unicycle::FuturesUnordered;
 use unix_socket::UnixListener;
-use unix_socket::UnixStream;
 use virtio::DeviceTraits;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
@@ -186,7 +187,7 @@ impl VirtioDevice for VirtioVsockDevice {
         if self.started_queues.iter().all(|q| q.is_some()) {
             let state = VsockWorkerState {
                 rx_queue: self.started_queues[RX_QUEUE_INDEX].take().unwrap(),
-                tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap(),
+                tx_queue: self.started_queues[TX_QUEUE_INDEX].take().unwrap().fuse(),
                 event_queue: self.started_queues[EVENT_QUEUE_INDEX].take().unwrap(),
                 memory: resources.guest_memory.clone(),
                 connections: ConnectionManager::new(self.guest_cid, self.base_path.clone()),
@@ -205,7 +206,7 @@ impl VirtioDevice for VirtioVsockDevice {
         if self.worker.stop().await {
             let state = self.worker.remove();
             self.started_queues[RX_QUEUE_INDEX] = Some(state.rx_queue);
-            self.started_queues[TX_QUEUE_INDEX] = Some(state.tx_queue);
+            self.started_queues[TX_QUEUE_INDEX] = Some(state.tx_queue.into_inner());
             self.started_queues[EVENT_QUEUE_INDEX] = Some(state.event_queue);
 
             // Drain any pending IO
@@ -222,7 +223,7 @@ impl VirtioDevice for VirtioVsockDevice {
 struct VsockWorkerState {
     connections: ConnectionManager,
     rx_queue: VirtioQueue,
-    tx_queue: VirtioQueue,
+    tx_queue: Fuse<VirtioQueue>,
     #[allow(dead_code)] // Required by the spec but not actively polled.
     event_queue: VirtioQueue,
     memory: GuestMemory,
@@ -430,137 +431,78 @@ impl AsyncRun<VsockWorkerState> for VsockWorker {
         stop: &mut StopTask<'_>,
         state: &mut VsockWorkerState,
     ) -> Result<(), task_control::Cancelled> {
-        while stop
-            .until_stopped(async {
-                loop {
-                    enum Event {
-                        TxWork(io::Result<VirtioQueueCallbackWork>),
-                        RxWork(RxWork),
-                        WriteReady(ConnectionInstanceId),
-                        Accept(io::Result<UnixStream>),
-                        Retry,
+        stop.until_stopped(async {
+            loop {
+                let peeked = match state.rx_queue.try_peek() {
+                    Ok(p) => p,
+                    Err(err) => {
+                        tracing::error!(
+                            error = &err as &dyn std::error::Error,
+                            "error peeking virtio rx queue"
+                        );
+                        return false;
                     }
+                };
 
-                    let peeked = match state.rx_queue.try_peek() {
-                        Ok(p) => p,
-                        Err(err) => {
-                            tracing::error!(
+                let has_rx_work = peeked.is_some();
+                let mut rx_ready =
+                    OptionFuture::from(has_rx_work.then(|| self.work.select_next_some()));
+
+                // This future unfortunately borrows state.rx_queue, which means peeked cannot be
+                // used below.
+                let mut rx_queue_kick = OptionFuture::from(
+                    (!has_rx_work).then(|| poll_fn(|cx| state.rx_queue.poll_kick(cx)).fuse()),
+                );
+
+                futures::select! {
+                    id = self.write_ready_work.select_next_some() => {
+                        let pending = state.connections.handle_write_ready(id);
+                        self.queue_pending_work(pending);
+                    }
+                    r = state.tx_queue.select_next_some() => {
+                        match r {
+                            Ok(work) => self.handle_tx_work(state, work),
+                            Err(err) => tracing::error!(
                                 error = &err as &dyn std::error::Error,
-                                "error peeking virtio rx queue"
-                            );
-                            return false;
+                                "error reading from virtio tx queue"
+                            ),
                         }
-                    };
-
-                    let has_rx_work = peeked.is_some();
-                    if !has_rx_work {
-                        tracing::trace!("no rx work ready");
                     }
-                    let event = std::future::poll_fn(|cx| {
-                        if let Poll::Ready(Some(item)) = self.write_ready_work.poll_next_unpin(cx) {
-                            return Poll::Ready(Event::WriteReady(item));
-                        }
-
-                        if let Poll::Ready(item) = state.tx_queue.poll_next_unpin(cx) {
-                            let item = item.expect("virtio queue stream never ends");
-                            return Poll::Ready(Event::TxWork(item));
-                        }
-
-                        if has_rx_work {
-                            if let Poll::Ready(Some(work)) = self.work.poll_next_unpin(cx) {
-                                return Poll::Ready(Event::RxWork(work));
+                    r = rx_ready => {
+                        let work = r.unwrap();
+                        self.handle_rx_work(state, work);
+                    }
+                    _ = rx_queue_kick => {
+                        // New buffers are available in the rx queue; try to peek again to trigger
+                        // processing.
+                    }
+                    r = self.listener.accept().fuse() => {
+                        match r {
+                            Ok((stream, _)) => {
+                                tracing::trace!("host unix socket accepted");
+                                match state.connections.handle_host_connect(&self.driver, stream) {
+                                    Err(err) => {
+                                        tracing::error!(
+                                            error = err.as_ref() as &dyn std::error::Error,
+                                            "error handling Unix socket connect"
+                                        );
+                                    }
+                                    Ok((read_work, timeout_work)) => {
+                                        self.queue_pending_work(read_work);
+                                        self.queue_pending_work(timeout_work);
+                                    }
+                                }
                             }
-                        } else if state.rx_queue.poll_kick(cx) == Poll::Ready(()) {
-                            // New buffers are available in the rx queue; try to peek again to trigger processing.
-                            return Poll::Ready(Event::Retry);
-                        }
-
-                        if let Poll::Ready(result) = self.listener.poll_accept(cx) {
-                            return Poll::Ready(Event::Accept(result.map(|(stream, _)| stream)));
-                        }
-
-                        Poll::Pending
-                    })
-                    .await;
-
-                    match event {
-                        Event::TxWork(Ok(work)) => {
-                            self.handle_tx_work(state, work);
-                        }
-                        Event::TxWork(Err(err)) => {
-                            tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "error reading from virtio queue"
-                            );
-
-                            return false;
-                        }
-                        Event::RxWork(work) => {
-                            self.handle_rx_work(state, work);
-                        }
-                        Event::WriteReady(id) => {
-                            let pending = state.connections.handle_write_ready(id);
-                            self.queue_pending_work(pending);
-                        }
-                        Event::Accept(Err(err)) => {
-                            tracing::error!(
+                            Err(err) => tracing::error!(
                                 error = &err as &dyn std::error::Error,
                                 "error accepting host connections"
-                            );
-
-                            return false;
+                            ),
                         }
-                        Event::Accept(Ok(stream)) => {
-                            tracing::trace!("host unix socket accepted");
-                            match state.connections.handle_host_connect(&self.driver, stream) {
-                                Err(err) => {
-                                    tracing::error!(
-                                        error = err.as_ref() as &dyn std::error::Error,
-                                        "error handling Unix socket connect"
-                                    );
-                                }
-                                Ok((read_work, timeout_work)) => {
-                                    self.queue_pending_work(read_work);
-                                    self.queue_pending_work(timeout_work);
-                                }
-                            }
-                        }
-                        Event::Retry => (),
                     }
-                }
-                // // Collect any pending rx packets from the relay.
-                // let relay_packets = self.relay.poll_rx_packets();
-                // state.pending_rx.extend(relay_packets);
-
-                // // Try to deliver pending rx packets to the guest.
-                // self.deliver_rx_packets(state);
-
-                // // Wait for a tx packet from the guest, or an exit signal.
-                // let mut tx_next = std::pin::pin!(state.tx_queue.next().fuse());
-
-                // futures::select_biased! {
-                //     _ = exit => return false,
-                //     work = tx_next => {
-                //         match work {
-                //             Some(Ok(work)) => {
-                //                 self.handle_tx_work(state, work);
-                //             }
-                //             Some(Err(err)) => {
-                //                 tracing::error!(
-                //                     error = &err as &dyn std::error::Error,
-                //                     "vsock tx queue error"
-                //                 );
-                //                 return false;
-                //             }
-                //             None => return false,
-                //         }
-                //     }
-                // }
-
-                // true
-            })
-            .await?
-        {}
+                };
+            }
+        })
+        .await?;
         Ok(())
     }
 }
