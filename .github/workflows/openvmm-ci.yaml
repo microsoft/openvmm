@@ -2698,7 +2698,7 @@ jobs:
     - Windows
     - X64
     - SNP
-    - Baremetal
+    - VM
     permissions:
       contents: read
       id-token: write

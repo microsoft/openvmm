@@ -92,6 +92,6 @@ pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
         "Windows".to_string(),
         "X64".to_string(),
         "SNP".to_string(),
-        "Baremetal".to_string(),
+        "VM".to_string(),
     ])
 }
