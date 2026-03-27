@@ -10,7 +10,6 @@ use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
-use chipset_resources::pit::PitDeviceHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -46,6 +45,7 @@ use mesh_worker::WorkerRpc;
 use missing_dev::MissingDevManifest;
 use openvmm_defs::config::Aarch64TopologyConfig;
 use openvmm_defs::config::ArchTopologyConfig;
+use openvmm_defs::config::ChipsetCapabilities;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
@@ -100,7 +100,6 @@ use virtio::VirtioPciDevice;
 use virtio::resolve::VirtioResolveInput;
 use vm_loader::initial_regs::initial_regs;
 use vm_resource::Resource;
-use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
@@ -158,30 +157,6 @@ const SYSTEM_IRQ_ACPI: u32 = 9;
 
 const WDAT_PORT: u16 = 0x30;
 
-#[derive(Copy, Clone)]
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
-struct ChipsetCapabilities {
-    with_ioapic: bool,
-    with_pic: bool,
-    with_pit: bool,
-    with_psp: bool,
-}
-
-impl ChipsetCapabilities {
-    fn from_parts(chipset: &BaseChipsetManifest, chipset_devices: &[ChipsetDeviceHandle]) -> Self {
-        const PIT_RESOURCE_ID: &str = PitDeviceHandle::ID;
-
-        Self {
-            with_ioapic: chipset.with_generic_ioapic,
-            with_pic: chipset.with_generic_pic,
-            with_pit: chipset_devices
-                .iter()
-                .any(|device| device.resource.id() == PIT_RESOURCE_ID),
-            with_psp: chipset.with_generic_psp,
-        }
-    }
-}
-
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
     DefaultPool::spawn_on_thread("basic_device_thread")
@@ -219,6 +194,7 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            chipset_capabilities: config.chipset_capabilities,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -266,6 +242,7 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    chipset_capabilities: ChipsetCapabilities,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -1178,7 +1155,7 @@ impl InitializedVm {
         ));
 
         let mapper = memory_manager.device_memory_mapper();
-        let chipset_caps = ChipsetCapabilities::from_parts(&cfg.chipset, &cfg.chipset_devices);
+        let chipset_caps = cfg.chipset_capabilities;
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -3151,9 +3128,10 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
+            debugger_rpc: None,      // TODO
+            vmbus_devices: vec![],   // TODO
+            chipset_devices: vec![], // TODO
+            chipset_capabilities: self.inner.chipset_caps,
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,

@@ -2724,6 +2724,7 @@ async fn new_underhill_vm(
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
+        ..
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
