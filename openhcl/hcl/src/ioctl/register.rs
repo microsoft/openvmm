@@ -297,7 +297,14 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         let registers: Vec<HvRegisterAssoc> = values.into_iter().map(Into::into).collect();
 
         #[cfg(guest_arch = "x86_64")]
-        let per_arch = |name| matches!(name, HvArchRegisterName::CrInterceptControl);
+        let per_arch = |name| {
+            matches!(
+                name,
+                HvArchRegisterName::CrInterceptControl
+                    | HvArchRegisterName::SevAvicGpa
+                    | HvArchRegisterName::GuestVsmPartitionConfig
+            )
+        };
 
         #[cfg(guest_arch = "aarch64")]
         let per_arch = |_: HvArchRegisterName| false;

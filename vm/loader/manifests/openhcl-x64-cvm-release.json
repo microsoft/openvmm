@@ -8,8 +8,9 @@
                 "snp": {
                     "shared_gpa_boundary_bits": 46,
                     "policy": 196639,
-                    "enable_debug": false,
-                    "injection_type": "normal"
+                    "enable_debug": true,
+                    "injection_type": "normal",
+                    "secure_avic": "enabled"
                 }
             },
             "image": {
