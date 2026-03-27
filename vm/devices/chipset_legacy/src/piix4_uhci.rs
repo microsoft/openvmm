@@ -51,7 +51,7 @@ impl ChipsetDevice for Piix4UsbUhciStub {
 impl chipset_device::pci::PciPlacement for Piix4UsbUhciStub {
     fn static_pci_placement(&mut self) -> chipset_device::pci::PciPlacementHint {
         chipset_device::pci::PciPlacementHint {
-            bus_name: "i440bx",
+            bus_name: "i440bx".into(),
             bdf: Some((0, 7, 2)),
         }
     }

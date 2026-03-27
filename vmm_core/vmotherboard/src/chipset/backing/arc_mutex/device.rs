@@ -184,7 +184,9 @@ where
                     // static pci registration
                     let bdf = match (
                         self.pci_addr,
-                        static_placement.and_then(|placement| placement.bdf),
+                        static_placement
+                            .as_ref()
+                            .and_then(|placement| placement.bdf),
                         dev.suggested_bdf(),
                     ) {
                         (Some(override_bdf), Some(hinted_bdf), _) => {
@@ -228,7 +230,7 @@ where
                     let bus_id = if let Some(bus_id) = self.pci_bus_id.take() {
                         bus_id
                     } else if let Some(placement) = static_placement {
-                        BusIdPci::new(placement.bus_name)
+                        BusIdPci::new(&placement.bus_name)
                     } else {
                         return Err(
                             AddDeviceErrorKind::NoPciBusSpecified.with_dev_name(self.dev_name)

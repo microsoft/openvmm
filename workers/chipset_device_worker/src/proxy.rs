@@ -85,7 +85,7 @@ struct PciProxy {
 
 #[derive(Inspect)]
 struct StaticPciPlacement {
-    bus_name: &'static str,
+    bus_name: Box<str>,
     #[inspect(with = "Option::is_some")]
     bdf: Option<(u8, u8, u8)>,
 }
@@ -134,9 +134,7 @@ impl ChipsetDeviceProxy {
              }| PciProxy {
                 suggested_bdf,
                 placement: placement.map(|placement| StaticPciPlacement {
-                    // The transport payload is owned String; leak once to satisfy the
-                    // static lifetime required by PciPlacementHint.
-                    bus_name: Box::leak(placement.bus_name.into_boxed_str()),
+                    bus_name: placement.bus_name.into_boxed_str(),
                     bdf: placement.bdf,
                 }),
             },
@@ -270,7 +268,7 @@ impl PciPlacement for ChipsetDeviceProxy {
             .unwrap();
 
         PciPlacementHint {
-            bus_name: placement.bus_name,
+            bus_name: placement.bus_name.clone(),
             bdf: placement.bdf,
         }
     }
