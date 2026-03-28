@@ -958,9 +958,9 @@ impl<D: DeviceBacking> NvmeDriver<D> {
             .worker_data
             .io
             .iter()
-            .filter(|q| {
-                q.queue_data.qid == 1 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
-            })
+            // .filter(|q| {
+            //     q.queue_data.qid == 1 || !q.queue_data.handler_data.pending_cmds.commands.is_empty()
+            // })
             .flat_map(|q| -> Result<IoQueue<D>, anyhow::Error> {
                 let qid = q.queue_data.qid;
                 let cpu = q.cpu;
@@ -989,12 +989,14 @@ impl<D: DeviceBacking> NvmeDriver<D> {
                     &pci_id,
                     q,
                     bounce_buffer,
-                    if q.queue_data.handler_data.pending_cmds.commands.is_empty() {
+                    if !q.queue_data.handler_data.pending_cmds.commands.is_empty() {
+                        drain_after_restore_template.new_draining()
+                    } else if q.queue_data.qid == 1 {
                         drain_after_restore_for_qid1
                             .take()
-                            .expect("only QID 1 should be empty in eager restore")
+                            .unwrap_or_else(|| drain_after_restore_template.new_self_drained())
                     } else {
-                        drain_after_restore_template.new_draining()
+                        drain_after_restore_template.new_self_drained()
                     },
                 )?;
                 tracing::info!(qid, cpu, ?pci_id, "restoring queue: create issuer");
@@ -1009,40 +1011,40 @@ impl<D: DeviceBacking> NvmeDriver<D> {
 
         // (2) Create prototype entries for any queues that don't currently have outstanding commands.
         // They will be restored on demand later.
-        worker.proto_io = saved_state
-            .worker_data
-            .io
-            .iter()
-            .filter(|q| {
-                q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
-            })
-            .zip(drain_after_restore_for_proto_queues)
-            .map(|(q, drain_after_restore)| {
-                // Create a prototype IO queue entry.
-                tracing::info!(
-                    qid = q.queue_data.qid,
-                    cpu = q.cpu,
-                    ?pci_id,
-                    "creating prototype io queue entry",
-                );
-                max_seen_qid = max_seen_qid.max(q.queue_data.qid);
-                let mem_block = restored_memory
-                    .iter()
-                    .find(|mem| {
-                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
-                    })
-                    .expect("unable to find restored mem block")
-                    .to_owned();
-                (
-                    q.cpu,
-                    ProtoIoQueue {
-                        save_state: q.clone(),
-                        mem: mem_block,
-                        drain_after_restore,
-                    },
-                )
-            })
-            .collect();
+        // worker.proto_io = saved_state
+        //     .worker_data
+        //     .io
+        //     .iter()
+        //     .filter(|q| {
+        //         q.queue_data.qid != 1 && q.queue_data.handler_data.pending_cmds.commands.is_empty()
+        //     })
+        //     .zip(drain_after_restore_for_proto_queues)
+        //     .map(|(q, drain_after_restore)| {
+        //         // Create a prototype IO queue entry.
+        //         tracing::info!(
+        //             qid = q.queue_data.qid,
+        //             cpu = q.cpu,
+        //             ?pci_id,
+        //             "creating prototype io queue entry",
+        //         );
+        //         max_seen_qid = max_seen_qid.max(q.queue_data.qid);
+        //         let mem_block = restored_memory
+        //             .iter()
+        //             .find(|mem| {
+        //                 mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
+        //             })
+        //             .expect("unable to find restored mem block")
+        //             .to_owned();
+        //         (
+        //             q.cpu,
+        //             ProtoIoQueue {
+        //                 save_state: q.clone(),
+        //                 mem: mem_block,
+        //                 drain_after_restore,
+        //             },
+        //         )
+        //     })
+        //     .collect();
 
         // Update next_ioq_id to avoid reusing qids.
         worker.next_ioq_id = max_seen_qid + 1;
