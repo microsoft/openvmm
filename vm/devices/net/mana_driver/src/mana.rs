@@ -630,6 +630,9 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
+    ///
+    /// Returns an error if the device backing has been taken via
+    /// [`ManaDevice::shutdown`] or [`ManaDevice::save`].
     pub async fn dma_client(&self) -> anyhow::Result<Arc<dyn DmaClient>> {
         let gdma = self.inner.gdma.lock().await;
         Ok(gdma
