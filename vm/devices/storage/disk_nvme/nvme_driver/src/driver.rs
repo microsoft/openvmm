@@ -942,7 +942,7 @@ impl<D: DeviceBacking> NvmeDriver<D> {
         // non-empty queues drain before we're able to create the proto queues
         // (or before QID 1's turn in the loop), they will still receive the
         // signal and not wait forever.
-        let drain_after_restore_for_proto_queues: Vec<_> = (0..proto_queues_count)
+        let _drain_after_restore_for_proto_queues: Vec<_> = (0..proto_queues_count)
             .map(|_| drain_after_restore_template.new_self_drained())
             .collect();
 
