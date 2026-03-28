@@ -190,7 +190,7 @@ impl InviteContext {
     /// is returned (needed for handle-based invitations). Otherwise `None`.
     fn process_invite(
         &self,
-        driver: &(impl Spawn + ?Sized),
+        driver: &impl Spawn,
         port: Port,
         dup_directory: bool,
     ) -> Result<(InvitationCredentials, Option<OwnedHandle>, InvitationHandle), InviteError> {
@@ -503,13 +503,12 @@ impl AlpcNode {
         directory_path: Option<String>,
     ) -> Result<Self, NewNodeError> {
         let path;
-        let attr = if let Some(ref dir_path) = directory_path {
+        let mut attr = ObjectAttributes::new();
+        if let Some(ref dir_path) = directory_path {
             path = UnicodeString::try_from(dir_path.as_str())
                 .map_err(|_| NewNodeError::InvalidDirectoryPath)?;
-            ObjectAttributes::new().name(&path)
-        } else {
-            ObjectAttributes::new()
-        };
+            attr.name(&path);
+        }
         let directory = create_object_directory(&attr, DIRECTORY_ALL_ACCESS)
             .map_err(NewNodeError::CreateDirectory)?;
 
@@ -532,7 +531,7 @@ impl AlpcNode {
     }
 
     /// Extract an [`AlpcMeshInviter`] handle. Cheap — clones the sender.
-    pub fn inviter(&self) -> AlpcMeshInviter {
+    pub(crate) fn inviter(&self) -> AlpcMeshInviter {
         AlpcMeshInviter {
             request_send: self.invite_request_send.clone(),
         }
@@ -817,8 +816,7 @@ impl AlpcNode {
     /// `port` with the initial port.
     pub fn invite(&self, port: Port) -> Result<(Invitation, InvitationHandle), InviteError> {
         let (creds, dup_dir, invite_handle) =
-            self.invite_ctx
-                .process_invite(self.driver.as_ref(), port, true)?;
+            self.invite_ctx.process_invite(&self.driver, port, true)?;
         Ok((
             Invitation {
                 credentials: creds,

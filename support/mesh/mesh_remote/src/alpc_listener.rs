@@ -222,7 +222,6 @@ mod tests {
     use mesh_protobuf::Protobuf;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
-    use pal_async::task::Spawn;
     use test_with_tracing::test;
 
     #[derive(Debug, PartialEq, Protobuf)]
