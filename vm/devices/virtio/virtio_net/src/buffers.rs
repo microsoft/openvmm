@@ -50,16 +50,21 @@ impl VirtioWorkPool {
         &self.mem
     }
 
-    /// Fills `buf` with the RxIds of currently available buffers.
+    /// Fills `buf` with the RxIds of currently available buffers. `buf` must be
+    /// at least as big as the virtio queue size, passed to `new()`.
     ///
     /// Returns the number of entries written.
     pub fn fill_ready(&self, buf: &mut [RxId]) -> usize {
+        assert!(buf.len() >= self.rx_packets.len());
         let mut n = 0;
-        for (i, e) in self.rx_packets.iter().enumerate() {
-            if e.is_some() {
-                buf[n] = RxId(i as u32);
-                n += 1;
-            }
+        for (dest, src) in buf.iter_mut().zip(
+            self.rx_packets
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| e.is_some().then_some(RxId(i as u32))),
+        ) {
+            *dest = src;
+            n += 1;
         }
         n
     }
