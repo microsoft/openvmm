@@ -218,7 +218,8 @@ pub extern "system" fn rpc_igvm_attest(
         "invoking attest igvm_agent"
     );
 
-    let payload = match igvm_agent::process_igvm_attest(report_slice) {
+    let vm_name_ref = vm_name_str.as_deref().unwrap_or("");
+    let payload = match igvm_agent::process_igvm_attest(vm_name_ref, report_slice) {
         Ok(payload) => payload,
         Err(err) => {
             tracing::error!(?err, "igvm_agent::process_igvm_attest failed");
