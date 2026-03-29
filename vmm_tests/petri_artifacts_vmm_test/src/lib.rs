@@ -150,6 +150,18 @@ pub mod artifacts {
         }
     }
 
+    /// Petritools disk images
+    pub mod petritools {
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Petritools erofs image (x64)
+            PETRITOOLS_EROFS_X64,
+            /// Petritools erofs image (aarch64)
+            PETRITOOLS_EROFS_AARCH64,
+        }
+    }
+
     /// OpenHCL IGVM artifacts
     pub mod openhcl_igvm {
         use petri_artifacts_common::tags::IsLoadable;
