@@ -101,3 +101,18 @@ mesh_worker::register_workers! {
     #[cfg(feature = "gdb")]
     debug_worker::DebuggerWorker<std::net::TcpListener>,
 }
+
+// Hypervisor backends (checked in registration order for auto-detection).
+openvmm_core::register_hypervisors! {
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
+    openvmm_hypervisors::mshv::MshvProbe, openvmm_hypervisors::mshv::MshvResolver,
+
+    #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
+    openvmm_hypervisors::kvm::KvmProbe, openvmm_hypervisors::kvm::KvmResolver,
+
+    #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
+    openvmm_hypervisors::whp::WhpProbe, openvmm_hypervisors::whp::WhpResolver,
+
+    #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
+    openvmm_hypervisors::hvf::HvfProbe, openvmm_hypervisors::hvf::HvfResolver,
+}

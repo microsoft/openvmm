@@ -2627,7 +2627,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         };
 
         let params = VmWorkerParameters {
-            hypervisor: opt.hypervisor,
+            hypervisor: match &opt.hypervisor {
+                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+            },
             cfg: vm_config,
             saved_state,
             shared_memory,

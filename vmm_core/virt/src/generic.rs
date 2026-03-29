@@ -51,8 +51,13 @@ pub trait Hypervisor: 'static {
     /// The error type when creating the partition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Returns whether this hypervisor is available on this machine.
-    fn is_available(&self) -> Result<bool, Self::Error>;
+    /// Returns the platform PMU GSIV for this hypervisor, if any.
+    ///
+    /// On aarch64, this is used to configure the GIC topology with the
+    /// correct PMU interrupt ID before creating the partition.
+    fn platform_gsiv(&self) -> Option<u32> {
+        None
+    }
 
     /// Returns a new prototype partition from the given configuration.
     fn new_partition<'a>(

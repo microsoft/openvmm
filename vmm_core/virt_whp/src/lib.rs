@@ -758,9 +758,15 @@ impl virt::Hypervisor for Whp {
         Ok(WhpProtoPartition { vtl0, vtl2, config })
     }
 
-    fn is_available(&self) -> Result<bool, Error> {
-        whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
+    #[cfg(guest_arch = "aarch64")]
+    fn platform_gsiv(&self) -> Option<u32> {
+        Some(WHP_PMU_GSIV)
     }
+}
+
+/// Returns whether WHP is available on this machine.
+pub fn is_available() -> Result<bool, Error> {
+    whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
 }
 
 /// The prototype partition.
