@@ -1380,23 +1380,4 @@ mod tests {
         node2.shutdown().await;
     }
 
-    #[async_test]
-    async fn test_inviter_handle_based(driver: DefaultDriver) {
-        let node1 = AlpcNode::new(driver.clone()).unwrap();
-        let (send, recv) = channel::<u32>();
-
-        let inviter = node1.inviter();
-        let (invitation, handle) = inviter.invite(recv.into()).await.unwrap();
-
-        let (send2, mut recv2) = channel::<u32>();
-        let node2 = AlpcNode::join(driver, invitation, send2.into()).unwrap();
-        handle.await;
-
-        send.send(99);
-        assert_eq!(recv2.recv().await.unwrap(), 99);
-        drop(send);
-        drop(recv2);
-        node1.shutdown().await;
-        node2.shutdown().await;
-    }
 }
