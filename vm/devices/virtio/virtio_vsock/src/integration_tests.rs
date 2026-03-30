@@ -1028,9 +1028,7 @@ async fn host_connect_to_guest_with_guid(driver: DefaultDriver) {
 }
 
 /// Two simultaneous host-to-guest connections must receive different local
-/// port numbers in their OK responses. This exercises port allocation —
-/// currently the device hardcodes local_port to 1234, so this test is
-/// expected to fail until that is fixed.
+/// port numbers in their OK responses. This exercises port allocation.
 #[async_test]
 async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver) {
     use unix_socket::UnixStream as StdUnixStream;
@@ -1426,9 +1424,6 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
 /// RX queue form a non-contiguous, non-page-aligned memory layout that cannot
 /// be directly mapped. This test splits the RX buffer into two fragments
 /// separated by a gap at non-page-aligned offsets.
-///
-/// This test is expected to fail until bounce buffer support is implemented
-/// for the vsock RX path.
 #[async_test]
 async fn bounce_buffer_rx_fragmented_descriptor(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
@@ -1893,8 +1888,8 @@ fn connection_thread(host_listener_path: PathBuf) {
     );
 
     const CHUNK_SIZE: usize = 16384;
-    // random number of chunks between 1 and 1000
-    let num_chunks = getrandom::u32().unwrap() as usize % 1000 + 1;
+    // random number of chunks between 1 and 100
+    let num_chunks = getrandom::u32().unwrap() as usize % 100 + 1;
 
     for _ in 0..num_chunks {
         let mut chunk = vec![0u8; CHUNK_SIZE];

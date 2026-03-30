@@ -176,9 +176,15 @@ impl RelaySocket {
                 Box::pin(async move {
                     let events = inner.await_ready(InterestSlot::Read, events).await;
 
+                    let is_readable = events.has_in() || events.has_err();
+
                     // RDHUP means the write side of the socket was shutdown by the peer, so the
-                    // next read will return 0, which is handled there.
-                    if events.has_in() || events.has_err() || events.has_rdhup() {
+                    // next read will return 0, which is handled there. It is not available on
+                    // MacOS.
+                    #[cfg(any(windows, target_os = "linux"))]
+                    let is_readable = is_readable || events.has_rdhup();
+
+                    if is_readable {
                         inner.has_data.store(true, Ordering::Release);
                     }
 

@@ -130,11 +130,11 @@ pub struct Options {
     pub isolation: Option<IsolationCli>,
 
     /// the hybrid vsock listener path
-    #[clap(long, value_name = "PATH", alias = "vsock_path")]
+    #[clap(long, value_name = "PATH", alias = "vsock-path")]
     pub vmbus_vsock_path: Option<String>,
 
     /// the VTL2 hybrid vsock listener path
-    #[clap(long, value_name = "PATH", requires("vtl2"), alias = "vtl2_vsock_path")]
+    #[clap(long, value_name = "PATH", requires("vtl2"), alias = "vtl2-vsock-path")]
     pub vmbus_vtl2_vsock_path: Option<String>,
 
     /// the late map vtl0 ram access policy when vtl2 is enabled

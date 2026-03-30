@@ -17,7 +17,6 @@ use std::any::Any;
 use std::fmt::Debug;
 use std::future::Future;
 use std::io;
-use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ops::Range;
@@ -2234,10 +2233,9 @@ impl GuestMemory {
             }
             let store_gpns = self.inner.imp.lock_gpns(paged_range.gpns())?;
             Ok(LockedRangeImpl {
-                mem: self.inner.clone(),
+                mem: &self.inner,
                 gpns: store_gpns.then(|| paged_range.gpns().to_vec().into_boxed_slice()),
                 inner: locked_range,
-                _phantom: PhantomData,
             })
         })
     }
@@ -2361,10 +2359,9 @@ pub trait LockedRange<'a> {
 }
 
 pub struct LockedRangeImpl<'a, T: LockedRange<'a>> {
-    mem: Arc<GuestMemoryInner>,
+    mem: &'a GuestMemoryInner,
     gpns: Option<Box<[u64]>>,
     inner: T,
-    _phantom: PhantomData<&'a ()>,
 }
 
 impl<'a, T: LockedRange<'a>> LockedRangeImpl<'a, T> {

@@ -377,9 +377,16 @@ impl VsockWorker {
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
             } else {
                 // Use a temp bounce buffer if the payload couldn't be locked.
-                let buf_len = work.get_payload_length(false) as usize;
-                let mut temp_buf = vec![0u8; buf_len.min(header.len as usize)];
-                work.read_at_offset(VSOCK_HEADER_SIZE as u64, &state.memory, &mut temp_buf)?;
+                let mut temp_buf = vec![0u8; rw_len as usize];
+                let read_bytes =
+                    work.read_at_offset(VSOCK_HEADER_SIZE as u64, &state.memory, &mut temp_buf)?;
+                if read_bytes != temp_buf.len() {
+                    anyhow::bail!(
+                        "expected to read {} bytes of payload, but only read {}",
+                        temp_buf.len(),
+                        read_bytes
+                    );
+                }
                 state.connections.handle_guest_tx(
                     &self.driver,
                     VsockPacket::new(header, &[IoSlice::new(&temp_buf)]),

@@ -85,7 +85,7 @@ impl VsockPortOrId {
 
         path.push(format!("_{}", self.id()));
         if !Path::new(&path).fs_err_try_exists()? {
-            return Err(UdsPathError::NoListener(base_path.to_path_buf()));
+            return Err(UdsPathError::NoListener(path.into()));
         }
 
         Ok(path.into())

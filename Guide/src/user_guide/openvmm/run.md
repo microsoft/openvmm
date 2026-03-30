@@ -179,7 +179,7 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `
     --com3 "term,name=VTL2 OpenHCL" `
-    --vtl2-vsock-path $env:temp\ohcldiag-dev
+    --vmbus-vtl2-vsock-path $env:temp\ohcldiag-dev
 ```
 
 ```admonish warning

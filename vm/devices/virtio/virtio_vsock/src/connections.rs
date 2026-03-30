@@ -480,6 +480,9 @@ impl Connection {
                 .socket
                 .read(&mut temp_buf)
                 .context("failed to read from host socket")?;
+            if let Some(bytes_read) = bytes_read {
+                temp_buf.truncate(bytes_read);
+            }
             (bytes_read, temp_buf)
         };
 
@@ -674,6 +677,13 @@ impl Connection {
     /// yet.
     fn is_recv_buf_empty(&self) -> bool {
         self.recv_buf.as_ref().is_none_or(|buf| buf.is_empty())
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // Ensure any pending read/write polls return.
+        self.socket.shutdown(std::net::Shutdown::Both).ok();
     }
 }
 
