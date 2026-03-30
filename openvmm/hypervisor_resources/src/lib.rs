@@ -7,7 +7,7 @@
 //! backends), per-backend handle types, and the [`HypervisorProbe`] trait +
 //! distributed slice used for auto-detection.
 //!
-//! Backends register probes via the `register_hypervisors!` macro in
+//! Backends register probes via the `register_hypervisor_probes!` macro in
 //! `openvmm_core`. Callers use [`probes()`] to iterate registered backends
 //! and [`probe_by_name()`] to look up a specific one.
 
