@@ -2801,12 +2801,6 @@ async fn new_underhill_vm(
             .then(|| dev::Piix4PciIsaBridgeDeps {
                 attached_to: pci_bus_id_piix4.clone(),
             });
-    let deps_piix4_pci_usb_uhci_stub =
-        chipset
-            .with_piix4_pci_usb_uhci_stub
-            .then(|| dev::Piix4PciUsbUhciStubDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
     let deps_piix4_power_management =
         chipset
             .with_piix4_power_management
@@ -3007,7 +3001,6 @@ async fn new_underhill_vm(
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
         deps_piix4_pci_isa_bridge,
-        deps_piix4_pci_usb_uhci_stub,
         deps_piix4_power_management,
         deps_underhill_vga_proxy,
         deps_winbond_super_io_and_floppy_stub,
