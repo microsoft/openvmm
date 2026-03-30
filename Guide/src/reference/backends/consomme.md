@@ -1,12 +1,8 @@
 # Consomme
 
 Consomme is a user-mode NAT that provides guest VM networking through
-ordinary host sockets. For TCP, UDP, DNS, and DHCP traffic it runs
-entirely unprivileged — no admin rights, no driver installation, no
-system-wide network configuration. ICMP (ping) forwarding on Unix/Linux
-may require additional privileges (for example `CAP_NET_RAW`) or
-configuring the `net.ipv4.ping_group_range` sysctl to permit
-unprivileged ping sockets. Because all traffic flows through standard
+ordinary host sockets — no driver installation and no system-wide
+network configuration. Because all traffic flows through standard
 socket APIs, host networking policies (firewalls, VPN routing, proxy
 settings) apply naturally, just as they would for any other application.
 
