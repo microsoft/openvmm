@@ -853,11 +853,10 @@ impl SimpleFlowNode for Node {
 
         let vmm_test_artifacts_dir = test_content_dir.join("images");
         fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
-        ctx.req(
-            crate::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
-                vmm_test_artifacts_dir,
-            ),
-        );
+        ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
+            custom_cache_dir: Some(vmm_test_artifacts_dir),
+            ..Default::default()
+        });
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
         let test_artifacts_dir =

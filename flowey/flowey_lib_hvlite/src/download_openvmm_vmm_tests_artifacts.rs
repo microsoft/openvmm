@@ -40,6 +40,10 @@ flowey_request! {
     pub enum Request {
         /// Specify a custom cache directory. By default, VHDs are cloned
         /// into a job-local temp directory.
+        ///
+        /// NOTE: Prefer using `Config::custom_cache_dir` instead. This
+        /// request variant exists only for pipeline-level `dep_on` callers
+        /// that cannot use config yet.
         CustomCacheDir(PathBuf),
         /// Download test artifacts into the download folder
         Download(Vec<KnownTestArtifacts>),
@@ -92,7 +96,15 @@ impl FlowNodeWithConfig for Node {
             true
         };
         let custom_disk_policy = config.custom_disk_policy;
-        let custom_cache_dir = config.custom_cache_dir.or(custom_cache_dir_req);
+        let custom_cache_dir = match (config.custom_cache_dir, custom_cache_dir_req) {
+            (Some(a), Some(b)) if a != b => {
+                anyhow::bail!(
+                    "custom_cache_dir set via both config and request to different values"
+                )
+            }
+            (Some(a), _) => Some(a),
+            (_, b) => b,
+        };
 
         let persistent_dir = ctx.persistent_dir();
 
@@ -162,12 +174,10 @@ Detected inconsistencies between expected and cached VMM test images.
 
   If you are trying to use the same disks used in CI, then this is not expected,
   and your cached disks are corrupt / out-of-date and need to be re-downloaded.
-  Please tweak your CLI invocation / pipeline such that
-  `LocalOnlyCustomDiskPolicy` is set to `CustomDiskPolicy::Strict`.
+  Please set the `custom_disk_policy` config to `CustomDiskPolicy::Strict`.
 
   If you manually modified or replaced disks and you would like to keep them,
-  please tweak your CLI invocation / pipeline such that
-  `LocalOnlyCustomDiskPolicy` is set to `CustomDiskPolicy::Loose`.
+  please set the `custom_disk_policy` config to `CustomDiskPolicy::Loose`.
 ================================================================================
 "#
                         );
