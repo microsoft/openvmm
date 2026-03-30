@@ -637,7 +637,27 @@ impl HclNetworkVFManagerWorker {
                     tracing::info!(vtl2_vfid, "Network endpoint disconnected");
                     endpoint.stop().await;
                 }
-                Ok(None) => (),
+                Ok(None) => {
+                    // If the endpoint still has active queues we may not have disconnected on the first attempt; see
+                    // net_backend/lib.rs, specifically how notify_disconnect_complete is used.
+                    tracing::info!(vtl2_vfid, "Network endpoint disconnect processed but incomplete");
+                    match control.disconnect().await {
+                        Ok(Some(mut endpoint)) => {
+                            tracing::info!(vtl2_vfid, "Network endpoint disconnected on second attempt");
+                            endpoint.stop().await;
+                        }
+                        Ok(None) => {
+                            tracing::info!(vtl2_vfid, "Network endpoint did not fully disconnect on second attempt. Abandoning.");
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                vtl2_vfid,
+                                err = err.as_ref() as &dyn std::error::Error,
+                                "Failed to disconnect endpoint"
+                            );
+                        }
+                    }
+                },
                 Err(err) => {
                     tracing::error!(
                         vtl2_vfid,
