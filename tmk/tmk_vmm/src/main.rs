@@ -130,27 +130,25 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
 fn choose_hypervisor() -> anyhow::Result<HypervisorOpt> {
     #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
     {
-        if virt::Hypervisor::is_available(&virt_mshv::LinuxMshv)? {
+        if virt_mshv::is_available()? {
             return Ok(HypervisorOpt::Mshv);
         }
     }
     #[cfg(target_os = "linux")]
     {
-        if virt::Hypervisor::is_available(&virt_kvm::Kvm)? {
+        if virt_kvm::is_available()? {
             return Ok(HypervisorOpt::Kvm);
         }
     }
     #[cfg(windows)]
     {
-        if virt::Hypervisor::is_available(&virt_whp::Whp)? {
+        if virt_whp::is_available()? {
             return Ok(HypervisorOpt::Whp);
         }
     }
     #[cfg(target_os = "macos")]
     {
-        if virt::Hypervisor::is_available(&virt_hvf::HvfHypervisor)? {
-            return Ok(HypervisorOpt::Hvf);
-        }
+        return Ok(HypervisorOpt::Hvf);
     }
 
     anyhow::bail!("no hypervisor available");

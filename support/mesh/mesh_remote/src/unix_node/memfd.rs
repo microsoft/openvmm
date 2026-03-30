@@ -3,6 +3,9 @@
 
 //! Support for building shared memory buffers via memfd.
 
+// UNSAFETY: libc calls to manipulate memfd objects.
+#![expect(unsafe_code)]
+
 use std::fs::File;
 use std::io;
 use std::ops::Deref;

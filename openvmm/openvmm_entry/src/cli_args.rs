@@ -23,7 +23,6 @@ use clap::Parser;
 use clap::ValueEnum;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::Hypervisor;
 use openvmm_defs::config::PcatBootDevice;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::X2ApicConfig;
@@ -557,8 +556,8 @@ flags:
     pub mana: Vec<NicConfigCli>,
 
     /// use a specific hypervisor interface
-    #[clap(long, value_parser = parse_hypervisor)]
-    pub hypervisor: Option<Hypervisor>,
+    #[clap(long)]
+    pub hypervisor: Option<String>,
 
     /// (dev utility) boot linux using a custom (raw) DSDT table.
     ///
@@ -1503,19 +1502,6 @@ impl FromStr for NicConfigCli {
             underhill,
             pcie_port,
         })
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("unknown hypervisor: {0}")]
-pub struct UnknownHypervisor(String);
-
-fn parse_hypervisor(s: &str) -> Result<Hypervisor, UnknownHypervisor> {
-    match s {
-        "kvm" => Ok(Hypervisor::Kvm),
-        "mshv" => Ok(Hypervisor::MsHv),
-        "whp" => Ok(Hypervisor::Whp),
-        _ => Err(UnknownHypervisor(s.to_owned())),
     }
 }
 

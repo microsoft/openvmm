@@ -92,10 +92,6 @@ impl virt::Hypervisor for HvfHypervisor {
     type Partition = HvfPartition;
     type Error = Error;
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-
     fn new_partition<'a>(
         &'a mut self,
         config: virt::ProtoPartitionConfig<'a>,

@@ -249,14 +249,6 @@ impl virt::Hypervisor for Kvm {
             cpuid: cpuid_entries,
         })
     }
-
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
-        }
-    }
 }
 
 /// A prototype partition.
