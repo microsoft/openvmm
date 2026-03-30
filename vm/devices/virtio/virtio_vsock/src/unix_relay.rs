@@ -24,8 +24,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-#[cfg(windows)]
-use tracing::event;
 use unix_socket::UnixStream;
 use vmcore::vm_task::VmTaskDriver;
 

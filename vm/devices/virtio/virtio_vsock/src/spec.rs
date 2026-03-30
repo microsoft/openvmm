@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Virtio block device specification constants and types.
+//! Virtio vsock device specification constants and types.
 //!
 //! Based on OASIS VIRTIO v1.3, Section 5.10.
 //! <https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html>
@@ -60,6 +60,21 @@ pub struct VsockHeader {
     pub flags: u32,
     pub buf_alloc: u32,
     pub fwd_cnt: u32,
+}
+
+impl VsockHeader {
+    /// Gets the operation specified in this header.
+    pub fn operation(&self) -> Operation {
+        Operation(self.op)
+    }
+
+    pub fn socket_type(&self) -> SocketType {
+        SocketType(self.socket_type)
+    }
+
+    pub fn shutdown_flags(&self) -> ShutdownFlags {
+        ShutdownFlags::from_bits(self.flags)
+    }
 }
 
 pub const VSOCK_HEADER_SIZE: usize = size_of::<VsockHeader>();

@@ -37,7 +37,7 @@ use unix_socket::UnixStream;
 use virtio::queue::VirtioQueuePayload;
 use vmcore::vm_task::VmTaskDriver;
 
-const TX_BUF_SIZE: u32 = 65536;
+pub const TX_BUF_SIZE: u32 = 65536;
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_ACTIVE_CONNECTIONS: usize = 1024;
@@ -772,16 +772,21 @@ impl ConnectionManager {
 
         // Validate the packet. Only stream sockets are supported currently.
         let src_cid = packet.header.src_cid;
-        if SocketType(packet.header.socket_type) != SocketType::STREAM || src_cid != self.guest_cid
+        let dst_cid = packet.header.dst_cid;
+        if packet.header.socket_type() != SocketType::STREAM
+            || src_cid != self.guest_cid
+            || dst_cid != VSOCK_CID_HOST
         {
             return Err(SendResetError::new(
                 key,
-                format!("invalid source CID {src_cid}"),
+                format!(
+                    "invalid packet from {src_cid} to {dst_cid}, type {:?}",
+                    packet.header.socket_type()
+                ),
             ));
         }
 
-        let op = Operation(packet.header.op);
-        let pending = match op {
+        let pending = match packet.header.operation() {
             Operation::REQUEST => self.handle_request_packet(driver, &packet.header, key)?,
             Operation::RESPONSE => self.handle_response_packet(key, &packet.header)?,
             Operation::RST => {
@@ -800,7 +805,7 @@ impl ConnectionManager {
                 conn.pending_reply.set_credit_update(true);
                 PendingFutures::simple_rx(RxReady::Connection(conn.instance_id()))
             }
-            _ => {
+            op => {
                 return Err(
                     SendResetError::new(key, format!("unsupported operation {op:?}"))
                         .with_remove(true),
@@ -840,7 +845,7 @@ impl ConnectionManager {
     ) -> Result<PendingFutures, SendResetError> {
         let conn = self.get_connection_mut(&key)?;
         Ok(
-            if let Err(err) = conn.handle_shutdown(ShutdownFlags::from_bits(header.flags)) {
+            if let Err(err) = conn.handle_shutdown(header.shutdown_flags()) {
                 tracelimit::warn_ratelimited!(
                     error = err.as_ref() as &dyn std::error::Error,
                     ?key,
@@ -1093,6 +1098,7 @@ impl ConnectionManager {
 
     /// Allocate a local port for a host-initiated connection.
     fn allocate_local_port(&mut self) -> u32 {
+        // The bounded maximum number of connections means that this will always find a port.
         loop {
             self.last_local_port = (self.last_local_port + 1) & !(1 << 31) | (1 << 30);
 

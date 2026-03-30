@@ -1699,11 +1699,13 @@ async fn host_shutdown(driver: DefaultDriver) {
             let dst_cid = hdr.dst_cid;
             let dst_port = hdr.dst_port;
             let src_port = hdr.src_port;
-            let flags = ShutdownFlags::from(hdr.flags);
             assert_eq!(dst_cid, GUEST_CID);
             assert_eq!(dst_port, 1024);
             assert_eq!(src_port, 5030);
-            assert!(flags.send(), "SHUTDOWN should have the send flag set");
+            assert!(
+                hdr.shutdown_flags().send(),
+                "SHUTDOWN should have the send flag set"
+            );
             break;
         }
     }

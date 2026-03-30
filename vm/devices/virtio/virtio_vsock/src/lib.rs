@@ -17,6 +17,8 @@ mod integration_tests;
 
 use crate::connections::ConnectionInstanceId;
 use crate::connections::ConnectionKey;
+use crate::connections::TX_BUF_SIZE;
+use crate::spec::Operation;
 use crate::spec::VSOCK_HEADER_SIZE;
 use crate::spec::VsockFeaturesBank0;
 use crate::spec::VsockPacket;
@@ -337,17 +339,39 @@ impl VsockWorker {
         let mut header = VsockHeader::new_zeroed();
         work.read(&state.memory, header.as_mut_bytes())?;
 
+        let rw_len = if header.operation() == Operation::RW {
+            // Unaligned field read.
+            let len = header.len;
+
+            // The guest should never exceed our available credit, which cannot be larger than the
+            // max buffer size. This check prevents a guest from consuming too much host memory if
+            // we need to bounce the data through a temporary buffer.
+            if len > TX_BUF_SIZE {
+                anyhow::bail!("guest attempted to send packet with data length {len}");
+            }
+
+            len
+        } else {
+            // Ignore the length field for other packets (it should always be zero).
+            0
+        };
+
         tracing::trace!(?header, "got tx packet from guest");
         let pending = {
-            // Attempt to lock the payload buffers so we can read from them directly.
-            if let Some(locked) = lock_payload_data(
+            if rw_len == 0 {
+                // No payload, so handle the packet immediately.
+                state
+                    .connections
+                    .handle_guest_tx(&self.driver, VsockPacket::new(header, &[]))
+            } else if let Some(locked) = lock_payload_data(
                 &state.memory,
                 &work.payload,
-                header.len as u64,
+                rw_len as u64,
                 true,
                 false,
                 LockedIoSlice::new(),
             )? {
+                // We can read the payload directly from guest memory.
                 state
                     .connections
                     .handle_guest_tx(&self.driver, VsockPacket::new(header, &locked.get().0))
@@ -544,7 +568,8 @@ impl LockedIoSliceMut<'_> {
 impl<'a> LockedRange<'a> for LockedIoSliceMut<'a> {
     fn push_sub_range(&mut self, sub_range: &'a [std::sync::atomic::AtomicU8]) {
         // SAFETY: Treating AtomicU8 as mut u8 for vectored IO. The lifetime annotations ensure the
-        // sub_range lives long enough for the IoSliceMut.
+        // sub_range lives long enough for the IoSliceMut. Treating the memory as mutable should be
+        // safe because AtomicU8 also provides interior mutability.
         let slice = unsafe {
             std::slice::from_raw_parts_mut(sub_range.as_ptr() as *mut u8, sub_range.len())
         };
@@ -575,6 +600,7 @@ fn lock_payload_data<'a, T: LockedRange<'a>>(
             PagedRange::new(*offset, *len, gpns).expect("offset and len should be valid");
         Some(mem.lock_range(paged_range, locked_range)?)
     } else {
+        tracing::trace!("payload data is not representable in a single PagedRange");
         None
     };
 
