@@ -12,46 +12,47 @@
 
 use flowey::node::prelude::*;
 
-/// The default .NET SDK channel to install when no version is specified.
-const DEFAULT_DOTNET_CHANNEL: &str = "8.0";
+flowey_config! {
+    /// Config for the install_dotnet_cli node.
+    pub struct Config {
+        /// Specify the .NET SDK *channel* to install (e.g. "8.0", "9.0").
+        /// This is passed to `dotnet-install` as `--channel`, not as an exact
+        /// SDK version.
+        pub version: Option<String>,
+        /// Automatically install the .NET SDK if not found on PATH.
+        ///
+        /// Must be set to true/false when running locally.
+        pub auto_install: Option<bool>,
+    }
+}
 
 flowey_request! {
     pub enum Request {
         /// Get the path to the `dotnet` binary.
         DotnetBin(WriteVar<PathBuf>),
-        /// Specify the .NET SDK *channel* to install (e.g. "8.0", "9.0").
-        /// This is passed to `dotnet-install` as `--channel`, not as an exact
-        /// SDK version.
-        /// Defaults to "8.0" if not specified.
-        Version(String),
-        /// Automatically install the .NET SDK if not found on PATH.
-        ///
-        /// Must be set to true/false when running locally.
-        AutoInstall(bool),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::ado_task_use_dotnet::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut broadcast_dotnet_bin = Vec::new();
-        let mut version = None;
-        let mut auto_install = None;
 
         for req in requests {
             match req {
                 Request::DotnetBin(outvar) => broadcast_dotnet_bin.push(outvar),
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
-                Request::AutoInstall(v) => {
-                    same_across_all_reqs("AutoInstall", &mut auto_install, v)?
-                }
             }
         }
 
@@ -59,7 +60,10 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let version = version.unwrap_or_else(|| DEFAULT_DOTNET_CHANNEL.to_string());
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
+        let auto_install = config.auto_install;
 
         // -- end of req processing -- //
 

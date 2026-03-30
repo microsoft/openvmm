@@ -863,7 +863,9 @@ impl SimpleFlowNode for Node {
         let test_artifacts_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        ctx.req(crate::install_vmm_tests_deps::Request::Select(deps));
+        ctx.config(crate::install_vmm_tests_deps::Config {
+            selections: Some(deps),
+        });
         let dep_install_cmds = ctx.reqv(crate::install_vmm_tests_deps::Request::GetCommands);
 
         // use the copied archive file

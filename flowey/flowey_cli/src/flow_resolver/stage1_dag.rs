@@ -57,6 +57,7 @@ pub(crate) fn stage1_dag(
     (
         petgraph::Graph<(StepId, Option<OutputGraphEntry>), DepKind>,
         BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+        BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         Option<FoundUnreachableNodes>,
     ),
     anyhow::Error,
@@ -72,6 +73,8 @@ pub(crate) fn stage1_dag(
     // of a static "pipeline database" file that is referenced at runtime to
     // correctly re-run rust-based steps encoded within flowey.
     let mut request_db: BTreeMap<NodeHandle, Vec<Box<[u8]>>> = BTreeMap::new();
+    // the config_db encodes the config partials that each node received.
+    let mut config_db: BTreeMap<NodeHandle, Vec<Box<[u8]>>> = BTreeMap::new();
 
     let mut step_to_output_graph = BTreeMap::<StepId, petgraph::prelude::NodeIndex>::new();
     let mut get_output_node_idx =
@@ -184,6 +187,9 @@ pub(crate) fn stage1_dag(
     let mut outstanding_reqs: BTreeMap<NodeHandle, (/*activated*/ bool, Vec<Box<[u8]>>)> =
         seed_nodes;
 
+    // maintain a list of pending config for nodes further down the order.
+    let mut outstanding_config: BTreeMap<NodeHandle, Vec<Box<[u8]>>> = BTreeMap::new();
+
     // maintain an outstanding queue of runtime variable connections that need
     // to be fulfilled
     #[derive(Default)]
@@ -204,6 +210,9 @@ pub(crate) fn stage1_dag(
             Some((false, _)) | None => continue,
         };
 
+        // Collect any config that was sent to this node
+        let config_bytes = outstanding_config.remove(&node_handle).unwrap_or_default();
+
         // HACK: flowey still has some issues with inconsistent traversal order
         // on windows / linux, so to avoid having frontends emit slightly
         // different outputs between platforms, apply this "band-aid" sort to
@@ -219,6 +228,10 @@ pub(crate) fn stage1_dag(
             let existing = request_db.insert(node_handle, requests.clone());
             assert!(existing.is_none());
         };
+
+        if !config_bytes.is_empty() {
+            config_db.insert(node_handle, config_bytes.clone());
+        }
 
         let (imports, events) = {
             let mut node = node_handle.new_erased_node();
@@ -240,7 +253,7 @@ pub(crate) fn stage1_dag(
             let mut ctx = flowey_core::node::new_node_ctx(&mut ctx_backend);
 
             node.imports(&mut dep_registration);
-            if let Err(e) = node.emit(requests.clone(), &mut ctx) {
+            if let Err(e) = node.emit(config_bytes.clone(), requests.clone(), &mut ctx) {
                 // don't want to immediately bail, since some errors could be a
                 // by-product of other errors (e.g: forgetting to include a
                 // imports can result in an incorrect visit order,
@@ -353,6 +366,29 @@ pub(crate) fn stage1_dag(
                         dep_node.modpath(),
                         node_handle.modpath()
                     ))?);
+                }
+                EmitEvent::Config { dep_node, config } => {
+                    // Config also requires the dep to be in the imports list
+                    if !imports.contains(&dep_node) {
+                        anyhow::bail!(
+                            "{} sent config to {} without including it in `imports`",
+                            node_handle.modpath(),
+                            dep_node.modpath()
+                        );
+                    }
+
+                    // Activate the dep node (config alone should activate it)
+                    let (active, _reqs) = outstanding_reqs.entry(dep_node).or_default();
+                    *active = true;
+
+                    outstanding_config
+                        .entry(dep_node)
+                        .or_default()
+                        .push(config.context(format!(
+                            "failed to serialize config to {} (via {})",
+                            dep_node.modpath(),
+                            node_handle.modpath()
+                        ))?);
                 }
             }
         }
@@ -557,7 +593,7 @@ pub(crate) fn stage1_dag(
         }
     }
 
-    Ok((output_graph, request_db, found_unreachable_nodes))
+    Ok((output_graph, request_db, config_db, found_unreachable_nodes))
 }
 
 #[derive(Clone)] // for viz
@@ -632,6 +668,10 @@ enum EmitEvent {
         dep_node: NodeHandle,
         req: anyhow::Result<Box<[u8]>>,
     },
+    Config {
+        dep_node: NodeHandle,
+        config: anyhow::Result<Box<[u8]>>,
+    },
     ClaimReadVar {
         var: String,
     },
@@ -693,6 +733,13 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
         self.events.push(EmitEvent::Request {
             dep_node: (self.patch_node)(node_handle),
             req,
+        });
+    }
+
+    fn on_config(&mut self, node_handle: NodeHandle, config: anyhow::Result<Box<[u8]>>) {
+        self.events.push(EmitEvent::Config {
+            dep_node: (self.patch_node)(node_handle),
+            config,
         });
     }
 

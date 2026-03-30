@@ -172,7 +172,7 @@ fn direct_run_do_work(
         let nodes = {
             let mut resolved_local_steps = Vec::new();
 
-            let (mut output_graph, _, err_unreachable_nodes) =
+            let (mut output_graph, _, _, err_unreachable_nodes) =
                 crate::flow_resolver::stage1_dag::stage1_dag(
                     FlowBackend::Local,
                     runtime_platform,
