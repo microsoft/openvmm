@@ -86,7 +86,12 @@ impl<T: DeviceBacking> ManaDevice<T> {
             let gdma_memory = memory
                 .iter()
                 .find(|m| m.pfns()[0] == mana_state.gdma.mem.base_pfn)
-                .expect("gdma restored memory not found")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "gdma restored memory not found for base_pfn {}",
+                        mana_state.gdma.mem.base_pfn
+                    )
+                })?
                 .clone();
 
             GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory)
@@ -201,7 +206,12 @@ impl<T: DeviceBacking> ManaDevice<T> {
             let gdma_memory = memory
                 .iter()
                 .find(|m| m.pfns()[0] == mana_state.gdma.mem.base_pfn)
-                .expect("gdma restored memory not found")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "gdma restored memory not found for base_pfn {}",
+                        mana_state.gdma.mem.base_pfn
+                    )
+                })?
                 .clone();
 
             GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory)

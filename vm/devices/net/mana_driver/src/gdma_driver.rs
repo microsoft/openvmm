@@ -928,7 +928,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 .dma_buffer
                 .read_obj::<GdmaRespHdr>(RESPONSE_PAGE * PAGE_SIZE);
 
-            if resp_hdr.response.msg_size < size_of::<Resp>() as u32 {
+            if resp_hdr.response.msg_size < (size_of::<GdmaRespHdr>() + size_of::<Resp>()) as u32 {
                 anyhow::bail!(
                     "response too small, request={:#x}, activity_id={:#x}",
                     req_msg_type,
@@ -1093,7 +1093,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 .dma_buffer
                 .read_obj::<GdmaRespHdr>(RESPONSE_PAGE * PAGE_SIZE);
 
-            if resp_hdr.response.msg_size < size_of::<Resp>() as u32 {
+            if resp_hdr.response.msg_size < (size_of::<GdmaRespHdr>() + size_of::<Resp>()) as u32 {
                 anyhow::bail!(
                     "response too small, request={:#x}, activity_id={:#x}",
                     req_msg_type,
