@@ -1428,8 +1428,8 @@ async fn vm_config_from_command_line(
         }
     };
 
-    let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
-    let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
+    let vtl0_vsock_listener = vsock_listener(opt.vmbus_vsock_path.as_deref())?;
+    let vtl2_vsock_listener = vsock_listener(opt.vmbus_vtl2_vsock_path.as_deref())?;
 
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
@@ -1639,16 +1639,18 @@ async fn vm_config_from_command_line(
         }
     }
 
-    let listener = vsock_listener(Some("/tmp/vsock"))?.unwrap();
-    add_virtio_device(
-        VirtioBusCli::Auto,
-        virtio_resources::vsock::VirtioVsockHandle {
-            guest_cid: 0x123,
-            base_path: "/tmp/vsock".into(),
-            listener,
-        }
-        .into_resource(),
-    );
+    if let Some(vsock_path) = &opt.virtio_vsock_path {
+        let listener = vsock_listener(Some(vsock_path))?.unwrap();
+        add_virtio_device(
+            VirtioBusCli::Auto,
+            virtio_resources::vsock::VirtioVsockHandle {
+                guest_cid: 0x3,
+                base_path: vsock_path.clone(),
+                listener,
+            }
+            .into_resource(),
+        );
+    }
 
     let mut cfg = Config {
         chipset,
@@ -1704,7 +1706,7 @@ async fn vm_config_from_command_line(
         virtio_devices,
         vmbus: with_hv.then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
-            vsock_path: opt.vsock_path.clone(),
+            vsock_path: opt.vmbus_vsock_path.clone(),
             vtl2_redirect: opt.vmbus_redirect,
             vmbus_max_version: opt.vmbus_max_version,
             #[cfg(windows)]
@@ -1712,7 +1714,7 @@ async fn vm_config_from_command_line(
         }),
         vtl2_vmbus: (with_hv && opt.vtl2).then_some(VmbusConfig {
             vsock_listener: vtl2_vsock_listener,
-            vsock_path: opt.vtl2_vsock_path.clone(),
+            vsock_path: opt.vmbus_vtl2_vsock_path.clone(),
             ..Default::default()
         }),
         vmbus_devices,
