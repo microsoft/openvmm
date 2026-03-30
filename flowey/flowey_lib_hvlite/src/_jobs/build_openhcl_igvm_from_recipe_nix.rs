@@ -56,6 +56,7 @@ impl SimpleFlowNode for Node {
                 artifact_dir_openhcl_igvm,
                 artifact_dir_openhcl_igvm_extras,
                 artifact_openhcl_verify_size_baseline,
+                kernel_checks_for_baseline: Vec::new(),
                 done,
             },
         );
