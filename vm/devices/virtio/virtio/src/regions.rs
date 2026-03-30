@@ -7,8 +7,7 @@ use std::borrow::Borrow;
 
 /// A data-carrying region extracted from a descriptor chain.
 ///
-/// Each entry represents one contiguous GPA range that carries IO data,
-/// after header bytes have been skipped and the status byte excluded.
+/// Each entry represents one contiguous GPA range.
 pub struct DataRegion {
     pub addr: u64,
     pub len: u64,

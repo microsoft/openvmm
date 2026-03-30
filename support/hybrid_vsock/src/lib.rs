@@ -16,7 +16,7 @@ use std::str::FromStr;
 pub const HYBRID_CONNECT_REQUEST_LEN: usize =
     "CONNECT 00000000-facb-11e6-bd58-64006a7986d3\n".len();
 
-// This GUID is an embedding of the AF_VSOCK port into an AF_HYPERV service ID.
+/// This GUID is an embedding of the AF_VSOCK port into an AF_HYPERV service ID.
 const VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
 
 /// Represents the local or remote port number for a vsock connection, or the service ID or instance

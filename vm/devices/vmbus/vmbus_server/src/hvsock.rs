@@ -218,7 +218,8 @@ impl ListenerWorker {
                 // Keep the offer alive until the relay completes.
                 let _offer = offer;
 
-                // Notify the client that connection was successful.
+                // Notify the client that connection was successful, using a format that matches the
+                // request.
                 let response = match request {
                     VsockPortOrId::Port(_) => VsockPortOrId::Port(instance_id.data1),
                     VsockPortOrId::Id(_) => VsockPortOrId::Id(instance_id),

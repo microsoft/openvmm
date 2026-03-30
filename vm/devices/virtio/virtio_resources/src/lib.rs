@@ -158,11 +158,7 @@ pub mod vsock {
 
     #[derive(MeshPayload)]
     pub struct VirtioVsockHandle {
-        /// The guest context ID (CID).
         pub guest_cid: u64,
-        /// Base path for Unix domain socket relay. The relay will listen on this path, and allow
-        /// host application to listen using this path appended with either the port number or a
-        /// corresponding service ID.
         pub base_path: String,
         pub listener: UnixListener,
     }

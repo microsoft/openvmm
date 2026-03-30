@@ -1644,6 +1644,8 @@ async fn vm_config_from_command_line(
         add_virtio_device(
             VirtioBusCli::Auto,
             virtio_resources::vsock::VirtioVsockHandle {
+                // The guest CID does not matter since the UDS relay does not use it. It just needs
+                // to be some non-reserved value for the guest to use.
                 guest_cid: 0x3,
                 base_path: vsock_path.clone(),
                 listener,
