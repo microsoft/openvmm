@@ -296,6 +296,17 @@ pub struct PendingMeshConnection {
 impl UnixMeshListener {
     /// Bind to a Unix socket path.
     ///
+    /// # Security
+    ///
+    /// The socket inherits the process's umask permissions. Any local user
+    /// who can connect to the socket will be able to join the mesh. The
+    /// caller must ensure `path` is inside a directory that is only
+    /// accessible to the intended user (e.g. a `0700` directory such as
+    /// `$XDG_RUNTIME_DIR`). Directory-level permissions are the only
+    /// reliable protection — `fchmod` after `bind` leaves a race window,
+    /// and `SO_PEERCRED` checks can be bypassed via symlink attacks in a
+    /// shared directory.
+    ///
     /// The caller is responsible for removing any existing socket file at
     /// `path` before calling this.
     fn bind(
@@ -355,6 +366,12 @@ impl UnixNode {
     ///
     /// Creates a [`UnixMeshListener`] bound to `path` that will accept mesh
     /// connections on behalf of this node.
+    ///
+    /// # Security
+    ///
+    /// `path` must be inside a directory accessible only to the intended
+    /// user (e.g. `$XDG_RUNTIME_DIR`, mode `0700`). See `UnixMeshListener::bind`
+    /// for details.
     ///
     /// The caller is responsible for removing any existing socket file at
     /// `path` before calling this.
