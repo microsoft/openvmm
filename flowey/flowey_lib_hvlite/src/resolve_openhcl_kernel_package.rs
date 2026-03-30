@@ -32,6 +32,7 @@ flowey_config! {
 }
 
 flowey_request! {
+    #[allow(clippy::enum_variant_names)]
     pub enum Request {
         /// Get path to the kernel binary
         GetKernel {
