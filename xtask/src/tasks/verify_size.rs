@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::Xtask;
-use anyhow::Context;
 use object::read::Object;
 use object::read::ObjectSection;
 use std::collections::HashSet;
@@ -79,19 +78,28 @@ impl Xtask for VerifySize {
         let original = fs_err::read(&self.original)?;
         let new = fs_err::read(&self.new)?;
 
-        let original_elf = object::File::parse(&*original).with_context(|| {
-            format!(
-                r#"Unable to parse target file "{}"."#,
-                &self.original.display()
-            )
-        })?;
-
-        let new_elf = object::File::parse(&*new).with_context(|| {
-            format!(r#"Unable to parse target file "{}"."#, &self.new.display(),)
-        })?;
+        let original_elf = object::File::parse(&*original);
+        let new_elf = object::File::parse(&*new);
 
         println!("Verifying size for {}:", (&self.new.display()));
-        let (total_diff, net_diff) = verify_sections_size(&new_elf, &original_elf)?;
+
+        let (total_diff, net_diff) = match (original_elf, new_elf) {
+            (Ok(orig), Ok(new_parsed)) => verify_sections_size(&new_parsed, &orig)?,
+            _ => {
+                // Fall back to raw file size comparison for non-object files
+                // (e.g. aarch64 raw kernel Image).
+                println!("(file is not a parseable object file, comparing raw file sizes)");
+                let orig_size = original.len() as u64 / 1024;
+                let new_size = new.len() as u64 / 1024;
+                let diff = (new_size as i64) - (orig_size as i64);
+                println!(
+                    "{:20} {:>15} {:>15} {:>16}",
+                    "raw file", orig_size, new_size, diff
+                );
+                println!("Total Size: {new_size} KiB.");
+                (diff.unsigned_abs(), diff)
+            }
+        };
 
         println!("Net difference: {net_diff} KiB.");
         println!("Total difference: {total_diff} KiB.");
