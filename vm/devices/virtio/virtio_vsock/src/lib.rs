@@ -298,20 +298,22 @@ struct VsockWorker {
 
 impl VsockWorker {
     /// Handle a work item from the tx virtqueue (guest -> host).
-    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
-        if let Err(err) = self.handle_guest_tx_inner(state, work) {
+    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, mut work: VirtioQueueCallbackWork) {
+        if let Err(err) = self.handle_guest_tx_inner(state, &work) {
             tracelimit::error_ratelimited!(
                 error = err.as_ref() as &dyn std::error::Error,
                 "error handling vsock tx work"
             );
         }
+
+        work.complete(0);
     }
 
     /// Handle a work item from the TX virtqueue (guest -> host).
     fn handle_guest_tx_inner(
         &mut self,
         state: &mut VsockWorkerState,
-        work: VirtioQueueCallbackWork,
+        work: &VirtioQueueCallbackWork,
     ) -> anyhow::Result<()> {
         let mut header = VsockHeader::new_zeroed();
         work.read(&state.memory, header.as_mut_bytes())?;
