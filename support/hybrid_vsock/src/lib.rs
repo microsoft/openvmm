@@ -92,7 +92,7 @@ impl VsockPortOrId {
     }
 
     /// Parses a connection request from a buffer containing a UTF-8 string of the format "CONNECT
-    /// <port or service ID>\n".
+    /// \<port or service ID>\n".
     pub fn parse_connect_request(buf: &[u8]) -> Result<Self, ParseError> {
         let rest = buf
             .strip_prefix(b"CONNECT ")
@@ -109,7 +109,7 @@ impl VsockPortOrId {
     }
 
     /// Gets the response string that should be sent back to the guest on a successful connection,
-    /// of the format "OK <port or service ID>\n".
+    /// of the format "OK \<port or service ID>\n".
     ///
     /// In this case, any instance using a GUID will be formatted using the full service ID, even if
     /// it matches the hvsocket vsock template. The format returned should always match the format
@@ -142,7 +142,7 @@ impl VsockPortOrId {
     }
 }
 
-/// Error returned by [`ConnectionRequest::host_uds_path`].
+/// Error returned by [`VsockPortOrId::host_uds_path`].
 #[derive(Debug, thiserror::Error)]
 pub enum UdsPathError {
     /// No hybrid vsock listener was found at the base path.
@@ -153,7 +153,7 @@ pub enum UdsPathError {
     Io(#[from] std::io::Error),
 }
 
-/// Error returned by [`ConnectionRequest::parse_connect_request`].
+/// Error returned by [`VsockPortOrId::parse_connect_request`].
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     /// The connect request did not contain a newline within the maximum expected length.
