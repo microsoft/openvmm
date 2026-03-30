@@ -40,6 +40,7 @@ use vmcore::vm_task::VmTaskDriver;
 const TX_BUF_SIZE: u32 = 65536;
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_ACTIVE_CONNECTIONS: usize = 1024;
 
 /// A key that uniquely identifies a vsock connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -717,6 +718,10 @@ impl ConnectionManager {
         driver: &VmTaskDriver,
         stream: UnixStream,
     ) -> anyhow::Result<(PendingFutures, PendingFutures)> {
+        if self.conns.len() + self.pending_conns.len() >= MAX_ACTIVE_CONNECTIONS {
+            anyhow::bail!("maximum number of active connections reached");
+        }
+
         let socket = RelaySocket::new(driver, stream)
             .context("Failed to create relay socket for incoming host connection")?;
 
@@ -878,6 +883,13 @@ impl ConnectionManager {
         key: ConnectionKey,
     ) -> Result<PendingFutures, SendResetError> {
         tracing::debug!(?header, "guest connect request");
+        if self.conns.len() + self.pending_conns.len() >= MAX_ACTIVE_CONNECTIONS {
+            return Err(SendResetError::new(
+                key,
+                "maximum number of active connections reached",
+            ));
+        }
+
         let socket = self.relay.connect(driver, key.local_port).map_err(|err| {
             SendResetError::new(
                 key,
