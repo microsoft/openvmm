@@ -19,9 +19,10 @@
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
-use chipset_resources::pit::PitDeviceHandle;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
+use chipset_resources::pit::PitDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -31,6 +32,7 @@ use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
+use vm_resource::PlatformResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
@@ -90,6 +92,8 @@ pub struct VmChipsetResult {
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
 }
+
+const WDAT_PORT: u16 = 0x30;
 
 /// Derived capabilities for the configured chipset devices.
 #[derive(Debug, Copy, Clone)]
@@ -326,6 +330,9 @@ impl VmManifestBuilder {
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
                 }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
+                }
             }
             BaseChipsetType::HypervGen2Uefi | BaseChipsetType::HyperVGen2LinuxDirect => {
                 let is_x86 = matches!(self.arch, MachineArch::X86_64);
@@ -363,6 +370,9 @@ impl VmManifestBuilder {
                     .attach_missing_arch_ports(self.arch, true);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
+                }
+                if self.guest_watchdog {
+                    result.attach_guest_watchdog();
                 }
             }
             BaseChipsetType::HclHost => {
@@ -455,6 +465,18 @@ impl VmChipsetResult {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "piix4-usb-uhci-stub".to_string(),
             resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
+        });
+        self
+    }
+
+    fn attach_guest_watchdog(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "hyperv-guest-watchdog".to_owned(),
+            resource: HyperVGuestWatchdogDeviceHandle {
+                port_base: WDAT_PORT,
+                platform: PlatformResource.into_resource(),
+            }
+            .into_resource(),
         });
         self
     }

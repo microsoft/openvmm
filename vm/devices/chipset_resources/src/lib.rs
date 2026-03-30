@@ -124,3 +124,26 @@ pub mod piix4_uhci {
         const ID: &'static str = "piix4PciUsbUhciStub";
     }
 }
+
+pub mod hyperv_guest_watchdog {
+    //! Resource definitions for the Hyper-V guest watchdog device.
+
+    use mesh::MeshPayload;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+    use watchdog_core::resources::WatchdogPlatformHandleKind;
+
+    /// A handle to the Hyper-V guest watchdog device.
+    #[derive(MeshPayload)]
+    pub struct HyperVGuestWatchdogDeviceHandle {
+        /// Base port IO address for the watchdog register window.
+        pub port_base: u16,
+        /// One-shot watchdog platform capability.
+        pub platform: Resource<WatchdogPlatformHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for HyperVGuestWatchdogDeviceHandle {
+        const ID: &'static str = "hyperv_guest_watchdog";
+    }
+}

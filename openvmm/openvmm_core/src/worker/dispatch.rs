@@ -151,11 +151,11 @@ use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
+use watchdog_core::resources::ResolvedWatchdogPlatform;
+use watchdog_core::resources::StaticWatchdogPlatformResolver;
 
 const PM_BASE: u16 = 0x400;
 const SYSTEM_IRQ_ACPI: u32 = 9;
-
-const WDAT_PORT: u16 = 0x30;
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
@@ -1432,34 +1432,33 @@ impl InitializedVm {
         }
 
         let deps_hyperv_guest_watchdog = if cfg.chipset.with_hyperv_guest_watchdog {
-            Some(dev::HyperVGuestWatchdogDeps {
-                port_base: WDAT_PORT,
-                watchdog_platform: {
-                    use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+            use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
-                    let store = match vmgs_client {
-                        Some(vmgs) => vmgs
-                            .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
-                            .context("failed to instantiate guest watchdog store")?,
-                        None => EphemeralNonVolatileStore::new_boxed(),
-                    };
+            let store = match vmgs_client {
+                Some(vmgs) => vmgs
+                    .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
+                    .context("failed to instantiate guest watchdog store")?,
+                None => EphemeralNonVolatileStore::new_boxed(),
+            };
 
-                    // Create the base watchdog platform
-                    let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
+            // Create the base watchdog platform
+            let mut base_watchdog_platform = BaseWatchdogPlatform::new(store).await?;
 
-                    // Create callback to reset on watchdog timeout
-                    let watchdog_callback = WatchdogTimeoutReset {
-                        halt_vps: halt_vps.clone(),
-                        watchdog_send: None, // This is not the UEFI watchdog, so no need to send
-                                             // watchdog notifications
-                    };
+            // Create callback to reset on watchdog timeout
+            let watchdog_callback = WatchdogTimeoutReset {
+                halt_vps: halt_vps.clone(),
+                watchdog_send: None, // This is not the UEFI watchdog, so no need to send
+                                     // watchdog notifications
+            };
 
-                    // Add callbacks
-                    base_watchdog_platform.add_callback(Box::new(watchdog_callback));
+            // Add callbacks
+            base_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-                    Box::new(base_watchdog_platform)
-                },
-            })
+            resolver.add_resolver(StaticWatchdogPlatformResolver(
+                ResolvedWatchdogPlatform::new(Box::new(base_watchdog_platform)),
+            ));
+
+            Some(dev::HyperVGuestWatchdogDeps {})
         } else {
             None
         };

@@ -666,6 +666,7 @@ dependencies = [
  "inspect",
  "mesh",
  "vm_resource",
+ "watchdog_core",
 ]
 
 [[package]]
@@ -2880,11 +2881,16 @@ dependencies = [
 name = "guest_watchdog"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "chipset_device",
+ "chipset_device_resources",
+ "chipset_resources",
  "inspect",
  "mesh",
  "open_enum",
+ "thiserror 2.0.16",
  "tracelimit",
+ "vm_resource",
  "vmcore",
  "watchdog_core",
 ]
@@ -5400,6 +5406,7 @@ dependencies = [
  "chipset_legacy",
  "debug_worker",
  "disk_striped",
+ "guest_watchdog",
  "hyperv_ic",
  "mesh_worker",
  "missing_dev",
@@ -5470,6 +5477,7 @@ dependencies = [
  "guest_crash_device",
  "guest_emulation_device",
  "guest_emulation_log",
+ "guest_watchdog",
  "hyperv_ic",
  "mesh_worker",
  "missing_dev",
@@ -9875,7 +9883,6 @@ dependencies = [
  "framebuffer",
  "futures",
  "generation_id",
- "guest_watchdog",
  "guestmem",
  "ide",
  "inspect",
@@ -10160,8 +10167,10 @@ dependencies = [
  "inspect",
  "mesh",
  "pal_async",
+ "parking_lot",
  "thiserror 2.0.16",
  "tracing",
+ "vm_resource",
  "vmcore",
  "watchdog_vmgs_format",
 ]

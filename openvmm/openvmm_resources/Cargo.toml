@@ -53,6 +53,7 @@ missing_dev.workspace = true
 serial_16550.workspace = true
 serial_debugcon.workspace = true
 serial_pl011.workspace = true
+guest_watchdog.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
