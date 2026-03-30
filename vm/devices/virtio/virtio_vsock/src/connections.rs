@@ -24,7 +24,6 @@ use bitfield_struct::bitfield;
 use guestmem::GuestMemory;
 use hybrid_vsock::HYBRID_CONNECT_REQUEST_LEN;
 use hybrid_vsock::VsockPortOrId;
-use pal_async::interest::InterestSlot;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
 use std::collections::HashMap;
@@ -492,8 +491,6 @@ impl Connection {
         let packet = if bytes_read == 0 {
             tracing::debug!("host socket shutdown");
             self.local_send_shutdown = true;
-            // Clear the slot so we can detect HUP if the socket wasn't closed yet.
-            self.socket.clear_ready(InterestSlot::Read);
             new_shutdown_packet(
                 self.key,
                 guest_cid,

@@ -17,6 +17,7 @@ mod integration_tests;
 use crate::connections::ConnectionInstanceId;
 use crate::connections::ConnectionKey;
 use crate::spec::VSOCK_HEADER_SIZE;
+use crate::spec::VsockFeaturesBank0;
 use crate::spec::VsockPacket;
 use crate::spec::VsockPacketBuf;
 use anyhow::Context;
@@ -109,9 +110,15 @@ impl VirtioVsockDevice {
 
 impl VirtioDevice for VirtioVsockDevice {
     fn traits(&self) -> DeviceTraits {
+        // Spec 5.10.3.2: The device SHOULD offer the VIRTIO_VSOCK_F_NO_IMPLIED_STREAM feature.
+        let features_bank0 = VsockFeaturesBank0::new()
+            .with_stream(true)
+            .with_no_implied_stream(true);
         DeviceTraits {
             device_id: VirtioDeviceType::VSOCK,
-            device_features: VirtioDeviceFeatures::new(),
+            device_features: VirtioDeviceFeatures::new().with_bank0(
+                virtio::spec::VirtioDeviceFeaturesBank0::from_bits(features_bank0.into_bits()),
+            ),
             max_queues: QUEUE_COUNT.try_into().unwrap(),
             device_register_length: size_of::<VsockConfig>() as u32,
             ..Default::default()
@@ -150,6 +157,17 @@ impl VirtioDevice for VirtioVsockDevice {
             .is_some()
         {
             anyhow::bail!("virtio queue already started");
+        }
+
+        // Spec 5.10.3.2: If no feature bit has been negotiated, the device SHOULD act as if
+        // VIRTIO_VSOCK_F_STREAM has been negotiated.
+        //
+        // If VIRTIO_VSOCK_F_SEQPACKET has been negotiated, but not
+        // VIRTIO_VSOCK_F_NO_IMPLIED_STREAM, the device MAY act as if VIRTIO_VSOCK_F_STREAM has also
+        // been negotiated.
+        let negotiated_features = VsockFeaturesBank0::from_bits(features.bank(0));
+        if negotiated_features.no_implied_stream() && !negotiated_features.stream() {
+            anyhow::bail!("guest does not support stream sockets");
         }
 
         let queue_event = PolledWait::new(&self.driver, resources.event)

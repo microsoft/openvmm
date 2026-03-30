@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Virtio vsock protocol definitions from the virtio specification, section 5.10.
+//! Virtio block device specification constants and types.
+//!
+//! Based on OASIS VIRTIO v1.3, Section 5.10.
+//! <https://docs.oasis-open.org/virtio/virtio/v1.3/csd01/virtio-v1.3-csd01.html>
+
+#![expect(
+    dead_code,
+    reason = "This module defines constants and types for the virtio-vsock spec, but not all of them are used in our implementation."
+)]
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
@@ -11,15 +19,16 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-// Feature bits defined by the spec but not all actively used.
-#[allow(dead_code)]
-/// Feature bit: stream socket type support (always set, mandatory).
-pub const VIRTIO_VSOCK_F_STREAM: u32 = 0; // Implicit, no feature bit needed
-#[allow(dead_code)]
-/// Feature bit: SOCK_SEQPACKET type support (optional).
-pub const VIRTIO_VSOCK_F_SEQPACKET: u32 = 1;
+#[bitfield(u32)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct VsockFeaturesBank0 {
+    pub stream: bool,
+    pub seqpacket: bool,
+    pub no_implied_stream: bool,
+    #[bits(29)]
+    _reserved: u32,
+}
 
-#[allow(dead_code)]
 /// Well-known CID values.
 pub const VSOCK_CID_HYPERVISOR: u64 = 0;
 pub const VSOCK_CID_HOST: u64 = 2;
@@ -115,11 +124,14 @@ pub struct ShutdownFlags {
     _reserved: u32,
 }
 
-#[allow(dead_code)]
-/// Event IDs for the event virtqueue.
-pub const VIRTIO_VSOCK_EVENT_TRANSPORT_RESET: u32 = 0;
+open_enum! {
+    /// Event IDs for the event virtqueue.
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    pub enum Event: u16 {
+        TRANSPORT_RESET = 0,
+    }
+}
 
-#[allow(dead_code)]
 /// Event structure sent on the event virtqueue.
 #[derive(Debug, Clone, Copy, FromBytes, IntoBytes, Immutable, KnownLayout)]
 #[repr(C)]

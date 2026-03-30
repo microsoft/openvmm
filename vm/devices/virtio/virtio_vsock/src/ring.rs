@@ -6,7 +6,7 @@ use std::io::Write;
 
 /// A simple, single-threaded byte ring buffer with a fixed capacity.
 pub struct RingBuffer {
-    buf: Vec<u8>,
+    buf: Box<[u8]>,
     /// Index of the first readable byte.
     head: usize,
     /// Number of bytes currently stored.
@@ -17,7 +17,7 @@ impl RingBuffer {
     /// Creates a new ring buffer that can hold up to `capacity` bytes.
     pub fn new(capacity: usize) -> Self {
         Self {
-            buf: vec![0; capacity],
+            buf: vec![0; capacity].into_boxed_slice(),
             head: 0,
             len: 0,
         }
@@ -38,8 +38,8 @@ impl RingBuffer {
         self.buf.len() - self.len
     }
 
-    /// Writes bytes from the given I/O slices into the buffer, starting at
-    /// byte `offset` into the logical concatenation of `bufs`.
+    /// Writes bytes from the given I/O slices into the buffer, starting at byte `offset` into the
+    /// logical concatenation of `bufs`.
     ///
     /// All bytes from `offset` to the end of the slices are written.
     ///
@@ -80,9 +80,9 @@ impl RingBuffer {
         self.len += written;
     }
 
-    /// Writes the current contents of the ring buffer to `writer`, using
-    /// `write_vectored` when the data wraps around. Advances the read
-    /// position by the number of bytes written and returns that count.
+    /// Writes the current contents of the ring buffer to `writer`, using `write_vectored` when the
+    /// data wraps around. Advances the read position by the number of bytes written and returns
+    /// that count.
     pub fn read_to(&mut self, writer: &mut impl Write) -> std::io::Result<usize> {
         let mut total_written = 0;
 
