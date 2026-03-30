@@ -9195,6 +9195,7 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "event-listener",
  "futures",
+ "getrandom 0.3.3",
  "guestmem",
  "guid",
  "hybrid_vsock",

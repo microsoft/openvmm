@@ -24,7 +24,11 @@ use std::collections::HashMap;
 use std::future::poll_fn;
 use std::io::Read;
 use std::io::Write;
+use std::net::Shutdown;
+use std::path::PathBuf;
+use std::thread;
 use std::time::Duration;
+use std::vec;
 use test_with_tracing::test;
 use unix_socket::UnixListener;
 use virtio::QueueResources;
@@ -112,6 +116,7 @@ struct TestHarness {
     next_data_offset: u64,
     // Temporary directory for socket files
     _tmp_dir: tempfile::TempDir,
+    host_listener_path: PathBuf,
 }
 
 impl TestHarness {
@@ -162,6 +167,7 @@ impl TestHarness {
             next_tx_desc: 0,
             next_data_offset: DATA_BASE,
             _tmp_dir: tmp_dir,
+            host_listener_path,
         }
     }
 
@@ -1742,4 +1748,163 @@ async fn host_shutdown(driver: DefaultDriver) {
             break;
         }
     }
+}
+
+#[async_test]
+async fn stress_test(driver: DefaultDriver) {
+    let tmp_dir = tempfile::tempdir().unwrap();
+    let mut harness = TestHarness::new(&driver, tmp_dir);
+    harness.enable().await;
+
+    let host_listener_path = harness.host_listener_path.clone();
+
+    // Spawn 10 host-side connection threads.
+    let threads: Vec<_> = (0..10)
+        .map(|_| {
+            let path = host_listener_path.clone();
+            std::thread::spawn(move || connection_thread(path))
+        })
+        .collect();
+
+    // Guest side: accept incoming connections and echo data back.
+    // Track per-connection fwd_cnt keyed by (device_port, guest_port).
+    let mut connections: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut completed = 0;
+
+    while completed < 10 {
+        // Reset descriptor and data allocators — safe because we fully
+        // consume each rx/tx pair before looping.
+        harness.next_rx_desc = 0;
+        harness.next_tx_desc = 0;
+        harness.next_data_offset = DATA_BASE;
+
+        // Post one rx buffer large enough for header + max payload (16 KB).
+        let (_desc, gpa) = harness.post_rx_buffer(HDR_SIZE + 16384);
+        let (_rx_id, _rx_len) = CancelContext::new()
+            .with_timeout(Duration::from_secs(30))
+            .until_cancelled(harness.wait_for_rx_used())
+            .await
+            .expect("timed out waiting for rx packet");
+        let hdr = harness.read_header(gpa);
+
+        match Operation(hdr.op) {
+            Operation::REQUEST => {
+                // Accept the connection.
+                let response = VsockHeader {
+                    src_cid: GUEST_CID,
+                    dst_cid: VSOCK_CID_HOST,
+                    src_port: hdr.dst_port,
+                    dst_port: hdr.src_port,
+                    len: 0,
+                    socket_type: SocketType::STREAM.0,
+                    op: Operation::RESPONSE.0,
+                    flags: 0,
+                    buf_alloc: GUEST_BUF_ALLOC,
+                    fwd_cnt: 0,
+                };
+                harness.post_tx_packet(&response, &[]);
+                harness.wait_for_tx_used().await;
+                connections.insert((hdr.src_port, hdr.dst_port), 0);
+            }
+            Operation::RW => {
+                let data = harness.read_rx_data(gpa, hdr.len);
+                let key = (hdr.src_port, hdr.dst_port);
+                let fwd_cnt = connections
+                    .get_mut(&key)
+                    .expect("RW for unknown connection");
+                *fwd_cnt += hdr.len;
+
+                let echo_hdr = VsockHeader {
+                    src_cid: GUEST_CID,
+                    dst_cid: VSOCK_CID_HOST,
+                    src_port: hdr.dst_port,
+                    dst_port: hdr.src_port,
+                    len: data.len() as u32,
+                    socket_type: SocketType::STREAM.0,
+                    op: Operation::RW.0,
+                    flags: 0,
+                    buf_alloc: GUEST_BUF_ALLOC,
+                    fwd_cnt: *fwd_cnt,
+                };
+                harness.post_tx_packet(&echo_hdr, &data);
+                harness.wait_for_tx_used().await;
+            }
+            Operation::SHUTDOWN => {
+                let key = (hdr.src_port, hdr.dst_port);
+                let fwd_cnt = connections.get(&key).copied().unwrap_or(0);
+                let rst_hdr = VsockHeader {
+                    src_cid: GUEST_CID,
+                    dst_cid: VSOCK_CID_HOST,
+                    src_port: hdr.dst_port,
+                    dst_port: hdr.src_port,
+                    len: 0,
+                    socket_type: SocketType::STREAM.0,
+                    op: Operation::RST.0,
+                    flags: 0,
+                    buf_alloc: GUEST_BUF_ALLOC,
+                    fwd_cnt,
+                };
+                harness.post_tx_packet(&rst_hdr, &[]);
+                harness.wait_for_tx_used().await;
+                completed += 1;
+            }
+            Operation::CREDIT_REQUEST => {
+                // Respond with current credit so the device can continue sending.
+                let key = (hdr.src_port, hdr.dst_port);
+                let fwd_cnt = connections.get(&key).copied().unwrap_or(0);
+                let credit_hdr = VsockHeader {
+                    src_cid: GUEST_CID,
+                    dst_cid: VSOCK_CID_HOST,
+                    src_port: hdr.dst_port,
+                    dst_port: hdr.src_port,
+                    len: 0,
+                    socket_type: SocketType::STREAM.0,
+                    op: Operation::CREDIT_UPDATE.0,
+                    flags: 0,
+                    buf_alloc: GUEST_BUF_ALLOC,
+                    fwd_cnt,
+                };
+                harness.post_tx_packet(&credit_hdr, &[]);
+                harness.wait_for_tx_used().await;
+            }
+            _ => {
+                // Ignore other packet types (e.g., CREDIT_UPDATE from device).
+            }
+        }
+    }
+
+    // Wait for all threads to complete.
+    for t in threads {
+        t.join().expect("connection thread panicked");
+    }
+}
+
+fn connection_thread(host_listener_path: PathBuf) {
+    let mut stream = unix_socket::UnixStream::connect(host_listener_path).unwrap();
+    stream.write_all(b"CONNECT 1234\n").unwrap();
+    // Wait for OK response.
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).unwrap();
+    let response = std::str::from_utf8(&buf[..n]).unwrap();
+    assert!(
+        response.starts_with("OK "),
+        "unexpected response: {response}"
+    );
+
+    const CHUNK_SIZE: usize = 16384;
+    // random number of chunks between 1 and 1000
+    let num_chunks = getrandom::u32().unwrap() as usize % 1000 + 1;
+
+    for _ in 0..num_chunks {
+        let mut chunk = vec![0u8; CHUNK_SIZE];
+        getrandom::fill(&mut chunk).unwrap();
+        stream.write_all(&chunk).unwrap();
+        // Receive echo from the guest.
+        let mut received = vec![0u8; CHUNK_SIZE];
+        stream.read_exact(&mut received).unwrap();
+        assert_eq!(received, chunk, "echoed data does not match sent data");
+        thread::yield_now();
+    }
+
+    stream.shutdown(Shutdown::Both).unwrap();
 }
