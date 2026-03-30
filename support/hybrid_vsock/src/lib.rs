@@ -145,8 +145,8 @@ impl VsockPortOrId {
 /// Error returned by [`VsockPortOrId::host_uds_path`].
 #[derive(Debug, thiserror::Error)]
 pub enum UdsPathError {
-    /// No hybrid vsock listener was found at the base path.
-    #[error("no hybrid vsock listener based at {}", _0.display())]
+    /// No hybrid vsock listener was found at the specified path.
+    #[error("no hybrid vsock listener at {}", _0.display())]
     NoListener(PathBuf),
     /// An I/O error occurred while checking for the listener.
     #[error(transparent)]

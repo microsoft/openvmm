@@ -2208,7 +2208,7 @@ impl GuestMemory {
         })
     }
 
-    /// Locks the guest pages spanned by the specified `PagedRange` for the `'static` lifetime.
+    /// Locks the guest pages spanned by the specified `PagedRange`.
     ///
     /// # Arguments
     /// * 'paged_range' - The guest memory range to lock.
