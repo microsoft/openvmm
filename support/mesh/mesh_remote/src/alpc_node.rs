@@ -596,7 +596,8 @@ impl AlpcNode {
             let directory = invite_ctx.directory.clone();
             let driver = driver.clone();
             async move {
-                Self::process_connects(&driver, local_id, directory, connect_recv, mesh_secret).await
+                Self::process_connects(&driver, local_id, directory, connect_recv, mesh_secret)
+                    .await
             }
         });
 
@@ -1399,5 +1400,4 @@ mod tests {
         node1.shutdown().await;
         node2.shutdown().await;
     }
-
 }
