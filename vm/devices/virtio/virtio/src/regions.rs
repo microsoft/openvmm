@@ -74,7 +74,7 @@ impl Iterator for DataRegions<'_> {
 ///
 /// Returns `Some((gpns, offset, len))` if every region boundary falls on
 /// a page boundary (or regions are GPA-contiguous), so the whole chain
-/// can be expressed as one [`PagedRange`]. Returns `None` if any
+/// can be expressed as one [`guestmem::PagedRange`]. Returns `None` if any
 /// interior boundary violates the constraint.
 pub fn try_build_gpn_list(
     regions: impl IntoIterator<Item = impl Borrow<DataRegion>>,
