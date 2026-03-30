@@ -6,17 +6,10 @@ name = "petri"
 edition.workspace = true
 rust-version.workspace = true
 
-[features]
-default = ["virt_kvm", "virt_mshv", "virt_whp", "virt_hvf"]
-virt_kvm = ["openvmm_hypervisors/virt_kvm"]
-virt_mshv = ["openvmm_hypervisors/virt_mshv"]
-virt_whp = ["openvmm_hypervisors/virt_whp"]
-virt_hvf = ["openvmm_hypervisors/virt_hvf"]
-
 [dependencies]
 pipette_client.workspace = true
 
-openvmm_hypervisors.workspace = true
+openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "virt_whp", "virt_hvf"] }
 
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
