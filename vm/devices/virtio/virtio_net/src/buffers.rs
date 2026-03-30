@@ -10,8 +10,6 @@ use net_backend::BufferAccess;
 use net_backend::RxBufferSegment;
 use net_backend::RxId;
 use net_backend::RxMetadata;
-use parking_lot::Mutex;
-use std::sync::Arc;
 use virtio::VirtioQueueCallbackWork;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -23,22 +21,19 @@ struct RxPacket {
 }
 
 /// Holds virtio buffers available for a network backend to send data to the client.
-#[derive(Clone, Inspect)]
+#[derive(Inspect)]
 #[inspect(extra = "Self::inspect_extra")]
 pub struct VirtioWorkPool {
     mem: GuestMemory,
     #[inspect(skip)]
-    rx_packets: Arc<Vec<Mutex<Option<RxPacket>>>>,
+    rx_packets: Vec<Option<RxPacket>>,
 }
 
 impl VirtioWorkPool {
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         resp.field(
             "pending_rx_packets",
-            self.rx_packets
-                .iter()
-                .filter(|p| p.lock().is_some())
-                .count(),
+            self.rx_packets.iter().filter(|p| p.is_some()).count(),
         );
     }
 
@@ -46,17 +41,32 @@ impl VirtioWorkPool {
     pub fn new(mem: GuestMemory, queue_size: u16) -> Self {
         Self {
             mem,
-            rx_packets: Arc::new((0..queue_size).map(|_| Mutex::new(None)).collect()),
+            rx_packets: (0..queue_size).map(|_| None).collect(),
         }
     }
 
-    /// Return a vector of RxIds currently available for use.
-    pub fn ready(&self) -> Vec<RxId> {
-        self.rx_packets
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| e.lock().as_ref().map(|_| RxId(i as u32)))
-            .collect::<Vec<RxId>>()
+    /// Returns a reference to the guest memory.
+    pub fn mem(&self) -> &GuestMemory {
+        &self.mem
+    }
+
+    /// Fills `buf` with the RxIds of currently available buffers. `buf` must be
+    /// at least as big as the virtio queue size, passed to `new()`.
+    ///
+    /// Returns the number of entries written.
+    pub fn fill_ready(&self, buf: &mut [RxId]) -> usize {
+        assert!(buf.len() >= self.rx_packets.len());
+        let mut n = 0;
+        for (dest, src) in buf.iter_mut().zip(
+            self.rx_packets
+                .iter()
+                .enumerate()
+                .filter_map(|(i, e)| e.is_some().then_some(RxId(i as u32))),
+        ) {
+            *dest = src;
+            n += 1;
+        }
+        n
     }
 
     /// Add a virtio work instance to the buffers available for use.
@@ -64,11 +74,11 @@ impl VirtioWorkPool {
     /// Returns `Err` with the work item if the descriptor index is already in
     /// use (duplicate submission by the guest).
     pub fn queue_work(
-        &self,
+        &mut self,
         work: VirtioQueueCallbackWork,
     ) -> Result<RxId, VirtioQueueCallbackWork> {
         let idx = work.descriptor_index();
-        let mut packet = self.rx_packets[idx as usize].lock();
+        let packet = &mut self.rx_packets[idx as usize];
         if packet.is_some() {
             tracelimit::warn_ratelimited!("dropping RX buffer: descriptor index already in use");
             return Err(work);
@@ -86,9 +96,8 @@ impl VirtioWorkPool {
     }
 
     /// Notify the client that a receive packet is ready (network packet available).
-    pub fn complete_packet(&self, rx_id: RxId) {
+    pub fn complete_packet(&mut self, rx_id: RxId) {
         let mut packet = self.rx_packets[rx_id.0 as usize]
-            .lock()
             .take()
             .expect("valid packet index");
         let payload_len = if packet.len == 0 {
@@ -108,8 +117,9 @@ impl BufferAccess for VirtioWorkPool {
     }
 
     fn write_data(&mut self, id: RxId, data: &[u8]) {
-        let mut locked_packet = self.rx_packets[id.0 as usize].lock();
-        let packet = locked_packet.as_mut().expect("invalid buffer index");
+        let packet = self.rx_packets[id.0 as usize]
+            .as_mut()
+            .expect("invalid buffer index");
         if let Err(err) = packet
             .work
             .write_at_offset(header_size() as u64, &self.mem, data)
@@ -123,8 +133,9 @@ impl BufferAccess for VirtioWorkPool {
     }
 
     fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
-        let locked_packet = self.rx_packets[id.0 as usize].lock();
-        let packet = locked_packet.as_ref().expect("invalid buffer index");
+        let packet = self.rx_packets[id.0 as usize]
+            .as_ref()
+            .expect("invalid buffer index");
         buf.extend(
             packet
                 .work
@@ -140,7 +151,6 @@ impl BufferAccess for VirtioWorkPool {
 
     fn capacity(&self, id: RxId) -> u32 {
         self.rx_packets[id.0 as usize]
-            .lock()
             .as_ref()
             .expect("invalid buffer index")
             .cap
@@ -162,8 +172,9 @@ impl BufferAccess for VirtioWorkPool {
             num_buffers: 1,
             ..FromZeros::new_zeroed()
         };
-        let mut locked_packet = self.rx_packets[id.0 as usize].lock();
-        let packet = locked_packet.as_mut().expect("invalid buffer index");
+        let packet = self.rx_packets[id.0 as usize]
+            .as_mut()
+            .expect("invalid buffer index");
         if let Err(err) = packet
             .work
             .write(&self.mem, &virtio_net_header.as_bytes()[..header_size()])
