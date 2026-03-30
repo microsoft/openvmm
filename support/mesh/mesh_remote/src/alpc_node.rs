@@ -112,7 +112,7 @@ pub enum JoinError {
     Setup(#[from] NodeSetupError),
 }
 
-/// Errors from [`AlpcMeshInviter::invite`] and [`AlpcMeshInviter::invite_named`].
+/// Errors from [`AlpcMeshInviter::invite_named`].
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs)]
 pub enum InviteError {
@@ -254,18 +254,6 @@ impl InviteContext {
     ) {
         while let Ok(request) = invite_request_recv.recv().await {
             match request {
-                AlpcInviteRequest::Invite(rpc) => {
-                    rpc.handle_sync(|port| {
-                        let (creds, dup_dir, handle) = self.process_invite(&driver, port, true)?;
-                        Ok((
-                            Invitation {
-                                credentials: creds,
-                                directory: dup_dir.expect("requested"),
-                            },
-                            handle,
-                        ))
-                    });
-                }
                 AlpcInviteRequest::InviteNamed(rpc) => {
                     let Some(ref dir_path) = directory_path else {
                         rpc.complete(Err(InviteError::NamedInvitationNotSupported));
@@ -361,7 +349,6 @@ use mesh_channel::rpc::RpcSend;
 
 /// Request types for the invite handler task.
 enum AlpcInviteRequest {
-    Invite(Rpc<Port, Result<(Invitation, InvitationHandle), InviteError>>),
     InviteNamed(Rpc<Port, Result<(NamedInvitation, InvitationHandle), InviteError>>),
 }
 
@@ -378,14 +365,6 @@ pub(crate) struct AlpcMeshInviter {
 }
 
 impl AlpcMeshInviter {
-    /// Create a handle-based invitation (for child process spawning).
-    pub async fn invite(&self, port: Port) -> Result<(Invitation, InvitationHandle), InviteError> {
-        self.request_send
-            .call(AlpcInviteRequest::Invite, port)
-            .await
-            .map_err(|_| InviteError::NodeShutDown)?
-    }
-
     /// Create a named invitation (for named-directory nodes only).
     /// Returns error if the node uses an anonymous directory.
     pub async fn invite_named(
