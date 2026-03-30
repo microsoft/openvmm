@@ -400,3 +400,63 @@ async fn pcie_hotplug(
     vm.wait_for_clean_teardown().await?;
     Ok(())
 }
+
+/// Verify PCIe root complex state survives a save/restore cycle.
+///
+/// This test:
+/// 1. Boots a VM with a PCIe root complex and 4 root ports
+/// 2. Enumerates PCI devices visible to the guest
+/// 3. Pulses save/restore (pause → save → restore → resume)
+/// 4. Re-enumerates PCI devices and verifies they match
+#[openvmm_test(linux_direct_x64)]
+async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let os_flavor = config.os_flavor();
+    let (mut vm, agent) = config
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 4))
+        .run()
+        .await?;
+
+    // Snapshot pre-save PCI topology from the guest
+    let devices_before = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?devices_before, "PCI devices before save/restore");
+
+    let root_ports_before = devices_before
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
+        .count();
+    assert_eq!(
+        root_ports_before, 4,
+        "expected 4 root ports before save/restore"
+    );
+
+    // Pulse save/restore — drop agent first (vsock won't survive)
+    drop(agent);
+    vm.backend().verify_save_restore().await?;
+
+    // Reconnect to the guest
+    let agent = vm.backend().wait_for_agent(false).await?;
+
+    // Re-enumerate and compare
+    let devices_after = parse_guest_pci_devices(os_flavor, &agent).await?;
+    tracing::info!(?devices_after, "PCI devices after save/restore");
+
+    let root_ports_after = devices_after
+        .iter()
+        .filter(|d| d.vendor_id == 0x1414 && d.device_id == 0xc030 && d.class_code == 0x060400)
+        .count();
+    assert_eq!(
+        root_ports_after, 4,
+        "expected 4 root ports after save/restore"
+    );
+
+    // Verify total device count is unchanged (no devices lost or duplicated)
+    assert_eq!(
+        devices_before.len(),
+        devices_after.len(),
+        "PCI device count changed across save/restore"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
