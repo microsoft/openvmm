@@ -19,13 +19,13 @@ pub use vhost_user_protocol::protocol;
 /// Re-export socket types from the shared crate.
 pub use vhost_user_protocol::socket;
 
-use anyhow::Context as _;
 use crate::memory::MemoryRegionInfo;
 use crate::memory::build_guest_memory;
 use crate::protocol::*;
 use crate::queue_setup::QueueSetup;
 use crate::socket::SocketError;
 use crate::socket::VhostUserSocket;
+use anyhow::Context as _;
 use guestmem::GuestMemory;
 use pal_async::driver::SpawnDriver;
 use pal_async::socket::PolledSocket;
@@ -175,8 +175,11 @@ impl VhostUserDeviceServer {
                 // VHOST_F_LOG_ALL may be toggled). We don't currently support
                 // any features that require restarting queues on change, so
                 // just storing the new value is correct.
-                state.negotiated_features = features_from_u64(msg.value);
-                maybe_ack(socket, hdr, state).await?;
+                // Mask out VHOST_USER_F_PROTOCOL_FEATURES — it's a
+                // vhost-user control bit, not a virtio device feature.
+                state.negotiated_features =
+                    features_from_u64(msg.value & !VHOST_USER_F_PROTOCOL_FEATURES);
+                maybe_ack(socket, hdr, state).await?
             }
 
             VhostUserRequestCode::GET_PROTOCOL_FEATURES => {
@@ -219,10 +222,17 @@ impl VhostUserDeviceServer {
 
             VhostUserRequestCode::GET_CONFIG => {
                 let config_hdr = parse_payload::<VhostUserConfigHeader>(payload)?;
-                let mut config_data = vec![0u8; config_hdr.size as usize];
-                // Read device config registers 4 bytes at a time.
                 let offset = config_hdr.offset;
                 let size = config_hdr.size;
+                // Clamp to the device's config space length.
+                let dev_len = traits.device_register_length;
+                if size > dev_len || offset > dev_len - size {
+                    anyhow::bail!(
+                        "GET_CONFIG out of range: offset={offset} size={size} dev_len={dev_len}"
+                    );
+                }
+                let mut config_data = vec![0u8; size as usize];
+                // Read device config registers 4 bytes at a time.
                 let mut pos = 0u32;
                 while pos < size {
                     let reg_offset = offset + pos;
@@ -244,6 +254,14 @@ impl VhostUserDeviceServer {
 
             VhostUserRequestCode::SET_CONFIG => {
                 let config_hdr = parse_payload::<VhostUserConfigHeader>(payload)?;
+                let dev_len = traits.device_register_length;
+                if config_hdr.size > dev_len || config_hdr.offset > dev_len - config_hdr.size {
+                    anyhow::bail!(
+                        "SET_CONFIG out of range: offset={} size={} dev_len={dev_len}",
+                        config_hdr.offset,
+                        config_hdr.size,
+                    );
+                }
                 let config_hdr_size = size_of::<VhostUserConfigHeader>();
                 let config_data = payload.get(config_hdr_size..).unwrap_or(&[]);
                 // Write device config registers 4 bytes at a time.

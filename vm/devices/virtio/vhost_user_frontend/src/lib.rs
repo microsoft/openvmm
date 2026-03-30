@@ -433,7 +433,20 @@ impl VirtioDevice for VhostUserFrontend {
         //   bits 16-31: used state (index + wrap counter)
         // For split ring, only the low 16 bits matter (avail index),
         // and used_index is read from the guest-visible used ring.
-        let vring_base = send_get_vring_base(&self.socket, idx).await.ok()?;
+        let vring_base = match send_get_vring_base(&self.socket, idx).await {
+            Ok(base) => base,
+            Err(e) => {
+                tracelimit::warn_ratelimited!(
+                    error = &*e as &dyn std::error::Error,
+                    idx,
+                    "GET_VRING_BASE failed during stop_queue; marking queue inactive"
+                );
+                q.active = false;
+                q.params = None;
+                q._event_proxy = None;
+                return None;
+            }
+        };
 
         let (avail_index, used_index) = if self.packed_ring {
             (vring_base as u16, (vring_base >> 16) as u16)
