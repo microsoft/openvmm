@@ -238,6 +238,10 @@ impl flowey_core::node::NodeCtxBackend for ExecSnippetCtx<'_, '_> {
         // nothing to do - filing requests only matters pre-exec
     }
 
+    fn on_config(&mut self, _node_handle: NodeHandle, _config: anyhow::Result<Box<[u8]>>) {
+        // nothing to do - config is already merged pre-exec
+    }
+
     fn on_new_var(&mut self) -> String {
         let v = self.var_tracker;
         self.var_tracker += 1;
