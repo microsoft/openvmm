@@ -90,39 +90,32 @@ impl CanResolveTo<ResolvedHypervisorBackend> for HypervisorKind {
     type Input<'a> = ();
 }
 
-/// Registers hypervisor backend probes and resource resolvers.
+/// Registers hypervisor backend probes for auto-detection.
 ///
-/// Each entry provides:
-/// - A probe type implementing
-///   [`HypervisorProbe`](hypervisor_resources::HypervisorProbe), which handles
-///   auto-detection and default resource construction.
-/// - A resolver type implementing
-///   [`ResolveResource<HypervisorKind, Handle>`](vm_resource::ResolveResource),
-///   which constructs a [`HypervisorBackend`] from the deserialized handle.
+/// Each entry is a unit struct implementing
+/// [`HypervisorProbe`](hypervisor_resources::HypervisorProbe).
 ///
-/// This registers:
-/// 1. The probe in the `hypervisor_resources` probe slice (for auto-detection).
-/// 2. The resolver in the `vm_resource` resolver slice (for resource resolution).
-///
-/// Backends are checked in registration order when auto-detecting the
+/// Probes are checked in registration order when auto-detecting the
 /// hypervisor, so register them from highest to lowest priority.
+///
+/// Resource resolvers should be registered separately via
+/// [`vm_resource::register_static_resolvers!`].
 ///
 /// # Example
 ///
 /// ```ignore
-/// openvmm_core::register_hypervisors! {
+/// openvmm_core::register_hypervisor_probes! {
 ///     #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
-///     hypervisors::KvmProbe, hypervisors::KvmResolver,
+///     openvmm_hypervisors::kvm::KvmProbe,
 /// }
 /// ```
 #[macro_export]
-macro_rules! register_hypervisors {
+macro_rules! register_hypervisor_probes {
     {} => {};
-    { $( $(#[$a:meta])* $probe:path, $resolver:ty ),+ $(,)? } => {
+    { $( $(#[$a:meta])* $probe:path ),+ $(,)? } => {
         $(
         $(#[$a])*
         const _: () = {
-            // Register the probe for auto-detection.
             static PROBE_INSTANCE: $probe = $probe;
 
             #[hypervisor_resources::private::linkme::distributed_slice(
@@ -131,9 +124,6 @@ macro_rules! register_hypervisors {
             #[linkme(crate = hypervisor_resources::private::linkme)]
             static PROBE: Option<&'static dyn hypervisor_resources::HypervisorProbe> =
                 Some(&PROBE_INSTANCE);
-
-            // Register the resource resolver.
-            vm_resource::register_static_resolvers!($resolver);
         };
         )*
     };

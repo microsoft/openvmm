@@ -5896,6 +5896,7 @@ dependencies = [
  "nvme_resources",
  "openvmm_defs",
  "openvmm_helpers",
+ "openvmm_hypervisors",
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
