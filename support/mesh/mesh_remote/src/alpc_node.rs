@@ -143,7 +143,7 @@ pub enum JoinError {
     Setup(#[from] NodeSetupError),
 }
 
-/// Errors from [`AlpcMeshInviter::invite_named`].
+/// Errors from inviting a node to the mesh.
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs)]
 pub enum InviteError {
