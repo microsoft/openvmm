@@ -6,52 +6,53 @@
 use flowey::node::prelude::*;
 use flowey_lib_common::_util::wslpath;
 
+flowey_config! {
+    /// Config for the install_git_credential_manager node.
+    pub struct Config {
+        /// Automatically configure the user's global config manager
+        pub auto_configure: Option<bool>,
+        /// WSL2 will use linux git credential manager if true, windows version if false.
+        pub use_native_linux_on_wsl2: Option<bool>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Automatically configure the user's global config manager
-        AutoConfigure,
-        /// WSL2 will use linux git credential manager if true, windows version if false.
-        UseNativeLinuxOnWsl2,
         /// Ensure that git was configured
         EnsureConfigured(WriteVar<SideEffect>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(dep: &mut ImportCtx<'_>) {
         dep.import::<flowey_lib_common::install_git::Node>();
         dep.import::<flowey_lib_common::check_needs_relaunch::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         if !matches!(ctx.backend(), FlowBackend::Local) {
             anyhow::bail!("only supported on the local backend at this time");
         }
 
-        let mut use_native_linux_on_wsl2 = None;
-        let mut auto_configure = None;
         let mut ensure_configured = Vec::new();
 
         for req in requests {
             match req {
-                Request::AutoConfigure => {
-                    same_across_all_reqs("AutoConfigure", &mut auto_configure, true)?
-                }
-                Request::UseNativeLinuxOnWsl2 => same_across_all_reqs(
-                    "UseNativeLinuxOnWsl2",
-                    &mut use_native_linux_on_wsl2,
-                    true,
-                )?,
                 Request::EnsureConfigured(v) => ensure_configured.push(v),
             }
         }
 
-        let use_native_linux_on_wsl2 = use_native_linux_on_wsl2.unwrap_or(false);
-        let auto_configure = auto_configure.unwrap_or(false);
+        let use_native_linux_on_wsl2 = config.use_native_linux_on_wsl2.unwrap_or(false);
+        let auto_configure = config.auto_configure.unwrap_or(false);
 
         // -- end of req processing -- //
 

@@ -149,7 +149,7 @@ pub fn viz_flow_toposort(
     with_persist_dir: bool,
 ) -> anyhow::Result<()> {
     // ignore the unreachable nodes error, since we want to allow debugging issues here
-    let (mut output_graph, _, _err_unreachable_nodes) =
+    let (mut output_graph, _, _, _err_unreachable_nodes) =
         crate::flow_resolver::stage1_dag::stage1_dag(
             backend,
             platform,
@@ -331,15 +331,16 @@ pub fn viz_flow_dot(
     with_persist_dir: bool,
 ) -> anyhow::Result<()> {
     // ignore the unreachable nodes error, since we want to allow debugging issues here
-    let (output_graph, _, _err_unreachable_nodes) = crate::flow_resolver::stage1_dag::stage1_dag(
-        backend,
-        platform,
-        arch,
-        resolved_patches,
-        seed_nodes,
-        external_read_vars,
-        with_persist_dir.then_some("<dummy>".into()),
-    )?;
+    let (output_graph, _, _, _err_unreachable_nodes) =
+        crate::flow_resolver::stage1_dag::stage1_dag(
+            backend,
+            platform,
+            arch,
+            resolved_patches,
+            seed_nodes,
+            external_read_vars,
+            with_persist_dir.then_some("<dummy>".into()),
+        )?;
 
     #[derive(Clone)]
     struct VizNode((StepId, Option<OutputGraphEntry>));

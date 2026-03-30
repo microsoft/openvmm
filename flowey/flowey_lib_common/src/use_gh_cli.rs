@@ -30,50 +30,74 @@ impl ClaimVar for GhCliAuth {
     }
 }
 
+/// Auth config for the gh CLI node. Uses [`ConfigVar`] so that
+/// `PartialEq`-based config merging works for the `ReadVar` variant.
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub enum GhCliAuthConfig {
+    /// Prompt user to log-in interactively.
+    LocalOnlyInteractive,
+    /// Set the value of the `GITHUB_TOKEN` environment variable.
+    AuthToken(ConfigVar<String>),
+}
+
+impl Default for GhCliAuthConfig {
+    fn default() -> Self {
+        GhCliAuthConfig::LocalOnlyInteractive
+    }
+}
+
+impl GhCliAuthConfig {
+    fn into_auth(self) -> GhCliAuth {
+        match self {
+            GhCliAuthConfig::LocalOnlyInteractive => GhCliAuth::LocalOnlyInteractive,
+            GhCliAuthConfig::AuthToken(v) => GhCliAuth::AuthToken(v.0),
+        }
+    }
+}
+
+flowey_config! {
+    /// Config for the use_gh_cli node.
+    pub struct Config {
+        /// Specify what authentication to use
+        pub auth: Option<GhCliAuthConfig>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Specify what authentication to use
-        WithAuth(GhCliAuth),
         /// Get a path to `gh` executable
         Get(WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_gh_cli::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut get_reqs = Vec::new();
-        let mut with_auth_interactive = false;
-        let mut with_auth_token = None;
 
         for req in requests {
             match req {
-                Request::WithAuth(v) => match v {
-                    GhCliAuth::LocalOnlyInteractive => with_auth_interactive = true,
-                    GhCliAuth::AuthToken(v) => {
-                        same_across_all_reqs_backing_var("WithAuth", &mut with_auth_token, v)?
-                    }
-                },
                 Request::Get(v) => get_reqs.push(v),
             }
         }
 
+        let auth = config
+            .auth
+            .ok_or(anyhow::anyhow!("missing config: auth"))?
+            .into_auth();
         let get_reqs = get_reqs;
-        let auth = match (with_auth_interactive, with_auth_token) {
-            (true, None) => GhCliAuth::LocalOnlyInteractive,
-            (false, Some(v)) => GhCliAuth::AuthToken(v),
-            (true, Some(_)) => {
-                anyhow::bail!("`WithAuth` must be consistent across requests")
-            }
-            (false, None) => anyhow::bail!("Missing essential request: WithAuth"),
-        };
 
         // -- end of req processing -- //
 

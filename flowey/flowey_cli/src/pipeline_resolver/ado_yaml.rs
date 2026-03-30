@@ -77,6 +77,7 @@ pub fn ado_yaml(
         flow_backend: crate::cli::FlowBackendCli::Ado,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_configs: BTreeMap::new(),
         job_command_wrappers: BTreeMap::new(),
         job_platforms: BTreeMap::new(),
         job_archs: BTreeMap::new(),
@@ -108,7 +109,7 @@ pub fn ado_yaml(
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
-        let (steps, req_db) = resolve_flow_as_ado_yaml_steps(
+        let (steps, req_db, cfg_db) = resolve_flow_as_ado_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
@@ -125,6 +126,12 @@ pub fn ado_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if !cfg_db.is_empty() {
+            pipeline_static_db
+                .job_configs
+                .insert(job_idx.index(), cfg_db);
         }
 
         if let Some(wrapper_kind) = command_wrapper_kind {
@@ -826,10 +833,11 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
 ) -> anyhow::Result<(
     Vec<serde_yaml::Value>,
     BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
+    BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
 )> {
     let mut output_steps = Vec::new();
 
-    let (mut output_graph, request_db, err_unreachable_nodes) =
+    let (mut output_graph, request_db, config_db, err_unreachable_nodes) =
         crate::flow_resolver::stage1_dag::stage1_dag(
             FlowBackend::Ado,
             platform,
@@ -1000,5 +1008,18 @@ EOF
         })
         .collect();
 
-    Ok((output_steps, request_db))
+    let config_db = config_db
+        .into_iter()
+        .map(|(node_handle, configs)| {
+            (
+                node_handle.modpath().to_owned(),
+                configs
+                    .into_iter()
+                    .map(crate::cli::exec_snippet::SerializedRequest)
+                    .collect(),
+            )
+        })
+        .collect();
+
+    Ok((output_steps, request_db, config_db))
 }

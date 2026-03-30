@@ -26,14 +26,12 @@ impl SimpleFlowNode for Node {
         let Params { hvlite_repo_source } = request;
 
         if matches!(ctx.backend(), FlowBackend::Local) {
-            ctx.req(
-                flowey_lib_common::git_checkout::Request::LocalOnlyRequireExistingClones(
-                    !matches!(
-                        hvlite_repo_source,
-                        flowey_lib_common::git_checkout::RepoSource::LocalOnlyNewClone { .. }
-                    ),
-                ),
-            );
+            ctx.config(flowey_lib_common::git_checkout::Config {
+                require_local_clones: Some(!matches!(
+                    hvlite_repo_source,
+                    flowey_lib_common::git_checkout::RepoSource::LocalOnlyNewClone { .. }
+                )),
+            });
         }
 
         ctx.req(flowey_lib_common::git_checkout::Request::RegisterRepo {
@@ -44,9 +42,9 @@ impl SimpleFlowNode for Node {
             pre_run_deps: Vec::new(), // no special auth required
         });
 
-        ctx.req(crate::git_checkout_openvmm_repo::req::SetRepoId(
-            ReadVar::from_static("openvmm".into()),
-        ));
+        ctx.config(crate::git_checkout_openvmm_repo::Config {
+            repo_id: Some(ConfigVar(ReadVar::from_static("openvmm".into()))),
+        });
 
         Ok(())
     }

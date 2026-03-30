@@ -16,42 +16,49 @@ pub struct Flags {
     pub verbose: bool,
 }
 
+flowey_config! {
+    /// Config for the cfg_cargo_common_flags node.
+    pub struct Config {
+        pub locked: Option<bool>,
+        pub verbose: Option<ConfigVar<bool>>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        SetLocked(bool),
-        SetVerbose(ReadVar<bool>),
         GetFlags(WriteVar<Flags>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::install_rust::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut set_locked = None;
-        let mut set_verbose = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut get_flags = Vec::new();
 
         for req in requests {
             match req {
-                Request::SetLocked(v) => same_across_all_reqs("SetLocked", &mut set_locked, v)?,
-                Request::SetVerbose(v) => {
-                    same_across_all_reqs_backing_var("SetVerbose", &mut set_verbose, v)?
-                }
                 Request::GetFlags(v) => get_flags.push(v),
             }
         }
 
-        let set_locked =
-            set_locked.ok_or(anyhow::anyhow!("Missing essential request: SetLocked"))?;
-        let set_verbose =
-            set_verbose.ok_or(anyhow::anyhow!("Missing essential request: SetVerbose"))?;
+        let set_locked = config
+            .locked
+            .ok_or(anyhow::anyhow!("missing config: locked"))?;
+        let set_verbose = config
+            .verbose
+            .ok_or(anyhow::anyhow!("missing config: verbose"))?;
         let get_flags = get_flags;
 
         // -- end of req processing -- //

@@ -78,7 +78,7 @@ impl Interrogate {
         node.imports(&mut dep_registration);
 
         let mut ctx = flowey_core::node::new_node_ctx(&mut ctx_backend);
-        node.emit(raw_json_reqs.clone(), &mut ctx)?;
+        node.emit(vec![], raw_json_reqs.clone(), &mut ctx)?;
 
         Ok(())
     }
