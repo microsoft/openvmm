@@ -3,7 +3,8 @@
 
 //! Virtio vsock device implementation, per section 5.10 of the virtio specification.
 
-#![allow(unsafe_code)]
+// UNSAFETY: Pointer casts between AtomicU8 and u8 to allow direct read/write into guest memory.
+#![expect(unsafe_code)]
 
 mod connections;
 pub mod resolver;

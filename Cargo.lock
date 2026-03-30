@@ -3190,7 +3190,7 @@ dependencies = [
 
 [[package]]
 name = "hybrid_vsock"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "fs-err",
  "guid",
@@ -9191,9 +9191,7 @@ name = "virtio_vsock"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "bitfield-struct 0.11.0",
- "event-listener",
  "futures",
  "getrandom 0.3.3",
  "guestmem",
@@ -9206,7 +9204,6 @@ dependencies = [
  "pal_event",
  "parking_lot",
  "smallvec",
- "socket2",
  "task_control",
  "tempfile",
  "test_with_tracing",
