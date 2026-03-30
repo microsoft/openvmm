@@ -462,7 +462,7 @@ impl HclNetworkVFManagerWorker {
         // method.
         *self.guest_state.offered_to_guest.lock().await = false;
         // Give the network stack a chance to prepare for the removal.
-        if let Err(err) = self.send_vf_state_change_notifications().await {
+        if let Err(err) = self.send_vf_state_change_notifications().instrument(tracing::info_span!("Sending VTL0 VF removal notice", vtl2_vfid, vtl0_bus = %bus_control)).await {
             tracing::error!(
                 vtl2_vfid,
                 err = err.as_ref() as &dyn std::error::Error,
@@ -846,7 +846,8 @@ impl HclNetworkVFManagerWorker {
                             "Adding VF to VTL0"
                         );
                         if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                            match vtl0_bus_control.offer_device().await {
+                            match vtl0_bus_control.offer_device().instrument(tracing::info_span!("Adding VF to VTL0", vtl2_vfid,
+                            vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control))).await {
                                 Ok(_) => {
                                     *self.guest_state.offered_to_guest.lock().await = true;
                                 }
