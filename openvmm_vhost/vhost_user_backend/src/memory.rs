@@ -78,7 +78,10 @@ pub fn build_guest_memory(
             let gpa = region.guest_phys_addr;
             let end = gpa
                 .checked_add(region.memory_size)
-                .ok_or(MemoryError::RegionOverflow { gpa, size: region.memory_size })?;
+                .ok_or(MemoryError::RegionOverflow {
+                    gpa,
+                    size: region.memory_size,
+                })?;
             let range = MemoryRange::try_new(gpa..end).map_err(MemoryError::InvalidRange)?;
             if let Some(prev) = prev {
                 if prev.overlaps(&range) {

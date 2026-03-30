@@ -334,7 +334,10 @@ fn try_recv(
             && cmsg.hdr.cmsg_level == libc::SOL_SOCKET
             && cmsg.hdr.cmsg_type == libc::SCM_RIGHTS
         {
-            #[allow(clippy::unnecessary_cast, reason = "cmsg_len type differs between musl and glibc")]
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "cmsg_len type differs between musl and glibc"
+            )]
             let fd_count = ((cmsg.hdr.cmsg_len as usize).saturating_sub(size_of_val(&cmsg.hdr))
                 / size_of::<RawFd>())
             .min(VHOST_USER_MAX_FDS);
@@ -352,7 +355,10 @@ fn try_recv(
             // Unexpected ancillary data type — no SCM_RIGHTS fds to close.
             return Err(io::ErrorKind::InvalidData.into());
         }
-        #[allow(clippy::unnecessary_cast, reason = "cmsg_len type differs between musl and glibc")]
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "cmsg_len type differs between musl and glibc"
+        )]
         let fd_count = ((cmsg.hdr.cmsg_len as usize).saturating_sub(size_of_val(&cmsg.hdr))
             / size_of::<RawFd>())
         .min(VHOST_USER_MAX_FDS);
