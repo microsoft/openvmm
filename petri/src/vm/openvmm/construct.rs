@@ -437,6 +437,7 @@ impl PetriVmConfigOpenVmm {
             with_pic: capabilities.with_pic,
             with_pit: capabilities.with_pit,
             with_psp: capabilities.with_psp,
+            with_guest_watchdog: capabilities.with_guest_watchdog,
         };
 
         // Add the TPM

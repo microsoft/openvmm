@@ -2725,7 +2725,7 @@ async fn new_underhill_vm(
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
-        ..
+        capabilities,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -2850,7 +2850,7 @@ async fn new_underhill_vm(
                 register_host_io_fastpath: Box::new(UhRegisterHostIoFastPath(partition.clone())),
             });
 
-    let deps_hyperv_guest_watchdog = if chipset.with_hyperv_guest_watchdog {
+    if capabilities.with_guest_watchdog {
         let store = if let Some(vmgs_client) = vmgs_client.as_ref() {
             vmgs_client
                 .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
@@ -2872,11 +2872,7 @@ async fn new_underhill_vm(
         resolver.add_resolver(StaticWatchdogPlatformResolver(
             ResolvedWatchdogPlatform::new(Box::new(underhill_watchdog_platform)),
         ));
-
-        Some(dev::HyperVGuestWatchdogDeps {})
-    } else {
-        None
-    };
+    }
 
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };
 
@@ -2987,7 +2983,6 @@ async fn new_underhill_vm(
         deps_generic_ioapic,
         deps_generic_psp,
         deps_hyperv_firmware_uefi,
-        deps_hyperv_guest_watchdog,
         deps_hyperv_power_management,
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,

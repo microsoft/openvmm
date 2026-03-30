@@ -1431,7 +1431,7 @@ impl InitializedVm {
             }
         }
 
-        let deps_hyperv_guest_watchdog = if cfg.chipset.with_hyperv_guest_watchdog {
+        if cfg.chipset_capabilities.with_guest_watchdog {
             use vmcore::non_volatile_store::EphemeralNonVolatileStore;
 
             let store = match vmgs_client {
@@ -1457,11 +1457,7 @@ impl InitializedVm {
             resolver.add_resolver(StaticWatchdogPlatformResolver(
                 ResolvedWatchdogPlatform::new(Box::new(base_watchdog_platform)),
             ));
-
-            Some(dev::HyperVGuestWatchdogDeps {})
-        } else {
-            None
-        };
+        }
 
         let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
             Some(firmware_pcat::default_cmos_values(&mem_layout))
@@ -1663,7 +1659,6 @@ impl InitializedVm {
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
                 deps_hyperv_framebuffer,
-                deps_hyperv_guest_watchdog,
                 deps_hyperv_ide,
                 deps_hyperv_power_management,
                 deps_hyperv_vga,
@@ -2532,7 +2527,7 @@ impl LoadedVmInner {
                     frontpage: !disable_frontpage,
                     tpm: enable_tpm,
                     battery: enable_battery,
-                    guest_watchdog: self.chipset_cfg.with_hyperv_guest_watchdog,
+                    guest_watchdog: self.chipset_caps.with_guest_watchdog,
                     vpci_boot: enable_vpci_boot,
                     serial: enable_serial,
                     uefi_console_mode,

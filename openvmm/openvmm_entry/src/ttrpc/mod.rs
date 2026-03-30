@@ -461,6 +461,7 @@ impl VmService {
             with_pic: chipset.capabilities.with_pic,
             with_pit: chipset.capabilities.with_pit,
             with_psp: chipset.capabilities.with_psp,
+            with_guest_watchdog: chipset.capabilities.with_guest_watchdog,
         };
 
         let mut config = Config {

@@ -26,6 +26,7 @@ pub struct ChipsetCapabilities {
     pub with_pic: bool,
     pub with_pit: bool,
     pub with_psp: bool,
+    pub with_guest_watchdog: bool,
 }
 
 #[derive(MeshPayload, Debug)]

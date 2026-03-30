@@ -106,6 +106,8 @@ pub struct VmChipsetCapabilities {
     pub with_pit: bool,
     /// Whether the VM exposes a PSP.
     pub with_psp: bool,
+    /// Whether the VM exposes the Hyper-V guest watchdog device.
+    pub with_guest_watchdog: bool,
 }
 
 /// Error type for building a VM manifest.
@@ -237,6 +239,7 @@ impl VmManifestBuilder {
                 with_pic: false,
                 with_pit: false,
                 with_psp: false,
+                with_guest_watchdog: false,
             },
         };
 
@@ -271,7 +274,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: !self.proxy_vga,
-                    with_hyperv_guest_watchdog: false,
                     with_hyperv_ide: true,
                     with_hyperv_power_management: false,
                     with_hyperv_vga: !self.proxy_vga,
@@ -303,7 +305,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: false,
                     with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
@@ -347,7 +348,6 @@ impl VmManifestBuilder {
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
                     with_hyperv_framebuffer: self.framebuffer,
-                    with_hyperv_guest_watchdog: self.guest_watchdog,
                     with_hyperv_ide: false,
                     with_hyperv_power_management: is_x86,
                     with_hyperv_vga: false,
@@ -404,6 +404,7 @@ impl VmChipsetResult {
             with_pic: self.chipset.with_generic_pic,
             with_pit: self.has_pit(),
             with_psp: self.chipset.with_generic_psp,
+            with_guest_watchdog: self.has_guest_watchdog(),
         }
     }
 
@@ -412,6 +413,13 @@ impl VmChipsetResult {
         self.chipset_devices
             .iter()
             .any(|d| d.resource.id() == PitDeviceHandle::ID)
+    }
+
+    /// Returns true when the chipset device list contains a guest watchdog handle.
+    fn has_guest_watchdog(&self) -> bool {
+        self.chipset_devices
+            .iter()
+            .any(|d| d.resource.id() == HyperVGuestWatchdogDeviceHandle::ID)
     }
 
     fn attach_i8042(&mut self) -> &mut Self {
@@ -667,6 +675,7 @@ mod tests {
                 with_pic: false,
                 with_pit: false,
                 with_psp: false,
+                with_guest_watchdog: false,
             },
         };
 

@@ -212,7 +212,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_firmware_pcat,
             deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
-            deps_hyperv_guest_watchdog: _,
             deps_hyperv_ide,
             deps_hyperv_power_management,
             deps_hyperv_vga,
@@ -1095,7 +1094,6 @@ pub mod options {
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat => 9,
             hyperv_firmware_uefi:        dev::HyperVFirmwareUefi => 10,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps => 11,
-            hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps => 12,
             hyperv_ide:                  dev::HyperVIdeDeps => 13,
             hyperv_power_management:     dev::HyperVPowerManagementDeps => 14,
             hyperv_vga:                  dev::HyperVVgaDeps => 15,
@@ -1311,9 +1309,6 @@ pub mod options {
             /// Channel to receive updated battery state
             pub battery_status_recv: mesh::Receiver<HostBatteryUpdate>,
         }
-
-        /// Hyper-V specific Guest Watchdog device
-        pub struct HyperVGuestWatchdogDeps {}
 
         /// Hyper-V specific UEFI Helper Device
         pub struct HyperVFirmwarePcat {
