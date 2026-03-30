@@ -4,12 +4,12 @@
 //! Install Shrinkwrap and its dependencies on Ubuntu.
 use flowey::node::prelude::*;
 use flowey::node::prelude::RustRuntimeServices;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use super::local_openvmm_repo::get_openvmm_tmk_repo;
 use std::time::SystemTime;
 
-const ARM_GNU_TOOLCHAIN_URL: &str = "https://developer.arm.com/-/media/Files/downloads/gnu/14.3.rel1/binrel/arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz";
 const OHCL_LINUX_KERNEL_REPO: &str = "https://github.com/weiding-msft/OHCL-Linux-Kernel.git";
 const OHCL_LINUX_KERNEL_PLANE0_BRANCH: &str = "with-arm-rebased-planes";
 const SHRINKWRAP_REPO: &str = "https://git.gitlab.arm.com/tooling/shrinkwrap.git";
@@ -44,6 +44,11 @@ flowey_request! {
 }
 
 new_simple_flow_node!(struct Node);
+
+fn is_distro_package_installed(rt: &RustRuntimeServices<'_>, pkg: &str) -> bool {
+    let output = flowey::shell_cmd!(rt, "dpkg -s {pkg}").output();
+    output.unwrap().status.success()
+}
 
 ///clone or update a git repository
 fn clone_or_update_repo(
@@ -121,7 +126,7 @@ fn should_rebuild_binary(binary_path: &Path, source_roots: &[PathBuf]) -> anyhow
         return Ok(true);
     }
 
-    let binary_mtime = std::fs::metadata(binary_path)
+    let binary_mtime = fs::metadata(binary_path)
         .with_context(|| format!("failed to stat binary {}", binary_path.display()))?
         .modified()
         .with_context(|| format!("failed to read mtime for {}", binary_path.display()))?;
@@ -146,7 +151,7 @@ fn should_rebuild_binary(binary_path: &Path, source_roots: &[PathBuf]) -> anyhow
 }
 
 fn newest_mtime(path: &Path) -> anyhow::Result<SystemTime> {
-    let metadata = std::fs::metadata(path)
+    let metadata = fs::metadata(path)
         .with_context(|| format!("failed to stat {}", path.display()))?;
 
     let mut newest = metadata
@@ -154,7 +159,7 @@ fn newest_mtime(path: &Path) -> anyhow::Result<SystemTime> {
         .with_context(|| format!("failed to read mtime for {}", path.display()))?;
 
     if metadata.is_dir() {
-        for entry in std::fs::read_dir(path)
+        for entry in fs::read_dir(path)
             .with_context(|| format!("failed to read directory {}", path.display()))?
         {
             let entry = entry.with_context(|| format!("failed to read entry in {}", path.display()))?;
@@ -168,10 +173,10 @@ fn newest_mtime(path: &Path) -> anyhow::Result<SystemTime> {
     Ok(newest)
 }
 
-fn make_target(rt: &RustRuntimeServices<'_>, arch: &str, cross_compile: &str, target: &str, jobs: &str) -> anyhow::Result<()> {
+fn make_target(rt: &RustRuntimeServices<'_>, arch: &str, target: &str, jobs: &str) -> anyhow::Result<()> {
     flowey::shell_cmd!(
         rt,
-        "make ARCH={arch} CROSS_COMPILE={cross_compile} {target} -j{jobs}"
+        "make ARCH={arch} CROSS_COMPILE=aarch64-linux-gnu- {target} -j{jobs}"
     )
     .run()
     .with_context(|| format!("Failed to run `make {}`", target))?;
@@ -195,62 +200,60 @@ impl SimpleFlowNode for Node {
             done.claim(ctx);
             move |rt| {
 
-                // 0) Create parent dir
-                if let Some(parent) = shrinkwrap_dir.parent() {
-                    fs_err::create_dir_all(parent)?;
+                // Check if required packages are installed
+                let required_packages = vec![
+                    "netcat-openbsd",
+                    "python3",
+                    "python3-pip",
+                    "telnet",
+                    "docker.io",
+		    "gcc-aarch64-linux-gnu",
+                ];
+
+                let mut missing_packages = Vec::new();
+                for pkg in required_packages {
+                    if !is_distro_package_installed(rt, pkg) {
+                        missing_packages.push(pkg);
+                    }
                 }
 
-                // 1) System deps (Ubuntu)
-                if do_installs {
-                    log::info!("Installing system dependencies...");
-                    flowey::shell_cmd!(rt, "sudo apt-get update").run()?;
-                    flowey::shell_cmd!(rt, "sudo apt-get install -y build-essential flex bison libssl-dev libelf-dev bc git netcat-openbsd python3 python3-pip python3-venv telnet docker.io unzip").run()?;
+                if !missing_packages.is_empty() {
+                    eprintln!("The following required packages are NOT installed:\n");
 
-                    // Setup Docker group and add current user
-                    log::info!("Setting up Docker group...");
-                    let username = std::env::var("USER").unwrap_or_else(|_| "vscode".to_string());
+                    for pkg in &missing_packages {
+                        eprintln!("  - {}", pkg);
+                    }
 
-                    // Create docker group (ignore error if it already exists)
-                    let _ = flowey::shell_cmd!(rt, "sudo groupadd docker").run();
-
-                    // Add user to docker group
-                    flowey::shell_cmd!(rt, "sudo usermod -aG docker {username}").run()?;
-
-                    log::warn!("Docker group membership updated. You may need to log out and log back in for docker permissions to take effect.");
-                    log::warn!("Alternatively, run: newgrp docker");
+                    eprintln!("\nPlease install them using:");
+                    eprintln!("  sudo apt update && sudo apt install -y {}\n", missing_packages.join(" "));
+                    anyhow::bail!("Stopped emulator installation due to missing packages");
                 }
 
-                // 2) Download and extract ARM GNU toolchain for Host linux kernel compilation
-                let toolchain_dir = shrinkwrap_dir.parent()
-                    .ok_or_else(|| anyhow::anyhow!("shrinkwrap_dir has no parent"))?;
-                let toolchain_archive = toolchain_dir.join("arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf.tar.xz");
-                let toolchain_extracted_dir = toolchain_dir.join("arm-gnu-toolchain-14.3.rel1-x86_64-aarch64-none-elf");
+                // Check if docker is setup
+                let group_name = "docker";
+                let group_file = fs::read_to_string("/etc/group").expect("Failed to read /etc/group");
+                let docker_group = group_file
+                    .lines()
+                    .find(|line| line.starts_with(&format!("{group_name}:")));
 
-                // Download toolchain if not present
-                if !toolchain_archive.exists() {
-                    log::info!("Downloading ARM GNU toolchain to {}", toolchain_archive.display());
-                    flowey::shell_cmd!(rt, "wget -O").arg(&toolchain_archive).arg(ARM_GNU_TOOLCHAIN_URL).run()?;
-                    log::info!("ARM GNU toolchain downloaded successfully");
-                } else {
-                    log::info!("ARM GNU toolchain already exists at {}", toolchain_archive.display());
+                if docker_group.is_none() {
+                    anyhow::bail!("Group '{group_name}' does not exist, please add it using 'sudo groupadd docker'");
                 }
 
-                // Extract toolchain if not already extracted
-                if !toolchain_extracted_dir.exists() {
-                    log::info!("Extracting ARM GNU toolchain to {}", toolchain_dir.display());
-                    rt.sh.change_dir(toolchain_dir);
-                    flowey::shell_cmd!(rt, "tar -xvf").arg(&toolchain_archive).run()?;
-                    log::info!("ARM GNU toolchain extracted successfully");
-                } else {
-                    log::info!("ARM GNU toolchain already extracted at {}", toolchain_extracted_dir.display());
+                // Check if current user is in the group
+                let output = flowey::shell_cmd!(rt, "id -nG").output()?;
+		let output = String::from_utf8(output.stdout)?;
+                let is_member = output.split_whitespace().any(|g| g == group_name);
+                if !is_member {
+                    anyhow::bail!("Current user does NOT belong to the '{group_name}' group, please add it using 'sudo usermod -aG docker $USER'");
                 }
 
-                // Document the cross-compilation environment variables needed
-                let cross_compile_path = toolchain_extracted_dir.join("bin").join("aarch64-none-elf-");
-                log::info!("ARM GNU toolchain bin path: {}", cross_compile_path.display());
+                // Create parent dir
+		let parent = shrinkwrap_dir.parent().ok_or_else(|| anyhow::anyhow!("shrinkwrap_dir has no parent"))?;
+		fs_err::create_dir_all(parent)?;
 
-                // 3) Clone OHCL Linux Kernel (Host Linux Kernel)
-                let host_kernel_dir = toolchain_dir.join("OHCL-Linux-Kernel");
+                // Clone OHCL Linux Kernel (Host Linux Kernel)
+                let host_kernel_dir = parent.join("OHCL-Linux-Kernel");
                 clone_or_update_repo(
                     &rt,
                     OHCL_LINUX_KERNEL_REPO,
@@ -260,7 +263,7 @@ impl SimpleFlowNode for Node {
                     "OHCL Linux Kernel",
                 )?;
 
-                // 4) Compile OHCL Linux Kernel with ARM GNU toolchain
+                // 3) Compile OHCL Linux Kernel with ARM GNU toolchain
                 let kernel_image = host_kernel_dir.join("arch").join("arm64").join("boot").join("Image");
                 if !kernel_image.exists() {
                     log::info!("Compiling OHCL Linux Kernel...");
@@ -268,12 +271,10 @@ impl SimpleFlowNode for Node {
 
                     // Set environment variables for cross-compilation
                     let arch = "arm64";
-                    let cross_compile = cross_compile_path.to_str()
-                        .ok_or_else(|| anyhow::anyhow!("Invalid cross_compile path"))?;
 
                     // Run make defconfig
                     log::info!("Running make defconfig...");
-                    make_target(&rt, arch, cross_compile, "defconfig", "1")?;
+                    make_target(&rt, arch, "defconfig", "1")?;
 
                     // Enable required kernel configs in groups
                     log::info!("Enabling required kernel configurations...");
@@ -283,14 +284,14 @@ impl SimpleFlowNode for Node {
 
                     // Run make olddefconfig
                     log::info!("Running make olddefconfig...");
-                    make_target(&rt, arch, cross_compile, "olddefconfig", "1")?;
+                    make_target(&rt, arch, "olddefconfig", "1")?;
 
                     // Build kernel Image
                     log::info!("Building kernel Image (this may take several minutes)...");
                     let nproc = std::thread::available_parallelism()
                         .map(|n| n.get().to_string())
                         .unwrap_or_else(|_| "1".to_string());
-                    make_target(&rt, arch, cross_compile, "Image", &nproc)?;
+                    make_target(&rt, arch, "Image", &nproc)?;
 
                     // Verify kernel Image was created
                     if !kernel_image.exists() {
@@ -304,7 +305,7 @@ impl SimpleFlowNode for Node {
                     log::info!("To rebuild, delete the Image file and run again");
                 }
 
-                // 4.5) Prefer local OpenVMM checkout for TMK components
+                // Prefer local OpenVMM checkout for TMK components
                 let tmk_kernel_dir = get_openvmm_tmk_repo()?;
                 anyhow::ensure!(
                     tmk_kernel_dir.is_dir(),
@@ -385,7 +386,7 @@ impl SimpleFlowNode for Node {
                 )?;
 
                 // 5.5) Clone cca_config repo and copy planes.yaml
-                let cca_config_dir = toolchain_dir.join("cca_config");
+                let cca_config_dir = parent.join("cca_config");
                 clone_or_update_repo(
                     &rt,
                     CCA_CONFIG_REPO,
@@ -439,7 +440,6 @@ impl SimpleFlowNode for Node {
                 log::info!("");
                 log::info!("Shrinkwrap repo ready at: {}", shrinkwrap_dir.display());
                 log::info!("Virtual environment at: {}", venv_dir.display());
-                log::info!("ARM GNU toolchain ready at: {}", toolchain_extracted_dir.display());
                 log::info!("OHCL Linux Kernel ready at: {}", host_kernel_dir.display());
                 log::info!("Kernel Image at: {}", kernel_image.display());
 
@@ -461,7 +461,7 @@ impl SimpleFlowNode for Node {
                 log::info!("");
                 log::info!("For kernel compilation, set these environment variables:");
                 log::info!("  export ARCH=arm64");
-                log::info!("  export CROSS_COMPILE={}", cross_compile_path.display());
+                log::info!("  export CROSS_COMPILE=aarch64-linux-gnu-");
                 log::info!("");
                 log::info!("For TMK builds, Rust targets are installed (aarch64-unknown-linux-gnu, aarch64-unknown-none)");
                 log::info!("Or the pipeline will invoke it directly using the venv Python.");
