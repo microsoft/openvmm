@@ -8,6 +8,8 @@ mod common;
 mod point_to_point;
 mod protocol;
 mod test_common;
+mod unix_common;
+mod unix_listener;
 mod unix_node;
 
 #[cfg(windows)]
@@ -24,8 +26,17 @@ pub mod windows {
 pub mod unix {
     //! Unix-specific mesh functionality.
 
+    use super::unix_listener;
     use super::unix_node;
+    pub use unix_listener::AcceptError;
+    pub use unix_listener::HandshakeError;
+    pub use unix_listener::JoinByPathError;
+    pub use unix_listener::ListenError;
+    pub use unix_listener::PendingMeshConnection;
+    pub use unix_listener::UnixMeshListener;
     pub use unix_node::Invitation as UnixInvitation;
+    pub use unix_node::InviteError;
+    pub use unix_node::JoinError;
     pub use unix_node::UnixNode;
 }
 
