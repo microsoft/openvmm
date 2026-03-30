@@ -32,18 +32,13 @@ impl ClaimVar for GhCliAuth {
 
 /// Auth config for the gh CLI node. Uses [`ConfigVar`] so that
 /// `PartialEq`-based config merging works for the `ReadVar` variant.
-#[derive(Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
 pub enum GhCliAuthConfig {
     /// Prompt user to log-in interactively.
+    #[default]
     LocalOnlyInteractive,
     /// Set the value of the `GITHUB_TOKEN` environment variable.
     AuthToken(ConfigVar<String>),
-}
-
-impl Default for GhCliAuthConfig {
-    fn default() -> Self {
-        GhCliAuthConfig::LocalOnlyInteractive
-    }
 }
 
 impl GhCliAuthConfig {
