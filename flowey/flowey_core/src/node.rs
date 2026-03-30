@@ -2904,7 +2904,7 @@ macro_rules! new_simple_flow_node {
 /// ```rust,ignore
 /// flowey_config! {
 ///     pub struct Config {
-///         pub version: String,
+///         pub version: Option<String>,
 ///     }
 /// }
 ///
@@ -2927,7 +2927,9 @@ macro_rules! new_simple_flow_node {
 ///         requests: Vec<Self::Request>,
 ///         ctx: &mut NodeCtx<'_>,
 ///     ) -> anyhow::Result<()> {
-///         // config.version is available here
+///         let version = config.version
+///             .ok_or(anyhow::anyhow!("missing config: version"))?;
+///         // ...
 ///         Ok(())
 ///     }
 /// }
@@ -3302,8 +3304,16 @@ macro_rules! flowey_request {
 
 /// Declare a config struct for a flowey node.
 ///
-/// Fields should be `Option<T>` — callers set only the fields they care about,
-/// and the node decides which fields are required vs optional in its `emit()`.
+/// Fields should be `Option<T>` or `BTreeMap<K, V>`:
+///
+/// - `Option<T>` — callers set only the fields they care about. The first
+///   caller to set a field wins; subsequent callers must agree on the same
+///   value or merging will fail. The node decides which fields are required
+///   vs optional in its `emit()`.
+///
+/// - `BTreeMap<K, V>` — callers contribute entries independently. Each key
+///   may only be set once; if two callers set the same key, the values must
+///   agree. Useful for per-variant or per-target configuration maps.
 ///
 /// Generates:
 /// - The `Config` struct with `Serialize`, `Deserialize`, `Default` derives
@@ -3317,6 +3327,7 @@ macro_rules! flowey_request {
 ///     pub struct Config {
 ///         pub version: Option<String>,
 ///         pub auto_install: Option<bool>,
+///         pub target_flags: BTreeMap<String, String>,
 ///     }
 /// }
 /// ```
