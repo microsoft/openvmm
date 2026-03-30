@@ -360,7 +360,6 @@ impl Connection {
             self.last_sent_fwd_count = fwd_cnt;
 
             self.pending_reply.set_credit_update(false);
-            tracing::info!(?self.key, fwd_cnt, "sending credit update");
             Some(new_reply_packet(
                 self.key,
                 Operation::CREDIT_UPDATE,
@@ -852,7 +851,7 @@ impl ConnectionManager {
             } else if conn.send_shutdown && conn.receive_shutdown && conn.is_recv_buf_empty() {
                 // Both sides have shutdown and all buffered data has been forwarded, so we can
                 // reset immediately.
-                tracing::info!(?key, "connection fully shutdown, removing");
+                tracing::debug!(?key, "connection fully shutdown, removing");
                 self.remove_connection(&key);
                 PendingFutures::simple_rx(RxReady::SendReset(key))
             } else {
@@ -954,7 +953,7 @@ impl ConnectionManager {
         match conn.write_from_buffer() {
             Ok(future) => {
                 if conn.send_shutdown && conn.receive_shutdown && conn.is_recv_buf_empty() {
-                    tracing::info!(?id, "connection fully shutdown after write, removing");
+                    tracing::debug!(?id, "connection fully shutdown after write, removing");
                     self.remove_connection(&id.key);
                     return PendingFutures::simple_rx(RxReady::SendReset(id.key));
                 }

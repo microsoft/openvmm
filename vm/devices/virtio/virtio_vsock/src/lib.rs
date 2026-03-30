@@ -372,7 +372,7 @@ impl VsockWorker {
         mut queue_work: VirtioQueueCallbackWork,
         packet: &VsockPacketBuf,
     ) -> anyhow::Result<()> {
-        tracing::info!(?packet.header, "sending reply");
+        tracing::trace!(?packet.header, "sending reply");
         let header_bytes = packet.header.as_bytes();
         queue_work
             .write(&state.memory, header_bytes)

@@ -1366,7 +1366,7 @@ async fn host_send_respects_credit(driver: DefaultDriver) {
         sent_bytes.extend_from_slice(&chunk[..size]);
     }
 
-    stream.get().shutdown(std::net::Shutdown::Both).unwrap();
+    stream.get().shutdown(Shutdown::Both).unwrap();
 
     // Consume remaining data.
     loop {
@@ -1684,13 +1684,12 @@ async fn host_shutdown(driver: DefaultDriver) {
 
     // Close the host socket. The device detects EOF on the socket read and
     // sends a SHUTDOWN to the guest, then starts the graceful shutdown timer.
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    stream.shutdown(Shutdown::Write).unwrap();
 
     // Wait for the SHUTDOWN packet, skipping any control packets.
     let mut rx_buf_idx = 0;
     loop {
         let (_rx_id, _rx_len) = harness.wait_for_rx_used().await;
-        tracing::info!(_rx_id, "Used");
         let gpa = rx_gpas[rx_buf_idx];
         rx_buf_idx += 1;
 
@@ -1719,7 +1718,6 @@ async fn host_shutdown(driver: DefaultDriver) {
             .wait_for_rx_used_timeout(Duration::from_secs(3))
             .await
         {
-            tracing::info!(rx_id, "Used");
             let hdr = harness.read_header(rx_gpas[rx_id as usize]);
             panic!(
                 "unexpected RX packet before graceful shutdown timeout: {:?}",
@@ -1728,7 +1726,7 @@ async fn host_shutdown(driver: DefaultDriver) {
         }
 
         // Shutting down the read side too should trigger the timeout.
-        stream.shutdown(std::net::Shutdown::Both).unwrap();
+        stream.shutdown(Shutdown::Both).unwrap();
     }
 
     loop {
@@ -1750,6 +1748,7 @@ async fn host_shutdown(driver: DefaultDriver) {
     }
 }
 
+/// Stress test: spawn multiple host threads that rapidly connect, send data, and disconnect.
 #[async_test]
 async fn stress_test(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
@@ -1762,7 +1761,7 @@ async fn stress_test(driver: DefaultDriver) {
     let threads: Vec<_> = (0..10)
         .map(|_| {
             let path = host_listener_path.clone();
-            std::thread::spawn(move || connection_thread(path))
+            thread::spawn(move || connection_thread(path))
         })
         .collect();
 
