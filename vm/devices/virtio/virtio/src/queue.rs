@@ -234,7 +234,10 @@ impl QueueCoreGetWork {
                     error = &err as &dyn std::error::Error,
                     "failed to arm kick"
                 );
-                false
+                // On error, behave as if armed to avoid a busy loop in callers
+                // that treat `false` as "retry immediately".
+                self.armed = true;
+                true
             }
         }
     }

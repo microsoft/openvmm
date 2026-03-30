@@ -100,6 +100,9 @@ impl PackedQueueGetWork {
             if flags.available() != self.wrapped_bit || flags.used() == self.wrapped_bit {
                 return Ok(None);
             }
+            // Ensure subsequent descriptor-field reads cannot be reordered
+            // before the flags read on weakly ordered architectures.
+            atomic::fence(atomic::Ordering::Acquire);
             self.next_is_available = true;
         }
         Ok(Some(self.next_avail_index))
@@ -202,6 +205,9 @@ impl PackedQueueCompleteWork {
                     .with_available(self.wrapped_bit)
                     .with_used(self.wrapped_bit),
             );
+        // Ensure any prior writes to guest buffers (e.g. device data) are
+        // visible before the used descriptor becomes visible to the guest.
+        atomic::fence(atomic::Ordering::Release);
         self.queue_desc
             .write_plain(descriptor_offset(self.next_index), &descriptor)
             .map_err(QueueError::Memory)?;
