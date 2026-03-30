@@ -140,7 +140,7 @@ impl TcpTestHarness {
 
         let mut consomme = Consomme::new({
             let mut params = ConsommeParams::new().unwrap();
-            params.allow_guest_loopback_access = true;
+            params.allow_host_local_access = true;
             params
         });
         let mut client = TestClient::new(driver);

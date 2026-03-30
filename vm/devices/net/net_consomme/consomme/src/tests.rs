@@ -224,7 +224,7 @@ async fn ipv4_link_local_blocked(driver: DefaultDriver) {
 async fn ipv4_loopback_allowed_when_opted_in(driver: DefaultDriver) {
     let mut consomme = Consomme::new({
         let mut params = ConsommeParams::new().unwrap();
-        params.allow_guest_loopback_access = true;
+        params.allow_host_local_access = true;
         params
     });
     let mut client = TestClient::new(driver);
@@ -280,6 +280,37 @@ async fn ipv6_loopback_blocked_by_default(driver: DefaultDriver) {
     assert!(
         matches!(result, Err(DropReason::DestinationNotAllowed)),
         "IPv6 loopback traffic should be rejected, got {result:?}"
+    );
+}
+
+/// Verify that traffic to IPv6 link-local (fe80::/10) is blocked by default.
+#[pal_async::async_test]
+async fn ipv6_link_local_blocked_by_default(driver: DefaultDriver) {
+    let mut consomme = Consomme::new({
+        let mut params = ConsommeParams::new().unwrap();
+        params.skip_ipv6_checks = true;
+        params
+    });
+    let mut client = TestClient::new(driver);
+    let mut buf = vec![0u8; 1514];
+
+    let guest_mac = consomme.params_mut().client_mac;
+    let gateway_mac = consomme.params_mut().gateway_mac_ipv6;
+    let guest_ip = Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+
+    let len = build_ipv6_syn(
+        &mut buf,
+        guest_mac,
+        gateway_mac,
+        guest_ip,
+        Ipv6Address::new(0xfe80, 0, 0, 0, 0, 0, 0, 1),
+    );
+    let result = consomme
+        .access(&mut client)
+        .send(&buf[..len], &ChecksumState::NONE);
+    assert!(
+        matches!(result, Err(DropReason::DestinationNotAllowed)),
+        "IPv6 link-local traffic should be rejected, got {result:?}"
     );
 }
 

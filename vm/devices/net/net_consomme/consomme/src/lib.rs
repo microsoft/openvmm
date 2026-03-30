@@ -124,7 +124,7 @@ pub struct ConsommeParams {
     /// If true, allow guest traffic destined for host-local addresses
     /// (loopback, unspecified, link-local).
     #[inspect(display)]
-    pub allow_guest_loopback_access: bool,
+    pub allow_host_local_access: bool,
 }
 
 /// An error indicating that the CIDR is invalid.
@@ -157,7 +157,7 @@ impl ConsommeParams {
             // Per RFC 4787, UDP NAT bindings, by default, should timeout after 5 minutes, but can be configured.
             udp_timeout: Duration::from_secs(300),
             skip_ipv6_checks: false,
-            allow_guest_loopback_access: false,
+            allow_host_local_access: false,
         })
     }
 
@@ -624,7 +624,7 @@ impl<T: Client> Access<'_, T> {
         }
 
         // Reject guest traffic to host-local-only destinations.
-        if !self.inner.state.params.allow_guest_loopback_access {
+        if !self.inner.state.params.allow_host_local_access {
             let dst_ip = std::net::Ipv4Addr::from(ipv4.dst_addr().octets());
             if dst_ip.is_loopback() || dst_ip.is_unspecified() || dst_ip.is_link_local() {
                 return Err(DropReason::DestinationNotAllowed);
@@ -668,9 +668,9 @@ impl<T: Client> Access<'_, T> {
         }
 
         // Reject guest traffic to host-local-only destinations.
-        if !self.inner.state.params.allow_guest_loopback_access {
+        if !self.inner.state.params.allow_host_local_access {
             let dst_ip = std::net::Ipv6Addr::from(ipv6.dst_addr().octets());
-            if dst_ip.is_loopback() || dst_ip.is_unspecified() {
+            if dst_ip.is_loopback() || dst_ip.is_unicast_link_local() {
                 return Err(DropReason::DestinationNotAllowed);
             }
         }
