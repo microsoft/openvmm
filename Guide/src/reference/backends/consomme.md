@@ -1,11 +1,14 @@
 # Consomme
 
 Consomme is a user-mode NAT that provides guest VM networking through
-ordinary host sockets. It runs entirely unprivileged — no admin rights,
-no driver installation, no system-wide network configuration. Because
-all traffic flows through standard socket APIs, host networking policies
-(firewalls, VPN routing, proxy settings) apply naturally, just as they
-would for any other application.
+ordinary host sockets. For TCP, UDP, DNS, and DHCP traffic it runs
+entirely unprivileged — no admin rights, no driver installation, no
+system-wide network configuration. ICMP (ping) forwarding on Unix/Linux
+may require additional privileges (for example `CAP_NET_RAW`) or
+configuring the `net.ipv4.ping_group_range` sysctl to permit
+unprivileged ping sockets. Because all traffic flows through standard
+socket APIs, host networking policies (firewalls, VPN routing, proxy
+settings) apply naturally, just as they would for any other application.
 
 The guest sees a normal network: it gets an IP address via DHCP, has a
 default gateway, and can resolve DNS names. Behind the scenes, Consomme
@@ -25,14 +28,14 @@ flowchart TB
         Parse --> ICMPFwd["ICMP forwarder"]
         Parse --> DNSFwd["DNS forwarder"]
         Parse --> DHCPSrv["DHCP / ARP / NDP"]
-        TCPProxy & UDPProxy & ICMPFwd --> Sockets["Winsock Sockets"]
-        DNSFwd -- "DnsQueryRaw" --> WinDNS["Windows DNS API"]
+        TCPProxy & UDPProxy & ICMPFwd --> Sockets["Host sockets"]
+        DNSFwd -- "DNS API call" --> HostDNS["Platform DNS resolver"]
         DHCPSrv -. "replies directly to guest" .-> VNIC
     end
 
     subgraph Kernel ["Host Kernel"]
-        Sockets --> HostStack["Windows TCP/IP Stack + Firewall + VPN"]
-        WinDNS --> HostStack
+        Sockets --> HostStack["Host TCP/IP stack + firewall + VPN"]
+        HostDNS --> HostStack
         HostStack --> NIC["Physical NIC"]
     end
 
@@ -84,9 +87,10 @@ programmatically bind host ports and forward them into the guest.
 
 ### UDP
 
-Each unique guest source address gets a host-side UDP socket bound to
-an ephemeral port. Datagrams are forwarded in both directions. Idle
-bindings are cleaned up after 5 minutes (per RFC 4787).
+Each unique guest source socket (guest IP + source port) gets a
+host-side UDP socket bound to an ephemeral port. Datagrams are
+forwarded in both directions. Idle bindings are cleaned up after a
+configurable timeout (5 minutes by default, per RFC 4787).
 
 UDP packets to the gateway on well-known ports are intercepted:
 
@@ -103,7 +107,9 @@ The guest is told (via DHCP) to use the gateway as its DNS server.
 Queries to the gateway on port 53 are intercepted and forwarded to the
 host's DNS resolver. On Windows, this uses the `DnsQueryRaw` API, which
 forwards the raw DNS packet without parsing — the host resolver handles
-all the logic and returns a raw response. This means guest DNS
+all the logic and returns a raw response. On Unix-like hosts, Consomme
+uses the system resolver configuration (for example `/etc/resolv.conf`)
+and forwards queries via host UDP/TCP sockets. This means guest DNS
 resolution matches the host's behavior, including corporate VPNs and
 split-tunnel DNS configurations.
 
