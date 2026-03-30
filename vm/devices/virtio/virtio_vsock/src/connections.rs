@@ -475,6 +475,10 @@ impl Connection {
                 .filter_map(|p| p.writeable.then_some(p.length as usize))
                 .sum();
 
+            if buf_len < VSOCK_HEADER_SIZE {
+                anyhow::bail!("guest buffer too small for vsock header");
+            }
+
             let mut temp_buf = vec![0u8; buf_len - VSOCK_HEADER_SIZE];
             let bytes_read = self
                 .socket
@@ -836,7 +840,7 @@ impl ConnectionManager {
         let future = conn
             .handle_guest_data(packet.data, packet.header.len as usize)
             .map_err(|err| {
-                SendResetError::new(key, "failed to handle RESPONSE from guest")
+                SendResetError::new(key, "failed to handle RW from guest")
                     .with_inner(err)
                     .with_remove(true)
             })?;

@@ -84,14 +84,13 @@ pub struct VirtioVsockDevice {
 impl VirtioVsockDevice {
     /// Create a new virtio-vsock device.
     ///
-    /// `guest_cid` is the context ID assigned to the guest. The host always
-    /// uses CID 2.
+    /// `guest_cid` is the context ID assigned to the guest.
     ///
-    /// `base_path` is the path prefix for Unix socket relay. For a vsock port
-    /// P, the relay will attempt to connect to `<base_path>_P`.
+    /// `base_path` is the path prefix for Unix socket relay. For a vsock port P, the relay will
+    /// attempt to connect to `<base_path>_P`.
     ///
-    /// `listener` is an optional pre-bound Unix listener for accepting
-    /// host-initiated connections using the hybrid vsock connect protocol.
+    /// `listener` is an pre-bound Unix listener for accepting host-initiated connections using the
+    /// hybrid vsock connect protocol.
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_cid: u64,

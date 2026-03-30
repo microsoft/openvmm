@@ -1549,9 +1549,6 @@ async fn bounce_buffer_rx_fragmented_descriptor(driver: DefaultDriver) {
 /// be directly mapped. This test splits the TX packet's data payload into two
 /// fragments separated by a gap at non-page-aligned offsets (the header is in
 /// its own descriptor).
-///
-/// This test is expected to fail until bounce buffer support is implemented
-/// for the vsock TX path.
 #[async_test]
 async fn bounce_buffer_tx_fragmented_descriptor(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
