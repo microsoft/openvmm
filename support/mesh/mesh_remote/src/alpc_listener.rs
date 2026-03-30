@@ -170,7 +170,7 @@ impl AlpcNode {
         stream
             .read_exact(&mut len_buf)
             .await
-            .map_err(JoinBySocketError::Connect)?;
+            .map_err(JoinBySocketError::Read)?;
         let data_len = u32::from_le_bytes(len_buf) as usize;
 
         const MAX_INVITATION_SIZE: usize = 64 * 1024;
@@ -182,7 +182,7 @@ impl AlpcNode {
         stream
             .read_exact(&mut data)
             .await
-            .map_err(JoinBySocketError::Connect)?;
+            .map_err(JoinBySocketError::Read)?;
         drop(stream);
 
         let invitation: NamedInvitation =
@@ -198,6 +198,8 @@ impl AlpcNode {
 pub enum JoinBySocketError {
     #[error("failed to connect to mesh socket")]
     Connect(#[source] io::Error),
+    #[error("failed to read invitation from mesh socket")]
+    Read(#[source] io::Error),
     #[error("invitation too large ({len} bytes)")]
     InvitationTooLarge { len: usize },
     #[error("failed to decode invitation")]

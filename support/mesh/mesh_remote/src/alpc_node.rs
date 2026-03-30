@@ -65,6 +65,39 @@ use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 
+/// A 256-bit mesh secret used to authenticate ALPC connections.
+///
+/// Implements constant-time comparison and redacted `Debug` output.
+#[derive(Clone, Copy, Protobuf, FromBytes, IntoBytes, Immutable)]
+#[mesh(transparent)]
+#[repr(transparent)]
+pub(crate) struct MeshSecret(
+    #[mesh(encoding = "mesh_protobuf::encoding::ZeroCopyEncoding")] [u8; 32],
+);
+
+impl MeshSecret {
+    /// Generate a new random mesh secret.
+    fn new() -> Self {
+        let mut secret = [0u8; 32];
+        getrandom::fill(&mut secret).unwrap();
+        Self(secret)
+    }
+}
+
+impl PartialEq for MeshSecret {
+    fn eq(&self, other: &Self) -> bool {
+        constant_time_eq_32(&self.0, &other.0)
+    }
+}
+
+impl Eq for MeshSecret {}
+
+impl Debug for MeshSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MeshSecret([REDACTED])")
+    }
+}
+
 /// Errors from internal node setup (`with_id`).
 #[derive(Debug, thiserror::Error)]
 pub enum NodeSetupError {
@@ -98,8 +131,6 @@ pub enum NewNodeError {
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs)]
 pub enum JoinError {
-    #[error("invalid mesh secret length (expected 32 bytes)")]
-    InvalidMeshSecret,
     #[error("invalid directory path")]
     InvalidDirectoryPath,
     #[error("failed to open object directory {path}")]
@@ -133,7 +164,7 @@ struct InviteContext {
     directory: Arc<OwnedHandle>,
     local_node: Arc<LocalNode>,
     invitations: InvitationMap,
-    mesh_secret: [u8; 32],
+    mesh_secret: MeshSecret,
 }
 
 impl InviteContext {
@@ -194,12 +225,13 @@ impl InviteContext {
         port: Port,
         dup_directory: bool,
     ) -> Result<(InvitationCredentials, Option<OwnedHandle>, InvitationHandle), InviteError> {
-        let (addr, handle, init_recv) = self.invite_setup()?;
+        // Duplicate the handle first (fallible) before mutating shared state.
         let dir = if dup_directory {
             Some(self.directory.as_handle().duplicate(true, Some(0))?)
         } else {
             None
         };
+        let (addr, handle, init_recv) = self.invite_setup()?;
         driver
             .spawn(
                 "mesh alpc invitation",
@@ -209,7 +241,7 @@ impl InviteContext {
         Ok((
             InvitationCredentials {
                 address: addr,
-                mesh_secret: self.mesh_secret.to_vec(),
+                mesh_secret: self.mesh_secret,
             },
             dir,
             handle,
@@ -290,11 +322,11 @@ const DIRECTORY_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED
 
 /// ALPC connection data — sent as the connection message payload.
 /// Uses zerocopy for safe transmutation to/from bytes.
-#[derive(Debug, FromBytes, IntoBytes, Immutable)]
+#[derive(FromBytes, IntoBytes, Immutable)]
 #[repr(C)]
 struct AlpcConnectionData {
     node_id: [u8; 16],
-    mesh_secret: [u8; 32],
+    mesh_secret: MeshSecret,
 }
 
 /// The serializable portion of an invitation — address + mesh secret.
@@ -305,7 +337,7 @@ pub struct InvitationCredentials {
     /// The invitation address.
     pub(crate) address: InvitationAddress,
     /// The mesh secret for ALPC connection auth.
-    pub(crate) mesh_secret: Vec<u8>,
+    pub(crate) mesh_secret: MeshSecret,
 }
 
 /// Invitation for connecting already-running processes — pure data.
@@ -493,8 +525,7 @@ impl AlpcNode {
 
         // Generate a 256-bit mesh secret for ALPC connection authentication.
         // Every connecting node must present this secret to be accepted.
-        let mut secret = [0u8; 32];
-        getrandom::fill(&mut secret).unwrap();
+        let secret = MeshSecret::new();
         Ok(Self::with_id(
             driver,
             NodeId::new(),
@@ -521,7 +552,7 @@ impl AlpcNode {
         driver: impl Driver + Spawn + Clone,
         local_id: NodeId,
         directory: OwnedHandle,
-        mesh_secret: [u8; 32],
+        mesh_secret: MeshSecret,
         directory_path: Option<String>,
     ) -> Result<Self, NodeSetupError> {
         let directory = Arc::new(directory);
@@ -565,8 +596,7 @@ impl AlpcNode {
             let directory = invite_ctx.directory.clone();
             let driver = driver.clone();
             async move {
-                Self::process_connects(&driver, local_id, directory, connect_recv, mesh_secret)
-                    .await
+                Self::process_connects(&driver, local_id, directory, connect_recv, mesh_secret).await
             }
         });
 
@@ -613,7 +643,7 @@ impl AlpcNode {
         local_id: NodeId,
         directory: Arc<OwnedHandle>,
         mut connect_recv: mpsc::UnboundedReceiver<(NodeId, RemoteNodeHandle)>,
-        mesh_secret: [u8; 32],
+        mesh_secret: MeshSecret,
     ) {
         let teardowns: Mutex<HashMap<NodeId, mesh_channel::OneshotSender<()>>> = Default::default();
         let mut connect_tasks = FuturesUnordered::new();
@@ -656,7 +686,7 @@ impl AlpcNode {
         directory: &OwnedHandle,
         local_id: NodeId,
         remote_id: NodeId,
-        mesh_secret: &[u8; 32],
+        mesh_secret: &MeshSecret,
     ) -> io::Result<PolledWait<AlpcPort>> {
         let data = AlpcConnectionData {
             node_id: (local_id.0).0,
@@ -703,7 +733,7 @@ impl AlpcNode {
         directory: &OwnedHandle,
         teardown_recv: mesh_channel::OneshotReceiver<()>,
         teardowns: &Mutex<HashMap<NodeId, mesh_channel::OneshotSender<()>>>,
-        mesh_secret: &[u8; 32],
+        mesh_secret: &MeshSecret,
     ) {
         tracing::debug!(node = ?local_id, remote_node = ?remote_id, "connecting to node");
         match Self::connect_alpc(driver, directory, local_id, remote_id, mesh_secret).await {
@@ -812,12 +842,7 @@ impl AlpcNode {
         invitation: Invitation,
         port: Port,
     ) -> Result<Self, JoinError> {
-        let mesh_secret: [u8; 32] = invitation
-            .credentials
-            .mesh_secret
-            .as_slice()
-            .try_into()
-            .map_err(|_| JoinError::InvalidMeshSecret)?;
+        let mesh_secret = invitation.credentials.mesh_secret;
         let node = Self::with_id(
             driver,
             invitation.credentials.address.local_addr.node,
@@ -843,12 +868,7 @@ impl AlpcNode {
         invitation: NamedInvitation,
         port: Port,
     ) -> Result<Self, JoinError> {
-        let mesh_secret: [u8; 32] = invitation
-            .credentials
-            .mesh_secret
-            .as_slice()
-            .try_into()
-            .map_err(|_| JoinError::InvalidMeshSecret)?;
+        let mesh_secret = invitation.credentials.mesh_secret;
         let path: UnicodeString = invitation
             .directory_path
             .as_str()
@@ -904,7 +924,7 @@ impl AlpcNode {
         mut port: PolledWait<alpc::Port>,
         invitations: InvitationMap,
         connect_send: mpsc::UnboundedSender<(NodeId, RemoteNodeHandle)>,
-        mesh_secret: [u8; 32],
+        mesh_secret: MeshSecret,
     ) -> io::Result<()> {
         struct Connection {
             comm: alpc::Port,
@@ -992,7 +1012,7 @@ impl AlpcNode {
                         continue;
                     };
                     let node_id = NodeId(Uuid(conn_data.node_id));
-                    if !constant_time_eq_32(&mesh_secret, &conn_data.mesh_secret) {
+                    if mesh_secret != conn_data.mesh_secret {
                         tracing::warn!(
                             node = ?local_id,
                             "rejected connection: invalid mesh secret"
