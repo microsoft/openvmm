@@ -942,12 +942,7 @@ pub trait NodeCtxBackend {
     /// Invoked when a node sets config on another node.
     ///
     /// Config is merged by the resolver and delivered before action requests.
-    fn on_config(&mut self, node_handle: NodeHandle, config: anyhow::Result<Box<[u8]>>) {
-        // Default: route through on_request for backwards compatibility
-        // during migration. Resolver implementations that support config
-        // should override this.
-        self.on_request(node_handle, config);
-    }
+    fn on_config(&mut self, node_handle: NodeHandle, config: anyhow::Result<Box<[u8]>>);
 
     fn on_emit_rust_step(
         &mut self,
