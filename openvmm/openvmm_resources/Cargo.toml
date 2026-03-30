@@ -14,21 +14,22 @@ gdb = ["openvmm_core/gdb", "dep:debug_worker"]
 tpm = ["dep:tpm_device"]
 
 # Enable building with /dev/mshv support.
-virt_mshv = ["openvmm_core/virt_mshv"]
+virt_mshv = ["openvmm_hypervisors/virt_mshv"]
 
 # Enable building with KVM support.
-virt_kvm = ["openvmm_core/virt_kvm"]
+virt_kvm = ["openvmm_hypervisors/virt_kvm"]
 
 # Enable building with WHP support.
-virt_whp = ["openvmm_core/virt_whp"]
+virt_whp = ["openvmm_core/virt_whp", "openvmm_hypervisors/virt_whp"]
 
 # Enable building with macOS hypervisor framework support.
-virt_hvf = ["openvmm_core/virt_hvf"]
+virt_hvf = ["openvmm_hypervisors/virt_hvf"]
 
 unstable_whp = ["openvmm_core/unstable_whp"]
 
 [dependencies]
 mesh_worker.workspace = true
+openvmm_hypervisors.workspace = true
 vm_resource.workspace = true
 
 # Serial

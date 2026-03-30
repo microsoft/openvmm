@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod disk;
+pub mod hypervisor;
 pub mod shared_memory;
 pub mod snapshot;
 pub mod underhill;

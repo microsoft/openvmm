@@ -3338,6 +3338,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypervisor_resources"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "linkme",
+ "mesh",
+ "vm_resource",
+]
+
+[[package]]
 name = "hypestv"
 version = "0.0.0"
 dependencies = [
@@ -5199,6 +5209,7 @@ dependencies = [
  "guid",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
+ "hypervisor_resources",
  "ide",
  "ide_resources",
  "igvm",
@@ -5233,9 +5244,6 @@ dependencies = [
  "uefi_nvram_storage",
  "uefi_specs",
  "virt",
- "virt_hvf",
- "virt_kvm",
- "virt_mshv",
  "virt_whp",
  "virtio",
  "vm_loader",
@@ -5267,6 +5275,7 @@ dependencies = [
  "framebuffer",
  "get_resources",
  "guid",
+ "hypervisor_resources",
  "ide_resources",
  "input_core",
  "memory_range",
@@ -5424,11 +5433,27 @@ dependencies = [
  "disk_vhdmp",
  "fs-err",
  "get_resources",
+ "hypervisor_resources",
  "mesh",
  "openvmm_defs",
  "sparse_mmap",
  "tempfile",
  "tracing",
+ "vm_resource",
+]
+
+[[package]]
+name = "openvmm_hypervisors"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "build_rs_guest_arch",
+ "hypervisor_resources",
+ "openvmm_core",
+ "virt_hvf",
+ "virt_kvm",
+ "virt_mshv",
+ "virt_whp",
  "vm_resource",
 ]
 
@@ -5475,6 +5500,7 @@ dependencies = [
  "nvme",
  "nvme_test",
  "openvmm_core",
+ "openvmm_hypervisors",
  "rusqlite",
  "scsidisk",
  "serial_16550",
@@ -5870,6 +5896,7 @@ dependencies = [
  "nvme_resources",
  "openvmm_defs",
  "openvmm_helpers",
+ "openvmm_hypervisors",
  "openvmm_pcat_locator",
  "pal",
  "pal_async",
