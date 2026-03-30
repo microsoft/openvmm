@@ -29,7 +29,7 @@ impl Worker {
         let (notify_send, notify_recv) = mesh::channel();
 
         let params = VmWorkerParameters {
-            hypervisor: None,
+            hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
             saved_state: None,
             shared_memory,

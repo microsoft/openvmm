@@ -194,13 +194,14 @@ impl virt::Hypervisor for LinuxMshv {
 
         Ok(MshvProtoPartition { config, vmfd, vps })
     }
+}
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/mshv") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(Error::AvailableCheck(err)),
-        }
+/// Returns whether MSHV is available on this machine.
+pub fn is_available() -> Result<bool, Error> {
+    match std::fs::metadata("/dev/mshv") {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(Error::AvailableCheck(err)),
     }
 }
 

@@ -9,6 +9,8 @@ rust-version.workspace = true
 [dependencies]
 pipette_client.workspace = true
 
+openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "virt_whp", "virt_hvf"] }
+
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
