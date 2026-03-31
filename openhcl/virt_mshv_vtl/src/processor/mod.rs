@@ -422,6 +422,7 @@ impl InterceptMessageType {
 
 /// Trait for processor backings that have hardware isolation support.
 // #[cfg(guest_arch = "x86_64")]
+#[allow(dead_code)]
 pub(crate) trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific VP state.
     fn cvm_state(&self) -> &crate::UhCvmVpState;

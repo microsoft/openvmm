@@ -101,14 +101,6 @@ impl CommonState {
 
         #[cfg(guest_arch = "x86_64")]
         let memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
-
-        #[cfg(guest_arch = "aarch64")]
-        let mut memory_layout =
-            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
-
-        #[cfg(guest_arch = "aarch64")]
-        let mut shared_memory_layout =
-            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
         
         let map_size = ram_size;
         let non_zero_size =NonZeroUsize::new(map_size as usize).expect("Size was already checked to be non-zero");
@@ -145,7 +137,8 @@ impl CommonState {
         let start = (raw_start + ALIGN - 1) & !(ALIGN - 1);
         let end   = raw_end & !(ALIGN - 1);
 
-        memory_layout = MemoryLayout::new_from_ranges(
+        #[cfg(guest_arch = "aarch64")]
+        let memory_layout = MemoryLayout::new_from_ranges(
                 &[MemoryRangeWithNode {
                     range: MemoryRange::new(Range {
                         start,
@@ -166,7 +159,8 @@ impl CommonState {
         //     end: region_end_exclusive,
         // };
 
-        shared_memory_layout = MemoryLayout::new_from_ranges(
+        #[cfg(guest_arch = "aarch64")]
+        let shared_memory_layout = MemoryLayout::new_from_ranges(
                 &[MemoryRangeWithNode {
                     range: MemoryRange::new(Range {
                         start: start + map_size/2,

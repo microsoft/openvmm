@@ -25,17 +25,15 @@ use zerocopy::FromBytes as _;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-use nix::{
-    sys::{
-        mman::{MapFlags, ProtFlags, mmap},
-        statfs::statfs,
-    },
-    unistd::{ftruncate, mkstemp, unlink},
-};
+// use nix::{
+//     sys::{
+//         mman::{MapFlags, ProtFlags, mmap},
+//         statfs::statfs,
+//     },
+//     unistd::{ftruncate, mkstemp, unlink},
+// };
 use std::{
-    num::NonZeroUsize,
-    os::unix::{fs::FileExt, io::FromRawFd},
-    path::Path,
+    os::unix::{fs::FileExt},
 };
 
 /// Loads a TMK, returning the initial registers for the BSP.

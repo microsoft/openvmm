@@ -634,6 +634,7 @@ pub(crate) mod ioctls {
     pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
     pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
     pub const HCL_CAP_DR6_SHARED: u32 = 3;
+    #[cfg(guest_arch = "x86_64")]
     pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
 
     ioctl_write_ptr!(
@@ -2651,16 +2652,19 @@ impl Hcl {
         Ok(())
     }
 
+    /// Gets Realm config
     #[cfg(guest_arch = "aarch64")]
     pub fn get_realm_config(&self) -> Result<RsiRealmConfig, Error> {
         self.mshv_vtl.get_realm_config()
     }
 
+    /// sets system registers through rsi calls
     #[cfg(guest_arch = "aarch64")]
     pub fn rsi_sysreg_write(&self, vtl: GuestVtl, sysreg: u64, value: u64) -> Result<(), HvError> {
         self.mshv_vtl.rsi_sysreg_write(vtl, sysreg, value)
     }
 
+    /// setting memory permissions
     #[cfg(guest_arch = "aarch64")]
     pub fn rsi_set_mem_perm(
         &self,

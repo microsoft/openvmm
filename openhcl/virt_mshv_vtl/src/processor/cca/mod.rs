@@ -38,6 +38,7 @@ use super::{BackingSharedParams, UhProcessor, private::BackingPrivate, vp_state:
 struct CcaRunVpError(#[source] hcl::ioctl::Error);
 
 // TODO: CCA: what is this needed for?
+#[allow(dead_code)]
 enum UhDirectOverlay {
     Sipp,
     Sifp,
@@ -88,8 +89,8 @@ pub struct CcaBackedShared {
 impl CcaBackedShared {
     pub(crate) fn new(
         partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams,
-    ) -> Result<Self, crate::Error> {
+        params: BackingSharedParams<'_>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             cvm: params.cvm_state.unwrap(),
             // VPs start in VTL 2.
@@ -183,7 +184,7 @@ impl BackingPrivate for CcaBacked {
     fn new(
         params: super::BackingParams<'_, '_, Self>,
         shared: &CcaBackedShared,
-    ) -> Result<Self, crate::Error> {
+    ) -> Result<Self, Error> {
         // TODO: CCA: see below
         // TODO TDX: ssp is for shadow stack
         // TODO TDX: direct overlay like snp?
@@ -303,10 +304,10 @@ impl BackingPrivate for CcaBacked {
     }
 
     fn process_interrupts(
-            this: &mut UhProcessor<'_, Self>,
-            scan_irr: VtlArray<bool, 2>,
-            first_scan_irr: &mut bool,
-            dev: &impl CpuIo,
+            _this: &mut UhProcessor<'_, Self>,
+            _scan_irr: VtlArray<bool, 2>,
+            _first_scan_irr: &mut bool,
+            _dev: &impl CpuIo,
         ) -> bool{
             false
         }
@@ -599,7 +600,7 @@ impl HardwareIsolatedBacking for CcaBacked {
         }
     }
 
-    fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>{
+    fn pending_event_vector(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> Option<u8>{
         // let event_inject = this.runner.vmsa(vtl).event_inject();
         // if event_inject.valid() {
         //     Some(event_inject.vector())
@@ -610,27 +611,27 @@ impl HardwareIsolatedBacking for CcaBacked {
     }
 
     fn is_interrupt_pending(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        check_rflags: bool,
-        dev: &impl CpuIo,
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _check_rflags: bool,
+        _dev: &impl CpuIo,
     ) -> bool{
         false
     }
 
     fn set_pending_exception(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        event: hvdef::HvX64PendingExceptionEvent,
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _event: hvdef::HvX64PendingExceptionEvent,
     ){
 
     }
 
     ///TODO Place holder. Not implemented for arm64.
     fn intercept_message_state(
-        this: &UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        include_optional_state: bool,
+        _this: &UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _include_optional_state: bool,
     ) -> InterceptMessageState{
         InterceptMessageState {
             instruction_length_and_cr8: 0,
@@ -648,35 +649,36 @@ impl HardwareIsolatedBacking for CcaBacked {
         }
     }
 
-    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+    fn cr0(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> u64 {
         //this.runner.vmsa(vtl).cr0()
         0
     }
 
-    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+    fn cr4(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> u64 {
         //this.runner.vmsa(vtl).cr4()
         0
     }
 
     fn cr_intercept_registration(
-        this: &mut UhProcessor<'_, Self>,
-        intercept_control: HvRegisterCrInterceptControl,
+        _this: &mut UhProcessor<'_, Self>,
+        _intercept_control: HvRegisterCrInterceptControl,
     ){}
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>{
         None
     }
 
-    fn update_deadline(this: &mut UhProcessor<'_, Self>, ref_time_now: u64, next_ref_time: u64){
+    fn update_deadline(_this: &mut UhProcessor<'_, Self>, _ref_time_now: u64, _next_ref_time: u64){
         unimplemented!()
     }
 
 
-    fn clear_deadline(this: &mut UhProcessor<'_, Self>){
+    fn clear_deadline(_this: &mut UhProcessor<'_, Self>){
         unimplemented!()
     }
 }
 
+#[allow(dead_code)]
 struct CcaTlbLockFlushAccess<'a> {
     vp_index: VpIndex,
     partition: &'a UhPartitionInner,

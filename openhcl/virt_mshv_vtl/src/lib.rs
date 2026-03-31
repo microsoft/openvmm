@@ -119,10 +119,12 @@ use user_driver::DmaClient;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
+#[cfg(guest_arch = "x86_64")]
 use virt::X86Partition;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
+#[cfg(guest_arch = "x86_64")]
 use virt_support_apic::LocalApicSet;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
@@ -425,9 +427,9 @@ impl UhCvmVpState {
     /// Creates a new CVM VP state.
     pub(crate) fn new(
         cvm_partition: &UhCvmPartitionState,
-        inner: &UhPartitionInner,
+        _inner: &UhPartitionInner,
         vp_info: &TargetVpInfo,
-        overlay_pages_required: usize,
+        _overlay_pages_required: usize,
     ) -> Result<Self, Error> {
 
         let direct_overlay_handle = cvm_partition
@@ -507,7 +509,7 @@ struct UhCvmPartitionState {
     #[inspect(with = "inspect::iter_by_index")]
     vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     #[inspect(skip)]
     isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
     #[cfg(guest_arch = "x86_64")]
@@ -622,7 +624,7 @@ struct TscReferenceTimeSource {
     tsc_scale: u64,
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 impl TscReferenceTimeSource {
     fn new(tsc_frequency: u64) -> Self {
         TscReferenceTimeSource {
@@ -809,7 +811,7 @@ struct TlbLockInfo {
     sleeping: AtomicBool,
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 impl TlbLockInfo {
     fn new(vp_count: usize) -> Self {
         Self {
@@ -835,11 +837,11 @@ struct WakeReason {
 
 impl WakeReason {
     // Convenient constants.
-    const EXTINT: Self = Self::new().with_extint(true);
+    const _EXTINT: Self = Self::new().with_extint(true);
     const MESSAGE_QUEUES: Self = Self::new().with_message_queues(true);
     #[cfg(guest_arch = "x86_64")]
     const HV_START_ENABLE_VP_VTL: Self = Self::new().with_hv_start_enable_vtl_vp(true); // StartVp/EnableVpVtl handling
-    const INTCON: Self = Self::new().with_intcon(true);
+    const _INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]
     const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
 }
@@ -950,6 +952,7 @@ impl X86Partition for UhPartition {
     }
 }
 
+#[allow(dead_code)]
 impl UhPartitionInner {
     fn vp(&self, index: VpIndex) -> Option<&'_ UhVpInner> {
         self.vps.get(index.index() as usize)
@@ -1435,6 +1438,8 @@ fn is_restore_partition_time_available() -> bool {
     );
     enlightenment_info.restore_time_on_resume()
 }
+
+#[allow(dead_code)]
 // xtask-fmt allow-target-arch cpu-intrinsic
 #[cfg(not(target_arch = "x86_64"))]
 fn is_restore_partition_time_available() -> bool {
@@ -1444,6 +1449,7 @@ fn is_restore_partition_time_available() -> bool {
 
 /// Configure the [`hvdef::HvRegisterVsmPartitionConfig`] register with the
 /// values used by underhill.
+#[allow(dead_code)]
 fn set_vtl2_vsm_partition_config(hcl: &Hcl) -> Result<(), Error> {
     // Read available capabilities to determine what to enable.
     let caps = hcl.get_vsm_capabilities().map_err(Error::GetReg)?;
@@ -1811,7 +1817,7 @@ impl<'a> UhProtoPartition<'a> {
             create_partition_available: _,
             #[cfg(guest_arch = "x86_64")]
             cpuid,
-            #[cfg(guest_arch = "aarch64")]
+            #[cfg_attr(guest_arch = "aarch64", allow(unused_variables))]
             realm_config,
         } = self;
         let isolation = params.isolation;
@@ -2008,7 +2014,7 @@ impl<'a> UhProtoPartition<'a> {
         let lower_vtl_timer_virt_available =
             hcl.supports_lower_vtl_timer_virt() && !params.disable_lower_vtl_timer_virt;
 
-        let mut backing_shared = BackingShared::new(
+        let backing_shared = BackingShared::new(
             isolation,
             &params,
             BackingSharedParams {
@@ -2084,11 +2090,13 @@ impl<'a> UhProtoPartition<'a> {
         ))
     }
 
+    /// Getter for realm_config
     #[cfg(guest_arch = "aarch64")]
     pub fn realm_config(&self) -> RsiRealmConfig {
         self.realm_config
     }
 
+    /// Setter for memory permissions
     #[cfg(guest_arch = "aarch64")]
     pub fn cca_set_mem_perm(&self, base_addr: u64, top_addr: u64) -> Result<(), Error> {
         self.hcl
