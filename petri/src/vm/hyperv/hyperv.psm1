@@ -203,7 +203,36 @@ function New-CustomVM
 
         [uint64] $HwThreadsPerCore = 0,
 
-        [uint64] $MaxProcessorsPerNumaNode = 1
+        [uint64] $MaxProcessorsPerNumaNode = 1,
+
+        # must be a hashtable with format:
+        # ScsiControllers => {
+        #     Vsid => {
+        #         Vtl,
+        #         Drives => {
+        #             Lun => {
+        #                 DiskPath,
+        #                 Dvd
+        #             },
+        #             ...
+        #         }
+        #     },
+        #     ...
+        # }
+        [hashtable] $ScsiControllers = $null,
+
+        # must be a hashtable with format:
+        # IdeControllers => {
+        #     ControllerNumber => {
+        #         Lun => {
+        #             DiskPath,
+        #             Dvd
+        #         },
+        #         ...
+        #     },
+        #     ...
+        # }
+        [hashtable] $IdeControllers = $null
     )
 
     $vmms = Get-Vmms
@@ -221,6 +250,7 @@ function New-CustomVM
         VMBusMessageRedirection    = $VMBusMessageRedirection
         SecureBootEnabled          = $SecureBootEnabled
         VirtualNumaEnabled         = $false
+        UserSnapshotType           = 2 #disable
     }
 
     if ($GuestStateFilePath) {
@@ -288,26 +318,113 @@ function New-CustomVM
 
     if (-not $psd) { throw "Unable to create the Msvm_ProcessorSettingData object" }
 
+    $resourceSettings = @(
+        ($msd | ConvertTo-CimEmbeddedString),
+        ($psd | ConvertTo-CimEmbeddedString)
+    )
+
+    if ($ScsiControllers) {
+        foreach ($controller in $ScsiControllers.GetEnumerator()) {
+            $vsid = $controller.Name
+            $targetVtl = $controller.Value["Vtl"]
+            $template = Get-DefaultRasd $SCSI_CONTROLLER_TYPE
+            $resourceSettings += Copy-CimInstanceWithNewProperties $template @{
+                "VirtualSystemIdentifiers" = @("{$vsid}");
+                "TargetVtl" = $targetVtl
+            } | ConvertTo-CimEmbeddedString
+        }
+    }
+
     $vm = ($vmms | Invoke-CimMethod -Name "DefineSystem" -Arguments @{
-        "SystemSettings"   = ($vssd | ConvertTo-CimEmbeddedString) ;
-        "ResourceSettings" = @(
-            ($msd | ConvertTo-CimEmbeddedString),
-            ($psd | ConvertTo-CimEmbeddedString)
-        )
+        "SystemSettings"   = ($vssd | ConvertTo-CimEmbeddedString);
+        "ResourceSettings" = $resourceSettings
     } | Trace-CimMethodExecution -MethodName "DefineSystem" -CimInstance $vmms)
 
-    if (-not $vm) { throw "Unable to DefineSystem" }
+    $resourceSettings = @()
+
+    $vssd = $vm.ResultingSystem | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+
+    if ($ScsiControllers) {
+        $controllersWmi = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object {
+            $_.ResourceSubType -eq $SCSI_CONTROLLER_TYPE
+        }
+        foreach ($controller in $ScsiControllers.GetEnumerator()) {
+            $vsid = $controller.Name
+            $controllerWmi = $controllersWmi | Where-Object { $_.VirtualSystemIdentifiers[0] -eq "{$vsid}" }
+            $controllerPath = $controllerWmi | Get-CimInstancePath
+            $drives = $controller.Value["Drives"]
+
+            $resourceSettings += Convert-DriveResource -Drives $drives -ControllerPath $controllerPath
+        }
+    }
+
+    if ($IdeControllers) {
+        $controllersWmi = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object {
+            $_.ResourceSubType -eq $IDE_CONTROLLER_TYPE
+        }
+        foreach ($controller in $IdeControllers.GetEnumerator()) {
+            $controllerNumber = $controller.Name
+            $controllerWmi = $controllersWmi | Where-Object { $_.Address -eq $controllerNumber }
+            $controllerPath = $controllerWmi | Get-CimInstancePath
+
+            $resourceSettings += Convert-DriveResource -Drives $controller.Value -ControllerPath $controllerPath
+        }
+    }
+    
+    $addDisksResult = $vmms | Invoke-CimMethod -Name "AddResourceSettings" -Arguments @{
+        "AffectedConfiguration" = $vssd;
+        "ResourceSettings" = $resourceSettings
+    } | Trace-CimMethodExecution -MethodName "AddResourceSettings" -CimInstance $vmms
 
     $vmid = $vm.ResultingSystem.Name
     $vm = Get-VM -Id $vmid
-
-    $vm | Set-VM -CheckpointType Disabled
 
     if (@(1, 2, 3) -contains $GuestStateIsolationType) {
         $vm | Disable-VMConsoleSupport
     }
 
     $vmid
+}
+
+function Convert-DriveResource
+{
+    param (
+        [hashtable] $Drives,
+        [string] $ControllerPath
+    )
+
+    $resourceSettings = @()
+
+    foreach ($drive in $Drives.GetEnumerator()) {
+        $lun = $drive.Name
+        $drivePath = $ControllerPath.Substring(0, $ControllerPath.Length - 1) + "\\$lun\\D`""
+        $dvd = $drive.Value["Dvd"]
+        $diskPath = $drive.Value["DiskPath"]
+
+        if ($dvd) {
+            $driveType = $DVD_DRIVE_TYPE
+            $diskType = $DVD_DISK_TYPE
+        } else {
+            $driveType = $HARD_DRIVE_TYPE
+            $diskType = $HARD_DISK_TYPE
+        }
+
+        $driveTemplate = Get-DefaultRasd $driveType
+        $resourceSettings += Copy-CimInstanceWithNewProperties $driveTemplate @{
+            "AddressOnParent" = $lun;
+            "Parent" = $ControllerPath
+        } | ConvertTo-CimEmbeddedString
+
+        if ($diskPath) {
+            $diskTemplate = Get-DefaultRasd $diskType
+            $resourceSettings += Copy-CimInstanceWithNewProperties $diskTemplate @{
+                "Parent" = $drivePath;
+                "HostResource" = @($diskPath)
+            } | ConvertTo-CimEmbeddedString
+        }
+    }
+
+    $resourceSettings
 }
 
 function Set-InitialMachineConfiguration

@@ -24,7 +24,6 @@ use crate::PetriVmRuntimeConfig;
 use crate::PetriVmmBackend;
 use crate::ShutdownKind;
 use crate::UefiConfig;
-use crate::VmbusStorageType;
 use crate::VmmQuirks;
 use crate::hyperv::powershell::HyperVNewCustomVMArgs;
 use crate::kmsg_log_task;
@@ -49,6 +48,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
@@ -219,11 +219,61 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
+        // Map SCSI
+        let mut scsi_controllers = HashMap::new();
+        for (vsid, controller) in config.vmbus_storage_controllers.iter() {
+            let mut drives = HashMap::new();
+            for (lun, Drive { disk, is_dvd }) in &controller.drives {
+                drives.insert(
+                    *lun,
+                    powershell::HyperVDrive {
+                        disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
+                        is_dvd: *is_dvd,
+                    },
+                );
+            }
+            if !drives.is_empty() {
+                scsi_controllers.insert(
+                    *vsid,
+                    powershell::HyperVScsiController {
+                        target_vtl: controller.target_vtl,
+                        drives,
+                    },
+                );
+            }
+        }
+
+        // Map IDE
+        let mut ide_controllers = HashMap::new();
+        if let Some(controllers) = config.firmware.ide_controllers() {
+            for (controller_number, controller) in controllers.iter().enumerate() {
+                let mut drives = HashMap::new();
+                for (lun, Drive { disk, is_dvd }) in controller
+                    .into_iter()
+                    .filter_map(|d| d.as_ref())
+                    .enumerate()
+                {
+                    drives.insert(
+                        lun as u8,
+                        powershell::HyperVDrive {
+                            disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
+                            is_dvd: *is_dvd,
+                        },
+                    );
+                }
+                if !drives.is_empty() {
+                    ide_controllers.insert(controller_number as u32, drives);
+                }
+            }
+        }
+
         let hyperv_args = {
             let mut args = HyperVNewCustomVMArgs::from_config(&config, &properties)?;
             args.firmware_file = igvm_file.clone();
             args.firmware_parameters = openhcl_command_line;
             args.guest_state_path = guest_state_path;
+            args.scsi_controllers = scsi_controllers;
+            args.ide_controllers = ide_controllers;
             args
         };
 
@@ -325,53 +375,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
             "guest-log",
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
-
-        // Add IDE storage
-        if let Some(ide_controllers) = config.firmware.ide_controllers() {
-            for (controller_number, controller) in ide_controllers.iter().enumerate() {
-                for (controller_location, disk) in controller.iter().enumerate() {
-                    if let Some(disk) = disk {
-                        let path = petri_disk_to_hyperv(disk.disk.as_ref(), &temp_dir).await?;
-
-                        vm.set_drive_ide(
-                            controller_number as u32,
-                            controller_location as u8,
-                            path.as_deref(),
-                            disk.is_dvd,
-                            false,
-                        )
-                        .await?;
-                    }
-                }
-            }
-        }
-
-        // Add VMBus storage
-        for (vsid, controller) in &config.vmbus_storage_controllers {
-            match controller.controller_type {
-                VmbusStorageType::Scsi => {
-                    vm.add_scsi_controller(vsid, controller.target_vtl as u32)
-                        .await?;
-
-                    for (controller_location, drive) in controller.drives.iter() {
-                        let path = petri_disk_to_hyperv(drive.disk.as_ref(), &temp_dir).await?;
-
-                        vm.set_drive_scsi(
-                            vsid,
-                            (*controller_location)
-                                .try_into()
-                                .context("invalid scsi lun")?,
-                            path.as_deref(),
-                            false,
-                            false,
-                        )
-                        .await?;
-                    }
-                }
-                VmbusStorageType::Nvme => todo!(),
-                VmbusStorageType::VirtioBlk => todo!(),
-            }
-        }
 
         // Configure the TPM
         if config.tpm.is_some() {

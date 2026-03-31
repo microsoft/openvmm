@@ -8,6 +8,7 @@ use crate::OpenHclServicingFlags;
 use crate::PetriVmConfig;
 use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
+use crate::Vtl;
 use crate::run_host_cmd;
 use crate::vm::append_cmdline;
 use anyhow::Context;
@@ -18,6 +19,7 @@ use powershell_builder as ps;
 use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::Path;
@@ -244,6 +246,25 @@ pub struct HyperVNewCustomVMArgs {
     pub apic_mode: Option<HyperVApicMode>,
     pub hw_threads_per_core: Option<u64>,
     pub max_processors_per_numa_node: Option<u64>,
+    pub scsi_controllers: HashMap<Guid, HyperVScsiController>,
+    pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
+}
+
+/// Hyper-V SCSI controller
+pub struct HyperVScsiController {
+    /// The VTL to assign the storage controller to
+    pub target_vtl: Vtl,
+    /// Drives (with any inserted disks) attached to this storage controller
+    pub drives: HashMap<u32, HyperVDrive>,
+}
+
+/// Hyper-V disk drive
+#[derive(Debug, Clone)]
+pub struct HyperVDrive {
+    /// Backing disk
+    pub disk: Option<PathBuf>,
+    /// Whether this is a DVD
+    pub is_dvd: bool,
 }
 
 impl HyperVNewCustomVMArgs {
@@ -451,6 +472,8 @@ impl HyperVNewCustomVMArgs {
             firmware_file: None,
             firmware_parameters: None,
             guest_state_path: None,
+            scsi_controllers: HashMap::new(),
+            ide_controllers: HashMap::new(),
         })
     }
 }
@@ -476,6 +499,55 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             guid::guid!("4292ae2b-ee2c-42b5-a969-dd8f8689f6f3")
         }
     });
+
+    let scsi_controllers = (!args.scsi_controllers.is_empty()).then(|| {
+        ps::HashTable::new(args.scsi_controllers.into_iter().map(
+            |(vsid, HyperVScsiController { target_vtl, drives })| {
+                (
+                    format!("{{{vsid}}}"),
+                    ps::Value::new(ps::HashTable::new([
+                        ("Vtl", ps::Value::new(target_vtl as u32)),
+                        (
+                            "Drives",
+                            ps::Value::new(ps::HashTable::new(drives.into_iter().map(
+                                |(lun, HyperVDrive { disk, is_dvd })| {
+                                    (lun.to_string(), {
+                                        let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
+                                        if let Some(disk) = disk {
+                                            drive.push(("DiskPath", ps::Value::new(disk)));
+                                        }
+                                        ps::Value::new(ps::HashTable::new(drive))
+                                    })
+                                },
+                            ))),
+                        ),
+                    ])),
+                )
+            },
+        ))
+    });
+
+    let ide_controllers =
+        (!args.ide_controllers.is_empty()).then(|| {
+            ps::HashTable::new(args.ide_controllers.into_iter().map(
+                |(controller_number, drives)| {
+                    (
+                        controller_number.to_string(),
+                        ps::Value::new(ps::HashTable::new(drives.into_iter().map(
+                            |(lun, HyperVDrive { disk, is_dvd })| {
+                                (lun.to_string(), {
+                                    let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
+                                    if let Some(disk) = disk {
+                                        drive.push(("DiskPath", ps::Value::new(disk)));
+                                    }
+                                    ps::Value::new(ps::HashTable::new(drive))
+                                })
+                            },
+                        ))),
+                    )
+                },
+            ))
+        });
 
     let vmid = run_host_cmd(
         PowerShellBuilder::new()
@@ -516,6 +588,8 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
                 "MaxProcessorsPerNumaNode",
                 args.max_processors_per_numa_node,
             )
+            .arg_opt("ScsiControllers", scsi_controllers)
+            .arg_opt("IdeControllers", ide_controllers)
             .finish()
             .build(),
     )
