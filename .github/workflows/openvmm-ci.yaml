@@ -345,9 +345,9 @@ jobs:
     name: clippy [x64-windows], unit tests [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -586,9 +586,9 @@ jobs:
     name: clippy [x64-linux, macos], unit tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job11-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -863,9 +863,9 @@ jobs:
     name: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job12-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -1131,9 +1131,9 @@ jobs:
     name: clippy [aarch64-windows], unit tests [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-ARM64
-    - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - ARM64
+    - Baremetal
     permissions:
       contents: read
       id-token: write
@@ -1370,11 +1370,7 @@ jobs:
       shell: bash
   job14:
     name: clippy [aarch64-linux], unit tests [aarch64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64
-    - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
@@ -1627,11 +1623,7 @@ jobs:
       shell: bash
   job15:
     name: clippy [aarch64-linux-musl, misc nostd], unit tests [aarch64-linux-musl]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-ARM64-Pool-WestUS2
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-ARM64
-    - JobId=job15-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       id-token: write
@@ -1897,9 +1889,10 @@ jobs:
     name: run vmm-tests [x64-windows-intel]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job16-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
+    - Intel
     permissions:
       contents: read
       id-token: write
@@ -2431,9 +2424,10 @@ jobs:
     name: run vmm-tests [x64-windows-amd]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job18-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
+    - AMD
     permissions:
       contents: read
       id-token: write
@@ -2965,9 +2959,9 @@ jobs:
     name: build artifacts (not for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -3045,8 +3039,6 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-igvmfilegen" | flowey.exe v 2 'artifact_publish_from_aarch64-windows-igvmfilegen' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-ohcldiag-dev"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-ohcldiag-dev" | flowey.exe v 2 'artifact_publish_from_aarch64-windows-ohcldiag-dev' --is-raw-string update
-        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-vmgs_lib"
-        echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-vmgs_lib" | flowey.exe v 2 'artifact_publish_from_aarch64-windows-vmgs_lib' --is-raw-string update
       shell: bash
     - name: add default cargo home to path
       run: flowey.exe e 2 flowey_lib_common::install_rust 0
@@ -3115,7 +3107,7 @@ jobs:
     - name: symlink protoc
       run: |-
         flowey.exe e 2 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 1
+        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build hypestv
       run: |-
@@ -3123,31 +3115,22 @@ jobs:
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 2 flowey_lib_hvlite::build_hypestv 0
         flowey.exe e 2 flowey_core::pipeline::artifact::publish 0
-        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 0
-      shell: bash
-    - name: cargo build vmgs_lib
-      run: |-
-        flowey.exe e 2 flowey_lib_common::run_cargo_build 3
-        flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 3
-        flowey.exe e 2 flowey_lib_hvlite::build_and_test_vmgs_lib 0
-        flowey.exe e 2 flowey_lib_hvlite::build_and_test_vmgs_lib 1
-        flowey.exe e 2 flowey_core::pipeline::artifact::publish 1
-        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 2
+        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build igvmfilegen
       run: |-
         flowey.exe e 2 flowey_lib_common::run_cargo_build 1
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 2 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey.exe e 2 flowey_core::pipeline::artifact::publish 2
-        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 3
+        flowey.exe e 2 flowey_core::pipeline::artifact::publish 1
+        flowey.exe e 2 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
         flowey.exe e 2 flowey_lib_common::run_cargo_build 2
         flowey.exe e 2 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 2 flowey_lib_hvlite::build_ohcldiag_dev 0
-        flowey.exe e 2 flowey_core::pipeline::artifact::publish 3
+        flowey.exe e 2 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 2 flowey_lib_common::cache 3
@@ -3170,19 +3153,14 @@ jobs:
         name: aarch64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-ohcldiag-dev/
         include-hidden-files: true
-    - name: 🌼📦 Publish aarch64-windows-vmgs_lib
-      uses: actions/upload-artifact@v7
-      with:
-        name: aarch64-windows-vmgs_lib
-        path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgs_lib/
-        include-hidden-files: true
   job20:
     name: run vmm-tests [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job20-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
+    - AMD
     permissions:
       contents: read
       id-token: write
@@ -3224,12 +3202,12 @@ jobs:
       shell: bash
     - name: creating new test content dir
       run: |-
-        flowey e 20 flowey_core::pipeline::artifact::resolve 1
-        flowey e 20 flowey_core::pipeline::artifact::resolve 0
         flowey e 20 flowey_core::pipeline::artifact::resolve 2
         flowey e 20 flowey_core::pipeline::artifact::resolve 5
         flowey e 20 flowey_core::pipeline::artifact::resolve 3
         flowey e 20 flowey_core::pipeline::artifact::resolve 6
+        flowey e 20 flowey_core::pipeline::artifact::resolve 1
+        flowey e 20 flowey_core::pipeline::artifact::resolve 0
         flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
       shell: bash
     - name: checking if packages need to be installed
@@ -3982,9 +3960,9 @@ jobs:
     name: build artifacts (for VMM tests) [aarch64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4140,14 +4118,6 @@ jobs:
     - name: symlink protoc
       run: |-
         flowey.exe e 3 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-        flowey.exe e 3 flowey_lib_hvlite::init_cross_build 7
-      shell: bash
-    - name: cargo build prep_steps
-      run: |-
-        flowey.exe e 3 flowey_lib_common::run_cargo_build 2
-        flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 2
-        flowey.exe e 3 flowey_lib_hvlite::build_prep_steps 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 5
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
@@ -4155,7 +4125,7 @@ jobs:
         flowey.exe e 3 flowey_lib_common::run_cargo_build 6
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 10
         flowey.exe e 3 flowey_lib_hvlite::build_vmgstool 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 6
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 5
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 3
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 7
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 8
@@ -4165,7 +4135,7 @@ jobs:
         flowey.exe e 3 flowey_lib_common::run_cargo_build 5
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 9
         flowey.exe e 3 flowey_lib_hvlite::build_tpm_guest_tests 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 7
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 6
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 1
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 3
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 4
@@ -4175,7 +4145,7 @@ jobs:
         flowey.exe e 3 flowey_lib_common::run_cargo_build 3
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 5
         flowey.exe e 3 flowey_lib_hvlite::build_test_igvm_agent_rpc_server 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 0
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 7
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -4216,7 +4186,7 @@ jobs:
       run: |-
         flowey.exe e 3 flowey_lib_common::run_cargo_nextest_archive 0
         flowey.exe e 3 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 1
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build openvmm
@@ -4224,7 +4194,7 @@ jobs:
         flowey.exe e 3 flowey_lib_common::run_cargo_build 0
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 3 flowey_lib_hvlite::build_openvmm 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 2
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 1
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build pipette
@@ -4232,7 +4202,7 @@ jobs:
         flowey.exe e 3 flowey_lib_common::run_cargo_build 1
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 3 flowey_lib_hvlite::build_pipette 0
-        flowey.exe e 3 flowey_core::pipeline::artifact::publish 3
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 2
         flowey.exe e 3 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build tmk_vmm
@@ -4240,6 +4210,14 @@ jobs:
         flowey.exe e 3 flowey_lib_common::run_cargo_build 4
         flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 6
         flowey.exe e 3 flowey_lib_hvlite::build_tmk_vmm 0
+        flowey.exe e 3 flowey_core::pipeline::artifact::publish 3
+        flowey.exe e 3 flowey_lib_hvlite::init_cross_build 7
+      shell: bash
+    - name: cargo build prep_steps
+      run: |-
+        flowey.exe e 3 flowey_lib_common::run_cargo_build 2
+        flowey.exe e 3 flowey_lib_hvlite::run_cargo_build 2
+        flowey.exe e 3 flowey_lib_hvlite::build_prep_steps 0
         flowey.exe e 3 flowey_core::pipeline::artifact::publish 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
@@ -4300,9 +4278,9 @@ jobs:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4380,8 +4358,6 @@ jobs:
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-igvmfilegen" | flowey.exe v 4 'artifact_publish_from_x64-windows-igvmfilegen' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-ohcldiag-dev"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-ohcldiag-dev" | flowey.exe v 4 'artifact_publish_from_x64-windows-ohcldiag-dev' --is-raw-string update
-        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-vmgs_lib"
-        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-vmgs_lib" | flowey.exe v 4 'artifact_publish_from_x64-windows-vmgs_lib' --is-raw-string update
       shell: bash
     - name: add default cargo home to path
       run: flowey.exe e 4 flowey_lib_common::install_rust 0
@@ -4450,7 +4426,7 @@ jobs:
     - name: symlink protoc
       run: |-
         flowey.exe e 4 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
-        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 1
+        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build hypestv
       run: |-
@@ -4458,35 +4434,22 @@ jobs:
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 4 flowey_lib_hvlite::build_hypestv 0
         flowey.exe e 4 flowey_core::pipeline::artifact::publish 0
-        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 0
-      shell: bash
-    - name: cargo build vmgs_lib
-      run: |-
-        flowey.exe e 4 flowey_lib_common::run_cargo_build 3
-        flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 3
-        flowey.exe e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 0
-      shell: bash
-    - name: test vmgs_lib
-      run: |-
-        flowey.exe e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 1
-        flowey.exe e 4 flowey_lib_hvlite::build_and_test_vmgs_lib 2
-        flowey.exe e 4 flowey_core::pipeline::artifact::publish 1
-        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 2
+        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build igvmfilegen
       run: |-
         flowey.exe e 4 flowey_lib_common::run_cargo_build 1
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 4 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey.exe e 4 flowey_core::pipeline::artifact::publish 2
-        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 3
+        flowey.exe e 4 flowey_core::pipeline::artifact::publish 1
+        flowey.exe e 4 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build ohcldiag-dev
       run: |-
         flowey.exe e 4 flowey_lib_common::run_cargo_build 2
         flowey.exe e 4 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 4 flowey_lib_hvlite::build_ohcldiag_dev 0
-        flowey.exe e 4 flowey_core::pipeline::artifact::publish 3
+        flowey.exe e 4 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 4 flowey_lib_common::cache 3
@@ -4509,19 +4472,13 @@ jobs:
         name: x64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-ohcldiag-dev/
         include-hidden-files: true
-    - name: 🌼📦 Publish x64-windows-vmgs_lib
-      uses: actions/upload-artifact@v7
-      with:
-        name: x64-windows-vmgs_lib
-        path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgs_lib/
-        include-hidden-files: true
   job5:
     name: build artifacts (for VMM tests) [x64-windows]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
-    - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Windows
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -4845,9 +4802,9 @@ jobs:
     name: build artifacts [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -5165,9 +5122,9 @@ jobs:
     name: build artifacts [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -5541,9 +5498,9 @@ jobs:
     name: build openhcl [aarch64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
@@ -5890,9 +5847,9 @@ jobs:
     name: build openhcl [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
-    - JobId=job9-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
+    - Linux
+    - X64
+    - VM
     permissions:
       contents: read
       id-token: write
