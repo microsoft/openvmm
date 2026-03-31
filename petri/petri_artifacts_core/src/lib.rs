@@ -9,7 +9,6 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -344,15 +343,23 @@ impl TestArtifactRequirements {
     /// Resolve the set of dependencies.
     pub fn resolve(&self, resolver: impl ResolveTestArtifact) -> anyhow::Result<TestArtifacts> {
         let mut failed = String::new();
-        let mut seen = HashSet::new();
         let mut resolved = HashMap::new();
 
+        // Merge duplicate registrations by handle, keeping the strictest
+        // requirement (treat as required if any registration is required).
+        let mut merged: HashMap<ErasedArtifactHandle, bool> = HashMap::new();
         for &(a, optional) in &self.artifacts {
-            // Skip duplicates — the same artifact may be registered by
-            // multiple tests.
-            if !seen.insert(a) {
-                continue;
-            }
+            merged
+                .entry(a)
+                .and_modify(|existing_optional| {
+                    // `optional == true` means optional; `false` means required.
+                    // We want the strictest semantics: required if any registration is required.
+                    *existing_optional = *existing_optional && optional;
+                })
+                .or_insert(optional);
+        }
+
+        for (a, optional) in merged {
             match resolver.resolve(a) {
                 Ok(p) => {
                     resolved.insert(a, p);
