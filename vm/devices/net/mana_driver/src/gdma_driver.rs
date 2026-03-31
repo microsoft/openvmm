@@ -787,8 +787,24 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         mem::take(&mut self.vf_reconfiguration_pending)
     }
 
+    #[cfg(test)]
     pub fn device(&self) -> &T {
-        self.device.as_ref().unwrap()
+        self.device.as_ref().expect("device has been taken")
+    }
+
+    /// Returns a reference to the device, or `None` if the device has been
+    /// taken via [`take_device`](Self::take_device).
+    pub fn try_device(&self) -> Option<&T> {
+        self.device.as_ref()
+    }
+
+    /// Takes the device backing out of the driver, leaving `None`.
+    ///
+    /// After this call, operations that require the device (e.g. DMA
+    /// allocation, interrupt retargeting) will fail with an error instead
+    /// of panicking.
+    pub fn take_device(&mut self) -> Option<T> {
+        self.device.take()
     }
 
     pub fn check_vf_resources(&self, num_vps: u32, num_queues_needed: u32) {
@@ -1308,10 +1324,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .await
     }
 
-    pub fn into_device(mut self) -> T {
-        self.device.take().unwrap()
-    }
-
     fn start_listening(&mut self, eq_id: u32, msix: u32) -> DeviceInterrupt {
         let interrupt = self.interrupts[msix as usize]
             .clone()
@@ -1331,7 +1343,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     fn get_msix_for_cpu(&mut self, cpu: u32) -> anyhow::Result<u32> {
         let msix = cpu % self.num_msix;
-        let device = self.device.as_mut().expect("device should be present");
+        let device = self.device.as_mut().context("device has been taken")?;
         let interrupt = device.map_interrupt(msix, cpu)?;
         self.interrupts[msix as usize] = Some(interrupt);
 
