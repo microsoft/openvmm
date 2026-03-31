@@ -238,8 +238,14 @@ impl BasicNic {
                     adapter_link_speed_mbps: 0,
                 };
 
-                write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                // Older guests (e.g. Linux 6.1) allocate a smaller response
+                // buffer that does not include the V4 fields added at the end
+                // of ManaQueryDeviceCfgResp. Truncate the response to whatever
+                // the guest can accept.
+                let resp_bytes = resp.as_bytes();
+                let write_len = MemoryWrite::len(&write).min(resp_bytes.len());
+                write.write(&resp_bytes[..write_len])?;
+                write_len
             }
             ManaCommandCode::MANA_CONFIG_VPORT_TX => {
                 let req: ManaConfigVportReq = read
