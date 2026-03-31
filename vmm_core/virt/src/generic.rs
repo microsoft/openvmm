@@ -167,10 +167,6 @@ pub trait ProtoPartition {
     /// The error type when creating the partition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Gets the default guest cpuid value for inputs `eax` and `ecx`.
-    #[cfg(guest_arch = "x86_64")]
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4];
-
     /// The maximum physical address width that processors and devices for this
     /// partition can access.
     ///

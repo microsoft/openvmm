@@ -874,15 +874,6 @@ impl InitializedVm {
             ));
         }
 
-        // Add in topology CPUID leaves.
-        #[cfg(guest_arch = "x86_64")]
-        vmm_core::cpuid::topology::topology_cpuid(
-            &processor_topology,
-            &|eax, ecx| proto.cpuid(eax, ecx),
-            &mut cpuid,
-        )
-        .context("failed to compute topology cpuid")?;
-
         let (partition, vps) = proto
             .build(virt::PartitionConfig {
                 mem_layout: &mem_layout,
