@@ -177,6 +177,150 @@ async fn servicing_keepalive_with_device<T: PetriVmmBackend>(
     .await
 }
 
+/// Test servicing with sidecar and per-CPU override for outstanding IO.
+/// Uses 24 VPs across 2 NUMA nodes with sidecar enabled. Delays IO
+/// completions, then saves while IO is in-flight. On restore, the CPUs
+/// with delayed IO should appear in cpus_with_outstanding_io, triggering
+/// the per-CPU sidecar override: those CPUs are started by the kernel,
+/// the remaining VPs go through sidecar's parallel startup.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn servicing_keepalive_sidecar_with_outstanding_io(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    use petri::ApicMode;
+
+    let mut flags = config.default_servicing_flags();
+    flags.enable_nvme_keepalive = true;
+    let mut fault_start_updater = CellUpdater::new(false);
+    let cell = fault_start_updater.cell();
+
+    // Delay IO completions (10s) so IO is still in-flight during save.
+    // With max_io_queues=2, exactly 2 NVMe IO queues are created, each
+    // bound to a specific CPU. Those 2 CPUs appear in cpus_with_outstanding_io
+    // while the remaining 22 VPs stay sidecar-eligible.
+    let fault_configuration = FaultConfiguration::new(cell.clone()).with_io_queue_fault(
+        IoQueueFaultConfig::new(cell.clone()).with_completion_queue_fault(
+            CommandMatchBuilder::new().match_cdw0(0, 0).build(),
+            IoQueueFaultBehavior::Delay(Duration::from_secs(10)),
+        ),
+    );
+
+    let scsi_controller_guid = Guid::new_random();
+    let disk_size = 4 * 1024 * 1024; // 4 MiB
+    let vp_count: u32 = 24;
+
+    // Build config directly (not via create_keepalive_test_config_custom_vps)
+    // so we can set vps_per_socket=12 for 2 NUMA nodes. Sidecar requires
+    // >1 VP per node to activate.
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    let (mut vm, agent) = config
+        .with_vmbus_redirect(true)
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512")
+        .with_openhcl_command_line("OPENHCL_SIDECAR=log")
+        .with_processor_topology(ProcessorTopology {
+            vp_count,
+            vps_per_socket: Some(12),
+            enable_smt: Some(false),
+            apic_mode: Some(ApicMode::X2apicSupported),
+        })
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vpci_devices.push(VpciDeviceConfig {
+                    vtl: DeviceVtl::Vtl2,
+                    instance_id: NVME_INSTANCE,
+                    resource: NvmeFaultControllerHandle {
+                        subsystem_id: Guid::new_random(),
+                        msix_count: 3,
+                        max_io_queues: 2,
+                        namespaces: vec![NamespaceDefinition {
+                            nsid: KEEPALIVE_VTL2_NSID,
+                            read_only: false,
+                            disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                len: Some(disk_size),
+                                sector_size: None,
+                            })
+                            .into_resource(),
+                        }],
+                        fault_config: fault_configuration,
+                        enable_tdisp_tests: false,
+                    }
+                    .into_resource(),
+                })
+            })
+        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_controller_guid)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(VTL0_NVME_LUN)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Nvme,
+                            NVME_INSTANCE,
+                            KEEPALIVE_VTL2_NSID,
+                        )),
+                )
+                .build(),
+        )
+        .with_custom_vtl2_settings(move |v| {
+            if v.fixed.is_none() {
+                v.fixed = Some(Default::default());
+            }
+            v.fixed.as_mut().unwrap().scsi_sub_channels = Some(vp_count - 1);
+        })
+        .run()
+        .await?;
+
+    agent.ping().await?;
+
+    // Find the disk path.
+    let device_paths = get_device_paths(
+        &agent,
+        scsi_controller_guid,
+        vec![ExpectedGuestDevice {
+            lun: VTL0_NVME_LUN,
+            disk_size_sectors: (disk_size / SCSI_SECTOR_SIZE) as usize,
+            friendly_name: "nvme_disk".to_string(),
+        }],
+    )
+    .await?;
+    assert!(device_paths.len() == 1);
+    let disk_path = &device_paths[0];
+
+    // Start delayed IO — this creates outstanding IO on the issuing CPUs.
+    fault_start_updater.set(true).await;
+    let _io_child = large_read_from_disk(&agent, disk_path).await?;
+
+    // Wait briefly so the IO reaches the NVMe controller and gets delayed.
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Save while IO is in-flight. The CPUs with delayed IO will appear
+    // in cpus_with_outstanding_io in the persisted state.
+    CancelContext::new()
+        .with_timeout(Duration::from_secs(60))
+        .until_cancelled(vm.save_openhcl(igvm_file.clone(), flags))
+        .await
+        .expect("VM save should complete within 60 seconds")
+        .expect("VM save failed");
+
+    // Restore — our code should:
+    // 1. Read cpus_with_outstanding_io (non-empty)
+    // 2. Set per_cpu_state_specified = true
+    // 3. Mark busy CPUs as kernel-started
+    // 4. Start sidecar for remaining VPs
+    // Look for "sidecar: excluding CPUs [...] due to outstanding IO" in logs.
+    vm.restore_openhcl().await?;
+
+    // Disable faults and verify guest is functional after restore.
+    fault_start_updater.set(false).await;
+    agent.ping().await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
 #[vmm_test(
     openvmm_openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, LATEST_RELEASE_LINUX_DIRECT_X64],
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64))[LATEST_STANDARD_X64, LATEST_RELEASE_STANDARD_X64],
