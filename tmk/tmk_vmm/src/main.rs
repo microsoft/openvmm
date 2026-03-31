@@ -151,5 +151,8 @@ fn choose_hypervisor() -> anyhow::Result<HypervisorOpt> {
         return Ok(HypervisorOpt::Hvf);
     }
 
-    anyhow::bail!("no hypervisor available");
+    #[allow(unreachable_code, reason = "unreachable on some targets")]
+    {
+        anyhow::bail!("no hypervisor available");
+    }
 }
