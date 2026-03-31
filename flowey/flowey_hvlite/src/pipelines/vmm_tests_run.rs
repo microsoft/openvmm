@@ -35,7 +35,7 @@ pub struct VmmTestsRunCli {
     /// Test filter (nextest filter expression)
     ///
     /// Examples:
-    ///   - `test(ubuntu)` - run tests with "ubuntu" in the name
+    ///   - `test(alpine)` - run tests with "alpine" in the name
     ///   - `test(/^boot_/)` - run tests starting with "boot_"
     ///   - `all()` - run all tests
     #[clap(long, default_value = "all()")]
@@ -62,6 +62,10 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     copy_extras: bool,
 
+    /// Skip the interactive VHD download prompt
+    #[clap(long)]
+    skip_vhd_prompt: bool,
+
     /// Optional: custom kernel modules
     #[clap(long)]
     custom_kernel_modules: Option<PathBuf>,
@@ -87,6 +91,7 @@ impl VmmTestsRunCli {
             copy_extras,
             custom_kernel_modules,
             custom_kernel,
+            skip_vhd_prompt,
         } = self;
 
         // Create output directory if it doesn't exist
@@ -178,6 +183,9 @@ impl VmmTestsRunCli {
         }
         if let Some(kernel) = custom_kernel {
             test_cmd.arg("--custom-kernel").arg(kernel);
+        }
+        if skip_vhd_prompt {
+            test_cmd.arg("--skip-vhd-prompt");
         }
 
         test_cmd.current_dir(crate::repo_root());
