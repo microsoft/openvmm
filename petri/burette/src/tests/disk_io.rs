@@ -172,62 +172,23 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                 let disk = make_disk_resource(&data_disk_path, disk_size_bytes)
                     .context("failed to create data disk resource")?;
                 builder = builder.modify_backend(move |b| {
-                    // Add NETVSP NIC for package installation.
-                    let b = b.with_nic();
-                    // Add virtio-blk on PCIe (UEFI guests need PCIe, not MMIO).
-                    b.with_custom_config(|c| {
-                        use openvmm_defs::config::PcieDeviceConfig;
-                        use openvmm_defs::config::PcieRootComplexConfig;
-                        use openvmm_defs::config::PcieRootPortConfig;
+                    b.with_nic()
+                        .with_pcie_root_topology(1, 1, 1)
+                        .with_custom_config(|c| {
+                            use openvmm_defs::config::PcieDeviceConfig;
 
-                        // Set up PCIe topology for the virtio-blk device.
-                        let low_mmio_start = c.memory.mmio_gaps[0].start();
-                        let high_mmio_end = c.memory.mmio_gaps[1].end();
-
-                        const ECAM_SIZE: u64 = 256 * 1024 * 1024;
-                        const LOW_MMIO_SIZE: u64 = 64 * 1024 * 1024;
-                        const HIGH_MMIO_SIZE: u64 = 1024 * 1024 * 1024;
-
-                        let pcie_low = memory_range::MemoryRange::new(
-                            low_mmio_start - LOW_MMIO_SIZE..low_mmio_start,
-                        );
-                        let pcie_high = memory_range::MemoryRange::new(
-                            high_mmio_end..high_mmio_end + HIGH_MMIO_SIZE,
-                        );
-                        let ecam_range = memory_range::MemoryRange::new(
-                            pcie_low.start() - ECAM_SIZE..pcie_low.start(),
-                        );
-
-                        c.memory.pci_ecam_gaps.push(ecam_range);
-                        c.memory.pci_mmio_gaps.push(pcie_low);
-                        c.memory.pci_mmio_gaps.push(pcie_high);
-                        c.pcie_root_complexes.push(PcieRootComplexConfig {
-                            index: 0,
-                            name: "rc0".into(),
-                            segment: 0,
-                            start_bus: 0,
-                            end_bus: 255,
-                            ecam_range,
-                            low_mmio: pcie_low,
-                            high_mmio: pcie_high,
-                            ports: vec![PcieRootPortConfig {
-                                name: "rp0".into(),
-                                hotplug: false,
-                            }],
-                        });
-
-                        c.pcie_devices.push(PcieDeviceConfig {
-                            port_name: "rp0".into(),
-                            resource: virtio_resources::VirtioPciDeviceHandle(
-                                virtio_resources::blk::VirtioBlkHandle {
-                                    disk,
-                                    read_only: false,
-                                }
+                            c.pcie_devices.push(PcieDeviceConfig {
+                                port_name: "s0rc0rp0".into(),
+                                resource: virtio_resources::VirtioPciDeviceHandle(
+                                    virtio_resources::blk::VirtioBlkHandle {
+                                        disk,
+                                        read_only: false,
+                                    }
+                                    .into_resource(),
+                                )
                                 .into_resource(),
-                            )
-                            .into_resource(),
-                        });
-                    })
+                            });
+                        })
                 });
             }
             DiskBackend::Storvsc => {

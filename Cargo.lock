@@ -420,7 +420,6 @@ dependencies = [
  "guid",
  "jiff",
  "libc",
- "memory_range",
  "openvmm_defs",
  "openvmm_helpers",
  "pal_async",
