@@ -733,6 +733,8 @@ pub enum Error {
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 trait WhpResultExt<T> {
@@ -954,7 +956,7 @@ impl WhpPartitionInner {
                 &|eax, ecx| vtl0.cpuid(eax, ecx),
                 &mut cpuid,
             )
-            .expect("topology cpuid should not fail");
+            .map_err(Error::TopologyCpuid)?;
 
             virt::CpuidLeafSet::new(cpuid)
         };
