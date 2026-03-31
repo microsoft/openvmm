@@ -13,6 +13,8 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
+        /// Target to discover and validate artifact mappings for.
+        pub target: CommonTriple,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -29,7 +31,11 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let Request { done } = request;
+        let Request { target, done } = request;
+
+        let triple = target.as_triple();
+        let arch = triple.architecture;
+        let os = triple.operating_system;
 
         // Ensure rust and nextest are installed before the discover step runs.
         let rust_installed = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
@@ -40,7 +46,7 @@ impl SimpleFlowNode for Node {
         let (discover_done, discover_done_write) = ctx.new_var::<SideEffect>();
 
         ctx.req(crate::_jobs::local_discover_vmm_tests_artifacts::Params {
-            target: CommonTriple::X86_64_LINUX_GNU,
+            target,
             filter: "test(/.*/)".to_string(),
             output: None,
             release: false,
@@ -60,8 +66,8 @@ impl SimpleFlowNode for Node {
                 let resolved =
                     crate::artifact_to_build_mapping::ResolvedArtifactSelections::from_artifact_list_json(
                         &json,
-                        target_lexicon::Architecture::X86_64,
-                        target_lexicon::OperatingSystem::Linux,
+                        arch,
+                        os,
                     )?;
 
                 if !resolved.unknown.is_empty() {
