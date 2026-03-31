@@ -207,7 +207,7 @@ impl SimpleFlowNode for Node {
                     "python3-pip",
                     "telnet",
                     "docker.io",
-		    "gcc-aarch64-linux-gnu",
+                    "gcc-aarch64-linux-gnu",
                 ];
 
                 let mut missing_packages = Vec::new();
@@ -242,15 +242,15 @@ impl SimpleFlowNode for Node {
 
                 // Check if current user is in the group
                 let output = flowey::shell_cmd!(rt, "id -nG").output()?;
-		let output = String::from_utf8(output.stdout)?;
+                let output = String::from_utf8(output.stdout)?;
                 let is_member = output.split_whitespace().any(|g| g == group_name);
                 if !is_member {
                     anyhow::bail!("Current user does NOT belong to the '{group_name}' group, please add it using 'sudo usermod -aG docker $USER'");
                 }
 
                 // Create parent dir
-		let parent = shrinkwrap_dir.parent().ok_or_else(|| anyhow::anyhow!("shrinkwrap_dir has no parent"))?;
-		fs_err::create_dir_all(parent)?;
+                let parent = shrinkwrap_dir.parent().ok_or_else(|| anyhow::anyhow!("shrinkwrap_dir has no parent"))?;
+                fs_err::create_dir_all(parent)?;
 
                 // Clone OHCL Linux Kernel (Host Linux Kernel)
                 let host_kernel_dir = parent.join("OHCL-Linux-Kernel");
@@ -263,7 +263,7 @@ impl SimpleFlowNode for Node {
                     "OHCL Linux Kernel",
                 )?;
 
-                // 3) Compile OHCL Linux Kernel with ARM GNU toolchain
+                // Compile OHCL Linux Kernel with ARM GNU toolchain
                 let kernel_image = host_kernel_dir.join("arch").join("arm64").join("boot").join("Image");
                 if !kernel_image.exists() {
                     log::info!("Compiling OHCL Linux Kernel...");
@@ -385,7 +385,7 @@ impl SimpleFlowNode for Node {
                     "Shrinkwrap",
                 )?;
 
-                // 5.5) Clone cca_config repo and copy planes.yaml
+                // Clone cca_config repo and copy planes.yaml
                 let cca_config_dir = parent.join("cca_config");
                 clone_or_update_repo(
                     &rt,
