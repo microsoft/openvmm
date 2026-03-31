@@ -245,13 +245,6 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        // Wire up skip_vhd_prompt to the download module
-        ctx.req(
-            crate::download_openvmm_vmm_tests_artifacts::Request::LocalOnlySkipDownloadPrompt(
-                skip_vhd_prompt,
-            ),
-        );
-
         let test_content_dir = test_content_dir.absolute()?;
         let custom_kernel_modules_abs = custom_kernel_modules.map(|p| p.absolute()).transpose()?;
         let custom_kernel_abs = custom_kernel.map(|p| p.absolute()).transpose()?;
@@ -899,6 +892,7 @@ impl SimpleFlowNode for Node {
         fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
         ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
             custom_cache_dir: Some(vmm_test_artifacts_dir),
+            skip_prompt: Some(skip_vhd_prompt),
             ..Default::default()
         });
 

@@ -35,6 +35,7 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<crate::install_openvmm_rust_build_essential::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -50,9 +51,11 @@ impl SimpleFlowNode for Node {
 
         let target_str = target.as_triple().to_string();
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+        let build_essential = ctx.reqv(crate::install_openvmm_rust_build_essential::Request);
 
         ctx.emit_rust_step("build vmm_tests and discover artifacts", |ctx| {
             done.claim(ctx);
+            build_essential.claim(ctx);
             for dep in pre_build_done {
                 dep.claim(ctx);
             }

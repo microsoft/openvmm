@@ -4527,6 +4527,46 @@ jobs:
         flowey e 25 flowey_lib_common::git_checkout 3
         flowey e 25 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
+    - name: set '-Dwarnings' in .cargo/config.toml
+      run: flowey e 25 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
+      shell: bash
+    - name: create gh-release-download cache dir
+      run: flowey e 25 flowey_lib_common::download_gh_release 0
+      shell: bash
+    - name: Pre-processing cache vars
+      run: |-
+        flowey e 25 flowey_lib_common::cache 4
+        flowey v 25 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar4
+        flowey v 25 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
+      shell: bash
+    - id: flowey_lib_common__cache__5
+      uses: actions/cache@v5
+      with:
+        key: ${{ env.floweyvar4 }}
+        path: ${{ env.floweyvar5 }}
+      name: 'Restore cache: gh-release-download'
+    - name: download artifacts from github releases
+      run: |-
+        flowey v 25 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:462:70' --is-raw-string update --env-source steps.flowey_lib_common__cache__5.outputs.cache-hit <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
+        flowey e 25 flowey_lib_common::cache 6
+        flowey e 25 flowey_lib_common::download_gh_release 1
+      shell: bash
+    - name: checking if packages need to be installed
+      run: flowey e 25 flowey_lib_common::install_dist_pkg 0
+      shell: bash
+    - name: installing packages
+      run: flowey e 25 flowey_lib_common::install_dist_pkg 1
+      shell: bash
+    - name: unpack protoc
+      run: |-
+        flowey e 25 flowey_lib_common::resolve_protoc 0
+        flowey e 25 flowey_lib_hvlite::cfg_openvmm_magicpath 0
+      shell: bash
+    - name: symlink protoc
+      run: flowey e 25 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
+      shell: bash
     - name: add default cargo home to path
       run: flowey e 25 flowey_lib_common::install_rust 0
       shell: bash
@@ -4574,6 +4614,9 @@ jobs:
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 25 flowey_lib_common::cache 3
+      shell: bash
+    - name: 'validate cache entry: gh-release-download'
+      run: flowey e 25 flowey_lib_common::cache 7
       shell: bash
   job26:
     name: publish vmgstool
