@@ -840,14 +840,16 @@ impl HclNetworkVFManagerWorker {
                     if !self.guest_state.is_offered_to_guest().await
                         && self.guest_state.vtl0_vfid().await.is_some()
                     {
-                        tracing::info!(
-                            vtl2_vfid,
-                            vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
-                            "Adding VF to VTL0"
-                        );
                         if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                            match vtl0_bus_control.offer_device().instrument(tracing::info_span!("Adding VF to VTL0", vtl2_vfid,
-                            vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control))).await {
+                            match vtl0_bus_control
+                                .offer_device()
+                                .instrument(tracing::info_span!(
+                                    "Adding VF to VTL0",
+                                    vtl2_vfid,
+                                    vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control)
+                                ))
+                                .await
+                            {
                                 Ok(_) => {
                                     *self.guest_state.offered_to_guest.lock().await = true;
                                 }
@@ -861,6 +863,12 @@ impl HclNetworkVFManagerWorker {
                                     );
                                 }
                             }
+                        } else {
+                            tracing::info!(
+                                vtl2_vfid,
+                                vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
+                                "Vtl0Bus not present, nothing to add"
+                            );
                         }
                     }
                 }

@@ -69,6 +69,7 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
+use tracing::Instrument;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
@@ -504,7 +505,14 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         // the queues when an endpoint is removed, and the queue has access to
         // the vport which is being stopped here.
         if self.queue_tracker.0.load(Ordering::Acquire) > 0 {
-            self.queue_tracker.1.wait().await;
+            self.queue_tracker
+                .1
+                .wait()
+                .instrument(tracing::info_span!(
+                    "Waiting for outstanding queues to stop",
+                    vport_id = self.vport.id()
+                ))
+                .await;
         }
     }
 
