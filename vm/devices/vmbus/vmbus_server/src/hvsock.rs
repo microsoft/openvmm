@@ -543,10 +543,6 @@ async fn relay_connected<T: RingMem + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use super::Guid;
-    use super::ServiceIdFormat;
-    use super::VSOCK_TEMPLATE;
-    use super::read_hybrid_vsock_connect;
     use super::relay_connected;
     use crate::ring::FlatRingMem;
     use futures::AsyncReadExt;
@@ -649,39 +645,5 @@ mod tests {
         assert_eq!(s.read(&mut v).await.unwrap(), 0);
         drop(s);
         task.await.unwrap();
-    }
-
-    #[async_test]
-    async fn test_read_hybrid_vsock_connect_uppercase(driver: DefaultDriver) {
-        let (s1, s2) = UnixStream::pair().unwrap();
-        let mut s1 = PolledSocket::new(&driver, s1).unwrap();
-        let mut s2 = PolledSocket::new(&driver, s2).unwrap();
-        s2.write_all(b"CONNECT 1234\n").await.unwrap();
-        let (service_id, format) = read_hybrid_vsock_connect(&mut s1).await.unwrap();
-        assert_eq!(format, ServiceIdFormat::Vsock);
-        assert_eq!(
-            service_id,
-            Guid {
-                data1: 1234,
-                ..VSOCK_TEMPLATE
-            }
-        );
-    }
-
-    #[async_test]
-    async fn test_read_hybrid_vsock_connect_lowercase(driver: DefaultDriver) {
-        let (s1, s2) = UnixStream::pair().unwrap();
-        let mut s1 = PolledSocket::new(&driver, s1).unwrap();
-        let mut s2 = PolledSocket::new(&driver, s2).unwrap();
-        s2.write_all(b"connect 1234\n").await.unwrap();
-        let (service_id, format) = read_hybrid_vsock_connect(&mut s1).await.unwrap();
-        assert_eq!(format, ServiceIdFormat::Vsock);
-        assert_eq!(
-            service_id,
-            Guid {
-                data1: 1234,
-                ..VSOCK_TEMPLATE
-            }
-        );
     }
 }

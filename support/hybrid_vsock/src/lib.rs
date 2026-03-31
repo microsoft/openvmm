@@ -94,8 +94,7 @@ impl VsockPortOrId {
     /// Parses a connection request from a buffer containing a UTF-8 string of the format "CONNECT
     /// \<port or service ID>\n".
     pub fn parse_connect_request(buf: &[u8]) -> Result<Self, ParseError> {
-        let rest = buf
-            .strip_prefix(b"CONNECT ")
+        let rest = strip_ascii_prefix_case_insensitive(buf, b"CONNECT ")
             .ok_or(ParseError::MissingPrefix)?;
 
         let rest = std::str::from_utf8(rest).map_err(ParseError::InvalidString)?;
@@ -142,6 +141,14 @@ impl VsockPortOrId {
     }
 }
 
+fn strip_ascii_prefix_case_insensitive<'a>(s: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    if s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
 /// Error returned by [`VsockPortOrId::host_uds_path`].
 #[derive(Debug, thiserror::Error)]
 pub enum UdsPathError {
@@ -168,4 +175,68 @@ pub enum ParseError {
     /// The connect request did not contain a valid port number or service ID.
     #[error("invalid port or service ID: {0}")]
     InvalidFormat(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guid::guid;
+
+    #[test]
+    fn test_read_hybrid_vsock_connect_uppercase() {
+        let connect = b"CONNECT 1234";
+        let request = VsockPortOrId::parse_connect_request(connect).unwrap();
+        assert_eq!(request, VsockPortOrId::Port(1234));
+        assert_eq!(
+            request.id(),
+            Guid {
+                data1: 1234,
+                ..VSOCK_TEMPLATE
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_hybrid_vsock_connect_lowercase() {
+        let connect = b"connect 1234";
+        let request = VsockPortOrId::parse_connect_request(connect).unwrap();
+        assert_eq!(request, VsockPortOrId::Port(1234));
+        assert_eq!(
+            request.id(),
+            Guid {
+                data1: 1234,
+                ..VSOCK_TEMPLATE
+            }
+        );
+    }
+
+    #[test]
+    fn test_read_hybrid_vsock_connect_guid() {
+        let connect = b"CONNECT 00000123-facb-11e6-bd58-64006a7986d3";
+        let request = VsockPortOrId::parse_connect_request(connect).unwrap();
+        let expected = guid!("00000123-facb-11e6-bd58-64006a7986d3");
+        assert_eq!(request, VsockPortOrId::Id(expected));
+        assert_eq!(request.port(), Some(0x123));
+        assert_eq!(request.id(), expected);
+
+        let connect = b"CONNECT EE59B4BF-A573-48D0-9C51-BB0E72C2B139";
+        let request = VsockPortOrId::parse_connect_request(connect).unwrap();
+        let expected = guid!("ee59b4bf-a573-48d0-9c51-bb0e72c2b139");
+        assert_eq!(request, VsockPortOrId::Id(expected));
+        assert_eq!(request.port(), None);
+        assert_eq!(request.id(), expected);
+    }
+
+    #[test]
+    fn test_get_ok_response() {
+        let port_request = VsockPortOrId::Port(1234);
+        assert_eq!(port_request.get_ok_response(), "OK 1234\n");
+
+        let guid = guid!("00000123-facb-11e6-bd58-64006a7986d3");
+        let id_request = VsockPortOrId::Id(guid);
+        assert_eq!(
+            id_request.get_ok_response(),
+            "OK 00000123-facb-11e6-bd58-64006a7986d3\n"
+        );
+    }
 }
