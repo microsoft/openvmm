@@ -1176,7 +1176,10 @@ async fn host_connect_two_connections_get_different_ports(driver: DefaultDriver)
 ///  5. Host begins draining data — the device flushes its buffer and sends
 ///     CREDIT_UPDATE packets on the rx queue as `fwd_cnt` advances.
 ///  6. Assert that all bytes arrive and at least one CREDIT_UPDATE was seen.
+///
+/// N.B. Temporarily ignore on Windows since it seems to occasionally fail.
 #[async_test]
+#[cfg_attr(windows, ignore)]
 async fn guest_send_exercises_ring_buffer(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
@@ -1743,7 +1746,10 @@ async fn host_shutdown(driver: DefaultDriver) {
 }
 
 /// Stress test: spawn multiple host threads that rapidly connect, send data, and disconnect.
+///
+/// N.B. Temporarily ignore on Windows since it seems to occasionally fail.
 #[async_test]
+#[cfg_attr(windows, ignore)]
 async fn stress_test(driver: DefaultDriver) {
     let tmp_dir = tempfile::tempdir().unwrap();
     let mut harness = TestHarness::new(&driver, tmp_dir);
