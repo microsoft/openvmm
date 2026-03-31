@@ -123,6 +123,8 @@ pub(crate) struct QueueCoreGetWork {
     mem: GuestMemory,
     #[inspect(flatten)]
     inner: QueueGetWorkInner,
+    /// Whether kick notification is currently armed.
+    armed: bool,
 }
 
 impl QueueCoreGetWork {
@@ -178,6 +180,7 @@ impl QueueCoreGetWork {
             features,
             mem,
             inner,
+            armed: false,
         })
     }
 
@@ -202,7 +205,60 @@ impl QueueCoreGetWork {
             QueueGetWorkInner::Packed(packed) => packed.is_available()?,
         };
         let Some(index) = index else { return Ok(None) };
+        self.suppress_if_armed();
         self.work_from_index(index).map(Some)
+    }
+
+    /// Arms kick notification so the guest will send a doorbell when new work
+    /// is available. Returns `true` if armed successfully (caller should
+    /// sleep), or `false` if new data arrived during arming (caller should
+    /// retry by calling [`try_next_work`](Self::try_next_work) again).
+    ///
+    /// If already armed, this is a no-op and returns `true`.
+    pub fn arm_for_kick(&mut self) -> bool {
+        if self.armed {
+            return true;
+        }
+        let r = match &mut self.inner {
+            QueueGetWorkInner::Split(split) => split.arm_kick(),
+            QueueGetWorkInner::Packed(packed) => packed.arm_kick(),
+        };
+        match r {
+            Ok(true) => {
+                self.armed = true;
+                true
+            }
+            Ok(false) => false,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to arm kick"
+                );
+                // On error, behave as if armed to avoid a busy loop in callers
+                // that treat `false` as "retry immediately".
+                self.armed = true;
+                true
+            }
+        }
+    }
+
+    /// If kicks are armed, suppress them. Called automatically when work is
+    /// found so the guest doesn't send unnecessary doorbells while draining.
+    fn suppress_if_armed(&mut self) {
+        if self.armed {
+            self.armed = false;
+            let r = match &self.inner {
+                QueueGetWorkInner::Split(split) => split.suppress_kicks(),
+                QueueGetWorkInner::Packed(packed) => packed.suppress_kicks(),
+            };
+
+            if let Err(err) = r {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to suppress kicks"
+                );
+            }
+        }
     }
 
     /// Advances the available index after a successful

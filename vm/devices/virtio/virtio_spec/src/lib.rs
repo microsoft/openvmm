@@ -351,12 +351,26 @@ pub mod queue {
         }
     }
 
+    /// Flags controlling event (interrupt/notification) suppression for packed
+    /// virtqueues.
+    ///
+    /// Reference: virtio spec §2.8.10, "Event Suppression Structure Layout".
     #[derive(Debug, PartialEq, Eq)]
     #[repr(u8)]
     pub enum EventSuppressionFlags {
+        /// `RING_EVENT_FLAGS_ENABLE` (0x0) — events are enabled; the device/driver
+        /// should generate events (interrupts or notifications) normally.
         Enabled = 0,
+        /// `RING_EVENT_FLAGS_DISABLE` (0x1) — events are disabled; the
+        /// device/driver should not generate any events.
         Disabled = 1,
+        /// `RING_EVENT_FLAGS_DESC` (0x2) — enable events only when a specific
+        /// descriptor index (with matching wrap counter) is reached, as
+        /// specified by the `offset` and `wrap` fields of the
+        /// [`PackedEventSuppression`] structure.
         DescriptorIndex = 2,
+        /// Reserved value (0x3). Treated as "events enabled" by this
+        /// implementation for forward compatibility.
         Reserved = 3,
     }
     impl EventSuppressionFlags {

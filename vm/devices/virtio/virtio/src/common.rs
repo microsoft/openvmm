@@ -325,9 +325,17 @@ impl VirtioQueue {
         }
     }
 
-    /// Polls until the queue is kicked by the guest, indicating new work may be available.
+    /// Polls until the queue is kicked by the guest, indicating new work may be
+    /// available.
+    ///
+    /// Before sleeping, this arms kick notification and rechecks the queue. If
+    /// new data arrived during arming, it returns immediately without sleeping.
+    /// On wakeup, kicks are suppressed to avoid unnecessary doorbells while
+    /// the caller drains the queue.
     pub fn poll_kick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        if self.core.arm_for_kick() {
+            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        }
         Poll::Ready(())
     }
 
@@ -335,9 +343,9 @@ impl VirtioQueue {
     /// work is currently available, or an error if there was an issue accessing
     /// the queue.
     ///
-    /// If `None` is returned, then the queue will be armed so that the guest
-    /// will kick it when new work is available; the caller can use
-    /// [`poll_kick`](Self::poll_kick) to wait for this.
+    /// This is a lightweight check that does not arm kick notification. When
+    /// used in a poll loop with [`poll_kick`](Self::poll_kick), the kick will
+    /// be armed automatically before sleeping.
     pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
         Ok(self
             .core
