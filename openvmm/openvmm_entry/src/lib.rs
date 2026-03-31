@@ -1041,9 +1041,18 @@ async fn vm_config_from_command_line(
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
+        capabilities,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
+
+    let chipset_capabilities = openvmm_defs::config::ChipsetCapabilities {
+        with_ioapic: capabilities.with_ioapic,
+        with_pic: capabilities.with_pic,
+        with_pit: capabilities.with_pit,
+        with_psp: capabilities.with_psp,
+        with_guest_watchdog: capabilities.with_guest_watchdog,
+    };
 
     if opt.restore_snapshot.is_some() {
         // Snapshot restore: skip firmware loading entirely. Device state and
@@ -1706,6 +1715,7 @@ async fn vm_config_from_command_line(
         }),
         vmbus_devices,
         chipset_devices,
+        chipset_capabilities,
         #[cfg(windows)]
         vpci_resources,
         vmgs,

@@ -33,6 +33,13 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
         None
     }
 
+    /// Optionally returns a trait object that provides static PCI placement
+    /// hints for this device.
+    #[inline(always)]
+    fn supports_pci_placement(&mut self) -> Option<&mut dyn pci::PciPlacement> {
+        None
+    }
+
     /// Optionally returns a trait object to send poll requests to.
     #[inline(always)]
     fn supports_poll_device(&mut self) -> Option<&mut dyn poll_device::PollDevice> {

@@ -429,7 +429,16 @@ impl PetriVmConfigOpenVmm {
         let VmChipsetResult {
             chipset,
             mut chipset_devices,
+            capabilities,
         } = chipset;
+
+        let chipset_capabilities = openvmm_defs::config::ChipsetCapabilities {
+            with_ioapic: capabilities.with_ioapic,
+            with_pic: capabilities.with_pic,
+            with_pit: capabilities.with_pit,
+            with_psp: capabilities.with_psp,
+            with_guest_watchdog: capabilities.with_guest_watchdog,
+        };
 
         // Add the TPM
         if let Some(tpm) = setup.config_tpm().await? {
@@ -448,6 +457,7 @@ impl PetriVmConfigOpenVmm {
             // Base chipset
             chipset,
             chipset_devices,
+            chipset_capabilities,
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {
