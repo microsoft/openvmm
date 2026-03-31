@@ -79,16 +79,16 @@ pub struct VmmTestsCli {
     #[clap(long)]
     copy_extras: bool,
 
+    /// Skip the interactive VHD download prompt
+    #[clap(long)]
+    skip_vhd_prompt: bool,
+
     /// Optional: custom kernel modules
     #[clap(long)]
     custom_kernel_modules: Option<PathBuf>,
     /// Optional: custom kernel image
     #[clap(long)]
     custom_kernel: Option<PathBuf>,
-
-    /// Skip the interactive VHD download prompt
-    #[clap(long)]
-    skip_vhd_prompt: bool,
 }
 
 impl IntoPipeline for VmmTestsCli {
