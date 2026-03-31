@@ -14,10 +14,9 @@ openvmm_hypervisors = { workspace = true, features = ["virt_kvm", "virt_mshv", "
 petri_artifacts_common.workspace = true
 petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
-chipset_resources.workspace = true
 chipset_device_worker_defs.workspace = true
+chipset_resources.workspace = true
 diag_client.workspace = true
-disk_backend.workspace = true
 disk_vhd1.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
@@ -53,11 +52,6 @@ vmgs_format.workspace = true
 vmgs_resources.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
-vmsocket.workspace = true
-
-hvdef.workspace = true
-safe_intrinsics.workspace = true
-x86defs.workspace = true
 guid.workspace = true
 inspect = { workspace = true, features = ["initiate"] }
 kmsg.workspace = true
@@ -66,7 +60,6 @@ mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal.workspace = true
-powershell_builder.workspace = true
 unix_socket.workspace = true
 sparse_mmap.workspace = true
 
@@ -95,8 +88,16 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+disk_backend.workspace = true
 disk_vhdmp.workspace = true
+powershell_builder.workspace = true
+vmsocket.workspace = true
 windows-version.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hvdef.workspace = true
+safe_intrinsics.workspace = true
+x86defs.workspace = true
 
 [lints]
 workspace = true

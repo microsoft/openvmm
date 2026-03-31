@@ -19,22 +19,23 @@ pal_async_test.workspace = true
 
 async-channel.workspace = true
 async-task.workspace = true
-cfg-if.workspace = true
 futures.workspace = true
-getrandom.workspace = true
-once_cell.workspace = true
 parking_lot.workspace = true
 slab.workspace = true
 smallbox.workspace = true
 socket2 = { workspace = true, features = ["all"] }
 tempfile = { workspace = true, optional = true }
-unicycle.workspace = true
-zerocopy.workspace = true
+
 [target.'cfg(unix)'.dependencies]
+cfg-if.workspace = true
 libc = { workspace = true, features = ["extra_traits"] }
 
 [target.'cfg(windows)'.dependencies]
+getrandom.workspace = true
 headervec.workspace = true
+once_cell.workspace = true
+unicycle.workspace = true
+zerocopy.workspace = true
 windows-result.workspace = true
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

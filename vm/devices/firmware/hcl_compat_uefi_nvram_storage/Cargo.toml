@@ -27,10 +27,10 @@ async-trait.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-wchar.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
 pal_async.workspace = true
+wchar.workspace = true
 
 [lints]
 workspace = true
