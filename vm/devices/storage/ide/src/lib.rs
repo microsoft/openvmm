@@ -12,8 +12,7 @@
 //! - **ATA hard drives** — use [`Disk`] for I/O. Support
 //!   PIO and DMA modes, 28-bit and 48-bit LBA, `IDENTIFY DEVICE`, `FLUSH CACHE`.
 //! - **ATAPI optical drives** — use `PACKET COMMAND` (0xA0) to transport SCSI
-//!   CDBs over the ATA interface, delegating to
-//!   [`SimpleScsiDvd`](scsidisk::scsidvd::SimpleScsiDvd).
+//!   CDBs over the ATA interface, delegating to [`AsyncScsiDisk`].
 //!
 //! # Port I/O
 //!
