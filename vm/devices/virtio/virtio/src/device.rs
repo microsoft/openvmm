@@ -30,6 +30,9 @@ pub trait VirtioDevice: InspectMut + Send {
     /// transport does not enforce this as a per-device cap; the only hard
     /// limit is [`crate::MAX_QUEUE_SIZE`].
     ///
+    /// Must be a power of two, >0, and ≤ [`crate::MAX_QUEUE_SIZE`]. The
+    /// transport asserts these invariants at construction time.
+    ///
     /// Override to provide per-device or per-queue sizes. The default
     /// returns [`DEFAULT_QUEUE_SIZE`] (256).
     fn queue_size(&self, _queue_index: u16) -> u16 {

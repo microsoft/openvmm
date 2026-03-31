@@ -125,12 +125,21 @@ impl VirtioMmioDevice {
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_gpa: u64,
         mmio_len: u64,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let traits = device.traits();
         let queues: Vec<MmioQueueData> = (0..traits.max_queues)
             .map(|i| {
                 let size = device.queue_size(i);
-                MmioQueueData {
+                if size == 0 || !size.is_power_of_two() || size > MAX_QUEUE_SIZE {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "invalid queue size {size} for queue {i}: \
+                             must be a power of two in 1..={MAX_QUEUE_SIZE}"
+                        ),
+                    ));
+                }
+                Ok(MmioQueueData {
                     params: QueueParams {
                         size,
                         ..Default::default()
@@ -138,9 +147,9 @@ impl VirtioMmioDevice {
                     initial_size: size,
                     event: pal_event::Event::new(),
                     saved_state: None,
-                }
+                })
             })
-            .collect();
+            .collect::<std::io::Result<Vec<_>>>()?;
         let interrupt_state = Arc::new(Mutex::new(InterruptState {
             interrupt,
             status: 0,
@@ -157,7 +166,7 @@ impl VirtioMmioDevice {
             run_device_task(device, receiver).await;
         });
 
-        Self {
+        Ok(Self {
             fixed_mmio_region: ("virtio-chipset", mmio_gpa..=(mmio_gpa + mmio_len - 1)),
             device_sender: sender,
             _device_task,
@@ -177,7 +186,7 @@ impl VirtioMmioDevice {
             interrupt_state,
             supports_save_restore,
             guest_memory,
-        }
+        })
     }
 
     fn update_config_generation(&mut self) {

@@ -150,7 +150,16 @@ impl VirtioPciDevice {
         let queues: Vec<PciQueueData> = (0..traits.max_queues)
             .map(|i| {
                 let size = device.queue_size(i);
-                PciQueueData {
+                if size == 0 || !size.is_power_of_two() || size > MAX_QUEUE_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "invalid queue size {size} for queue {i}: \
+                             must be a power of two in 1..={MAX_QUEUE_SIZE}"
+                        ),
+                    ));
+                }
+                Ok(PciQueueData {
                     params: QueueParams {
                         size,
                         ..Default::default()
@@ -159,9 +168,9 @@ impl VirtioPciDevice {
                     msix_vector: 0,
                     event: pal_event::Event::new(),
                     saved_state: None,
-                }
+                })
             })
-            .collect();
+            .collect::<io::Result<Vec<_>>>()?;
 
         let hardware_ids = HardwareIds {
             vendor_id: VIRTIO_VENDOR_ID,
