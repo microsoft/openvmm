@@ -59,6 +59,9 @@ pub enum KvmError {
     Misaligned,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 #[derive(Debug, Inspect)]

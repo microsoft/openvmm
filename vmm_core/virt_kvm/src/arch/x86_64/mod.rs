@@ -263,20 +263,26 @@ impl ProtoPartition for KvmProtoPartition<'_> {
     type Error = KvmError;
     type ProcessorBinder = KvmProcessorBinder;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        self.cpuid.result(eax, ecx, &[0; 4])
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]))
     }
 
     fn build(
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        // Build topology leaves using the base cpuid before consuming it.
+        let mut topology_leaves = Vec::new();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]),
+            &mut topology_leaves,
+        )
+        .map_err(KvmError::TopologyCpuid)?;
+
         let mut cpuid = self.cpuid.into_leaves();
         cpuid.extend(config.cpuid);
+        cpuid.extend(topology_leaves);
         let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;

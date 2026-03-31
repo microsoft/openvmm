@@ -139,6 +139,19 @@ struct VtlPartition {
     hypervisor_enlightened: bool,
 }
 
+impl VtlPartition {
+    /// Query the default CPUID result for the given leaf/subleaf from VP0.
+    #[cfg(guest_arch = "x86_64")]
+    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
+        let output = self
+            .whp
+            .vp(0)
+            .get_cpuid_output(eax, ecx)
+            .expect("cpuid should not fail");
+        [output.Eax, output.Ebx, output.Ecx, output.Edx]
+    }
+}
+
 #[derive(Inspect)]
 #[inspect(external_tag)]
 enum LocalApicKind {
@@ -720,6 +733,8 @@ pub enum Error {
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 trait WhpResultExt<T> {
@@ -782,22 +797,8 @@ impl ProtoPartition for WhpProtoPartition<'_> {
     type Error = Error;
 
     #[cfg(guest_arch = "x86_64")]
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        // This call should never fail unless there is a kernel or hypervisor
-        // bug.
-        let output = self
-            .vtl0
-            .whp
-            .vp(0)
-            .get_cpuid_output(eax, ecx)
-            .expect("cpuid should not fail");
-
-        [output.Eax, output.Ebx, output.Ecx, output.Edx]
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn max_physical_address_size(&self) -> u8 {
-        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.vtl0.cpuid(eax, ecx))
     }
 
     #[cfg(not(guest_arch = "x86_64"))]
@@ -948,6 +949,15 @@ impl WhpPartitionInner {
             }
 
             cpuid.extend(config.cpuid);
+
+            // Add topology CPUID leaves.
+            virt::x86::topology::topology_cpuid(
+                proto_config.processor_topology,
+                &|eax, ecx| vtl0.cpuid(eax, ecx),
+                &mut cpuid,
+            )
+            .map_err(Error::TopologyCpuid)?;
+
             virt::CpuidLeafSet::new(cpuid)
         };
 
@@ -1013,18 +1023,7 @@ impl WhpPartitionInner {
         let caps = {
             let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(
                 proto_config.processor_topology,
-                &mut |function, index| {
-                    let output = vtl0
-                        .whp
-                        .vp(0)
-                        .get_cpuid_output(function, index)
-                        .expect("cpuid should not fail");
-                    cpuid.result(
-                        function,
-                        index,
-                        &[output.Eax, output.Ebx, output.Ecx, output.Edx],
-                    )
-                },
+                &mut |function, index| cpuid.result(function, index, &vtl0.cpuid(function, index)),
             )
             .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;

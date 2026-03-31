@@ -217,24 +217,33 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     type ProcessorBinder = MshvProcessorBinder;
     type Error = Error;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        // This call should never fail unless there is a kernel or hypervisor
-        // bug.
-        self.vps[0]
-            .vcpufd
-            .get_cpuid_values(eax, ecx, 0, 0)
-            .expect("cpuid should not fail")
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| {
+            self.vps[0]
+                .vcpufd
+                .get_cpuid_values(eax, ecx, 0, 0)
+                .expect("cpuid should not fail")
+        })
     }
 
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        // TODO: do something with cpuid.
+        // Build topology CPUID leaves.
+        // TODO: actually apply these to the partition's CPUID results.
+        let mut cpuid_leaves: Vec<virt::CpuidLeaf> = config.cpuid.to_vec();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| {
+                self.vps[0]
+                    .vcpufd
+                    .get_cpuid_values(eax, ecx, 0, 0)
+                    .expect("cpuid should not fail")
+            },
+            &mut cpuid_leaves,
+        )
+        .map_err(Error::TopologyCpuid)?;
 
         // Get caps via cpuid
         let caps = virt::PartitionCapabilities::from_cpuid(
@@ -1103,6 +1112,8 @@ pub enum Error {
     InstallIntercept(#[source] MshvError),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 impl MshvPartitionInner {
