@@ -190,6 +190,9 @@ flowey_request! {
         /// Optional: provide a custom kernel image to embed in IGVM (forces UEFI)
         pub custom_kernel: Option<PathBuf>,
 
+        /// Skip the interactive VHD download prompt
+        pub skip_vhd_prompt: bool,
+
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -237,8 +240,16 @@ impl SimpleFlowNode for Node {
             copy_extras,
             custom_kernel_modules,
             custom_kernel,
+            skip_vhd_prompt,
             done,
         } = request;
+
+        // Wire up skip_vhd_prompt to the download module
+        ctx.req(
+            crate::download_openvmm_vmm_tests_artifacts::Request::LocalOnlySkipDownloadPrompt(
+                skip_vhd_prompt,
+            ),
+        );
 
         let test_content_dir = test_content_dir.absolute()?;
         let custom_kernel_modules_abs = custom_kernel_modules.map(|p| p.absolute()).transpose()?;

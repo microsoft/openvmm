@@ -85,6 +85,10 @@ pub struct VmmTestsCli {
     /// Optional: custom kernel image
     #[clap(long)]
     custom_kernel: Option<PathBuf>,
+
+    /// Skip the interactive VHD download prompt
+    #[clap(long)]
+    skip_vhd_prompt: bool,
 }
 
 impl IntoPipeline for VmmTestsCli {
@@ -108,6 +112,7 @@ impl IntoPipeline for VmmTestsCli {
             copy_extras,
             custom_kernel_modules,
             custom_kernel,
+            skip_vhd_prompt,
         } = self;
 
         let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
@@ -303,6 +308,7 @@ impl IntoPipeline for VmmTestsCli {
                     copy_extras,
                     custom_kernel_modules,
                     custom_kernel,
+                    skip_vhd_prompt,
                     done: ctx.new_done_handle(),
                 }
             });
