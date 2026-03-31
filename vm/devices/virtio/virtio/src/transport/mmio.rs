@@ -130,15 +130,7 @@ impl VirtioMmioDevice {
         let queues: Vec<MmioQueueData> = (0..traits.max_queues)
             .map(|i| {
                 let size = device.queue_size(i);
-                if size == 0 || !size.is_power_of_two() || size > MAX_QUEUE_SIZE {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!(
-                            "invalid queue size {size} for queue {i}: \
-                             must be a power of two in 1..={MAX_QUEUE_SIZE}"
-                        ),
-                    ));
-                }
+                super::validate_queue_size(i, size)?;
                 Ok(MmioQueueData {
                     params: QueueParams {
                         size,
