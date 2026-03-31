@@ -1527,9 +1527,9 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // queue index
     assert_eq!(dev.read_u32(48), 0);
     // queue max size (queue 0)
-    assert_eq!(dev.read_u32(52), 0x40);
+    assert_eq!(dev.read_u32(52), 0x100);
     // queue size (queue 0)
-    assert_eq!(dev.read_u32(56), 0x40);
+    assert_eq!(dev.read_u32(56), 0x100);
     dev.write_u32(56, 0x20);
     assert_eq!(dev.read_u32(56), 0x20);
     // queue enable (queue 0)
@@ -1831,7 +1831,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     // queue index, config generation and device status
     assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 0);
     // current queue size and msix vector
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x40);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x100);
     pci_test_device.write_u32(bar_address1 + 24, 0x20);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x20);
     // current queue enabled and notify offset
