@@ -58,6 +58,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
 
             _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
+            #[cfg(target_os = "linux")]
+            _ if id == OPENVMM_VHOST_NATIVE => openvmm_vhost_native_executable_path(),
 
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
@@ -310,6 +312,12 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
 /// Path to the output location of the openvmm executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
+}
+
+/// Path to the output location of the openvmm_vhost executable.
+#[cfg(target_os = "linux")]
+fn openvmm_vhost_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("openvmm_vhost")
 }
 
 /// Path to the output location of the tmk_vmm executable.

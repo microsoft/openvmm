@@ -7,6 +7,8 @@ default-members = ["openvmm/openvmm"]
 members = [
   # openvmm
   "openvmm/openvmm",
+  # openvmm_vhost
+  "openvmm_vhost/openvmm_vhost",
   # repo tooling
   "flowey/flowey_hvlite",
   "xtask",
@@ -86,6 +88,9 @@ openvmm_hypervisors = { path = "openvmm/openvmm_hypervisors" }
 openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
 hypervisor_resources = { path = "openvmm/hypervisor_resources" }
 membacking = { path = "openvmm/membacking" }
+vhost_user_backend = { path = "openvmm_vhost/vhost_user_backend" }
+vhost_user_frontend = { path = "vm/devices/virtio/vhost_user_frontend" }
+vhost_user_protocol = { path = "vm/devices/virtio/vhost_user_protocol" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }

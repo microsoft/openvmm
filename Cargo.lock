@@ -5380,6 +5380,7 @@ dependencies = [
  "unix_socket",
  "video_core",
  "virt_whp",
+ "virtio",
  "virtio_resources",
  "vm_manifest_builder",
  "vm_resource",
@@ -5524,6 +5525,7 @@ dependencies = [
  "storvsp",
  "tpm_device",
  "uidevices",
+ "vhost_user_frontend",
  "virtio",
  "virtio_blk",
  "virtio_console",
@@ -5550,6 +5552,24 @@ dependencies = [
  "mesh_rpc",
  "prost",
  "prost-build",
+]
+
+[[package]]
+name = "openvmm_vhost"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "disk_backend_resources",
+ "disk_file",
+ "pal_async",
+ "tracing-subscriber",
+ "vhost_user_backend",
+ "virtio",
+ "virtio_blk",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
 ]
 
 [[package]]
@@ -8727,6 +8747,71 @@ name = "vhd1_defs"
 version = "0.0.0"
 dependencies = [
  "guid",
+ "zerocopy",
+]
+
+[[package]]
+name = "vhost_user_backend"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "guestmem",
+ "inspect",
+ "memory_range",
+ "pal_async",
+ "pal_event",
+ "parking_lot",
+ "socket2",
+ "sparse_mmap",
+ "tempfile",
+ "test_with_tracing",
+ "thiserror 2.0.16",
+ "tracelimit",
+ "tracing",
+ "unix_socket",
+ "vhost_user_protocol",
+ "virtio",
+ "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "vhost_user_frontend"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "guestmem",
+ "inspect",
+ "pal_async",
+ "pal_event",
+ "socket2",
+ "sparse_mmap",
+ "test_with_tracing",
+ "tracelimit",
+ "tracing",
+ "unix_socket",
+ "vhost_user_backend",
+ "vhost_user_protocol",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
+ "zerocopy",
+]
+
+[[package]]
+name = "vhost_user_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.11.0",
+ "libc",
+ "open_enum",
+ "pal_async",
+ "parking_lot",
+ "thiserror 2.0.16",
+ "unix_socket",
  "zerocopy",
 ]
 

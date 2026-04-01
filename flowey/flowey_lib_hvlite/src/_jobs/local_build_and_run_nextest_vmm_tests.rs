@@ -107,6 +107,7 @@ define_vmm_test_selection_flags! {
 pub struct BuildSelections {
     pub openhcl: bool,
     pub openvmm: bool,
+    pub openvmm_vhost: bool,
     pub pipette_windows: bool,
     pub pipette_linux: bool,
     pub prep_steps: bool,
@@ -127,6 +128,7 @@ impl Default for BuildSelections {
             prep_steps: true,
             openhcl: true,
             openvmm: true,
+            openvmm_vhost: true,
             pipette_windows: true,
             pipette_linux: true,
             guest_test_uefi: true,
@@ -178,6 +180,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
+        ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
         ctx.import::<crate::build_tmks::Node>();
@@ -420,6 +423,7 @@ impl SimpleFlowNode for Node {
         if !linux_host {
             build.openhcl = false;
             build.pipette_linux = false;
+            build.openvmm_vhost = false;
             build.tmk_vmm_linux = false;
             build.tpm_guest_tests_linux = false;
             build.test_igvm_agent_rpc_server = false;
@@ -555,6 +559,16 @@ impl SimpleFlowNode for Node {
                 ));
             }
             output
+        });
+
+        let register_openvmm_vhost = build.openvmm_vhost.then(|| {
+            ctx.reqv(|v| crate::build_openvmm_vhost::Request {
+                params: crate::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                    target: target.clone(),
+                    profile: CommonProfile::from_release(release),
+                },
+                openvmm_vhost: v,
+            })
         });
 
         let register_pipette_windows = build.pipette_windows.then(|| {
@@ -904,6 +918,7 @@ impl SimpleFlowNode for Node {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             vmm_tests_target: target_triple.clone(),
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
