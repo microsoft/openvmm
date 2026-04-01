@@ -57,7 +57,6 @@ use null::NullEndpoint;
 use pal_async::driver::Driver;
 use std::future::pending;
 use std::sync::Arc;
-use std::sync::mpsc::RecvError;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
@@ -660,6 +659,7 @@ impl Endpoint for DisconnectableEndpoint {
             match receive_update.next().await {
                 Some(m) => Message::DisconnectableEndpointUpdate(m),
                 None => {
+                    // Only warn up to 3 times over a 10sec period.
                     tracelimit::warn_ratelimited!(period: 10000, limit: 3, "Failed to receive an update; sender has disconnected.");
                     pending::<()>().await;
                     unreachable!()

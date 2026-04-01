@@ -531,7 +531,7 @@ impl HclNetworkVFManagerWorker {
                 tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
             ))
             .await
-            .map_err(|cr| anyhow!("vtl0 revoke timed out: {cr}"))
+            .map_err(|cr| anyhow!("vtl0 revoke cancelled: {cr}"))
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -627,44 +627,35 @@ impl HclNetworkVFManagerWorker {
         let num_endpoints = self.endpoint_controls.len();
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
 
-        let disconnecting_endpoints =
-            futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
-                match control.disconnect().await {
-                    Ok(Some(mut endpoint)) => {
-                        tracing::info!(vtl2_vfid, "Network endpoint disconnected");
-                        endpoint.stop().await;
-                    }
-                    Ok(None) => (),
-                    Err(err) => {
-                        tracing::error!(
-                            vtl2_vfid,
-                            err = err.as_ref() as &dyn std::error::Error,
-                            "Failed to disconnect endpoint"
-                        );
-                    }
+        futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
+            // If endpoints take any significant time to disconnect, we should proceed anyways;
+            // cleanup & recovery is better than timing out the host.
+            let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+            match ctx
+                .until_cancelled(control.disconnect())
+                .await
+                .unwrap_or_else(|cr| Err(anyhow!("cancelled: {cr}")))
+            {
+                Ok(Some(mut endpoint)) => {
+                    tracing::info!(vtl2_vfid, "Network endpoint disconnected");
+                    endpoint.stop().await;
                 }
-            }))
-            .instrument(tracing::info_span!(
-                "disconnecting all endpoints",
-                vtl2_vfid,
-                num_endpoints
-            ));
-
-        // If endpoints take any significant time to disconnect, we should proceed anyways;
-        // cleanup & recovery is better than timing out the host.
-        let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
-        ctx.until_cancelled(disconnecting_endpoints)
-            .await
-            .map_or_else(
-                |err| {
+                Ok(None) => (),
+                Err(err) => {
                     tracing::error!(
                         vtl2_vfid,
-                        "endpoint disconnect signalling cancelled: {}",
-                        err
+                        err = err.as_ref() as &dyn std::error::Error,
+                        "Failed to disconnect endpoint"
                     );
-                },
-                |_| (),
-            );
+                }
+            }
+        }))
+        .instrument(tracing::info_span!(
+            "disconnecting all endpoints",
+            vtl2_vfid,
+            num_endpoints
+        ))
+        .await;
     }
 
     async fn update_vtl2_device_bind_state(&self, is_bound: bool) -> anyhow::Result<()> {
