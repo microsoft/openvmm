@@ -267,6 +267,18 @@ async fn servicing_keepalive_sidecar_with_outstanding_io_very_heavy(
     // are started by the kernel, remaining VPs go through sidecar.
     vm.restore_openhcl().await?;
 
+    // Verify the per-CPU override fired by checking openhcl_boot logs.
+    let boot_logs = vm
+        .inspect_openhcl("vm/runtime_params/bootshim_logs", Some(2), None)
+        .await?;
+    let boot_logs_str = format!("{}", boot_logs.json());
+    assert!(
+        boot_logs_str.contains("excluding CPUs"),
+        "per-CPU sidecar override did not fire on restore; \
+         cpus_with_outstanding_io was likely empty. Boot logs: {}",
+        boot_logs_str
+    );
+
     // Disable faults and verify guest is functional after restore.
     fault_start_updater.set(false).await;
     agent.ping().await?;
