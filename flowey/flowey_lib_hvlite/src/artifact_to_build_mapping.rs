@@ -111,11 +111,8 @@ impl ResolvedArtifactSelections {
         // or nested like:
         // "petri_artifacts_vmm_test::artifacts::test_vhd::ARTIFACT_NAME"
 
-        // Common artifacts
         let is_windows = matches!(target_os, target_lexicon::OperatingSystem::Windows);
-        let _is_linux = matches!(target_os, target_lexicon::OperatingSystem::Linux);
         let is_x64 = matches!(target_arch, target_lexicon::Architecture::X86_64);
-        let _is_aarch64 = matches!(target_arch, target_lexicon::Architecture::Aarch64(_));
 
         match artifact_id {
             // OpenVMM binary
@@ -336,6 +333,11 @@ impl ResolvedArtifactSelections {
             "petri_artifacts_common::artifacts::PIPETTE_WINDOWS_X64"
             | "petri_artifacts_common::artifacts::PIPETTE_WINDOWS_AARCH64" => {
                 self.build.pipette_windows = true;
+                true
+            }
+
+            "petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM" => {
+                self.downloads.insert(KnownTestArtifacts::VmgsWith16kTpm);
                 true
             }
 
