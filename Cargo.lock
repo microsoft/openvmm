@@ -415,10 +415,13 @@ dependencies = [
  "anyhow",
  "build_rs_git_info",
  "clap",
+ "disk_backend_resources",
  "futures",
+ "guid",
  "jiff",
  "libc",
  "openvmm_defs",
+ "openvmm_helpers",
  "pal_async",
  "petri",
  "petri_artifact_resolver_openvmm_known_paths",
@@ -429,6 +432,8 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
+ "virtio_resources",
+ "vm_resource",
  "windows 0.62.0",
 ]
 

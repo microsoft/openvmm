@@ -16,26 +16,20 @@ use petri::pipette::cmd;
 
 use petri_artifacts_common::tags::MachineArch;
 
-fn arch() -> MachineArch {
-    MachineArch::host()
-}
-
 /// Which NIC backend to use for the network test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum NicBackend {
     /// VMBus synthetic NIC (NETVSP).
     Vmbus,
     /// Virtio-net on PCIe.
+    #[value(name = "virtio-net")]
     VirtioNet,
 }
 
-impl NicBackend {
-    /// Short label used in metric names.
-    fn label(self) -> &'static str {
-        match self {
-            NicBackend::Vmbus => "vmbus",
-            NicBackend::VirtioNet => "virtio",
-        }
+impl std::fmt::Display for NicBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use clap::ValueEnum;
+        f.write_str(self.to_possible_value().unwrap().get_name())
     }
 }
 
@@ -63,7 +57,7 @@ fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
     use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64;
     use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64;
 
-    let arch = arch();
+    let arch = MachineArch::host();
     let boot_image = match arch {
         MachineArch::X86_64 => petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_X64)),
         MachineArch::Aarch64 => {
@@ -80,7 +74,7 @@ pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
         resolver,
         firmware,
-        arch(),
+        MachineArch::host(),
         true,
     );
 }
@@ -120,7 +114,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
             resolver,
             firmware,
-            arch(),
+            MachineArch::host(),
             true,
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
@@ -185,7 +179,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
 
     async fn run_once(&self, state: &mut NetworkTestState) -> anyhow::Result<Vec<MetricResult>> {
         let mut metrics = Vec::new();
-        let label = self.nic.label();
+        let label = self.nic;
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let mut timer = pal_async::timer::PolledTimer::new(&state.driver);
