@@ -6,11 +6,9 @@ name = "kvm"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
-pal.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 kvm-bindings.workspace = true
+pal.workspace = true
 libc.workspace = true
 nix = { workspace = true, features = ["ioctl"] }
 parking_lot.workspace = true

@@ -452,6 +452,10 @@ impl FlowNode for Node {
                     in_bin: elf_bin,
                     out_bin: write_out_bin,
                     out_dbg_info: write_out_dbg,
+                    reproducible_without_debuglink: matches!(
+                        ctx.platform(),
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                    ),
                 });
 
                 ctx.emit_minor_rust_step("reporting split debug info", |ctx| {

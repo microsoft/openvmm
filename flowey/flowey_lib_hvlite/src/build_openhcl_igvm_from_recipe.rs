@@ -386,7 +386,8 @@ impl SimpleFlowNode for Node {
             } else {
                 match typ {
                     Vtl0KernelType::Example => ctx.reqv(|v| {
-                        crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(
+                        crate::resolve_openvmm_deps::Request::Get(
+                            crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
                             match arch {
                                 CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                                 CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -399,7 +400,8 @@ impl SimpleFlowNode for Node {
             };
 
             let initrd = ctx.reqv(|v| {
-                crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(
+                crate::resolve_openvmm_deps::Request::Get(
+                    crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
                     match arch {
                         CommonArch::X86_64 => OpenvmmDepsArch::X86_64,
                         CommonArch::Aarch64 => OpenvmmDepsArch::Aarch64,
@@ -537,6 +539,10 @@ impl SimpleFlowNode for Node {
                 in_bin,
                 out_bin: write,
                 out_dbg_info: write_dbg,
+                reproducible_without_debuglink: matches!(
+                    ctx.platform(),
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                ),
             });
 
             read.zip(ctx, read_dbg).map(ctx, |(bin, dbg)| {

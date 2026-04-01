@@ -57,8 +57,8 @@ pub const VIRTIO_BLK_ID_BYTES: usize = 20;
 /// status) in a single request. The virtio spec requires that a
 /// descriptor chain is no longer than the queue size, and each block
 /// request uses one descriptor for the header and one for the status
-/// byte, so the data segment limit is `QUEUE_MAX_SIZE - 2`.
-pub const DEFAULT_SEG_MAX: u32 = virtio::QUEUE_MAX_SIZE as u32 - 2;
+/// byte, so the data segment limit is `DEFAULT_QUEUE_SIZE - 2`.
+pub const DEFAULT_SEG_MAX: u32 = virtio::DEFAULT_QUEUE_SIZE as u32 - 2;
 
 /// Flag bit in `VirtioBlkDiscardWriteZeroes::flags` (spec §5.2.6).
 /// When set in a write zeroes command, allows the device to deallocate

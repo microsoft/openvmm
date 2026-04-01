@@ -2074,7 +2074,7 @@ impl InitializedVm {
                     virtio_mmio_start -= 0x1000;
                     let id = format!("{id}-{mmio_start}");
                     let gm = gm.clone();
-                    chipset_builder.arc_mutex_device(id).add(|services| {
+                    chipset_builder.arc_mutex_device(id).try_add(|services| {
                         VirtioMmioDevice::new(
                             device.0,
                             &driver_source.simple(),

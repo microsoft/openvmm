@@ -6,7 +6,7 @@ name = "hcl_mapper"
 rust-version.workspace = true
 edition.workspace = true
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 hcl.workspace = true
 page_pool_alloc.workspace = true
 

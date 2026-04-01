@@ -12,7 +12,7 @@ use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
 use crate::DynVirtioDevice;
-use crate::QUEUE_MAX_SIZE;
+use crate::MAX_QUEUE_SIZE;
 use crate::QueueResources;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
@@ -35,6 +35,7 @@ use device_emulators::write_as_u32_chunks;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
+use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -98,12 +99,8 @@ pub struct VirtioPciDevice {
     driver_feature_select: u32,
     msix_config_vector: u16,
     queue_select: u32,
-    #[inspect(skip)]
-    events: Vec<pal_event::Event>,
     #[inspect(iter_by_index)]
-    queues: Vec<QueueParams>,
-    #[inspect(skip)]
-    msix_vectors: Vec<u16>,
+    queues: Vec<PciQueueData>,
     #[inspect(skip)]
     interrupt_status: Arc<Mutex<u32>>,
     #[inspect(hex)]
@@ -119,12 +116,24 @@ pub struct VirtioPciDevice {
     doorbells: VirtioDoorbells,
     #[inspect(hex)]
     shared_memory_size: u64,
-    /// Cached queue states from `ChangeDeviceState::stop()` for resume.
-    #[inspect(skip)]
-    saved_queue_states: Vec<Option<QueueState>>,
     supports_save_restore: bool,
     #[inspect(skip)]
     guest_memory: GuestMemory,
+}
+
+/// Per-queue transport data.
+#[derive(Inspect)]
+struct PciQueueData {
+    #[inspect(flatten)]
+    params: QueueParams,
+    #[inspect(skip)]
+    initial_size: u16,
+    #[inspect(skip)]
+    msix_vector: u16,
+    #[inspect(skip)]
+    event: pal_event::Event,
+    #[inspect(skip)]
+    saved_state: Option<QueueState>,
 }
 
 impl VirtioPciDevice {
@@ -138,16 +147,22 @@ impl VirtioPciDevice {
         shared_mem_mapper: Option<&dyn MemoryMapper>,
     ) -> io::Result<Self> {
         let traits = device.traits();
-        let queues = (0..traits.max_queues)
-            .map(|_| QueueParams {
-                size: QUEUE_MAX_SIZE,
-                ..Default::default()
+        let queues: Vec<PciQueueData> = (0..traits.max_queues)
+            .map(|i| {
+                let size = device.queue_size(i);
+                super::validate_queue_size(i, size)?;
+                Ok(PciQueueData {
+                    params: QueueParams {
+                        size,
+                        ..Default::default()
+                    },
+                    initial_size: size,
+                    msix_vector: 0,
+                    event: pal_event::Event::new(),
+                    saved_state: None,
+                })
             })
-            .collect();
-        let events = (0..traits.max_queues)
-            .map(|_| pal_event::Event::new())
-            .collect();
-        let msix_vectors = vec![0; traits.max_queues.into()];
+            .collect::<io::Result<Vec<_>>>()?;
 
         let hardware_ids = HardwareIds {
             vendor_id: VIRTIO_VENDOR_ID,
@@ -282,9 +297,7 @@ impl VirtioPciDevice {
             driver_feature_select: 0,
             msix_config_vector: 0,
             queue_select: 0,
-            events,
             queues,
-            msix_vectors,
             interrupt_status: Arc::new(Mutex::new(0)),
             device_status: VirtioDeviceStatus::new(),
             poll_waker: None,
@@ -293,7 +306,6 @@ impl VirtioPciDevice {
             config_space,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             shared_memory_size,
-            saved_queue_states: vec![None; traits.max_queues as usize],
             supports_save_restore,
             guest_memory,
         })
@@ -316,7 +328,7 @@ impl VirtioPciDevice {
 
     /// Create an interrupt for a specific queue index.
     fn create_queue_interrupt(&self, idx: usize) -> Interrupt {
-        let vector = self.msix_vectors[idx];
+        let vector = self.queues[idx].msix_vector;
         match &self.interrupt_kind {
             InterruptKind::Msix(msix) => {
                 if let Some(interrupt) = msix.interrupt(vector) {
@@ -368,13 +380,9 @@ impl VirtioPciDevice {
     fn install_doorbells(&mut self) {
         if let Some(bar0_base) = self.config_space.bar_address(0) {
             let notification_address = bar0_base + BAR0_NOTIFY_OFFSET as u64;
-            for i in 0..self.events.len() {
-                self.doorbells.add(
-                    notification_address,
-                    Some(i as u64),
-                    Some(2),
-                    &self.events[i],
-                );
+            for (i, qd) in self.queues.iter().enumerate() {
+                self.doorbells
+                    .add(notification_address, Some(i as u64), Some(2), &qd.event);
             }
         }
     }
@@ -403,16 +411,16 @@ impl VirtioPciDevice {
             }
             VirtioPciCommonCfg::QUEUE_SIZE => {
                 let size = if queue_select < self.queues.len() {
-                    self.queues[queue_select].size
+                    self.queues[queue_select].params.size
                 } else {
                     0
                 };
-                let msix_vector = self.msix_vectors.get(queue_select).copied().unwrap_or(0);
+                let msix_vector = self.queues.get(queue_select).map_or(0, |qd| qd.msix_vector);
                 (msix_vector as u32) << 16 | size as u32
             }
             VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let enable = if queue_select < self.queues.len() {
-                    if self.queues[queue_select].enable {
+                    if self.queues[queue_select].params.enable {
                         1
                     } else {
                         0
@@ -430,42 +438,42 @@ impl VirtioPciDevice {
             }
             VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].desc_addr as u32
+                    self.queues[queue_select].params.desc_addr as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].desc_addr >> 32) as u32
+                    (self.queues[queue_select].params.desc_addr >> 32) as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].avail_addr as u32
+                    self.queues[queue_select].params.avail_addr as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].avail_addr >> 32) as u32
+                    (self.queues[queue_select].params.avail_addr >> 32) as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].used_addr as u32
+                    self.queues[queue_select].params.used_addr as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].used_addr >> 32) as u32
+                    (self.queues[queue_select].params.used_addr >> 32) as u32
                 } else {
                     0
                 }
@@ -560,15 +568,15 @@ impl VirtioPciDevice {
                         .queues
                         .iter()
                         .enumerate()
-                        .filter(|(_, q)| q.enable)
-                        .map(|(i, q)| {
+                        .filter(|(_, qd)| qd.params.enable)
+                        .map(|(i, qd)| {
                             let notify = self.create_queue_interrupt(i);
                             (
                                 i as u16,
                                 QueueResources {
-                                    params: *q,
+                                    params: qd.params,
                                     notify,
-                                    event: self.events[i].clone(),
+                                    event: qd.event.clone(),
                                     guest_memory: self.guest_memory.clone(),
                                 },
                             )
@@ -587,61 +595,60 @@ impl VirtioPciDevice {
                 let msix_vector = (val >> 16) as u16;
                 if !queues_locked && queue_select < self.queues.len() {
                     let val = val as u16;
-                    let queue = &mut self.queues[queue_select];
-                    if val > QUEUE_MAX_SIZE {
-                        queue.size = QUEUE_MAX_SIZE;
+                    let qd = &mut self.queues[queue_select];
+                    if val > MAX_QUEUE_SIZE {
+                        qd.params.size = MAX_QUEUE_SIZE;
                     } else {
-                        queue.size = val;
+                        qd.params.size = val;
                     }
-                    self.msix_vectors[queue_select] = msix_vector;
+                    qd.msix_vector = msix_vector;
                 }
             }
             VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let val = val & 0xffff;
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
-                    queue.enable = val != 0;
+                    self.queues[queue_select].params.enable = val != 0;
                 }
             }
             VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.desc_addr = queue.desc_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.desc_addr = (val as u64) << 32 | queue.desc_addr & 0xffffffff;
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.avail_addr = queue.avail_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.avail_addr = (val as u64) << 32 | queue.avail_addr & 0xffffffff;
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if !queues_locked && (queue_select) < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.used_addr = queue.used_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.used_addr = (val as u64) << 32 | queue.used_addr & 0xffffffff;
                 }
             }
             VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => {
-                if (val as usize) < self.events.len() {
-                    self.events[val as usize].signal();
+                if let Some(qd) = self.queues.get(val as usize) {
+                    qd.event.signal();
                 }
             }
             _ => {
@@ -688,23 +695,29 @@ impl ChangeDeviceState for VirtioPciDevice {
         if self.device_status.driver_ok() {
             let features = self.driver_feature.clone();
             let mut queues = Vec::new();
-            for (i, q) in self.queues.iter().enumerate() {
-                if !q.enable {
+            for (i, qd) in self.queues.iter_mut().enumerate() {
+                if !qd.params.enable {
                     continue;
                 }
-                let notify = self.create_queue_interrupt(i);
-                let initial_state = self.saved_queue_states[i].take();
-                queues.push((
-                    i as u16,
-                    QueueResources {
-                        params: *q,
-                        notify,
-                        event: self.events[i].clone(),
-                        guest_memory: self.guest_memory.clone(),
-                    },
-                    initial_state,
-                ));
+                let initial_state = qd.saved_state.take();
+                queues.push((i, qd.params, qd.event.clone(), initial_state));
             }
+            let queues: Vec<_> = queues
+                .into_iter()
+                .map(|(i, params, event, initial_state)| {
+                    let notify = self.create_queue_interrupt(i);
+                    (
+                        i as u16,
+                        QueueResources {
+                            params,
+                            notify,
+                            event,
+                            guest_memory: self.guest_memory.clone(),
+                        },
+                        initial_state,
+                    )
+                })
+                .collect();
 
             let params = StartParams { queues, features };
 
@@ -726,7 +739,7 @@ impl ChangeDeviceState for VirtioPciDevice {
             .await
             .expect("device task is gone");
         for (i, state) in states.into_iter().enumerate() {
-            self.saved_queue_states[i] = state;
+            self.queues[i].saved_state = state;
         }
     }
 
@@ -751,9 +764,7 @@ impl ChangeDeviceState for VirtioPciDevice {
             driver_feature_select,
             msix_config_vector,
             queue_select,
-            events: _,
             queues,
-            msix_vectors,
             // Handled by reset_status() above.
             interrupt_status: _,
             device_status: _,
@@ -763,7 +774,6 @@ impl ChangeDeviceState for VirtioPciDevice {
             doorbells: _,
             config_space,
             shared_memory_size: _,
-            saved_queue_states,
             supports_save_restore: _,
             guest_memory: _,
         } = self;
@@ -777,17 +787,17 @@ impl ChangeDeviceState for VirtioPciDevice {
         *driver_feature_select = 0;
         *msix_config_vector = 0;
         *queue_select = 0;
-        for q in queues {
-            *q = QueueParams {
-                size: QUEUE_MAX_SIZE,
-                ..Default::default()
+        for qd in queues.iter_mut() {
+            *qd = PciQueueData {
+                params: QueueParams {
+                    size: qd.initial_size,
+                    ..Default::default()
+                },
+                initial_size: qd.initial_size,
+                msix_vector: 0,
+                event: pal_event::Event::new(),
+                saved_state: None,
             };
-        }
-        for v in msix_vectors {
-            *v = 0;
-        }
-        for s in saved_queue_states {
-            *s = None;
         }
     }
 }
@@ -874,17 +884,16 @@ mod saved_state {
                 queues: self
                     .queues
                     .iter()
-                    .enumerate()
-                    .map(|(i, q)| state::SavedQueueState {
+                    .map(|qd| state::SavedQueueState {
                         common: common_state::CommonQueueState {
-                            size: q.size,
-                            enable: q.enable,
-                            desc_addr: q.desc_addr,
-                            avail_addr: q.avail_addr,
-                            used_addr: q.used_addr,
-                            queue_state: self.saved_queue_states[i],
+                            size: qd.params.size,
+                            enable: qd.params.enable,
+                            desc_addr: qd.params.desc_addr,
+                            avail_addr: qd.params.avail_addr,
+                            used_addr: qd.params.used_addr,
+                            queue_state: qd.saved_state,
                         },
-                        msix_vector: self.msix_vectors[i],
+                        msix_vector: qd.msix_vector,
                     })
                     .collect(),
             })
@@ -907,7 +916,7 @@ mod saved_state {
                     .map(|(i, q)| (i, q.common.size)),
                 self.queues.len(),
                 state.queues.len(),
-                QUEUE_MAX_SIZE,
+                MAX_QUEUE_SIZE,
             )?;
 
             let new_status = VirtioDeviceStatus::from(common.device_status);
@@ -929,15 +938,16 @@ mod saved_state {
 
             // Restore per-queue transport parameters.
             for (i, sq) in state.queues.iter().enumerate() {
-                self.queues[i] = QueueParams {
+                let qd = &mut self.queues[i];
+                qd.params = QueueParams {
                     size: sq.common.size,
                     enable: sq.common.enable,
                     desc_addr: sq.common.desc_addr,
                     avail_addr: sq.common.avail_addr,
                     used_addr: sq.common.used_addr,
                 };
-                self.msix_vectors[i] = sq.msix_vector;
-                self.saved_queue_states[i] = sq.common.queue_state;
+                qd.msix_vector = sq.msix_vector;
+                qd.saved_state = sq.common.queue_state;
             }
 
             self.device_status = new_status;

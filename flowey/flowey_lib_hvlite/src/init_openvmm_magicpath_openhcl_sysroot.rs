@@ -50,7 +50,8 @@ impl FlowNode for Node {
 
         for (arch, out_vars) in sysroot_arch {
             let openhcl_sysroot_tar_gz = ctx.reqv(|v| {
-                crate::resolve_openvmm_deps::Request::GetOpenhclSysroot(
+                crate::resolve_openvmm_deps::Request::Get(
+                    crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclSysroot,
                     match arch {
                         OpenvmmSysrootArch::Aarch64 => OpenvmmDepsArch::Aarch64,
                         OpenvmmSysrootArch::X64 => OpenvmmDepsArch::X86_64,

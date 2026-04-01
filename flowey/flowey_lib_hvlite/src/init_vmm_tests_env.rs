@@ -28,6 +28,8 @@ flowey_request! {
 
         /// Register an openvmm binary
         pub register_openvmm: Option<ReadVar<crate::build_openvmm::OpenvmmOutput>>,
+        /// Register an openvmm_vhost binary (Linux only)
+        pub register_openvmm_vhost: Option<ReadVar<crate::build_openvmm_vhost::OpenvmmVhostOutput>>,
         /// Register a windows pipette binary
         pub register_pipette_windows: Option<ReadVar<crate::build_pipette::PipetteOutput>>,
         /// Register a linux-musl pipette binary
@@ -85,6 +87,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target,
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
@@ -110,10 +113,18 @@ impl SimpleFlowNode for Node {
         };
 
         let test_linux_initrd = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
+                openvmm_deps_arch,
+                v,
+            )
         });
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+                openvmm_deps_arch,
+                v,
+            )
         });
 
         let mu_msvm_arch = match vmm_tests_target.architecture {
@@ -131,6 +142,7 @@ impl SimpleFlowNode for Node {
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
+            let openvmm_vhost = register_openvmm_vhost.claim(ctx);
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
             let guest_test_uefi = register_guest_test_uefi.claim(ctx);
@@ -258,6 +270,14 @@ impl SimpleFlowNode for Node {
                             dst.make_executable()?;
                         }
                     }
+                }
+
+                if let Some(openvmm_vhost) = openvmm_vhost {
+                    let crate::build_openvmm_vhost::OpenvmmVhostOutput { bin, dbg: _ } =
+                        rt.read(openvmm_vhost);
+                    let dst = test_content_dir.join("openvmm_vhost");
+                    fs_err::copy(bin, &dst)?;
+                    dst.make_executable()?;
                 }
 
                 if let Some(pipette_win) = pipette_win {

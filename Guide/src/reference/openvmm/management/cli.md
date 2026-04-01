@@ -33,6 +33,17 @@ as well as the generated CLI help (via `cargo run -- --help`).
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
+* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,pcie_port=<PORT>]`: Attach a
+  vhost-user device backed by an external process over a Unix socket (Linux
+  only). The backend process must already be listening on `SOCKET_PATH`.
+  Supported `type` values: `blk`, `net`, `rng`, `console`, `fs`, `pmem`.
+  Alternatively, use `device_id=<N>` instead of `type=` to specify the numeric
+  virtio device ID directly. Examples:
+  ```sh
+  --vhost-user /tmp/vhost-blk.sock,type=blk
+  --vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
+  --vhost-user /tmp/vhost-fs.sock,device_id=26
+  ```
 
 Serial devices can be configured to appear as different devices inside the guest:
 
@@ -101,4 +112,10 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 ```sh
 --virtio-rng --virtio-rng-pcie-port rp0
 --virtio-console console --virtio-console-pcie-port rp0
+```
+
+**vhost-user devices** (comma-separated option, Linux only): `--vhost-user`
+
+```sh
+--vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
 ```

@@ -1639,6 +1639,33 @@ async fn vm_config_from_command_line(
         }
     }
 
+    // Handle --vhost-user arguments.
+    #[cfg(target_os = "linux")]
+    for vhost_cli in &opt.vhost_user {
+        let stream =
+            unix_socket::UnixStream::connect(&vhost_cli.socket_path).with_context(|| {
+                format!(
+                    "failed to connect to vhost-user socket: {}",
+                    vhost_cli.socket_path
+                )
+            })?;
+
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::vhost_user::VhostUserDeviceHandle {
+                socket: stream.into(),
+                device_id: vhost_cli.device_id,
+            }
+            .into_resource();
+        if let Some(pcie_port) = &vhost_cli.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
     if let Some(vsock_path) = &opt.virtio_vsock_path {
         let listener = vsock_listener(Some(vsock_path))?.unwrap();
         add_virtio_device(

@@ -57,6 +57,7 @@ tpm_resources.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
 virtio_resources.workspace = true
+virtio.workspace = true
 vmbfs_resources.workspace = true
 vmbus_core.workspace = true
 vmbus_serial_resources.workspace = true

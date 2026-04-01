@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 debug_ptr.workspace = true
 inspect = { workspace = true, features = ["std", "defer"] }
-inspect_rlimit.workspace = true
 inspect_task.workspace = true
 mesh.workspace = true
 mesh_remote.workspace = true
@@ -23,6 +22,9 @@ futures-concurrency.workspace = true
 slab.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+inspect_rlimit.workspace = true
 
 [lints]
 workspace = true
