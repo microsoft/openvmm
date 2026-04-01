@@ -371,7 +371,7 @@ impl HyperVVM {
     /// return the named pipe path for the serial port.
     ///
     /// this is computed by New-CustomVM
-    pub fn get_vm_com_port_path(&mut self, port: u8) -> String {
+    pub fn get_vm_com_port_path(&self, port: u8) -> String {
         format!(r#"\\.\pipe\{}-{}"#, self.vmid, port)
     }
 

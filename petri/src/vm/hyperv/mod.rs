@@ -23,6 +23,7 @@ use crate::PetriVmRuntimeConfig;
 use crate::PetriVmmBackend;
 use crate::ShutdownKind;
 use crate::UefiConfig;
+use crate::VmbusStorageController;
 use crate::VmmQuirks;
 use crate::hyperv::powershell::HyperVNewCustomVMArgs;
 use crate::kmsg_log_task;
@@ -220,10 +221,22 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         // Map SCSI
         let mut scsi_controllers = HashMap::new();
-        for (vsid, controller) in config.vmbus_storage_controllers.iter() {
-            let mut drives = HashMap::new();
-            for (lun, Drive { disk, is_dvd }) in &controller.drives {
-                drives.insert(
+        for (
+            vsid,
+            VmbusStorageController {
+                target_vtl,
+                controller_type,
+                drives,
+            },
+        ) in config.vmbus_storage_controllers.iter()
+        {
+            if !matches!(controller_type, crate::VmbusStorageType::Scsi) {
+                todo!("other storage types for hyper-v")
+            }
+
+            let mut hyperv_drives = HashMap::new();
+            for (lun, Drive { disk, is_dvd }) in drives {
+                hyperv_drives.insert(
                     *lun,
                     powershell::HyperVDrive {
                         disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
@@ -231,15 +244,13 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     },
                 );
             }
-            if !drives.is_empty() {
-                scsi_controllers.insert(
-                    *vsid,
-                    powershell::HyperVScsiController {
-                        target_vtl: controller.target_vtl,
-                        drives,
-                    },
-                );
-            }
+            scsi_controllers.insert(
+                *vsid,
+                powershell::HyperVScsiController {
+                    target_vtl: *target_vtl,
+                    drives: hyperv_drives,
+                },
+            );
         }
 
         // Map IDE
@@ -247,16 +258,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
         if let Some(controllers) = config.firmware.ide_controllers() {
             for (controller_number, controller) in controllers.iter().enumerate() {
                 let mut drives = HashMap::new();
-                for (lun, Drive { disk, is_dvd }) in
-                    controller.iter().filter_map(|d| d.as_ref()).enumerate()
-                {
-                    drives.insert(
-                        lun as u8,
-                        powershell::HyperVDrive {
-                            disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
-                            is_dvd: *is_dvd,
-                        },
-                    );
+                for (lun, drive) in controller.iter().enumerate() {
+                    if let Some(Drive { disk, is_dvd }) = drive.as_ref() {
+                        drives.insert(
+                            lun as u8,
+                            powershell::HyperVDrive {
+                                disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
+                                is_dvd: *is_dvd,
+                            },
+                        );
+                    }
                 }
                 if !drives.is_empty() {
                     ide_controllers.insert(controller_number as u32, drives);
@@ -286,6 +297,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             properties.is_openhcl && is_not_vbs && is_x86 && is_supported_winver
         };
+
+        // devnote: The imc_hiv and management_vtl_settings temp files are
+        // passed into HyperVVM::new and dropped after the VM is created.
+        // In both cases, the data written to the file is read into the VM's
+        // configuration when the New-CustomVM powershell cmdlet is called.
+        // Once this is done, the files can safely be deleted.
 
         let imc_hiv = if properties.using_vtl0_pipette
             && matches!(properties.os_flavor, OsFlavor::Windows)
@@ -323,14 +340,12 @@ impl PetriVmmBackend for HyperVPetriBackend {
             args.scsi_controllers = scsi_controllers;
             args.ide_controllers = ide_controllers;
             args.com_3 = supports_com3;
-            args.imc_hiv = imc_hiv.as_ref().map(|x| x.path().to_path_buf());
-            args.management_vtl_settings = management_vtl_settings
-                .as_ref()
-                .map(|x| x.path().to_path_buf());
+            args.imc_hiv = imc_hiv;
+            args.management_vtl_settings = management_vtl_settings;
             args
         };
 
-        let mut vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
+        let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
         if properties.is_openhcl {
             // Copy the IGVM file locally, since it may not be accessible by
