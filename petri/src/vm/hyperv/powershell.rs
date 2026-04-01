@@ -248,6 +248,11 @@ pub struct HyperVNewCustomVMArgs {
     pub max_processors_per_numa_node: Option<u64>,
     pub scsi_controllers: HashMap<Guid, HyperVScsiController>,
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
+    pub imc_hiv: Option<PathBuf>,
+    pub com_1: bool,
+    pub com_3: bool,
+    pub tpm_enabled: bool,
+    pub management_vtl_settings: Option<PathBuf>,
 }
 
 /// Hyper-V SCSI controller
@@ -374,6 +379,13 @@ impl HyperVNewCustomVMArgs {
             ..
         } = config;
 
+        if firmware
+            .openhcl_config()
+            .is_some_and(|c| c.vtl2_base_address_type.is_some())
+        {
+            todo!("custom VTL2 base address type not yet supported for Hyper-V")
+        }
+
         Ok(HyperVNewCustomVMArgs {
             name: name.to_owned(),
             generation: Some(if properties.is_pcat {
@@ -467,6 +479,14 @@ impl HyperVNewCustomVMArgs {
                 ),
             hw_threads_per_core: proc_topology.enable_smt.map(|smt| if smt { 2 } else { 1 }),
             max_processors_per_numa_node: proc_topology.vps_per_socket.map(|v| v as u64),
+            tpm_enabled: {
+                let tpm_enabled = tpm.is_some();
+                if properties.is_pcat && tpm_enabled {
+                    anyhow::bail!("hyper-v gen 1 VMs do not support a TPM");
+                }
+                tpm_enabled
+            },
+            com_1: true,
 
             // specified after creation
             firmware_file: None,
@@ -474,6 +494,9 @@ impl HyperVNewCustomVMArgs {
             guest_state_path: None,
             scsi_controllers: HashMap::new(),
             ide_controllers: HashMap::new(),
+            com_3: false,
+            imc_hiv: None,
+            management_vtl_settings: None,
         })
     }
 }
@@ -590,6 +613,11 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             )
             .arg_opt("ScsiControllers", scsi_controllers)
             .arg_opt("IdeControllers", ide_controllers)
+            .arg_opt("ImcHive", args.imc_hiv)
+            .arg("Com1", args.com_1)
+            .arg("Com3", args.com_3)
+            .arg("TpmEnabled", args.tpm_enabled)
+            .arg_opt("ManagementVtlSettings", args.management_vtl_settings)
             .finish()
             .build(),
     )

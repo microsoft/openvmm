@@ -368,11 +368,11 @@ impl HyperVVM {
         hvc::hvc_reset(&self.vmid).await.context("hvc_reset")
     }
 
-    /// Enable serial output and return the named pipe path
-    pub async fn set_vm_com_port(&mut self, port: u8) -> anyhow::Result<String> {
-        let pipe_path = format!(r#"\\.\pipe\{}-{}"#, self.vmid, port);
-        powershell::run_set_vm_com_port(&self.vmid, port, Path::new(&pipe_path)).await?;
-        Ok(pipe_path)
+    /// return the named pipe path for the serial port.
+    ///
+    /// this is computed by New-CustomVM
+    pub fn get_vm_com_port_path(&mut self, port: u8) -> String {
+        format!(r#"\\.\pipe\{}-{}"#, self.vmid, port)
     }
 
     /// Wait for the VM to stop
