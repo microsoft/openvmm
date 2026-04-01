@@ -13,7 +13,6 @@ use crate::Firmware;
 use crate::IsolationType;
 use crate::ModifyFn;
 use crate::NoPetriVmInspector;
-use crate::OpenHclConfig;
 use crate::OpenHclServicingFlags;
 use crate::OpenvmmLogConfig;
 use crate::PetriHaltReason;
@@ -248,10 +247,8 @@ impl PetriVmmBackend for HyperVPetriBackend {
         if let Some(controllers) = config.firmware.ide_controllers() {
             for (controller_number, controller) in controllers.iter().enumerate() {
                 let mut drives = HashMap::new();
-                for (lun, Drive { disk, is_dvd }) in controller
-                    .into_iter()
-                    .filter_map(|d| d.as_ref())
-                    .enumerate()
+                for (lun, Drive { disk, is_dvd }) in
+                    controller.iter().filter_map(|d| d.as_ref()).enumerate()
                 {
                     drives.insert(
                         lun as u8,
@@ -267,6 +264,57 @@ impl PetriVmmBackend for HyperVPetriBackend {
             }
         }
 
+        // Attempt to enable COM3 and use that to get KMSG logs, otherwise
+        // fall back to use diag_client.
+        let supports_com3 = {
+            // Hyper-V VBS VMs don't work with COM3 enabled.
+            // Hypervisor support is needed for this to work.
+            let is_not_vbs = !matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
+
+            // The Hyper-V serial device for ARM doesn't support additional
+            // serial ports yet.
+            let is_x86 = matches!(config.arch, MachineArch::X86_64);
+
+            // The registry key to enable additional COM ports is only
+            // available in newer builds of Windows.
+            let current_winver = windows_version::OsVersion::current();
+            tracing::debug!(?current_winver, "host windows version");
+            // This is the oldest working build used in CI
+            // TODO: determine the actual minimum version
+            const COM3_MIN_WINVER: u32 = 27813;
+            let is_supported_winver = current_winver.build >= COM3_MIN_WINVER;
+
+            properties.is_openhcl && is_not_vbs && is_x86 && is_supported_winver
+        };
+
+        let imc_hiv = if properties.using_vtl0_pipette
+            && matches!(properties.os_flavor, OsFlavor::Windows)
+            && !properties.is_isolated
+        {
+            let mut imc_hive_file = tempfile::NamedTempFile::new().context("creating tempfile")?;
+            imc_hive_file
+                .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                .context("failed to write imc hive")?;
+            Some(imc_hive_file)
+        } else {
+            None
+        };
+
+        let management_vtl_settings = if let Some(vtl2_settings) = config
+            .firmware
+            .openhcl_config()
+            .and_then(|c| c.vtl2_settings.as_ref())
+        {
+            let mut vtl2_settings_file =
+                tempfile::NamedTempFile::new().context("creating tempfile")?;
+            vtl2_settings_file
+                .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
+                .context("writing settings to tempfile")?;
+            Some(vtl2_settings_file)
+        } else {
+            None
+        };
+
         let hyperv_args = {
             let mut args = HyperVNewCustomVMArgs::from_config(&config, &properties)?;
             args.firmware_file = igvm_file.clone();
@@ -274,39 +322,17 @@ impl PetriVmmBackend for HyperVPetriBackend {
             args.guest_state_path = guest_state_path;
             args.scsi_controllers = scsi_controllers;
             args.ide_controllers = ide_controllers;
+            args.com_3 = supports_com3;
+            args.imc_hiv = imc_hiv.as_ref().map(|x| x.path().to_path_buf());
+            args.management_vtl_settings = management_vtl_settings
+                .as_ref()
+                .map(|x| x.path().to_path_buf());
             args
         };
 
         let mut vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
-        if properties.using_vtl0_pipette
-            && matches!(properties.os_flavor, OsFlavor::Windows)
-            && !properties.is_isolated
-        {
-            // Make a file for the IMC hive. It's not guaranteed to be at a fixed
-            // location at runtime.
-            let imc_hive = temp_dir.path().join("imc.hiv");
-            {
-                let mut imc_hive_file = fs_err::File::create_new(&imc_hive)?;
-                imc_hive_file
-                    .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
-                    .context("failed to write imc hive")?;
-            }
-
-            // Set the IMC
-            vm.set_imc(&imc_hive).await?;
-        }
-
-        if let Some(OpenHclConfig {
-            vtl2_base_address_type,
-            vtl2_settings,
-            ..
-        }) = config.firmware.openhcl_config()
-        {
-            if vtl2_base_address_type.is_some() {
-                todo!("custom VTL2 base address type not yet supported for Hyper-V")
-            }
-
+        if properties.is_openhcl {
             // Copy the IGVM file locally, since it may not be accessible by
             // Hyper-V (e.g., if it is in a WSL filesystem).
             let local_path = igvm_file.as_ref().unwrap();
@@ -315,34 +341,11 @@ impl PetriVmmBackend for HyperVPetriBackend {
             acl_read_for_vm(local_path, Some(*vm.vmid()))
                 .context("failed to set ACL for igvm file")?;
 
-            // Attempt to enable COM3 and use that to get KMSG logs, otherwise
-            // fall back to use diag_client.
-            let supports_com3 = {
-                // Hyper-V VBS VMs don't work with COM3 enabled.
-                // Hypervisor support is needed for this to work.
-                let is_not_vbs = !matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
-
-                // The Hyper-V serial device for ARM doesn't support additional
-                // serial ports yet.
-                let is_x86 = matches!(config.arch, MachineArch::X86_64);
-
-                // The registry key to enable additional COM ports is only
-                // available in newer builds of Windows.
-                let current_winver = windows_version::OsVersion::current();
-                tracing::debug!(?current_winver, "host windows version");
-                // This is the oldest working build used in CI
-                // TODO: determine the actual minimum version
-                const COM3_MIN_WINVER: u32 = 27813;
-                let is_supported_winver = current_winver.build >= COM3_MIN_WINVER;
-
-                is_not_vbs && is_x86 && is_supported_winver
-            };
-
             let openhcl_log_file = log_source.log_file("openhcl")?;
             if supports_com3 {
                 tracing::debug!("getting kmsg logs from COM3");
 
-                let openhcl_serial_pipe_path = vm.set_vm_com_port(3).await?;
+                let openhcl_serial_pipe_path = vm.get_vm_com_port_path(3);
                 log_tasks.push(driver.spawn(
                     "openhcl-log",
                     hyperv_serial_log_task(
@@ -362,29 +365,14 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     ),
                 ));
             }
-
-            // Set the VTL2 settings if necessary
-            if let Some(settings) = &vtl2_settings {
-                vm.set_base_vtl2_settings(settings).await?;
-            }
         }
 
-        let serial_pipe_path = vm.set_vm_com_port(1).await?;
+        let serial_pipe_path = vm.get_vm_com_port_path(1);
         let serial_log_file = log_source.log_file("guest")?;
         log_tasks.push(driver.spawn(
             "guest-log",
             hyperv_serial_log_task(driver.clone(), serial_pipe_path, serial_log_file),
         ));
-
-        // Configure the TPM
-        if config.tpm.is_some() {
-            if properties.is_pcat {
-                anyhow::bail!("hyper-v gen 1 VMs do not support a TPM");
-            }
-            vm.enable_tpm().await?;
-        } else {
-            vm.disable_tpm().await?;
-        }
 
         vm.start().await?;
 
