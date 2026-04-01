@@ -355,6 +355,7 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
         tests::scale_boot::register_artifacts,
         tests::memory::register_artifacts,
         tests::network::register_artifacts,
+        tests::disk_io::register_artifacts,
     ];
 
     let mut requirements = petri::TestArtifactRequirements::new();
