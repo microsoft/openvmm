@@ -500,7 +500,13 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         }
 
         self.queues.clear();
-        self.vport.destroy(std::mem::take(&mut self.arena)).await;
+        self.vport
+            .destroy(std::mem::take(&mut self.arena))
+            .instrument(tracing::info_span!(
+                "clearing memory allocations",
+                vport_id = self.vport.id()
+            ))
+            .await;
         // Wait for all outstanding queues. There can be a delay switching out
         // the queues when an endpoint is removed, and the queue has access to
         // the vport which is being stopped here.
@@ -509,7 +515,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 .1
                 .wait()
                 .instrument(tracing::info_span!(
-                    "Waiting for outstanding queues to stop",
+                    "waiting for outstanding queues to stop",
                     vport_id = self.vport.id()
                 ))
                 .await;
