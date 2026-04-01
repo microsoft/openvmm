@@ -16,7 +16,8 @@ impl Pkcs7CertStoreInner {
         let mut builder = openssl::x509::store::X509StoreBuilder::new()
             .map_err(|e| err(e, "creating x509 store builder"))?;
 
-        // TODO: set these flags from callers
+        // TODO: set these flags from callers once its clear how different backends handle similar adjustments
+
         // PARTIAL_CHAIN rationale: the certs in the EFI_SIGNATURE_LIST are not
         // root certs, and we don't have a full cert chain available. Instead,
         // we want to terminate the chain verification at whatever certs are
@@ -32,6 +33,10 @@ impl Pkcs7CertStoreInner {
             .set_flags(store_flags)
             .map_err(|e| err(e, "setting x509 verify flags"))?;
 
+        // X509Purpose::Any rationale: openssl expects the trusted certs to have
+        // certain capabilities that ours do not. Omitting this call will result
+        // in the verify operation failing with "Verify error:unsupported
+        // certificate purpose"
         builder
             .set_purpose(openssl::x509::X509PurposeId::ANY)
             .map_err(|e| err(e, "setting x509 purpose"))?;
