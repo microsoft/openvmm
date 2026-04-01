@@ -964,7 +964,7 @@ impl PartitionInfo {
         // from sidecar startup. These CPUs need immediate kernel access to handle
         // device interrupts. All other CPUs still benefit from sidecar's parallel
         // startup. Falls back to disabling sidecar entirely if CPU IDs exceed the
-        // per-CPU state array capacity (>1000 CPUs).
+        // per-CPU state array capacity (>400 CPUs).
         //
         // Sidecar is automatically disabled when: all NUMA nodes have exactly
         // one CPU (nothing to parallelize), x2apic is unavailable, the VM is
