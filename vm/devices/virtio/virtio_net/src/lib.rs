@@ -235,6 +235,7 @@ pub struct Device {
 }
 
 /// Tracks the state of a queue pair through the start_queue lifecycle.
+#[expect(clippy::large_enum_variant)]
 enum QueuePairState {
     /// No queues started for this pair.
     Empty,
