@@ -4,7 +4,7 @@
 //! Handler for the execute request.
 
 // UNSAFETY: Required for libc::chroot() and libc::chdir() in pre_exec on Linux.
-#![expect(unsafe_code)]
+#![cfg_attr(target_os = "linux", expect(unsafe_code))]
 
 use futures::executor::block_on;
 use futures::io::AllowStdIo;
