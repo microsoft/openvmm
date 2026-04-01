@@ -3012,6 +3012,12 @@ pub trait IntoRequest {
 /// try to implement it manually!
 pub trait IntoConfig: Serialize {
     type Node: FlowNodeBase;
+
+    /// By implementing this method manually, you're indicating that you know what you're
+    /// doing,
+    #[doc(hidden)]
+    #[expect(nonstandard_style)]
+    fn do_not_manually_impl_this_trait__use_the_flowey_config_macro_instead(&mut self);
 }
 
 /// Trait for merging config values. Implemented by the `flowey_config!`
@@ -3373,6 +3379,8 @@ macro_rules! flowey_config {
 
         impl $crate::node::IntoConfig for $Config {
             type Node = Node;
+
+            fn do_not_manually_impl_this_trait__use_the_flowey_config_macro_instead(&mut self) {}
         }
     };
 }

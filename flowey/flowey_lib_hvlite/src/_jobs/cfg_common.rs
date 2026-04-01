@@ -78,7 +78,7 @@ impl SimpleFlowNode for Node {
             });
             let token = ctx.get_gh_context_var().global().token();
             ctx.config(flowey_lib_common::use_gh_cli::Config {
-                auth: Some(flowey_lib_common::use_gh_cli::GhCliAuthConfig::AuthToken(
+                auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::AuthToken(
                     ConfigVar(token),
                 )),
             });
@@ -109,9 +109,7 @@ impl SimpleFlowNode for Node {
                     ..Default::default()
                 });
                 ctx.config(flowey_lib_common::use_gh_cli::Config {
-                    auth: Some(
-                        flowey_lib_common::use_gh_cli::GhCliAuthConfig::LocalOnlyInteractive,
-                    ),
+                    auth: Some(flowey_lib_common::use_gh_cli::GhCliAuth::LocalOnlyInteractive),
                 });
                 ctx.config(flowey_lib_common::install_rust::Config {
                     ignore_version: Some(ignore_rust_version),

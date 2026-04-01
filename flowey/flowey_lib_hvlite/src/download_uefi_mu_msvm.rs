@@ -49,11 +49,7 @@ impl FlowNodeWithConfig for Node {
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
         let version = config.version;
-        let local_paths: BTreeMap<MuMsvmArch, ReadVar<PathBuf>> = config
-            .local_paths
-            .into_iter()
-            .map(|(k, v)| (k, v.0))
-            .collect();
+        let local_paths = config.local_paths;
         let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {

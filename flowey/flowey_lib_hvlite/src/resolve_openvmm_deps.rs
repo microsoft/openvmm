@@ -50,7 +50,7 @@ flowey_config! {
 }
 
 flowey_request! {
-    #[allow(clippy::enum_variant_names)]
+    #[expect(clippy::enum_variant_names)]
     pub enum Request {
         /// Get the path to a specific dep file
         Get(OpenvmmDepFile, OpenvmmDepsArch, WriteVar<PathBuf>),
@@ -74,11 +74,7 @@ impl FlowNodeWithConfig for Node {
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
         let version = config.version;
-        let local_paths: BTreeMap<OpenvmmDepsArch, ReadVar<PathBuf>> = config
-            .local_paths
-            .into_iter()
-            .map(|(k, v)| (k, v.0))
-            .collect();
+        let local_paths = config.local_paths;
         let mut deps: BTreeMap<(OpenvmmDepFile, OpenvmmDepsArch), Vec<WriteVar<PathBuf>>> =
             BTreeMap::new();
 

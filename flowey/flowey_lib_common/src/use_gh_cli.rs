@@ -10,30 +10,10 @@
 use flowey::node::prelude::*;
 use std::io::Write;
 
-#[derive(Serialize, Deserialize)]
-pub enum GhCliAuth<C = VarNotClaimed> {
-    /// Prompt user to log-in interactively.
-    LocalOnlyInteractive,
-    /// Set the value of the `GITHUB_TOKEN` environment variable to the
-    /// specified runtime String when invoking the `gh` CLI.
-    AuthToken(ReadVar<String, C>),
-}
-
-impl ClaimVar for GhCliAuth {
-    type Claimed = GhCliAuth<VarClaimed>;
-
-    fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
-        match self {
-            GhCliAuth::LocalOnlyInteractive => GhCliAuth::LocalOnlyInteractive,
-            GhCliAuth::AuthToken(v) => GhCliAuth::AuthToken(v.claim(ctx)),
-        }
-    }
-}
-
 /// Auth config for the gh CLI node. Uses [`ConfigVar`] so that
 /// `PartialEq`-based config merging works for the `ReadVar` variant.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Default)]
-pub enum GhCliAuthConfig {
+pub enum GhCliAuth {
     /// Prompt user to log-in interactively.
     #[default]
     LocalOnlyInteractive,
@@ -41,11 +21,20 @@ pub enum GhCliAuthConfig {
     AuthToken(ConfigVar<String>),
 }
 
-impl GhCliAuthConfig {
-    fn into_auth(self) -> GhCliAuth {
+#[derive(Serialize, Deserialize)]
+#[doc(hidden)]
+pub enum ClaimedGhCliAuth {
+    LocalOnlyInteractive,
+    AuthToken(ClaimedReadVar<String>),
+}
+
+impl ClaimVar for GhCliAuth {
+    type Claimed = ClaimedGhCliAuth;
+
+    fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
         match self {
-            GhCliAuthConfig::LocalOnlyInteractive => GhCliAuth::LocalOnlyInteractive,
-            GhCliAuthConfig::AuthToken(v) => GhCliAuth::AuthToken(v.0),
+            GhCliAuth::LocalOnlyInteractive => ClaimedGhCliAuth::LocalOnlyInteractive,
+            GhCliAuth::AuthToken(v) => ClaimedGhCliAuth::AuthToken(v.claim(ctx)),
         }
     }
 }
@@ -54,7 +43,7 @@ flowey_config! {
     /// Config for the use_gh_cli node.
     pub struct Config {
         /// Specify what authentication to use
-        pub auth: Option<GhCliAuthConfig>,
+        pub auth: Option<GhCliAuth>,
     }
 }
 
@@ -88,17 +77,14 @@ impl FlowNodeWithConfig for Node {
             }
         }
 
-        let auth = config
-            .auth
-            .ok_or(anyhow::anyhow!("missing config: auth"))?
-            .into_auth();
+        let auth = config.auth.ok_or(anyhow::anyhow!("missing config: auth"))?;
         let get_reqs = get_reqs;
 
         // -- end of req processing -- //
 
         if get_reqs.is_empty() {
             if let GhCliAuth::AuthToken(tok) = auth {
-                tok.claim_unused(ctx);
+                tok.0.claim_unused(ctx);
             }
             return Ok(());
         }
@@ -118,8 +104,8 @@ impl FlowNodeWithConfig for Node {
             |rt| {
                 let gh_bin_path = rt.read(gh_bin_path).display().to_string();
                 let gh_token = match auth {
-                    GhCliAuth::LocalOnlyInteractive => String::new(),
-                    GhCliAuth::AuthToken(tok) => rt.read(tok),
+                    ClaimedGhCliAuth::LocalOnlyInteractive => String::new(),
+                    ClaimedGhCliAuth::AuthToken(tok) => rt.read(tok),
                 };
                 // only set GITHUB_TOKEN if there is a value to set it to, otherwise
                 // let the user's environment take precedence over authenticating interactively
