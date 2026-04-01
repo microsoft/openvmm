@@ -10,6 +10,8 @@
 //! 3. Runs the tests
 
 use crate::pipelines::vmm_tests::VmmTestTargetCli;
+use anyhow::Context;
+use flowey::pipeline::prelude::PipelineBackendHint;
 use std::path::PathBuf;
 
 /// Build and run VMM tests with automatic artifact discovery
@@ -76,8 +78,10 @@ pub struct VmmTestsRunCli {
 
 impl VmmTestsRunCli {
     /// Execute the combined discover + run workflow
-    pub fn run(self) -> anyhow::Result<()> {
-        use anyhow::Context;
+    pub fn run(self, backend_hint: PipelineBackendHint) -> anyhow::Result<()> {
+        if !matches!(backend_hint, PipelineBackendHint::Local) {
+            anyhow::bail!("vmm-tests-run is for local use only")
+        }
 
         let Self {
             target,

@@ -78,7 +78,7 @@ impl IntoPipeline for OpenvmmPipelines {
             OpenvmmPipelines::VmmTestsRun(cmd) => {
                 // VmmTestsRun is a meta-command that runs discover + tests sequentially
                 // It doesn't return a pipeline, it executes directly
-                let result = cmd.run();
+                let result = cmd.run(pipeline_hint);
                 match result {
                     Ok(()) => std::process::exit(0),
                     Err(e) => {
