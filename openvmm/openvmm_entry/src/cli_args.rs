@@ -130,12 +130,12 @@ pub struct Options {
     pub isolation: Option<IsolationCli>,
 
     /// the hybrid vsock listener path
-    #[clap(long, value_name = "PATH")]
-    pub vsock_path: Option<String>,
+    #[clap(long, value_name = "PATH", alias = "vsock-path")]
+    pub vmbus_vsock_path: Option<String>,
 
     /// the VTL2 hybrid vsock listener path
-    #[clap(long, value_name = "PATH", requires("vtl2"))]
-    pub vtl2_vsock_path: Option<String>,
+    #[clap(long, value_name = "PATH", requires("vtl2"), alias = "vtl2-vsock-path")]
+    pub vmbus_vtl2_vsock_path: Option<String>,
 
     /// the late map vtl0 ram access policy when vtl2 is enabled
     #[clap(long, requires("vtl2"), default_value = "halt")]
@@ -434,6 +434,10 @@ options:
     /// attach the virtio-console device to the specified PCIe port
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
+
+    /// add a virtio vsock device with the given Unix socket base path
+    #[clap(long, value_name = "PATH")]
+    pub virtio_vsock_path: Option<String>,
 
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)

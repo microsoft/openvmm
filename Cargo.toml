@@ -117,6 +117,7 @@ fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
+hybrid_vsock = { path = "support/hybrid_vsock" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -352,6 +353,7 @@ virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
 virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
+virtio_vsock = { path = "vm/devices/virtio/virtio_vsock" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
 vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }

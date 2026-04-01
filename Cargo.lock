@@ -3198,6 +3198,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "hybrid_vsock"
+version = "0.0.0"
+dependencies = [
+ "fs-err",
+ "guid",
+ "thiserror 2.0.16",
+]
+
+[[package]]
 name = "hyper"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5529,6 +5538,7 @@ dependencies = [
  "virtio_p9",
  "virtio_pmem",
  "virtio_rng",
+ "virtio_vsock",
  "virtiofs",
  "vm_resource",
  "vmbfs",
@@ -9162,6 +9172,7 @@ version = "0.0.0"
 dependencies = [
  "mesh",
  "net_backend_resources",
+ "unix_socket",
  "vm_resource",
 ]
 
@@ -9193,6 +9204,38 @@ dependencies = [
  "bitfield-struct 0.11.0",
  "inspect",
  "open_enum",
+ "zerocopy",
+]
+
+[[package]]
+name = "virtio_vsock"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bitfield-struct 0.11.0",
+ "futures",
+ "getrandom 0.3.3",
+ "guestmem",
+ "guid",
+ "hybrid_vsock",
+ "inspect",
+ "mesh",
+ "open_enum",
+ "pal_async",
+ "pal_event",
+ "parking_lot",
+ "smallvec",
+ "task_control",
+ "tempfile",
+ "test_with_tracing",
+ "tracelimit",
+ "tracing",
+ "unicycle",
+ "unix_socket",
+ "virtio",
+ "virtio_resources",
+ "vm_resource",
+ "vmcore",
  "zerocopy",
 ]
 
@@ -9566,13 +9609,13 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "fs-err",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.3",
  "guestmem",
  "guid",
  "hvdef",
+ "hybrid_vsock",
  "inspect",
  "mesh",
  "pal_async",

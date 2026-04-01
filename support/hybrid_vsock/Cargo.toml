@@ -2,16 +2,15 @@
 # Licensed under the MIT License.
 
 [package]
-name = "virtio_resources"
+name = "hybrid_vsock"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-net_backend_resources.workspace = true
-unix_socket = { workspace = true, features = ["mesh"] }
-vm_resource.workspace = true
+guid.workspace = true
 
-mesh.workspace = true
+fs-err.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true

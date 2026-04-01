@@ -149,3 +149,21 @@ pub mod console {
         const ID: &'static str = "virtio-console";
     }
 }
+
+pub mod vsock {
+    use mesh::MeshPayload;
+    use unix_socket::UnixListener;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioVsockHandle {
+        pub guest_cid: u64,
+        pub base_path: String,
+        pub listener: UnixListener,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
+        const ID: &'static str = "virtio-vsock";
+    }
+}
