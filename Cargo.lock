@@ -2068,11 +2068,8 @@ dependencies = [
 name = "flowey_lib_common"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "flowey",
- "fs-err",
  "home",
- "log",
  "rlimit",
  "roxmltree",
  "rustc-hash 2.1.1",
@@ -2089,13 +2086,10 @@ dependencies = [
 name = "flowey_lib_hvlite"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "crossterm",
  "flowey",
  "flowey_lib_common",
- "fs-err",
  "igvmfilegen_config",
- "log",
  "powershell_builder",
  "serde",
  "serde_json",
@@ -5245,7 +5239,6 @@ dependencies = [
  "missing_dev",
  "openvmm_defs",
  "openvmm_pcat_locator",
- "page_table",
  "pal",
  "pal_async",
  "pci_bus",

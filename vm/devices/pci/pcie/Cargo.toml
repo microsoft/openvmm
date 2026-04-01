@@ -11,7 +11,6 @@ anyhow.workspace = true
 chipset_device.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
-pal_async.workspace = true
 pci_bus.workspace = true
 pci_core.workspace = true
 tracing.workspace = true
@@ -20,6 +19,7 @@ vmcore.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+pal_async.workspace = true
 parking_lot.workspace = true
 
 [features]

@@ -50,9 +50,6 @@ disklayer_sqlite = { workspace = true, optional = true }
 # Chipset devices
 chipset.workspace = true
 missing_dev.workspace = true
-serial_16550.workspace = true
-serial_debugcon.workspace = true
-serial_pl011.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
@@ -104,6 +101,13 @@ vnc_worker.workspace = true
 # linux runners). Once this gap is resolved, switch over to use bundled sqlite
 # on all platforms, to ensure consist sqlite behavior.
 rusqlite = { workspace = true, features = ["bundled"] }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+serial_16550.workspace = true
+serial_debugcon.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+serial_pl011.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }

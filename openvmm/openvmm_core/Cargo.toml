@@ -35,7 +35,6 @@ ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader.workspace = true
-page_table.workspace = true
 virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
@@ -78,7 +77,6 @@ virtio.workspace = true
 vmbus_channel.workspace = true
 vmbus_core.workspace = true
 vmbus_server.workspace = true
-vpci.workspace = true
 watchdog_core.workspace = true
 
 cache_topology.workspace = true
@@ -90,7 +88,6 @@ local_clock.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
-pal.workspace = true
 range_map_vec.workspace = true
 sparse_mmap.workspace = true
 
@@ -105,6 +102,8 @@ tracing.workspace = true
 zerocopy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+pal.workspace = true
+vpci.workspace = true
 vmgs_broker = { workspace = true, features = ["encryption"] }
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true
