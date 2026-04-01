@@ -491,6 +491,10 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 default_rxobj: None,
                 indirection_table: None,
             })
+            .instrument(tracing::info_span!(
+                "clearing rx configuration",
+                vport_id = self.vport.id()
+            ))
             .await
         {
             tracing::warn!(
@@ -503,7 +507,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         self.vport
             .destroy(std::mem::take(&mut self.arena))
             .instrument(tracing::info_span!(
-                "clearing memory allocations",
+                "destroying vport resources",
                 vport_id = self.vport.id()
             ))
             .await;
