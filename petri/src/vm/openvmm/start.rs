@@ -52,11 +52,13 @@ impl PetriVmConfigOpenVmm {
         // TODO: arm64 is broken?
         // TODO: VPCI and NVMe don't support save/restore
         // TODO: PCIe emulators don't support save/restore yet
+        // TODO: virtio vsock doesn't support save/restore yet
         let supports_save_restore = !resources.properties.is_openhcl
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
-            && !has_pcie;
+            && !has_pcie
+            && !resources.properties.use_virtio_vsock;
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
