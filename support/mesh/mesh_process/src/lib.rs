@@ -22,6 +22,7 @@ use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
+#[cfg(unix)]
 use mesh_remote::InvitationAddress;
 #[cfg(unix)]
 use pal::unix::process::Builder as ProcessBuilder;
@@ -64,6 +65,9 @@ const INVITATION_ENV_NAME: &str = "MESH_WORKER_INVITATION";
 #[derive(Protobuf)]
 struct Invitation {
     node_name: String,
+    #[cfg(windows)]
+    credentials: mesh_remote::windows::AlpcInvitationCredentials,
+    #[cfg(unix)]
     address: InvitationAddress,
     #[cfg(windows)]
     directory_handle: usize,
@@ -183,10 +187,8 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
         let directory =
             unsafe { OwnedHandle::from_raw_handle(invitation.directory_handle as RawHandle) };
 
-        let invitation = mesh_remote::windows::AlpcInvitation {
-            address: invitation.address,
-            directory,
-        };
+        let invitation =
+            mesh_remote::windows::AlpcInvitation::new(invitation.credentials, directory);
 
         // join the node w/ the provided invitation and the send port of the channel.
         node = mesh_remote::windows::AlpcNode::join(
@@ -639,13 +641,14 @@ impl MeshInner {
         #[cfg(windows)]
         let wait = {
             let (invitation, handle) = self.node.invite(recv).context("mesh node invite error")?;
-            node_id = invitation.address.local_addr.node;
+            node_id = invitation.node_id();
+            let (credentials, directory) = invitation.into_parts();
 
             let invitation_env = base64::engine::general_purpose::STANDARD.encode(
                 mesh::payload::encode(Invitation {
                     node_name: name.clone(),
-                    address: invitation.address,
-                    directory_handle: invitation.directory.as_raw_handle() as usize,
+                    credentials,
+                    directory_handle: directory.as_raw_handle() as usize,
                 }),
             );
 
@@ -665,7 +668,7 @@ impl MeshInner {
             builder
                 .stdin(process::Stdio::Null)
                 .stdout(process::Stdio::Null)
-                .handle(&invitation.directory)
+                .handle(&directory)
                 .env(INVITATION_ENV_NAME, invitation_env)
                 .extend_env(config.env_vars)
                 .job(self.job.as_handle());
