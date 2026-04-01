@@ -925,7 +925,7 @@ impl PartitionInfo {
             persisted_state_header.is_some(),
             options.sidecar,
         );
-        let (topology, cpus_with_mapped_interrupts) = if let Some(header) = persisted_state_header {
+        let (topology, cpus_with_outstanding_io) = if let Some(header) = persisted_state_header {
             log::info!("found persisted state header");
             let persisted_topology =
                 topology_from_persisted_state(header, params, parsed, address_space)?;
@@ -977,27 +977,26 @@ impl PartitionInfo {
         // not used at present. Based on production performance data, either
         // remove `cpu_threshold` from `SidecarOptions` in cmdline.rs, or
         // add a VP-count cutoff here to disable sidecar for small VMs.
-        if let (SidecarOptions::Enabled { .. }, true) = (
-            &boot_options.sidecar,
-            !cpus_with_mapped_interrupts.is_empty(),
-        ) {
-            let max_cpu_id = *cpus_with_mapped_interrupts.iter().max().unwrap() as usize;
+        if let (SidecarOptions::Enabled { .. }, true) =
+            (&boot_options.sidecar, !cpus_with_outstanding_io.is_empty())
+        {
+            let max_cpu_id = *cpus_with_outstanding_io.iter().max().unwrap() as usize;
             if parsed.cpu_count() <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
                 && max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len()
             {
                 // Mark specific CPUs as kernel-started instead of sidecar-started.
                 sidecar_cpu_overrides.per_cpu_state_specified = true;
-                for &cpu_id in &cpus_with_mapped_interrupts {
+                for &cpu_id in &cpus_with_outstanding_io {
                     sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
                 }
                 log::info!(
                     "sidecar: excluding CPUs {:?} due to outstanding IO",
-                    cpus_with_mapped_interrupts,
+                    cpus_with_outstanding_io,
                 );
             } else {
                 // CPU IDs exceed per-cpu array capacity; disable sidecar entirely.
                 log::info!(
-                    "sidecar: disabling, too many CPUs with mapped interrupts (max id {max_cpu_id})"
+                    "sidecar: disabling, too many CPUs for per-CPU state (max id {max_cpu_id})"
                 );
                 boot_options.sidecar = SidecarOptions::DisabledServicing;
                 options.sidecar = SidecarOptions::DisabledServicing;
