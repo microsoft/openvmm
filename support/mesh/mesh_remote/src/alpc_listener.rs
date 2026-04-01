@@ -67,8 +67,11 @@ impl AlpcMeshListener {
         inviter: AlpcMeshInviter,
         path: &Path,
     ) -> io::Result<Self> {
-        // Remove stale socket file if it exists.
-        let _ = std::fs::remove_file(path);
+        // Remove stale socket file if it exists, but only if it's actually
+        // a Unix socket — avoid deleting an unrelated file at the same path.
+        if pal::windows::fs::is_unix_socket(path).unwrap_or(false) {
+            let _ = std::fs::remove_file(path);
+        }
         let listener = UnixListener::bind(path)?;
         let listener = PolledSocket::new(driver, listener)?;
         Ok(Self {
@@ -101,7 +104,9 @@ impl AlpcMeshListener {
 
 impl Drop for AlpcMeshListener {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if pal::windows::fs::is_unix_socket(&self.path).unwrap_or(false) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 

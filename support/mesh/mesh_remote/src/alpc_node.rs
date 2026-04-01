@@ -494,16 +494,17 @@ impl AlpcNode {
 
     /// Creates a node within a new mesh, with a named Ob directory.
     ///
-    /// The directory is created at `\BaseNamedObjects\mesh-<random-uuid>`
-    /// with the default DACL (current user + SYSTEM). A 256-bit mesh secret
-    /// is generated for ALPC connection authentication.
+    /// The directory is created at `\BaseNamedObjects\mesh-<node-id>`
+    /// (where `<node-id>` is the UUID of the node) with the default DACL
+    /// (current user + SYSTEM). A 256-bit mesh secret is generated for
+    /// ALPC connection authentication.
     ///
     /// Use this when other already-running processes need to connect to this
     /// mesh (via socket invitations). For child process spawning, use
     /// `new()` instead.
     pub fn new_named(driver: impl Driver + Spawn + Clone) -> Result<Self, NewNodeError> {
         let id = NodeId::new();
-        let path_string = format!(r"\BaseNamedObjects\mesh-{id:?}");
+        let path_string = format!(r"\BaseNamedObjects\mesh-{}", id.0);
         Self::new_mesh(driver, Some(path_string))
     }
 
