@@ -14,29 +14,19 @@ pub struct Pkcs7SignedData(sys::Pkcs7SignedDataInner);
 /// A store of trusted X509 certificates used for PKCS#7 verification.
 pub struct Pkcs7CertStore(sys::Pkcs7CertStoreInner);
 
-/// An error for PKCS#7 parsing operations.
+/// An error for PKCS#7 operations.
 #[derive(Clone, Debug, Error)]
-#[error("PKCS#7 parse error")]
+#[error("PKCS#7 error")]
 pub struct Pkcs7Error(#[source] super::BackendError);
-
-/// An error for certificate store operations.
-#[derive(Clone, Debug, Error)]
-#[error("certificate store error")]
-pub struct CertStoreError(#[source] super::BackendError);
-
-/// An error for PKCS#7 verification setup operations.
-#[derive(Clone, Debug, Error)]
-#[error("PKCS#7 verify error")]
-pub struct Pkcs7VerifyError(#[source] super::BackendError);
 
 impl Pkcs7CertStore {
     /// Creates a new empty certificate store.
-    pub fn new() -> Result<Self, CertStoreError> {
+    pub fn new() -> Result<Self, Pkcs7Error> {
         sys::Pkcs7CertStoreInner::new().map(Self)
     }
 
     /// Adds a DER-encoded X509 certificate to the store.
-    pub fn add_cert_der(&mut self, data: &[u8]) -> Result<(), CertStoreError> {
+    pub fn add_cert_der(&mut self, data: &[u8]) -> Result<(), Pkcs7Error> {
         self.0.add_cert_der(data)
     }
 }
@@ -49,13 +39,11 @@ impl Pkcs7SignedData {
 
     /// Verifies signed data against a trusted certificate store.
     ///
+    /// Consumes the store, since the backend may need to finalize it.
+    ///
     /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
     /// signature check fails.
-    pub fn verify(
-        &self,
-        store: &Pkcs7CertStore,
-        signed_content: &[u8],
-    ) -> Result<bool, Pkcs7VerifyError> {
-        self.0.verify(&store.0, signed_content)
+    pub fn verify(&self, store: Pkcs7CertStore, signed_content: &[u8]) -> Result<bool, Pkcs7Error> {
+        self.0.verify(store.0, signed_content)
     }
 }

@@ -16,16 +16,16 @@ pub enum FormatError {
     #[error("parsing signature list from auth_var_data")]
     SignatureList(#[source] signature_list::ParseError),
     #[error("adding x509 cert from signature list to store")]
-    SignatureListX509(#[source] crypto::pkcs7::CertStoreError),
+    SignatureListX509(#[source] crypto::pkcs7::Pkcs7Error),
 
     #[error("parsing auth var's pkcs7_data as pkcs#7 DER")]
     AuthVarPkcs7Der(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("could not reconstruct signedData header for auth var's pkcs#7 data: {0:?}")]
     AuthVarPkcs7DerHeader(der::Error),
     #[error("creating PKCS#7 certificate store")]
-    AuthVarPkcs7Store(#[source] crypto::pkcs7::CertStoreError),
+    AuthVarPkcs7Store(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("setting up PKCS#7 verification")]
-    AuthVarPkcs7Verify(#[source] crypto::pkcs7::Pkcs7VerifyError),
+    AuthVarPkcs7Verify(#[source] crypto::pkcs7::Pkcs7Error),
 }
 
 impl FormatError {
@@ -116,7 +116,7 @@ pub fn authenticate_variable(
 
     // stage 4 - verify the signed data using trusted certs from EFI signature lists
     var_pkcs7
-        .verify(&store, &verify_buf)
+        .verify(store, &verify_buf)
         .map_err(FormatError::AuthVarPkcs7Verify)
 }
 
