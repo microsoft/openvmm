@@ -485,8 +485,7 @@ impl PetriVmConfigOpenVmm {
                 // If virtio vsock is enabled, the vsock_listener will have already been taken and
                 // is now None.
                 vsock_listener,
-                vsock_path: properties
-                    .use_virtio_vsock
+                vsock_path: (!properties.use_virtio_vsock)
                     .then(|| vsock_path_string.to_string()),
                 vmbus_max_version: None,
                 vtl2_redirect: firmware.openhcl_config().is_some_and(|c| c.vmbus_redirect),
