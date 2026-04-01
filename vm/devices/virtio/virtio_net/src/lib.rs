@@ -913,7 +913,7 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) {
+    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) {
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
@@ -926,7 +926,7 @@ impl Worker {
                 );
                 self.active_state.stats.tx_dropped.increment();
                 self.active_state.data.tx_segments.truncate(seg_start);
-                self.virtio_state.tx_queue.complete(&mut work, 0);
+                self.virtio_state.tx_queue.complete(work, 0);
             }
         }
     }
@@ -1203,10 +1203,10 @@ impl Worker {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
-                Err(mut work) => {
+                Err(work) => {
                     // Reason has been traced by the callee.
                     self.active_state.stats.rx_dropped.increment();
-                    self.virtio_state.rx_queue.complete(&mut work, 0);
+                    self.virtio_state.rx_queue.complete(work, 0);
                 }
             }
         }
@@ -1232,8 +1232,8 @@ impl Worker {
 
         for ready_id in state.data.rx_ready[..n].iter() {
             state.stats.rx_packets.increment();
-            let (mut work, bytes) = state.pending_rx_packets.complete_packet(*ready_id);
-            self.virtio_state.rx_queue.complete(&mut work, bytes);
+            let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
+            self.virtio_state.rx_queue.complete(work, bytes);
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
@@ -1305,8 +1305,8 @@ impl Worker {
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
-        let mut tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
-        self.virtio_state.tx_queue.complete(&mut tx_packet.work, 0);
+        let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
+        self.virtio_state.tx_queue.complete(tx_packet.work, 0);
         self.active_state.stats.tx_packets.increment();
         Ok(())
     }

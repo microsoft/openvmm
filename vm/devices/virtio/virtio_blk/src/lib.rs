@@ -123,8 +123,8 @@ enum IoStat {
 
 impl BlkWorker {
     /// Complete a descriptor and accumulate stats.
-    fn finish_io(&mut self, queue: &mut VirtioQueue, mut completion: IoCompletion) {
-        queue.complete(&mut completion.work, completion.bytes_written);
+    fn finish_io(&mut self, queue: &mut VirtioQueue, completion: IoCompletion) {
+        queue.complete(completion.work, completion.bytes_written);
         match completion.stat {
             IoStat::Read => self.stats.read_ops.increment(),
             IoStat::Write => self.stats.write_ops.increment(),

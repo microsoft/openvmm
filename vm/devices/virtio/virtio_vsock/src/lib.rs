@@ -318,7 +318,7 @@ struct VsockWorker {
 
 impl VsockWorker {
     /// Handle a work item from the tx virtqueue (guest -> host).
-    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, mut work: VirtioQueueCallbackWork) {
+    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
         if let Err(err) = self.handle_guest_tx_inner(state, &work) {
             tracelimit::error_ratelimited!(
                 error = err.as_ref() as &dyn std::error::Error,
@@ -326,7 +326,7 @@ impl VsockWorker {
             );
         }
 
-        state.tx_queue.get_mut().complete(&mut work, 0);
+        state.tx_queue.get_mut().complete(work, 0);
     }
 
     /// Handle a work item from the TX virtqueue (guest -> host).
@@ -440,7 +440,7 @@ impl VsockWorker {
 
         // If there's a packet to send, write it to the guest.
         if let Some(packet) = packet {
-            let mut queue_work = peeked_work.consume();
+            let queue_work = peeked_work.consume();
             let bytes = match Self::write_packet(state, &queue_work, &packet) {
                 Ok(bytes) => bytes,
                 Err(err) => {
@@ -457,7 +457,7 @@ impl VsockWorker {
                     0
                 }
             };
-            state.rx_queue.complete(&mut queue_work, bytes);
+            state.rx_queue.complete(queue_work, bytes);
         }
 
         state.queue_pending(pending);

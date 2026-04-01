@@ -358,7 +358,10 @@ impl VirtioQueue {
     ///
     /// Writes `bytes_written` to the used ring and delivers an interrupt
     /// to the guest (unless interrupt suppression is active).
-    pub fn complete(&mut self, work: &mut VirtioQueueCallbackWork, bytes_written: u32) {
+    ///
+    /// Takes ownership of the work item, ensuring it can only be completed
+    /// once.
+    pub fn complete(&mut self, work: VirtioQueueCallbackWork, bytes_written: u32) {
         match self.complete.complete_descriptor(&work.work, bytes_written) {
             Ok(true) => {
                 self.notify_guest.deliver();

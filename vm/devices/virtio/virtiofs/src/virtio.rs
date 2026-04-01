@@ -240,9 +240,9 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
             let work = stop.until_stopped(state.queue.next()).await?;
             let Some(work) = work else { break };
             match work {
-                Ok(mut work) => {
+                Ok(work) => {
                     let bytes = process_virtiofs_request(self, &state.mem, &work);
-                    state.queue.complete(&mut work, bytes);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracing::error!(

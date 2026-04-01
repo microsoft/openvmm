@@ -98,7 +98,8 @@ impl VirtioWorkPool {
     /// Take the RX work item for the given packet, returning it with the
     /// computed payload length. The caller is responsible for completing
     /// the descriptor via the queue.
-    pub fn complete_packet(&mut self, rx_id: RxId) -> (VirtioQueueCallbackWork, u32) {
+    #[must_use = "caller must complete the returned work via VirtioQueue::complete"]
+    pub fn take_rx_work(&mut self, rx_id: RxId) -> (VirtioQueueCallbackWork, u32) {
         let packet = self.rx_packets[rx_id.0 as usize]
             .take()
             .expect("valid packet index");

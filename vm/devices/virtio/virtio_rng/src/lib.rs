@@ -151,9 +151,9 @@ impl AsyncRun<RngQueue> for RngWorker {
             let work = stop.until_stopped(state.queue.next()).await?;
             let Some(work) = work else { break };
             match work {
-                Ok(mut work) => {
+                Ok(work) => {
                     let bytes = process_rng_request(&state.mem, &work);
-                    state.queue.complete(&mut work, bytes);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
