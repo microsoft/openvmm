@@ -539,6 +539,10 @@ impl SimpleFlowNode for Node {
                 in_bin,
                 out_bin: write,
                 out_dbg_info: write_dbg,
+                reproducible_without_debuglink: matches!(
+                    ctx.platform(),
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Nix)
+                ),
             });
 
             read.zip(ctx, read_dbg).map(ctx, |(bin, dbg)| {
