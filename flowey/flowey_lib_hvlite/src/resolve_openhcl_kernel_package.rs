@@ -32,7 +32,7 @@ flowey_config! {
 }
 
 flowey_request! {
-    #[allow(clippy::enum_variant_names)]
+    #[expect(clippy::enum_variant_names)]
     pub enum Request {
         /// Get path to the kernel binary
         GetKernel {
@@ -78,12 +78,7 @@ impl FlowNodeWithConfig for Node {
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
         let versions = config.versions;
-        let local_paths: BTreeMap<OpenhclKernelPackageArch, (ReadVar<PathBuf>, ReadVar<PathBuf>)> =
-            config
-                .local_paths
-                .into_iter()
-                .map(|(k, (a, b))| (k, (a.0, b.0)))
-                .collect();
+        let local_paths = config.local_paths;
         let mut kernel_reqs: BTreeMap<
             (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
             Vec<WriteVar<PathBuf>>,

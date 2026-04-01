@@ -38,13 +38,6 @@ flowey_config! {
 
 flowey_request! {
     pub enum Request {
-        /// Specify a custom cache directory. By default, VHDs are cloned
-        /// into a job-local temp directory.
-        ///
-        /// NOTE: Prefer using `Config::custom_cache_dir` instead. This
-        /// request variant exists only for pipeline-level `dep_on` callers
-        /// that cannot use config yet.
-        CustomCacheDir(PathBuf),
         /// Download test artifacts into the download folder
         Download(Vec<KnownTestArtifacts>),
         /// Get path to folder containing all downloaded artifacts
@@ -70,16 +63,9 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let mut test_artifacts = BTreeSet::<_>::new();
         let mut get_download_folder = Vec::new();
-        let mut custom_cache_dir_req = None;
 
         for req in requests {
             match req {
-                Request::CustomCacheDir(v) => {
-                    if custom_cache_dir_req.is_some() {
-                        anyhow::bail!("CustomCacheDir must not be specified multiple times");
-                    }
-                    custom_cache_dir_req = Some(v);
-                }
                 Request::Download(v) => v.into_iter().for_each(|v| {
                     test_artifacts.insert(v);
                 }),
@@ -96,15 +82,7 @@ impl FlowNodeWithConfig for Node {
             true
         };
         let custom_disk_policy = config.custom_disk_policy;
-        let custom_cache_dir = match (config.custom_cache_dir, custom_cache_dir_req) {
-            (Some(a), Some(b)) if a != b => {
-                anyhow::bail!(
-                    "custom_cache_dir set via both config and request to different values"
-                )
-            }
-            (Some(a), _) => Some(a),
-            (_, b) => b,
-        };
+        let custom_cache_dir = config.custom_cache_dir;
 
         let persistent_dir = ctx.persistent_dir();
 

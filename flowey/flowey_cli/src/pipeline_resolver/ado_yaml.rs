@@ -88,6 +88,7 @@ pub fn ado_yaml(
     for job_idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
@@ -109,12 +110,17 @@ pub fn ado_yaml(
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
-        let (steps, req_db, cfg_db) = resolve_flow_as_ado_yaml_steps(
+        let super::common_yaml::ResolvedFlowSteps {
+            steps,
+            request_db: req_db,
+            config_db: cfg_db,
+        } = resolve_flow_as_ado_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
                 .map(|(node, requests)| (node, (true, requests)))
                 .collect(),
+            root_configs.clone(),
             patches.clone(),
             external_read_vars.clone(),
             platform,
@@ -825,31 +831,33 @@ EOF
 // pub(crate) so that internal debug CLI tooling can use it
 pub(crate) fn resolve_flow_as_ado_yaml_steps(
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     resolved_patches: flowey_core::patch::ResolvedPatches,
     external_read_vars: BTreeSet<String>,
     platform: FlowPlatform,
     arch: FlowArch,
     job_idx: usize,
-) -> anyhow::Result<(
-    Vec<serde_yaml::Value>,
-    BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
-    BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
-)> {
+) -> anyhow::Result<super::common_yaml::ResolvedFlowSteps> {
     let mut output_steps = Vec::new();
 
-    let (mut output_graph, request_db, config_db, err_unreachable_nodes) =
-        crate::flow_resolver::stage1_dag::stage1_dag(
-            FlowBackend::Ado,
-            platform,
-            arch,
-            resolved_patches,
-            seed_nodes,
-            external_read_vars,
-            // TODO: support ADO agents with persistent storage
-            None,
-        )?;
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes,
+    } = crate::flow_resolver::stage1_dag::stage1_dag(
+        FlowBackend::Ado,
+        platform,
+        arch,
+        resolved_patches,
+        seed_nodes,
+        seed_configs,
+        external_read_vars,
+        // TODO: support ADO agents with persistent storage
+        None,
+    )?;
 
-    if err_unreachable_nodes.is_some() {
+    if found_unreachable_nodes {
         anyhow::bail!("detected unreachable nodes")
     }
 
@@ -1021,5 +1029,9 @@ EOF
         })
         .collect();
 
-    Ok((output_steps, request_db, config_db))
+    Ok(super::common_yaml::ResolvedFlowSteps {
+        steps: output_steps,
+        request_db,
+        config_db,
+    })
 }

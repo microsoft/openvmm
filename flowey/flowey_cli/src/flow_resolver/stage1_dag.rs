@@ -38,12 +38,23 @@ pub(crate) struct StepId {
     pub step_idx: usize,
 }
 
-/// A error that denotes the presence of unreachable nodes in the returned
-/// graph.
-///
-/// Needs to be returned as part of the Ok(()) response to allow debugging with
-/// --viz-mode.
-pub(crate) struct FoundUnreachableNodes;
+/// The output of the stage1 DAG resolution pass.
+pub(crate) struct Stage1DagOutput {
+    /// The resolved step graph, where each node corresponds to a step to run
+    /// and edges represent runtime dependencies between steps.
+    pub output_graph: petgraph::Graph<(StepId, Option<OutputGraphEntry>), DepKind>,
+    /// The serialized requests that each node was invoked with. On "compiled"
+    /// backends, this gets persisted as part of a static "pipeline database"
+    /// file that is referenced at runtime to re-run rust-based steps.
+    pub request_db: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+    /// The serialized config partials that each node received.
+    pub config_db: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+    /// If set, the graph contains unreachable nodes.
+    ///
+    /// Needs to be returned as part of the Ok(()) response to allow debugging with
+    /// --viz-mode.
+    pub found_unreachable_nodes: bool,
+}
 
 pub(crate) fn stage1_dag(
     backend: FlowBackend,
@@ -51,20 +62,10 @@ pub(crate) fn stage1_dag(
     arch: FlowArch,
     mut resolved_patches: flowey_core::patch::ResolvedPatches,
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     external_read_vars: BTreeSet<String>,
     persistent_dir_path_var: Option<String>,
-) -> Result<
-    (
-        petgraph::Graph<(StepId, Option<OutputGraphEntry>), DepKind>,
-        BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
-        BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
-        Option<FoundUnreachableNodes>,
-    ),
-    anyhow::Error,
-> {
-    // this output_graph and request_db are the two key items we'll be be
-    // populating in the stage1 dag.
-
+) -> Result<Stage1DagOutput, anyhow::Error> {
     // each node output_graph corresponds to a step to run, with the edges
     // corresponding to runtime dependencies between those steps.
     let mut output_graph = petgraph::Graph::<(StepId, Option<OutputGraphEntry>), DepKind>::new();
@@ -188,7 +189,7 @@ pub(crate) fn stage1_dag(
         seed_nodes;
 
     // maintain a list of pending config for nodes further down the order.
-    let mut outstanding_config: BTreeMap<NodeHandle, Vec<Box<[u8]>>> = BTreeMap::new();
+    let mut outstanding_config: BTreeMap<NodeHandle, Vec<Box<[u8]>>> = seed_configs;
 
     // maintain an outstanding queue of runtime variable connections that need
     // to be fulfilled
@@ -575,9 +576,9 @@ pub(crate) fn stage1_dag(
             log::error!(
                 "found buggy node that emitted unreachable steps! use `--viz-mode flow-dot` to debug"
             );
-            Some(FoundUnreachableNodes)
+            true
         } else {
-            None
+            false
         }
     };
 
@@ -593,7 +594,12 @@ pub(crate) fn stage1_dag(
         }
     }
 
-    Ok((output_graph, request_db, config_db, found_unreachable_nodes))
+    Ok(Stage1DagOutput {
+        output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes,
+    })
 }
 
 #[derive(Clone)] // for viz
