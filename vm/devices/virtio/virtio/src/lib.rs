@@ -21,4 +21,9 @@ pub use device::VirtioDevice;
 pub use transport::*;
 pub use virtio_spec as spec;
 
-pub const QUEUE_MAX_SIZE: u16 = 0x40; // TODO: make queue size configurable
+/// Default queue size for virtio devices. Devices that don't override
+/// [`VirtioDevice::queue_size`] will use this value.
+pub const DEFAULT_QUEUE_SIZE: u16 = 256;
+
+/// Maximum queue size the transport will accept from the guest.
+pub const MAX_QUEUE_SIZE: u16 = 1024;
