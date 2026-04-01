@@ -1639,7 +1639,6 @@ async fn vm_config_from_command_line(
         }
     }
 
-
     // Handle --vhost-user arguments.
     #[cfg(target_os = "linux")]
     for vhost_cli in &opt.vhost_user {
@@ -1681,7 +1680,7 @@ async fn vm_config_from_command_line(
             .into_resource(),
         );
     }
-    
+
     let mut cfg = Config {
         chipset,
         load_mode,
