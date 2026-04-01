@@ -150,6 +150,7 @@ impl IntoPipeline for VmmTestsCli {
         };
 
         // Handle artifacts-file mode: read discovered artifacts from JSON file
+        let using_artifacts_file = artifacts_file.is_some();
         let (resolved_filter, resolved_artifacts, resolved_build, needs_release_igvm) =
             if let Some(artifacts_path) = artifacts_file {
                 let filter = filter.expect("--filter is required with --artifacts-file");
@@ -215,8 +216,6 @@ impl IntoPipeline for VmmTestsCli {
         }
 
         // Determine test selections based on mode
-        // Note: We track whether artifacts_file was used via resolved_build having non-default values
-        let using_artifacts_file = resolved_build != BuildSelections::default();
         let selections = if using_artifacts_file {
             VmmTestSelections::Custom {
                 filter: resolved_filter,

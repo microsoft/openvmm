@@ -90,7 +90,7 @@ To run a **specific test** (or set of tests), use `--filter` with a
 [nextest filter](https://nexte.st/docs/filtersets/) expression:
 
 ```bash
-cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /mnt/e/vmm_tests
+cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
 ```
 
 ### Targeting a Platform
@@ -101,23 +101,18 @@ build for a different platform. The supported targets are:
 | Target | Description |
 |--------|-------------|
 | `windows-x64` | Windows x86_64 (Hyper-V / WHP) |
+| `windows-aarch64` | Windows ARM64 (Hyper-V / WHP) |
 | `linux-x64` | Linux x86_64 |
-| `linux-aarch64` | Linux AArch64 |
 
-**Cross-compiling for Windows from WSL2** is fully supported — you can build
+**Cross-compiling for Windows from WSL2** is fully supported, you can build
 and run Windows VMM tests directly from your WSL2 shell. This requires the
-cross-compilation environment to be set up first:
-
-```bash
-# One-time setup (see the cross-compilation guide for details):
-. ./build_support/setup_windows_cross.sh
-```
+cross-compilation environment to be set up first.
 
 Then target Windows as usual. The output directory **must** be on the Windows
-filesystem (e.g., `/mnt/e/...`):
+filesystem (e.g., `/mnt/d/...`):
 
 ```bash
-cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/e/vmm_tests
+cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
 ```
 
 For full cross-compilation setup instructions, see
@@ -172,7 +167,7 @@ which provide detailed instructions on how to build / acquire the missing
 artifact. Some dependencies can only be built on Linux (OpenHCL and Linux
 pipette, for example). If you are building on Linux and want to run Windows
 guest tests, pipette will need to be
-[cross compiled for Windows](#linux-cross-compiling-pipetteexe). 
+[cross compiled for Windows](#linux-cross-compiling-pipetteexe).
 
 ```admonish warning
 `cargo nextest run` won't rebuild any of your changes. Make sure you `cargo build`
