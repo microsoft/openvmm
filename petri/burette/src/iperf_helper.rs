@@ -13,7 +13,7 @@
 #![expect(unsafe_code)]
 
 use mesh::MeshPayload;
-use mesh::rpc::Rpc;
+use mesh::rpc::FailableRpc;
 
 /// Initial message sent from parent to the helper via mesh.
 #[derive(MeshPayload)]
@@ -31,12 +31,12 @@ pub struct IperfHelperReady {
 #[derive(MeshPayload)]
 pub enum IperfRequest {
     /// Spawn iperf3 server, run until client disconnects, return JSON output.
-    RunIperf3(Rpc<Iperf3Args, String>),
+    RunIperf3(FailableRpc<Iperf3Args, String>),
     /// Create a TAP device in the helper's (namespaced) network stack and
     /// return the fd. Only valid when the helper was started with
     /// `run_tap_helper`.
     #[cfg(target_os = "linux")]
-    SetupTap(Rpc<TapConfig, std::os::fd::OwnedFd>),
+    SetupTap(FailableRpc<TapConfig, std::os::fd::OwnedFd>),
     /// Shut down the helper.
     Stop,
 }
@@ -83,7 +83,7 @@ async fn serve_requests(mut recv: mesh::Receiver<IperfRequest>) {
     while let Ok(req) = recv.recv().await {
         match req {
             IperfRequest::RunIperf3(rpc) => {
-                rpc.handle(async |args| {
+                rpc.handle_failable(async |args| {
                     // -s: server mode
                     // -1: handle one client then exit
                     // -J: JSON output
@@ -94,16 +94,25 @@ async fn serve_requests(mut recv: mesh::Receiver<IperfRequest>) {
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped())
                         .output()
-                        .expect("failed to spawn iperf3");
-                    String::from_utf8_lossy(&output.stdout).into_owned()
+                        .map_err(|e| format!("failed to spawn iperf3: {e}"))?;
+
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(format!(
+                            "iperf3 exited with {}: {}",
+                            output.status,
+                            stderr.trim()
+                        ));
+                    }
+
+                    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
                 })
                 .await;
             }
             #[cfg(target_os = "linux")]
             IperfRequest::SetupTap(rpc) => {
-                rpc.handle(async |config| {
+                rpc.handle_failable(async |config| {
                     linux::setup_tap_device(&config.name, &config.cidr)
-                        .expect("failed to set up TAP device")
                 })
                 .await;
             }
@@ -167,7 +176,7 @@ pub mod linux {
         let sock = unsafe { std::os::fd::OwnedFd::from_raw_fd(sock) };
         let fd = sock.as_raw_fd();
 
-        let mut ifr = new_ifreq(name);
+        let mut ifr = new_ifreq(name)?;
 
         // SAFETY: SIOCGIFFLAGS / SIOCSIFFLAGS are standard Linux ioctls.
         unsafe {
@@ -207,15 +216,18 @@ pub mod linux {
         Ok(())
     }
 
-    fn new_ifreq(name: &str) -> libc::ifreq {
+    fn new_ifreq(name: &str) -> anyhow::Result<libc::ifreq> {
         // SAFETY: All-zero is a valid `ifreq`.
         let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
         let bytes = name.as_bytes();
-        assert!(bytes.len() < libc::IF_NAMESIZE, "interface name too long");
+        anyhow::ensure!(
+            bytes.len() < libc::IF_NAMESIZE,
+            "interface name too long: {name:?}"
+        );
         for (i, &b) in bytes.iter().enumerate() {
             ifr.ifr_name[i] = b as libc::c_char;
         }
-        ifr
+        Ok(ifr)
     }
 
     fn sockaddr_in4(addr: std::net::Ipv4Addr) -> libc::sockaddr {
