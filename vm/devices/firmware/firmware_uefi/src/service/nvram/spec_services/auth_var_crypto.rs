@@ -17,11 +17,10 @@ pub enum FormatError {
     SignatureList(#[source] signature_list::ParseError),
     #[error("adding x509 cert from signature list to store")]
     SignatureListX509(#[source] crypto::pkcs7::Pkcs7Error),
-
     #[error("parsing auth var's pkcs7_data as pkcs#7 DER")]
     AuthVarPkcs7Der(#[source] crypto::pkcs7::Pkcs7Error),
-    #[error("could not reconstruct signedData header for auth var's pkcs#7 data: {0:?}")]
-    AuthVarPkcs7DerHeader(der::Error),
+    #[error("could not reconstruct signedData header for auth var's pkcs#7 data")]
+    AuthVarPkcs7DerHeader(#[source] der::Error),
     #[error("creating PKCS#7 certificate store")]
     AuthVarPkcs7Store(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("setting up PKCS#7 verification")]
@@ -88,18 +87,17 @@ pub fn authenticate_variable(
     // stage 2 - extract all the x509 certs from the signature list(s)
     //           and add them to a certificate store
     let mut store = crypto::pkcs7::Pkcs7CertStore::new().map_err(FormatError::AuthVarPkcs7Store)?;
-    {
-        let lists = signature_list::ParseSignatureLists::new(signature_lists);
-        for list in lists {
-            let list = list.map_err(FormatError::SignatureList)?;
-            // we only care about x509 certs in the signature lists
-            if let signature_list::ParseSignatureList::X509(certs) = list {
-                for cert in certs {
-                    let cert = cert.map_err(FormatError::SignatureList)?;
-                    store
-                        .add_cert_der(&cert.data.0)
-                        .map_err(FormatError::SignatureListX509)?;
-                }
+
+    let lists = signature_list::ParseSignatureLists::new(signature_lists);
+    for list in lists {
+        let list = list.map_err(FormatError::SignatureList)?;
+        // we only care about x509 certs in the signature lists
+        if let signature_list::ParseSignatureList::X509(certs) = list {
+            for cert in certs {
+                let cert = cert.map_err(FormatError::SignatureList)?;
+                store
+                    .add_cert_der(&cert.data.0)
+                    .map_err(FormatError::SignatureListX509)?;
             }
         }
     }

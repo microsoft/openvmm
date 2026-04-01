@@ -17,6 +17,15 @@ impl Pkcs7CertStoreInner {
             .map_err(|e| err(e, "creating x509 store builder"))?;
 
         // TODO: set these flags from callers
+        // PARTIAL_CHAIN rationale: the certs in the EFI_SIGNATURE_LIST are not
+        // root certs, and we don't have a full cert chain available. Instead,
+        // we want to terminate the chain verification at whatever certs are
+        // present from the EFI_SIGNATURE_LISTs.
+        //
+        // NO_CHECK_TIME rationale: when testing this feature, we noticed that
+        // the UEFI signing key expired a long time ago. The existing
+        // implementations didn't care about this, and allowed the verification
+        // to succeed regardless.
         let store_flags = openssl::x509::verify::X509VerifyFlags::PARTIAL_CHAIN
             | openssl::x509::verify::X509VerifyFlags::NO_CHECK_TIME;
         builder
