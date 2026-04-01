@@ -628,6 +628,7 @@ mod tests {
     fn create_consomme_with_timeout(timeout: Duration) -> Consomme {
         let mut params = ConsommeParams::new().expect("Failed to create params");
         params.udp_timeout = timeout;
+        params.allow_host_local_access = true;
         Consomme::new(params)
     }
 

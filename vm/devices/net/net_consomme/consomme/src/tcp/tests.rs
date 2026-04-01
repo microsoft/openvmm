@@ -138,7 +138,11 @@ impl TcpTestHarness {
         let dst_port = std_listener.local_addr().unwrap().port();
         let mut listener = PolledSocket::new(&driver, std_listener).unwrap();
 
-        let mut consomme = Consomme::new(ConsommeParams::new().unwrap());
+        let mut consomme = Consomme::new({
+            let mut params = ConsommeParams::new().unwrap();
+            params.allow_host_local_access = true;
+            params
+        });
         let mut client = TestClient::new(driver);
 
         let guest_mac = consomme.params_mut().client_mac;
