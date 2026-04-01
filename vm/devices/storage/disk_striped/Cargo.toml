@@ -13,10 +13,7 @@ scsi_buffers.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-hvdef.workspace = true
-guestmem.workspace = true
 inspect.workspace = true
-pal_async.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -24,6 +21,9 @@ vm_resource.workspace = true
 
 [dev-dependencies]
 disklayer_ram.workspace = true
+guestmem.workspace = true
+hvdef.workspace = true
+pal_async.workspace = true
 
 [lints]
 workspace = true

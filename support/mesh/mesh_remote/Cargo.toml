@@ -11,10 +11,7 @@ mesh_channel.workspace = true
 mesh_node.workspace = true
 mesh_protobuf.workspace = true
 open_enum.workspace = true
-pal.workspace = true
 pal_async.workspace = true
-tracing_helpers.workspace = true
-unix_socket = { workspace = true, features = ["mesh"] }
 
 futures.workspace = true
 futures-concurrency.workspace = true
@@ -22,12 +19,16 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
+unix_socket = { workspace = true, features = ["mesh"] }
 zerocopy.workspace = true
+
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 socket2.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+pal.workspace = true
+tracing_helpers.workspace = true
 windows-sys = { workspace = true, features = [
 	"Wdk_System_SystemServices",
 	"Win32_Storage_FileSystem",

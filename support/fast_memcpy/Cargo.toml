@@ -10,8 +10,6 @@ edition.workspace = true
 # Export `memcpy` and `memmove`, replacing the system-provided implementation.
 replace_system_memcpy = []
 
-[dependencies]
-
 [dev-dependencies]
 criterion.workspace = true
 

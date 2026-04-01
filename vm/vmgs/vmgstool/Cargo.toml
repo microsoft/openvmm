@@ -12,7 +12,7 @@ default = []
 
 encryption = ["vmgs/encryption"]
 
-test_helpers = ["vmgs/test_helpers", "getrandom"]
+test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
 
 # run encryption unit tests in CI
 ci = ["encryption"]
@@ -41,7 +41,7 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ucs2.workspace = true
-resource_dll_parser.workspace = true
+resource_dll_parser = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
