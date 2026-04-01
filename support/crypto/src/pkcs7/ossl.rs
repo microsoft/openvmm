@@ -80,7 +80,13 @@ impl Pkcs7SignedDataInner {
             openssl::pkcs7::Pkcs7Flags::empty(),
         ) {
             Ok(()) => Ok(true),
-            Err(_) => Ok(false),
+            Err(e) => {
+                tracing::trace!(
+                    error = &e as &dyn std::error::Error,
+                    "pkcs7 verification failed"
+                );
+                Ok(false)
+            }
         }
     }
 }
