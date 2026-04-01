@@ -69,9 +69,9 @@ pub struct SidecarNodeParams {
 /// The maximum number of supported sidecar nodes.
 pub const MAX_NODES: usize = 128;
 /// The maximum number of supported sidecar CPUs.
-/// This odd number is chosen so that `SidecarParams` still
-/// fits within a single page.
-pub const NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE: usize = 1000;
+/// Keep small to leave space on the SidecarParams page for future fields.
+/// VMs with more CPUs fall back to disabling sidecar on restore.
+pub const NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE: usize = 400;
 
 const _: () = assert!(size_of::<SidecarParams>() <= PAGE_SIZE);
 

@@ -163,6 +163,7 @@ pub fn start_sidecar<'a>(
 
         let mut base_vp = 0;
         total_ram = 0;
+        *initial_state = partition_info.sidecar_cpu_overrides.clone();
         for (cpus, node) in cpus_by_node().zip(nodes) {
             let required_ram = sidecar_defs::required_memory(cpus.len() as u32) as u64;
             // Take some VTL2 RAM for sidecar use. Try to use the same NUMA node
@@ -205,7 +206,6 @@ pub fn start_sidecar<'a>(
                 base_vp,
                 vp_count: cpus.len() as u32,
             };
-            *initial_state = partition_info.sidecar_cpu_overrides.clone();
             if initial_state.per_cpu_state_specified {
                 // If per-CPU state is specified, make sure to explicitly state that
                 // sidecar should not start the base vp of this node.

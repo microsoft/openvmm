@@ -675,7 +675,7 @@ fn topology_from_persisted_state(
         cpus_with_outstanding_io,
     } = parsed_protobuf;
 
-    log::debug!(
+    log::info!(
         "persisted state: cpus_with_mapped_interrupts_no_io={:?}, cpus_with_outstanding_io={:?}",
         cpus_with_mapped_interrupts_no_io,
         cpus_with_outstanding_io,
@@ -982,7 +982,9 @@ impl PartitionInfo {
             !cpus_with_mapped_interrupts.is_empty(),
         ) {
             let max_cpu_id = *cpus_with_mapped_interrupts.iter().max().unwrap() as usize;
-            if max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len() {
+            if parsed.cpu_count() <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
+                && max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len()
+            {
                 // Mark specific CPUs as kernel-started instead of sidecar-started.
                 sidecar_cpu_overrides.per_cpu_state_specified = true;
                 for &cpu_id in &cpus_with_mapped_interrupts {
@@ -997,6 +999,7 @@ impl PartitionInfo {
                 log::info!(
                     "sidecar: disabling, too many CPUs with mapped interrupts (max id {max_cpu_id})"
                 );
+                boot_options.sidecar = SidecarOptions::DisabledServicing;
                 options.sidecar = SidecarOptions::DisabledServicing;
             }
         }
