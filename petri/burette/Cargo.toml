@@ -14,6 +14,7 @@ petri_artifacts_vmm_test.workspace = true
 petri_artifact_resolver_openvmm_known_paths.workspace = true
 disk_backend_resources.workspace = true
 guid.workspace = true
+memory_range.workspace = true
 openvmm_defs.workspace = true
 openvmm_helpers.workspace = true
 pal_async.workspace = true
@@ -22,6 +23,7 @@ vm_resource.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+fs-err.workspace = true
 futures.workspace = true
 jiff.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
