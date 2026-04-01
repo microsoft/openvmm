@@ -201,11 +201,11 @@ function New-CustomVM
 
         [Nullable[uint64]] $VpCount = 2,
 
-        [uint16] $ApicMode = 0,
+        [Nullable[uint16]] $ApicMode = $null,
 
-        [uint64] $HwThreadsPerCore = 0,
+        [Nullable[uint64]] $HwThreadsPerCore = $null,
 
-        [uint64] $MaxProcessorsPerNumaNode = 1,
+        [Nullable[uint64]] $MaxProcessorsPerNumaNode = $null,
 
         # must be a hashtable with format:
         # ScsiControllers => {
@@ -321,12 +321,18 @@ function New-CustomVM
 
     if (-not $msd) { throw "Unable to create the Msvm_MemorySettingData object" }
 
-    $psd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_ProcessorSettingData" | New-CimInstance -ClientOnly -Property @{
-        VirtualQuantity          = $VpCount
-        ApicMode                 = $ApicMode
-        HwThreadsPerCore         = $HwThreadsPerCore
-        MaxProcessorsPerNumaNode = $MaxProcessorsPerNumaNode
+    $psdProperties = @{ VirtualQuantity = $VpCount }
+    if ($ApicMode) {
+        $psdProperties["ApicMode"] = $ApicMode
     }
+    if ($HwThreadsPerCore) {
+        $psdProperties["HwThreadsPerCore"] = $HwThreadsPerCore
+    }
+    if ($MaxProcessorsPerNumaNode) {
+        $psdProperties["MaxProcessorsPerNumaNode"] = $MaxProcessorsPerNumaNode
+    }
+
+    $psd = Get-CimClass -Namespace $ROOT_HYPER_V_NAMESPACE -ClassName "Msvm_ProcessorSettingData" | New-CimInstance -ClientOnly -Property $psdProperties
 
     if (-not $psd) { throw "Unable to create the Msvm_ProcessorSettingData object" }
 

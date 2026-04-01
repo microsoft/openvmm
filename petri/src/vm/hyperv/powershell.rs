@@ -25,6 +25,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tempfile::NamedTempFile;
 
 /// Hyper-V VM Generation
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -161,12 +162,16 @@ pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
     Guid::from_str(&vmid).context("invalid vmid")
 }
 
+/// Hyper-V Guest State Lifetime
 #[derive(Clone, Copy)]
-#[expect(missing_docs)]
 pub enum HyperVGuestStateLifetime {
+    /// Standard persistent VMGS
     Default = 0,
+    /// Reprovision the VMGS if it is corrupted
     ReprovisionOnFailure = 1,
+    /// Reprovision the VMGS
     Reprovision = 2,
+    /// Don't persist anything to the VMGS
     Ephemeral = 3,
 }
 
@@ -181,14 +186,20 @@ impl ps::AsVal for HyperVGuestStateLifetime {
     }
 }
 
+/// Hyper-V Guest State Encryption Policy
 #[derive(Clone, Copy, Debug)]
-#[expect(missing_docs)]
 pub enum HyperVGuestStateEncryptionPolicy {
+    /// Use the best available
     Default = 0,
+    /// Don't encrypt
     None = 1,
+    /// Encrypt using GspById
     GspById = 2,
+    /// Encrypt using GspKey
     GspKey = 3,
+    /// Encrypt using hardware sealing (hash)
     HardwareSealedSecretsHashPolicy = 4,
+    /// Encrypt using hardware sealing (signer)
     HardwareSealedSecretsSignerPolicy = 5,
 }
 
@@ -205,8 +216,8 @@ impl ps::AsVal for HyperVGuestStateEncryptionPolicy {
     }
 }
 
+/// Hyper-V Management VTL Feature Flags
 #[bitfield_struct::bitfield(u64)]
-#[expect(missing_docs)]
 pub struct HyperVManagementVtlFeatureFlags {
     pub strict_encryption_policy: bool,
     pub _reserved1: bool,
@@ -224,35 +235,61 @@ impl ps::AsVal for HyperVManagementVtlFeatureFlags {
 }
 
 /// Arguments for the New-CustomVM powershell cmdlet
-#[expect(missing_docs)]
 pub struct HyperVNewCustomVMArgs {
+    /// Name
     pub name: String,
+    /// Generation
     pub generation: Option<HyperVGeneration>,
+    /// Guest State Isolation Type
     pub guest_state_isolation_type: Option<HyperVGuestStateIsolationType>,
+    /// Guest State Isolation Mode
     pub guest_state_isolation_mode: Option<HyperVGuestStateIsolationMode>,
+    /// Guest State Lifetime
     pub guest_state_lifetime: Option<HyperVGuestStateLifetime>,
+    /// Path to the VMGS file (creates a new one if not specified)
     pub guest_state_path: Option<PathBuf>,
+    /// VMBUS message redirection
     pub vmbus_message_redirection: Option<bool>,
+    /// Path to the OpenHCL firmware IGVM file
     pub firmware_file: Option<PathBuf>,
+    /// OpenHCL command line paramters
     pub firmware_parameters: Option<String>,
+    /// Whether to increase the memory available to VTL2
     pub increase_vtl2_memory: Option<bool>,
+    /// Whether to attempt a default boot even if existing entries fail
     pub default_boot_always_attempt: Option<bool>,
+    /// Enable secure boot
     pub secure_boot_enabled: Option<bool>,
+    /// Secure boot template
     pub secure_boot_template: Option<HyperVSecureBootTemplate>,
+    /// Management VTL feature flags
     pub management_vtl_feature_flags: Option<HyperVManagementVtlFeatureFlags>,
+    /// Guest State Encryption Policy
     pub guest_state_encryption_policy: Option<HyperVGuestStateEncryptionPolicy>,
+    /// Memory to assign to the VM (defaults to 4GB)
     pub memory: Option<u64>,
+    /// Number of processors for the VM (defaults to 2)
     pub vp_count: Option<u64>,
+    /// APIC mode
     pub apic_mode: Option<HyperVApicMode>,
+    /// Threads per core
     pub hw_threads_per_core: Option<u64>,
+    /// Processors per socket
     pub max_processors_per_numa_node: Option<u64>,
+    /// SCSI controllers and associated drives/disks
     pub scsi_controllers: HashMap<Guid, HyperVScsiController>,
+    /// IDE controllers and associated drives/disks
     pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
-    pub imc_hiv: Option<PathBuf>,
+    /// Temporary file containing initial machine configuration data
+    pub imc_hiv: Option<NamedTempFile>,
+    /// Enable COM1 at \\.\pipe\<VMID>-1
     pub com_1: bool,
+    /// Enable COM3 at \\.\pipe\<VMID>-3
     pub com_3: bool,
+    /// Enable the TPM
     pub tpm_enabled: bool,
-    pub management_vtl_settings: Option<PathBuf>,
+    /// Temporary file containing managment VTL settings
+    pub management_vtl_settings: Option<NamedTempFile>,
 }
 
 /// Hyper-V SCSI controller
@@ -613,11 +650,14 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
             )
             .arg_opt("ScsiControllers", scsi_controllers)
             .arg_opt("IdeControllers", ide_controllers)
-            .arg_opt("ImcHive", args.imc_hiv)
+            .arg_opt("ImcHive", args.imc_hiv.as_ref().map(|f| f.path()))
             .arg("Com1", args.com_1)
             .arg("Com3", args.com_3)
             .arg("TpmEnabled", args.tpm_enabled)
-            .arg_opt("ManagementVtlSettings", args.management_vtl_settings)
+            .arg_opt(
+                "ManagementVtlSettings",
+                args.management_vtl_settings.as_ref().map(|f| f.path()),
+            )
             .finish()
             .build(),
     )
@@ -1712,7 +1752,7 @@ pub async fn run_set_base_vtl2_settings(
 ) -> anyhow::Result<()> {
     // Pass the settings via a file to avoid challenges escaping the string across
     // the command line.
-    let mut tempfile = tempfile::NamedTempFile::new().context("creating tempfile")?;
+    let mut tempfile = NamedTempFile::new().context("creating tempfile")?;
     tempfile
         .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
         .context("writing settings to tempfile")?;
