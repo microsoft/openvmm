@@ -19,8 +19,8 @@ pub enum FormatError {
     SignatureListX509(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("parsing auth var's pkcs7_data as pkcs#7 DER")]
     AuthVarPkcs7Der(#[source] crypto::pkcs7::Pkcs7Error),
-    #[error("could not reconstruct signedData header for auth var's pkcs#7 data")]
-    AuthVarPkcs7DerHeader(#[source] der::Error),
+    #[error("could not reconstruct signedData header for auth var's pkcs#7 data: {0:?}")]
+    AuthVarPkcs7DerHeader(der::Error),
     #[error("creating PKCS#7 certificate store")]
     AuthVarPkcs7Store(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("setting up PKCS#7 verification")]
