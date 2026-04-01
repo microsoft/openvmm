@@ -4,7 +4,7 @@
 use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
 use crate::options::KeepAliveConfig;
 use crate::vpci::HclVpciBusControl;
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -454,6 +454,8 @@ impl HclNetworkVFManagerWorker {
             .map(drop)
     }
 
+    const LONG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
     async fn try_notify_guest_and_revoke_vtl0_vf(&mut self, bus_control: &Vtl0Bus) {
         if !self.guest_state.is_offered_to_guest().await {
             return;
@@ -521,12 +523,15 @@ impl HclNetworkVFManagerWorker {
                 };
                 bus_control
             };
-            vpci_bus_control
-                .revoke_device()
-                .instrument(
-                    tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
-                )
-                .await
+
+            let mut ctx =
+                mesh::CancelContext::new().with_timeout(HclNetworkVFManagerWorker::LONG_TIMEOUT);
+
+            ctx.until_cancelled(vpci_bus_control.revoke_device().instrument(
+                tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
+            ))
+            .await
+            .map_err(|cr| anyhow!("vtl0 revoke timed out: {cr}"))
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -595,14 +600,14 @@ impl HclNetworkVFManagerWorker {
         if self.guest_state.is_offered_to_guest().await {
             *self.guest_state.offered_to_guest.lock().await = false;
             if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                match vtl0_bus_control
-                    .revoke_device()
-                    .instrument(tracing::info_span!(
-                        "Removing VF from VTL0",
-                        vtl2_vfid,
-                        vtl0_vfid,
+                let mut ctx = mesh::CancelContext::new()
+                    .with_timeout(HclNetworkVFManagerWorker::LONG_TIMEOUT);
+                match ctx
+                    .until_cancelled(vtl0_bus_control.revoke_device().instrument(
+                        tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
                     ))
                     .await
+                    .map_err(|cr| anyhow!("cancelled: {cr}"))
                 {
                     Ok(_) => (),
                     Err(err) => {
