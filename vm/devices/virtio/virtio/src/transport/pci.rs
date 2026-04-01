@@ -380,7 +380,7 @@ impl VirtioPciDevice {
             VirtioPciCommonCfg::DRIVER_FEATURE_SELECT => self.core.driver_feature_select = val,
             VirtioPciCommonCfg::DRIVER_FEATURE => {
                 let bank = self.core.driver_feature_select as usize;
-                if !features_locked && bank < self.core.device_feature.len() {
+                if !features_locked && bank < 2 {
                     self.core
                         .driver_feature
                         .set_bank(bank, val & self.core.device_feature.bank(bank));

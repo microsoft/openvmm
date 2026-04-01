@@ -183,7 +183,7 @@ impl PackedQueueCompleteWork {
             queue_size: params.size,
             next_index: initial_index,
             wrapped_bit: initial_wrap,
-            use_event_index: features.bank0().ring_event_idx(),
+            use_event_index: features.ring_event_idx(),
         })
     }
 

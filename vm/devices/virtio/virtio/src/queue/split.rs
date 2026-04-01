@@ -61,7 +61,7 @@ impl SplitQueueGetWork {
             queue_size: params.size,
             last_avail_index: initial_avail_index,
             cached_avail_index: initial_avail_index,
-            use_ring_event_index: features.bank0().ring_event_idx(),
+            use_ring_event_index: features.ring_event_idx(),
         })
     }
 
@@ -208,7 +208,7 @@ impl SplitQueueCompleteWork {
             queue_used,
             queue_size: params.size,
             last_used_index: initial_used_index,
-            use_ring_event_index: features.bank0().ring_event_idx(),
+            use_ring_event_index: features.ring_event_idx(),
         })
     }
 
