@@ -527,7 +527,7 @@ pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> any
         ps::HashTable::new(args.scsi_controllers.into_iter().map(
             |(vsid, HyperVScsiController { target_vtl, drives })| {
                 (
-                    format!("{{{vsid}}}"),
+                    format!("\"{vsid}\""),
                     ps::Value::new(ps::HashTable::new([
                         ("Vtl", ps::Value::new(target_vtl as u32)),
                         (
