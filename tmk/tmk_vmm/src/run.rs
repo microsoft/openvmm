@@ -159,23 +159,6 @@ impl CommonState {
         //     end: region_end_exclusive,
         // };
 
-        #[cfg(guest_arch = "aarch64")]
-        let shared_memory_layout = MemoryLayout::new_from_ranges(
-                &[MemoryRangeWithNode {
-                    range: MemoryRange::new(Range {
-                        start: start + map_size/2,
-                        end: start + map_size,
-                    }),
-                    vnode: 0,
-                },
-                //  MemoryRangeWithNode {
-                //     range: MemoryRange::new(region_range),
-                //     vnode: 0,
-                // },
-                ],
-                &[],
-            )
-            .context("bad memory layout")?;
 
         let offset_memory = Some(start);
 
@@ -192,6 +175,19 @@ impl CommonState {
         let shared_address_start = unsafe { load::virt_to_phys(shared_virtual_address_start) }
                 .map_err(anyhow::Error::msg)
                 .context("failed to get page physical address")?;
+
+        #[cfg(guest_arch = "aarch64")]
+        let shared_memory_layout = MemoryLayout::new_from_ranges(
+                &[MemoryRangeWithNode {
+                    range: MemoryRange::new(Range {
+                        start: shared_address_start,
+                        end: shared_address_start + map_size/2,
+                    }),
+                    vnode: 0,
+                }],
+                &[],
+            )
+            .context("bad memory layout")?;
 
         let shared_address_start_command = start;
 
