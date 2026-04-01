@@ -77,7 +77,6 @@ pub struct VhostUserFrontend {
     /// reset, because the guest memory backing is the same file-backed
     /// allocation for the lifetime of the socket connection.
     mem_table_sent: bool,
-    config_cache: Vec<u8>,
     queues: Vec<FrontendQueueState>,
     /// Set on the first `start_queue` call, used by `stop_queue` to read
     /// the used index from the guest-visible used ring.
@@ -156,22 +155,21 @@ impl VhostUserFrontend {
         };
         tracing::trace!(max_queues, "GET_QUEUE_NUM");
 
-        // 5. GET_CONFIG (requires CONFIG protocol feature)
-        let config_cache = if negotiated_proto.config() {
-            send_get_config(&socket, 0, 256).await.unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
         // Build DeviceTraits from the wire features.
         let device_features =
             features_from_u64(device_features_raw & !(VHOST_USER_F_PROTOCOL_FEATURES));
+
+        // Config reads/writes are forwarded live via GET_CONFIG/SET_CONFIG,
+        // so we don't need to prefetch. Use the vhost-user max config size
+        // (256) as the register length; reads beyond the backend's actual
+        // config space will return zeros.
+        let device_register_length = if negotiated_proto.config() { 256 } else { 0 };
 
         let device_traits = DeviceTraits {
             device_id,
             device_features,
             max_queues,
-            device_register_length: config_cache.len() as u32,
+            device_register_length,
             shared_memory: DeviceTraitsSharedMemory::default(),
         };
 
@@ -192,7 +190,6 @@ impl VhostUserFrontend {
             guest_features_sent: false,
             mem_table_sent: false,
             packed_ring: false,
-            config_cache,
             queues,
             guest_memory: None,
         })
@@ -205,11 +202,20 @@ impl VirtioDevice for VhostUserFrontend {
     }
 
     async fn read_registers_u32(&mut self, offset: u16) -> u32 {
-        let off = offset as usize;
-        if off + 4 <= self.config_cache.len() {
-            u32::from_le_bytes(self.config_cache[off..off + 4].try_into().unwrap())
-        } else {
-            0
+        if !self.protocol_features.config() {
+            return 0;
+        }
+        match send_get_config(&self.socket, offset as u32, 4).await {
+            Ok(data) if data.len() >= 4 => u32::from_le_bytes(data[..4].try_into().unwrap()),
+            Ok(_) => 0,
+            Err(e) => {
+                tracelimit::warn_ratelimited!(
+                    error = &*e as &dyn std::error::Error,
+                    offset,
+                    "GET_CONFIG failed"
+                );
+                0
+            }
         }
     }
 
@@ -222,10 +228,6 @@ impl VirtioDevice for VhostUserFrontend {
                 offset,
                 "SET_CONFIG failed"
             );
-        }
-        let off = offset as usize;
-        if off + 4 <= self.config_cache.len() {
-            self.config_cache[off..off + 4].copy_from_slice(&val.to_le_bytes());
         }
     }
 

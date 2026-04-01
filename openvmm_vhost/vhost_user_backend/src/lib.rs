@@ -264,6 +264,13 @@ impl VhostUserDeviceServer {
                 }
                 let config_hdr_size = size_of::<VhostUserConfigHeader>();
                 let config_data = payload.get(config_hdr_size..).unwrap_or(&[]);
+                if config_data.len() < config_hdr.size as usize {
+                    anyhow::bail!(
+                        "SET_CONFIG payload too short: expected {} bytes, got {}",
+                        config_hdr.size,
+                        config_data.len(),
+                    );
+                }
                 // Write device config registers 4 bytes at a time.
                 let mut pos = 0u32;
                 while pos < config_hdr.size {
