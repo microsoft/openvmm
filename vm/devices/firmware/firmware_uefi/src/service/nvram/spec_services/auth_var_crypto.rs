@@ -15,13 +15,15 @@ use zerocopy::IntoBytes;
 pub enum FormatError {
     #[error("parsing signature list from auth_var_data")]
     SignatureList(#[source] signature_list::ParseError),
-    #[error("decoding x509 cert from signature list")]
-    SignatureListX509(#[source] crypto::pkcs7::X509CertificateError),
+    #[error("adding x509 cert from signature list to store")]
+    SignatureListX509(#[source] crypto::pkcs7::CertStoreError),
 
     #[error("parsing auth var's pkcs7_data as pkcs#7 DER")]
     AuthVarPkcs7Der(#[source] crypto::pkcs7::Pkcs7Error),
     #[error("could not reconstruct signedData header for auth var's pkcs#7 data: {0:?}")]
     AuthVarPkcs7DerHeader(der::Error),
+    #[error("creating PKCS#7 certificate store")]
+    AuthVarPkcs7Store(#[source] crypto::pkcs7::CertStoreError),
     #[error("setting up PKCS#7 verification")]
     AuthVarPkcs7Verify(#[source] crypto::pkcs7::Pkcs7VerifyError),
 }
@@ -33,6 +35,7 @@ impl FormatError {
             FormatError::SignatureList(_) | FormatError::SignatureListX509(_) => true,
             FormatError::AuthVarPkcs7Der(_)
             | FormatError::AuthVarPkcs7DerHeader(_)
+            | FormatError::AuthVarPkcs7Store(_)
             | FormatError::AuthVarPkcs7Verify(_) => false,
         }
     }
@@ -82,9 +85,10 @@ pub fn authenticate_variable(
         }
     };
 
-    // stage 2 - extract and parse all the x509 certs from the signature list(s)
-    let certs = {
-        let mut parsed_certs = Vec::new();
+    // stage 2 - extract all the x509 certs from the signature list(s)
+    //           and add them to a certificate store
+    let mut store = crypto::pkcs7::Pkcs7CertStore::new().map_err(FormatError::AuthVarPkcs7Store)?;
+    {
         let lists = signature_list::ParseSignatureLists::new(signature_lists);
         for list in lists {
             let list = list.map_err(FormatError::SignatureList)?;
@@ -92,14 +96,13 @@ pub fn authenticate_variable(
             if let signature_list::ParseSignatureList::X509(certs) = list {
                 for cert in certs {
                     let cert = cert.map_err(FormatError::SignatureList)?;
-                    let cert = crypto::pkcs7::X509Certificate::from_der(&cert.data.0)
+                    store
+                        .add_cert_der(&cert.data.0)
                         .map_err(FormatError::SignatureListX509)?;
-                    parsed_certs.push(cert);
                 }
             }
         }
-        parsed_certs
-    };
+    }
 
     // stage 3 - construct the "data to verify" buffer
     //
@@ -111,33 +114,9 @@ pub fn authenticate_variable(
     verify_buf.extend(timestamp.as_bytes());
     verify_buf.extend(var_data);
 
-    // then, we set some extra flags to work around the particular
-    // idiosyncrasies of how these certs are constructed...
-
-    // PARTIAL_CHAIN rationale: the certs in the EFI_SIGNATURE_LIST are not
-    // root certs, and we don't have a full cert chain available. Instead,
-    // we want to terminate the chain verification at whatever certs are
-    // present from the EFI_SIGNATURE_LISTs.
-    //
-    // NO_CHECK_TIME rationale: when testing this feature, we noticed that
-    // the UEFI signing key expired a long time ago. The existing
-    // implementations didn't care about this, and allowed the verification
-    // to succeed regardless.
-    // let store_flags = openssl::x509::verify::X509VerifyFlags::PARTIAL_CHAIN
-    //     | openssl::x509::verify::X509VerifyFlags::NO_CHECK_TIME;
-    // store.set_flags(store_flags).unwrap();
-
-    // X509Purpose::Any rationale: openssl expects the trusted certs to have
-    // certain capabilities that ours do not. Omitting this call will result
-    // in the verify operation failing with "Verify error:unsupported
-    // certificate purpose"
-    // store
-    //     .set_purpose(openssl::x509::X509PurposeId::ANY)
-    //     .unwrap();
-
     // stage 4 - verify the signed data using trusted certs from EFI signature lists
     var_pkcs7
-        .verify(&certs, &verify_buf)
+        .verify(&store, &verify_buf)
         .map_err(FormatError::AuthVarPkcs7Verify)
 }
 
