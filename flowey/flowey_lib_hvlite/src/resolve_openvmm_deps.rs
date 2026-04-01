@@ -50,7 +50,6 @@ flowey_config! {
 }
 
 flowey_request! {
-    #[expect(clippy::enum_variant_names)]
     pub enum Request {
         /// Get the path to a specific dep file
         Get(OpenvmmDepFile, OpenvmmDepsArch, WriteVar<PathBuf>),
