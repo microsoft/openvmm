@@ -77,6 +77,8 @@ pub fn github_yaml(
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
         job_command_wrappers: BTreeMap::new(),
+        job_platforms: BTreeMap::new(),
+        job_archs: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -136,6 +138,11 @@ pub fn github_yaml(
                 .job_command_wrappers
                 .insert(job_idx.index(), wrapper_kind.clone());
         }
+
+        pipeline_static_db
+            .job_platforms
+            .insert(job_idx.index(), platform);
+        pipeline_static_db.job_archs.insert(job_idx.index(), arch);
 
         let mut gh_steps = Vec::new();
 
@@ -574,7 +581,18 @@ EOF
             github_yaml_defs::Job {
                 name: label.clone(),
                 timeout_minutes,
-                runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
+                runs_on: gh_pool.clone().map(|runner| {
+                    let mut yaml_runner = runner_kind_to_yaml(&runner);
+                    if let github_yaml_defs::Runner::SelfHosted(ref mut labels) = yaml_runner {
+                        if labels.iter().any(|l| l.starts_with("1ES.Pool=")) {
+                            labels.push(format!(
+                                "JobId=job{}-${{{{ github.run_id }}}}-${{{{ github.run_number }}}}-${{{{ github.run_attempt }}}}",
+                                job_idx.index()
+                            ));
+                        }
+                    }
+                    yaml_runner
+                }),
                 permissions: job_permissions
                     .iter()
                     .map(|k| (perm_kind_to_yaml(k.0), perm_val_to_yaml(k.1)))

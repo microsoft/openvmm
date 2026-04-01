@@ -125,6 +125,12 @@ impl VirtioQueueUsedHandler {
     }
 }
 
+/// A descriptor chain popped from a [`VirtioQueue`].
+///
+/// The device must call [`complete`](Self::complete) exactly once to post a
+/// completion to the guest's used ring. Dropping without completing is a bug
+/// and will not automatically post a completion.
+#[must_use]
 pub struct VirtioQueueCallbackWork {
     used_queue_handler: Arc<Mutex<VirtioQueueUsedHandler>>,
     work: QueueWork,
@@ -170,6 +176,17 @@ impl VirtioQueueCallbackWork {
     // Read all payload into a buffer.
     pub fn read(&self, mem: &GuestMemory, target: &mut [u8]) -> Result<usize, GuestMemoryError> {
         read_from_payload(&self.payload, mem, target)
+    }
+
+    /// Read readable payload into `target`, skipping the first `offset`
+    /// bytes of readable data.
+    pub fn read_at_offset(
+        &self,
+        offset: u64,
+        mem: &GuestMemory,
+        target: &mut [u8],
+    ) -> Result<usize, GuestMemoryError> {
+        read_from_payload_at_offset(&self.payload, offset, mem, target)
     }
 
     // Write the specified buffer to the payload buffers.
@@ -225,14 +242,6 @@ pub enum VirtioWriteError {
     NotAllWritten(usize),
 }
 
-impl Drop for VirtioQueueCallbackWork {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.complete(0);
-        }
-    }
-}
-
 /// A descriptor that has been peeked from a [`VirtioQueue`] without advancing
 /// the available index.
 ///
@@ -280,8 +289,8 @@ impl<'a> PeekedWork<'a> {
 
     /// Consume this peeked work, advancing the queue's available index.
     ///
-    /// Returns a [`VirtioQueueCallbackWork`] that must be completed (or will
-    /// auto-complete with 0 bytes on drop).
+    /// Returns a [`VirtioQueueCallbackWork`] that must be explicitly
+    /// completed via [`VirtioQueueCallbackWork::complete`].
     pub fn consume(self) -> VirtioQueueCallbackWork {
         self.queue.core.advance(&self.work);
         VirtioQueueCallbackWork::new(self.work, &self.queue.used_handler)
@@ -327,9 +336,17 @@ impl VirtioQueue {
         }
     }
 
-    /// Polls until the queue is kicked by the guest, indicating new work may be available.
+    /// Polls until the queue is kicked by the guest, indicating new work may be
+    /// available.
+    ///
+    /// Before sleeping, this arms kick notification and rechecks the queue. If
+    /// new data arrived during arming, it returns immediately without sleeping.
+    /// On wakeup, kicks are suppressed to avoid unnecessary doorbells while
+    /// the caller drains the queue.
     pub fn poll_kick(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        if self.core.arm_for_kick() {
+            ready!(self.queue_event.wait().poll_unpin(cx)).expect("waits on Event cannot fail");
+        }
         Poll::Ready(())
     }
 
@@ -337,9 +354,9 @@ impl VirtioQueue {
     /// work is currently available, or an error if there was an issue accessing
     /// the queue.
     ///
-    /// If `None` is returned, then the queue will be armed so that the guest
-    /// will kick it when new work is available; the caller can use
-    /// [`poll_kick`](Self::poll_kick) to wait for this.
+    /// This is a lightweight check that does not arm kick notification. When
+    /// used in a poll loop with [`poll_kick`](Self::poll_kick), the kick will
+    /// be armed automatically before sleeping.
     pub fn try_next(&mut self) -> Result<Option<VirtioQueueCallbackWork>, Error> {
         Ok(self
             .core

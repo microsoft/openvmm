@@ -53,7 +53,6 @@ use net_backend::TxMetadata;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
-use parking_lot::Mutex;
 use slab::Slab;
 use std::future::poll_fn;
 use std::sync::Arc;
@@ -68,8 +67,7 @@ use zerocopy::IntoBytes;
 
 pub struct GuestBuffers {
     gm: GuestMemory,
-    rx_packets: Arc<Mutex<Slab<RxPacket>>>,
-    buffer_segments: Vec<RxBufferSegment>,
+    rx_packets: Slab<RxPacket>,
 }
 
 struct RxPacket {
@@ -85,8 +83,7 @@ impl BufferAccess for GuestBuffers {
     }
 
     fn write_data(&mut self, id: RxId, mut data: &[u8]) {
-        self.guest_addresses(id);
-        let mut addrs = self.buffer_segments.iter();
+        let mut addrs = self.rx_packets[id.0 as usize].segments.iter();
         while !data.is_empty() {
             let addr = addrs.next().expect("packet too large");
             let len = data.len().min(addr.len as usize);
@@ -103,14 +100,12 @@ impl BufferAccess for GuestBuffers {
         }
     }
 
-    fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment] {
-        self.buffer_segments
-            .clone_from(&self.rx_packets.lock()[id.0 as usize].segments);
-        &self.buffer_segments
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
+        buf.extend_from_slice(&self.rx_packets[id.0 as usize].segments);
     }
 
     fn capacity(&self, id: RxId) -> u32 {
-        self.rx_packets.lock()[id.0 as usize].len
+        self.rx_packets[id.0 as usize].len
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
@@ -139,8 +134,7 @@ impl BufferAccess for GuestBuffers {
             },
         }
 
-        let mut packets = self.rx_packets.lock();
-        let packet = &mut packets[id.0 as usize];
+        let packet = &mut self.rx_packets[id.0 as usize];
         packet.oob = ManaRxcompOob {
             cqe_hdr: ManaCqeHeader::new()
                 .with_cqe_type(CQE_RX_OKAY)
@@ -355,19 +349,11 @@ impl BasicNic {
                         if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =
                             (vport.queue_cfg.tx, vport.queue_cfg.rx)
                         {
-                            let rx_packets = Arc::new(Default::default());
-
                             let mut queues = vec![];
                             vport
                                 .endpoint
                                 .get_queues(
                                     vec![QueueConfig {
-                                        pool: Box::new(GuestBuffers {
-                                            gm: state.queues.gm.clone(),
-                                            rx_packets: Arc::clone(&rx_packets),
-                                            buffer_segments: Vec::new(),
-                                        }),
-                                        initial_rx: &[],
                                         driver: Box::new(state.queues.driver.clone()),
                                     }],
                                     None,
@@ -381,7 +367,10 @@ impl BasicNic {
                                 TxRxTask {
                                     queues: state.queues.clone(),
                                     epqueue: queues.drain(..).next().unwrap(),
-                                    rx_packets,
+                                    pool: GuestBuffers {
+                                        gm: state.queues.gm.clone(),
+                                        rx_packets: Default::default(),
+                                    },
                                     sq_id,
                                     sq_cq_id,
                                     rq_id,
@@ -460,7 +449,7 @@ impl BasicNic {
 pub struct TxRxTask {
     queues: Arc<Queues>,
     epqueue: Box<dyn Queue>,
-    rx_packets: Arc<Mutex<Slab<RxPacket>>>,
+    pool: GuestBuffers,
     sq_id: u32,
     sq_cq_id: u32,
     rq_id: u32,
@@ -474,7 +463,7 @@ impl InspectTaskMut<TxRxTask> for TxRxState {
         let mut resp = req.respond();
         if let Some(task) = task {
             resp.field_mut("queue", &mut task.epqueue)
-                .field("rx_bufs", task.rx_packets.lock().len());
+                .field("rx_bufs", task.pool.rx_packets.len());
         }
     }
 }
@@ -491,16 +480,18 @@ impl TxRxTask {
 
         loop {
             let event = poll_fn(|cx| {
-                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
-                    return Poll::Ready(Event::Sqe(wqe));
-                }
+                // Fill rx before transmitting to avoid rx buffer starvation
+                // (particularly in tests, but seems reasonable in general).
                 if self.rx_buf_count < max_rx_buf {
                     if let Poll::Ready((wqe_offset, wqe)) = self.queues.poll_rq(self.rq_id, cx) {
                         self.rx_buf_count += 1;
                         return Poll::Ready(Event::Rqe(wqe_offset, wqe));
                     }
                 }
-                if self.epqueue.poll_ready(cx).is_ready() {
+                if let Poll::Ready(wqe) = self.queues.poll_sq(self.sq_id, cx) {
+                    return Poll::Ready(Event::Sqe(wqe));
+                }
+                if self.epqueue.poll_ready(cx, &mut self.pool).is_ready() {
                     return Poll::Ready(Event::Ready);
                 }
                 Poll::Pending
@@ -593,7 +584,7 @@ impl TxRxTask {
                 len: sge.size,
             });
         }
-        let (sync, count) = self.epqueue.tx_avail(tx_segments)?;
+        let (sync, count) = self.epqueue.tx_avail(&mut self.pool, tx_segments)?;
         if sync || count == 0 {
             tracing::trace!("tx sync complete");
             self.post_tx_completion();
@@ -646,18 +637,18 @@ impl TxRxTask {
             wqe_offset,
             oob: FromZeros::new_zeroed(),
         };
-        let id = RxId(self.rx_packets.lock().insert(packet) as u32);
-        self.epqueue.rx_avail(&[id]);
+        let id = RxId(self.pool.rx_packets.insert(packet) as u32);
+        self.epqueue.rx_avail(&mut self.pool, &[id]);
         Ok(())
     }
 
     fn process_backend(&mut self) -> anyhow::Result<()> {
         let mut packets = [RxId(0)];
-        if self.epqueue.rx_poll(&mut packets)? > 0 {
+        if self.epqueue.rx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("rx complete");
             let packet = self
+                .pool
                 .rx_packets
-                .lock()
                 .try_remove(packets[0].0 as usize)
                 .context("invalid rx id")?;
 
@@ -668,7 +659,7 @@ impl TxRxTask {
         }
 
         let mut packets = [TxId(0)];
-        if self.epqueue.tx_poll(&mut packets)? > 0 {
+        if self.epqueue.tx_poll(&mut self.pool, &mut packets)? > 0 {
             tracing::trace!("tx async complete");
             self.post_tx_completion();
         }

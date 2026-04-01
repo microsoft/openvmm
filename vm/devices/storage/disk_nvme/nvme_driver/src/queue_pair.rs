@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
+use std::time::Instant;
 use task_control::AsyncRun;
 use task_control::TaskControl;
 use thiserror::Error;
@@ -123,6 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
+            submitted_at: (self.qid == 0).then(Instant::now),
         });
     }
 
@@ -179,6 +181,7 @@ impl PendingCommands {
                         PendingCommand {
                             command: state.command,
                             respond: Rpc::detached(()),
+                            submitted_at: None,
                         },
                     )
                 })
@@ -946,6 +949,9 @@ struct PendingCommand {
     command: spec::Command,
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
+    /// When the command was submitted to the queue. Used only for the admin queue
+    #[inspect(with = "|x| x.map(|submitted_at| submitted_at.elapsed().as_millis() as u64)")]
+    submitted_at: Option<Instant>,
 }
 
 /// Diagnostic information about the completion queue state.
@@ -1299,6 +1305,24 @@ impl<A: AerHandler> QueueHandler<A> {
 
     /// Save queue data for servicing.
     pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
+        // Log pending admin command wait durations at save time.
+        if self.qid == 0 {
+            for (_index, cmd) in self.commands.commands.iter() {
+                if let Some(elapsed) = cmd.submitted_at {
+                    tracing::info!(
+                        pci_id = ?self.device_id,
+                        cid = cmd.command.cdw0.cid(),
+                        opcode = cmd.command.cdw0.opcode(),
+                        nsid = cmd.command.nsid,
+                        cdw10 = cmd.command.cdw10,
+                        cdw11 = cmd.command.cdw11,
+                        elapsed = elapsed.elapsed().as_millis() as u64,
+                        "pending admin command at save time",
+                    );
+                }
+            }
+        }
+
         // The data is collected from both QueuePair and QueueHandler.
         Ok(QueueHandlerSavedState {
             sq_state: self.sq.save(),

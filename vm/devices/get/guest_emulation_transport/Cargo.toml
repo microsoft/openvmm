@@ -7,11 +7,11 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-test_utilities = [ "guest_emulation_device/test_utilities" ]
+test_utilities = [ "guest_emulation_device/test_utilities", "dep:guestmem" ]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 get_protocol.workspace = true
-guestmem.workspace = true
+guestmem = { workspace = true, optional = true }
 guest_emulation_device = { workspace = true, optional = true }
 hvdef.workspace = true
 underhill_config.workspace = true
@@ -29,7 +29,6 @@ inspect.workspace = true
 inspect_counters.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
-test_with_tracing.workspace = true
 tracing_helpers.workspace = true
 
 anyhow.workspace = true
@@ -47,8 +46,10 @@ zerocopy.workspace = true
 vmbus_user_channel.workspace = true
 
 [dev-dependencies]
+guestmem.workspace = true
 guest_emulation_device = { workspace = true, features = ["test_utilities"] }
 power_resources.workspace = true
+test_with_tracing.workspace = true
 
 [lints]
 workspace = true

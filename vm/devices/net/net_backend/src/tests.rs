@@ -30,7 +30,6 @@ pub fn test_layout() -> MemoryLayout {
 #[derive(Clone)]
 pub struct Bufs {
     inner: Arc<BufsInner>,
-    buffer_segment: RxBufferSegment,
 }
 
 struct BufsInner {
@@ -47,7 +46,6 @@ impl Bufs {
                 rx_metadata,
                 guest_memory,
             }),
-            buffer_segment: RxBufferSegment { gpa: 0, len: 0 },
         }
     }
 }
@@ -57,10 +55,9 @@ impl BufferAccess for Bufs {
         &self.inner.guest_memory
     }
 
-    fn guest_addresses(&mut self, id: RxId) -> &[RxBufferSegment] {
+    fn push_guest_addresses(&self, id: RxId, buf: &mut Vec<RxBufferSegment>) {
         let gpa = id.0 as u64 * 2048;
-        self.buffer_segment = RxBufferSegment { gpa, len: 2048 };
-        std::slice::from_ref(&self.buffer_segment)
+        buf.push(RxBufferSegment { gpa, len: 2048 });
     }
 
     fn capacity(&self, _id: RxId) -> u32 {

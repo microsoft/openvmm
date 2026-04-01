@@ -32,6 +32,7 @@ use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue as NetQueue;
 use net_backend::QueueConfig;
+use net_backend::RxBufferSegment;
 use net_backend::TxError;
 use net_backend::TxOffloadSupport;
 use net_backend::null::NullEndpoint;
@@ -228,7 +229,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         _rss: Option<&net_backend::RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
@@ -332,30 +333,29 @@ impl net_backend::Endpoint for TestNicEndpoint {
 #[derive(InspectMut)]
 struct TestNicQueue {
     #[inspect(skip)]
-    pool: Box<dyn BufferAccess>,
-    #[inspect(skip)]
     rx_ids: VecDeque<RxId>,
     #[inspect(skip)]
     rx: mesh::Receiver<Vec<u8>>,
     next_rx_packet: Option<Vec<u8>>,
     sync_tx: bool,
+    #[inspect(skip)]
+    scratch_segments: Vec<RxBufferSegment>,
 }
 
 impl TestNicQueue {
-    pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>, sync_tx: bool) -> Self {
-        let rx_ids = config.initial_rx.iter().copied().collect();
+    pub fn new(_config: QueueConfig, rx: mesh::Receiver<Vec<u8>>, sync_tx: bool) -> Self {
         Self {
-            pool: config.pool,
-            rx_ids,
+            rx_ids: VecDeque::new(),
             rx,
             next_rx_packet: None,
             sync_tx,
+            scratch_segments: Vec::new(),
         }
     }
 }
 
 impl NetQueue for TestNicQueue {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
         if self.rx_ids.is_empty() {
             return Poll::Pending;
         }
@@ -374,11 +374,15 @@ impl NetQueue for TestNicQueue {
         Poll::Ready(())
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
         self.rx_ids.extend(done);
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         if packets.is_empty() || self.rx_ids.is_empty() {
             return Ok(0);
         }
@@ -393,8 +397,10 @@ impl NetQueue for TestNicQueue {
             let rx_id = self.rx_ids.pop_front().unwrap();
             tracing::info!(rx_id = rx_id.0, ?packet, "returning packet on receive path");
             let mut packet = &packet[..];
-            let guest_memory = self.pool.guest_memory().clone();
-            for seg in self.pool.guest_addresses(rx_id).iter() {
+            self.scratch_segments.clear();
+            pool.push_guest_addresses(rx_id, &mut self.scratch_segments);
+            let guest_memory = pool.guest_memory();
+            for seg in &self.scratch_segments {
                 // N.B. The packet data is written after the implicit header,
                 //      which is 256 bytes long. The header can be written with
                 //      self.pool.write_header(...) if desired.
@@ -415,16 +421,20 @@ impl NetQueue for TestNicQueue {
         }
     }
 
-    fn tx_avail(&mut self, packets: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        packets: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         Ok((self.sync_tx, packets.len()))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        _done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         Ok(0)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        None
     }
 }
 

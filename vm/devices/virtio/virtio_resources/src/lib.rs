@@ -149,3 +149,45 @@ pub mod console {
         const ID: &'static str = "virtio-console";
     }
 }
+
+#[cfg(unix)]
+pub mod vhost_user {
+    use mesh::MeshPayload;
+    use std::os::fd::OwnedFd;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    /// Handle for a vhost-user device backed by an external process.
+    ///
+    /// The socket must already be connected. The CLI layer connects
+    /// to the backend and passes the connected fd here.
+    #[derive(MeshPayload)]
+    pub struct VhostUserDeviceHandle {
+        /// Connected Unix socket fd to the vhost-user backend.
+        pub socket: OwnedFd,
+        /// Virtio device ID (e.g., 2 for block, 1 for net).
+        pub device_id: u16,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserDeviceHandle {
+        const ID: &'static str = "vhost-user";
+    }
+}
+
+pub mod vsock {
+    use mesh::MeshPayload;
+    use unix_socket::UnixListener;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    #[derive(MeshPayload)]
+    pub struct VirtioVsockHandle {
+        pub guest_cid: u64,
+        pub base_path: String,
+        pub listener: UnixListener,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VirtioVsockHandle {
+        const ID: &'static str = "virtio-vsock";
+    }
+}

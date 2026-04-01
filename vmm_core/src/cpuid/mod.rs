@@ -3,8 +3,6 @@
 
 //! VM CPUID support.
 
-pub mod topology;
-
 use hvdef::VIRTUALIZATION_STACK_CPUID_INTERFACE;
 use hvdef::VIRTUALIZATION_STACK_CPUID_PROPERTIES;
 use hvdef::VIRTUALIZATION_STACK_CPUID_VENDOR;
@@ -13,10 +11,6 @@ use hvdef::VS1_PARTITION_PROPERTIES_EAX_EXTENDED_IOAPIC_RTE;
 use hvdef::VS1_PARTITION_PROPERTIES_EAX_IS_PORTABLE;
 use virt::CpuidLeaf;
 use x86defs::cpuid::CpuidFunction;
-
-/// A function used to query the cpuid result for a given input value (`eax`,
-/// `ecx`).
-pub type CpuidFn<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
 
 /// Returns CPUID leaves for Hyper-V-style VMs.
 ///

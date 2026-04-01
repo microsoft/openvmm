@@ -157,6 +157,15 @@ in pkgs.mkShell {
 
   RUST_BACKTRACE = 1;
   SOURCE_DATE_EPOCH = 12345;
+  # Need the unstable trim-paths feature on the stable toolchain to strip paths from the output binary
+  RUSTC_BOOTSTRAP = 1;
+  # Enable path trimming
+  CARGO_UNSTABLE_TRIM_PATHS = "true";
+  CARGO_PROFILE_DEV_TRIM_PATHS = "object";
+  CARGO_PROFILE_RELEASE_TRIM_PATHS = "object";
+  CARGO_PROFILE_UNDERHILL_SHIP_TRIM_PATHS = "object";
+  CARGO_PROFILE_BOOT_DEV_TRIM_PATHS = "object";
+  CARGO_PROFILE_BOOT_RELEASE_TRIM_PATHS = "object";
 
   shellHook = ''
     # Create a temp bin directory with symlinks using the expected gcc names.

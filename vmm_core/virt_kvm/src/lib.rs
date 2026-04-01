@@ -23,6 +23,16 @@ use thiserror::Error;
 use virt::state::StateError;
 
 pub use arch::Kvm;
+
+/// Returns whether KVM is available on this machine.
+pub fn is_available() -> Result<bool, KvmError> {
+    match std::fs::metadata("/dev/kvm") {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(KvmError::AvailableCheck(err)),
+    }
+}
+
 use arch::KvmVpInner;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
@@ -49,6 +59,9 @@ pub enum KvmError {
     Misaligned,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 #[derive(Debug, Inspect)]

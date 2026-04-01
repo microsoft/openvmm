@@ -10,7 +10,6 @@ use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
-use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
@@ -329,25 +328,6 @@ pub struct HypervisorConfig {
     pub user_mode_apic: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
-}
-
-#[derive(Debug, Copy, Clone, MeshPayload)]
-pub enum Hypervisor {
-    Kvm,
-    MsHv,
-    Whp,
-    Hvf,
-}
-
-impl fmt::Display for Hypervisor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(match self {
-            Self::Kvm => "kvm",
-            Self::MsHv => "mshv",
-            Self::Whp => "whp",
-            Self::Hvf => "hvf",
-        })
-    }
 }
 
 #[derive(Debug, MeshPayload)]

@@ -1,11 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use anyhow::anyhow;
-use fs_err::File;
-use std::io::BufRead;
-use std::io::BufReader;
+//! Checks that code uses `guest_arch` instead of `target_arch` for
+//! guest-architecture-specific conditionals.
+
+use super::Lint;
+use super::LintCtx;
+use super::Lintable;
 use std::path::Path;
+use toml_edit::DocumentMut;
 
 const SUPPRESS: &str = "xtask-fmt allow-target-arch";
 
@@ -23,7 +26,7 @@ const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
 /// One off - used by petri to select native test dependencies
 const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS: &str = "oneoff-petri-native-test-deps";
-/// Onee off - used by petri to return the host architecture for test filtering
+/// One off - used by petri to return the host architecture for test filtering
 const SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH: &str = "oneoff-petri-host-arch";
 
 fn has_suppress(s: &str) -> bool {
@@ -34,7 +37,7 @@ fn has_suppress(s: &str) -> bool {
     let after = after.trim();
     let justification = after.split(' ').next().unwrap();
 
-    let ok = matches!(
+    matches!(
         justification,
         SUPPRESS_REASON_CPU_INTRINSIC
             | SUPPRESS_REASON_SYS_CRATE
@@ -43,34 +46,11 @@ fn has_suppress(s: &str) -> bool {
             | SUPPRESS_REASON_ONEOFF_FLOWEY
             | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
             | SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH
-    );
-
-    if !ok {
-        log::error!(
-            "invalid justification '{}' (must be one of [sys-crate, cpu-intrinsic]",
-            after.split(' ').next().unwrap()
-        );
-    }
-
-    ok
+    )
 }
 
-pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or_default();
-
-    if !matches!(ext, "rs") {
-        return Ok(());
-    }
-
-    // need to exclude self (and house_rules.rs, which includes help-text) from
-    // the lint
-    if path == Path::new(file!()) || path == Path::new(super::PATH_TO_HOUSE_RULES_RS) {
-        return Ok(());
-    }
-
+/// Paths that are exempt from the target_arch lint.
+fn is_exempt(path: &Path) -> bool {
     // guest_test_uefi is a guest-side crate (the code runs in the guest), so
     // target_arch here is actually referring to the guest_arch
     //
@@ -86,47 +66,52 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     // low-level bindings to a particular platform's virtualization APIs
     //
     // The TMK-related crates run in the guest and are inherently arch-specific.
-    if path.starts_with("guest_test_uefi")
+    path.starts_with("guest_test_uefi")
         || path.starts_with("openhcl/openhcl_boot")
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/minimal_rt_reloc")
         || path.starts_with("openhcl/sidecar")
-        || path.starts_with("support/")
+        || path.starts_with("support")
         || path.starts_with("tmk/simple_tmk")
         || path.starts_with("tmk/tmk_core")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
-    {
-        return Ok(());
+}
+
+pub struct CfgTargetArch;
+
+impl Lint for CfgTargetArch {
+    fn new(_ctx: &LintCtx) -> Self {
+        CfgTargetArch
     }
 
-    let mut error = false;
+    fn enter_workspace(&mut self, _content: &Lintable<DocumentMut>) {}
+    fn enter_crate(&mut self, _content: &Lintable<DocumentMut>) {}
 
-    // TODO: this lint really ought to be a dynlint / clippy lint
-    let f = BufReader::new(File::open(path)?);
-    let mut prev_line = String::new();
-    for (i, line) in f.lines().enumerate() {
-        let line = line?;
-        if line.contains("target_arch =") || line.contains("CARGO_CFG_TARGET_ARCH") {
-            // check if current line contains valid suppress, or is commented out
-            if !line.trim().starts_with("//") && !has_suppress(&line) && !has_suppress(&prev_line) {
-                error = true;
-                log::error!(
-                    "unjustified `cfg(target_arch = ...)`: {}:{}",
-                    path.display(),
-                    i + 1
-                );
-            }
+    fn visit_file(&mut self, content: &mut Lintable<String>) {
+        let path = content.path();
+
+        // Exclude ourselves from the lint (we mention the patterns in strings).
+        if path.ends_with(file!()) || is_exempt(path) {
+            return;
         }
-        prev_line = line;
+
+        let mut prev_line = "";
+        for (i, line) in content.lines().enumerate() {
+            if line.contains("target_arch =") || line.contains("CARGO_CFG_TARGET_ARCH") {
+                // check if current line contains valid suppress, or is commented out
+                if !line.trim().starts_with("//") && !has_suppress(line) && !has_suppress(prev_line)
+                {
+                    content.unfixable(&format!(
+                        "unjustified `cfg(target_arch = ...)` at line {}",
+                        i + 1
+                    ));
+                }
+            }
+            prev_line = line;
+        }
     }
 
-    if error {
-        Err(anyhow!(
-            "found unjustified uses of `cfg(target_arch = ...)` in {}",
-            path.display()
-        ))
-    } else {
-        Ok(())
-    }
+    fn exit_crate(&mut self, _content: &mut Lintable<DocumentMut>) {}
+    fn exit_workspace(&mut self, _content: &mut Lintable<DocumentMut>) {}
 }

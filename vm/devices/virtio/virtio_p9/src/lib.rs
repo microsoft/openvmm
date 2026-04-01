@@ -5,6 +5,8 @@
 #![forbid(unsafe_code)]
 #![cfg(any(windows, target_os = "linux"))]
 
+#[cfg(test)]
+mod integration_tests;
 pub mod resolver;
 
 use anyhow::Context as _;
@@ -71,7 +73,14 @@ impl VirtioDevice for VirtioPlan9Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::P9,
-            device_features: VirtioDeviceFeatures::new().with_bank(0, VIRTIO_9P_F_MOUNT_TAG),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::new()
+                        .with_device_specific(VIRTIO_9P_F_MOUNT_TAG)
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 1,
             device_register_length: self.tag.len() as u32,
             ..Default::default()
@@ -174,8 +183,9 @@ impl AsyncRun<Plan9Queue> for Plan9Worker {
             let work = stop.until_stopped(state.queue.next()).await?;
             let Some(work) = work else { break };
             match work {
-                Ok(work) => {
-                    process_9p_request(&state.mem, &self.fs, work);
+                Ok(mut work) => {
+                    let bytes = process_9p_request(&state.mem, &self.fs, &work);
+                    work.complete(bytes);
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");
@@ -187,7 +197,11 @@ impl AsyncRun<Plan9Queue> for Plan9Worker {
     }
 }
 
-fn process_9p_request(mem: &GuestMemory, fs: &Plan9FileSystem, mut work: VirtioQueueCallbackWork) {
+fn process_9p_request(
+    mem: &GuestMemory,
+    fs: &Plan9FileSystem,
+    work: &VirtioQueueCallbackWork,
+) -> u32 {
     // Make a copy of the incoming message.
     let mut message = vec![0; work.get_payload_length(false) as usize];
     if let Err(e) = work.read(mem, &mut message) {
@@ -195,21 +209,23 @@ fn process_9p_request(mem: &GuestMemory, fs: &Plan9FileSystem, mut work: VirtioQ
             error = &e as &dyn std::error::Error,
             "[VIRTIO 9P] Failed to read guest memory"
         );
-        return;
+        return 0;
     }
 
     // Allocate a temporary buffer for the response.
     let mut response = vec![9; work.get_payload_length(true) as usize];
-    if let Ok(size) = fs.process_message(&message, &mut response) {
-        // Write out the response.
-        if let Err(e) = work.write(mem, &response[0..size]) {
-            tracing::error!(
-                error = &e as &dyn std::error::Error,
-                "[VIRTIO 9P] Failed to write guest memory"
-            );
-            return;
-        }
+    let Ok(size) = fs.process_message(&message, &mut response) else {
+        return 0;
+    };
 
-        work.complete(size as u32);
+    // Write out the response.
+    if let Err(e) = work.write(mem, &response[0..size]) {
+        tracing::error!(
+            error = &e as &dyn std::error::Error,
+            "[VIRTIO 9P] Failed to write guest memory"
+        );
+        return 0;
     }
+
+    size as u32
 }

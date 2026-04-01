@@ -1400,7 +1400,9 @@ impl VirtioPciTestDevice {
                 &driver_source,
                 DeviceTraits {
                     device_id: VirtioDeviceType::CONSOLE,
-                    device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                    device_features: VirtioDeviceFeatures::new()
+                        .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                        .with_bank(1, VIRTIO_F_RING_PACKED),
                     max_queues: num_queues,
                     device_register_length: 12,
                     ..Default::default()
@@ -1451,7 +1453,9 @@ async fn verify_chipset_config(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX)
+                    .with_bank(1, VIRTIO_F_RING_PACKED),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -1464,7 +1468,8 @@ async fn verify_chipset_config(driver: DefaultDriver) {
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
     // magic value
     assert_eq!(dev.read_u32(0), u32::from_le_bytes(*b"virt"));
     // version
@@ -1523,9 +1528,9 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // queue index
     assert_eq!(dev.read_u32(48), 0);
     // queue max size (queue 0)
-    assert_eq!(dev.read_u32(52), 0x40);
+    assert_eq!(dev.read_u32(52), 0x100);
     // queue size (queue 0)
-    assert_eq!(dev.read_u32(56), 0x40);
+    assert_eq!(dev.read_u32(56), 0x100);
     dev.write_u32(56, 0x20);
     assert_eq!(dev.read_u32(56), 0x20);
     // queue enable (queue 0)
@@ -1827,7 +1832,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     // queue index, config generation and device status
     assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 0);
     // current queue size and msix vector
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x40);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x100);
     pci_test_device.write_u32(bar_address1 + 24, 0x20);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x20);
     // current queue enabled and notify offset
@@ -2552,7 +2557,8 @@ async fn verify_device_queue_simple_inner(
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     guest.setup_chipset_device(&mut dev, features).await;
     expect_mmio_interrupt(
@@ -2638,7 +2644,8 @@ async fn verify_device_multi_queue_inner(
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
     guest.setup_chipset_device(&mut dev, features).await;
     expect_mmio_interrupt(
         &mut dev,
@@ -2776,7 +2783,7 @@ async fn verify_device_packed_multi_queue_pci(driver: DefaultDriver) {
     let test_mem = VirtioTestMemoryAccess::new();
     let guest = VirtioTestGuest::new_packed(&driver, &test_mem, num_queues, 2, true);
     let features = VirtioDeviceFeatures::new()
-        .with_bank(0, VIRTIO_F_RING_EVENT_IDX | 2)
+        .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX | 2)
         .with_bank(1, VIRTIO_F_VERSION_1 | VIRTIO_F_RING_PACKED);
     verify_device_multi_queue_pci_inner(test_mem, guest, num_queues, features).await;
 }
@@ -2791,7 +2798,8 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -2803,7 +2811,8 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     // Drive through ACKNOWLEDGE -> DRIVER -> FEATURES_OK -> DRIVER_OK
     dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
@@ -2842,7 +2851,8 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
         Box::new(FailingTestDevice {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -3428,11 +3438,11 @@ async fn split_queue_state_advances_on_pop(driver: DefaultDriver) {
     .unwrap();
 
     guest.queue_available_desc(0, 0);
-    let work = queue.try_next().unwrap().unwrap();
+    let mut work = queue.try_next().unwrap().unwrap();
     let state = queue.queue_state();
     assert_eq!(state.avail_index, 1);
     // Complete the descriptor → used_index advances
-    drop(work);
+    work.complete(0);
     let state = queue.queue_state();
     assert_eq!(state.used_index, 1);
 }
@@ -3524,7 +3534,8 @@ impl PartialFailTestDevice {
         Self {
             traits: DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues,
                 device_register_length: 0,
                 ..Default::default()
@@ -3611,7 +3622,8 @@ impl MmioTestTransport {
             Some(doorbell_registration),
             0,
             0x1000,
-        );
+        )
+        .unwrap();
 
         // Drive through ACKNOWLEDGE -> DRIVER -> features -> FEATURES_OK
         dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
@@ -3956,7 +3968,8 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -4135,7 +4148,8 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4148,7 +4162,8 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Some(doorbell_registration.clone()),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     guest
         .setup_chipset_device(&mut dev, guest.queue_features())
@@ -4169,7 +4184,8 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4182,7 +4198,8 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     dev2.restore(saved).expect("restore should succeed");
     // Verify device is active after restore — read STATUS register.
@@ -4224,7 +4241,8 @@ async fn pci_save_restore_incompatible_features(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new(), // no device-specific features
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX), // no device-specific features
                 max_queues: 1,
                 device_register_length: 12,
                 ..Default::default()
@@ -4299,7 +4317,8 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
         None,
         0,
         1,
-    );
+    )
+    .unwrap();
 
     let result = dev.save();
     assert!(result.is_err(), "save should fail for unsupported device");
@@ -4379,7 +4398,8 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4392,7 +4412,8 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Some(doorbell_registration.clone()),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     guest
         .setup_chipset_device(&mut dev, guest.queue_features())
@@ -4415,7 +4436,8 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: VirtioDeviceFeatures::new().with_bank(0, 2),
+                device_features: VirtioDeviceFeatures::new()
+                    .with_bank(0, 2 | VIRTIO_F_RING_INDIRECT_DESC | VIRTIO_F_RING_EVENT_IDX),
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -4428,7 +4450,8 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     // Reset counter to isolate restore behavior.
     test_mem.doorbell_count.store(0, Ordering::Relaxed);

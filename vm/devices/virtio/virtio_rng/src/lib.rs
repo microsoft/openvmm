@@ -55,7 +55,13 @@ impl VirtioDevice for VirtioRngDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::RNG,
-            device_features: VirtioDeviceFeatures::new(),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::new()
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 1,
             device_register_length: 0,
             shared_memory: DeviceTraitsSharedMemory::default(),

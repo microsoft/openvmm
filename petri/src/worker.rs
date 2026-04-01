@@ -29,7 +29,7 @@ impl Worker {
         let (notify_send, notify_recv) = mesh::channel();
 
         let params = VmWorkerParameters {
-            hypervisor: None,
+            hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
             cfg,
             saved_state: None,
             shared_memory,
@@ -97,6 +97,24 @@ impl Worker {
     pub(crate) async fn update_command_line(&self, command_line: &str) -> anyhow::Result<()> {
         self.rpc
             .call_failable(VmRpc::UpdateCliParams, command_line.to_string())
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn add_pcie_device(
+        &self,
+        port_name: String,
+        resource: vm_resource::Resource<vm_resource::kind::PciDeviceHandleKind>,
+    ) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn remove_pcie_device(&self, port_name: String) -> anyhow::Result<()> {
+        self.rpc
+            .call_failable(VmRpc::RemovePcieDevice, port_name)
             .await?;
         Ok(())
     }
