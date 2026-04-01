@@ -8634,6 +8634,7 @@ dependencies = [
  "inspect_counters",
  "libc",
  "mesh",
+ "nix 0.30.1",
  "pal_async",
  "pal_event",
  "parking_lot",
@@ -8714,6 +8715,7 @@ dependencies = [
  "libc",
  "nix 0.30.1",
  "pal_async",
+ "tracelimit",
  "tracing",
  "vfio-bindings",
 ]
