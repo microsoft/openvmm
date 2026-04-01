@@ -110,10 +110,18 @@ impl SimpleFlowNode for Node {
         };
 
         let test_linux_initrd = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
+                openvmm_deps_arch,
+                v,
+            )
         });
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+                openvmm_deps_arch,
+                v,
+            )
         });
 
         let mu_msvm_arch = match vmm_tests_target.architecture {

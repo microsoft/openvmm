@@ -64,6 +64,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => linux_direct_test_initrd_path(MachineArch::X86_64),
             _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => linux_direct_test_initrd_path(MachineArch::Aarch64),
 
+            _ if id == petritools::PETRITOOLS_EROFS_X64 => petritools_erofs_path(MachineArch::X86_64),
+            _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => petritools_erofs_path(MachineArch::Aarch64),
+
             _ if id == loadable::PCAT_FIRMWARE_X64 => pcat_firmware_path(),
             _ if id == loadable::SVGA_FIRMWARE_X64 => svga_firmware_path(),
             _ if id == loadable::UEFI_FIRMWARE_X64 => uefi_firmware_path(MachineArch::X86_64),
@@ -154,6 +157,8 @@ pub fn resolve_bundle_name(id: ErasedArtifactHandle) -> Option<&'static str> {
         _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => Some("aarch64/Image"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_X64 => Some("x64/initrd"),
         _ if id == loadable::LINUX_DIRECT_TEST_INITRD_AARCH64 => Some("aarch64/initrd"),
+        _ if id == petritools::PETRITOOLS_EROFS_X64 => Some("x64/petritools.erofs"),
+        _ if id == petritools::PETRITOOLS_EROFS_AARCH64 => Some("aarch64/petritools.erofs"),
         _ if id == loadable::UEFI_FIRMWARE_X64 => {
             Some("hyperv.uefi.mscoreuefi.x64.RELEASE/MsvmX64/RELEASE_VS2022/FV/MSVM.fd")
         }
@@ -420,6 +425,22 @@ fn linux_direct_test_initrd_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
         resolve_bundle_name(id).unwrap(),
         MissingCommand::Restore {
             description: "linux direct test initrd",
+        },
+    )
+}
+
+/// Path to our packaged petritools erofs image.
+fn petritools_erofs_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    use petri_artifacts_vmm_test::artifacts::petritools;
+    let id = match arch {
+        MachineArch::X86_64 => petritools::PETRITOOLS_EROFS_X64.erase(),
+        MachineArch::Aarch64 => petritools::PETRITOOLS_EROFS_AARCH64.erase(),
+    };
+    get_path(
+        ".packages/underhill-deps-private",
+        resolve_bundle_name(id).unwrap(),
+        MissingCommand::Restore {
+            description: "petritools erofs image",
         },
     )
 }
