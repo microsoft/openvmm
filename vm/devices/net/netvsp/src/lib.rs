@@ -4471,8 +4471,8 @@ impl Coordinator {
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
         // Pre-compute the active queue count and validate the rx buffer configuration.
-        // For invalid configurations, the error is logged and we exit without performing
-        // any destructive operations (dropping queues, stopping the endpoint).
+        // For invalid configurations, log the error and exit without performing
+        // destructive operations (dropping queues, stopping the endpoint).
         let (num_queues, active_queues, active_queue_count) = if let Some(state) = self.workers[0]
             .state()
             .and_then(|worker| worker.state.ready())
@@ -4502,6 +4502,13 @@ impl Coordinator {
                 state.buffers.recv_buffer.count,
                 active_queue_count.into(),
             )?;
+
+            GuestBuffers::validate_config(
+                &state.buffers.recv_buffer.gpadl,
+                state.buffers.recv_buffer.sub_allocation_size,
+                state.buffers.ndis_config.mtu,
+            )
+            .map_err(WorkerError::GuestBuffers)?;
 
             (num_queues, active_queues, active_queue_count)
         } else {
