@@ -53,6 +53,12 @@ pub const SIG_HEADER: [u8; 4] = *b"ALOG";
 /// Advanced Logger Entry signature
 pub const SIG_ENTRY: [u8; 4] = *b"ALM2";
 
+/// Current expected version of the Advanced Logger Info structure
+pub const ADVANCED_LOGGER_INFO_VERSION: u16 = 6;
+
+/// Maximum depth when following the NewLoggerInfoAddress chain
+pub const MAX_LOGGER_CHAIN_DEPTH: usize = 3;
+
 /// UEFI Advanced Logger Info Header, which is shared
 /// with the Advanced Logger Package in UEFI. The entries
 /// live right after.
@@ -97,6 +103,10 @@ pub struct AdvancedLoggerInfo {
     pub hw_print_level: u32,
     /// Reserved field
     pub reserved3: u32,
+    /// If non-zero, holds the address of the new logger info that should be
+    /// used. The Advanced Logger sets this when it relocates the PEI buffer
+    /// to reserved memory at EndOfDxe.
+    pub new_logger_info_address: u64,
 }
 
 /// UEFI Advanced Logger Entry, which is shared with the

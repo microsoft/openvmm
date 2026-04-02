@@ -8,6 +8,7 @@ use crate::service::diagnostics::gpa::Gpa;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use thiserror::Error;
+use uefi_specs::hyperv::advanced_logger::ADVANCED_LOGGER_INFO_VERSION;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 
@@ -20,6 +21,9 @@ pub enum HeaderParseError {
     /// Expected header signature does not match
     #[error("Expected header signature: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
+    /// Header version does not match the expected version
+    #[error("Expected header version: {0}, got: {1}")]
+    VersionMismatch(u16, u16),
     /// Log buffer size exceeds maximum allowed size
     #[error("Log buffer size {1:#x} exceeds maximum {0:#x}")]
     BufferSizeExceeded(u32, u32),
@@ -51,6 +55,10 @@ pub struct LogBufferHeader {
 impl LogBufferHeader {
     /// Parse and validate a log buffer header from guest memory at the given GPA.
     ///
+    /// The UEFI EfiDiagnosticsDxe driver is responsible for following the
+    /// `NewLoggerInfoAddress` chain and advertising the final relocated GPA.
+    /// This function reads the header at the GPA that UEFI provided directly.
+    ///
     /// # Arguments
     /// * `gpa` - Optional guest physical address of the log buffer header
     /// * `gm` - Guest memory to read the header from
@@ -67,6 +75,13 @@ impl LogBufferHeader {
             return Err(HeaderParseError::SignatureMismatch(
                 expected_sig,
                 raw_header.signature,
+            ));
+        }
+
+        if raw_header.version != ADVANCED_LOGGER_INFO_VERSION {
+            return Err(HeaderParseError::VersionMismatch(
+                ADVANCED_LOGGER_INFO_VERSION,
+                raw_header.version,
             ));
         }
 

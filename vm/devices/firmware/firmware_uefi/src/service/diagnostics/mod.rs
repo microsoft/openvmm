@@ -178,9 +178,16 @@ impl DiagnosticsServices {
         self.processed = false;
     }
 
-    /// Set the GPA of the diagnostics buffer
+    /// Set the GPA of the diagnostics buffer.
+    ///
+    /// If the GPA changes (e.g. due to buffer relocation at EndOfDxe), the
+    /// `processed` flag is reset so that the new buffer can be processed.
     pub fn set_gpa(&mut self, gpa: u32) {
-        self.gpa = Gpa::new(gpa).ok();
+        let new_gpa = Gpa::new(gpa).ok();
+        if new_gpa != self.gpa {
+            self.processed = false;
+        }
+        self.gpa = new_gpa;
     }
 
     /// Processes diagnostics from guest memory
@@ -202,7 +209,6 @@ impl DiagnosticsServices {
     {
         // Check if processing is allowed
         if self.processed && !allow_reprocess {
-            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
             return Ok(());
         }
 

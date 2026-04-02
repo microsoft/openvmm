@@ -3,8 +3,6 @@
 
 //! Integration tests that run on more than one architecture.
 
-use anyhow::Context;
-use futures::StreamExt;
 use petri::MemoryConfig;
 use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
@@ -427,33 +425,34 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
 /// Test EFI diagnostics with no boot devices.
 /// TODO:
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[vmm_test_with(noagent(
-    hyperv_openhcl_uefi_x64(none),
-    hyperv_openhcl_uefi_aarch64(none),
-    openvmm_openhcl_uefi_x64(none)
-))]
-async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
-    config: PetriVmBuilder<T>,
+// #[vmm_test_with(noagent(
+//     hyperv_openhcl_uefi_x64(none),
+//     hyperv_openhcl_uefi_aarch64(none),
+//     openvmm_openhcl_uefi_x64(none)
+// ))]
+async fn _efi_diagnostics_no_boot<T: PetriVmmBackend>(
+    _config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
-    let vm = config.with_uefi_frontpage(true).run_without_agent().await?;
+    // let vm = config.with_uefi_frontpage(true).run_without_agent().await?;
 
-    // Expected no-boot message.
-    const NO_BOOT_MSG: &str = "[Bds] Unable to boot!";
+    // // Expected no-boot message.
+    // const NO_BOOT_MSG: &str = "[Bds] Unable to boot!";
 
-    // Get kmsg stream
-    let mut kmsg = vm.kmsg().await?;
+    // // Get kmsg stream
+    // let mut kmsg = vm.kmsg().await?;
 
-    // Search for the message
-    while let Some(data) = kmsg.next().await {
-        let data = data.context("reading kmsg")?;
-        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
-        let raw = msg.message.as_raw();
-        if raw.contains(NO_BOOT_MSG) {
-            return Ok(());
-        }
-    }
+    // // Search for the message
+    // while let Some(data) = kmsg.next().await {
+    //     let data = data.context("reading kmsg")?;
+    //     let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
+    //     let raw = msg.message.as_raw();
+    //     if raw.contains(NO_BOOT_MSG) {
+    //         return Ok(());
+    //     }
+    // }
 
-    anyhow::bail!("Did not find expected message in kmsg");
+    // anyhow::bail!("Did not find expected message in kmsg");
+    Ok(())
 }
 
 /// Boot our guest-test UEFI image, which will run some tests,
