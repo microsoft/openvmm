@@ -374,6 +374,10 @@ impl VpciClientTdispState {
             .await
             .context("tdisp_attest_device: failed to start device")?;
 
+        tracing::info!(
+            "tdisp_attest_device: device attestation flow completed successfully, waiting on resources to be assigned"
+        );
+
         // Device is now in the Run state without resource validation being performed.
         // Platform specific validation methods should be called to unblock resources.
         Ok(())

@@ -14,11 +14,11 @@ use crate::TdispResourceValidationInterface;
 #[allow(missing_docs)]
 pub struct UnblockedMmioRange {
     pub target_vtl: Vtl,
-    pub device_id: u64,
-    pub range_id: u64,
+    pub device_id: u16,
     pub base_gpa: u64,
-    pub base_offset: u64,
-    pub length_in_bytes: u64,
+    pub base_offset: u32,
+    pub length_in_bytes: u32,
+    pub range_id: u16,
 }
 
 /// Mock implementation of [`TdispResourceValidationInterface`] for testing.
@@ -57,11 +57,11 @@ impl TdispResourceValidationInterface for TdispMockResourceValidator {
     fn tdisp_unblock_mmio(
         &self,
         target_vtl: Vtl,
-        device_id: u64,
-        range_id: u64,
+        device_id: u16,
         base_gpa: u64,
-        base_offset: u64,
-        length_in_bytes: u64,
+        base_offset: u32,
+        length_in_bytes: u32,
+        range_id: u16,
     ) -> anyhow::Result<()> {
         self.unblocked_mmio_ranges.lock().push(UnblockedMmioRange {
             target_vtl,
@@ -74,7 +74,7 @@ impl TdispResourceValidationInterface for TdispMockResourceValidator {
         Ok(())
     }
 
-    fn tdisp_unblock_dma(&self, _target_vtl: Vtl, _device_id: u64) -> anyhow::Result<()> {
+    fn tdisp_unblock_dma(&self, _target_vtl: Vtl, _device_id: u16) -> anyhow::Result<()> {
         *self.dma_unblocked.lock() = true;
         Ok(())
     }

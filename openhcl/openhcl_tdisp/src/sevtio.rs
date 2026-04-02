@@ -72,16 +72,16 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     fn tdisp_unblock_mmio(
         &self,
         target_vtl: Vtl,
-        device_id: u64,
+        device_id: u16,
         base_gpa: u64,
-        base_offset: u64,
-        length_in_bytes: u64,
-        range_id: u64,
+        base_offset: u32,
+        length_in_bytes: u32,
+        range_id: u16,
     ) -> anyhow::Result<()> {
         let pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
 
         // Ensure length_in_bytes is page aligned
-        if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE) {
+        if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE as u32) {
             anyhow::bail!("length_in_bytes must be page aligned");
         }
 
@@ -103,13 +103,11 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             }
         }
 
-        let length_in_pages = length_in_bytes / hvdef::HV_PAGE_SIZE;
-        let guest_device_id = u16::try_from(device_id).context("device_id must fit within u16")?;
+        let length_in_pages = length_in_bytes / (hvdef::HV_PAGE_SIZE as u32);
+        let guest_device_id = device_id;
         let subrange_base = base_gpa;
-        let subrange_page_count =
-            u32::try_from(length_in_pages).context("length_in_pages must fit within u32")?;
-        let range_id = u16::try_from(range_id).context("range_id must fit within u16")?;
-        let range_offset = u32::try_from(base_offset).context("base_offset must fit within u32")?;
+        let subrange_page_count = length_in_pages;
+        let range_offset = base_offset;
         let validate = true;
         let force_validate = false;
 
@@ -155,7 +153,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         // Finally, rmpadjust the pages to be read/write to VTL0 so the guest can access them.
         match self.mshv_vtl.rmpadjust_pages(
-            MemoryRange::from_4k_gpn_range(pfn..pfn + length_in_pages),
+            MemoryRange::from_4k_gpn_range(pfn..(pfn + (length_in_pages as u64))),
             SevRmpAdjust::new()
                 .with_enable_read(true)
                 .with_enable_write(true)
@@ -174,7 +172,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
     }
 
     #[tracing::instrument(skip(self), fields(device_id, base_gpa, range_id))]
-    fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u64) -> anyhow::Result<()> {
+    fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
         // Take the high order bits of the vtom address (the lower 15 bits are always 0 as vtom is 2MB aligned)
         const SHIFT_2MB: u32 = 15;
         let vtom_high = (self.vtom >> SHIFT_2MB) as u32;
@@ -189,11 +187,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         let accept_dma = self
             .sev_guest
-            .tio_msg_sdte_write_req(
-                u16::try_from(device_id).context("device_id must fit within u16")?,
-                vtom,
-                Self::vtl_to_vmpl(target_vtl),
-            )
+            .tio_msg_sdte_write_req(device_id, vtom, Self::vtl_to_vmpl(target_vtl))
             .context("failed to send SDTE write request")
             .unwrap();
         tracing::info!(msg = format!("SDTE write request response"), response = ?accept_dma);

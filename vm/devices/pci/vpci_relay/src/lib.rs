@@ -352,7 +352,7 @@ impl VpciRelay {
                 .await
                 .expect("failed to exercise TDISP flow test");
         } else {
-            // Otherwise, try to perform real TDISP attestation
+            // Otherwise, try to perform real TDISP attestation before the device appears to VTL0
             let tdisp_capabilities = vpci_device.tdisp_query_capabilities().await;
             match tdisp_capabilities {
                 Ok(interface_info) => {

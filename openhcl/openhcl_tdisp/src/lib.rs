@@ -114,17 +114,17 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     fn tdisp_unblock_mmio(
         &self,
         target_vtl: Vtl,
-        device_id: u64,
-        range_id: u64,
+        device_id: u16,
         base_gpa: u64,
-        base_offset: u64,
-        length_in_bytes: u64,
+        base_offset: u32,
+        length_in_bytes: u32,
+        range_id: u16,
     ) -> anyhow::Result<()>;
 
     /// Unblock DMA access for the device's IOMMU domain.
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
-    fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u64) -> anyhow::Result<()>;
+    fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.
