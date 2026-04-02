@@ -8,7 +8,7 @@ on:
     inputs:
       verbose:
         description: Run with verbose output
-        default: false
+        default: true
         required: false
         type: boolean
   pull_request:
@@ -101,7 +101,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 0 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 0 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: check if openvmm needs to be cloned
@@ -298,7 +298,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 1 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 1 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: check if openvmm needs to be cloned
@@ -460,7 +460,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 10 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 10 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-cvm-reproducible-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/x64-cvm-reproducible-openhcl-igvm" | flowey v 10 'artifact_publish_from_x64-cvm-reproducible-openhcl-igvm' --is-raw-string update
@@ -697,7 +697,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 11 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 11 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/x64-cvm-local-reproducible-openhcl-igvm" | flowey v 11 'artifact_publish_from_x64-cvm-local-reproducible-openhcl-igvm' --is-raw-string update
@@ -785,7 +785,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 12 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 12 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "$AgentTempDirNormal/used_artifacts/x64-cvm-local-reproducible-openhcl-igvm" | flowey v 12 'artifact_use_from_x64-cvm-local-reproducible-openhcl-igvm' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-cvm-reproducible-openhcl-igvm" | flowey v 12 'artifact_use_from_x64-cvm-reproducible-openhcl-igvm' --is-raw-string update
@@ -871,7 +871,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 13 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 13 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: add default cargo home to path
@@ -1070,7 +1070,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 14 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 14 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: add default cargo home to path
@@ -1284,7 +1284,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 15 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 15 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: add default cargo home to path
@@ -1554,7 +1554,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 16 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 16 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: add default cargo home to path
@@ -1797,7 +1797,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 17 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 17 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: add default cargo home to path
@@ -2056,7 +2056,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 18 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 18 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: add default cargo home to path
@@ -2285,7 +2285,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 19 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 19 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 19 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 19 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
@@ -2591,7 +2591,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 2 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 2 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-hypestv"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-hypestv" | flowey.exe v 2 'artifact_publish_from_aarch64-windows-hypestv' --is-raw-string update
@@ -2768,7 +2768,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 20 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 20 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 20 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 20 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
@@ -3038,7 +3038,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 21 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 21 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 21 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 21 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
@@ -3304,7 +3304,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 22 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 22 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 22 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 22 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
@@ -3574,7 +3574,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 23 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 23 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "$AgentTempDirNormal/used_artifacts/x64-guest_test_uefi" | flowey v 23 'artifact_use_from_x64-guest_test_uefi' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-pipette" | flowey v 23 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
@@ -3876,7 +3876,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 24 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 24 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-guest_test_uefi" | flowey.exe v 24 'artifact_use_from_aarch64-guest_test_uefi' --is-raw-string update
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-linux-musl-pipette" | flowey.exe v 24 'artifact_use_from_aarch64-linux-musl-pipette' --is-raw-string update
@@ -4127,7 +4127,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 25 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 25 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
       shell: bash
     - name: check if openvmm needs to be cloned
@@ -4243,7 +4243,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 3 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 3 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-openvmm"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-openvmm" | flowey.exe v 3 'artifact_publish_from_aarch64-windows-openvmm' --is-raw-string update
@@ -4563,7 +4563,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 4 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 4 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-hypestv"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-hypestv" | flowey.exe v 4 'artifact_publish_from_x64-windows-hypestv' --is-raw-string update
@@ -4784,7 +4784,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 5 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 5 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-openvmm"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-openvmm" | flowey.exe v 5 'artifact_publish_from_x64-windows-openvmm' --is-raw-string update
@@ -5068,7 +5068,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 6 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 6 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-guest_test_uefi"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-guest_test_uefi" | flowey v 6 'artifact_publish_from_aarch64-guest_test_uefi' --is-raw-string update
@@ -5367,7 +5367,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 7 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 7 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-guest_test_uefi"
         echo "$AgentTempDirNormal/publish_artifacts/x64-guest_test_uefi" | flowey v 7 'artifact_publish_from_x64-guest_test_uefi' --is-raw-string update
@@ -5722,7 +5722,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 8 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 8 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-pipette' --is-raw-string update
@@ -6005,7 +6005,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 9 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 9 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette" | flowey v 9 'artifact_publish_from_x64-linux-musl-pipette' --is-raw-string update

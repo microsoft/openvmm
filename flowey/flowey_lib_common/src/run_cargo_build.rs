@@ -224,6 +224,9 @@ impl FlowNode for Node {
                             v.push("build".into());
                             v.push("--message-format=json-render-diagnostics".into());
                             if verbose {
+                                // Pass -vv to show full rustc invocations,
+                                // including --extern ordering.
+                                v.push("--verbose".into());
                                 v.push("--verbose".into());
                             }
                             if locked {
