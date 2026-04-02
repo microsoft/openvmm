@@ -357,6 +357,7 @@ impl VpciDeviceDescription {
         resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
         isolation_type: IsolationType,
         vtom: u64,
+        target_vtl: hvdef::Vtl,
     ) -> anyhow::Result<(VpciDevice, VpciDeviceEject)> {
         let requirements = self
             .req
@@ -384,6 +385,7 @@ impl VpciDeviceDescription {
             resource_validator,
             isolation_type,
             vtom,
+            target_vtl,
         );
 
         // After this, the device is considered initialized and the caller is

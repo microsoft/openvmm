@@ -341,6 +341,7 @@ impl VpciRelay {
                 self.resource_validator.clone(),
                 self.isolation_type,
                 self.vtom.unwrap_or(0),
+                hvdef::Vtl::Vtl0,
             )
             .await
             .context("failed to initialize vpci device")?;

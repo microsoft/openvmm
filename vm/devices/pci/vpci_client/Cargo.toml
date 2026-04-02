@@ -15,6 +15,7 @@ chipset_device.workspace = true
 openhcl_tdisp.workspace = true
 pci_core.workspace = true
 hcl.workspace = true
+hvdef.workspace = true
 tdisp.workspace = true
 vpci_protocol.workspace = true
 virt.workspace = true

@@ -4,6 +4,7 @@
 //! TDISP interface implementation for VPCI devices.
 
 use anyhow::Context;
+use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::rpc::RpcSend;
 use openhcl_tdisp::GuestToHostCommand;
@@ -30,11 +31,17 @@ use vpci_protocol::SlotNumber;
 use super::VpciDevice;
 use super::WorkerRequest;
 use openhcl_tdisp::TdispResourceValidationInterface;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 #[derive(Inspect)]
 struct VpciClientTdispMutableState {
     tdi_state: TdispTdiState,
+    guest_device_id: u16,
+    /// Set of BAR IDs that have been successfully validated via `tdisp_unblock_mmio`.
+    /// Cleared on unbind so that ranges are re-validated after re-attestation.
+    #[inspect(iter_by_index)]
+    validated_mmio_bars: HashSet<u16>,
 }
 
 impl VpciClientTdispMutableState {
@@ -46,6 +53,15 @@ impl VpciClientTdispMutableState {
         );
         self.tdi_state = new_state;
     }
+
+    fn update_guest_device_id(&mut self, new_device_id: u16) {
+        tracing::info!(
+            old_device_id = self.guest_device_id,
+            new_device_id = new_device_id,
+            "updating guest device ID based on host response"
+        );
+        self.guest_device_id = new_device_id;
+    }
 }
 
 /// TDISP state for a VPCI device.
@@ -53,9 +69,12 @@ impl VpciClientTdispMutableState {
 pub struct VpciClientTdispState {
     #[inspect(skip)]
     worker_req: mesh::Sender<WorkerRequest>,
-    device_id: u64,
+    // The device ID if the VPCI channel. Not to be confused with the guest device ID returned by the host in TDISP reports.
+    vpci_device_id: u64,
     isolation_type: IsolationType,
     vtom: u64,
+    #[inspect(debug)]
+    target_vtl: Vtl,
     mutable_state: VpciClientTdispMutableState,
     #[inspect(skip)]
     resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
@@ -69,15 +88,19 @@ impl VpciClientTdispState {
         resource_validator: Option<Arc<dyn TdispResourceValidationInterface>>,
         isolation_type: IsolationType,
         vtom: u64,
+        target_vtl: Vtl,
     ) -> Self {
         Self {
             worker_req,
-            device_id,
+            vpci_device_id: device_id,
             mutable_state: VpciClientTdispMutableState {
                 tdi_state: TdispTdiState::Uninitialized,
+                guest_device_id: 0,
+                validated_mmio_bars: HashSet::new(),
             },
             isolation_type,
             vtom,
+            target_vtl,
             resource_validator,
         }
     }
@@ -113,7 +136,7 @@ impl VpciClientTdispState {
                 vpci_protocol::VpciTdispCommand {
                     header: vpci_protocol::VpciTdispCommandHeader {
                         message_type: vpci_protocol::MessageType::VPCI_TDISP_COMMAND,
-                        slot: SlotNumber::from_bits(self.device_id as u32),
+                        slot: SlotNumber::from_bits(self.vpci_device_id as u32),
                         data_length: serialized.len() as u64,
                     },
                     data: serialized,
@@ -156,7 +179,7 @@ impl VpciClientTdispState {
     ) -> anyhow::Result<TdispDeviceInterfaceInfo> {
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_get_device_interface_info_command(
-                self.device_id,
+                self.vpci_device_id,
                 target_protocol,
             ))
             .await?;
@@ -175,7 +198,7 @@ impl VpciClientTdispState {
     pub async fn tdisp_bind_interface(&mut self) -> anyhow::Result<()> {
         let state_before = self.tdi_state();
         let res = self
-            .send_tdisp_command(openhcl_tdisp::new_bind_command(self.device_id))
+            .send_tdisp_command(openhcl_tdisp::new_bind_command(self.vpci_device_id))
             .await?;
 
         // The host should have transitioned the device to the Bind state if the bind was successful.
@@ -207,7 +230,7 @@ impl VpciClientTdispState {
     pub async fn tdisp_start_device(&mut self) -> anyhow::Result<()> {
         let state_before = self.tdi_state();
         let res = self
-            .send_tdisp_command(openhcl_tdisp::new_start_tdi_command(self.device_id))
+            .send_tdisp_command(openhcl_tdisp::new_start_tdi_command(self.vpci_device_id))
             .await?;
 
         match self.tdi_state() {
@@ -241,7 +264,7 @@ impl VpciClientTdispState {
     ) -> anyhow::Result<Vec<u8>> {
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_get_tdi_report_command(
-                self.device_id,
+                self.vpci_device_id,
                 *report_type,
             ))
             .await?;
@@ -283,11 +306,17 @@ impl VpciClientTdispState {
     /// See: [`TdispVirtualDeviceInterface::tdisp_unbind`]
     pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
         let res = self
-            .send_tdisp_command(openhcl_tdisp::new_unbind_command(self.device_id, reason))
+            .send_tdisp_command(openhcl_tdisp::new_unbind_command(
+                self.vpci_device_id,
+                reason,
+            ))
             .await?;
 
         match res.response::<TdispCommandResponseUnbind>() {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.mutable_state.validated_mmio_bars.clear();
+                Ok(())
+            }
             Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
         }
     }
@@ -374,9 +403,25 @@ impl VpciClientTdispState {
             .await
             .context("tdisp_attest_device: failed to start device")?;
 
+        // Request the guest device ID to use in firmware calls to unblock resources
+        let guest_device_id = self
+            .tdisp_get_tdi_device_id()
+            .await
+            .context("tdisp_attest_device: failed to get TDI device ID after starting device")?;
+
+        // Platforms require a u16 device ID even though the report returns a
+        // u64. Ensure the returned device ID fits within that constraint before
+        // proceeding.
+        let guest_device_id_u16 = u16::try_from(guest_device_id)
+            .context("tdisp_attest_device: guest device ID must fit within u16")?;
+
         tracing::info!(
+            %guest_device_id,
             "tdisp_attest_device: device attestation flow completed successfully, waiting on resources to be assigned"
         );
+
+        self.mutable_state
+            .update_guest_device_id(guest_device_id_u16);
 
         // Device is now in the Run state without resource validation being performed.
         // Platform specific validation methods should be called to unblock resources.
@@ -386,6 +431,52 @@ impl VpciClientTdispState {
     /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
     pub fn tdisp_get_tdi_state(&self) -> TdispTdiState {
         self.tdi_state()
+    }
+
+    /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
+    /// validator is present, unblocks the MMIO range for the device.
+    ///
+    /// # Arguments
+    ///
+    /// * `bar_id` - The BAR index being configured.
+    /// * `base_address` - The base guest physical address of the MMIO range.
+    /// * `length` - The length in bytes of the MMIO range.
+    pub fn on_mmio_reconfigured(
+        &mut self,
+        bar_id: u16,
+        base_address: u64,
+        length: u32,
+    ) -> anyhow::Result<()> {
+        if let Some(validator) = &self.resource_validator {
+            // If the device is not attested and in Run state, don't attempt to unblock resources
+            if self.tdi_state() != TdispTdiState::Run {
+                tracing::warn!(
+                    bar_id,
+                    base_address,
+                    length,
+                    "ignoring MMIO reconfiguration callback because device is not in Run state"
+                );
+                return Ok(());
+            }
+
+            if self.mutable_state.validated_mmio_bars.contains(&bar_id) {
+                tracing::debug!(
+                    bar_id,
+                    "skipping MMIO unblock for BAR that has already been validated"
+                );
+                return Ok(());
+            }
+
+            let device_id = self.mutable_state.guest_device_id;
+
+            validator
+                .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
+                .inspect(|_| {
+                    self.mutable_state.validated_mmio_bars.insert(bar_id);
+                })
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -471,6 +562,21 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
 
     /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
     async fn tdisp_tdi_state(&self) -> TdispTdiState;
+
+    /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
+    /// validator is present, unblocks the MMIO range for the device.
+    ///
+    /// # Arguments
+    ///
+    /// * `bar_id` - The BAR index being configured.
+    /// * `base_address` - The base guest physical address of the MMIO range.
+    /// * `length` - The length in bytes of the MMIO range.
+    async fn on_mmio_reconfigured(
+        &self,
+        bar_id: u16,
+        base_address: u64,
+        length: u32,
+    ) -> anyhow::Result<()>;
 }
 
 impl TdispVpciAttestationInterface for VpciDevice {
@@ -490,5 +596,15 @@ impl TdispVpciAttestationInterface for VpciDevice {
     async fn tdisp_tdi_state(&self) -> TdispTdiState {
         let guard = self.tdisp.0.lock().await;
         guard.tdi_state()
+    }
+
+    async fn on_mmio_reconfigured(
+        &self,
+        bar_id: u16,
+        base_address: u64,
+        length: u32,
+    ) -> anyhow::Result<()> {
+        let mut guard = self.tdisp.0.lock().await;
+        guard.on_mmio_reconfigured(bar_id, base_address, length)
     }
 }
