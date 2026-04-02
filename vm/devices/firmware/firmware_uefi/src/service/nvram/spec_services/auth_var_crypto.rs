@@ -114,7 +114,7 @@ pub fn authenticate_variable(
 
     // stage 4 - verify the signed data using trusted certs from EFI signature lists
     var_pkcs7
-        .verify(store, &verify_buf)
+        .verify(store, &verify_buf, true)
         .map_err(FormatError::AuthVarPkcs7Verify)
 }
 

@@ -41,9 +41,16 @@ impl Pkcs7SignedData {
     ///
     /// Consumes the store, since the backend may need to finalize it.
     ///
+    /// The `uefi_mode` flag weakens verification behavior to match UEFI's requirements.
+    ///
     /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
     /// signature check fails.
-    pub fn verify(&self, store: Pkcs7CertStore, signed_content: &[u8]) -> Result<bool, Pkcs7Error> {
-        self.0.verify(store.0, signed_content)
+    pub fn verify(
+        &self,
+        store: Pkcs7CertStore,
+        signed_content: &[u8],
+        uefi_mode: bool,
+    ) -> Result<bool, Pkcs7Error> {
+        self.0.verify(store.0, signed_content, uefi_mode)
     }
 }
