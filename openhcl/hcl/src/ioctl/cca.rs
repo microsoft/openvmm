@@ -3,6 +3,7 @@
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::FileExt;
 
+ use crate::Inspect;
 use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
@@ -398,6 +399,20 @@ impl From<mshv_realm_config> for RsiRealmConfig {
             gicv3_vtr: value.gicv3_vtr,
         }
     }
+}
+
+/// Used to know which address to write in plane 1 and read from in plane 0
+/// And which address to write to the command address of clean exit of plane 1
+#[derive(Debug, Clone, Copy, Inspect, Default)]
+pub struct Addresses {
+    /// shared_address_start - GPA
+    pub shared_address_start: u64,
+    /// shared_virtual_address_start - GVA
+    pub shared_virtual_address_start: u64,
+    /// shared_address_start_command - GPA
+    pub shared_address_start_command: u64,
+    /// shared_virtual_address_start_command - GVA
+    pub shared_virtual_address_start_command: u64,
 }
 
 impl MshvVtl {

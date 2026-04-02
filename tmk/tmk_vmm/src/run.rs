@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 //! Support for running a VM's VPs.
+use crate::HypervisorOpt;
 // use std::{io, os::unix::io::AsRawFd, ptr};
 use crate::Options;
 use crate::load;
@@ -10,6 +11,7 @@ use futures::StreamExt as _;
 use guestmem::GuestMemory;
 use hvdef::HvError;
 use hvdef::Vtl;
+use hcl::ioctl::cca::Addresses;
 use pal_async::DefaultDriver;
 use std::sync::Arc;
 use virt::PartitionCapabilities;
@@ -56,10 +58,8 @@ pub struct CommonState {
     pub shared_memory_layout: MemoryLayout,
     pub offset_memory: Option<u64>,
     pub mmemory: Option<Mmemory>,
-    pub shared_address_start: u64,
-    pub shared_virtual_address_start: u64,
-    pub shared_address_start_command: u64,
-    pub shared_virtual_address_start_command: u64,
+    pub addresses: Option<Addresses>,
+    
 }
 
 pub struct RunContext<'a> {
@@ -79,7 +79,7 @@ pub enum TestResult {
 }
 
 impl CommonState {
-    pub async fn new(driver: DefaultDriver, opts: Options) -> anyhow::Result<Self> {
+    pub async fn new(driver: DefaultDriver, opts: Options, hv: HypervisorOpt) -> anyhow::Result<Self> {
         #[cfg(guest_arch = "x86_64")]
         let processor_topology = TopologyBuilder::new_x86()
             .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
@@ -99,99 +99,112 @@ impl CommonState {
 
         let ram_size = 0x400000;
 
-        #[cfg(guest_arch = "x86_64")]
-        let memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
         
-        let map_size = ram_size;
-        let non_zero_size =NonZeroUsize::new(map_size as usize).expect("Size was already checked to be non-zero");
-        let file = OpenOptions::new().read(true).write(true).open("/dev/zero")?;
-        #[allow(unsafe_code)]
-        let addr = unsafe {
-            mmap(
-                None,
-                non_zero_size,
-                ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-                MapFlags::MAP_SHARED,
-                &file,
-                0,
-            )
-        }
-        .context("Failed to memory-map bytes")?;
+        let mut memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
+        let mut shared_memory_layout = MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
+        let mut mmemory = None;
+        let mut offset_memory  = None;
 
-        #[allow(unsafe_code)]
-        unsafe {
-                std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
+        let addresses = match hv {
+            #[cfg(target_os = "linux")]
+            HypervisorOpt::Kvm => { None },
+            #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
+            HypervisorOpt::Mshv => { None },
+            #[cfg(target_os = "linux")]
+            HypervisorOpt::MshvVtl => { None }
+            #[cfg(all(target_os = "linux", guest_arch = "aarch64"))]
+            HypervisorOpt::Cca => { 
+                let map_size = ram_size;
+                let non_zero_size =NonZeroUsize::new(map_size as usize).expect("Size was already checked to be non-zero");
+                let file = OpenOptions::new().read(true).write(true).open("/dev/zero")?;
+                #[allow(unsafe_code)]
+                let addr = unsafe {
+                    mmap(
+                        None,
+                        non_zero_size,
+                        ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+                        MapFlags::MAP_SHARED,
+                        &file,
+                        0,
+                    )
+                }
+                .context("Failed to memory-map bytes")?;
+
+                #[allow(unsafe_code)]
+                unsafe {
+                        std::ptr::write_bytes(addr.as_ptr() as *mut u8, 0, map_size as usize);
+                    }
+
+                #[allow(unsafe_code)]
+                let pa = unsafe { load::virt_to_phys(addr.as_ptr() as u64) }
+                        .map_err(anyhow::Error::msg)
+                        .context("failed to get page physical address")?;
+
+                const PAGE: u64 = 4096;
+                const ALIGN: u64 = PAGE * 8;
+
+                let raw_start = pa;
+                let raw_end = pa + map_size/2;
+
+                let start = (raw_start + ALIGN - 1) & !(ALIGN - 1);
+                let end   = raw_end & !(ALIGN - 1);
+
+                // #[cfg(guest_arch = "aarch64")]
+                memory_layout = MemoryLayout::new_from_ranges(
+                        &[MemoryRangeWithNode {
+                            range: MemoryRange::new(Range {
+                                start,
+                                end,
+                            }),
+                            vnode: 0,
+                        }],
+                        &[],
+                    )
+                    .context("bad memory layout")?;
+
+                offset_memory = Some(start);
+
+                mmemory = Some(Mmemory {
+                        startpa: start,
+                        endpa: end,
+                    });
+                
+                let aligned = ((addr.as_ptr() as u64) + ALIGN - 1) & !(ALIGN - 1);
+                let shared_virtual_address_start = aligned + map_size / 2;
+                let shared_virtual_address_start_command = aligned + map_size / 2 + 8;
+
+                #[allow(unsafe_code)]
+                let shared_address_start = unsafe { load::virt_to_phys(shared_virtual_address_start) }
+                        .map_err(anyhow::Error::msg)
+                        .context("failed to get page physical address")?;
+
+                // #[cfg(guest_arch = "aarch64")]
+                shared_memory_layout = MemoryLayout::new_from_ranges(
+                        &[MemoryRangeWithNode {
+                            range: MemoryRange::new(Range {
+                                start: shared_address_start,
+                                end: shared_address_start + map_size/2,
+                            }),
+                            vnode: 0,
+                        }],
+                        &[],
+                    )
+                    .context("bad memory layout")?;
+
+                let shared_address_start_command = start;
+
+                Some (Addresses {
+                    shared_address_start,
+                    shared_virtual_address_start,
+                    shared_address_start_command,
+                    shared_virtual_address_start_command,
+                } )
             }
-
-        #[allow(unsafe_code)]
-        let pa = unsafe { load::virt_to_phys(addr.as_ptr() as u64) }
-                .map_err(anyhow::Error::msg)
-                .context("failed to get page physical address")?;
-
-        const PAGE: u64 = 4096;
-        const ALIGN: u64 = PAGE * 8;
-
-        let raw_start = pa;
-        let raw_end = pa + map_size/2;
-
-        let start = (raw_start + ALIGN - 1) & !(ALIGN - 1);
-        let end   = raw_end & !(ALIGN - 1);
-
-        #[cfg(guest_arch = "aarch64")]
-        let memory_layout = MemoryLayout::new_from_ranges(
-                &[MemoryRangeWithNode {
-                    range: MemoryRange::new(Range {
-                        start,
-                        end,
-                    }),
-                    vnode: 0,
-                }],
-                &[],
-            )
-            .context("bad memory layout")?;
-
-        // let command_addr: u64 = 0xffff_0000u64;
-        // let region_start = command_addr & !(ALIGN - 1);
-        // let region_end_exclusive = region_start + ALIGN;
-
-        // let region_range = Range {
-        //     start: region_start,
-        //     end: region_end_exclusive,
-        // };
-
-
-        let offset_memory = Some(start);
-
-        let mmemory = Some(Mmemory {
-                startpa: start,
-                endpa: end,
-            });
-        
-        let aligned = ((addr.as_ptr() as u64) + ALIGN - 1) & !(ALIGN - 1);
-        let shared_virtual_address_start = aligned + map_size / 2;
-        let shared_virtual_address_start_command = aligned + map_size / 2 + 8;
-
-        #[allow(unsafe_code)]
-        let shared_address_start = unsafe { load::virt_to_phys(shared_virtual_address_start) }
-                .map_err(anyhow::Error::msg)
-                .context("failed to get page physical address")?;
-
-        #[cfg(guest_arch = "aarch64")]
-        let shared_memory_layout = MemoryLayout::new_from_ranges(
-                &[MemoryRangeWithNode {
-                    range: MemoryRange::new(Range {
-                        start: shared_address_start,
-                        end: shared_address_start + map_size/2,
-                    }),
-                    vnode: 0,
-                }],
-                &[],
-            )
-            .context("bad memory layout")?;
-
-        let shared_address_start_command = start;
-
-        // let shared_address_start = pa_temp;
+            #[cfg(windows)]
+            HypervisorOpt::Whp => { None }
+            #[cfg(target_os = "macos")]
+            HypervisorOpt::Hvf => { None }
+        };
 
         Ok(Self {
             driver,
@@ -201,10 +214,7 @@ impl CommonState {
             shared_memory_layout,
             offset_memory,
             mmemory,
-            shared_address_start,
-            shared_virtual_address_start,
-            shared_address_start_command,
-            shared_virtual_address_start_command,
+            addresses,
         })
     }
 

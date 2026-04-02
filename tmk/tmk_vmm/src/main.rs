@@ -107,7 +107,7 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
             Some(hv) => hv,
             None => choose_hypervisor()?,
         };
-        let mut state = CommonState::new(driver, opts).await?;
+        let mut state = CommonState::new(driver, opts, hv).await?;
 
         state
             .for_each_test(async |state, test| match hv {

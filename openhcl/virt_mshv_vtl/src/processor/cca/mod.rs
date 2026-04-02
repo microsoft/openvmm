@@ -528,8 +528,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, CcaBacked> {
         plane_enter.gprs[30] = *lr;
         plane_enter.pc = *pc;
 
-        plane_enter.gprs[1] = self.shared_address_start;
-        plane_enter.gprs[2] = self.shared_address_start_command;
+        plane_enter.gprs[1] = self.vp.partition.addresses.shared_address_start;
+        plane_enter.gprs[2] = self.vp.partition.addresses.shared_address_start_command;
 
         Ok(())
     }

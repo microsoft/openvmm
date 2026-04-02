@@ -11,15 +11,11 @@ use thiserror::Error;
 pub struct UhVpStateAccess<'a, 'b, T: Backing> {
     pub(crate) vp: &'a mut UhProcessor<'b, T>,
     pub(crate) vtl: GuestVtl,
-    pub(crate) shared_address_start: u64,
-    pub(crate) shared_address_start_command: u64,
 }
 
 impl<'a, 'p, T: Backing> UhVpStateAccess<'a, 'p, T> {
     pub(crate) fn new(vp: &'a mut UhProcessor<'p, T>, vtl: GuestVtl) -> Self {
-        let shared_address_start = vp.partition.shared_addr_start;
-        let shared_address_start_command = vp.partition.shared_addr_start_command;
-        Self { vp, vtl, shared_address_start, shared_address_start_command, }
+        Self { vp, vtl, }
     }
 }
 
