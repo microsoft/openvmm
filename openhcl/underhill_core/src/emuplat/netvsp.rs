@@ -522,14 +522,14 @@ impl HclNetworkVFManagerWorker {
                 bus_control
             };
 
-            let mut ctx =
-                mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+            let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
 
             ctx.until_cancelled(vpci_bus_control.revoke_device().instrument(
                 tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
             ))
             .await
             .map_err(|cr| anyhow!("vtl0 revoke cancelled: {cr}"))
+            .and_then(|inner| inner)
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -598,14 +598,14 @@ impl HclNetworkVFManagerWorker {
         if self.guest_state.is_offered_to_guest().await {
             *self.guest_state.offered_to_guest.lock().await = false;
             if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                let mut ctx = mesh::CancelContext::new()
-                    .with_timeout(MAX_WAIT_TIMEOUT);
+                let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
                 match ctx
                     .until_cancelled(vtl0_bus_control.revoke_device().instrument(
                         tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
                     ))
                     .await
                     .map_err(|cr| anyhow!("cancelled: {cr}"))
+                    .and_then(|inner| inner)
                 {
                     Ok(_) => (),
                     Err(err) => {
