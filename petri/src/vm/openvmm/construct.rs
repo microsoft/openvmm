@@ -176,7 +176,7 @@ impl PetriVmConfigOpenVmm {
             }
         }
 
-        let (emulated_serial_config, log_stream_tasks, linux_direct_serial_agent) =
+        let (emulated_serial_config, mut log_stream_tasks, linux_direct_serial_agent) =
             if !properties.enable_serial {
                 // No emulated serial backends (OpenHCL VMBus serial stubs may still exist)
                 ([None, None, None, None], Vec::new(), None)
@@ -254,6 +254,16 @@ impl PetriVmConfigOpenVmm {
         } else {
             (None, None, None, None, None)
         };
+
+        if let Some(vtl2_vsock_path) = vtl2_vsock_path.as_ref() {
+            log_stream_tasks.push(driver.spawn(
+                "openhcl-log",
+                crate::kmsg_log_task(
+                    log_source.log_file("openhcl")?,
+                    diag_client::DiagClient::from_hybrid_vsock(driver.clone(), vtl2_vsock_path),
+                ),
+            ));
+        }
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
@@ -603,7 +613,10 @@ impl PetriVmConfigSetupCore<'_> {
         );
         serial_tasks.push(serial0_task);
 
-        let serial2 = if self.firmware.is_openhcl() {
+        // manually overrride for testing
+        let use_serial2 = false;
+
+        let serial2 = if use_serial2 {
             let (serial2_host, serial2) = self
                 .create_serial_stream()
                 .context("failed to create serial2 stream")?;

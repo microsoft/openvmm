@@ -277,7 +277,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         // Attempt to enable COM3 and use that to get KMSG logs, otherwise
         // fall back to use diag_client.
-        let supports_com3 = {
+        let _supports_com3 = {
             // Hyper-V VBS VMs don't work with COM3 enabled.
             // Hypervisor support is needed for this to work.
             let is_not_vbs = !matches!(config.firmware.isolation(), Some(IsolationType::Vbs));
@@ -297,6 +297,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
             properties.is_openhcl && is_not_vbs && is_x86 && is_supported_winver
         };
+
+        // manually overrride for testing
+        let supports_com3 = false;
 
         // devnote: The imc_hiv and management_vtl_settings temp files are
         // passed into HyperVVM::new and dropped after the VM is created.
