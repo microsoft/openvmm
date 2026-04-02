@@ -179,7 +179,7 @@ This places `openvmm.exe` and `openhcl-x64-test-linux-direct.bin` in the
     -m 2GB `
     --vmbus-com1-serial "term,name=VTL0 Linux" `
     --com3 "term,name=VTL2 OpenHCL" `
-    --vtl2-vsock-path $env:temp\ohcldiag-dev
+    --vmbus-vtl2-vsock-path $env:temp\ohcldiag-dev
 ```
 
 ```admonish warning
@@ -194,6 +194,12 @@ kernel console output for debugging.
 For more details on running OpenHCL on OpenVMM, including
 [VMBus relay](../../reference/architecture/openhcl/vmbus.md) and device
 assignment, see [Running OpenHCL: OpenVMM](../openhcl/run/openvmm.md).
+
+### Alpine Linux, via Direct Boot
+
+See the dedicated [Alpine Linux](./alpine.md) guide for a full walkthrough of
+booting Alpine from a cloud disk image using direct boot with PCIe and
+virtio-blk.
 
 ### DOS, via PCAT BIOS
 

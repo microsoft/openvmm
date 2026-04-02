@@ -14,21 +14,22 @@ gdb = ["openvmm_core/gdb", "dep:debug_worker"]
 tpm = ["dep:tpm_device"]
 
 # Enable building with /dev/mshv support.
-virt_mshv = ["openvmm_core/virt_mshv"]
+virt_mshv = ["openvmm_hypervisors/virt_mshv"]
 
 # Enable building with KVM support.
-virt_kvm = ["openvmm_core/virt_kvm"]
+virt_kvm = ["openvmm_hypervisors/virt_kvm"]
 
 # Enable building with WHP support.
-virt_whp = ["openvmm_core/virt_whp"]
+virt_whp = ["openvmm_core/virt_whp", "openvmm_hypervisors/virt_whp"]
 
 # Enable building with macOS hypervisor framework support.
-virt_hvf = ["openvmm_core/virt_hvf"]
+virt_hvf = ["openvmm_hypervisors/virt_hvf"]
 
 unstable_whp = ["openvmm_core/unstable_whp"]
 
 [dependencies]
 mesh_worker.workspace = true
+openvmm_hypervisors.workspace = true
 vm_resource.workspace = true
 
 # Serial
@@ -49,9 +50,6 @@ disklayer_sqlite = { workspace = true, optional = true }
 # Chipset devices
 chipset.workspace = true
 missing_dev.workspace = true
-serial_16550.workspace = true
-serial_debugcon.workspace = true
-serial_pl011.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
@@ -73,10 +71,13 @@ net_consomme = { workspace = true, optional = true }
 # Virtio devices
 virtio.workspace = true
 virtio_blk.workspace = true
+virtio_console.workspace = true
 virtiofs.workspace = true
 virtio_net.workspace = true
 virtio_p9.workspace = true
 virtio_pmem.workspace = true
+virtio_rng.workspace = true
+virtio_vsock.workspace = true
 
 # Vmbus devices
 guest_crash_device.workspace = true
@@ -101,8 +102,16 @@ vnc_worker.workspace = true
 # on all platforms, to ensure consist sqlite behavior.
 rusqlite = { workspace = true, features = ["bundled"] }
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+serial_16550.workspace = true
+serial_debugcon.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+serial_pl011.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
+vhost_user_frontend.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 net_dio.workspace = true

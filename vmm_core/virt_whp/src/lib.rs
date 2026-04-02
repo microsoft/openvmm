@@ -62,6 +62,7 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::vm::AccessVmState;
+use virt::vp::AccessVpState;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
@@ -110,6 +111,9 @@ pub struct WhpPartitionInner {
     monitor_page: MonitorPage,
     hvstate: Hv1State,
     isolation: IsolationType,
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
 }
 
 #[derive(Inspect)]
@@ -133,6 +137,19 @@ struct VtlPartition {
     lapic: LocalApicKind,
 
     hypervisor_enlightened: bool,
+}
+
+impl VtlPartition {
+    /// Query the default CPUID result for the given leaf/subleaf from VP0.
+    #[cfg(guest_arch = "x86_64")]
+    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
+        let output = self
+            .whp
+            .vp(0)
+            .get_cpuid_output(eax, ecx)
+            .expect("cpuid should not fail");
+        [output.Eax, output.Ebx, output.Ecx, output.Edx]
+    }
 }
 
 #[derive(Inspect)]
@@ -159,10 +176,6 @@ struct WhpVp {
     vtl2_wake: AtomicBool,
     /// Enable VTL2 at the next opportunity.
     vtl2_enable: AtomicBool,
-    /// Force reset of run state at the next run.
-    reset_next: AtomicBool,
-    /// Scrub VTL2 state at the next run.
-    scrub_next: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -178,10 +191,6 @@ struct RunState {
     #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
-    #[inspect(skip)]
-    finish_reset_vtl0: bool,
-    #[inspect(skip)]
-    finish_reset_vtl2: bool,
     crash_msg_address: Option<u64>,
     crash_msg_len: Option<usize>,
     #[inspect(flatten)]
@@ -284,8 +293,6 @@ impl RunState {
             ref mut crash_msg_len,
             ref mut vtls,
             ref mut halted,
-            finish_reset_vtl0: ref mut reset_vtl0,
-            finish_reset_vtl2: ref mut reset_vtl2,
             exits: _,
             vtl2_wakeup_vmtime: _,
             vmtime: _,
@@ -298,11 +305,9 @@ impl RunState {
         *crash_msg_len = None;
         if !vtl2_scrub {
             vtls.vtl0.reset(is_bsp);
-            *reset_vtl0 = true;
         }
         if let Some(vtl) = &mut vtls.vtl2 {
             vtl.reset(is_bsp);
-            *reset_vtl2 = true;
         }
         *halted = false;
     }
@@ -342,8 +347,6 @@ impl WhpVp {
             interrupt: NeedsYield::new(),
             vtl2_wake: false.into(),
             vtl2_enable: vtl2_enabled.into(),
-            reset_next: false.into(),
-            scrub_next: false.into(),
             vp_info: vp,
             waker: Default::default(),
             scan_irr: true.into(),
@@ -437,9 +440,6 @@ impl virt::ResetPartition for WhpPartition {
 
     fn reset(&self) -> Result<(), Error> {
         self.inner.vtl0.reset()?;
-        for vp in self.inner.vps() {
-            vp.vp().reset_next.store(true, Ordering::SeqCst);
-        }
         self.validate_is_reset(Vtl::Vtl0);
 
         if let Some(vtl2) = self.inner.vtl2.as_ref() {
@@ -479,9 +479,6 @@ impl virt::ScrubVtl for WhpPartition {
         // NOTE: Mapping state (and therefore VTL protections) is _not_ reset
         // across scrub. Thus only reset WHP state, but not VtlPartition state.
         vtl2.whp.reset().for_op("reset partition")?;
-        for vp in self.inner.vps() {
-            vp.vp().scrub_next.store(true, Ordering::SeqCst);
-        }
         self.inner.vtl2_emulation.as_ref().unwrap().reset(false);
         self.validate_is_reset(Vtl::Vtl2);
 
@@ -548,6 +545,18 @@ impl virt::Partition for WhpPartition {
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         Some(self.with_vtl(minimum_vtl).clone())
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn as_signal_msi(
+        self: &Arc<Self>,
+        minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+        let v2m = self.inner.gic_v2m.as_ref()?;
+        let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
     }
 
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
@@ -620,7 +629,7 @@ impl virt::BindProcessor for WhpProcessorBinder {
     type Error = Error;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
-        let vp = WhpProcessor {
+        let mut vp = WhpProcessor {
             vp: WhpVpRef {
                 partition: &self.partition,
                 index: self.index,
@@ -670,6 +679,13 @@ impl virt::BindProcessor for WhpProcessorBinder {
             }
         }
 
+        // Apply initial arch fixups that WHP doesn't handle correctly
+        // (CS register, TSC, APIC ID, x2apic).
+        vp.finish_reset(Vtl::Vtl0);
+        if vp.state.enabled_vtls.is_set(Vtl::Vtl2) {
+            vp.finish_reset(Vtl::Vtl2);
+        }
+
         Ok(vp)
     }
 }
@@ -717,6 +733,8 @@ pub enum Error {
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 trait WhpResultExt<T> {
@@ -755,9 +773,15 @@ impl virt::Hypervisor for Whp {
         Ok(WhpProtoPartition { vtl0, vtl2, config })
     }
 
-    fn is_available(&self) -> Result<bool, Error> {
-        whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
+    #[cfg(guest_arch = "aarch64")]
+    fn platform_gsiv(&self) -> Option<u32> {
+        Some(WHP_PMU_GSIV)
     }
+}
+
+/// Returns whether WHP is available on this machine.
+pub fn is_available() -> Result<bool, Error> {
+    whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
 }
 
 /// The prototype partition.
@@ -773,22 +797,8 @@ impl ProtoPartition for WhpProtoPartition<'_> {
     type Error = Error;
 
     #[cfg(guest_arch = "x86_64")]
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        // This call should never fail unless there is a kernel or hypervisor
-        // bug.
-        let output = self
-            .vtl0
-            .whp
-            .vp(0)
-            .get_cpuid_output(eax, ecx)
-            .expect("cpuid should not fail");
-
-        [output.Eax, output.Ebx, output.Ecx, output.Edx]
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn max_physical_address_size(&self) -> u8 {
-        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.vtl0.cpuid(eax, ecx))
     }
 
     #[cfg(not(guest_arch = "x86_64"))]
@@ -854,8 +864,6 @@ impl ProtoPartition for WhpProtoPartition<'_> {
                         enabled_vtls,
                         runnable_vtls: enabled_vtls,
                         vtl2_deliverability_notifications: Default::default(),
-                        finish_reset_vtl0: true,
-                        finish_reset_vtl2: partition.inner.vtl2.is_some(),
                         crash_msg_address: None,
                         crash_msg_len: None,
                         halted: false,
@@ -941,6 +949,15 @@ impl WhpPartitionInner {
             }
 
             cpuid.extend(config.cpuid);
+
+            // Add topology CPUID leaves.
+            virt::x86::topology::topology_cpuid(
+                proto_config.processor_topology,
+                &|eax, ecx| vtl0.cpuid(eax, ecx),
+                &mut cpuid,
+            )
+            .map_err(Error::TopologyCpuid)?;
+
             virt::CpuidLeafSet::new(cpuid)
         };
 
@@ -1006,18 +1023,7 @@ impl WhpPartitionInner {
         let caps = {
             let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(
                 proto_config.processor_topology,
-                &mut |function, index| {
-                    let output = vtl0
-                        .whp
-                        .vp(0)
-                        .get_cpuid_output(function, index)
-                        .expect("cpuid should not fail");
-                    cpuid.result(
-                        function,
-                        index,
-                        &[output.Eax, output.Ebx, output.Ecx, output.Edx],
-                    )
-                },
+                &mut |function, index| cpuid.result(function, index, &vtl0.cpuid(function, index)),
             )
             .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
@@ -1026,7 +1032,15 @@ impl WhpPartitionInner {
             caps
         };
         #[cfg(guest_arch = "aarch64")]
-        let caps = virt::aarch64::Aarch64PartitionCapabilities {};
+        let caps = {
+            let features =
+                whp::capabilities::processor_features().for_op("get processor features")?;
+            virt::aarch64::Aarch64PartitionCapabilities {
+                supports_aarch32_el0: features
+                    .bank0
+                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
+            }
+        };
 
         let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
             whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
@@ -1075,6 +1089,8 @@ impl WhpPartitionInner {
             monitor_page: MonitorPage::new(),
             hvstate,
             isolation: proto_config.isolation,
+            #[cfg(guest_arch = "aarch64")]
+            gic_v2m: proto_config.processor_topology.gic_v2m(),
         };
 
         Ok(inner)
@@ -1250,14 +1266,20 @@ impl VtlPartition {
             let gic_params = whp::abi::WHV_ARM64_IC_PARAMETERS {
                 EmulationMode: whp::abi::WHV_ARM64_IC_EMULATION_MODE::GicV3,
                 Reserved: 0,
-                // TODO: Make all of these values configurable.
-                // Using legacy Hyper-V defaults for now.
                 GicV3Parameters: whp::abi::WHV_ARM64_IC_GIC_V3_PARAMETERS {
                     GicdBaseAddress: config.processor_topology.gic_distributor_base(),
                     GitsTranslatorBaseAddress: 0,
                     Reserved: 0,
-                    GicLpiIntIdBits: 1,
-                    GicPpiOverflowInterruptFromCntv: 0x14,
+                    // When v2m is configured, disable LPI support
+                    // (GICD_TYPER.LPIS=0) so Linux uses the GICv2m MSI frame
+                    // instead of ITS for PCIe MSIs. Otherwise keep LPI
+                    // enabled (1 ID bit minimum).
+                    GicLpiIntIdBits: if config.processor_topology.gic_v2m().is_some() {
+                        0
+                    } else {
+                        1
+                    },
+                    GicPpiOverflowInterruptFromCntv: config.processor_topology.virt_timer_ppi(),
                     GicPpiPerformanceMonitorsInterrupt: 0x17,
                     Reserved1: [0; 6],
                 },
@@ -1513,7 +1535,7 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         &mut self,
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
-    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as virt::vp::AccessVpState>::Error> {
+    ) -> Result<(), <WhpVpStateAccess<'_, 'p> as AccessVpState>::Error> {
         Err(Error::GuestDebuggingNotSupported)
     }
 
@@ -1537,6 +1559,44 @@ impl<'p> virt::Processor for WhpProcessor<'p> {
         if self.state.vtls.vtl2.is_some() {
             self.flush_apic(Vtl::Vtl2);
         }
+    }
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        let is_bsp = self.inner.vp_info.base.is_bsp();
+        self.state.reset(false, is_bsp);
+
+        // VTL0 is always present.
+        self.finish_reset(Vtl::Vtl0);
+        self.vplc(Vtl::Vtl0).message_queues.clear();
+        if self.state.vtls.vtl2.is_some() {
+            self.finish_reset(Vtl::Vtl2);
+            self.vplc(Vtl::Vtl2).message_queues.clear();
+        }
+
+        if cfg!(debug_assertions) {
+            let vp_info = &self.inner.vp_info;
+            self.access_state(Vtl::Vtl0).check_reset_all(vp_info);
+            if self.state.enabled_vtls.is_set(Vtl::Vtl2) {
+                self.access_state(Vtl::Vtl2).check_reset_all(vp_info);
+            }
+        }
+        Ok::<(), Infallible>(())
+    }
+
+    fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        assert_eq!(vtl, Vtl::Vtl2);
+        let is_bsp = self.inner.vp_info.base.is_bsp();
+        self.state.reset(true, is_bsp);
+
+        // Scrub only resets VTL2.
+        self.finish_reset(Vtl::Vtl2);
+        self.vplc(Vtl::Vtl2).message_queues.clear();
+
+        if cfg!(debug_assertions) {
+            let vp_info = &self.inner.vp_info;
+            self.access_state(Vtl::Vtl2).check_reset_all(vp_info);
+        }
+        Ok::<(), Infallible>(())
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {

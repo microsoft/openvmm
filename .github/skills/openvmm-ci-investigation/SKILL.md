@@ -5,13 +5,14 @@ description: Investigate CI failures on OpenVMM PRs. Load when a PR has failing 
 
 # Investigating CI Failures
 
-When a PR has failing CI checks, use this workflow to diagnose the root cause.
-A helper script is available at `repo_support/investigate_ci.py`.
+When a PR has failing CI checks, **always start by running the investigation
+script**. Do not manually query the GitHub API or download artifacts by hand
+— the script handles all of that automatically.
 
-## Quick Start
+## Step 1: Run the Script
 
 ```bash
-# Investigate a PR by number
+# Investigate a PR by number (ALWAYS use this first)
 python3 repo_support/investigate_ci.py 2946
 
 # Or by run ID directly
@@ -22,12 +23,26 @@ The script automatically:
 1. Resolves the PR to the correct CI run (prefers failed runs from the main
    "OpenVMM PR" workflow)
 2. Identifies failed jobs
-3. Downloads `*-vmm-tests-logs` artifacts if they exist
-4. Finds tests with `petri.failed` markers and extracts ERROR/WARN lines
-5. If no test artifacts exist (build/fmt/clippy failure), shows the tail of
-   the failed job's log
+3. Downloads `*-unit-tests-junit-xml` artifacts and parses JUnit XML for
+   unit test failures
+4. Downloads `*-vmm-tests-logs` artifacts if they exist
+5. Finds tests with `petri.failed` markers and extracts ERROR/WARN lines
+6. If no test or JUnit artifacts exist (build/fmt/clippy failure), shows the
+   tail of the failed job's log
 
-## Manual Investigation Steps
+## Step 2: Analyze the Script Output
+
+Read the script's output to identify:
+- Which tests failed (unit tests and/or VMM tests)
+- Error messages and root causes
+- Whether it's a build/fmt/clippy failure vs. a test failure
+
+Then use the information to diagnose the issue and suggest fixes.
+
+## Reference: Manual Commands
+
+> **Only use these if the script fails or you need to dig deeper into a
+> specific artifact.** In normal usage, the script above is sufficient.
 
 If the script isn't available or you need more control, follow these steps:
 
@@ -47,9 +62,33 @@ gh run view <RUN_ID> -R microsoft/openvmm --json jobs \
   -q '[.jobs[] | select(.conclusion == "failure") | {name, databaseId}]'
 ```
 
-### 3. Download test log artifacts
+### 3. Download test artifacts
 
-VMM test results are stored in artifacts named `{platform}-vmm-tests-logs`.
+**Unit test results** are stored in JUnit XML artifacts named
+`{platform}-unit-tests-junit-xml`. Known platforms include:
+- `x64-linux`
+- `aarch64-linux`
+- `aarch64-linux-musl`
+
+```bash
+# Download unit test JUnit XML for a platform
+gh run download <RUN_ID> -R microsoft/openvmm \
+  -n aarch64-linux-unit-tests-junit-xml -D /tmp/junit-xml
+# Parse failures from the XML
+python3 -c "
+import xml.etree.ElementTree as ET, sys
+for f in __import__('pathlib').Path(sys.argv[1]).rglob('*.xml'):
+    for tc in ET.parse(f).iter('testcase'):
+        fail = tc.find('failure')
+        if fail is None:
+            fail = tc.find('error')
+        if fail is not None:
+            print(f'FAIL: {tc.get(\"classname\",\"\")}::{tc.get(\"name\",\"\")}')
+            print(f'  {fail.get(\"message\",\"\")[:200]}')
+" /tmp/junit-xml
+```
+
+**VMM test results** are stored in artifacts named `{platform}-vmm-tests-logs`.
 The known platforms are:
 - `x64-windows-intel`
 - `x64-windows-intel-tdx`
@@ -95,6 +134,15 @@ for line in open(sys.argv[1]):
 
 ## Artifact Contents
 
+### Unit test JUnit XML
+
+Artifacts named `{platform}-unit-tests-junit-xml` contain JUnit XML files
+with `<testcase>` elements. Failed tests have `<failure>` or `<error>`
+children with `message` attributes describing the failure. These are the
+primary artifacts for diagnosing unit test / cargo-nextest failures.
+
+### VMM test logs (petri)
+
 Each test directory contains:
 - `petri.jsonl` — Structured JSON Lines log **(primary file for investigation)**
 - `petri.log` — Plain text version of the test log
@@ -113,6 +161,10 @@ Test results are uploaded to Azure Blob Storage and viewable at:
 
 ## Common Failure Patterns
 
+- **Unit test failure**: A `unit tests` job failed. The script downloads
+  JUnit XML artifacts and shows the failing test names and messages. Common
+  causes: new test code that relies on OS capabilities not available in CI
+  (e.g. TAP devices, elevated permissions).
 - **Formatting / house-rules**: The `quick check [fmt, clippy x64-linux]` job
   failed. No test artifacts will exist. Run `cargo xtask fmt --fix` locally
   and check the job log for the specific rule that failed.

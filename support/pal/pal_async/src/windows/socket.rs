@@ -17,13 +17,13 @@ use std::os::windows::prelude::*;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use winapi::shared::ntdef::NT_SUCCESS;
-use winapi::shared::ntdef::NTSTATUS;
-use winapi::shared::ntstatus::STATUS_CANCELLED;
-use winapi::shared::ntstatus::STATUS_PENDING;
-use winapi::shared::ntstatus::STATUS_SUCCESS;
-use winapi::um::ioapiset::CancelIoEx;
-use winapi::um::minwinbase::OVERLAPPED;
+use windows_result::HRESULT;
+use windows_sys::Win32::Foundation::NTSTATUS;
+use windows_sys::Win32::Foundation::STATUS_CANCELLED;
+use windows_sys::Win32::Foundation::STATUS_PENDING;
+use windows_sys::Win32::Foundation::STATUS_SUCCESS;
+use windows_sys::Win32::System::IO::CancelIoEx;
+use windows_sys::Win32::System::IO::OVERLAPPED;
 
 pub fn make_poll_handle_info(handle: RawHandle, events: PollEvents) -> afd::PollHandleInfo {
     let mut afd_events = afd::POLL_ABORT | afd::POLL_CONNECT_FAIL;
@@ -305,7 +305,7 @@ impl AfdSocketReadyOp {
         wakers: &mut WakerList,
     ) {
         loop {
-            let revents = if NT_SUCCESS(status) {
+            let revents = if HRESULT::from_nt(status).is_ok() {
                 // SAFETY: there is no IO in flight, so we have exclusive access to the
                 // poll info buffer.
                 let poll_info = unsafe { &mut *self.poll_info.0.get() };

@@ -23,6 +23,7 @@
 // low level memory manipulation functions.
 #![expect(unsafe_code)]
 
+use super::manager::DmaRegionProvider;
 use super::manager::MapperId;
 use super::manager::MapperRequest;
 use super::manager::MappingParams;
@@ -30,6 +31,7 @@ use super::manager::MappingRequest;
 use crate::RemoteProcess;
 use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
+use guestmem::GuestMemorySharing;
 use guestmem::PageFaultAction;
 use guestmem::PageFaultError;
 use memory_range::MemoryRange;
@@ -111,6 +113,7 @@ impl MapperTask {
                     mappable,
                     writable,
                     file_offset,
+                    ..
                 }) => {
                     tracing::debug!(%range, "mapping received for range");
 
@@ -215,6 +218,9 @@ impl VaMapper {
         }
         .map_err(VaMapperError::Reserve)?;
 
+        // Name the VA reservation so it's identifiable in /proc/{pid}/smaps.
+        mapping.set_name(0, mapping.len(), "guest-memory");
+
         let (send, req_recv) = mesh::channel();
         let id = req_send
             .call(MappingRequest::AddMapper, send)
@@ -274,11 +280,28 @@ impl VaMapper {
         self.inner.mapping.alloc(offset, len)
     }
 
+    /// Names a range within the mapping for debugging (visible in smaps).
+    pub fn set_range_name(&self, offset: usize, len: usize, name: &str) {
+        self.inner.mapping.set_name(offset, len, name);
+    }
+
+    /// Marks a range as eligible for Transparent Huge Pages.
+    ///
+    /// Only valid when private_ram mode is enabled.
+    #[cfg(target_os = "linux")]
+    pub fn madvise_hugepage(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
+        assert!(
+            self.private_ram,
+            "madvise_hugepage requires private RAM mode"
+        );
+        self.inner.mapping.madvise_hugepage(offset, len)
+    }
+
     /// Decommits a range of private RAM, releasing physical pages back to the
     /// host.
     ///
     /// Only valid when private_ram mode is enabled.
-    #[allow(dead_code)] // Will be used by ballooning / memory hot-remove.
+    #[expect(dead_code)] // Will be used by ballooning / memory hot-remove.
     pub fn decommit(&self, offset: usize, len: usize) -> Result<(), std::io::Error> {
         assert!(self.private_ram, "decommit requires private RAM mode");
         self.inner.mapping.decommit(offset, len)
@@ -358,10 +381,20 @@ unsafe impl GuestMemoryAccess for VaMapper {
         }
         PageFaultAction::Retry
     }
+
+    fn sharing(&self) -> Option<GuestMemorySharing> {
+        if self.private_ram {
+            return None;
+        }
+        Some(GuestMemorySharing::new(DmaRegionProvider {
+            req_send: self.inner.req_send.clone(),
+        }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
+
     use sparse_mmap::SparseMapping;
 
     /// Tests that private RAM pages can be allocated, written to, and read from.

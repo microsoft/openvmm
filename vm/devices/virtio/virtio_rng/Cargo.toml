@@ -1,0 +1,31 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "virtio_rng"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+virtio.workspace = true
+virtio_resources.workspace = true
+
+guestmem.workspace = true
+vmcore.workspace = true
+vm_resource.workspace = true
+task_control.workspace = true
+
+anyhow.workspace = true
+futures.workspace = true
+getrandom.workspace = true
+inspect.workspace = true
+pal_async.workspace = true
+tracelimit.workspace = true
+
+[dev-dependencies]
+mesh.workspace = true
+pal_event.workspace = true
+test_with_tracing.workspace = true
+
+[lints]
+workspace = true

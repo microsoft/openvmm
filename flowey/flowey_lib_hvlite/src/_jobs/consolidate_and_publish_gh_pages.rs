@@ -109,7 +109,7 @@ impl SimpleFlowNode for Node {
 
         let consolidated_html = if matches!(ctx.backend(), FlowBackend::Github) {
             let did_upload = ctx
-                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v3")
+                .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v4")
                 .with(
                     "path",
                     consolidated_html.map(ctx, |x| x.display().to_string()),

@@ -11,6 +11,7 @@ device_emulators.workspace = true
 pci_core.workspace = true
 pci_resources.workspace = true
 virtio_resources.workspace = true
+virtio_spec.workspace = true
 
 chipset_device.workspace = true
 guestmem.workspace = true
@@ -21,15 +22,11 @@ inspect.workspace = true
 mesh.workspace = true
 pal_event.workspace = true
 pal_async.workspace = true
-task_control.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-bitfield-struct.workspace = true
-event-listener.workspace = true
 futures.workspace = true
-open_enum.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -37,6 +34,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 mesh.workspace = true
 pal_async.workspace = true
+task_control.workspace = true
 test_with_tracing.workspace = true
 
 futures.workspace = true

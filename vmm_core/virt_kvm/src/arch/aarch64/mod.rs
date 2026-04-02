@@ -178,6 +178,7 @@ open_enum::open_enum! {
         SYS_MAIR_EL1 = sys_reg64(SystemReg::MAIR_EL1),
         SYS_SPSR_EL1 = sys_reg64(SystemReg::SPSR_EL1),
         SYS_VBAR_EL1 = sys_reg64(SystemReg::VBAR),
+        SYS_ID_AA64PFR0_EL1 = sys_reg64(SystemReg::ID_AA64PFR0_EL1),
     }
 }
 
@@ -617,9 +618,28 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
         // TODO: Save the GICv3 FD to a File to ensure it is cleaned up.
         self.add_gicv3()?;
 
-        // Use the Hyper-V timers instead of the ARM architectural ones. TODO:
-        // make this configurable.
-        self.set_timer_ppis(20, 19)?;
+        // Configure the virtual timer PPI from topology. KVM also requires
+        // a physical timer PPI, but we don't expose it to the guest.
+        self.set_timer_ppis(
+            self.config.processor_topology.virt_timer_ppi(),
+            19, // KVM requires this; unused by the guest
+        )?;
+
+        let caps = {
+            let supports_aarch32_el0 = {
+                let pfr0 = self
+                    .vm
+                    .vp(0)
+                    .get_reg64(KvmRegisterId::SYS_ID_AA64PFR0_EL1.into())
+                    .map_err(KvmError::Kvm)?;
+                // ID_AA64PFR0_EL1 bits [3:0] (EL0) indicate aarch32 support.
+                // 0b0001 = aarch64 only, 0b0010 = aarch64 and aarch32.
+                pfr0 & 0xf == 2
+            };
+            PartitionCapabilities {
+                supports_aarch32_el0,
+            }
+        };
 
         let partition = KvmPartitionInner {
             kvm: self.vm,
@@ -636,7 +656,8 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                     eval: false.into(),
                 })
                 .collect(),
-            caps: PartitionCapabilities {},
+            caps,
+            gic_v2m: self.config.processor_topology.gic_v2m(),
         };
 
         let partition = KvmPartition {
@@ -676,6 +697,17 @@ impl virt::Partition for KvmPartition {
 
     fn request_msi(&self, _vtl: Vtl, _request: virt::irqcon::MsiRequest) {
         tracelimit::warn_ratelimited!("msis not supported");
+    }
+
+    fn as_signal_msi(
+        self: &Arc<Self>,
+        _minimum_vtl: Vtl,
+    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+        let v2m = self.inner.gic_v2m.as_ref()?;
+        let irqcon = self.inner.clone() as Arc<dyn virt::irqcon::ControlGic>;
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -768,14 +800,6 @@ impl virt::Hypervisor for Kvm {
     type ProtoPartition<'a> = KvmProtoPartition<'a>;
     type Partition = KvmPartition;
     type Error = KvmError;
-
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
-        }
-    }
 
     fn new_partition<'a>(
         &'a mut self,

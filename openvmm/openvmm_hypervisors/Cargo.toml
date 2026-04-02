@@ -1,0 +1,42 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "openvmm_hypervisors"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# Enable building with /dev/mshv support.
+virt_mshv = ["dep:virt_mshv"]
+
+# Enable building with KVM support.
+virt_kvm = ["dep:virt_kvm"]
+
+# Enable building with WHP support.
+virt_whp = ["dep:virt_whp"]
+
+# Enable building with macOS hypervisor framework support.
+virt_hvf = ["dep:virt_hvf"]
+
+[dependencies]
+anyhow.workspace = true
+hypervisor_resources.workspace = true
+openvmm_core.workspace = true
+vm_resource.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+virt_kvm = { workspace = true, optional = true }
+virt_mshv = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+virt_whp = { workspace = true, optional = true }
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+virt_hvf = { workspace = true, optional = true }
+
+[build-dependencies]
+build_rs_guest_arch.workspace = true
+
+[lints]
+workspace = true

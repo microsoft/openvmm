@@ -78,6 +78,8 @@ pub fn ado_yaml(
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
         job_command_wrappers: BTreeMap::new(),
+        job_platforms: BTreeMap::new(),
+        job_archs: BTreeMap::new(),
     };
 
     let mut ado_jobs = Vec::new();
@@ -131,6 +133,11 @@ pub fn ado_yaml(
                 .insert(job_idx.index(), wrapper_kind.clone());
         }
 
+        pipeline_static_db
+            .job_platforms
+            .insert(job_idx.index(), platform);
+        pipeline_static_db.job_archs.insert(job_idx.index(), arch);
+
         let mut ado_steps = Vec::new();
 
         if let FloweySource::Bootstrap(artifact, publish) = &flowey_source {
@@ -152,10 +159,14 @@ pub fn ado_yaml(
                 )
                 .replace(
                     "{{FLOWEY_TARGET}}",
-                    match platform {
-                        FlowPlatform::Windows => "x86_64-pc-windows-msvc",
-                        FlowPlatform::Linux(_) => "x86_64-unknown-linux-gnu",
-                        platform => anyhow::bail!("unsupported ADO platform {platform:?}"),
+                    match (platform, arch) {
+                        (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
+                        (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
+                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
+                        (platform, arch) => anyhow::bail!(
+                            "unsupported ADO platform/arch combo {platform:?}/{arch:?}"
+                        ),
                     },
                 )
                 .replace(

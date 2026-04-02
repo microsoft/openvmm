@@ -179,7 +179,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn net_backend::Queue>>,
     ) -> anyhow::Result<()> {
@@ -189,8 +189,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             slot: self.endpoint_state.clone(),
             endpoint_state: self.endpoint_state.lock().take(),
             state: QueueState {
-                pool: config.pool,
-                rx_avail: config.initial_rx.iter().copied().collect(),
+                rx_avail: VecDeque::new(),
                 rx_ready: VecDeque::new(),
                 tx_avail: VecDeque::new(),
                 tx_ready: VecDeque::new(),
@@ -198,7 +197,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             stats: Default::default(),
             driver: config.driver,
         });
-        queue.with_consomme(|c| c.refresh_driver());
+        queue.with_consomme_no_pool(|c| c.refresh_driver());
         queues.push(queue);
         Ok(())
     }
@@ -248,7 +247,21 @@ impl Drop for ConsommeQueue {
 }
 
 impl ConsommeQueue {
-    fn with_consomme<F, R>(&mut self, f: F) -> R
+    fn with_consomme_no_pool<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut consomme::Access<'_, ClientNoPool<'_>>) -> R,
+    {
+        f(&mut self
+            .endpoint_state
+            .as_mut()
+            .unwrap()
+            .consomme
+            .access(&mut ClientNoPool {
+                driver: &self.driver,
+            }))
+    }
+
+    fn with_consomme<F, R>(&mut self, pool: &mut dyn BufferAccess, f: F) -> R
     where
         F: FnOnce(&mut consomme::Access<'_, Client<'_>>) -> R,
     {
@@ -261,10 +274,11 @@ impl ConsommeQueue {
                 state: &mut self.state,
                 stats: &mut self.stats,
                 driver: &self.driver,
+                pool,
             }))
     }
 
-    fn poll_message(&mut self, cx: &mut Context<'_>) {
+    fn poll_message(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) {
         // process all pending messages
         let state = self.endpoint_state.as_mut().unwrap();
         while let Some(recv) = &mut state.recv {
@@ -282,6 +296,7 @@ impl ConsommeQueue {
                         state: &mut self.state,
                         stats: &mut self.stats,
                         driver: &self.driver,
+                        pool,
                     }),
                     message,
                 ),
@@ -318,7 +333,7 @@ fn process_message(
 }
 
 impl net_backend::Queue for ConsommeQueue {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
         while let Some(head) = self.state.tx_avail.front() {
             let TxSegmentType::Head(meta) = &head.ty else {
                 unreachable!()
@@ -335,7 +350,7 @@ impl net_backend::Queue for ConsommeQueue {
             };
 
             let mut buf = vec![0; meta.len as usize];
-            let gm = self.state.pool.guest_memory();
+            let gm = pool.guest_memory();
             let mut offset = 0;
             for segment in self.state.tx_avail.drain(..meta.segment_count as usize) {
                 let dest = &mut buf[offset..offset + segment.len as usize];
@@ -348,7 +363,7 @@ impl net_backend::Queue for ConsommeQueue {
                 offset += segment.len as usize;
             }
 
-            if let Err(err) = self.with_consomme(|c| c.send(&buf, &checksum)) {
+            if let Err(err) = self.with_consomme(pool, |c| c.send(&buf, &checksum)) {
                 tracing::debug!(error = &err as &dyn std::error::Error, "tx packet ignored");
                 match err {
                     consomme::DropReason::SendBufferFull => self.stats.tx_dropped.increment(),
@@ -375,9 +390,9 @@ impl net_backend::Queue for ConsommeQueue {
         // there is no guarantee the queue will be processed at all (e.g., if
         // the guest stops processing traffic). This will probably require adding
         // a lock around the consomme state.
-        self.poll_message(cx);
+        self.poll_message(cx, pool);
 
-        self.with_consomme(|c| c.poll(cx));
+        self.with_consomme(pool, |c| c.poll(cx));
 
         if !self.state.tx_ready.is_empty() || !self.state.rx_ready.is_empty() {
             Poll::Ready(())
@@ -386,11 +401,15 @@ impl net_backend::Queue for ConsommeQueue {
         }
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
+    fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, done: &[RxId]) {
         self.state.rx_avail.extend(done);
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         let n = packets.len().min(self.state.rx_ready.len());
         for (x, y) in packets.iter_mut().zip(self.state.rx_ready.drain(..n)) {
             *x = y;
@@ -398,26 +417,29 @@ impl net_backend::Queue for ConsommeQueue {
         Ok(n)
     }
 
-    fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         self.state.tx_avail.extend(segments.iter().cloned());
         Ok((false, segments.len()))
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         let n = done.len().min(self.state.tx_ready.len());
         for (x, y) in done.iter_mut().zip(self.state.tx_ready.drain(..n)) {
             *x = y;
         }
         Ok(n)
     }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        Some(self.state.pool.as_mut())
-    }
 }
 
 struct QueueState {
-    pool: Box<dyn BufferAccess>,
     rx_avail: VecDeque<RxId>,
     rx_ready: VecDeque<RxId>,
     tx_avail: VecDeque<TxSegment>,
@@ -436,6 +458,25 @@ struct Client<'a> {
     state: &'a mut QueueState,
     stats: &'a mut Stats,
     driver: &'a dyn Driver,
+    pool: &'a mut dyn BufferAccess,
+}
+
+/// Minimal client for consomme operations that don't need BufferAccess
+/// (e.g., refresh_driver, timer/socket management).
+struct ClientNoPool<'a> {
+    driver: &'a dyn Driver,
+}
+
+impl consomme::Client for ClientNoPool<'_> {
+    fn driver(&self) -> &dyn Driver {
+        self.driver
+    }
+
+    fn recv(&mut self, _data: &[u8], _checksum: &ChecksumState) {}
+
+    fn rx_mtu(&mut self) -> usize {
+        0
+    }
 }
 
 impl consomme::Client for Client<'_> {
@@ -451,9 +492,9 @@ impl consomme::Client for Client<'_> {
             self.stats.rx_dropped.increment();
             return;
         };
-        let max = self.state.pool.capacity(rx_id) as usize;
+        let max = self.pool.capacity(rx_id) as usize;
         if data.len() <= max {
-            self.state.pool.write_packet(
+            self.pool.write_packet(
                 rx_id,
                 &RxMetadata {
                     offset: 0,
@@ -487,7 +528,7 @@ impl consomme::Client for Client<'_> {
 
     fn rx_mtu(&mut self) -> usize {
         if let Some(&rx_id) = self.state.rx_avail.front() {
-            self.state.pool.capacity(rx_id) as usize
+            self.pool.capacity(rx_id) as usize
         } else {
             0
         }

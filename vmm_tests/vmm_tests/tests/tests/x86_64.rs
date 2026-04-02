@@ -29,7 +29,7 @@ use virtio_resources::net::VirtioNetHandle;
 use vm_resource::IntoResource;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Basic boot test with the VTL 0 alias map.
 // TODO: Remove once #73 is fixed.
@@ -115,7 +115,7 @@ fn configure_for_sidecar<T: PetriVmmBackend>(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none)))]
 async fn sidecar_aps_unused<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
@@ -282,10 +282,11 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     let disk_size: u64 = 8 * 1024 * 1024; // 8 MiB
     let disk_resource = LayeredDiskHandle::single_layer(RamDiskLayerHandle {
         len: Some(disk_size),
+        sector_size: None,
     })
     .into_resource();
 
-    let (vm, agent) = config
+    let (mut vm, agent) = config
         .modify_backend(move |b| {
             b.with_custom_config(|c| {
                 c.virtio_devices.push((
@@ -335,7 +336,229 @@ async fn virtio_blk_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
         "read back data mismatch: {readback}"
     );
 
+    // Pulse save/restore with the device active and data on disk.
+    // Drop the old agent — its vsock connection won't survive the pulse.
+    drop(agent);
+    vm.backend().verify_save_restore().await?;
+
+    // Pipette automatically reconnects after the pulse. Accept the new connection.
+    let agent = vm.backend().wait_for_agent(false).await?;
+    let sh = agent.unix_shell();
+
+    // Verify the device still works after save/restore.
+    // Use iflag=direct to bypass the page cache and force a real device read.
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda iflag=direct bs=512 count=1 2>/dev/null | head -c 16'"
+    )
+    .read()
+    .await
+    .context("read from virtio-blk after save/restore")?;
+    assert!(
+        readback.starts_with("hello_virtio_blk"),
+        "data mismatch after save/restore: {readback}"
+    );
+
+    // Write new data after restore to confirm writes work too.
+    cmd!(
+        sh,
+        "sh -c 'echo post_restore_ok | dd of=/dev/vda oflag=direct bs=512 count=1 conv=sync,notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to virtio-blk after save/restore")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda iflag=direct bs=512 count=1 2>/dev/null | head -c 15'"
+    )
+    .read()
+    .await
+    .context("read new data after save/restore")?;
+    assert!(
+        readback.starts_with("post_restore_ok"),
+        "post-restore write/read mismatch: {readback}"
+    );
+
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with a virtio-rng device via virtio-mmio and verify the guest can read entropy.
+#[openvmm_test(linux_direct_x64)]
+async fn virtio_rng_device(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use virtio_resources::rng::VirtioRngHandle;
+
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                c.virtio_devices
+                    .push((VirtioBus::Mmio, VirtioRngHandle.into_resource()));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Fail fast if the virtio-rng driver isn't available in the guest kernel
+    cmd!(sh, "test -e /dev/hwrng")
+        .run()
+        .await
+        .context("/dev/hwrng not found — guest kernel may lack CONFIG_HW_RANDOM_VIRTIO")?;
+
+    // Verify virtio-rng driver bound to the device
+    let rng_current = cmd!(sh, "cat /sys/class/misc/hw_random/rng_current")
+        .read()
+        .await
+        .context("failed to read rng_current")?;
+    let rng_current = rng_current.trim();
+    assert!(
+        rng_current.starts_with("virtio_rng"),
+        "expected virtio_rng as current hwrng, got {rng_current:?}"
+    );
+
+    // Read 64 bytes of entropy with a timeout to avoid hanging if the device is broken
+    let read_entropy = async {
+        cmd!(
+            sh,
+            "sh -c 'dd if=/dev/hwrng bs=64 count=1 2>/dev/null | od -A n -t x1 | tr -d \" \\n\"'"
+        )
+        .read()
+        .await
+    };
+    let hex_output = mesh::CancelContext::new()
+        .with_timeout(std::time::Duration::from_secs(10))
+        .until_cancelled(read_entropy)
+        .await
+        .context("timed out reading from /dev/hwrng — device may be broken")?
+        .context("failed to read from /dev/hwrng")?;
+    let hex = hex_output.trim();
+    assert_eq!(
+        hex.len(),
+        128,
+        "expected 128 hex chars (64 bytes), got {}",
+        hex.len()
+    );
+    assert_ne!(
+        hex,
+        "0".repeat(128),
+        "hwrng returned all zeros — device not producing entropy"
+    );
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot Linux with guest memory backed by a file instead of anonymous RAM.
+///
+/// This validates that the file-backed memory plumbing through petri works
+/// end-to-end: the VM should boot normally, and the backing file should
+/// exist and be non-empty after boot.
+#[openvmm_test(linux_direct_x64)]
+async fn file_backed_memory_boot(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let mem_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let mem_path: std::path::PathBuf = mem_dir.path().join("memory.bin");
+
+    let (vm, agent) = config
+        .modify_backend({
+            let mem_path = mem_path.clone();
+            move |b| b.with_memory_backing_file(mem_path)
+        })
+        .run()
+        .await?;
+
+    // Verify the backing file was created and is non-empty.
+    let metadata = std::fs::metadata(&mem_path).expect("memory backing file should exist");
+    assert!(
+        metadata.len() > 0,
+        "memory backing file should be non-empty"
+    );
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
+/// Boot with file-backed memory, pause + save VM state, write the snapshot
+/// artifacts to disk, read them back to verify the roundtrip, then resume
+/// the VM and confirm it is still functional.
+///
+/// This exercises the full save-to-disk path with real VM state and validates
+/// that the serialized state bytes survive a disk roundtrip unchanged.
+#[openvmm_test(linux_direct_x64)]
+async fn snapshot_save_to_disk(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let work_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let mem_path: std::path::PathBuf = work_dir.path().join("memory.bin");
+    let snap_dir = work_dir.path().join("snapshot");
+
+    let (mut vm, agent) = config
+        .modify_backend({
+            let mem_path = mem_path.clone();
+            move |b| b.with_memory_backing_file(mem_path)
+        })
+        .run()
+        .await?;
+
+    // Verify the guest is functional before saving.
+    agent.ping().await?;
+
+    // Pause the VM.
+    vm.backend().pause().await?;
+
+    // Save device + processor state.
+    let saved_state_bytes = vm.backend().save_state().await?;
+    assert!(
+        !saved_state_bytes.is_empty(),
+        "saved state should be non-empty"
+    );
+
+    // Get the size of the memory backing file. The VM is paused so dirty
+    // pages have already been flushed by the hypervisor.
+    let mem_size = std::fs::metadata(&mem_path)?.len();
+    assert!(mem_size > 0, "memory file should be non-empty");
+
+    // Build manifest and write snapshot to disk.
+    //
+    // vp_count and page_size are hardcoded to match the petri test defaults.
+    // If those defaults change, update these values accordingly.
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
+        created_at: std::time::SystemTime::now().into(),
+        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_size_bytes: mem_size,
+        vp_count: 2,
+        page_size: 4096,
+        architecture: "x86_64".to_string(),
+    };
+    openvmm_helpers::snapshot::write_snapshot(&snap_dir, &manifest, &saved_state_bytes, &mem_path)?;
+
+    // Verify all snapshot files exist and the saved state roundtrips.
+    assert!(snap_dir.join("manifest.bin").exists());
+    assert!(snap_dir.join("state.bin").exists());
+    assert!(snap_dir.join("memory.bin").exists());
+    let (read_manifest, read_state) = openvmm_helpers::snapshot::read_snapshot(&snap_dir)?;
+    assert_eq!(
+        read_state, saved_state_bytes,
+        "state roundtrip through disk should match"
+    );
+    assert_eq!(read_manifest.memory_size_bytes, mem_size);
+
+    // Resume the VM and verify it is still functional.
+    vm.backend().resume().await?;
+    agent.ping().await?;
+
+    // Clean shutdown.
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
     Ok(())
 }

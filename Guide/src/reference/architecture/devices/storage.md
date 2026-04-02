@@ -81,7 +81,16 @@ but they all produce `DiskIo` calls on the backend side.
 
 **NVMe** is the simplest path. The NVMe controller's namespace directly holds a `Disk`. NVM opcodes (READ, WRITE, FLUSH, DSM) map nearly 1:1 to `DiskIo` methods. The FUA bit from the NVMe write command is forwarded directly.
 
-**StorVSP / SCSI** has a two-layer design. StorVSP handles the VMBus transport — negotiation, ring buffer management, sub-channel allocation. It dispatches each SCSI request to an [`AsyncScsiDisk`](https://openvmm.dev/rustdoc/linux/scsi_core/trait.AsyncScsiDisk.html) implementation. For hard drives, that's [`SimpleScsiDisk`](https://openvmm.dev/rustdoc/linux/scsidisk/struct.SimpleScsiDisk.html), which parses the SCSI CDB and translates it to `DiskIo` calls. For optical drives, it's [`SimpleScsiDvd`](https://openvmm.dev/rustdoc/linux/scsidisk/scsidvd/struct.SimpleScsiDvd.html).
+**StorVSP / SCSI** has a two-layer design. StorVSP handles the VMBus
+transport — negotiation, ring buffer management,
+[sub-channel allocation](../../devices/vmbus/storvsp_channels.md). It
+dispatches each SCSI request to an
+[`AsyncScsiDisk`](https://openvmm.dev/rustdoc/linux/scsi_core/trait.AsyncScsiDisk.html)
+implementation. For hard drives, that's
+[`SimpleScsiDisk`](https://openvmm.dev/rustdoc/linux/scsidisk/struct.SimpleScsiDisk.html),
+which parses the SCSI CDB and translates it to `DiskIo` calls. For
+optical drives, it's
+[`SimpleScsiDvd`](https://openvmm.dev/rustdoc/linux/scsidisk/scsidvd/struct.SimpleScsiDvd.html).
 
 **IDE** is the legacy path. ATA commands for hard drives call `DiskIo` directly. ATAPI commands for optical drives delegate to `SimpleScsiDvd` through an ATAPI-to-SCSI translation layer — the same DVD implementation that StorVSP uses. IDE also supports [enlightened INT13 commands](../../emulated/legacy_x86/ide.md#enlightened-io), a Microsoft-specific optimization that collapses the multi-exit register-programming sequence into a single VM exit.
 
@@ -148,7 +157,7 @@ The storage resolver chain is recursive. An NVMe controller resolves each namesp
 **Example:** `--disk memdiff:file:path/to/disk.vhdx`
 
 1. CLI parses this into a `LayeredDiskHandle` with two layers:
-   - Layer 0: `RamDiskLayerHandle { len: None }` (RAM diff, inherits size from backing disk)
+   - Layer 0: `RamDiskLayerHandle { len: None, sector_size: None }` (RAM diff, inherits size and sector size from backing disk)
    - Layer 1: `DiskLayerHandle(FileDiskHandle(...))` (the file)
 2. The layered disk resolver resolves both layers in parallel.
 3. The RAM layer attaches on top of the file layer, inheriting its sector size and capacity.
@@ -232,7 +241,7 @@ Both CLI options map to the layered disk model:
 - **`mem:1G`** creates a single-layer `LayeredDisk` with a `RamDiskLayer` sized to 1 GB. No backing disk — the RAM layer is the entire disk.
 - **`memdiff:file:disk.vhdx`** creates a two-layer `LayeredDisk`: a `RamDiskLayer` (inheriting size from the backing disk) on top of the file. Writes go to the RAM layer; reads fall through to the file for sectors not yet written.
 
-Both use `RamDiskLayerHandle` under the hood. The difference is `len: Some(size)` for `mem:` (standalone RAM disk with explicit size) vs. `len: None` for `memdiff:` (inherits from backing disk). The [Running OpenVMM](../../../user_guide/openvmm/run.md) page shows concrete examples.
+Both use `RamDiskLayerHandle` under the hood. The difference is `len: Some(size)` for `mem:` (standalone RAM disk with explicit size) vs. `len: None` for `memdiff:` (inherits from backing disk). The optional `sector_size` field (default `None`) lets you override the sector size; when `None`, it inherits from the lower layer or defaults to 512 bytes. The [Running OpenVMM](../../../user_guide/openvmm/run.md) page shows concrete examples.
 
 ## Controller identity and Azure disk classification
 

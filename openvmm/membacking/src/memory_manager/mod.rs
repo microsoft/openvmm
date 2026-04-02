@@ -98,6 +98,12 @@ pub enum MemoryBuildError {
     /// Failed to allocate private RAM range.
     #[error("failed to allocate private RAM range {1}")]
     PrivateRamAlloc(#[source] std::io::Error, MemoryRange),
+    /// THP requires private memory mode.
+    #[error("transparent huge pages requires private memory mode")]
+    ThpWithoutPrivateMemory,
+    /// THP is only supported on Linux.
+    #[error("transparent huge pages is only supported on Linux")]
+    ThpUnsupportedPlatform,
 }
 
 /// A builder for [`GuestMemoryManager`].
@@ -108,6 +114,7 @@ pub struct GuestMemoryBuilder {
     pin_mappings: bool,
     x86_legacy_support: bool,
     private_memory: bool,
+    transparent_hugepages: bool,
 }
 
 impl GuestMemoryBuilder {
@@ -120,6 +127,7 @@ impl GuestMemoryBuilder {
             prefetch_ram: false,
             x86_legacy_support: false,
             private_memory: false,
+            transparent_hugepages: false,
         }
     }
 
@@ -183,6 +191,17 @@ impl GuestMemoryBuilder {
         self
     }
 
+    /// Enables Transparent Huge Pages for guest RAM.
+    ///
+    /// When set, `madvise(MADV_HUGEPAGE)` is called on private RAM allocations
+    /// to allow khugepaged to collapse 4K pages into 2MB huge pages.
+    /// Requires [`private_memory`](Self::private_memory) and Linux; `build()`
+    /// will return an error if either condition is not met.
+    pub fn transparent_hugepages(mut self, enable: bool) -> Self {
+        self.transparent_hugepages = enable;
+        self
+    }
+
     /// Builds the memory backing, allocating memory if existing memory was not
     /// provided by [`existing_backing`](Self::existing_backing).
     pub async fn build(
@@ -196,6 +215,16 @@ impl GuestMemoryBuilder {
             }
             if self.existing_mapping.is_some() {
                 return Err(MemoryBuildError::PrivateMemoryWithExistingBacking);
+            }
+        }
+
+        // Validate THP constraints.
+        if self.transparent_hugepages {
+            if !self.private_memory {
+                return Err(MemoryBuildError::ThpWithoutPrivateMemory);
+            }
+            if !cfg!(target_os = "linux") {
+                return Err(MemoryBuildError::ThpUnsupportedPlatform);
             }
         }
 
@@ -213,6 +242,7 @@ impl GuestMemoryBuilder {
                     ram_size
                         .try_into()
                         .map_err(|_| MemoryBuildError::RamTooLarge(ram_size))?,
+                    "guest-ram",
                 )
                 .map_err(MemoryBuildError::AllocationFailed)?
                 .into(),
@@ -295,6 +325,28 @@ impl GuestMemoryBuilder {
                 va_mapper
                     .alloc_range(range.start() as usize, range.len() as usize)
                     .map_err(|e| MemoryBuildError::PrivateRamAlloc(e, *range))?;
+                va_mapper.set_range_name(
+                    range.start() as usize,
+                    range.len() as usize,
+                    "guest-ram-private",
+                );
+            }
+
+            // Mark private RAM as THP-eligible so khugepaged can collapse
+            // 4K pages into 2MB huge pages.
+            #[cfg(target_os = "linux")]
+            if self.transparent_hugepages {
+                for range in &ram_ranges {
+                    if let Err(e) =
+                        va_mapper.madvise_hugepage(range.start() as usize, range.len() as usize)
+                    {
+                        tracing::warn!(
+                            error = &e as &dyn std::error::Error,
+                            range = %range,
+                            "failed to mark RAM as THP eligible"
+                        );
+                    }
+                }
             }
         }
 
@@ -303,7 +355,7 @@ impl GuestMemoryBuilder {
         for range in &ram_ranges {
             let region = region_manager
                 .client()
-                .new_region("ram".into(), *range, RAM_PRIORITY)
+                .new_region("ram".into(), *range, RAM_PRIORITY, true)
                 .await
                 .expect("regions cannot overlap yet");
 
@@ -354,6 +406,13 @@ impl GuestMemoryBuilder {
 #[derive(Debug, MeshPayload)]
 pub struct SharedMemoryBacking {
     guest_ram: Mappable,
+}
+
+impl SharedMemoryBacking {
+    /// Create a SharedMemoryBacking from a mappable handle/fd.
+    pub fn from_mappable(guest_ram: Mappable) -> Self {
+        Self { guest_ram }
+    }
 }
 
 /// A mesh-serializable object for providing access to guest memory.

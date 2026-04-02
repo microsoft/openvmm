@@ -50,6 +50,7 @@ use pal::unix::pthread::*;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::io;
 use std::sync::Arc;
@@ -193,13 +194,14 @@ impl virt::Hypervisor for LinuxMshv {
 
         Ok(MshvProtoPartition { config, vmfd, vps })
     }
+}
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/mshv") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(Error::AvailableCheck(err)),
-        }
+/// Returns whether MSHV is available on this machine.
+pub fn is_available() -> Result<bool, Error> {
+    match std::fs::metadata("/dev/mshv") {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(Error::AvailableCheck(err)),
     }
 }
 
@@ -215,24 +217,33 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     type ProcessorBinder = MshvProcessorBinder;
     type Error = Error;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        // This call should never fail unless there is a kernel or hypervisor
-        // bug.
-        self.vps[0]
-            .vcpufd
-            .get_cpuid_values(eax, ecx, 0, 0)
-            .expect("cpuid should not fail")
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| {
+            self.vps[0]
+                .vcpufd
+                .get_cpuid_values(eax, ecx, 0, 0)
+                .expect("cpuid should not fail")
+        })
     }
 
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        // TODO: do something with cpuid.
+        // Build topology CPUID leaves.
+        // TODO: actually apply these to the partition's CPUID results.
+        let mut cpuid_leaves: Vec<virt::CpuidLeaf> = config.cpuid.to_vec();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| {
+                self.vps[0]
+                    .vcpufd
+                    .get_cpuid_values(eax, ecx, 0, 0)
+                    .expect("cpuid should not fail")
+            },
+            &mut cpuid_leaves,
+        )
+        .map_err(Error::TopologyCpuid)?;
 
         // Get caps via cpuid
         let caps = virt::PartitionCapabilities::from_cpuid(
@@ -327,6 +338,10 @@ impl virt::Partition for MshvPartition {
 
     fn request_msi(&self, _vtl: Vtl, request: MsiRequest) {
         self.inner.request_msi(request)
+    }
+
+    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        Some(self.inner.clone())
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -1097,6 +1112,8 @@ pub enum Error {
     InstallIntercept(#[source] MshvError),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 impl MshvPartitionInner {
@@ -1120,6 +1137,12 @@ impl MshvPartitionInner {
                 "failed to request msi"
             );
         }
+    }
+}
+
+impl SignalMsi for MshvPartitionInner {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.request_msi(MsiRequest { address, data });
     }
 }
 

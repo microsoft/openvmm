@@ -12,6 +12,7 @@ use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use pal_async::DefaultPool;
 use scsi_defs::Cdb10;
+use scsi_defs::CdbInquiry;
 use scsi_defs::ScsiOp;
 use std::pin::pin;
 use std::sync::Arc;
@@ -31,9 +32,24 @@ use zerocopy::IntoBytes;
 
 #[derive(Arbitrary)]
 enum StorvspFuzzAction {
-    SendReadWritePacket,
+    SendScsiPacket(FuzzCdbType),
     SendRawPacket(FuzzOutgoingPacketType),
+    SendResetPacket(FuzzResetType),
     ReadCompletion,
+}
+
+#[derive(Arbitrary)]
+enum FuzzCdbType {
+    ReadWrite,
+    ReportLuns,
+    Inquiry,
+}
+
+#[derive(Arbitrary)]
+enum FuzzResetType {
+    Bus,
+    Adapter,
+    Lun,
 }
 
 #[derive(Arbitrary)]
@@ -42,12 +58,14 @@ enum FuzzOutgoingPacketType {
     GpaDirectPacket,
 }
 
-/// Return an arbitrary byte length that can be sent in a GPA direct
-/// packet. The byte length is limited to the maximum number of pages
-/// that could fit into a `PagedRange` (at least with how we store the
-/// list of pages in the fuzzer ...).
+/// Maximum number of pages in a single GPA direct packet. Kept small to
+/// avoid per-packet Vec<u64> heap allocations — the GPN array is stack-allocated.
+const MAX_GPA_PAGES: usize = 8;
+
+/// Return an arbitrary byte length for GPA direct packets, capped to
+/// MAX_GPA_PAGES pages to keep allocations bounded.
 fn arbitrary_byte_len(u: &mut Unstructured<'_>) -> Result<usize, arbitrary::Error> {
-    let max_byte_len = u.arbitrary_len::<u64>()? * PAGE_SIZE;
+    let max_byte_len = MAX_GPA_PAGES * PAGE_SIZE;
     u.int_in_range(0..=max_byte_len)
 }
 
@@ -61,13 +79,24 @@ async fn send_gpa_direct_packet(
     transaction_id: u64,
 ) -> Result<(), anyhow::Error> {
     let start_page: u64 = gpa_start / PAGE_SIZE as u64;
-    let end_page = start_page
-        .checked_add(byte_len.try_into()?)
-        .map(|v| v.div_ceil(PAGE_SIZE as u64))
-        .ok_or(arbitrary::Error::IncorrectFormat)?;
+    let page_offset = gpa_start as usize % PAGE_SIZE;
+    // Clamp byte_len so the GPA range fits in MAX_GPA_PAGES.
+    let byte_len = byte_len.min(MAX_GPA_PAGES * PAGE_SIZE - page_offset);
 
-    let gpns: Vec<u64> = (start_page..end_page).collect();
-    let pages = PagedRange::new(gpa_start as usize % PAGE_SIZE, byte_len, gpns.as_slice())
+    let end_addr = gpa_start
+        .checked_add(byte_len as u64)
+        .ok_or(arbitrary::Error::IncorrectFormat)?;
+    let end_page = end_addr.div_ceil(PAGE_SIZE as u64);
+    let page_count = (end_page - start_page) as usize;
+    if page_count > MAX_GPA_PAGES {
+        return Err(arbitrary::Error::IncorrectFormat.into());
+    }
+
+    let mut gpns = [0u64; MAX_GPA_PAGES];
+    for (i, gpn) in (start_page..end_page).enumerate() {
+        gpns[i] = gpn;
+    }
+    let pages = PagedRange::new(page_offset, byte_len, &gpns[..page_count])
         .ok_or(arbitrary::Error::IncorrectFormat)?;
 
     guest
@@ -83,19 +112,17 @@ async fn send_gpa_direct_packet(
         .map_err(|e| e.into())
 }
 
-/// Send a reasonably well structured read or write packet to storvsp.
-/// While the fuzzer should eventually discover these paths by poking at
-/// arbitrary GpaDirect packet payload, make the search more efficient by
-/// generating a packet that is more likely to pass basic parsing checks.
-async fn send_arbitrary_readwrite_packet(
+/// Build and send an EXECUTE_SRB packet with the given CDB type.
+/// The three SCSI send paths (read/write, report-luns, inquiry) share
+/// identical packet construction — only the CDB content differs.
+async fn send_scsi_packet(
     u: &mut Unstructured<'_>,
     guest: &mut TestGuest,
+    cdb_type: &FuzzCdbType,
 ) -> Result<(), anyhow::Error> {
     let path: ScsiPath = u.arbitrary()?;
     let gpa = u.arbitrary::<u64>()?;
     let byte_len = arbitrary_byte_len(u)?;
-
-    let block: u32 = u.arbitrary()?;
     let transaction_id: u64 = u.arbitrary()?;
 
     let packet = storvsp_protocol::Packet {
@@ -104,13 +131,38 @@ async fn send_arbitrary_readwrite_packet(
         status: storvsp_protocol::NtStatus::SUCCESS,
     };
 
-    // TODO: read6, read12, read16, write6, write12, write16, etc. (READ is read10, WRITE is write10)
-    let scsiop_choices = [ScsiOp::READ, ScsiOp::WRITE];
-    let cdb = Cdb10 {
-        operation_code: *(u.choose(&scsiop_choices)?),
-        logical_block: block.into(),
-        transfer_blocks: ((byte_len / 512) as u16).into(),
-        ..FromZeros::new_zeroed()
+    let mut cdb_buf = [0u8; 16];
+    let (cdb_len, is_read) = match cdb_type {
+        FuzzCdbType::ReadWrite => {
+            let block: u32 = u.arbitrary()?;
+            let ops = [ScsiOp::READ, ScsiOp::WRITE];
+            let op = *u.choose(&ops)?;
+            let cdb = Cdb10 {
+                operation_code: op,
+                logical_block: block.into(),
+                transfer_blocks: ((byte_len / 512) as u16).into(),
+                ..FromZeros::new_zeroed()
+            };
+            cdb_buf[..10].copy_from_slice(cdb.as_bytes());
+            (size_of::<Cdb10>(), op == ScsiOp::READ)
+        }
+        FuzzCdbType::ReportLuns => {
+            // REPORT_LUNS is a 12-byte CDB. Only the opcode byte matters
+            // for storvsp dispatch, but set the length correctly.
+            cdb_buf[0] = ScsiOp::REPORT_LUNS.0;
+            (12, true)
+        }
+        FuzzCdbType::Inquiry => {
+            let cdb = CdbInquiry {
+                operation_code: ScsiOp::INQUIRY.0,
+                page_code: u.arbitrary()?,
+                allocation_length: (byte_len as u16).into(),
+                ..FromZeros::new_zeroed()
+            };
+            let bytes = cdb.as_bytes();
+            cdb_buf[..bytes.len()].copy_from_slice(bytes);
+            (bytes.len(), true)
+        }
     };
 
     let mut scsi_req = storvsp_protocol::ScsiRequest {
@@ -118,13 +170,13 @@ async fn send_arbitrary_readwrite_packet(
         path_id: path.path,
         lun: path.lun,
         length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
-        cdb_length: size_of::<Cdb10>() as u8,
+        cdb_length: cdb_len as u8,
         data_transfer_length: byte_len.try_into()?,
-        data_in: 1,
+        data_in: if is_read { 1 } else { 0 },
         ..FromZeros::new_zeroed()
     };
 
-    scsi_req.payload[0..10].copy_from_slice(cdb.as_bytes());
+    scsi_req.payload[..cdb_len].copy_from_slice(&cdb_buf[..cdb_len]);
 
     send_gpa_direct_packet(
         guest,
@@ -136,55 +188,89 @@ async fn send_arbitrary_readwrite_packet(
     .await
 }
 
+/// Send a reset packet (RESET_BUS, RESET_ADAPTER, or RESET_LUN).
+async fn send_reset_packet(
+    u: &mut Unstructured<'_>,
+    guest: &mut TestGuest,
+    reset_type: &FuzzResetType,
+) -> Result<(), anyhow::Error> {
+    let operation = match reset_type {
+        FuzzResetType::Bus => storvsp_protocol::Operation::RESET_BUS,
+        FuzzResetType::Adapter => storvsp_protocol::Operation::RESET_ADAPTER,
+        FuzzResetType::Lun => storvsp_protocol::Operation::RESET_LUN,
+    };
+
+    let packet = storvsp_protocol::Packet {
+        operation,
+        flags: 0,
+        status: storvsp_protocol::NtStatus::SUCCESS,
+    };
+
+    let transaction_id: u64 = u.arbitrary()?;
+
+    guest
+        .queue
+        .split()
+        .1
+        .write(OutgoingPacket {
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            transaction_id,
+            payload: &[packet.as_bytes()],
+        })
+        .await?;
+
+    Ok(())
+}
+
 async fn do_fuzz_loop(
     u: &mut Unstructured<'_>,
     guest: &mut TestGuest,
 ) -> Result<(), anyhow::Error> {
-    if u.ratio(9, 10)? {
-        // TODO: [use-arbitrary-input] (e.g., munge the negotiation packets)
-        guest.perform_protocol_negotiation().await;
-    }
+    // Always negotiate — without init, storvsp just rejects all packets
+    // with INVALID_DEVICE_STATE. The SendRawPacket paths can still exercise
+    // the init state machine through mutation if needed.
+    guest.perform_protocol_negotiation().await;
 
     while !u.is_empty() {
         let action = u.arbitrary::<StorvspFuzzAction>()?;
         match action {
-            StorvspFuzzAction::SendReadWritePacket => {
-                send_arbitrary_readwrite_packet(u, guest).await?;
+            StorvspFuzzAction::SendScsiPacket(cdb_type) => {
+                send_scsi_packet(u, guest, &cdb_type).await?;
             }
-            StorvspFuzzAction::SendRawPacket(packet_type) => {
-                match packet_type {
-                    FuzzOutgoingPacketType::AnyOutgoingPacket => {
-                        let packet_types = [
-                            OutgoingPacketType::InBandNoCompletion,
-                            OutgoingPacketType::InBandWithCompletion,
-                            OutgoingPacketType::Completion,
-                        ];
-                        let payload = u.arbitrary::<storvsp_protocol::Packet>()?;
-                        // TODO: [use-arbitrary-input] (send a byte blob of arbitrary length rather
-                        // than a fixed-size arbitrary packet)
-                        let packet = OutgoingPacket {
-                            transaction_id: u.arbitrary()?,
-                            packet_type: *u.choose(&packet_types)?,
-                            payload: &[payload.as_bytes()], // TODO: [use-arbitrary-input]
-                        };
+            StorvspFuzzAction::SendResetPacket(reset_type) => {
+                send_reset_packet(u, guest, &reset_type).await?;
+            }
+            StorvspFuzzAction::SendRawPacket(packet_type) => match packet_type {
+                FuzzOutgoingPacketType::AnyOutgoingPacket => {
+                    let packet_types = [
+                        OutgoingPacketType::InBandNoCompletion,
+                        OutgoingPacketType::InBandWithCompletion,
+                        OutgoingPacketType::Completion,
+                    ];
+                    let payload_len = u.int_in_range(0..=64)?;
+                    let payload: &[u8] = u.bytes(payload_len)?;
+                    let packet = OutgoingPacket {
+                        transaction_id: u.arbitrary()?,
+                        packet_type: *u.choose(&packet_types)?,
+                        payload: &[payload],
+                    };
 
-                        guest.queue.split().1.write(packet).await?;
-                    }
-                    FuzzOutgoingPacketType::GpaDirectPacket => {
-                        let header = u.arbitrary::<storvsp_protocol::Packet>()?;
-                        let scsi_req = u.arbitrary::<storvsp_protocol::ScsiRequest>()?;
-
-                        send_gpa_direct_packet(
-                            guest,
-                            &[header.as_bytes(), scsi_req.as_bytes()],
-                            u.arbitrary()?,
-                            arbitrary_byte_len(u)?,
-                            u.arbitrary()?,
-                        )
-                        .await?
-                    }
+                    guest.queue.split().1.write(packet).await?;
                 }
-            }
+                FuzzOutgoingPacketType::GpaDirectPacket => {
+                    let header = u.arbitrary::<storvsp_protocol::Packet>()?;
+                    let scsi_req = u.arbitrary::<storvsp_protocol::ScsiRequest>()?;
+
+                    send_gpa_direct_packet(
+                        guest,
+                        &[header.as_bytes(), scsi_req.as_bytes()],
+                        u.arbitrary()?,
+                        arbitrary_byte_len(u)?,
+                        u.arbitrary()?,
+                    )
+                    .await?
+                }
+            },
             StorvspFuzzAction::ReadCompletion => {
                 // Read completion(s) from the storvsp -> guest queue. This shouldn't
                 // evoke any specific storvsp behavior, but is important to eventually
@@ -202,17 +288,23 @@ async fn do_fuzz_loop(
 
 fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
     DefaultPool::run_with(async |driver| {
-        let (host, guest_channel) = connected_async_channels(16 * 1024); // TODO: [use-arbitrary-input]
+        let (host, guest_channel) = connected_async_channels(4 * 1024);
         let guest_queue = Queue::new(guest_channel).unwrap();
 
-        let test_guest_mem = GuestMemory::allocate(u.int_in_range(1..=256)? * PAGE_SIZE);
+        let test_guest_mem = GuestMemory::allocate(4 * PAGE_SIZE);
         let controller = ScsiController::new();
-        let disk_len_sectors = u.int_in_range(1..=1048576)?; // up to 512mb in 512 byte sectors
-        let disk = scsidisk::SimpleScsiDisk::new(
-            disklayer_ram::ram_disk(disk_len_sectors * 512, false).unwrap(),
-            Default::default(),
-        );
-        controller.attach(u.arbitrary()?, ScsiControllerDisk::new(Arc::new(disk)))?;
+        // Attach 0-3 disks at arbitrary paths. 0 disks exercises the
+        // empty-controller code paths (REPORT_LUNS returns empty list,
+        // INQUIRY returns "not present", other ops return INVALID_LUN).
+        let num_disks = u.int_in_range(0..=3)?;
+        for _ in 0..num_disks {
+            let disk = scsidisk::SimpleScsiDisk::new(
+                disklayer_ram::ram_disk(64 * 512, false).unwrap(),
+                Default::default(),
+            );
+            // Ignore errors (e.g., duplicate paths) — fewer disks is fine.
+            let _ = controller.attach(u.arbitrary()?, ScsiControllerDisk::new(Arc::new(disk)));
+        }
 
         let test_worker = TestWorker::start(
             controller,
@@ -243,10 +335,5 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
 
 fuzz_target!(|input: &[u8]| {
     xtask_fuzz::init_tracing_if_repro();
-
     let _ = do_fuzz(&mut Unstructured::new(input));
-
-    // Always keep the corpus, since errors are a reasonable outcome.
-    // A future optimization would be to reject any corpus entries that
-    // result in the inability to generate arbitrary data from the Unstructured...
 });

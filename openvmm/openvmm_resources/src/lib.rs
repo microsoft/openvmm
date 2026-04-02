@@ -70,12 +70,17 @@ vm_resource::register_static_resolvers! {
 
     // Virtio devices
     virtio_blk::resolver::VirtioBlkResolver,
+    virtio_console::resolver::VirtioConsoleResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtiofs::resolver::VirtioFsResolver,
     #[cfg(any(windows, target_os = "linux"))]
     virtio_p9::resolver::VirtioPlan9Resolver,
     virtio_net::resolver::VirtioNetResolver,
     virtio_pmem::resolver::VirtioPmemResolver,
+    virtio_rng::resolver::VirtioRngResolver,
+    #[cfg(target_os = "linux")]
+    vhost_user_frontend::resolver::VhostUserFrontendResolver,
+    virtio_vsock::resolver::VirtioVsockResolver,
 
     // Vmbus devices
     guest_crash_device::resolver::GuestCrashDeviceResolver,
@@ -98,4 +103,19 @@ mesh_worker::register_workers! {
 
     #[cfg(feature = "gdb")]
     debug_worker::DebuggerWorker<std::net::TcpListener>,
+}
+
+// Hypervisor backend resolvers.
+vm_resource::register_static_resolvers! {
+    #[cfg(all(target_os = "linux", feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
+    openvmm_hypervisors::mshv::MshvResolver,
+
+    #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
+    openvmm_hypervisors::kvm::KvmResolver,
+
+    #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
+    openvmm_hypervisors::whp::WhpResolver,
+
+    #[cfg(all(target_os = "macos", guest_arch = "aarch64", guest_is_native, feature = "virt_hvf"))]
+    openvmm_hypervisors::hvf::HvfResolver,
 }

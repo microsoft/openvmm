@@ -77,6 +77,8 @@ pub fn github_yaml(
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
         job_command_wrappers: BTreeMap::new(),
+        job_platforms: BTreeMap::new(),
+        job_archs: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -137,6 +139,11 @@ pub fn github_yaml(
                 .insert(job_idx.index(), wrapper_kind.clone());
         }
 
+        pipeline_static_db
+            .job_platforms
+            .insert(job_idx.index(), platform);
+        pipeline_static_db.job_archs.insert(job_idx.index(), arch);
+
         let mut gh_steps = Vec::new();
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
@@ -196,22 +203,38 @@ pub fn github_yaml(
         // download any artifacts that'll be used
         artifact_names.extend(artifacts_used.iter().map(|a| a.name.as_str()));
         if !artifact_names.is_empty() {
-            let pattern = if let &[name] = artifact_names.as_slice() {
-                name.to_string()
-            } else {
-                format!("{{{}}}", artifact_names.join(","))
-            };
+            // When downloading a single artifact by name, the contents are
+            // extracted directly to `path/` without a subdirectory. For
+            // multiple artifacts with `merge-multiple: false` (the default),
+            // named subdirectories are created automatically.
+            //
+            // Use `name:` with an explicit subdirectory path for single
+            // artifacts, and `pattern:` for multiple artifacts.
             gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
-                    r#"
-                        name: '🌼📦 Download artifacts'
-                        uses: actions/download-artifact@v4
-                        with:
-                          pattern: '{pattern}'
-                          path: {RUNNER_TEMP}/used_artifacts/
-                    "#
-                ))
-                .unwrap();
+                let map: serde_yaml::Mapping = if let &[name] = artifact_names.as_slice() {
+                    serde_yaml::from_str(&format!(
+                        r#"
+                            name: '🌼📦 Download artifacts'
+                            uses: actions/download-artifact@v8
+                            with:
+                              name: '{name}'
+                              path: {RUNNER_TEMP}/used_artifacts/{name}/
+                        "#
+                    ))
+                    .unwrap()
+                } else {
+                    let pattern = format!("{{{}}}", artifact_names.join(","));
+                    serde_yaml::from_str(&format!(
+                        r#"
+                            name: '🌼📦 Download artifacts'
+                            uses: actions/download-artifact@v8
+                            with:
+                              pattern: '{pattern}'
+                              path: {RUNNER_TEMP}/used_artifacts/
+                        "#
+                    ))
+                    .unwrap()
+                };
                 map.into()
             });
         }
@@ -451,7 +474,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
-                        uses: actions/upload-artifact@v4
+                        uses: actions/upload-artifact@v7
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
@@ -485,7 +508,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                     name: 🌼🥾 Publish bootstrapped flowey
-                    uses: actions/upload-artifact@v4
+                    uses: actions/upload-artifact@v7
                     with:
                         name: {artifact}
                         path: {RUNNER_TEMP}/{flowey_path}
@@ -558,7 +581,18 @@ EOF
             github_yaml_defs::Job {
                 name: label.clone(),
                 timeout_minutes,
-                runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
+                runs_on: gh_pool.clone().map(|runner| {
+                    let mut yaml_runner = runner_kind_to_yaml(&runner);
+                    if let github_yaml_defs::Runner::SelfHosted(ref mut labels) = yaml_runner {
+                        if labels.iter().any(|l| l.starts_with("1ES.Pool=")) {
+                            labels.push(format!(
+                                "JobId=job{}-${{{{ github.run_id }}}}-${{{{ github.run_number }}}}-${{{{ github.run_attempt }}}}",
+                                job_idx.index()
+                            ));
+                        }
+                    }
+                    yaml_runner
+                }),
                 permissions: job_permissions
                     .iter()
                     .map(|k| (perm_kind_to_yaml(k.0), perm_val_to_yaml(k.1)))

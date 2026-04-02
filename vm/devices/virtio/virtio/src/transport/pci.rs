@@ -4,12 +4,19 @@
 //! PCI transport for virtio devices
 
 use self::capabilities::*;
-use crate::QUEUE_MAX_SIZE;
+use super::task::DeviceCommand;
+use super::task::StartParams;
+use super::task::TransportState;
+use super::task::TransportStateResult;
+use super::task::defer_config_read;
+use super::task::defer_config_write;
+use super::task::run_device_task;
+use crate::DynVirtioDevice;
+use crate::MAX_QUEUE_SIZE;
 use crate::QueueResources;
-use crate::Resources;
-use crate::VirtioDevice;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
+use crate::queue::QueueState;
 use crate::spec::pci::VIRTIO_PCI_COMMON_CFG_SIZE;
 use crate::spec::pci::VIRTIO_PCI_DEVICE_ID_BASE;
 use crate::spec::pci::VIRTIO_VENDOR_ID;
@@ -26,9 +33,14 @@ use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
 use guestmem::DoorbellRegistration;
-use guestmem::MappedMemoryRegion;
+use guestmem::GuestMemory;
 use guestmem::MemoryMapper;
+use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use parking_lot::Mutex;
 use pci_core::PciInterruptPin;
 use pci_core::capabilities::PciCapability;
@@ -45,13 +57,10 @@ use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::io;
 use std::sync::Arc;
+use std::task::Poll;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::interrupt::Interrupt;
 use vmcore::line_interrupt::LineInterrupt;
-use vmcore::save_restore::NoSavedState;
-use vmcore::save_restore::RestoreError;
-use vmcore::save_restore::SaveError;
-use vmcore::save_restore::SaveRestore;
 
 /// What kind of PCI interrupts [`VirtioPciDevice`] should use.
 pub enum PciInterruptModel<'a> {
@@ -75,8 +84,11 @@ const BAR0_DEVICE_CFG_OFFSET: u16 = BAR0_ISR_OFFSET + BAR0_ISR_SIZE;
 /// Run a virtio device over PCI
 #[derive(InspectMut)]
 pub struct VirtioPciDevice {
-    #[inspect(mut)]
-    device: Box<dyn VirtioDevice>,
+    #[inspect(rename = "device", send = "DeviceCommand::Inspect")]
+    device_sender: mesh::Sender<DeviceCommand>,
+    #[inspect(skip)]
+    _device_task: Task<()>,
+    state: TransportState,
     #[inspect(skip)]
     device_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
@@ -87,17 +99,12 @@ pub struct VirtioPciDevice {
     driver_feature_select: u32,
     msix_config_vector: u16,
     queue_select: u32,
-    #[inspect(skip)]
-    events: Vec<pal_event::Event>,
-    #[inspect(skip)]
-    queues: Vec<QueueParams>,
-    #[inspect(skip)]
-    msix_vectors: Vec<u16>,
+    #[inspect(iter_by_index)]
+    queues: Vec<PciQueueData>,
     #[inspect(skip)]
     interrupt_status: Arc<Mutex<u32>>,
     #[inspect(hex)]
     device_status: VirtioDeviceStatus,
-    disabling: bool,
     #[inspect(skip)]
     poll_waker: Option<std::task::Waker>,
     config_generation: u32,
@@ -107,35 +114,59 @@ pub struct VirtioPciDevice {
     interrupt_kind: InterruptKind,
     #[inspect(skip)]
     doorbells: VirtioDoorbells,
-    #[inspect(skip)]
-    shared_memory_region: Option<Arc<dyn MappedMemoryRegion>>,
     #[inspect(hex)]
     shared_memory_size: u64,
+    supports_save_restore: bool,
+    #[inspect(skip)]
+    guest_memory: GuestMemory,
+}
+
+/// Per-queue transport data.
+#[derive(Inspect)]
+struct PciQueueData {
+    #[inspect(flatten)]
+    params: QueueParams,
+    #[inspect(skip)]
+    initial_size: u16,
+    #[inspect(skip)]
+    msix_vector: u16,
+    #[inspect(skip)]
+    event: pal_event::Event,
+    #[inspect(skip)]
+    saved_state: Option<QueueState>,
 }
 
 impl VirtioPciDevice {
     pub fn new(
-        device: Box<dyn VirtioDevice>,
+        mut device: Box<dyn DynVirtioDevice>,
+        driver: &impl Spawn,
+        guest_memory: GuestMemory,
         interrupt_model: PciInterruptModel<'_>,
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_registration: &mut dyn RegisterMmioIntercept,
         shared_mem_mapper: Option<&dyn MemoryMapper>,
     ) -> io::Result<Self> {
         let traits = device.traits();
-        let queues = (0..traits.max_queues)
-            .map(|_| QueueParams {
-                size: QUEUE_MAX_SIZE,
-                ..Default::default()
+        let queues: Vec<PciQueueData> = (0..traits.max_queues)
+            .map(|i| {
+                let size = device.queue_size(i);
+                super::validate_queue_size(i, size)?;
+                Ok(PciQueueData {
+                    params: QueueParams {
+                        size,
+                        ..Default::default()
+                    },
+                    initial_size: size,
+                    msix_vector: 0,
+                    event: pal_event::Event::new(),
+                    saved_state: None,
+                })
             })
-            .collect();
-        let events = (0..traits.max_queues)
-            .map(|_| pal_event::Event::new())
-            .collect();
-        let msix_vectors = vec![0; traits.max_queues.into()];
+            .collect::<io::Result<Vec<_>>>()?;
 
         let hardware_ids = HardwareIds {
             vendor_id: VIRTIO_VENDOR_ID,
-            device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id,
+            device_id: VIRTIO_PCI_DEVICE_ID_BASE + traits.device_id.0,
             revision_id: 1,
             prog_if: ProgrammingInterface::NONE,
             base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
@@ -211,7 +242,6 @@ impl VirtioPciDevice {
         };
 
         let shared_memory_size = traits.shared_memory.size;
-        let mut shared_memory_region = None;
         if shared_memory_size > 0 {
             let (control, region) = shared_mem_mapper
                 .expect("must provide mapper for shmem")
@@ -232,7 +262,10 @@ impl VirtioPciDevice {
             )));
 
             bars = bars.bar4(shared_memory_size, BarMemoryKind::SharedMem(control));
-            shared_memory_region = Some(region);
+
+            device
+                .set_shared_memory_region(&region)
+                .map_err(io::Error::other)?;
         }
 
         let mut config_space = ConfigSpaceType0Emulator::new(hardware_ids, caps, bars);
@@ -246,41 +279,35 @@ impl VirtioPciDevice {
         let device_feature = traits
             .device_features
             .clone()
-            .with_bank0(
-                traits
-                    .device_features
-                    .bank0()
-                    .with_ring_event_idx(true)
-                    .with_ring_indirect_desc(true),
-            )
-            .with_bank1(
-                traits
-                    .device_features
-                    .bank1()
-                    .with_version_1(true)
-                    .with_ring_packed(true),
-            );
+            .with_bank1(traits.device_features.bank1().with_version_1(true));
+        let supports_save_restore = device.supports_save_restore();
+
+        let (sender, receiver) = mesh::channel();
+        let _device_task = driver.spawn("virtio-device-task", async move {
+            run_device_task(device, receiver).await;
+        });
+
         Ok(VirtioPciDevice {
-            device,
+            device_sender: sender,
+            _device_task,
+            state: TransportState::Ready,
             device_feature,
             device_feature_select: 0,
             driver_feature: VirtioDeviceFeatures::new(),
             driver_feature_select: 0,
             msix_config_vector: 0,
             queue_select: 0,
-            events,
             queues,
-            msix_vectors,
             interrupt_status: Arc::new(Mutex::new(0)),
             device_status: VirtioDeviceStatus::new(),
-            disabling: false,
             poll_waker: None,
             config_generation: 0,
             interrupt_kind,
             config_space,
             doorbells: VirtioDoorbells::new(doorbell_registration),
-            shared_memory_region,
             shared_memory_size,
+            supports_save_restore,
+            guest_memory,
         })
     }
 
@@ -299,7 +326,70 @@ impl VirtioPciDevice {
         }
     }
 
-    fn read_u32(&mut self, offset: u16) -> u32 {
+    /// Create an interrupt for a specific queue index.
+    fn create_queue_interrupt(&self, idx: usize) -> Interrupt {
+        let vector = self.queues[idx].msix_vector;
+        match &self.interrupt_kind {
+            InterruptKind::Msix(msix) => {
+                if let Some(interrupt) = msix.interrupt(vector) {
+                    interrupt
+                } else {
+                    tracing::warn!(vector, "invalid MSIx vector specified");
+                    Interrupt::null()
+                }
+            }
+            InterruptKind::IntX(line) => {
+                let interrupt_status = self.interrupt_status.clone();
+                let line = line.clone();
+                Interrupt::from_fn(move || {
+                    *interrupt_status.lock() |= 1;
+                    line.set_level(true);
+                })
+            }
+        }
+    }
+
+    /// Reset transport status and interrupt state after a failed enable or
+    /// completed disable.
+    fn reset_status(&mut self) {
+        self.doorbells.clear();
+        self.device_status = VirtioDeviceStatus::new();
+        self.config_generation = 0;
+        *self.interrupt_status.lock() = 0;
+        if let InterruptKind::IntX(line) = &self.interrupt_kind {
+            line.set_level(false);
+        }
+    }
+
+    /// Apply the result of a completed transport state transition.
+    /// Used by both `poll_device` and `stop` to avoid duplicating
+    /// the side-effect logic.
+    fn apply_transport_result(&mut self, result: TransportStateResult) {
+        match result {
+            TransportStateResult::EnableComplete(true) => {
+                self.device_status.set_driver_ok(true);
+                self.update_config_generation();
+            }
+            TransportStateResult::EnableComplete(false) | TransportStateResult::DisableComplete => {
+                self.reset_status();
+            }
+        }
+    }
+
+    /// Register doorbells for all queues at BAR0's notification offset.
+    fn install_doorbells(&mut self) {
+        if let Some(bar0_base) = self.config_space.bar_address(0) {
+            let notification_address = bar0_base + BAR0_NOTIFY_OFFSET as u64;
+            for (i, qd) in self.queues.iter().enumerate() {
+                self.doorbells
+                    .add(notification_address, Some(i as u64), Some(2), &qd.event);
+            }
+        }
+    }
+
+    /// Read a transport register as a u32. Does not handle device-config
+    /// registers — those are dispatched to the device task by `mmio_read`.
+    fn read_u32_local(&mut self, offset: u16) -> u32 {
         assert!(offset & 3 == 0);
         let queue_select = self.queue_select as usize;
         match VirtioPciCommonCfg(offset) {
@@ -321,16 +411,16 @@ impl VirtioPciDevice {
             }
             VirtioPciCommonCfg::QUEUE_SIZE => {
                 let size = if queue_select < self.queues.len() {
-                    self.queues[queue_select].size
+                    self.queues[queue_select].params.size
                 } else {
                     0
                 };
-                let msix_vector = self.msix_vectors.get(queue_select).copied().unwrap_or(0);
+                let msix_vector = self.queues.get(queue_select).map_or(0, |qd| qd.msix_vector);
                 (msix_vector as u32) << 16 | size as u32
             }
             VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let enable = if queue_select < self.queues.len() {
-                    if self.queues[queue_select].enable {
+                    if self.queues[queue_select].params.enable {
                         1
                     } else {
                         0
@@ -348,42 +438,42 @@ impl VirtioPciDevice {
             }
             VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].desc_addr as u32
+                    self.queues[queue_select].params.desc_addr as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].desc_addr >> 32) as u32
+                    (self.queues[queue_select].params.desc_addr >> 32) as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].avail_addr as u32
+                    self.queues[queue_select].params.avail_addr as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].avail_addr >> 32) as u32
+                    (self.queues[queue_select].params.avail_addr >> 32) as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].used_addr as u32
+                    self.queues[queue_select].params.used_addr as u32
                 } else {
                     0
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].used_addr >> 32) as u32
+                    (self.queues[queue_select].params.used_addr >> 32) as u32
                 } else {
                     0
                 }
@@ -398,9 +488,6 @@ impl VirtioPciDevice {
                 }
                 status
             }
-            VirtioPciCommonCfg(offset) if offset >= BAR0_DEVICE_CFG_OFFSET => self
-                .device
-                .read_registers_u32(offset - BAR0_DEVICE_CFG_OFFSET),
             _ => {
                 tracing::warn!(offset, "unknown bar read");
                 0xffffffff
@@ -408,7 +495,9 @@ impl VirtioPciDevice {
         }
     }
 
-    fn write_u32(&mut self, address: u64, offset: u16, val: u32) {
+    /// Write a transport register as a u32. Does not handle device-config
+    /// registers — those are dispatched to the device task by `mmio_write`.
+    fn write_u32_local(&mut self, offset: u16, val: u32) {
         assert!(offset & 3 == 0);
         let queues_locked = self.device_status.driver_ok();
         let features_locked = queues_locked || self.device_status.features_ok();
@@ -430,30 +519,25 @@ impl VirtioPciDevice {
                 self.queue_select = val >> 16;
                 let val = val & 0xff;
                 if val == 0 {
-                    if self.disabling {
+                    if self.state.try_pending_reset() {
+                        // An enable or disable is in flight — the
+                        // reset will complete asynchronously. STATUS
+                        // stays non-zero until then; the guest polls
+                        // per virtio spec v1.2 §2.1.
                         return;
                     }
-                    let started = self.device_status.driver_ok();
-                    self.config_generation = 0;
-                    if started {
+
+                    if !self.device_status.driver_ok() {
+                        // Never reached DRIVER_OK, reset synchronously.
+                        self.reset_status();
+                    } else {
+                        // Queues are active — send async teardown to task.
                         self.doorbells.clear();
-                        // Try the fast path: poll with a noop waker to see if
-                        // the device can disable synchronously.
-                        let waker = std::task::Waker::noop();
-                        let mut cx = std::task::Context::from_waker(waker);
-                        if self.device.poll_disable(&mut cx).is_pending() {
-                            self.disabling = true;
-                            // Wake the real poll waker so that poll_device will
-                            // re-poll with a real waker, replacing the noop one.
-                            if let Some(waker) = self.poll_waker.take() {
-                                waker.wake();
-                            }
-                            return;
+                        self.state.start_disable(&self.device_sender);
+                        if let Some(waker) = self.poll_waker.take() {
+                            waker.wake();
                         }
                     }
-                    // Fast path: disable completed synchronously.
-                    self.device_status = VirtioDeviceStatus::new();
-                    *self.interrupt_status.lock() = 0;
                     return;
                 }
 
@@ -474,136 +558,99 @@ impl VirtioPciDevice {
                 }
 
                 if !self.device_status.driver_ok() && new_status.driver_ok() {
-                    let notification_address = (address & !0xfff) + BAR0_NOTIFY_OFFSET as u64;
-                    for i in 0..self.events.len() {
-                        self.doorbells.add(
-                            notification_address,
-                            Some(i as u64),
-                            Some(2),
-                            &self.events[i],
-                        );
+                    if self.state.is_busy() {
+                        return;
                     }
-                    let queues = self
+                    self.install_doorbells();
+
+                    let features = self.driver_feature.clone();
+                    let queues: Vec<_> = self
                         .queues
                         .iter()
-                        .zip(self.msix_vectors.iter().copied())
-                        .zip(self.events.iter().cloned())
-                        .map(|((queue, vector), event)| {
-                            let notify = match &self.interrupt_kind {
-                                InterruptKind::Msix(msix) => {
-                                    if let Some(interrupt) = msix.interrupt(vector) {
-                                        interrupt
-                                    } else {
-                                        tracing::warn!(vector, "invalid MSIx vector specified");
-                                        Interrupt::null()
-                                    }
-                                }
-                                InterruptKind::IntX(line) => {
-                                    let interrupt_status = self.interrupt_status.clone();
-                                    let line = line.clone();
-                                    Interrupt::from_fn(move || {
-                                        *interrupt_status.lock() |= 1;
-                                        line.set_level(true);
-                                    })
-                                }
-                            };
-
-                            QueueResources {
-                                params: *queue,
-                                notify,
-                                event,
-                            }
+                        .enumerate()
+                        .filter(|(_, qd)| qd.params.enable)
+                        .map(|(i, qd)| {
+                            let notify = self.create_queue_interrupt(i);
+                            (
+                                i as u16,
+                                QueueResources {
+                                    params: qd.params,
+                                    notify,
+                                    event: qd.event.clone(),
+                                    guest_memory: self.guest_memory.clone(),
+                                },
+                            )
                         })
                         .collect();
 
-                    match self.device.enable(Resources {
-                        features: self.driver_feature.clone(),
-                        queues,
-                        shared_memory_region: self.shared_memory_region.clone(),
-                        shared_memory_size: self.shared_memory_size,
-                    }) {
-                        Ok(()) => {
-                            self.device_status.set_driver_ok(true);
-                        }
-                        Err(err) => {
-                            self.doorbells.clear();
-                            // FUTURE: consider setting DEVICE_NEEDS_RESET and
-                            // delivering a config change interrupt so the guest
-                            // can detect the failure proactively instead of
-                            // waiting for IO timeouts.
-                            tracelimit::error_ratelimited!(
-                                error = &*err as &dyn std::error::Error,
-                                "virtio device enable failed"
-                            );
-                        }
+                    self.state
+                        .start_enable(&self.device_sender, queues, features);
+
+                    if let Some(waker) = self.poll_waker.take() {
+                        waker.wake();
                     }
-                    self.update_config_generation();
                 }
             }
             VirtioPciCommonCfg::QUEUE_SIZE => {
                 let msix_vector = (val >> 16) as u16;
                 if !queues_locked && queue_select < self.queues.len() {
                     let val = val as u16;
-                    let queue = &mut self.queues[queue_select];
-                    if val > QUEUE_MAX_SIZE {
-                        queue.size = QUEUE_MAX_SIZE;
+                    let qd = &mut self.queues[queue_select];
+                    if val > MAX_QUEUE_SIZE {
+                        qd.params.size = MAX_QUEUE_SIZE;
                     } else {
-                        queue.size = val;
+                        qd.params.size = val;
                     }
-                    self.msix_vectors[queue_select] = msix_vector;
+                    qd.msix_vector = msix_vector;
                 }
             }
             VirtioPciCommonCfg::QUEUE_ENABLE => {
                 let val = val & 0xffff;
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
-                    queue.enable = val != 0;
+                    self.queues[queue_select].params.enable = val != 0;
                 }
             }
             VirtioPciCommonCfg::QUEUE_DESC_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.desc_addr = queue.desc_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioPciCommonCfg::QUEUE_DESC_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.desc_addr = (val as u64) << 32 | queue.desc_addr & 0xffffffff;
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_LO => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.avail_addr = queue.avail_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioPciCommonCfg::QUEUE_AVAIL_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.avail_addr = (val as u64) << 32 | queue.avail_addr & 0xffffffff;
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_LO => {
                 if !queues_locked && (queue_select) < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.used_addr = queue.used_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioPciCommonCfg::QUEUE_USED_HI => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.used_addr = (val as u64) << 32 | queue.used_addr & 0xffffffff;
                 }
             }
             VirtioPciCommonCfg(BAR0_NOTIFY_OFFSET) => {
-                if (val as usize) < self.events.len() {
-                    self.events[val as usize].signal();
+                if let Some(qd) = self.queues.get(val as usize) {
+                    qd.event.signal();
                 }
             }
-            VirtioPciCommonCfg(offset) if offset >= BAR0_DEVICE_CFG_OFFSET => self
-                .device
-                .write_registers_u32(offset - BAR0_DEVICE_CFG_OFFSET, val),
             _ => {
                 tracing::warn!(offset, "unknown bar write at offset");
             }
@@ -612,12 +659,13 @@ impl VirtioPciDevice {
 }
 
 impl VirtioPciDevice {
-    fn read_bar_u32(&mut self, bar: u8, offset: u16) -> u32 {
+    /// Read a BAR register as a u32 (transport registers only, not config).
+    fn read_bar_local(&mut self, bar: u8, offset: u16) -> u32 {
         match bar {
-            0 => self.read_u32(offset),
+            0 => self.read_u32_local(offset),
             2 => {
                 if let InterruptKind::Msix(msix) = &self.interrupt_kind {
-                    msix.read_u32(offset)
+                    msix.read_u32(offset as u64)
                 } else {
                     !0
                 }
@@ -626,45 +674,140 @@ impl VirtioPciDevice {
         }
     }
 
-    fn write_bar_u32(&mut self, address: u64, bar: u8, offset: u16, value: u32) {
+    /// Write a BAR register as a u32 (transport registers only, not config).
+    fn write_bar_local(&mut self, bar: u8, offset: u16, value: u32) {
         match bar {
-            0 => self.write_u32(address, offset, value),
+            0 => self.write_u32_local(offset, value),
             2 => {
                 if let InterruptKind::Msix(msix) = &mut self.interrupt_kind {
-                    msix.write_u32(offset, value)
+                    msix.write_u32(offset as u64, value)
                 }
             }
-            _ => tracing::warn!(bar, offset, "Unknown write"),
+            _ => {
+                tracing::warn!(bar, offset, "Unknown write");
+            }
         }
     }
 }
 
 impl ChangeDeviceState for VirtioPciDevice {
-    fn start(&mut self) {}
+    fn start(&mut self) {
+        if self.device_status.driver_ok() {
+            let features = self.driver_feature.clone();
+            let mut queues = Vec::new();
+            for (i, qd) in self.queues.iter_mut().enumerate() {
+                if !qd.params.enable {
+                    continue;
+                }
+                let initial_state = qd.saved_state.take();
+                queues.push((i, qd.params, qd.event.clone(), initial_state));
+            }
+            let queues: Vec<_> = queues
+                .into_iter()
+                .map(|(i, params, event, initial_state)| {
+                    let notify = self.create_queue_interrupt(i);
+                    (
+                        i as u16,
+                        QueueResources {
+                            params,
+                            notify,
+                            event,
+                            guest_memory: self.guest_memory.clone(),
+                        },
+                        initial_state,
+                    )
+                })
+                .collect();
 
-    async fn stop(&mut self) {}
+            let params = StartParams { queues, features };
+
+            // Fire and forget — start() is sync, can't await.
+            self.device_sender
+                .send(DeviceCommand::Start(Rpc::detached(params)));
+        }
+    }
+
+    async fn stop(&mut self) {
+        if let Some(result) = self.state.drain(&self.device_sender).await {
+            self.apply_transport_result(result);
+        }
+        // Always send Stop to the device task; it safely handles
+        // the case where no queues are running (returns None for each).
+        let states = self
+            .device_sender
+            .call(DeviceCommand::Stop, ())
+            .await
+            .expect("device task is gone");
+        for (i, state) in states.into_iter().enumerate() {
+            self.queues[i].saved_state = state;
+        }
+    }
 
     async fn reset(&mut self) {
-        if self.device_status.driver_ok() || self.disabling {
-            self.doorbells.clear();
-            std::future::poll_fn(|cx| self.device.poll_disable(cx)).await;
+        // Drain ignoring result — reset_status() below clears everything.
+        let _ = self.state.drain(&self.device_sender).await;
+        let _ = self.device_sender.call(DeviceCommand::Reset, ()).await;
+
+        // reset_status() handles device_status, config_generation,
+        // interrupt_status, doorbells, and interrupt line level.
+        self.reset_status();
+
+        // Destructure to ensure every field is handled; the compiler will
+        // flag new fields that are not addressed here.
+        let Self {
+            device_sender: _,
+            _device_task,
+            state: _,
+            device_feature: _,
+            device_feature_select,
+            driver_feature,
+            driver_feature_select,
+            msix_config_vector,
+            queue_select,
+            queues,
+            // Handled by reset_status() above.
+            interrupt_status: _,
+            device_status: _,
+            poll_waker: _,
+            config_generation: _,
+            interrupt_kind: _,
+            doorbells: _,
+            config_space,
+            shared_memory_size: _,
+            supports_save_restore: _,
+            guest_memory: _,
+        } = self;
+
+        // Reset PCI config space so BARs and command register return to
+        // their power-on defaults.
+        config_space.reset();
+
+        *device_feature_select = 0;
+        *driver_feature = VirtioDeviceFeatures::new();
+        *driver_feature_select = 0;
+        *msix_config_vector = 0;
+        *queue_select = 0;
+        for qd in queues.iter_mut() {
+            *qd = PciQueueData {
+                params: QueueParams {
+                    size: qd.initial_size,
+                    ..Default::default()
+                },
+                initial_size: qd.initial_size,
+                msix_vector: 0,
+                event: pal_event::Event::new(),
+                saved_state: None,
+            };
         }
-        self.device_status = VirtioDeviceStatus::new();
-        self.disabling = false;
-        self.config_generation = 0;
-        *self.interrupt_status.lock() = 0;
     }
 }
 
 impl PollDevice for VirtioPciDevice {
     fn poll_device(&mut self, cx: &mut std::task::Context<'_>) {
         self.poll_waker = Some(cx.waker().clone());
-        if self.disabling {
-            if self.device.poll_disable(cx).is_ready() {
-                self.device_status = VirtioDeviceStatus::new();
-                self.disabling = false;
-                *self.interrupt_status.lock() = 0;
-            }
+
+        if let Poll::Ready(result) = self.state.poll(cx, &self.device_sender) {
+            self.apply_transport_result(result);
         }
     }
 }
@@ -683,35 +826,184 @@ impl ChipsetDevice for VirtioPciDevice {
     }
 }
 
-impl SaveRestore for VirtioPciDevice {
-    type SavedState = NoSavedState; // TODO
+mod saved_state {
+    mod state {
+        use crate::transport::saved_state::state::CommonQueueState;
+        use crate::transport::saved_state::state::CommonSavedState;
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
 
-    fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        Ok(NoSavedState)
+        #[derive(Protobuf)]
+        #[mesh(package = "virtio.transport.pci")]
+        pub struct SavedQueueState {
+            #[mesh(1)]
+            pub common: CommonQueueState,
+            #[mesh(2)]
+            pub msix_vector: u16,
+        }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "virtio.transport.pci")]
+        pub struct SavedState {
+            #[mesh(1)]
+            pub common: CommonSavedState,
+            #[mesh(2)]
+            pub msix_config_vector: u16,
+            #[mesh(3)]
+            pub queues: Vec<SavedQueueState>,
+        }
     }
 
-    fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
-        Ok(())
+    use super::*;
+    use crate::transport::saved_state::state as common_state;
+    use vmcore::save_restore::RestoreError;
+    use vmcore::save_restore::SaveError;
+    use vmcore::save_restore::SaveRestore;
+
+    impl SaveRestore for VirtioPciDevice {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            if !self.supports_save_restore {
+                return Err(SaveError::NotSupported);
+            }
+
+            Ok(state::SavedState {
+                common: common_state::CommonSavedState {
+                    device_status: self.device_status.into(),
+                    driver_feature_banks: (0..self.device_feature.len())
+                        .map(|i| self.driver_feature.bank(i))
+                        .collect(),
+                    device_feature_select: self.device_feature_select,
+                    driver_feature_select: self.driver_feature_select,
+                    queue_select: self.queue_select,
+                    config_generation: self.config_generation,
+                    interrupt_status: *self.interrupt_status.lock(),
+                },
+                msix_config_vector: self.msix_config_vector,
+                queues: self
+                    .queues
+                    .iter()
+                    .map(|qd| state::SavedQueueState {
+                        common: common_state::CommonQueueState {
+                            size: qd.params.size,
+                            enable: qd.params.enable,
+                            desc_addr: qd.params.desc_addr,
+                            avail_addr: qd.params.avail_addr,
+                            used_addr: qd.params.used_addr,
+                            queue_state: qd.saved_state,
+                        },
+                        msix_vector: qd.msix_vector,
+                    })
+                    .collect(),
+            })
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            if !self.supports_save_restore {
+                return Err(RestoreError::SavedStateNotSupported);
+            }
+
+            let common = &state.common;
+
+            crate::transport::saved_state::validate_restore(
+                common,
+                &self.device_feature,
+                state
+                    .queues
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| (i, q.common.size)),
+                self.queues.len(),
+                state.queues.len(),
+                MAX_QUEUE_SIZE,
+            )?;
+
+            let new_status = VirtioDeviceStatus::from(common.device_status);
+
+            // Restore transport fields.
+            self.driver_feature = VirtioDeviceFeatures::new();
+            for (i, &bank) in common.driver_feature_banks.iter().enumerate() {
+                self.driver_feature.set_bank(i, bank);
+            }
+            self.device_feature_select = common.device_feature_select;
+            self.driver_feature_select = common.driver_feature_select;
+            self.queue_select = common.queue_select;
+            self.config_generation = common.config_generation;
+            *self.interrupt_status.lock() = common.interrupt_status;
+            if let InterruptKind::IntX(line) = &self.interrupt_kind {
+                line.set_level(common.interrupt_status != 0);
+            }
+            self.msix_config_vector = state.msix_config_vector;
+
+            // Restore per-queue transport parameters.
+            for (i, sq) in state.queues.iter().enumerate() {
+                let qd = &mut self.queues[i];
+                qd.params = QueueParams {
+                    size: sq.common.size,
+                    enable: sq.common.enable,
+                    desc_addr: sq.common.desc_addr,
+                    avail_addr: sq.common.avail_addr,
+                    used_addr: sq.common.used_addr,
+                };
+                qd.msix_vector = sq.msix_vector;
+                qd.saved_state = sq.common.queue_state;
+            }
+
+            self.device_status = new_status;
+
+            // Verify ephemeral runtime state.
+            assert!(!self.state.is_busy());
+            self.poll_waker = None;
+
+            // Reinstall doorbells for the restored device state.
+            self.doorbells.clear();
+            if new_status.driver_ok() {
+                self.install_doorbells();
+            }
+
+            Ok(())
+        }
     }
 }
 
 impl MmioIntercept for VirtioPciDevice {
     fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
         if let Some((bar, offset)) = self.config_space.find_bar(address) {
-            read_as_u32_chunks(offset, data, |offset| self.read_bar_u32(bar, offset))
+            let offset = offset as u16;
+            // Device config — defer the entire access to the device task.
+            if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
+                return defer_config_read(
+                    &self.device_sender,
+                    offset - BAR0_DEVICE_CFG_OFFSET,
+                    data.len() as u8,
+                );
+            }
+            // Transport/MSI-X registers — handle locally.
+            read_as_u32_chunks(offset, data, |offset| self.read_bar_local(bar, offset));
         }
         IoResult::Ok
     }
 
     fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
         if let Some((bar, offset)) = self.config_space.find_bar(address) {
+            let offset = offset as u16;
+            // Device config — defer the entire access to the device task.
+            if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
+                return defer_config_write(
+                    &self.device_sender,
+                    offset - BAR0_DEVICE_CFG_OFFSET,
+                    data,
+                );
+            }
+            // Transport/MSI-X registers — handle locally.
             write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
                 ReadWriteRequestType::Write(value) => {
-                    self.write_bar_u32(address, bar, offset, value);
+                    self.write_bar_local(bar, offset, value);
                     None
                 }
-                ReadWriteRequestType::Read => Some(self.read_bar_u32(bar, offset)),
-            })
+                ReadWriteRequestType::Read => Some(self.read_bar_local(bar, offset)),
+            });
         }
         IoResult::Ok
     }

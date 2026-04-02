@@ -430,6 +430,7 @@ impl VmService {
                     cmdline: boot.kernel_cmdline,
                     custom_dsdt: None,
                     enable_serial: true,
+                    boot_mode: openvmm_defs::config::LinuxDirectBootMode::Acpi,
                 }
             }
             vmservice::vm_config::BootConfig::Uefi(_) => {
@@ -477,6 +478,7 @@ impl VmService {
                 pci_mmio_gaps: vec![],
                 prefetch_memory: false,
                 private_memory: false,
+                transparent_hugepages: false,
             },
             chipset: chipset.chipset,
             processor_topology: ProcessorTopologyConfig {
@@ -587,9 +589,10 @@ impl VmService {
             .launch_worker(
                 VM_WORKER,
                 VmWorkerParameters {
-                    hypervisor: None,
+                    hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
                     cfg: config,
                     saved_state: None,
+                    shared_memory: None,
                     rpc: recv,
                     notify: notify_send,
                 },

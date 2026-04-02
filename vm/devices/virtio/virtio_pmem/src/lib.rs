@@ -12,8 +12,6 @@ use guestmem::GuestMemory;
 use inspect::InspectMut;
 use pal_async::wait::PolledWait;
 use std::fs;
-use std::task::Poll;
-use std::task::ready;
 use task_control::AsyncRun;
 use task_control::Cancelled;
 use task_control::InspectTaskMut;
@@ -21,10 +19,11 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
+use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -43,7 +42,6 @@ pub struct Device {
 impl Device {
     pub fn new(
         driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
         file: fs::File,
         writable: bool,
     ) -> anyhow::Result<Self> {
@@ -53,11 +51,7 @@ impl Device {
             .context("failed to create file mapping")?;
         Ok(Self {
             driver: driver_source.simple(),
-            worker: TaskControl::new(PmemWorker {
-                writable,
-                file,
-                mem: memory,
-            }),
+            worker: TaskControl::new(PmemWorker { writable, file }),
             mappable,
             len,
             writable,
@@ -74,8 +68,14 @@ struct PmemConfig {
 impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
-            device_id: 27,
-            device_features: VirtioDeviceFeatures::new(),
+            device_id: virtio::spec::VirtioDeviceType::PMEM,
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::new()
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 1,
             device_register_length: size_of::<PmemConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -85,55 +85,70 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn read_registers_u32(&self, _offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, _offset: u16) -> u32 {
         // The PmemConfig type is not used--instead, the memory region is
         // reported via the shared memory capability.
         0
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, mut resources: Resources) -> anyhow::Result<()> {
-        if !resources.queues[0].params.enable {
-            return Ok(());
-        }
-
-        let shared_memory_region = resources
-            .shared_memory_region
-            .clone()
-            .context("shared memory region not available")?;
-
-        shared_memory_region
+    fn set_shared_memory_region(
+        &mut self,
+        region: &std::sync::Arc<dyn guestmem::MappedMemoryRegion>,
+    ) -> anyhow::Result<()> {
+        region
             .map(0, &self.mappable, 0, self.len as usize, self.writable)
             .context("failed to map shared memory region")?;
 
-        let qr = resources.queues.remove(0);
-        let queue_event =
-            PolledWait::new(&self.driver, qr.event).context("failed to create polled wait")?;
+        Ok(())
+    }
+
+    async fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        assert_eq!(idx, 0);
+
+        let queue_event = PolledWait::new(&self.driver, resources.event)
+            .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            resources.features,
-            qr.params,
-            self.worker.task().mem.clone(),
-            qr.notify,
+            features.clone(),
+            resources.params,
+            resources.guest_memory.clone(),
+            resources.notify,
             queue_event,
+            initial_state,
         )
         .context("failed to create virtio queue")?;
 
         self.worker.insert(
             self.driver.clone(),
             "virtio-pmem-queue",
-            PmemQueue { queue },
+            PmemQueue {
+                queue,
+                mem: resources.guest_memory,
+            },
         );
         self.worker.start();
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
-        ready!(self.worker.poll_stop(cx));
-        if self.worker.has_state() {
-            self.worker.remove();
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
+        assert_eq!(idx, 0);
+        if !self.worker.has_state() {
+            return None;
         }
-        Poll::Ready(())
+        self.worker.stop().await;
+        let state = self.worker.remove().queue.queue_state();
+        Some(state)
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
     }
 }
 
@@ -141,7 +156,6 @@ impl VirtioDevice for Device {
 struct PmemWorker {
     writable: bool,
     file: fs::File,
-    mem: GuestMemory,
 }
 
 impl InspectTaskMut<PmemQueue> for PmemWorker {
@@ -153,6 +167,7 @@ impl InspectTaskMut<PmemQueue> for PmemWorker {
 #[derive(InspectMut)]
 struct PmemQueue {
     queue: VirtioQueue,
+    mem: GuestMemory,
 }
 
 impl AsyncRun<PmemQueue> for PmemWorker {
@@ -166,7 +181,7 @@ impl AsyncRun<PmemQueue> for PmemWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_pmem_request(self, work);
+                    process_pmem_request(self, &state.mem, work);
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");
@@ -178,9 +193,9 @@ impl AsyncRun<PmemQueue> for PmemWorker {
     }
 }
 
-fn process_pmem_request(worker: &PmemWorker, mut work: VirtioQueueCallbackWork) {
+fn process_pmem_request(worker: &PmemWorker, mem: &GuestMemory, mut work: VirtioQueueCallbackWork) {
     let mut req = [0; 4];
-    let err = match work.read(&worker.mem, &mut req) {
+    let err = match work.read(mem, &mut req) {
         Ok(_) => match u32::from_le_bytes(req) {
             0 if !worker.writable => {
                 // Ignore the request for read-only devices.
@@ -203,6 +218,6 @@ fn process_pmem_request(worker: &PmemWorker, mut work: VirtioQueueCallbackWork) 
             1
         }
     };
-    let _ = work.write(&worker.mem, &u32::to_le_bytes(err));
+    let _ = work.write(mem, &u32::to_le_bytes(err));
     work.complete(4);
 }

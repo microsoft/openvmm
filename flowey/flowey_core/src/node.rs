@@ -945,7 +945,7 @@ pub enum FlowPlatformKind {
 }
 
 /// The kind platform the flow is being running on, Windows or Unix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FlowPlatformLinuxDistro {
     /// Fedora (including WSL2)
     Fedora,
@@ -962,7 +962,7 @@ pub enum FlowPlatformLinuxDistro {
 }
 
 /// What platform the flow is being running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FlowPlatform {
     /// Windows
@@ -1007,7 +1007,7 @@ impl std::fmt::Display for FlowPlatform {
 }
 
 /// What architecture the flow is being running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FlowArch {
     X86_64,
@@ -1941,12 +1941,12 @@ pub mod steps {
             /// action to use. For example, the following code generates the following yaml:
             ///
             /// ```ignore
-            /// GhStepBuilder::new("Check out repository code", "actions/checkout@v4").finish()
+            /// GhStepBuilder::new("Check out repository code", "actions/checkout@v6").finish()
             /// ```
             ///
             /// ```ignore
             /// - name: Check out repository code
-            ///   uses: actions/checkout@v4
+            ///   uses: actions/checkout@v6
             /// ```
             ///
             /// For more information on the yaml syntax for the `name` and `uses` parameters,

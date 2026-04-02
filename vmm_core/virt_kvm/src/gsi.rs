@@ -180,7 +180,7 @@ impl GsiRoute {
     }
 
     /// Signals the interrupt if it is enabled.
-    #[allow(clippy::assertions_on_constants)]
+    #[expect(clippy::assertions_on_constants)]
     #[expect(dead_code)]
     pub fn signal(&self) {
         // Use a relaxed atomic read to avoid extra synchronization in this

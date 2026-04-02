@@ -14,8 +14,6 @@ use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::user_facing::ClaimedGhParam;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
-use flowey_core::pipeline::HostExt;
-use flowey_core::pipeline::PipelineBackendHint;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -54,9 +52,6 @@ impl ExecSnippet {
             dry_run,
         } = self;
 
-        let flow_platform = FlowPlatform::host(PipelineBackendHint::Local);
-        let flow_arch = FlowArch::host(PipelineBackendHint::Local);
-
         let mut runtime_var_db = super::var_db::open_var_db(job_idx)?;
 
         let working_dir: PathBuf = {
@@ -77,6 +72,8 @@ impl ExecSnippet {
             var_db_backend_kind: _,
             job_reqs,
             job_command_wrappers,
+            job_platforms,
+            job_archs,
         } = {
             let current_exe = std::env::current_exe()
                 .context("failed to get path to current flowey executable")?;
@@ -84,6 +81,13 @@ impl ExecSnippet {
                 fs_err::File::open(current_exe.with_file_name("pipeline.json"))?;
             serde_json::from_reader(pipeline_static_db)?
         };
+
+        let flow_platform = *job_platforms
+            .get(&job_idx)
+            .context("invalid job_idx: missing platform")?;
+        let flow_arch = *job_archs
+            .get(&job_idx)
+            .context("invalid job_idx: missing arch")?;
 
         let command_wrapper = job_command_wrappers.get(&job_idx).cloned();
 
@@ -351,6 +355,8 @@ pub(crate) struct FloweyPipelineStaticDb {
     pub var_db_backend_kind: VarDbBackendKind,
     pub job_reqs: BTreeMap<usize, BTreeMap<String, Vec<SerializedRequest>>>,
     pub job_command_wrappers: BTreeMap<usize, flowey_core::shell::CommandWrapperKind>,
+    pub job_platforms: BTreeMap<usize, FlowPlatform>,
+    pub job_archs: BTreeMap<usize, FlowArch>,
 }
 
 // encode requests as JSON stored in a JSON string (to make human inspection

@@ -563,6 +563,12 @@ async fn vm_config_from_command_line(
         "debugcon",
     )?;
 
+    let virtio_console_backend = if let Some(serial_cfg) = opt.virtio_console.clone() {
+        setup_serial("virtio-console", serial_cfg, "hvc0")?
+    } else {
+        None
+    };
+
     let mut resources = VmResources::default();
     let mut console_str = "";
     if let Some(ConsoleState { device, input }) = console_state.into_inner() {
@@ -974,7 +980,7 @@ async fn vm_config_from_command_line(
     };
 
     let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc || opt.pcat {
-        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE)?;
+        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vram")?;
         let (fb, fba) =
             framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).context("creating framebuffer")?;
         resources.framebuffer_access = Some(fba);
@@ -1039,7 +1045,12 @@ async fn vm_config_from_command_line(
         .build()
         .context("failed to build chipset configuration")?;
 
-    if let Some(path) = &opt.igvm {
+    if opt.restore_snapshot.is_some() {
+        // Snapshot restore: skip firmware loading entirely. Device state and
+        // memory come from the snapshot directory.
+        load_mode = LoadMode::None;
+        with_hv = true;
+    } else if let Some(path) = &opt.igvm {
         let file = fs_err::File::open(path)
             .context("failed to open igvm file")?
             .into();
@@ -1107,13 +1118,14 @@ async fn vm_config_from_command_line(
         let mut cmdline = "panic=-1 debug".to_string();
 
         with_hv = opt.hv;
-        if with_hv {
+        if with_hv && opt.pcie_root_complex.is_empty() {
             cmdline += " pci=off";
         }
 
         if !console_str.is_empty() {
             let _ = write!(&mut cmdline, " console={}", console_str);
         }
+
         if opt.gfx {
             cmdline += " console=tty";
         }
@@ -1151,6 +1163,11 @@ async fn vm_config_from_command_line(
             cmdline,
             custom_dsdt,
             enable_serial: any_serial_configured,
+            boot_mode: if opt.device_tree {
+                openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+            } else {
+                openvmm_defs::config::LinuxDirectBootMode::Acpi
+            },
         };
     }
 
@@ -1411,8 +1428,8 @@ async fn vm_config_from_command_line(
         }
     };
 
-    let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
-    let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
+    let vtl0_vsock_listener = vsock_listener(opt.vmbus_vsock_path.as_deref())?;
+    let vtl2_vsock_listener = vsock_listener(opt.vmbus_vtl2_vsock_path.as_deref())?;
 
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
@@ -1510,64 +1527,157 @@ async fn vm_config_from_command_line(
         if cli_cfg.underhill {
             anyhow::bail!("use --net uh:[...] to add underhill NICs")
         }
-        if cli_cfg.pcie_port.is_some() {
-            anyhow::bail!("use --mana to add PCIe NICs")
-        }
         let vport = parse_endpoint(cli_cfg, &mut nic_index, &mut resources)?;
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::net::VirtioNetHandle {
-                max_queues: vport.max_queues,
-                mac_address: vport.mac_address,
-                endpoint: vport.endpoint,
-            }
-            .into_resource(),
-        );
+        let resource = virtio_resources::net::VirtioNetHandle {
+            max_queues: vport.max_queues,
+            mac_address: vport.mac_address,
+            endpoint: vport.endpoint,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &cli_cfg.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
     for args in &opt.virtio_fs {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::HostFs {
-                    root_path: args.path.clone(),
-                    mount_options: args.options.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::HostFs {
+                root_path: args.path.clone(),
+                mount_options: args.options.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_fs_shmem {
-        add_virtio_device(
-            opt.virtio_fs_bus,
-            virtio_resources::fs::VirtioFsHandle {
-                tag: args.tag.clone(),
-                fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
-                    root_path: args.path.clone(),
-                },
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::fs::VirtioFsHandle {
+            tag: args.tag.clone(),
+            fs: virtio_resources::fs::VirtioFsBackend::SectionFs {
+                root_path: args.path.clone(),
+            },
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_fs_bus, resource);
+        }
     }
 
     for args in &opt.virtio_9p {
-        add_virtio_device(
-            VirtioBusCli::Auto,
-            virtio_resources::p9::VirtioPlan9Handle {
-                tag: args.tag.clone(),
-                root_path: args.path.clone(),
-                debug: opt.virtio_9p_debug,
-            }
-            .into_resource(),
-        );
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::p9::VirtioPlan9Handle {
+            tag: args.tag.clone(),
+            root_path: args.path.clone(),
+            debug: opt.virtio_9p_debug,
+        }
+        .into_resource();
+        if let Some(pcie_port) = &args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
     }
 
-    if let Some(path) = &opt.virtio_pmem {
+    if let Some(pmem_args) = &opt.virtio_pmem {
+        let resource: Resource<VirtioDeviceHandle> = virtio_resources::pmem::VirtioPmemHandle {
+            path: pmem_args.path.clone(),
+        }
+        .into_resource();
+        if let Some(pcie_port) = &pmem_args.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if opt.virtio_rng {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::rng::VirtioRngHandle.into_resource();
+        if let Some(pcie_port) = &opt.virtio_rng_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(opt.virtio_rng_bus, resource);
+        }
+    }
+
+    if let Some(backend) = virtio_console_backend {
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::console::VirtioConsoleHandle { backend }.into_resource();
+        if let Some(pcie_port) = &opt.virtio_console_pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    // Handle --vhost-user arguments.
+    #[cfg(target_os = "linux")]
+    for vhost_cli in &opt.vhost_user {
+        let stream =
+            unix_socket::UnixStream::connect(&vhost_cli.socket_path).with_context(|| {
+                format!(
+                    "failed to connect to vhost-user socket: {}",
+                    vhost_cli.socket_path
+                )
+            })?;
+
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::vhost_user::VhostUserDeviceHandle {
+                socket: stream.into(),
+                device_id: vhost_cli.device_id,
+            }
+            .into_resource();
+        if let Some(pcie_port) = &vhost_cli.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if let Some(vsock_path) = &opt.virtio_vsock_path {
+        let listener = vsock_listener(Some(vsock_path))?.unwrap();
         add_virtio_device(
             VirtioBusCli::Auto,
-            virtio_resources::pmem::VirtioPmemHandle { path: path.clone() }.into_resource(),
+            virtio_resources::vsock::VirtioVsockHandle {
+                // The guest CID does not matter since the UDS relay does not use it. It just needs
+                // to be some non-reserved value for the guest to use.
+                guest_cid: 0x3,
+                base_path: vsock_path.clone(),
+                listener,
+            }
+            .into_resource(),
         );
     }
 
@@ -1585,6 +1695,7 @@ async fn vm_config_from_command_line(
             mmio_gaps,
             prefetch_memory: opt.prefetch,
             private_memory: opt.private_memory,
+            transparent_hugepages: opt.thp,
             pci_ecam_gaps,
             pci_mmio_gaps,
         },
@@ -1624,7 +1735,7 @@ async fn vm_config_from_command_line(
         virtio_devices,
         vmbus: with_hv.then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
-            vsock_path: opt.vsock_path.clone(),
+            vsock_path: opt.vmbus_vsock_path.clone(),
             vtl2_redirect: opt.vmbus_redirect,
             vmbus_max_version: opt.vmbus_max_version,
             #[cfg(windows)]
@@ -1632,7 +1743,7 @@ async fn vm_config_from_command_line(
         }),
         vtl2_vmbus: (with_hv && opt.vtl2).then_some(VmbusConfig {
             vsock_listener: vtl2_vsock_listener,
-            vsock_path: opt.vtl2_vsock_path.clone(),
+            vsock_path: opt.vmbus_vtl2_vsock_path.clone(),
             ..Default::default()
         }),
         vmbus_devices,
@@ -1833,7 +1944,10 @@ fn disk_open_inner(
     }
     match disk_cli {
         &DiskCliKind::Memory(len) => {
-            layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: Some(len),
+                sector_size: None,
+            }));
         }
         DiskCliKind::File {
             path,
@@ -1855,7 +1969,10 @@ fn disk_open_inner(
             }))
         }
         DiskCliKind::MemoryDiff(inner) => {
-            layers.push(layer(RamDiskLayerHandle { len: None }));
+            layers.push(layer(RamDiskLayerHandle {
+                len: None,
+                sector_size: None,
+            }));
             disk_open_inner(inner, true, layers)?;
         }
         DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
@@ -1954,6 +2071,124 @@ fn disk_open_inner(
             disk_open_inner(disk, read_only, layers)?;
         }
     }
+    Ok(())
+}
+
+/// Get the system page size.
+fn system_page_size() -> u32 {
+    sparse_mmap::SparseMapping::page_size() as u32
+}
+
+/// The guest architecture string, derived from the compile-time `guest_arch` cfg.
+const GUEST_ARCH: &str = if cfg!(guest_arch = "x86_64") {
+    "x86_64"
+} else {
+    "aarch64"
+};
+
+/// Open a snapshot directory and validate it against the current VM config.
+/// Returns the shared memory fd (from memory.bin) and the saved device state.
+fn prepare_snapshot_restore(
+    snapshot_dir: &Path,
+    opt: &Options,
+) -> anyhow::Result<(
+    openvmm_defs::worker::SharedMemoryFd,
+    mesh::payload::message::ProtobufMessage,
+)> {
+    let (manifest, state_bytes) = openvmm_helpers::snapshot::read_snapshot(snapshot_dir)?;
+
+    // Validate manifest against current VM config.
+    openvmm_helpers::snapshot::validate_manifest(
+        &manifest,
+        GUEST_ARCH,
+        opt.memory,
+        opt.processors,
+        system_page_size(),
+    )?;
+
+    // Open memory.bin (existing file, no create, no resize).
+    let memory_file = fs_err::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(snapshot_dir.join("memory.bin"))?;
+
+    // Validate file size matches expected memory size.
+    let file_size = memory_file.metadata()?.len();
+    if file_size != manifest.memory_size_bytes {
+        anyhow::bail!(
+            "memory.bin size ({file_size} bytes) doesn't match manifest ({} bytes)",
+            manifest.memory_size_bytes,
+        );
+    }
+
+    let shared_memory_fd =
+        openvmm_helpers::shared_memory::file_to_shared_memory_fd(memory_file.into())?;
+
+    // Reconstruct ProtobufMessage from the saved state bytes.
+    // The save side wrote mesh::payload::encode(ProtobufMessage), so we decode
+    // back to ProtobufMessage.
+    let state_msg: mesh::payload::message::ProtobufMessage = mesh::payload::decode(&state_bytes)
+        .context("failed to decode saved state from snapshot")?;
+
+    Ok((shared_memory_fd, state_msg))
+}
+
+/// Save a VM snapshot to the given directory.
+///
+/// Pauses the VM, saves device state, fsyncs the memory backing file,
+/// and writes the snapshot directory. The VM remains paused after this
+/// call — resuming would corrupt the snapshot.
+async fn save_snapshot(
+    vm_rpc: &mesh::Sender<VmRpc>,
+    opt: &Options,
+    dir: &Path,
+) -> anyhow::Result<()> {
+    let memory_file_path = opt
+        .memory_backing_file
+        .as_ref()
+        .context("save-snapshot requires --memory-backing-file")?;
+
+    // Pause the VM.
+    vm_rpc
+        .call(VmRpc::Pause, ())
+        .await
+        .context("failed to pause VM")?;
+
+    // Get device state via existing VmRpc::Save.
+    let saved_state_msg = vm_rpc
+        .call_failable(VmRpc::Save, ())
+        .await
+        .context("failed to save state")?;
+
+    // Serialize the ProtobufMessage to bytes for writing to disk.
+    let saved_state_bytes = mesh::payload::encode(saved_state_msg);
+
+    // Fsync the memory backing file.
+    let memory_file = fs_err::File::open(memory_file_path)?;
+    memory_file
+        .sync_all()
+        .context("failed to fsync memory backing file")?;
+
+    // Build manifest.
+    let manifest = openvmm_helpers::snapshot::SnapshotManifest {
+        version: openvmm_helpers::snapshot::MANIFEST_VERSION,
+        created_at: std::time::SystemTime::now().into(),
+        openvmm_version: env!("CARGO_PKG_VERSION").to_string(),
+        memory_size_bytes: opt.memory,
+        vp_count: opt.processors,
+        page_size: system_page_size(),
+        architecture: GUEST_ARCH.to_string(),
+    };
+
+    // Write snapshot directory.
+    openvmm_helpers::snapshot::write_snapshot(
+        dir,
+        &manifest,
+        &saved_state_bytes,
+        memory_file_path,
+    )?;
+
+    // VM stays paused. Do NOT resume.
     Ok(())
 }
 
@@ -2061,6 +2296,13 @@ enum InteractiveCommand {
     /// Resume the VM.
     #[clap(visible_alias = "r")]
     Resume,
+
+    /// Save a snapshot to a directory (requires --memory-backing-file).
+    #[clap(visible_alias = "snap")]
+    SaveSnapshot {
+        /// Directory to write the snapshot to.
+        dir: PathBuf,
+    },
 
     /// Do a pulsed save restore (pause, save, reset, restore, resume) to the VM.
     #[clap(visible_alias = "psr")]
@@ -2412,10 +2654,28 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
 
+        let (shared_memory, saved_state) = if let Some(snapshot_dir) = &opt.restore_snapshot {
+            let (fd, state_msg) = prepare_snapshot_restore(snapshot_dir, &opt)?;
+            (Some(fd), Some(state_msg))
+        } else {
+            let shared_memory = opt
+                .memory_backing_file
+                .as_ref()
+                .map(|path| {
+                    openvmm_helpers::shared_memory::open_memory_backing_file(path, opt.memory)
+                })
+                .transpose()?;
+            (shared_memory, None)
+        };
+
         let params = VmWorkerParameters {
-            hypervisor: opt.hypervisor,
+            hypervisor: match &opt.hypervisor {
+                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+            },
             cfg: vm_config,
-            saved_state: None,
+            saved_state,
+            shared_memory,
             rpc: rpc_recv,
             notify: notify_send,
         };
@@ -2424,6 +2684,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             .await
             .context("failed to launch vm worker")?
     };
+
+    if opt.restore_snapshot.is_some() {
+        tracing::info!("restoring VM from snapshot");
+    }
 
     if !opt.paused {
         vm_rpc.call(VmRpc::Resume, ()).await?;
@@ -2587,6 +2851,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
     let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
     let mut pending_shutdown = None;
+    let mut snapshot_saved = false;
 
     enum StateChange {
         Pause(bool),
@@ -2882,13 +3147,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 );
             }
             InteractiveCommand::Resume => {
-                state_change(
-                    driver,
-                    &vm_rpc,
-                    &mut state_change_task,
-                    VmRpc::Resume,
-                    StateChange::Resume,
-                );
+                if snapshot_saved {
+                    eprintln!(
+                        "error: cannot resume after snapshot save — resuming would corrupt the snapshot. Use 'shutdown' to exit."
+                    );
+                } else {
+                    state_change(
+                        driver,
+                        &vm_rpc,
+                        &mut state_change_task,
+                        VmRpc::Resume,
+                        StateChange::Resume,
+                    );
+                }
             }
             InteractiveCommand::Reset => {
                 state_change(
@@ -2898,6 +3169,22 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     VmRpc::Reset,
                     StateChange::Reset,
                 );
+            }
+            InteractiveCommand::SaveSnapshot { dir } => {
+                match save_snapshot(&vm_rpc, &opt, &dir).await {
+                    Ok(()) => {
+                        snapshot_saved = true;
+                        tracing::info!(
+                            dir = %dir.display(),
+                            "snapshot saved; VM is paused. \
+                             Resume is blocked to prevent snapshot corruption. \
+                             Use 'shutdown' to exit."
+                        );
+                    }
+                    Err(err) => {
+                        eprintln!("error: save-snapshot failed: {err:#}");
+                    }
+                }
             }
             InteractiveCommand::PulseSaveRestore => {
                 state_change(
@@ -2966,7 +3253,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         }
                         Some(size) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                     };
@@ -3133,7 +3423,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                                RamDiskLayerHandle { len: Some(size) },
+                                RamDiskLayerHandle {
+                                    len: Some(size),
+                                    sector_size: None,
+                                },
                             ))
                         }
                         (None, None) => {

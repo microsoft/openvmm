@@ -249,14 +249,6 @@ impl virt::Hypervisor for Kvm {
             cpuid: cpuid_entries,
         })
     }
-
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
-        }
-    }
 }
 
 /// A prototype partition.
@@ -271,20 +263,26 @@ impl ProtoPartition for KvmProtoPartition<'_> {
     type Error = KvmError;
     type ProcessorBinder = KvmProcessorBinder;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        self.cpuid.result(eax, ecx, &[0; 4])
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]))
     }
 
     fn build(
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        // Build topology leaves using the base cpuid before consuming it.
+        let mut topology_leaves = Vec::new();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| self.cpuid.result(eax, ecx, &[0; 4]),
+            &mut topology_leaves,
+        )
+        .map_err(KvmError::TopologyCpuid)?;
+
         let mut cpuid = self.cpuid.into_leaves();
         cpuid.extend(config.cpuid);
+        cpuid.extend(topology_leaves);
         let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
@@ -491,12 +489,6 @@ impl ResetPartition for KvmPartition {
     type Error = KvmError;
 
     fn reset(&self) -> Result<(), Self::Error> {
-        for vp in self.inner.vps() {
-            self.inner
-                .vp_state_access(vp.vp_info.base.vp_index)
-                .reset_all(&vp.vp_info)
-                .map_err(Box::new)?;
-        }
         let mut this = self;
         this.reset_all(&self.inner.bsp().vp_info)
             .map_err(Box::new)?;
@@ -1242,6 +1234,12 @@ impl Processor for KvmProcessor<'_> {
     }
 
     fn flush_async_requests(&mut self) {}
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.partition
+            .vp_state_access(self.vpindex)
+            .reset_all(&self.inner.vp_info)
+    }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);

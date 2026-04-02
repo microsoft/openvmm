@@ -15,9 +15,10 @@ Examples:
 This script:
   1. Finds the most recent CI run (or uses the given run ID)
   2. Identifies failed jobs
-  3. Downloads the petri test log artifacts for the run
-  4. Finds tests with petri.failed markers
-  5. Extracts ERROR/WARN lines from petri.jsonl for quick diagnosis
+  3. Downloads unit test JUnit XML artifacts and reports failures
+  4. Downloads petri VMM test log artifacts for the run
+  5. Finds tests with petri.failed markers
+  6. Extracts ERROR/WARN lines from petri.jsonl for quick diagnosis
 
 Requires: gh (GitHub CLI), authenticated to microsoft/openvmm
 """
@@ -28,14 +29,20 @@ import json
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
 REPO = "microsoft/openvmm"
 
 
-def gh(*args: str, check: bool = True) -> str:
-    """Run a gh CLI command and return its stdout."""
+def gh(*args: str, check: bool = True, quiet: bool = False) -> str:
+    """Run a gh CLI command and return its stdout.
+
+    When *check* is False and the command fails, returns an empty string
+    (ignoring any error body the server may have sent on stdout).
+    When *quiet* is True, suppresses warning output on failure.
+    """
     result = subprocess.run(
         ["gh", *args],
         capture_output=True,
@@ -47,13 +54,14 @@ def gh(*args: str, check: bool = True) -> str:
             print(f"ERROR: gh {' '.join(args)}", file=sys.stderr)
             print(result.stderr.strip(), file=sys.stderr)
             sys.exit(1)
-        else:
+        if not quiet:
             print(
                 f"WARNING: gh {' '.join(args)} failed with exit code {result.returncode}",
                 file=sys.stderr,
             )
             if result.stderr.strip():
                 print(result.stderr.strip(), file=sys.stderr)
+        return ""
     return result.stdout.strip()
 
 
@@ -177,20 +185,39 @@ def get_failed_jobs(run_id: str) -> list[dict]:
     return failed
 
 
-def list_test_log_artifacts(run_id: str) -> list[str]:
+def list_artifacts(run_id: str) -> list[str]:
+    """List all artifact names for a run."""
+    api_json = gh(
+        "api", f"repos/{REPO}/actions/runs/{run_id}/artifacts",
+        "--paginate", check=False,
+    )
+    if not api_json:
+        return []
+    names: list[str] = []
+    # --paginate concatenates multiple JSON objects; parse each one.
+    decoder = json.JSONDecoder()
+    pos = 0
+    text = api_json.strip()
+    while pos < len(text):
+        try:
+            obj, end = decoder.raw_decode(text, pos)
+            names.extend(a["name"] for a in obj.get("artifacts", []))
+            pos = end
+        except json.JSONDecodeError as e:
+            print(f"WARNING: Failed to parse artifact JSON at position {pos}: {e}", file=sys.stderr)
+            print(f"  Context: ...{text[max(0, pos-20):pos+40]}...", file=sys.stderr)
+            break
+        # skip whitespace between objects
+        while pos < len(text) and text[pos] in " \t\n\r":
+            pos += 1
+    return names
+
+
+def list_test_log_artifacts(all_artifacts: list[str]) -> list[str]:
     """List available *-vmm-tests-logs artifact names for a run."""
     print()
     print("==> Listing available test log artifacts...")
-    api_json = gh("api", f"repos/{REPO}/actions/runs/{run_id}/artifacts", check=False)
-    if not api_json:
-        return []
-
-    try:
-        artifacts = json.loads(api_json).get("artifacts", [])
-    except json.JSONDecodeError:
-        return []
-
-    log_artifacts = [a["name"] for a in artifacts if a["name"].endswith("-vmm-tests-logs")]
+    log_artifacts = [n for n in all_artifacts if n.endswith("-vmm-tests-logs")]
     if log_artifacts:
         print("    Available artifacts:")
         for name in log_artifacts:
@@ -200,6 +227,11 @@ def list_test_log_artifacts(run_id: str) -> list[str]:
         print("    This run may not have produced test artifacts (build failure?)")
 
     return log_artifacts
+
+
+def list_junit_artifacts(all_artifacts: list[str]) -> list[str]:
+    """List available *-unit-tests-junit-xml artifact names."""
+    return [n for n in all_artifacts if n.endswith("-unit-tests-junit-xml")]
 
 
 def download_artifacts(run_id: str, artifact_names: list[str], workdir: Path) -> None:
@@ -251,19 +283,215 @@ def extract_errors_from_jsonl(jsonl_path: Path) -> list[str]:
     return lines
 
 
-def show_build_failure_log(run_id: str, failed_jobs: list[dict]) -> None:
-    """For build failures with no test artifacts, show the CI log tail."""
+def parse_junit_failures(xml_path: Path) -> list[dict]:
+    """Parse a JUnit XML file and return a list of failure dicts.
+
+    Each dict has keys: 'suite', 'test', 'message', 'output'.
+    """
+    failures: list[dict] = []
+    try:
+        # CI artifacts come from potentially-untrusted PR code.
+        # Python's expat-based parser does not resolve external entities and
+        # has built-in entity expansion limits, but use defusedxml when
+        # available for belt-and-suspenders protection against XML DoS.
+        try:
+            import defusedxml.ElementTree as SafeET
+            tree = SafeET.parse(xml_path)
+        except ImportError:
+            tree = ET.parse(xml_path)
+    except (ET.ParseError, OSError) as e:
+        failures.append({"suite": "?", "test": "?", "message": f"(failed to parse JUnit XML: {e})", "output": ""})
+        return failures
+
+    for testcase in tree.iter("testcase"):
+        failure = testcase.find("failure")
+        error = testcase.find("error")
+        elem = failure if failure is not None else error
+        if elem is None:
+            continue
+        suite = testcase.get("classname", "")
+        name = testcase.get("name", "")
+        msg = elem.get("message", "")
+
+        # nextest puts the actual test output in <system-out>/<system-err>
+        # rather than in the <failure> element body, so collect all sources.
+        output_parts: list[str] = []
+        failure_text = (elem.text or "").strip()
+        if failure_text:
+            output_parts.append(failure_text)
+        for tag in ("system-out", "system-err"):
+            el = testcase.find(tag)
+            if el is not None and el.text and el.text.strip():
+                output_parts.append(el.text.strip())
+        output = "\n".join(output_parts)
+
+        failures.append({"suite": suite, "test": name, "message": msg, "output": output})
+
+    return failures
+
+
+def show_junit_failures(run_id: str, junit_artifact_names: list[str], workdir: Path) -> int:
+    """Download JUnit XML artifacts and display any failures. Returns failure count."""
+    if not junit_artifact_names:
+        return 0
+
     print()
-    print("==> Checking CI log for errors...")
+    print("==> Downloading unit test JUnit XML artifacts...")
+    total_failures = 0
+
+    for name in junit_artifact_names:
+        dest = workdir / name
+        if not dest.is_dir():
+            print(f"    Downloading {name}...")
+            result = subprocess.run(
+                ["gh", "run", "download", run_id, "-R", REPO, "-n", name, "-D", str(dest)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                print(f"    WARNING: Failed to download {name}")
+                continue
+        else:
+            print(f"    {name} (cached)")
+
+        # Find all XML files in the artifact directory.
+        xml_files = sorted(dest.rglob("*.xml"))
+        if not xml_files:
+            print(f"    WARNING: No XML files found in {name}")
+            continue
+
+        for xml_file in xml_files:
+            failures = parse_junit_failures(xml_file)
+            if not failures:
+                continue
+            total_failures += len(failures)
+            for f in failures:
+                print()
+                print(f"  FAIL: {f['suite']}::{f['test']}")
+                if f["message"]:
+                    msg = f["message"]
+                    if len(msg) > 300:
+                        msg = msg[:300] + "..."
+                    print(f"    Message: {msg}")
+                if f["output"]:
+                    # Extract the most useful lines from the test output.
+                    # nextest system-out includes the full "running 1 test"
+                    # harness output; we want the failure details.
+                    output_lines = f["output"].splitlines()
+                    # Look for the "failures:" section which has the cause.
+                    useful_lines: list[str] = []
+                    in_failures = False
+                    for line in output_lines:
+                        stripped = line.strip()
+                        if stripped == "failures:" and not in_failures:
+                            in_failures = True
+                            continue
+                        if in_failures:
+                            # Stop at "test result:" or a second "failures:" header
+                            if stripped.startswith("test result:") or stripped == "failures:":
+                                break
+                            if stripped:
+                                useful_lines.append(stripped)
+                    if useful_lines:
+                        for line in useful_lines[:15]:
+                            print(f"    {line}")
+                        if len(useful_lines) > 15:
+                            print(f"    ... ({len(useful_lines) - 15} more lines)")
+                    else:
+                        # Fallback: show up to 10 lines of raw output.
+                        for line in output_lines[:10]:
+                            print(f"    {line}")
+                        if len(output_lines) > 10:
+                            print(f"    ... ({len(output_lines) - 10} more lines)")
+
+    return total_failures
+
+
+def show_build_failure_logs(run_id: str, failed_jobs: list[dict]) -> None:
+    """Show build/compile errors from the logs of all failed jobs."""
     if not failed_jobs:
         return
-    job = failed_jobs[0]
-    job_id = str(job["databaseId"])
-    print(f"    Last 50 lines of '{job['name']}':")
-    log = gh("run", "view", run_id, "-R", REPO, "--job", job_id, "--log", check=False)
-    if log:
-        for line in log.splitlines()[-50:]:
-            print(f"    {line}")
+
+    print()
+    print("==========================================")
+    print("  BUILD / JOB FAILURES")
+    print("==========================================")
+
+    for job in failed_jobs:
+        job_id = str(job["databaseId"])
+        job_name = job["name"]
+        print()
+        print(f"  --- {job_name} ---")
+
+        # Try the per-job logs API first (works for completed jobs even when
+        # the run is still in progress).
+        log = gh(
+            "api", f"repos/{REPO}/actions/jobs/{job_id}/logs",
+            check=False, quiet=True,
+        )
+        if not log:
+            # Fallback to the run-level log command.
+            log = gh("run", "view", run_id, "-R", REPO, "--job", job_id, "--log",
+                      check=False, quiet=True)
+        if not log:
+            # Last resort: get check-run annotations, which are available
+            # even while the run is still in progress.
+            ann_json = gh(
+                "api", f"repos/{REPO}/check-runs/{job_id}/annotations",
+                check=False,
+            )
+            if ann_json:
+                try:
+                    annotations = json.loads(ann_json)
+                    if annotations:
+                        for ann in annotations:
+                            level = ann.get("annotation_level", "?")
+                            title = ann.get("title", "")
+                            msg = ann.get("message", "").strip()
+                            prefix = f"[{level}]"
+                            if title:
+                                prefix += f" {title}"
+                            print(f"    {prefix}: {msg}")
+                        continue
+                except json.JSONDecodeError:
+                    pass
+            print("    (no log available)")
+            continue
+
+        all_lines = log.splitlines()
+
+        # Extract lines that look like build errors.
+        # gh --log output format: "STEP_NAME\tTIMESTAMP TEXT" or plain text.
+        error_lines: list[str] = []
+        for line in all_lines:
+            # Strip the step-name prefix (tab-separated) for matching.
+            text = line.split("\t", 1)[-1] if "\t" in line else line
+            text_lower = text.lower()
+            if any((
+                "error[e" in text_lower,          # rustc error codes
+                "error:" in text_lower,            # generic compiler errors
+                "cannot find" in text_lower,       # resolution errors
+                "aborting due to" in text_lower,   # rustc abort summary
+                "could not compile" in text_lower, # cargo summary
+                "fatal error" in text_lower,       # C/C++ fatal errors
+                "undefined reference" in text_lower,
+                "linker error" in text_lower,
+                text_lower.strip().startswith("error "),
+            )):
+                error_lines.append(line)
+
+        if error_lines:
+            # Show up to 80 error lines.
+            for line in error_lines[:80]:
+                print(f"    {line}")
+            if len(error_lines) > 80:
+                print(f"    ... ({len(error_lines) - 80} more error lines)")
+        else:
+            # Fallback: show last 50 lines of the log.
+            print(f"    (no error patterns found; showing last 50 lines)")
+            for line in all_lines[-50:]:
+                print(f"    {line}")
 
 
 def find_failed_tests(workdir: Path) -> list[Path]:
@@ -287,10 +515,14 @@ def main() -> None:
     if not failed_jobs:
         sys.exit(0)
 
-    artifact_names = list_test_log_artifacts(run_id)
+    all_artifacts = list_artifacts(run_id)
+    vmm_artifact_names = list_test_log_artifacts(all_artifacts)
+    junit_artifact_names = list_junit_artifacts(all_artifacts)
 
-    if not artifact_names:
-        show_build_failure_log(run_id, failed_jobs)
+    # Always show build/job failure logs when jobs failed.
+    show_build_failure_logs(run_id, failed_jobs)
+
+    if not vmm_artifact_names and not junit_artifact_names:
         sys.exit(1)
 
     # Set up work directory
@@ -298,23 +530,40 @@ def main() -> None:
     workdir = tmpdir_base / run_id
     workdir.mkdir(parents=True, exist_ok=True)
 
-    download_artifacts(run_id, artifact_names, workdir)
+    # --- Unit test failures (JUnit XML) ---
+    junit_failure_count = 0
+    if junit_artifact_names:
+        print()
+        print("==========================================")
+        print("  UNIT TEST FAILURES (JUnit XML)")
+        print("==========================================")
+        junit_failure_count = show_junit_failures(run_id, junit_artifact_names, workdir)
+        if junit_failure_count == 0:
+            print("  No unit test failures found in JUnit XML artifacts.")
+        else:
+            print()
+            print(f"  Total unit test failures: {junit_failure_count}")
 
-    # Find failed tests
-    print()
-    print("==========================================")
-    print("  FAILED TESTS")
-    print("==========================================")
+    # --- VMM test failures (petri) ---
+    failed_markers: list[Path] = []
+    if vmm_artifact_names:
+        download_artifacts(run_id, vmm_artifact_names, workdir)
 
-    failed_markers = find_failed_tests(workdir)
+        print()
+        print("==========================================")
+        print("  VMM TEST FAILURES (petri)")
+        print("==========================================")
 
-    if not failed_markers:
-        print("  No petri.failed markers found.")
-        print("  Tests may have passed, or failure occurred before test execution.")
-        sys.exit(0)
+        failed_markers = find_failed_tests(workdir)
 
-    print(f"  Found {len(failed_markers)} failed test(s):")
-    print()
+        if not failed_markers:
+            print("  No petri.failed markers found.")
+            if junit_failure_count == 0:
+                print("  Tests may have passed, or failure occurred before test execution.")
+                sys.exit(0)
+        else:
+            print(f"  Found {len(failed_markers)} failed test(s):")
+            print()
 
     for marker in failed_markers:
         test_dir = marker.parent
@@ -346,7 +595,12 @@ def main() -> None:
     print("==========================================")
     print(f"  Run ID:       {run_id}")
     print(f"  Logview URL:  https://openvmm.dev/test-results/#/runs/{run_id}")
-    print(f"  Failed tests: {len(failed_markers)}")
+    if junit_failure_count > 0:
+        print(f"  Unit test failures: {junit_failure_count}")
+    if failed_markers:
+        print(f"  VMM test failures:  {len(failed_markers)}")
+    if junit_failure_count == 0 and not failed_markers:
+        print("  No test failures found.")
     print()
     print(f"  For full logs, examine files in: {workdir}")
     print("  Each test directory may contain:")

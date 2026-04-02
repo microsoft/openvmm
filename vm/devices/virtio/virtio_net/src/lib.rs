@@ -29,8 +29,10 @@ use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::TxFlags;
 use net_backend::TxId;
 use net_backend::TxMetadata;
+use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
 use net_backend_resources::mac_address::MacAddress;
@@ -38,7 +40,6 @@ use pal_async::wait::PolledWait;
 use std::future::pending;
 use std::mem::offset_of;
 use std::sync::Arc;
-use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
 use task_control::InspectTaskMut;
@@ -47,10 +48,11 @@ use task_control::TaskControl;
 use thiserror::Error;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
-use virtio::Resources;
+use virtio::QueueResources;
 use virtio::VirtioDevice;
 use virtio::VirtioQueue;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::QueueState;
 use virtio::spec::VirtioDeviceFeatures;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -217,33 +219,68 @@ const fn header_size() -> usize {
 
 struct Adapter {
     driver: VmTaskDriver,
-    max_queues: u16,
+    max_queue_pairs: u16,
     tx_fast_completions: bool,
     mac_address: MacAddress,
+    tx_offload_support: TxOffloadSupport,
 }
 
 pub struct Device {
     registers: NetConfig,
-    memory: GuestMemory,
     coordinator: TaskControl<CoordinatorState, Coordinator>,
     adapter: Arc<Adapter>,
     driver_source: VmTaskDriverSource,
+    /// Per-pair state tracking.
+    pairs: Vec<QueuePairState>,
+}
+
+/// Tracks the state of a queue pair through the start_queue lifecycle.
+enum QueuePairState {
+    /// No queues started for this pair.
+    Empty,
+    /// One queue started, waiting for its partner.
+    HalfOpen {
+        queue: VirtioQueue,
+        queue_size: u16,
+        /// true if this is the RX queue (even index), false if TX (odd).
+        is_rx: bool,
+    },
+    /// Both queues started, worker running.
+    Active,
 }
 
 impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
-        // TODO: Add network features based on endpoint capabilities (NetworkFeatures::VIRTIO_NET_F_*)
+        let offloads = &self.adapter.tx_offload_support;
+
+        // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
+        let csum = offloads.tcp && offloads.udp;
+        // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
+        let host_tso = offloads.tso && offloads.tcp;
+
+        let features_bank0 = NetworkFeaturesBank0::new()
+            .with_mac(true)
+            .with_csum(csum)
+            .with_guest_csum(true)
+            .with_host_tso4(host_tso)
+            .with_host_tso6(host_tso);
+
         DeviceTraits {
-            device_id: 1,
+            device_id: virtio::spec::VirtioDeviceType::NET,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank(0, NetworkFeaturesBank0::new().with_mac(true).into_bits()),
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::from_bits(features_bank0.into_bits())
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
         }
     }
 
-    fn read_registers_u32(&self, offset: u16) -> u32 {
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
         match offset {
             0 => u32::from_le_bytes(self.registers.mac[..4].try_into().unwrap()),
             4 => {
@@ -262,73 +299,134 @@ impl VirtioDevice for Device {
         }
     }
 
-    fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
+    async fn write_registers_u32(&mut self, _offset: u16, _val: u32) {}
 
-    fn enable(&mut self, resources: Resources) -> anyhow::Result<()> {
-        let mut queue_resources: Vec<_> = resources.queues.into_iter().collect();
-        let mut workers = Vec::with_capacity(queue_resources.len() / 2);
-        while queue_resources.len() > 1 {
-            let mut next = queue_resources.drain(..2);
-            let rx_resources = next.next().unwrap();
-            let tx_resources = next.next().unwrap();
-            if !rx_resources.params.enable || !tx_resources.params.enable {
-                continue;
+    async fn start_queue(
+        &mut self,
+        idx: u16,
+        resources: QueueResources,
+        features: &VirtioDeviceFeatures,
+        initial_state: Option<QueueState>,
+    ) -> anyhow::Result<()> {
+        let guest_memory = resources.guest_memory.clone();
+        let queue_size = resources.params.size;
+        let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
+            .context("failed creating queue event")?;
+        let queue = VirtioQueue::new(
+            features.clone(),
+            resources.params,
+            resources.guest_memory,
+            resources.notify,
+            queue_event,
+            initial_state,
+        )
+        .context("failed creating virtio net queue")?;
+
+        let negotiated_features = NetworkFeaturesBank0::from(features.bank(0));
+        let pair_idx = (idx / 2) as usize;
+        let is_rx = idx.is_multiple_of(2);
+
+        match &self.pairs[pair_idx] {
+            QueuePairState::Empty => {
+                // First queue of the pair — buffer it.
+                self.pairs[pair_idx] = QueuePairState::HalfOpen {
+                    queue,
+                    queue_size,
+                    is_rx,
+                };
             }
+            QueuePairState::HalfOpen {
+                is_rx: pending_is_rx,
+                ..
+            } => {
+                if *pending_is_rx == is_rx {
+                    anyhow::bail!(
+                        "duplicate {} queue for pair {pair_idx}",
+                        if is_rx { "RX" } else { "TX" }
+                    );
+                }
 
-            let rx_queue_size = rx_resources.params.size;
-            let rx_queue_event = PolledWait::new(&self.adapter.driver, rx_resources.event)
-                .context("failed creating rx queue event")?;
-            let rx_queue = VirtioQueue::new(
-                resources.features.clone(),
-                rx_resources.params,
-                self.memory.clone(),
-                rx_resources.notify,
-                rx_queue_event,
-            )
-            .context("failed creating virtio net receive queue")?;
+                // Second queue — extract the first, form the pair.
+                let first_pair = !self
+                    .pairs
+                    .iter()
+                    .any(|p| matches!(p, QueuePairState::Active));
 
-            let tx_queue_size = tx_resources.params.size;
-            let tx_queue_event = PolledWait::new(&self.adapter.driver, tx_resources.event)
-                .context("failed creating tx queue event")?;
-            let tx_queue = VirtioQueue::new(
-                resources.features.clone(),
-                tx_resources.params,
-                self.memory.clone(),
-                tx_resources.notify,
-                tx_queue_event,
-            )
-            .context("failed creating virtio net transmit queue")?;
+                let prev = std::mem::replace(&mut self.pairs[pair_idx], QueuePairState::Active);
+                let QueuePairState::HalfOpen {
+                    queue: pending_queue,
+                    queue_size: pending_queue_size,
+                    is_rx: pending_is_rx,
+                } = prev
+                else {
+                    unreachable!()
+                };
 
-            workers.push(VirtioState {
-                rx_queue,
-                rx_queue_size,
-                tx_queue,
-                tx_queue_size,
-            });
+                let (rx_queue, rx_queue_size, tx_queue, tx_queue_size) = if pending_is_rx {
+                    (pending_queue, pending_queue_size, queue, queue_size)
+                } else {
+                    (queue, queue_size, pending_queue, pending_queue_size)
+                };
+
+                if first_pair {
+                    self.insert_coordinator(self.pairs.len() as u16);
+                }
+
+                let virtio_state = VirtioState {
+                    rx_queue,
+                    rx_queue_size,
+                    tx_queue,
+                    tx_queue_size,
+                };
+                self.insert_worker(virtio_state, pair_idx, &guest_memory, negotiated_features);
+
+                if first_pair {
+                    self.coordinator.start();
+                }
+            }
+            QueuePairState::Active => {
+                anyhow::bail!("queue pair {pair_idx} already active");
+            }
         }
-
-        self.insert_coordinator(workers.len() as u16);
-        for (i, virtio_state) in workers.into_iter().enumerate() {
-            self.insert_worker(virtio_state, i);
-        }
-        self.coordinator.start();
         Ok(())
     }
 
-    fn poll_disable(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        // Stop the coordinator task.
-        let _ = std::task::ready!(self.coordinator.poll_stop(cx));
-        // Stop all workers (coordinator may not have stopped them if it was
-        // cancelled before reaching its own stop_workers call).
-        if let Some(coordinator) = self.coordinator.state_mut() {
-            for worker in &mut coordinator.workers {
-                let _ = std::task::ready!(worker.poll_stop(cx));
+    async fn stop_queue(&mut self, idx: u16) -> Option<QueueState> {
+        let pair_idx = (idx / 2) as usize;
+
+        if pair_idx < self.pairs.len() {
+            if let QueuePairState::HalfOpen { is_rx, .. } = self.pairs[pair_idx] {
+                let stopping_rx = idx.is_multiple_of(2);
+                if is_rx != stopping_rx {
+                    // The caller is stopping the queue that wasn't started;
+                    // leave the pending half intact.
+                    return None;
+                }
+                // Drop the pending half-open queue.
+                self.pairs[pair_idx] = QueuePairState::Empty;
+            } else if matches!(self.pairs[pair_idx], QueuePairState::Active) {
+                // Stop the coordinator (which stops all workers).
+                self.coordinator.stop().await;
+                if let Some(coordinator) = self.coordinator.state_mut() {
+                    for worker in &mut coordinator.workers {
+                        worker.stop().await;
+                    }
+                }
+                let _ = self.coordinator.remove();
+                self.pairs[pair_idx] = QueuePairState::Empty;
             }
         }
-        // Remove the coordinator state so that a subsequent enable() can
-        // re-insert it.
-        let _ = self.coordinator.remove();
-        Poll::Ready(())
+
+        // We don't support save/restore of virtio-net queue state yet.
+        None
+    }
+
+    async fn reset(&mut self) {
+        self.pairs.fill_with(|| QueuePairState::Empty);
+    }
+
+    fn supports_save_restore(&self) -> bool {
+        true
     }
 }
 
@@ -377,6 +475,8 @@ struct QueueStats {
     spurious_wakes: Counter,
     rx_packets: Counter,
     tx_packets: Counter,
+    tx_dropped: Counter,
+    rx_dropped: Counter,
     tx_packets_per_wake: Histogram<10>,
     rx_packets_per_wake: Histogram<10>,
 }
@@ -407,12 +507,12 @@ struct PendingTxPacket {
 }
 
 pub struct NicBuilder {
-    max_queues: u16,
+    max_queue_pairs: u16,
 }
 
 impl NicBuilder {
-    pub fn max_queues(mut self, max_queues: u16) -> Self {
-        self.max_queues = max_queues;
+    pub fn max_queues(mut self, max_queue_pairs: u16) -> Self {
+        self.max_queue_pairs = max_queue_pairs;
         self
     }
 
@@ -420,21 +520,22 @@ impl NicBuilder {
     pub fn build(
         self,
         driver_source: &VmTaskDriverSource,
-        memory: GuestMemory,
         endpoint: Box<dyn Endpoint>,
         mac_address: MacAddress,
     ) -> Device {
         // TODO: Implement VIRTIO_NET_F_MQ and VIRTIO_NET_F_RSS logic based on mulitqueue support.
         // let multiqueue = endpoint.multiqueue_support();
-        // let max_queues = self.max_queues.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
-        let max_queues = 1;
+        // let max_queue_pairs = self.max_queue_pairs.clamp(1, multiqueue.max_queues.min(VIRTIO_NET_MAX_QUEUES));
+        let max_queue_pairs = 1;
 
         let driver = driver_source.simple();
+        let tx_offload_support = endpoint.tx_offload_support();
         let adapter = Arc::new(Adapter {
             driver,
-            max_queues,
+            max_queue_pairs,
             tx_fast_completions: endpoint.tx_fast_completions(),
             mac_address,
+            tx_offload_support,
         });
 
         let coordinator = TaskControl::new(CoordinatorState {
@@ -445,7 +546,7 @@ impl NicBuilder {
         let registers = NetConfig {
             mac: mac_address.to_bytes(),
             status: NetStatus::new().with_link_up(true).into(),
-            max_virtqueue_pairs: max_queues,
+            max_virtqueue_pairs: max_queue_pairs,
             mtu: DEFAULT_MTU,
             speed: 0xffffffff,
             duplex: 0xff,
@@ -456,17 +557,21 @@ impl NicBuilder {
 
         Device {
             registers,
-            memory,
             coordinator,
             adapter,
             driver_source: driver_source.clone(),
+            pairs: (0..max_queue_pairs)
+                .map(|_| QueuePairState::Empty)
+                .collect(),
         }
     }
 }
 
 impl Device {
     pub fn builder() -> NicBuilder {
-        NicBuilder { max_queues: !0 }
+        NicBuilder {
+            max_queue_pairs: !0,
+        }
     }
 }
 
@@ -482,7 +587,7 @@ impl Device {
             &self.adapter.driver,
             "virtio-net-coordinator".to_string(),
             Coordinator {
-                workers: (0..self.adapter.max_queues)
+                workers: (0..self.adapter.max_queue_pairs)
                     .map(|_| TaskControl::new(NetQueue { state: None }))
                     .collect(),
                 num_queues,
@@ -494,7 +599,13 @@ impl Device {
     /// Allocates and inserts a worker.
     ///
     /// The coordinator must be stopped.
-    fn insert_worker(&mut self, virtio_state: VirtioState, idx: usize) {
+    fn insert_worker(
+        &mut self,
+        virtio_state: VirtioState,
+        idx: usize,
+        guest_memory: &GuestMemory,
+        negotiated_features: NetworkFeaturesBank0,
+    ) {
         let mut builder = self.driver_source.builder();
         // TODO: set this correctly
         builder.target_vp(0);
@@ -506,13 +617,14 @@ impl Device {
         let driver = builder.build("virtio-net");
 
         let active_state = ActiveState::new(
-            self.memory.clone(),
+            guest_memory.clone(),
             virtio_state.rx_queue_size,
             virtio_state.tx_queue_size,
         );
         let worker = Worker {
             virtio_state,
             active_state,
+            negotiated_features,
         };
         let coordinator = self.coordinator.state_mut().unwrap();
         let worker_task = &mut coordinator.workers[idx];
@@ -538,7 +650,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
 
         let adapter = self.adapter.as_ref();
         resp.field("mac_address", adapter.mac_address)
-            .field("max_queues", adapter.max_queues);
+            .field("max_queue_pairs", adapter.max_queue_pairs);
 
         resp.field("endpoint_type", self.endpoint.endpoint_type())
             .field(
@@ -612,30 +724,11 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
-        let (rx_pools, ready_packets): (Vec<_>, Vec<_>) = self
-            .workers
-            .iter()
-            .map(|worker| {
-                let pool = worker
-                    .state()
-                    .unwrap()
-                    .active_state
-                    .pending_rx_packets
-                    .clone();
-                let ready = pool.ready();
-                (pool, ready)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .unzip();
-        let mut queue_config = Vec::with_capacity(rx_pools.len());
-        for (i, pool) in rx_pools.into_iter().enumerate() {
-            queue_config.push(QueueConfig {
-                pool: Box::new(pool),
-                initial_rx: ready_packets[i].as_slice(),
+        let queue_config = (0..self.workers.len())
+            .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
-            });
-        }
+            })
+            .collect::<Vec<_>>();
 
         let mut queues = Vec::new();
         c_state
@@ -646,7 +739,12 @@ impl Coordinator {
 
         assert_eq!(queues.len(), self.workers.len());
 
-        for (worker, queue) in self.workers.iter_mut().zip(queues) {
+        for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
+            let state = &mut worker.state_mut().unwrap().active_state;
+            let n = state
+                .pending_rx_packets
+                .fill_ready(&mut state.data.rx_ready);
+            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -687,8 +785,6 @@ struct VirtioState {
 
 #[derive(Debug, Error)]
 enum WorkerError {
-    #[error("packet error")]
-    Packet(#[from] PacketError),
     #[error("virtio queue processing error")]
     VirtioQueue(#[source] std::io::Error),
     #[error("endpoint")]
@@ -697,22 +793,30 @@ enum WorkerError {
     Cancelled(task_control::Cancelled),
 }
 
+#[derive(Debug, Error)]
+enum TxPacketError {
+    #[error("failed to read virtio-net header")]
+    ReadHeader(#[source] guestmem::GuestMemoryError),
+    #[error("empty or too-small packet")]
+    Empty,
+    #[error("too many segments")]
+    TooManySegments,
+    #[error("descriptor index {0} already in use")]
+    DuplicateIndex(u16),
+}
+
 impl From<task_control::Cancelled> for WorkerError {
     fn from(value: task_control::Cancelled) -> Self {
         Self::Cancelled(value)
     }
 }
 
-#[derive(Debug, Error)]
-enum PacketError {
-    #[error("Empty packet")]
-    Empty,
-}
-
 #[derive(InspectMut)]
 struct Worker {
     virtio_state: VirtioState,
     active_state: ActiveState,
+    #[inspect(skip)]
+    negotiated_features: NetworkFeaturesBank0,
 }
 
 impl Worker {
@@ -753,18 +857,22 @@ impl Worker {
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
             // cancellation.
+            let pending_rx_packets = &mut self.active_state.pending_rx_packets;
+            let tx_segments = &self.active_state.data.tx_segments;
+            let tx_queue = &mut self.virtio_state.tx_queue;
+            let rx_queue = &mut self.virtio_state.rx_queue;
             stop.until_stopped(std::future::poll_fn(|cx| {
-                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx) {
+                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx, pending_rx_packets) {
                     return Poll::Ready(());
                 }
 
-                if self.active_state.data.tx_segments.is_empty()
-                    && let Poll::Ready(()) = self.virtio_state.tx_queue.poll_kick(cx)
+                if tx_segments.is_empty()
+                    && let Poll::Ready(()) = tx_queue.poll_kick(cx)
                 {
                     return Poll::Ready(());
                 }
 
-                if let Poll::Ready(()) = self.virtio_state.rx_queue.poll_kick(cx) {
+                if let Poll::Ready(()) = rx_queue.poll_kick(cx) {
                     return Poll::Ready(());
                 }
 
@@ -794,7 +902,7 @@ impl Worker {
                 else {
                     break;
                 };
-                self.queue_tx_packet(work)?;
+                self.queue_tx_packet(work);
                 did_work = true;
             }
             if self.active_state.data.tx_segments.is_empty() {
@@ -804,52 +912,279 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) -> Result<(), WorkerError> {
-        let mut header_bytes_remaining = header_size() as u32;
-        let mut segments = work
-            .payload
-            .iter()
-            .filter_map(|p| {
-                if p.writeable {
-                    None
-                } else if header_bytes_remaining >= p.length {
-                    header_bytes_remaining -= p.length;
-                    None
-                } else if header_bytes_remaining > 0 {
-                    let segment = TxSegment {
-                        ty: TxSegmentType::Tail,
-                        gpa: p.address + header_bytes_remaining as u64,
-                        len: p.length - header_bytes_remaining,
-                    };
-                    header_bytes_remaining = 0;
-                    Some(segment)
-                } else {
-                    Some(TxSegment {
-                        ty: TxSegmentType::Tail,
-                        gpa: p.address,
-                        len: p.length,
-                    })
-                }
-            })
-            .collect::<Vec<_>>();
-        if segments.is_empty() {
-            work.complete(0);
-            return Err(WorkerError::Packet(PacketError::Empty));
+    fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) {
+        let seg_start = self.active_state.data.tx_segments.len();
+        match self.try_queue_tx_packet(&work) {
+            Ok(idx) => {
+                self.active_state.pending_tx_packets[idx as usize] = Some(PendingTxPacket { work });
+            }
+            Err(err) => {
+                tracelimit::warn_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    "dropping TX packet"
+                );
+                self.active_state.stats.tx_dropped.increment();
+                self.active_state.data.tx_segments.truncate(seg_start);
+                work.complete(0);
+            }
         }
+    }
+
+    /// Build TX segments and offload metadata for a packet.
+    ///
+    /// On success, returns the descriptor index. The segments have been
+    /// appended to `tx_segments` with the head metadata filled in.
+    /// On failure, the caller must truncate `tx_segments` back to its
+    /// prior length.
+    fn try_queue_tx_packet(
+        &mut self,
+        work: &VirtioQueueCallbackWork,
+    ) -> Result<u16, TxPacketError> {
         let idx = work.descriptor_index();
-        segments[0].ty = TxSegmentType::Head(TxMetadata {
+        if self.active_state.pending_tx_packets[idx as usize].is_some() {
+            return Err(TxPacketError::DuplicateIndex(idx));
+        }
+
+        let total_readable = work.get_payload_length(false) as usize;
+        let packet_len: u32 = total_readable
+            .checked_sub(header_size())
+            .and_then(|len| u32::try_from(len).ok())
+            .ok_or(TxPacketError::Empty)?;
+
+        // Read the virtio-net header + enough of the Ethernet frame to parse
+        // the EtherType (and a potential VLAN tag).
+        const ETH_PEEK: usize = 18; // 14 standard + 4 for VLAN tag
+        let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
+        let bytes_read = work
+            .read(
+                self.active_state.pending_rx_packets.mem(),
+                &mut peek_buf[..header_size() + ETH_PEEK],
+            )
+            .map_err(TxPacketError::ReadHeader)?;
+
+        let header = VirtioNetHeader::read_from_prefix(&peek_buf)
+            .map(|(h, _)| h)
+            .ok();
+        let packet_prefix = if bytes_read > header_size() {
+            &peek_buf[header_size()..bytes_read]
+        } else {
+            &[]
+        };
+
+        let segments = &mut self.active_state.data.tx_segments;
+        let seg_start = segments.len();
+        let mut header_bytes_remaining = header_size() as u32;
+        for p in &work.payload {
+            if p.writeable {
+                continue;
+            } else if header_bytes_remaining >= p.length {
+                header_bytes_remaining -= p.length;
+            } else if header_bytes_remaining > 0 {
+                segments.push(TxSegment {
+                    ty: TxSegmentType::Tail,
+                    gpa: p.address + header_bytes_remaining as u64,
+                    len: p.length - header_bytes_remaining,
+                });
+                header_bytes_remaining = 0;
+            } else {
+                segments.push(TxSegment {
+                    ty: TxSegmentType::Tail,
+                    gpa: p.address,
+                    len: p.length,
+                });
+            }
+        }
+        let seg_count = segments.len() - seg_start;
+        if seg_count == 0 {
+            return Err(TxPacketError::Empty);
+        }
+        let segment_count: u8 =
+            u8::try_from(seg_count).map_err(|_| TxPacketError::TooManySegments)?;
+
+        // Map virtio-net header fields to TxMetadata offload flags.
+        let tx_metadata = Self::parse_tx_offloads(
+            header.as_ref(),
+            packet_prefix,
+            packet_len,
+            self.negotiated_features,
+        );
+
+        self.active_state.data.tx_segments[seg_start].ty = TxSegmentType::Head(TxMetadata {
             id: TxId(idx.into()),
-            segment_count: segments.len().try_into().unwrap(),
-            len: (work.get_payload_length(false) as usize - header_size())
-                .try_into()
-                .unwrap(),
-            ..Default::default()
+            segment_count,
+            len: packet_len,
+            ..tx_metadata
         });
-        let state = &mut self.active_state;
-        state.data.tx_segments.append(&mut segments);
-        assert!(state.pending_tx_packets[idx as usize].is_none());
-        state.pending_tx_packets[idx as usize] = Some(PendingTxPacket { work });
-        Ok(())
+        Ok(idx)
+    }
+
+    /// Parse virtio-net header offload fields into a `TxMetadata` template.
+    ///
+    /// `packet_prefix` should contain at least the first 18 bytes of the
+    /// Ethernet frame (enough to read the EtherType and a potential VLAN tag).
+    ///
+    /// The returned `TxMetadata` has `id`, `segment_count`, and `len` set to
+    /// defaults — the caller must fill those in.
+    fn parse_tx_offloads(
+        header: Option<&VirtioNetHeader>,
+        packet_prefix: &[u8],
+        packet_len: u32,
+        features: NetworkFeaturesBank0,
+    ) -> TxMetadata {
+        let Some(header) = header else {
+            return TxMetadata::default();
+        };
+
+        let flags_byte = VirtioNetHeaderFlags::from(header.flags);
+        let gso = VirtioNetHeaderGso::from(header.gso_type);
+        let gso_protocol = gso.protocol();
+
+        let mut flags = TxFlags::new();
+        let mut l2_len: u8 = 0;
+        let mut l3_len: u16 = 0;
+        let mut l4_len: u8 = 0;
+        let mut max_tcp_segment_size: u16 = 0;
+
+        // Determine IP version from GSO type when available.
+        let is_ipv4_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV4;
+        let is_ipv6_from_gso = gso_protocol == VirtioNetHeaderGsoProtocol::TCPV6;
+
+        // Parse the Ethernet header to determine IP version and L2 length.
+        // EtherType is at offset 12. If it's 0x8100 (VLAN), the real
+        // EtherType is at offset 16 and L2 is 18 bytes.
+        let (parsed_l2_len, is_ipv4_from_eth, is_ipv6_from_eth) =
+            Self::parse_ethertype(packet_prefix);
+
+        // Only honor NEEDS_CSUM if VIRTIO_NET_F_CSUM was negotiated.
+        if flags_byte.needs_csum() && features.csum() {
+            // The guest requests partial checksum offload.
+            // csum_start is the byte offset (from packet start) of the L4
+            // header. csum_offset is the byte offset within the L4 header
+            // of the checksum field.
+            l2_len = parsed_l2_len;
+
+            // Only proceed if we successfully parsed the Ethernet header
+            // and the csum_start offset is consistent.
+            if l2_len > 0
+                && header.csum_start > l2_len as u16
+                && (header.csum_start as u32)
+                    .checked_add(header.csum_offset as u32 + 2)
+                    .is_some_and(|end| end <= packet_len)
+            {
+                l3_len = header.csum_start - l2_len as u16;
+
+                // Determine TCP vs UDP from csum_offset:
+                //   TCP checksum is at offset 16 within the TCP header.
+                //   UDP checksum is at offset 6 within the UDP header.
+                let is_tcp = header.csum_offset == 16;
+                let is_udp = header.csum_offset == 6;
+
+                if is_tcp {
+                    flags.set_offload_tcp_checksum(true);
+                } else if is_udp {
+                    flags.set_offload_udp_checksum(true);
+                }
+
+                // Prefer GSO-derived IP version, then EtherType-derived.
+                let is_ipv4 = is_ipv4_from_gso || (!is_ipv6_from_gso && is_ipv4_from_eth);
+                let is_ipv6 = is_ipv6_from_gso || (!is_ipv4_from_gso && is_ipv6_from_eth);
+
+                // Only enable checksum offloads if we know the IP version;
+                // backends require consistent is_ipv4/is_ipv6 and header lengths.
+                if !is_ipv4 && !is_ipv6 {
+                    flags.set_offload_tcp_checksum(false);
+                    flags.set_offload_udp_checksum(false);
+                }
+
+                flags.set_is_ipv4(is_ipv4);
+                flags.set_is_ipv6(is_ipv6);
+            }
+            // Don't set offload_ip_header_checksum here: virtio guests
+            // always compute the IPv4 header checksum themselves (the
+            // virtio CSUM feature only covers L4 checksums). The GSO
+            // path below sets it because hardware backends (e.g. MANA)
+            // need it to know they must compute per-segment checksums.
+        }
+
+        // GSO (segmentation offload) — only honor if the corresponding
+        // HOST_TSO feature was negotiated.
+        let gso_enabled = match gso_protocol {
+            VirtioNetHeaderGsoProtocol::TCPV4 => features.host_tso4(),
+            VirtioNetHeaderGsoProtocol::TCPV6 => features.host_tso6(),
+            _ => false,
+        };
+        if gso_enabled {
+            if l2_len == 0 {
+                l2_len = parsed_l2_len;
+            }
+
+            // Validate gso_size and l2_len before enabling segmentation.
+            if l2_len > 0 && header.gso_size > 0 {
+                // Derive l3_len from csum_start if we haven't already.
+                if l3_len == 0 && header.csum_start > l2_len as u16 {
+                    l3_len = header.csum_start - l2_len as u16;
+                }
+
+                // Derive l4_len from hdr_len if available:
+                //   hdr_len = l2_len + l3_len + l4_len (total header length)
+                let total_hdr = header.hdr_len as u32;
+                let l2_l3 = l2_len as u32 + l3_len as u32;
+                if total_hdr > l2_l3 && total_hdr <= packet_len {
+                    let computed_l4 = total_hdr - l2_l3;
+                    if computed_l4 <= u8::MAX as u32 {
+                        l4_len = computed_l4 as u8;
+                    }
+                }
+
+                // Only enable segmentation if we derived valid header lengths.
+                if l3_len > 0 && l4_len > 0 {
+                    flags.set_offload_tcp_segmentation(true);
+                    flags.set_offload_tcp_checksum(true);
+                    flags.set_offload_udp_checksum(false);
+                    max_tcp_segment_size = header.gso_size;
+
+                    flags.set_is_ipv4(is_ipv4_from_gso);
+                    flags.set_is_ipv6(is_ipv6_from_gso);
+                    if is_ipv4_from_gso {
+                        flags.set_offload_ip_header_checksum(true);
+                    }
+                }
+            }
+        }
+
+        TxMetadata {
+            flags,
+            l2_len,
+            l3_len,
+            l4_len,
+            max_tcp_segment_size,
+            ..Default::default()
+        }
+    }
+
+    /// Parse the EtherType from the start of an Ethernet frame.
+    ///
+    /// Returns `(l2_len, is_ipv4, is_ipv6)`. Handles 802.1Q VLAN tags.
+    fn parse_ethertype(packet: &[u8]) -> (u8, bool, bool) {
+        const ETHERTYPE_IPV4: u16 = 0x0800;
+        const ETHERTYPE_IPV6: u16 = 0x86DD;
+        const ETHERTYPE_VLAN: u16 = 0x8100;
+
+        if packet.len() < 14 {
+            return (0, false, false);
+        }
+
+        let ethertype = u16::from_be_bytes([packet[12], packet[13]]);
+        if ethertype == ETHERTYPE_VLAN {
+            // VLAN-tagged: real EtherType is 4 bytes further.
+            if packet.len() < 18 {
+                return (0, false, false);
+            }
+            let inner = u16::from_be_bytes([packet[16], packet[17]]);
+            (18, inner == ETHERTYPE_IPV4, inner == ETHERTYPE_IPV6)
+        } else {
+            (14, ethertype == ETHERTYPE_IPV4, ethertype == ETHERTYPE_IPV6)
+        }
     }
 
     fn process_virtio_rx(
@@ -865,10 +1200,17 @@ impl Worker {
             .map_err(WorkerError::VirtioQueue)?
         {
             tracing::trace!("rx packet");
-            rx_ids.push(self.active_state.pending_rx_packets.queue_work(work));
+            match self.active_state.pending_rx_packets.queue_work(work) {
+                Ok(rx_id) => rx_ids.push(rx_id),
+                Err(mut work) => {
+                    // Reason has been traced by the callee.
+                    self.active_state.stats.rx_dropped.increment();
+                    work.complete(0);
+                }
+            }
         }
         if !rx_ids.is_empty() {
-            epqueue.rx_avail(rx_ids.as_slice());
+            epqueue.rx_avail(&mut self.active_state.pending_rx_packets, rx_ids.as_slice());
             Ok(true)
         } else {
             Ok(false)
@@ -881,7 +1223,7 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         let state = &mut self.active_state;
         let n = epqueue
-            .rx_poll(&mut state.data.rx_ready)
+            .rx_poll(&mut state.pending_rx_packets, &mut state.data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
             return Ok(false);
@@ -902,7 +1244,10 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
         let n = epqueue
-            .tx_poll(&mut self.active_state.data.tx_done)
+            .tx_poll(
+                &mut self.active_state.pending_rx_packets,
+                &mut self.active_state.data.tx_done,
+            )
             .map_err(|tx_error| WorkerError::Endpoint(tx_error.into()))?;
         if n == 0 {
             return Ok(false);
@@ -929,7 +1274,10 @@ impl Worker {
         }
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(&self.active_state.data.tx_segments)
+            .tx_avail(
+                &mut self.active_state.pending_rx_packets,
+                &self.active_state.data.tx_segments,
+            )
             .map_err(WorkerError::Endpoint)?;
 
         if sync {

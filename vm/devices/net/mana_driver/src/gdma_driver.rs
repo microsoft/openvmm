@@ -1228,21 +1228,39 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn verify_vf_driver_version(&mut self) -> anyhow::Result<()> {
+        let ver = &build_info::OPENHCL_VERSION;
+
+        let mut req = GdmaVerifyVerReq {
+            protocol_ver_min: 1,
+            protocol_ver_max: 1,
+            gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
+                | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
+                | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
+                | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
+                | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
+            os_type: gdma_defs::OS_TYPE_OHCL,
+            os_ver_major: ver.major(),
+            os_ver_minor: ver.minor(),
+            os_ver_build: ver.build(),
+            os_ver_platform: ver.platform(),
+            ..FromZeros::new_zeroed()
+        };
+
+        // Identify the driver and build to the SOC
+        // str1 = "OpenHCL", str2 = build identity.
+        let name = ver.product_name().as_bytes();
+        let len = name.len().min(req.os_ver_str1.len().saturating_sub(1));
+        req.os_ver_str1[..len].copy_from_slice(&name[..len]);
+
+        let revision = build_info::get().scm_revision().as_bytes();
+        let len = revision.len().min(req.os_ver_str2.len().saturating_sub(1));
+        req.os_ver_str2[..len].copy_from_slice(&revision[..len]);
+
         let resp: GdmaVerifyVerResp = self
             .request(
                 GdmaRequestType::GDMA_VERIFY_VF_DRIVER_VERSION.0,
                 HWC_DEV_ID,
-                GdmaVerifyVerReq {
-                    protocol_ver_min: 1,
-                    protocol_ver_max: 1,
-                    gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
-                        | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
-                        | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG
-                        | DRIVER_CAP_FLAG_1_SELF_RESET_ON_EQE_NOTIFICATION
-                        | DRIVER_CAP_FLAG_1_VTL2_REVOKE_SUB_ON_RESET_EQE,
-                    os_type: gdma_defs::OS_TYPE_OHCL,
-                    ..FromZeros::new_zeroed()
-                },
+                req,
             )
             .await?;
 

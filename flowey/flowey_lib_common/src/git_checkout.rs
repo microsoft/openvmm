@@ -504,7 +504,7 @@ impl Node {
                 RepoSource::GithubSelf | RepoSource::GithubRepo { .. }
             ) {
                 let mut step = ctx
-                    .emit_gh_step(format!("checkout repo {repo_id}"), "actions/checkout@v4")
+                    .emit_gh_step(format!("checkout repo {repo_id}"), "actions/checkout@v6")
                     .condition(active.clone())
                     .with("path", format!("repo{idx}"))
                     .with("fetch-depth", depth.unwrap_or(0).to_string())

@@ -3,6 +3,10 @@
 
 //! Linux specific loader definitions and implementation.
 
+use crate::common::ChunkBuf;
+use crate::common::ImportFileRegion;
+use crate::common::ImportFileRegionError;
+use crate::common::ReadSeek;
 use crate::common::import_default_gdt;
 use crate::elf::load_static_elf;
 use crate::importer::Aarch64Register;
@@ -28,6 +32,8 @@ use page_table::x64::PageTable;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use std::ffi::CString;
+use std::io::Read;
+use std::io::Seek;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 use zerocopy::FromBytes;
@@ -129,6 +135,8 @@ pub enum Error {
     UnalignedAddress(u64),
     #[error("importer error")]
     Importer(#[source] anyhow::Error),
+    #[error("failed to import initrd")]
+    ImportInitrd(#[source] ImportFileRegionError),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
 }
@@ -171,7 +179,8 @@ pub enum InitrdAddressType {
 
 pub struct InitrdConfig<'a> {
     pub initrd_address: InitrdAddressType,
-    pub initrd: &'a [u8],
+    pub initrd: &'a mut dyn ReadSeek,
+    pub size: u64,
 }
 
 /// Information returned about the kernel loaded.
@@ -220,7 +229,7 @@ fn import_initrd<R: GuestArch>(
     next_addr: u64,
     importer: &mut dyn ImageLoad<R>,
 ) -> Result<Option<InitrdInfo>, Error> {
-    let initrd_info = match &initrd {
+    let initrd_info = match initrd {
         Some(cfg) => {
             let initrd_address = match cfg.initrd_address {
                 InitrdAddressType::AfterKernel => align_up_to_large_page_size(next_addr),
@@ -229,20 +238,25 @@ fn import_initrd<R: GuestArch>(
 
             tracing::trace!(initrd_address, "loading initrd");
             check_address_alignment(initrd_address)?;
-            let initrd_size_pages = align_up_to_page_size(cfg.initrd.len() as u64) / HV_PAGE_SIZE;
-            importer
-                .import_pages(
-                    initrd_address / HV_PAGE_SIZE,
-                    initrd_size_pages,
-                    "linux-initrd",
-                    BootPageAcceptance::Exclusive,
-                    cfg.initrd,
+
+            ChunkBuf::new()
+                .import_file_region(
+                    importer,
+                    ImportFileRegion {
+                        file: cfg.initrd,
+                        file_offset: 0,
+                        file_length: cfg.size,
+                        gpa: initrd_address,
+                        memory_length: cfg.size,
+                        acceptance: BootPageAcceptance::Exclusive,
+                        tag: "linux-initrd",
+                    },
                 )
-                .map_err(Error::Importer)?;
+                .map_err(Error::ImportInitrd)?;
 
             Some(InitrdInfo {
                 gpa: initrd_address,
-                size: cfg.initrd.len() as u64,
+                size: cfg.size,
             })
         }
         None => None,
@@ -267,7 +281,7 @@ pub fn load_kernel_and_initrd_x64<F>(
     initrd: Option<InitrdConfig<'_>>,
 ) -> Result<LoadInfo, Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     tracing::trace!(kernel_minimum_start_address, "loading x86_64 kernel");
     let crate::elf::LoadInfo {
@@ -454,7 +468,7 @@ pub fn load_x86<F>(
     registers: RegisterConfig,
 ) -> Result<LoadInfo, Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     let load_info =
         load_kernel_and_initrd_x64(importer, kernel_image, kernel_minimum_start_address, initrd)?;
@@ -566,7 +580,7 @@ pub fn load_kernel_and_initrd_arm64<F>(
     device_tree_blob: Option<&[u8]>,
 ) -> Result<LoadInfo, Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     tracing::trace!(kernel_minimum_start_address, "loading aarch64 kernel");
 

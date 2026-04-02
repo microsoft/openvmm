@@ -23,6 +23,16 @@ use thiserror::Error;
 use virt::state::StateError;
 
 pub use arch::Kvm;
+
+/// Returns whether KVM is available on this machine.
+pub fn is_available() -> Result<bool, KvmError> {
+    match std::fs::metadata("/dev/kvm") {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(KvmError::AvailableCheck(err)),
+    }
+}
+
 use arch::KvmVpInner;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
@@ -49,6 +59,9 @@ pub enum KvmError {
     Misaligned,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 #[derive(Debug, Inspect)]
@@ -89,6 +102,10 @@ struct KvmPartitionInner {
     // This is used for debugging via Inspect
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
+
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
 }
 
 // TODO: Chunk this up into smaller types.
@@ -120,11 +137,6 @@ impl KvmPartitionInner {
 
     fn vp(&self, vp_index: VpIndex) -> Option<&KvmVpInner> {
         self.vps.get(vp_index.index() as usize)
-    }
-
-    #[cfg(guest_arch = "x86_64")]
-    fn vps(&self) -> impl Iterator<Item = &'_ KvmVpInner> {
-        (0..self.vps.len() as u32).filter_map(|index| self.vp(VpIndex::new(index)))
     }
 
     fn evaluate_vp(&self, vp_index: VpIndex) {

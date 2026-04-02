@@ -4,6 +4,7 @@
 //! ScsiDisk basic tests.
 
 use super::test_helpers::check_execute_scsi_pass;
+use super::test_helpers::check_execute_scsi_pass_with_tx;
 use super::test_helpers::check_guest_memory;
 use super::test_helpers::make_cdb10_request;
 use super::test_helpers::make_cdb16_request;
@@ -27,8 +28,10 @@ use scsi_core::ScsiSaveRestore;
 use scsi_core::save_restore::SavedSenseData;
 use scsi_core::save_restore::ScsiDiskSavedState;
 use scsi_core::save_restore::ScsiSavedState;
+use std::mem::size_of;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
 fn save_scsi_disk(scsi_disk: &SimpleScsiDisk) -> ScsiDiskSavedState {
@@ -252,4 +255,77 @@ async fn validate_atapi_disk_read() {
     println!("validate guest_mem ...");
     let state = state.lock();
     check_guest_memory(&guest_mem, 0, &state.storage[..sector_size * 4].to_vec());
+}
+
+fn make_read_track_information_request(
+    number_type: u8,
+    logical_track_number: u32,
+    allocation_length: u16,
+) -> Request {
+    let mut cdb = [0u8; 16];
+    cdb[0] = ScsiOp::READ_TRACK_INFORMATION.0;
+    cdb[1] = number_type & 0x3; // number_type in bits [1:0]
+    cdb[2..6].copy_from_slice(&logical_track_number.to_be_bytes());
+    cdb[7..9].copy_from_slice(&allocation_length.to_be_bytes());
+    Request { cdb, srb_flags: 0 }
+}
+
+#[async_test]
+async fn validate_read_track_information_returns_correct_tx() {
+    let sector_count = 1024u64;
+    let (dvd, _state) = new_scsi_dvd(2048, 2048, sector_count, false);
+    let track_info_size = size_of::<scsi::TrackInformation3>();
+
+    // Test with allocation_length == full struct size (number_type=1, track 1).
+    {
+        let alloc_len = track_info_size as u16;
+        let guest_mem = GuestMemory::allocate(track_info_size);
+        let external_data = OwnedRequestBuffers::linear(0, track_info_size, true);
+        let request = make_read_track_information_request(1, 1, alloc_len);
+        check_execute_scsi_pass_with_tx(
+            &dvd,
+            &external_data.buffer(&guest_mem),
+            &request,
+            track_info_size,
+        )
+        .await;
+
+        // Verify the returned TrackInformation3 header bytes.
+        let mut buf = vec![0u8; track_info_size];
+        guest_mem.read_at(0, &mut buf).unwrap();
+        let info = scsi::TrackInformation3::read_from_prefix(&buf).unwrap().0;
+        assert_eq!(info.length.get(), 0x002e);
+        assert_eq!(info.track_number_lsb, 0x01);
+        assert_eq!(info.session_number_lsb, 0x01);
+    }
+
+    // Test with allocation_length < struct size — tx should be clamped.
+    {
+        let alloc_len = 8u16;
+        let guest_mem = GuestMemory::allocate(track_info_size);
+        let external_data = OwnedRequestBuffers::linear(0, alloc_len as usize, true);
+        let request = make_read_track_information_request(1, 1, alloc_len);
+        check_execute_scsi_pass_with_tx(
+            &dvd,
+            &external_data.buffer(&guest_mem),
+            &request,
+            alloc_len as usize,
+        )
+        .await;
+    }
+
+    // Test with number_type=2 (session), session 1.
+    {
+        let alloc_len = track_info_size as u16;
+        let guest_mem = GuestMemory::allocate(track_info_size);
+        let external_data = OwnedRequestBuffers::linear(0, track_info_size, true);
+        let request = make_read_track_information_request(2, 1, alloc_len);
+        check_execute_scsi_pass_with_tx(
+            &dvd,
+            &external_data.buffer(&guest_mem),
+            &request,
+            track_info_size,
+        )
+        .await;
+    }
 }

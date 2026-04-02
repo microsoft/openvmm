@@ -896,6 +896,9 @@ impl LoadedVm {
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
+        // Save the emulation platform state prior to any network settings so that
+        // it can capture any relevant state from the network devices that may be
+        // needed for a successful restore.
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
         // Only save dma manager state if we are expected to keep VF devices
@@ -931,7 +934,6 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
-
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {

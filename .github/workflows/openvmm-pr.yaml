@@ -29,7 +29,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job0-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -39,7 +40,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -49,7 +50,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -57,12 +58,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -109,7 +110,7 @@ jobs:
         flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -148,7 +149,7 @@ jobs:
         flowey v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -218,7 +219,7 @@ jobs:
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job0.json
       shell: bash
     - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: _internal-flowey-bootstrap-x86_64-linux-uid-1
         path: ${{ runner.temp }}/bootstrapped-flowey
@@ -236,7 +237,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -246,7 +247,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -254,12 +255,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -306,7 +307,7 @@ jobs:
         flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -345,7 +346,7 @@ jobs:
         flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -385,7 +386,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job10-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -394,10 +396,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -440,7 +442,7 @@ jobs:
         flowey v 10 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar2
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
@@ -474,7 +476,7 @@ jobs:
         flowey v 10 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -731,25 +733,25 @@ jobs:
       run: flowey e 10 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-linux-musl-pipette
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-tmk_vmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-extras
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-extras/
@@ -765,10 +767,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -805,7 +807,7 @@ jobs:
         flowey v 11 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -837,7 +839,7 @@ jobs:
         flowey v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar6
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar5 }}
         path: ${{ env.floweyvar6 }}
@@ -884,7 +886,7 @@ jobs:
         flowey v 11 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:129:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x86_64_openvmm_hcl_for_size_analysis
         path: ${{ env.floweyvar1 }}
@@ -911,7 +913,7 @@ jobs:
         flowey v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar4
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar3 }}
         path: ${{ env.floweyvar4 }}
@@ -964,7 +966,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -974,7 +976,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -982,12 +984,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -1045,7 +1047,7 @@ jobs:
         flowey.exe v 12 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -1073,7 +1075,7 @@ jobs:
         flowey.exe v 12 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -1123,7 +1125,7 @@ jobs:
         flowey.exe v 12 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -1171,7 +1173,7 @@ jobs:
         flowey.exe v 12 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-unit-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -1194,7 +1196,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job13-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -1203,10 +1206,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -1249,7 +1252,7 @@ jobs:
         flowey v 13 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -1277,7 +1280,7 @@ jobs:
         flowey v 13 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -1331,7 +1334,7 @@ jobs:
         flowey v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -1384,7 +1387,7 @@ jobs:
         flowey v 13 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-unit-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -1407,7 +1410,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job14-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -1416,10 +1420,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -1456,7 +1460,7 @@ jobs:
         flowey v 14 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -1488,7 +1492,7 @@ jobs:
         flowey v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -1556,7 +1560,7 @@ jobs:
         flowey v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -1609,7 +1613,7 @@ jobs:
         flowey v 14 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-musl-unit-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -1641,7 +1645,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -1651,7 +1655,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -1659,12 +1663,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -1722,7 +1726,7 @@ jobs:
         flowey.exe v 15 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -1750,7 +1754,7 @@ jobs:
         flowey.exe v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -1800,7 +1804,7 @@ jobs:
         flowey.exe v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -1848,7 +1852,7 @@ jobs:
         flowey.exe v 15 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-unit-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -1880,7 +1884,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -1890,7 +1894,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -1898,12 +1902,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -1967,7 +1971,7 @@ jobs:
         flowey v 16 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -1995,7 +1999,7 @@ jobs:
         flowey v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -2050,7 +2054,7 @@ jobs:
         flowey v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -2103,7 +2107,7 @@ jobs:
         flowey v 16 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-unit-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2135,7 +2139,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2145,7 +2149,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2153,12 +2157,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -2216,7 +2220,7 @@ jobs:
         flowey v 17 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -2248,7 +2252,7 @@ jobs:
         flowey v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -2316,7 +2320,7 @@ jobs:
         flowey v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -2369,7 +2373,7 @@ jobs:
         flowey v 17 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-musl-unit-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2392,7 +2396,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - JobId=job18-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -2404,7 +2409,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-6,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -2454,7 +2459,7 @@ jobs:
         flowey.exe v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -2474,7 +2479,7 @@ jobs:
         flowey.exe v 18 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -2517,7 +2522,7 @@ jobs:
         flowey.exe v 18 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -2551,7 +2556,7 @@ jobs:
         flowey.exe v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -2617,7 +2622,7 @@ jobs:
         flowey.exe v 18 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__6
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-intel-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -2633,7 +2638,7 @@ jobs:
         flowey.exe v 18 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-intel-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2670,7 +2675,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-6,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -2720,7 +2725,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -2740,7 +2745,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -2783,7 +2788,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -2817,7 +2822,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -2888,7 +2893,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__6
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-intel-tdx-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -2904,7 +2909,7 @@ jobs:
         flowey.exe v 19 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-intel-tdx-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -2927,7 +2932,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - JobId=job2-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -2939,7 +2945,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2949,7 +2955,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2957,12 +2963,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -3028,7 +3034,7 @@ jobs:
         flowey.exe v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -3056,7 +3062,7 @@ jobs:
         flowey.exe v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -3115,25 +3121,25 @@ jobs:
       run: flowey.exe e 2 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-hypestv
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-hypestv/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-igvmfilegen
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-ohcldiag-dev
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgs_lib
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgs_lib/
@@ -3143,7 +3149,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - JobId=job20-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -3155,7 +3162,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-6,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -3205,7 +3212,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -3225,7 +3232,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -3268,7 +3275,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -3302,7 +3309,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -3368,7 +3375,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__6
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-amd-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -3384,7 +3391,7 @@ jobs:
         flowey.exe v 20 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-amd-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -3421,7 +3428,7 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-6,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-tpm_guest_tests,x64-openhcl-igvm,x64-tmks,x64-windows-openvmm,x64-windows-pipette,x64-windows-prep_steps,x64-windows-test_igvm_agent_rpc_server,x64-windows-tmk_vmm,x64-windows-tpm_guest_tests,x64-windows-vmgstool,x64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -3471,7 +3478,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -3491,7 +3498,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -3534,7 +3541,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -3568,7 +3575,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -3639,7 +3646,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__6
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-amd-snp-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -3655,7 +3662,7 @@ jobs:
         flowey.exe v 21 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-amd-snp-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -3678,7 +3685,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job22-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -3690,9 +3698,9 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-vmm-tests-archive,x64-tmks,x64-windows-pipette}'
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-openvmm_vhost,x64-linux-vmm-tests-archive,x64-tmks,x64-windows-pipette}'
         path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
@@ -3715,17 +3723,19 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-pipette" | flowey v 22 'artifact_use_from_x64-linux-musl-pipette' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-tmk_vmm" | flowey v 22 'artifact_use_from_x64-linux-musl-tmk_vmm' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-openvmm" | flowey v 22 'artifact_use_from_x64-linux-openvmm' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-linux-openvmm_vhost" | flowey v 22 'artifact_use_from_x64-linux-openvmm_vhost' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-vmm-tests-archive" | flowey v 22 'artifact_use_from_x64-linux-vmm-tests-archive' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-tmks" | flowey v 22 'artifact_use_from_x64-tmks' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-pipette" | flowey v 22 'artifact_use_from_x64-windows-pipette' --is-raw-string update
       shell: bash
     - name: creating new test content dir
       run: |-
+        flowey e 22 flowey_core::pipeline::artifact::resolve 3
+        flowey e 22 flowey_core::pipeline::artifact::resolve 4
+        flowey e 22 flowey_core::pipeline::artifact::resolve 7
         flowey e 22 flowey_core::pipeline::artifact::resolve 1
         flowey e 22 flowey_core::pipeline::artifact::resolve 0
         flowey e 22 flowey_core::pipeline::artifact::resolve 2
-        flowey e 22 flowey_core::pipeline::artifact::resolve 5
-        flowey e 22 flowey_core::pipeline::artifact::resolve 3
         flowey e 22 flowey_core::pipeline::artifact::resolve 6
         flowey e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
       shell: bash
@@ -3745,7 +3755,7 @@ jobs:
         flowey v 22 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -3779,7 +3789,7 @@ jobs:
         flowey v 22 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -3833,7 +3843,7 @@ jobs:
         flowey v 22 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -3853,7 +3863,7 @@ jobs:
         flowey v 22 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -3869,7 +3879,7 @@ jobs:
         flowey e 22 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 22 flowey_lib_hvlite::run_cargo_nextest_run 0
         flowey e 22 flowey_lib_hvlite::run_cargo_nextest_run 1
-        flowey e 22 flowey_core::pipeline::artifact::resolve 4
+        flowey e 22 flowey_core::pipeline::artifact::resolve 5
         flowey e 22 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
       shell: bash
     - name: generate nextest command
@@ -3889,7 +3899,7 @@ jobs:
         flowey v 22 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__6
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -3905,7 +3915,7 @@ jobs:
         flowey v 22 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -3944,7 +3954,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -3954,7 +3964,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -3962,12 +3972,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -3981,7 +3991,7 @@ jobs:
       working-directory: flowey_bootstrap
       shell: bash
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         pattern: '{aarch64-guest_test_uefi,aarch64-linux-musl-pipette,aarch64-linux-musl-tmk_vmm,aarch64-openhcl-igvm,aarch64-tmks,aarch64-windows-openvmm,aarch64-windows-pipette,aarch64-windows-tmk_vmm,aarch64-windows-vmgstool,aarch64-windows-vmm-tests-archive}'
         path: ${{ runner.temp }}/used_artifacts/
@@ -4036,7 +4046,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -4056,7 +4066,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -4096,7 +4106,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar9
       shell: bash
     - id: flowey_lib_common__cache__9
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar8 }}
         path: ${{ env.floweyvar9 }}
@@ -4130,7 +4140,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar7
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar6 }}
         path: ${{ env.floweyvar7 }}
@@ -4196,7 +4206,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::publish_test_results:7:flowey_lib_common/src/publish_test_results.rs:144:57' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__6
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
@@ -4212,7 +4222,7 @@ jobs:
         flowey.exe v 23 'flowey_lib_common::publish_test_results:0:flowey_lib_common/src/publish_test_results.rs:77:43' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__publish_test_results__3
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
@@ -4241,10 +4251,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -4270,7 +4280,7 @@ jobs:
         flowey v 24 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -4335,10 +4345,10 @@ jobs:
       ANY_JOBS_FAILED: ${{ contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'failure') }}
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -4365,7 +4375,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - JobId=job3-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -4377,7 +4388,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4387,7 +4398,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -4395,12 +4406,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -4474,7 +4485,7 @@ jobs:
         flowey.exe v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -4502,7 +4513,7 @@ jobs:
         flowey.exe v 3 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -4582,7 +4593,7 @@ jobs:
         flowey.exe v 3 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -4632,49 +4643,49 @@ jobs:
       run: flowey.exe e 3 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish aarch64-windows-openvmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-pipette
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-prep_steps
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-test_igvm_agent_rpc_server
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-test_igvm_agent_rpc_server
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-test_igvm_agent_rpc_server/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-tmk_vmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-tpm_guest_tests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgstool
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmm-tests-archive
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-archive/
@@ -4684,7 +4695,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - JobId=job4-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -4696,7 +4708,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4706,7 +4718,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -4714,12 +4726,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -4785,7 +4797,7 @@ jobs:
         flowey.exe v 4 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -4813,7 +4825,7 @@ jobs:
         flowey.exe v 4 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -4876,25 +4888,25 @@ jobs:
       run: flowey.exe e 4 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish x64-windows-hypestv
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-hypestv/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-igvmfilegen
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-ohcldiag-dev
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgs_lib
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgs_lib/
@@ -4904,7 +4916,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
-    - 1ES.ImageOverride=HvLite-CI-Win-Ge-Image-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - JobId=job5-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -4916,7 +4929,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.93.1 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4926,7 +4939,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -4934,12 +4947,12 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.93.1
+        ./rustup-init.exe -y --default-toolchain=1.94.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
       shell: bash
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         path: flowey_bootstrap
     - name: Build flowey
@@ -5013,7 +5026,7 @@ jobs:
         flowey.exe v 5 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -5041,7 +5054,7 @@ jobs:
         flowey.exe v 5 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -5137,7 +5150,7 @@ jobs:
         flowey.exe v 5 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -5171,49 +5184,49 @@ jobs:
       run: flowey.exe e 5 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish x64-windows-openvmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-openvmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-pipette
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-prep_steps
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-prep_steps
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-prep_steps/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-test_igvm_agent_rpc_server
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-test_igvm_agent_rpc_server
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-test_igvm_agent_rpc_server/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-tmk_vmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-tpm_guest_tests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgstool
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmm-tests-archive
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmm-tests-archive/
@@ -5222,7 +5235,7 @@ jobs:
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job5.json
       shell: bash
     - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: _internal-flowey-bootstrap-x86_64-windows-uid-6
         path: ${{ runner.temp }}/bootstrapped-flowey
@@ -5231,7 +5244,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job6-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -5240,10 +5254,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -5269,6 +5283,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-ohcldiag-dev" | flowey v 6 'artifact_publish_from_aarch64-linux-ohcldiag-dev' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-openvmm"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-openvmm" | flowey v 6 'artifact_publish_from_aarch64-linux-openvmm' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-openvmm_vhost"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-openvmm_vhost" | flowey v 6 'artifact_publish_from_aarch64-linux-openvmm_vhost' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-tpm_guest_tests"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-tpm_guest_tests" | flowey v 6 'artifact_publish_from_aarch64-linux-tpm_guest_tests' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-vmgs_lib"
@@ -5302,7 +5318,7 @@ jobs:
         flowey v 6 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -5330,7 +5346,7 @@ jobs:
         flowey v 6 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -5364,29 +5380,42 @@ jobs:
         flowey e 6 flowey_lib_hvlite::run_cargo_build 6
         flowey e 6 flowey_lib_hvlite::build_openvmm 0
         flowey e 6 flowey_core::pipeline::artifact::publish 0
-        flowey e 6 flowey_lib_hvlite::init_cross_build 5
+        flowey e 6 flowey_lib_hvlite::init_cross_build 3
       shell: bash
-    - name: cargo build vmgstool
+    - name: cargo build openvmm_vhost
       run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 7
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 14
+        flowey e 6 flowey_lib_common::run_cargo_build 4
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 6 flowey_lib_hvlite::run_split_debug_info 4
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 15
-        flowey e 6 flowey_lib_hvlite::build_vmgstool 0
+        flowey e 6 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 6 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 6 flowey_core::pipeline::artifact::publish 1
-        flowey e 6 flowey_lib_hvlite::init_cross_build 4
+        flowey e 6 flowey_lib_hvlite::init_cross_build 6
+      shell: bash
+    - name: cargo build vmgstool
+      run: |-
+        flowey e 6 flowey_lib_common::run_cargo_build 8
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 16
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 6 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 17
+        flowey e 6 flowey_lib_hvlite::build_vmgstool 0
+        flowey e 6 flowey_core::pipeline::artifact::publish 2
+        flowey e 6 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build vmgs_lib
       run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 6
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 13
+        flowey e 6 flowey_lib_common::run_cargo_build 7
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 15
         flowey e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 0
         flowey e 6 flowey_lib_hvlite::build_and_test_vmgs_lib 1
-        flowey e 6 flowey_core::pipeline::artifact::publish 2
-        flowey e 6 flowey_lib_hvlite::init_cross_build 6
+        flowey e 6 flowey_core::pipeline::artifact::publish 3
+        flowey e 6 flowey_lib_hvlite::init_cross_build 7
       shell: bash
     - name: cargo build igvmfilegen
       run: |-
@@ -5395,10 +5424,10 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 6 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 6 flowey_lib_hvlite::run_split_debug_info 6
         flowey e 6 flowey_lib_hvlite::run_cargo_build 2
         flowey e 6 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey e 6 flowey_core::pipeline::artifact::publish 3
+        flowey e 6 flowey_core::pipeline::artifact::publish 4
         flowey e 6 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build ohcldiag-dev
@@ -5411,8 +5440,8 @@ jobs:
         flowey e 6 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 6 flowey_lib_hvlite::run_cargo_build 4
         flowey e 6 flowey_lib_hvlite::build_ohcldiag_dev 0
-        flowey e 6 flowey_core::pipeline::artifact::publish 4
-        flowey e 6 flowey_lib_hvlite::init_cross_build 7
+        flowey e 6 flowey_core::pipeline::artifact::publish 5
+        flowey e 6 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build guest_test_uefi
       run: |-
@@ -5422,25 +5451,12 @@ jobs:
     - name: build guest_test_uefi.img
       run: |-
         flowey e 6 flowey_lib_hvlite::build_guest_test_uefi 0
-        flowey e 6 flowey_core::pipeline::artifact::publish 5
+        flowey e 6 flowey_core::pipeline::artifact::publish 6
         flowey e 6 flowey_lib_hvlite::init_cross_build 0
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build simple_tmk
-      run: |-
-        flowey e 6 flowey_lib_common::run_cargo_build 4
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 9
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 6 flowey_lib_hvlite::run_split_debug_info 2
-        flowey e 6 flowey_lib_hvlite::run_cargo_build 10
-        flowey e 6 flowey_lib_hvlite::build_tmks 0
-        flowey e 6 flowey_core::pipeline::artifact::publish 6
-        flowey e 6 flowey_lib_hvlite::init_cross_build 3
-      shell: bash
-    - name: cargo build tpm_guest_tests
       run: |-
         flowey e 6 flowey_lib_common::run_cargo_build 5
         flowey e 6 flowey_lib_hvlite::run_cargo_build 11
@@ -5449,56 +5465,75 @@ jobs:
       run: |-
         flowey e 6 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 6 flowey_lib_hvlite::run_cargo_build 12
-        flowey e 6 flowey_lib_hvlite::build_tpm_guest_tests 0
+        flowey e 6 flowey_lib_hvlite::build_tmks 0
         flowey e 6 flowey_core::pipeline::artifact::publish 7
+        flowey e 6 flowey_lib_hvlite::init_cross_build 4
+      shell: bash
+    - name: cargo build tpm_guest_tests
+      run: |-
+        flowey e 6 flowey_lib_common::run_cargo_build 6
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 13
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 6 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 6 flowey_lib_hvlite::run_cargo_build 14
+        flowey e 6 flowey_lib_hvlite::build_tpm_guest_tests 0
+        flowey e 6 flowey_core::pipeline::artifact::publish 8
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 6 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-guest_test_uefi
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/aarch64-guest_test_uefi/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-igvmfilegen
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-ohcldiag-dev
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-openvmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-openvmm/
         include-hidden-files: true
+    - name: 🌼📦 Publish aarch64-linux-openvmm_vhost
+      uses: actions/upload-artifact@v7
+      with:
+        name: aarch64-linux-openvmm_vhost
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-openvmm_vhost/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-tpm_guest_tests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgs_lib
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgs_lib/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgstool
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-tmks
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-tmks
         path: ${{ runner.temp }}/publish_artifacts/aarch64-tmks/
@@ -5508,7 +5543,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job7-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -5517,10 +5553,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -5546,6 +5582,8 @@ jobs:
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-ohcldiag-dev" | flowey v 7 'artifact_publish_from_x64-linux-ohcldiag-dev' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-openvmm"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-openvmm" | flowey v 7 'artifact_publish_from_x64-linux-openvmm' --is-raw-string update
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-openvmm_vhost"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-openvmm_vhost" | flowey v 7 'artifact_publish_from_x64-linux-openvmm_vhost' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-tpm_guest_tests"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-tpm_guest_tests" | flowey v 7 'artifact_publish_from_x64-linux-tpm_guest_tests' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-vmgs_lib"
@@ -5581,7 +5619,7 @@ jobs:
         flowey v 7 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -5609,7 +5647,7 @@ jobs:
         flowey v 7 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar5
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar4 }}
         path: ${{ env.floweyvar5 }}
@@ -5643,33 +5681,46 @@ jobs:
         flowey e 7 flowey_lib_hvlite::run_cargo_build 6
         flowey e 7 flowey_lib_hvlite::build_openvmm 0
         flowey e 7 flowey_core::pipeline::artifact::publish 0
-        flowey e 7 flowey_lib_hvlite::init_cross_build 6
+        flowey e 7 flowey_lib_hvlite::init_cross_build 4
       shell: bash
-    - name: cargo build vmgstool
+    - name: cargo build openvmm_vhost
       run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 7
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 14
+        flowey e 7 flowey_lib_common::run_cargo_build 4
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 7 flowey_lib_hvlite::run_split_debug_info 4
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 15
-        flowey e 7 flowey_lib_hvlite::build_vmgstool 0
+        flowey e 7 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 7 flowey_lib_hvlite::build_openvmm_vhost 0
         flowey e 7 flowey_core::pipeline::artifact::publish 1
-        flowey e 7 flowey_lib_hvlite::init_cross_build 5
+        flowey e 7 flowey_lib_hvlite::init_cross_build 7
+      shell: bash
+    - name: cargo build vmgstool
+      run: |-
+        flowey e 7 flowey_lib_common::run_cargo_build 8
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 16
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 7 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 17
+        flowey e 7 flowey_lib_hvlite::build_vmgstool 0
+        flowey e 7 flowey_core::pipeline::artifact::publish 2
+        flowey e 7 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build vmgs_lib
       run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 6
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 13
+        flowey e 7 flowey_lib_common::run_cargo_build 7
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 15
         flowey e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       shell: bash
     - name: test vmgs_lib
       run: |-
         flowey e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 1
         flowey e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 2
-        flowey e 7 flowey_core::pipeline::artifact::publish 2
-        flowey e 7 flowey_lib_hvlite::init_cross_build 7
+        flowey e 7 flowey_core::pipeline::artifact::publish 3
+        flowey e 7 flowey_lib_hvlite::init_cross_build 8
       shell: bash
     - name: cargo build igvmfilegen
       run: |-
@@ -5678,10 +5729,10 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 7 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 7 flowey_lib_hvlite::run_split_debug_info 6
         flowey e 7 flowey_lib_hvlite::run_cargo_build 2
         flowey e 7 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey e 7 flowey_core::pipeline::artifact::publish 3
+        flowey e 7 flowey_core::pipeline::artifact::publish 4
         flowey e 7 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build ohcldiag-dev
@@ -5694,8 +5745,8 @@ jobs:
         flowey e 7 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 7 flowey_lib_hvlite::run_cargo_build 4
         flowey e 7 flowey_lib_hvlite::build_ohcldiag_dev 0
-        flowey e 7 flowey_core::pipeline::artifact::publish 4
-        flowey e 7 flowey_lib_hvlite::init_cross_build 8
+        flowey e 7 flowey_core::pipeline::artifact::publish 5
+        flowey e 7 flowey_lib_hvlite::init_cross_build 9
       shell: bash
     - name: cargo build guest_test_uefi
       run: |-
@@ -5705,25 +5756,12 @@ jobs:
     - name: build guest_test_uefi.img
       run: |-
         flowey e 7 flowey_lib_hvlite::build_guest_test_uefi 0
-        flowey e 7 flowey_core::pipeline::artifact::publish 5
+        flowey e 7 flowey_core::pipeline::artifact::publish 6
         flowey e 7 flowey_lib_hvlite::init_cross_build 0
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 9
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: cargo build simple_tmk
-      run: |-
-        flowey e 7 flowey_lib_common::run_cargo_build 4
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 9
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 7 flowey_lib_hvlite::run_split_debug_info 2
-        flowey e 7 flowey_lib_hvlite::run_cargo_build 10
-        flowey e 7 flowey_lib_hvlite::build_tmks 0
-        flowey e 7 flowey_core::pipeline::artifact::publish 6
-        flowey e 7 flowey_lib_hvlite::init_cross_build 4
-      shell: bash
-    - name: cargo build tpm_guest_tests
       run: |-
         flowey e 7 flowey_lib_common::run_cargo_build 5
         flowey e 7 flowey_lib_hvlite::run_cargo_build 11
@@ -5732,8 +5770,21 @@ jobs:
       run: |-
         flowey e 7 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 7 flowey_lib_hvlite::run_cargo_build 12
-        flowey e 7 flowey_lib_hvlite::build_tpm_guest_tests 0
+        flowey e 7 flowey_lib_hvlite::build_tmks 0
         flowey e 7 flowey_core::pipeline::artifact::publish 7
+        flowey e 7 flowey_lib_hvlite::init_cross_build 5
+      shell: bash
+    - name: cargo build tpm_guest_tests
+      run: |-
+        flowey e 7 flowey_lib_common::run_cargo_build 6
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 13
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 7 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 7 flowey_lib_hvlite::run_cargo_build 14
+        flowey e 7 flowey_lib_hvlite::build_tpm_guest_tests 0
+        flowey e 7 flowey_core::pipeline::artifact::publish 8
       shell: bash
     - name: create cargo-nextest cache dir
       run: |-
@@ -5749,7 +5800,7 @@ jobs:
         flowey v 7 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar2 }}
         path: ${{ env.floweyvar3 }}
@@ -5774,7 +5825,7 @@ jobs:
       run: |-
         flowey e 7 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 7 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey e 7 flowey_core::pipeline::artifact::publish 8
+        flowey e 7 flowey_core::pipeline::artifact::publish 9
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 7 flowey_lib_common::cache 3
@@ -5783,55 +5834,61 @@ jobs:
       run: flowey e 7 flowey_lib_common::cache 7
       shell: bash
     - name: 🌼📦 Publish x64-guest_test_uefi
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/x64-guest_test_uefi/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-igvmfilegen
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-igvmfilegen/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-ohcldiag-dev
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-ohcldiag-dev/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-openvmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-openvmm/
         include-hidden-files: true
+    - name: 🌼📦 Publish x64-linux-openvmm_vhost
+      uses: actions/upload-artifact@v7
+      with:
+        name: x64-linux-openvmm_vhost
+        path: ${{ runner.temp }}/publish_artifacts/x64-linux-openvmm_vhost/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-tpm_guest_tests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-tpm_guest_tests
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-tpm_guest_tests/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgs_lib
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgs_lib/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgstool
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgstool/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmm-tests-archive
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-linux-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-archive/
         include-hidden-files: true
     - name: 🌼📦 Publish x64-tmks
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: x64-tmks
         path: ${{ runner.temp }}/publish_artifacts/x64-tmks/
@@ -5841,7 +5898,8 @@ jobs:
     runs-on:
     - self-hosted
     - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - JobId=job8-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
       id-token: write
@@ -5850,10 +5908,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -5896,7 +5954,7 @@ jobs:
         flowey v 8 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar2
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar1 }}
         path: ${{ env.floweyvar2 }}
@@ -5930,7 +5988,7 @@ jobs:
         flowey v 8 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -6095,25 +6153,25 @@ jobs:
       run: flowey e 8 flowey_lib_common::cache 3
       shell: bash
     - name: 🌼📦 Publish aarch64-linux-musl-pipette
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-pipette/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-tmk_vmm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-tmk_vmm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm/
         include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm-extras
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm-extras/
@@ -6129,10 +6187,10 @@ jobs:
     if: github.event.pull_request.draft == false
     steps:
     - name: 🌼📦 Download artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
-        pattern: _internal-flowey-bootstrap-x86_64-linux-uid-1
-        path: ${{ runner.temp }}/used_artifacts/
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-1
+        path: ${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/
     - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -6169,7 +6227,7 @@ jobs:
         flowey v 9 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: '1'
         path: repo0
@@ -6201,7 +6259,7 @@ jobs:
         flowey v 9 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar6
       shell: bash
     - id: flowey_lib_common__cache__5
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar5 }}
         path: ${{ env.floweyvar6 }}
@@ -6248,7 +6306,7 @@ jobs:
         flowey v 9 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:8:flowey_lib_hvlite/src/_jobs/check_openvmm_hcl_size.rs:129:27' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__2
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: aarch64_openvmm_hcl_for_size_analysis
         path: ${{ env.floweyvar1 }}
@@ -6275,7 +6333,7 @@ jobs:
         flowey v 9 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar4
       shell: bash
     - id: flowey_lib_common__cache__1
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         key: ${{ env.floweyvar3 }}
         path: ${{ env.floweyvar4 }}

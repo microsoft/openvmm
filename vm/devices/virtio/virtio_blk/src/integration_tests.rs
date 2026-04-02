@@ -10,7 +10,6 @@
 use crate::VirtioBlkDevice;
 use crate::spec::VirtioBlkDiscardWriteZeroes;
 use crate::spec::*;
-use core::mem::offset_of;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -20,28 +19,20 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
-use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
-use std::time::Duration;
 use test_with_tracing::test;
 use virtio::QueueResources;
-use virtio::Resources;
 use virtio::VirtioDevice;
 use virtio::queue::QueueParams;
 use virtio::spec::VirtioDeviceFeatures;
-use virtio::spec::queue::AVAIL_ELEMENT_SIZE;
-use virtio::spec::queue::AVAIL_OFFSET_FLAGS;
-use virtio::spec::queue::AVAIL_OFFSET_IDX;
-use virtio::spec::queue::AVAIL_OFFSET_RING;
 use virtio::spec::queue::DescriptorFlags;
-use virtio::spec::queue::SplitDescriptor;
-use virtio::spec::queue::USED_ELEMENT_SIZE;
-use virtio::spec::queue::USED_OFFSET_FLAGS;
-use virtio::spec::queue::USED_OFFSET_IDX;
-use virtio::spec::queue::USED_OFFSET_RING;
-use virtio::spec::queue::UsedElement;
+use virtio::test_helpers::init_avail_ring;
+use virtio::test_helpers::init_used_ring;
+use virtio::test_helpers::make_available;
+use virtio::test_helpers::wait_for_used;
+use virtio::test_helpers::write_descriptor;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -49,7 +40,7 @@ use zerocopy::IntoBytes;
 
 // --- Constants ---
 
-const QUEUE_SIZE: u16 = 16;
+const QUEUE_SIZE: u16 = 32;
 
 // Memory layout for the single requestq
 const DESC_ADDR: u64 = 0x0000;
@@ -62,105 +53,6 @@ const TOTAL_MEM_SIZE: usize = 0x40000;
 
 // VirtioBlkReqHeader is 16 bytes (u32 type, u32 reserved, u64 sector)
 const REQ_HEADER_SIZE: u32 = 16;
-
-// --- Guest memory helpers ---
-
-/// Write a split virtio descriptor at the given descriptor table base.
-fn write_descriptor(
-    mem: &GuestMemory,
-    desc_table_base: u64,
-    index: u16,
-    addr: u64,
-    len: u32,
-    flags: DescriptorFlags,
-    next: u16,
-) {
-    let base = desc_table_base + size_of::<SplitDescriptor>() as u64 * index as u64;
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, address) as u64,
-        &addr.to_le_bytes(),
-    )
-    .unwrap();
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, length) as u64,
-        &len.to_le_bytes(),
-    )
-    .unwrap();
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, flags_raw) as u64,
-        &u16::from(flags).to_le_bytes(),
-    )
-    .unwrap();
-    mem.write_at(
-        base + offset_of!(SplitDescriptor, next) as u64,
-        &next.to_le_bytes(),
-    )
-    .unwrap();
-}
-
-/// Initialize avail ring (flags=0, idx=0).
-fn init_avail_ring(mem: &GuestMemory, avail_addr: u64) {
-    mem.write_at(avail_addr + AVAIL_OFFSET_FLAGS, &0u16.to_le_bytes())
-        .unwrap();
-    mem.write_at(avail_addr + AVAIL_OFFSET_IDX, &0u16.to_le_bytes())
-        .unwrap();
-}
-
-/// Initialize used ring (flags=0, idx=0).
-fn init_used_ring(mem: &GuestMemory, used_addr: u64) {
-    mem.write_at(used_addr + USED_OFFSET_FLAGS, &0u16.to_le_bytes())
-        .unwrap();
-    mem.write_at(used_addr + USED_OFFSET_IDX, &0u16.to_le_bytes())
-        .unwrap();
-}
-
-/// Make a descriptor index available in the avail ring and bump the index.
-fn make_available(mem: &GuestMemory, avail_addr: u64, desc_index: u16, avail_idx: &mut u16) {
-    let ring_offset =
-        avail_addr + AVAIL_OFFSET_RING + AVAIL_ELEMENT_SIZE * (*avail_idx % QUEUE_SIZE) as u64;
-    mem.write_at(ring_offset, &desc_index.to_le_bytes())
-        .unwrap();
-    *avail_idx = avail_idx.wrapping_add(1);
-    mem.write_at(avail_addr + AVAIL_OFFSET_IDX, &avail_idx.to_le_bytes())
-        .unwrap();
-}
-
-/// Read the used ring index.
-fn read_used_idx(mem: &GuestMemory, used_addr: u64) -> u16 {
-    let mut buf = [0u8; 2];
-    mem.read_at(used_addr + USED_OFFSET_IDX, &mut buf).unwrap();
-    u16::from_le_bytes(buf)
-}
-
-/// Read a used ring entry (id, len).
-fn read_used_entry(mem: &GuestMemory, used_addr: u64, index: u16) -> (u32, u32) {
-    let entry_offset =
-        used_addr + USED_OFFSET_RING + USED_ELEMENT_SIZE * (index % QUEUE_SIZE) as u64;
-    let mut id_buf = [0u8; 4];
-    let mut len_buf = [0u8; 4];
-    mem.read_at(
-        entry_offset + offset_of!(UsedElement, id) as u64,
-        &mut id_buf,
-    )
-    .unwrap();
-    mem.read_at(
-        entry_offset + offset_of!(UsedElement, len) as u64,
-        &mut len_buf,
-    )
-    .unwrap();
-    (u32::from_le_bytes(id_buf), u32::from_le_bytes(len_buf))
-}
-
-/// Read the next used ring entry, returning (desc_id, bytes_written) or None.
-fn read_used(mem: &GuestMemory, used_idx: &mut u16) -> Option<(u16, u32)> {
-    let current_used_idx = read_used_idx(mem, USED_ADDR);
-    if current_used_idx == *used_idx {
-        return None;
-    }
-    let (id, len) = read_used_entry(mem, USED_ADDR, *used_idx);
-    *used_idx = used_idx.wrapping_add(1);
-    Some((id as u16, len))
-}
 
 // --- Test Harness ---
 
@@ -184,7 +76,7 @@ impl TestHarness {
         init_used_ring(&mem, USED_ADDR);
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
-        let device = VirtioBlkDevice::new(&driver_source, mem.clone(), disk, read_only);
+        let device = VirtioBlkDevice::new(&driver_source, disk, read_only);
 
         let queue_event = Event::new();
         let interrupt_event = Event::new();
@@ -202,27 +94,29 @@ impl TestHarness {
     }
 
     /// Enable the device with one queue.
-    fn enable(&mut self) {
+    async fn enable(&mut self) {
         let interrupt = Interrupt::from_event(self.interrupt_event.clone());
 
-        let resources = Resources {
-            features: VirtioDeviceFeatures::new(),
-            queues: vec![QueueResources {
-                params: QueueParams {
-                    size: QUEUE_SIZE,
-                    enable: true,
-                    desc_addr: DESC_ADDR,
-                    avail_addr: AVAIL_ADDR,
-                    used_addr: USED_ADDR,
+        self.device
+            .start_queue(
+                0,
+                QueueResources {
+                    params: QueueParams {
+                        size: QUEUE_SIZE,
+                        enable: true,
+                        desc_addr: DESC_ADDR,
+                        avail_addr: AVAIL_ADDR,
+                        used_addr: USED_ADDR,
+                    },
+                    notify: interrupt,
+                    event: self.queue_event.clone(),
+                    guest_memory: self.mem.clone(),
                 },
-                notify: interrupt,
-                event: self.queue_event.clone(),
-            }],
-            shared_memory_region: None,
-            shared_memory_size: 0,
-        };
-
-        self.device.enable(resources).unwrap();
+                &VirtioDeviceFeatures::new(),
+                None,
+            )
+            .await
+            .unwrap();
     }
 
     /// Allocate a data region in guest memory and return its GPA.
@@ -283,7 +177,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         data_gpa
@@ -352,7 +252,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
     }
 
@@ -393,7 +299,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
     }
 
@@ -436,7 +348,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         id_gpa
@@ -504,7 +422,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         status_gpa
@@ -547,7 +471,13 @@ impl TestHarness {
             0,
         );
 
-        make_available(&self.mem, AVAIL_ADDR, head_desc, &mut self.avail_idx);
+        make_available(
+            &self.mem,
+            AVAIL_ADDR,
+            QUEUE_SIZE,
+            head_desc,
+            &mut self.avail_idx,
+        );
         self.queue_event.signal();
 
         status_gpa
@@ -555,19 +485,15 @@ impl TestHarness {
 
     /// Wait for the next used ring entry with a timeout.
     async fn wait_for_used(&mut self) -> (u16, u32) {
-        let mut wait = PolledWait::new(&self.driver, self.interrupt_event.clone()).unwrap();
-        mesh::CancelContext::new()
-            .with_timeout(Duration::from_secs(5))
-            .until_cancelled(async {
-                loop {
-                    if let Some(entry) = read_used(&self.mem, &mut self.used_idx) {
-                        return entry;
-                    }
-                    wait.wait().await.unwrap();
-                }
-            })
-            .await
-            .expect("timed out waiting for used ring entry")
+        wait_for_used(
+            &self.driver,
+            &self.interrupt_event,
+            &self.mem,
+            USED_ADDR,
+            QUEUE_SIZE,
+            &mut self.used_idx,
+        )
+        .await
     }
 
     /// Read a status byte from guest memory at the given GPA.
@@ -589,7 +515,7 @@ fn ram_disk(size: u64, read_only: bool) -> Disk {
 async fn write_then_read_roundtrip(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false); // 64 KiB
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write a recognizable pattern to sector 0.
     let data: Vec<u8> = (0..512).map(|i| (i % 251) as u8).collect();
@@ -621,7 +547,7 @@ async fn write_then_read_roundtrip(driver: DefaultDriver) {
 async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let data_gpa = harness.post_read_request(0, 4, 512);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -638,7 +564,7 @@ async fn read_unwritten_sector_returns_zeroes(driver: DefaultDriver) {
 async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, true);
     let mut harness = TestHarness::new(&driver, disk, true);
-    harness.enable();
+    harness.enable().await;
 
     // Attempt to write — this should fail.
     // We need to find the status byte location: it's the writable descriptor
@@ -671,7 +597,13 @@ async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
     let flags2 = DescriptorFlags::new().with_write(true);
     write_descriptor(&harness.mem, DESC_ADDR, 2, status_gpa, 1, flags2, 0);
 
-    make_available(&harness.mem, AVAIL_ADDR, 0, &mut harness.avail_idx);
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        0,
+        &mut harness.avail_idx,
+    );
     harness.queue_event.signal();
 
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -687,7 +619,7 @@ async fn write_to_read_only_disk_fails(driver: DefaultDriver) {
 async fn flush_succeeds(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     harness.post_flush_request(0);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -700,7 +632,7 @@ async fn flush_succeeds(driver: DefaultDriver) {
 async fn get_id_returns_identifier(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let id_gpa = harness.post_get_id_request(0);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -719,7 +651,7 @@ async fn get_id_returns_identifier(driver: DefaultDriver) {
 async fn unsupported_request_type(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let status_gpa = harness.post_raw_request(0, 0xFF, 0);
     let (used_id, used_len) = harness.wait_for_used().await;
@@ -735,7 +667,7 @@ async fn unsupported_request_type(driver: DefaultDriver) {
 async fn multi_sector_write_read(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write 2 sectors (1024 bytes) starting at sector 2.
     let data: Vec<u8> = (0..1024).map(|i| ((i * 7 + 3) % 256) as u8).collect();
@@ -758,7 +690,7 @@ async fn multi_sector_write_read(driver: DefaultDriver) {
 async fn sequential_write_read_flush(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write
     let pattern = [0xDE; 512];
@@ -796,7 +728,7 @@ async fn sequential_write_read_flush(driver: DefaultDriver) {
 async fn sector_offset_correctness(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false); // 128 × 512-byte sectors
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write to sector 10.
     let data = [0xAA; 512];
@@ -956,7 +888,7 @@ async fn write_read_4k_sector_disk(driver: DefaultDriver) {
     // 64 KiB disk with 4096-byte sectors → 16 disk sectors.
     let disk = Disk::new(TestDisk4K::new(64 * 1024, 4096)).unwrap();
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write to virtio sector 8 (= byte offset 4096 = disk sector 1).
     let data = [0xAA; 4096];
@@ -994,7 +926,7 @@ async fn sector_shift_multiple_offsets_4k(driver: DefaultDriver) {
     // 128 KiB disk with 4096-byte sectors → 32 disk sectors.
     let disk = Disk::new(TestDisk4K::new(128 * 1024, 4096)).unwrap();
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     // Write different patterns to virtio sectors 0, 16, and 24.
     // Virtio sector 0  → disk sector 0  (byte offset 0)
@@ -1047,7 +979,7 @@ async fn check_discard(
     expected_status: u8,
 ) {
     let mut harness = TestHarness::new(driver, disk, read_only);
-    harness.enable();
+    harness.enable().await;
     let status_gpa = harness.post_discard_request(0, sector, num_sectors, flags);
     let (_id, used_len) = harness.wait_for_used().await;
     assert_eq!(used_len, 1);
@@ -1176,7 +1108,7 @@ async fn discard_512b_sector_any_count_succeeds(driver: DefaultDriver) {
 async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
     let disk = ram_disk(64 * 1024, false);
     let mut harness = TestHarness::new(&driver, disk, false);
-    harness.enable();
+    harness.enable().await;
 
     let frag_size: u32 = 256;
 
@@ -1252,7 +1184,13 @@ async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
         DescriptorFlags::new().with_write(true),
         0,
     );
-    make_available(&harness.mem, AVAIL_ADDR, d, &mut harness.avail_idx);
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        d,
+        &mut harness.avail_idx,
+    );
     harness.queue_event.signal();
 
     let (_id, used_len) = harness.wait_for_used().await;
@@ -1318,7 +1256,13 @@ async fn bounce_buffer_write_read_roundtrip(driver: DefaultDriver) {
         DescriptorFlags::new().with_write(true),
         0,
     );
-    make_available(&harness.mem, AVAIL_ADDR, d, &mut harness.avail_idx);
+    make_available(
+        &harness.mem,
+        AVAIL_ADDR,
+        QUEUE_SIZE,
+        d,
+        &mut harness.avail_idx,
+    );
     harness.queue_event.signal();
 
     let (_id, used_len) = harness.wait_for_used().await;
