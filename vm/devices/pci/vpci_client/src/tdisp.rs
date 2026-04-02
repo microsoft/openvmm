@@ -441,7 +441,7 @@ impl VpciClientTdispState {
     /// * `bar_id` - The BAR index being configured.
     /// * `base_address` - The base guest physical address of the MMIO range.
     /// * `length` - The length in bytes of the MMIO range.
-    pub fn on_mmio_reconfigured(
+    pub fn tdisp_on_mmio_reconfigured(
         &mut self,
         bar_id: u16,
         base_address: u64,
@@ -571,7 +571,7 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// * `bar_id` - The BAR index being configured.
     /// * `base_address` - The base guest physical address of the MMIO range.
     /// * `length` - The length in bytes of the MMIO range.
-    async fn on_mmio_reconfigured(
+    async fn tdisp_on_mmio_reconfigured(
         &self,
         bar_id: u16,
         base_address: u64,
@@ -598,13 +598,13 @@ impl TdispVpciAttestationInterface for VpciDevice {
         guard.tdi_state()
     }
 
-    async fn on_mmio_reconfigured(
+    async fn tdisp_on_mmio_reconfigured(
         &self,
         bar_id: u16,
         base_address: u64,
         length: u32,
     ) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
-        guard.on_mmio_reconfigured(bar_id, base_address, length)
+        guard.tdisp_on_mmio_reconfigured(bar_id, base_address, length)
     }
 }

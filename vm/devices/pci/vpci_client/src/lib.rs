@@ -554,6 +554,93 @@ impl VpciDevice {
         }
         accessor.write(self.dev.id, offset, value);
     }
+
+    /// Notifies TDISP about each currently active MMIO BAR, calling
+    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`] for each.
+    ///
+    /// Call this after a write to the STATUS_COMMAND config register. If MMIO
+    /// is not currently enabled or no resource validator is configured, this is
+    /// a no-op. BARs that have already been validated are skipped via
+    /// deduplication in the TDISP state.
+    ///
+    /// Uses a non-blocking try-lock on the TDISP mutex. This succeeds in
+    /// practice because TDISP operations complete before the guest is able to
+    /// enable MMIO.
+    pub fn notify_tdisp_of_mmio_bars(&self) {
+        // Check if MMIO is enabled in command register
+        let bars = {
+            let shadows = self.shadows.lock();
+            if !shadows.command.mmio_enabled() {
+                return;
+            }
+            shadows.bars
+        };
+
+        let Some(mut tdisp) = self.tdisp.0.try_lock() else {
+            tracing::warn!("TDISP mutex held when notifying of MMIO bars; skipping BAR validation");
+            return;
+        };
+
+        tracing::debug!(?bars, ?self.bar_masks, "command register write enabled mmio, notifying TDISP of MMIO bars");
+
+        let mut i = 0usize;
+        while i < bars.len() {
+            let mask = self.bar_masks[i];
+            if mask == 0 {
+                i += 1;
+                continue;
+            }
+
+            let bits = pci_core::spec::cfg_space::BarEncodingBits::from(mask);
+
+            // Decode the BAR values to determine what the base address and length of the MMIO ranges configured by the guest.
+            let (bar_id, base_address, length_bytes, next_i) = if bits.type_64_bit() && i + 1 < 6 {
+                // Combine both 32-bit masks and bases into 64-bit values. Mask off low 4 bits used for flags.
+                let base = ((bars[i + 1] as u64) << 32) | ((bars[i] & !0xF_u32) as u64);
+                let full_mask = ((self.bar_masks[i + 1] as u64) << 32) | ((mask & !0xF_u32) as u64);
+                let size = (!full_mask).wrapping_add(1);
+                let size_u32 = u32::try_from(size).unwrap_or_else(|_| {
+                    tracing::warn!(bar_id = i, size, "64-bit BAR size exceeds u32");
+                    0
+                });
+                (i as u16, base, size_u32, i + 2)
+            } else {
+                let base = (bars[i] & !0xF_u32) as u64;
+                let size = (!(mask & !0xF_u32)).wrapping_add(1);
+                (i as u16, base, size, i + 1)
+            };
+
+            tracing::debug!(
+                ?self.bar_masks,
+                ?bars,
+                bar_id,
+                base_address,
+                length_bytes,
+                "notify_tdisp_of_mmio_bars"
+            );
+
+            if base_address != 0 && length_bytes != 0 {
+                tracing::info!(
+                    bar_id,
+                    base_address,
+                    length_bytes,
+                    "notifying TDISP state of active MMIO BAR"
+                );
+                if let Err(e) = tdisp.tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
+                {
+                    tracing::error!(
+                        bar_id,
+                        base_address,
+                        length_bytes,
+                        error = %e,
+                        "failed to notify TDISP of active MMIO BAR"
+                    );
+                }
+            }
+
+            i = next_i;
+        }
+    }
 }
 
 #[derive(Error, Debug)]

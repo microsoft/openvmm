@@ -30,6 +30,7 @@ use inspect::InspectMut;
 use memory_range::MemoryRange;
 use openhcl_tdisp::TdispResourceValidationInterface;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
+use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
 use state_unit::StateUnits;
 use std::future::poll_fn;
@@ -537,6 +538,11 @@ impl PciConfigSpace for RelayedVpciDevice {
 
     fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         self.0.write_cfg(offset, value);
+
+        // Intercept command register writes to notify TDISP state changes for MMIO reconfiguration.
+        if HeaderType00(offset) == HeaderType00::STATUS_COMMAND {
+            self.0.notify_tdisp_of_mmio_bars();
+        }
         IoResult::Ok
     }
 }
