@@ -4447,9 +4447,9 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
-        // Pre-compute the active queue count and validate the rx buffer configuration.
-        // For invalid configurations, log the error and exit without performing
-        // destructive operations (dropping queues, stopping the endpoint).
+        // Pre-compute the active queue count and validate the rx buffer configuration
+        // before continuing with the queue restart work in this function.
+        // Invalid configurations are returned to the caller as errors.
         let (num_queues, active_queues, active_queue_count) = if let Some(state) = self.workers[0]
             .state()
             .and_then(|worker| worker.state.ready())
