@@ -65,18 +65,32 @@ impl BufferPool {
 }
 
 impl GuestBuffers {
-    pub fn new(
-        mem: GuestMemory,
-        gpadl: GpadlView,
+    /// Validates that the GPADL and sub_allocation_size are compatible with the MTU
+    /// without performing any allocations.
+    pub fn validate_config(
+        gpadl: &GpadlView,
         sub_allocation_size: u32,
         mtu: u32,
-    ) -> Result<Self, GuestBuffersError> {
+    ) -> Result<(), GuestBuffersError> {
         if sub_allocation_size < sub_allocation_size_for_mtu(mtu) {
             return Err(GuestBuffersError::SubAllocationTooSmall {
                 sub_allocation_size,
                 mtu,
             });
         }
+        if gpadl.first().is_none() {
+            return Err(GuestBuffersError::EmptyGpadl);
+        }
+        Ok(())
+    }
+
+    pub fn new(
+        mem: GuestMemory,
+        gpadl: GpadlView,
+        sub_allocation_size: u32,
+        mtu: u32,
+    ) -> Result<Self, GuestBuffersError> {
+        Self::validate_config(&gpadl, sub_allocation_size, mtu)?;
 
         let gpns = gpadl
             .first()
