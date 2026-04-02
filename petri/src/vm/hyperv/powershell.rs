@@ -252,7 +252,7 @@ pub struct HyperVNewCustomVMArgs {
     pub vmbus_message_redirection: Option<bool>,
     /// Path to the OpenHCL firmware IGVM file
     pub firmware_file: Option<PathBuf>,
-    /// OpenHCL command line paramters
+    /// OpenHCL command line parameters
     pub firmware_parameters: Option<String>,
     /// Whether to increase the memory available to VTL2
     pub increase_vtl2_memory: Option<bool>,
@@ -288,7 +288,7 @@ pub struct HyperVNewCustomVMArgs {
     pub com_3: bool,
     /// Enable the TPM
     pub tpm_enabled: bool,
-    /// Temporary file containing managment VTL settings
+    /// Temporary file containing management VTL settings
     pub management_vtl_settings: Option<NamedTempFile>,
 }
 

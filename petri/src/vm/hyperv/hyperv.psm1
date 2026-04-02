@@ -322,13 +322,13 @@ function New-CustomVM
     if (-not $msd) { throw "Unable to create the Msvm_MemorySettingData object" }
 
     $psdProperties = @{ VirtualQuantity = $VpCount }
-    if ($ApicMode) {
+    if ($ApicMode -ne $null) {
         $psdProperties["ApicMode"] = $ApicMode
     }
-    if ($HwThreadsPerCore) {
+    if ($HwThreadsPerCore -ne $null) {
         $psdProperties["HwThreadsPerCore"] = $HwThreadsPerCore
     }
-    if ($MaxProcessorsPerNumaNode) {
+    if ($MaxProcessorsPerNumaNode -ne $null) {
         $psdProperties["MaxProcessorsPerNumaNode"] = $MaxProcessorsPerNumaNode
     }
 
