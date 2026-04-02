@@ -70,8 +70,6 @@ pub struct NetworkTestState {
     iperf_requests: mesh::Sender<crate::iperf_helper::IperfRequest>,
     /// Mesh instance (kept alive so the helper process stays running).
     _helper_mesh: mesh_process::Mesh,
-    /// Whether the guest uses chroot for iperf3 (Consomme with erofs).
-    use_chroot: bool,
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
@@ -258,7 +256,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             #[cfg(target_os = "linux")]
             NetBackend::Tap => {
                 let tap_fd = tap_fd.unwrap();
-                builder = tap::configure_builder(builder, tap_fd, self.nic);
+                builder = tap::configure_builder(builder, tap_fd, self.nic, erofs_file);
             }
             #[cfg(not(target_os = "linux"))]
             NetBackend::Tap => unreachable!(),
@@ -275,35 +273,32 @@ impl crate::harness::WarmPerfTest for NetworkTest {
 
         // Guest networking and iperf3 setup depends on backend.
         let host_ip;
-        let use_chroot;
         match self.backend {
             NetBackend::Consomme => {
                 // Bring up networking on the real root (busybox in initrd).
                 cmd!(sh, "ifconfig eth0 up").run().await?;
                 cmd!(sh, "udhcpc eth0").run().await?;
 
-                // Mount the erofs image and prepare chroot.
-                agent
-                    .mount("/dev/vda", "/perf", "erofs", 1 /* MS_RDONLY */, true)
-                    .await
-                    .context("failed to mount erofs on /dev/vda")?;
-                agent
-                    .prepare_chroot("/perf")
-                    .await
-                    .context("failed to prepare chroot at /perf")?;
-
                 host_ip = detect_host_ip().context("failed to detect host IP")?;
                 tracing::info!(host_ip = %host_ip, "detected host IP");
-                use_chroot = true;
             }
             #[cfg(target_os = "linux")]
             NetBackend::Tap => {
                 host_ip = tap::setup_guest_networking(&agent).await?;
-                use_chroot = false;
             }
             #[cfg(not(target_os = "linux"))]
             NetBackend::Tap => unreachable!(),
         }
+
+        // Mount the erofs image (iperf3 pre-installed) and prepare chroot.
+        agent
+            .mount("/dev/vda", "/perf", "erofs", 1 /* MS_RDONLY */, true)
+            .await
+            .context("failed to mount erofs on /dev/vda")?;
+        agent
+            .prepare_chroot("/perf")
+            .await
+            .context("failed to prepare chroot at /perf")?;
 
         Ok(NetworkTestState {
             vm,
@@ -311,7 +306,6 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             host_ip,
             iperf_requests: ready.requests,
             _helper_mesh: helper_mesh,
-            use_chroot,
         })
     }
 
@@ -408,13 +402,10 @@ impl NetworkTest {
         std::thread::sleep(std::time::Duration::from_millis(500));
 
         // Run guest iperf3 client.
-        run_guest_iperf3_client(&state.agent, host_ip, port, &mode, metric_name, state.use_chroot)
-            .await?;
+        run_guest_iperf3_client(&state.agent, host_ip, port, &mode, metric_name).await?;
 
         // Collect JSON from the helper.
-        let json = json_future
-            .await
-            .context("iperf3 helper RPC failed")?;
+        let json = json_future.await.context("iperf3 helper RPC failed")?;
 
         if !json.is_empty() {
             tracing::debug!(metric = metric_name, json = %json, "raw iperf3 output");
@@ -436,12 +427,9 @@ async fn run_guest_iperf3_client(
     port: u16,
     mode: &IperfMode,
     metric_name: &str,
-    use_chroot: bool,
 ) -> anyhow::Result<()> {
     let mut sh = agent.unix_shell();
-    if use_chroot {
-        sh.chroot("/perf");
-    }
+    sh.chroot("/perf");
     let port_str = port.to_string();
     match mode {
         IperfMode::TcpTx => {
@@ -494,8 +482,7 @@ mod tap {
     /// Add a VMBus synthnic backed by a TAP fd to the VM config.
     fn add_tap_nic(config: &mut openvmm_defs::config::Config, tap_fd: std::os::fd::OwnedFd) {
         let endpoint = net_backend_resources::tap::TapHandle { fd: tap_fd }.into_resource();
-        const TAP_NETVSP_INSTANCE: guid::Guid =
-            guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
+        const TAP_NETVSP_INSTANCE: guid::Guid = guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
 
         config.vmbus_devices.push((
             DeviceVtl::Vtl0,
@@ -510,10 +497,7 @@ mod tap {
     }
 
     /// Add a virtio-net NIC backed by a TAP fd to the VM config (PCIe).
-    fn add_virtio_tap_nic(
-        config: &mut openvmm_defs::config::Config,
-        tap_fd: std::os::fd::OwnedFd,
-    ) {
+    fn add_virtio_tap_nic(config: &mut openvmm_defs::config::Config, tap_fd: std::os::fd::OwnedFd) {
         let endpoint = net_backend_resources::tap::TapHandle { fd: tap_fd }.into_resource();
 
         config.pcie_devices.push(PcieDeviceConfig {
@@ -530,22 +514,47 @@ mod tap {
         });
     }
 
-    /// Configure the VM builder to add both a Consomme NIC and a TAP NIC.
+    /// Configure the VM builder to add both a Consomme NIC and a TAP NIC,
+    /// plus a read-only virtio-blk device with the erofs image.
     pub(super) fn configure_builder(
         builder: petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend>,
         tap_fd: std::os::fd::OwnedFd,
         nic: super::NicBackend,
+        erofs_file: fs_err::File,
     ) -> petri::PetriVmBuilder<petri::openvmm::OpenVmmPetriBackend> {
         builder.modify_backend(move |c| {
-            let c = match nic {
-                super::NicBackend::Vmbus => c.with_nic(),
-                super::NicBackend::VirtioNet => c
-                    .with_pcie_root_topology(1, 1, 2)
-                    .with_virtio_nic("s0rc0rp0"),
+            let (c, blk_port) = match nic {
+                super::NicBackend::Vmbus => {
+                    (c.with_pcie_root_topology(1, 1, 1).with_nic(), "s0rc0rp0")
+                }
+                super::NicBackend::VirtioNet => (
+                    c.with_pcie_root_topology(1, 1, 3)
+                        .with_virtio_nic("s0rc0rp0"),
+                    "s0rc0rp2",
+                ),
             };
-            c.with_custom_config(|config| match nic {
-                super::NicBackend::Vmbus => add_tap_nic(config, tap_fd),
-                super::NicBackend::VirtioNet => add_virtio_tap_nic(config, tap_fd),
+            c.with_custom_config(|config| {
+                use disk_backend_resources::FileDiskHandle;
+                use vm_resource::IntoResource;
+
+                // Attach erofs image as read-only virtio-blk device.
+                config.pcie_devices.push(PcieDeviceConfig {
+                    port_name: blk_port.into(),
+                    resource: virtio_resources::VirtioPciDeviceHandle(
+                        virtio_resources::blk::VirtioBlkHandle {
+                            disk: FileDiskHandle(erofs_file.into()).into_resource(),
+                            read_only: true,
+                        }
+                        .into_resource(),
+                    )
+                    .into_resource(),
+                });
+
+                // Add TAP NIC.
+                match nic {
+                    super::NicBackend::Vmbus => add_tap_nic(config, tap_fd),
+                    super::NicBackend::VirtioNet => add_virtio_tap_nic(config, tap_fd),
+                }
             })
         })
     }
@@ -573,11 +582,6 @@ mod tap {
 
         cmd!(sh, "ifconfig {consomme_if} up").run().await?;
         cmd!(sh, "udhcpc -i {consomme_if} -n -q").run().await?;
-
-        cmd!(sh, "apk add iperf3")
-            .run()
-            .await
-            .context("failed to install iperf3")?;
 
         let find_tap =
             "ip -o link show | grep -i 00:15:5d:12:12:13 | awk -F: '{print $2}' | tr -d ' '";

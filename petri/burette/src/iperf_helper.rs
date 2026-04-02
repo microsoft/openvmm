@@ -10,7 +10,7 @@
 
 // UNSAFETY: Calling libc functions for namespace setup (unshare) and
 // network interface configuration (socket, ioctls).
-#![expect(unsafe_code)]
+#![cfg_attr(target_os = "linux", expect(unsafe_code))]
 
 use mesh::MeshPayload;
 use mesh::rpc::FailableRpc;
