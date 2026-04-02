@@ -5356,6 +5356,7 @@ dependencies = [
  "mesh_rpc",
  "mesh_worker",
  "net_backend_resources",
+ "net_tap",
  "netvsp_resources",
  "nvme_resources",
  "openssl",

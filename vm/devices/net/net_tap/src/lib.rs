@@ -3,7 +3,7 @@
 
 //! A TAP interface based endpoint.
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![expect(missing_docs)]
 
 pub mod resolver;
