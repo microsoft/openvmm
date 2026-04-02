@@ -332,17 +332,16 @@ impl PetriVmmBackend for HyperVPetriBackend {
             None
         };
 
-        let hyperv_args = {
-            let mut args = HyperVNewCustomVMArgs::from_config(&config, &properties)?;
-            args.firmware_file = igvm_file.clone();
-            args.firmware_parameters = openhcl_command_line;
-            args.guest_state_path = guest_state_path;
-            args.scsi_controllers = scsi_controllers;
-            args.ide_controllers = ide_controllers;
-            args.com_3 = supports_com3;
-            args.imc_hiv = imc_hiv;
-            args.management_vtl_settings = management_vtl_settings;
-            args
+        let hyperv_args = HyperVNewCustomVMArgs {
+            firmware_file: igvm_file.clone(),
+            firmware_parameters: openhcl_command_line,
+            guest_state_path,
+            scsi_controllers,
+            ide_controllers,
+            com_3: supports_com3,
+            imc_hiv,
+            management_vtl_settings,
+            ..HyperVNewCustomVMArgs::from_config(&config, &properties)?
         };
 
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;

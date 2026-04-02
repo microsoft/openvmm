@@ -328,7 +328,7 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-        let is_openhcl = self.firmware_file.is_none();
+        let is_openhcl = self.firmware_file.is_some();
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
@@ -344,7 +344,6 @@ impl HyperVNewCustomVMArgs {
                     &mut self.firmware_parameters,
                     format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
                 );
-                self.guest_state_lifetime = None;
 
             // allow default/ephemeral/none to imply default behavior for non-openhcl VMs
             } else if !matches!(
@@ -355,29 +354,28 @@ impl HyperVNewCustomVMArgs {
             ) {
                 anyhow::bail!("OpenHCL is required to set GuestStateLifetime via commandline");
             }
+            self.guest_state_lifetime = None;
         }
 
         if let Some(default_boot_always_attempt) = self.default_boot_always_attempt.as_ref()
             && !property_exists("DefaultBootAlwaysAttempt")
         {
-            if !is_openhcl {
-                anyhow::bail!(
-                    "OpenHCL is required to set DefaultBootAlwaysAttempt via commandline"
+            if is_openhcl {
+                let arg = format!(
+                    "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
+                    if *default_boot_always_attempt { 1 } else { 0 }
                 );
+                // In certain cases, this one may have already been added
+                if !self
+                    .firmware_parameters
+                    .as_ref()
+                    .is_some_and(|x| x.contains(&arg))
+                {
+                    append_cmdline(&mut self.firmware_parameters, arg);
+                }
             }
 
-            let arg = format!(
-                "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
-                if *default_boot_always_attempt { 1 } else { 0 }
-            );
-            // In certain cases, this one may have already been added
-            if !self
-                .firmware_parameters
-                .as_ref()
-                .is_some_and(|x| x.contains(&arg))
-            {
-                append_cmdline(&mut self.firmware_parameters, arg);
-            }
+            // allow default behavior for non-openhcl vms
             self.default_boot_always_attempt = None;
         }
 
