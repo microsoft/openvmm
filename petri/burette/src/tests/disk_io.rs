@@ -3,10 +3,11 @@
 
 //! Block I/O performance test via fio.
 //!
-//! Boots an Alpine Linux VM with a data disk, installs fio, and measures
-//! sequential/random read/write bandwidth (MiB/s) and IOPS across multiple
-//! iterations. Uses warm mode: the VM is booted once and reused for all
-//! iterations.
+//! Boots a minimal Linux VM (linux_direct, pipette as PID 1) with a data disk
+//! and a read-only virtio-blk device carrying an erofs image with fio
+//! pre-installed. Measures sequential/random read/write bandwidth (MiB/s) and
+//! IOPS across multiple iterations. Uses warm mode: the VM is booted once and
+//! reused for all iterations.
 //!
 //! Supports both virtio-blk and storvsc (synthetic SCSI) disk backends.
 
@@ -59,18 +60,17 @@ pub struct DiskIoTestState {
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64;
-    use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64;
+    petri::Firmware::linux_direct(resolver, MachineArch::host())
+}
 
-    let arch = MachineArch::host();
-    let boot_image = match arch {
-        MachineArch::X86_64 => petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_X64)),
-        MachineArch::Aarch64 => {
-            petri::BootImageConfig::from_vhd(resolver.require(ALPINE_3_23_AARCH64))
-        }
-    };
-    let guest = petri::UefiGuest::Vhd(boot_image);
-    petri::Firmware::uefi(resolver, arch, guest)
+fn require_petritools_erofs(
+    resolver: &petri::ArtifactResolver<'_>,
+) -> petri_artifacts_core::ResolvedArtifact {
+    use petri_artifacts_vmm_test::artifacts::petritools::*;
+    match MachineArch::host() {
+        MachineArch::X86_64 => resolver.require(PETRITOOLS_EROFS_X64).erase(),
+        MachineArch::Aarch64 => resolver.require(PETRITOOLS_EROFS_AARCH64).erase(),
+    }
 }
 
 /// Register artifacts needed by the disk I/O test.
@@ -82,6 +82,7 @@ pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
         MachineArch::host(),
         true,
     );
+    require_petritools_erofs(resolver);
 }
 
 /// GUID for the data disk SCSI controller (used for storvsc backend).
@@ -152,18 +153,22 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
             post_test_hooks: &mut post_test_hooks,
         };
 
-        let mut builder = petri::PetriVmBuilder::new(params, artifacts, driver)?
+        // Open the perf rootfs erofs image for the virtio-blk device.
+        let erofs_path = require_petritools_erofs(resolver);
+        let erofs_file = fs_err::File::open(&erofs_path)?;
+
+        let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
             .with_processor_topology(petri::ProcessorTopology {
                 vp_count: 2,
                 ..Default::default()
             })
             .with_memory(petri::MemoryConfig {
-                startup_bytes: 2 * 1024 * 1024 * 1024,
+                startup_bytes: 1024 * 1024 * 1024, // 1 GB
                 ..Default::default()
             });
 
-        // Attach data disk and NIC. Only one modify_backend() call is
-        // allowed, so combine disk + NIC setup in a single call.
+        // Attach erofs + data disk and NIC. Only one modify_backend() call is
+        // allowed, so combine all PCIe device setup in a single call.
         let data_disk_path = self.data_disk.clone();
         match self.backend {
             DiskBackend::VirtioBlk => {
@@ -173,12 +178,26 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                     .context("failed to create data disk resource")?;
                 builder = builder.modify_backend(move |b| {
                     b.with_nic()
-                        .with_pcie_root_topology(1, 1, 1)
+                        .with_pcie_root_topology(1, 1, 2)
                         .with_custom_config(|c| {
+                            use disk_backend_resources::FileDiskHandle;
                             use openvmm_defs::config::PcieDeviceConfig;
 
+                            // erofs image on port 0
                             c.pcie_devices.push(PcieDeviceConfig {
                                 port_name: "s0rc0rp0".into(),
+                                resource: virtio_resources::VirtioPciDeviceHandle(
+                                    virtio_resources::blk::VirtioBlkHandle {
+                                        disk: FileDiskHandle(erofs_file.into()).into_resource(),
+                                        read_only: true,
+                                    }
+                                    .into_resource(),
+                                )
+                                .into_resource(),
+                            });
+                            // data disk on port 1
+                            c.pcie_devices.push(PcieDeviceConfig {
+                                port_name: "s0rc0rp1".into(),
                                 resource: virtio_resources::VirtioPciDeviceHandle(
                                     virtio_resources::blk::VirtioBlkHandle {
                                         disk,
@@ -197,7 +216,27 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                     None => petri::Disk::Memory(disk_size_bytes),
                 };
                 builder = builder
-                    .modify_backend(|b| b.with_nic())
+                    .modify_backend(move |b| {
+                        b.with_nic()
+                            .with_pcie_root_topology(1, 1, 1)
+                            .with_custom_config(|c| {
+                                use disk_backend_resources::FileDiskHandle;
+                                use openvmm_defs::config::PcieDeviceConfig;
+
+                                // erofs image on a PCIe root port
+                                c.pcie_devices.push(PcieDeviceConfig {
+                                    port_name: "s0rc0rp0".into(),
+                                    resource: virtio_resources::VirtioPciDeviceHandle(
+                                        virtio_resources::blk::VirtioBlkHandle {
+                                            disk: FileDiskHandle(erofs_file.into()).into_resource(),
+                                            read_only: true,
+                                        }
+                                        .into_resource(),
+                                    )
+                                    .into_resource(),
+                                });
+                            })
+                    })
                     .add_vmbus_storage_controller(
                         &DATA_DISK_SCSI_CONTROLLER,
                         petri::Vtl::Vtl0,
@@ -213,20 +252,21 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
 
         if !self.diag {
             builder = builder.without_screenshots();
+        } else {
+            builder = builder.with_serial_output();
         }
 
-        let (vm, agent) = builder.run().await.context("failed to boot Alpine VM")?;
+        let (vm, agent) = builder.run().await.context("failed to boot minimal VM")?;
 
-        // Bring up networking for package installation.
-        let sh = agent.unix_shell();
-        cmd!(sh, "ifconfig eth0 up").run().await?;
-        cmd!(sh, "udhcpc eth0").run().await?;
-
-        // Install fio.
-        cmd!(sh, "apk add fio")
-            .run()
+        // Mount the erofs image and prepare chroot (fio is pre-installed).
+        agent
+            .mount("/dev/vda", "/perf", "erofs", 1 /* MS_RDONLY */, true)
             .await
-            .context("failed to install fio — host may need internet access")?;
+            .context("failed to mount erofs on /dev/vda")?;
+        agent
+            .prepare_chroot("/perf")
+            .await
+            .context("failed to prepare chroot at /perf")?;
 
         // Discover the data disk device.
         let disk_device = discover_data_disk(&agent, self.backend)
@@ -329,7 +369,7 @@ async fn discover_data_disk(
 
     match backend {
         DiskBackend::VirtioBlk => {
-            // List block devices via /sys/block (always available, no extra packages).
+            // /dev/vda is the erofs image, the data disk is /dev/vdb.
             let blocks = cmd!(sh, "ls /sys/block")
                 .read()
                 .await
@@ -337,13 +377,12 @@ async fn discover_data_disk(
 
             tracing::debug!(blocks = %blocks, "guest block devices");
 
-            // Find the first vd* device.
-            for dev in blocks.split_whitespace() {
-                if dev.starts_with("vd") {
-                    return Ok(format!("/dev/{dev}"));
-                }
+            // The data disk is the second virtio-blk device (vdb).
+            if blocks.split_whitespace().any(|d| d == "vdb") {
+                Ok("/dev/vdb".to_string())
+            } else {
+                anyhow::bail!("data disk /dev/vdb not found in guest; found: {blocks}")
             }
-            anyhow::bail!("no virtio-blk device (vd*) found in guest; found: {blocks}")
         }
         DiskBackend::Storvsc => {
             // Discover the data disk by controller GUID via sysfs, which is
@@ -371,7 +410,8 @@ async fn run_fio_job(
     device: &str,
     rw_mode: &str,
 ) -> anyhow::Result<String> {
-    let sh = agent.unix_shell();
+    let mut sh = agent.unix_shell();
+    sh.chroot("/perf");
     let output: String = cmd!(sh, "fio --name=test --filename={device} --rw={rw_mode} --bs=4k --ioengine=io_uring --direct=1 --runtime=10 --ramp_time=5 --iodepth=32 --numjobs=1 --output-format=json")
         .read()
         .await

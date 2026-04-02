@@ -416,6 +416,7 @@ dependencies = [
  "build_rs_git_info",
  "clap",
  "disk_backend_resources",
+ "fs-err",
  "futures",
  "guid",
  "jiff",
