@@ -12,7 +12,6 @@ $HARD_DRIVE_TYPE = "Microsoft:Hyper-V:Synthetic Disk Drive"
 $DVD_DRIVE_TYPE = "Microsoft:Hyper-V:Synthetic DVD Drive"
 $HARD_DISK_TYPE = "Microsoft:Hyper-V:Virtual Hard Disk"
 $DVD_DISK_TYPE = "Microsoft:Hyper-V:Virtual CD/DVD Disk"
-$SERIAL_PORT_TYPE = "Microsoft:Hyper-V:Serial Port"
 
 #
 # Hyper-V Helpers
@@ -406,8 +405,8 @@ function New-CustomVM
             $resourceSettings += $serialPorts[0] | ConvertTo-CimEmbeddedString
         }
         if ($Com3) {
-            $serialPorts[3].Connection = @("\\.\pipe\$vmid-3")
-            $resourceSettings += $serialPorts[3] | ConvertTo-CimEmbeddedString
+            $serialPorts[2].Connection = @("\\.\pipe\$vmid-3")
+            $resourceSettings += $serialPorts[2] | ConvertTo-CimEmbeddedString
         }
 
         $vmms | Invoke-CimMethod -Name "ModifyResourceSettings" -Arguments @{

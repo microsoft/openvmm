@@ -574,7 +574,7 @@ impl HyperVNewCustomVMArgs {
     }
 }
 
-/// Runs New-VM with the given arguments.
+/// Runs New-CustomVM with the given arguments.
 pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> anyhow::Result<Guid> {
     let (guest_state_isolation_enabled, guest_state_isolation_type) = args
         .guest_state_isolation_type
