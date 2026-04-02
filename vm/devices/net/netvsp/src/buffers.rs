@@ -17,6 +17,7 @@ use net_backend::RxMetadata;
 use safeatomic::AtomicSliceOps;
 use std::ops::Range;
 use std::sync::Arc;
+use thiserror::Error;
 use vmbus_channel::gpadl::GpadlView;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -25,6 +26,16 @@ use zerocopy::KnownLayout;
 
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE32: u32 = 4096;
+
+#[derive(Debug, Error)]
+pub enum GuestBuffersError {
+    #[error("sub_allocation_size {sub_allocation_size} is too small for mtu {mtu}")]
+    SubAllocationTooSmall { sub_allocation_size: u32, mtu: u32 },
+    #[error("GPADL has no ranges")]
+    EmptyGpadl,
+    #[error("guest memory error")]
+    Memory(#[source] GuestMemoryError),
+}
 
 /// A type providing access to the netvsp receive buffer.
 pub struct GuestBuffers {
@@ -59,11 +70,22 @@ impl GuestBuffers {
         gpadl: GpadlView,
         sub_allocation_size: u32,
         mtu: u32,
-    ) -> Result<Self, GuestMemoryError> {
-        assert!(sub_allocation_size >= sub_allocation_size_for_mtu(mtu));
+    ) -> Result<Self, GuestBuffersError> {
+        if sub_allocation_size < sub_allocation_size_for_mtu(mtu) {
+            return Err(GuestBuffersError::SubAllocationTooSmall {
+                sub_allocation_size,
+                mtu,
+            });
+        }
 
-        let gpns = gpadl.first().unwrap().gpns().to_vec();
-        let locked_pages = mem.lock_gpns(false, &gpns)?;
+        let gpns = gpadl
+            .first()
+            .ok_or(GuestBuffersError::EmptyGpadl)?
+            .gpns()
+            .to_vec();
+        let locked_pages = mem
+            .lock_gpns(false, &gpns)
+            .map_err(GuestBuffersError::Memory)?;
         Ok(Self {
             mem,
             _gpadl: gpadl,
@@ -222,8 +244,74 @@ impl BufferAccess for BufferPool {
 
 #[cfg(test)]
 mod tests {
+    use crate::buffers::GuestBuffers;
+    use crate::buffers::GuestBuffersError;
     use crate::buffers::compute_buffer_segments;
+    use crate::buffers::sub_allocation_size_for_mtu;
+    use guestmem::GuestMemory;
     use net_backend::RxBufferSegment;
+    use vmbus_channel::gpadl::GpadlMap;
+    use vmbus_core::protocol::GpadlId;
+    use vmbus_ring::gparange::GpaRange;
+    use vmbus_ring::gparange::MultiPagedRangeBuf;
+    use zerocopy::IntoBytes;
+
+    /// Verify that inconsistent sub_allocation_size and MTU from saved state
+    /// returns an error instead of panicking.
+    #[test]
+    fn sub_allocation_too_small_for_mtu() {
+        let default_mtu = 1514;
+        let max_mtu = 9216;
+        let sub_alloc_for_default = sub_allocation_size_for_mtu(default_mtu);
+
+        // The sub_allocation for default MTU must be smaller than for max MTU.
+        assert!(sub_alloc_for_default < sub_allocation_size_for_mtu(max_mtu));
+
+        // Build a multipaged ranged buffer.
+        let num_pages = 16;
+        let hdr = GpaRange {
+            len: (num_pages * 4096) as u32,
+            offset: 0,
+        };
+        let mut buf = vec![u64::from_le_bytes(hdr.as_bytes().try_into().unwrap())];
+        // Append one GPN per page.
+        buf.extend((0..num_pages).map(|i| i as u64));
+        let multipaged_ranged_buf = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap();
+
+        // Build a minimal GpadlView (won't be accessed — the check fires first).
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(1);
+        gpadl_map.add(gpadl_id, multipaged_ranged_buf);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+
+        let mem = GuestMemory::empty();
+        let result = GuestBuffers::new(mem, gpadl_view, sub_alloc_for_default, max_mtu);
+        match result {
+            Err(GuestBuffersError::SubAllocationTooSmall { .. }) => {}
+            Err(e) => panic!("expected SubAllocationTooSmall, got {e}"),
+            Ok(_) => panic!("expected SubAllocationTooSmall, got Ok"),
+        }
+    }
+
+    /// Verify that a GPADL with zero ranges returns EmptyGpadl instead of
+    /// panicking.
+    #[test]
+    fn empty_gpadl_returns_error() {
+        let multipaged_ranged_buf = MultiPagedRangeBuf::from_range_buffer(0, vec![]).unwrap();
+
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(2);
+        gpadl_map.add(gpadl_id, multipaged_ranged_buf);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+
+        let mem = GuestMemory::empty();
+        let result = GuestBuffers::new(mem, gpadl_view, 1806, 1514);
+        match result {
+            Err(GuestBuffersError::EmptyGpadl) => {}
+            Err(e) => panic!("expected EmptyGpadl, got {e}"),
+            Ok(_) => panic!("expected EmptyGpadl, got Ok"),
+        }
+    }
 
     #[test]
     fn test_buffer_segments() {

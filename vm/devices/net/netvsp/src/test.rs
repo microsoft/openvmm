@@ -6175,3 +6175,141 @@ async fn subchannel_request_equal_to_max_queues_rejected(driver: DefaultDriver) 
         .await
         .expect("completion message");
 }
+
+/// Sending RSS parameters with `indirection_table_size == 0` should be rejected
+/// with `STATUS_INVALID_DATA`.
+#[async_test]
+async fn rss_set_with_zero_indirection_table_size_rejected(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let nic = Nic::builder().build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new())
+        .await;
+
+    // RNDIS Initialize.
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 1,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    // Build RSS params with indirection_table_size == 0.
+    #[repr(C)]
+    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 0, // invalid — must be rejected
+            pad0: 0,
+            indirection_table_offset: size_of::<RssParams>() as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+    };
+
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: size_of::<RssParams>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_params.as_bytes(),
+        )
+        .await;
+
+    // Read the SET_CMPLT and verify it reports STATUS_INVALID_DATA.
+    let set_complete: rndisprot::SetComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_SET_CMPLT)
+        .await
+        .unwrap();
+    assert_eq!(
+        set_complete.status,
+        rndisprot::STATUS_INVALID_DATA,
+        "indirection_table_size == 0 should be rejected with STATUS_INVALID_DATA"
+    );
+}
+
+#[test]
+fn rx_buffer_ranges_zero_queue_count() {
+    let result = RxBufferRanges::new(100, 0);
+    match result {
+        Err(WorkerError::InvalidRxBufferConfig(RxBufferConfigError::ZeroQueueCount)) => {}
+        Err(other) => panic!("expected InvalidRxBufferConfig(ZeroQueueCount), got: {other}"),
+        Ok(_) => panic!("expected error, got Ok"),
+    }
+}
+
+#[test]
+fn rx_buffer_ranges_buffer_count_below_reserved() {
+    let result = RxBufferRanges::new(RX_RESERVED_CONTROL_BUFFERS - 1, 1);
+    match result {
+        Err(WorkerError::InvalidRxBufferConfig(RxBufferConfigError::InsufficientBuffers)) => {}
+        Err(other) => panic!("expected InvalidRxBufferConfig(InsufficientBuffers), got: {other}"),
+        Ok(_) => panic!("expected error, got Ok"),
+    }
+}
+
+#[test]
+fn rx_buffer_ranges_zero_buffers_per_queue() {
+    // buffer_count == RX_RESERVED_CONTROL_BUFFERS means 0 buffers available for queues
+    let result = RxBufferRanges::new(RX_RESERVED_CONTROL_BUFFERS, 1);
+    match result {
+        Err(WorkerError::InvalidRxBufferConfig(RxBufferConfigError::ZeroBuffersPerQueue)) => {}
+        Err(other) => panic!("expected InvalidRxBufferConfig(ZeroBuffersPerQueue), got: {other}"),
+        Ok(_) => panic!("expected error, got Ok"),
+    }
+}
+
+#[test]
+fn rx_buffer_ranges_valid() {
+    let buffer_count = RX_RESERVED_CONTROL_BUFFERS + 4;
+    let queue_count = 2;
+    let (ranges, recvs) = RxBufferRanges::new(buffer_count, queue_count).unwrap();
+    assert_eq!(ranges.buffers_per_queue, 2);
+    assert_eq!(recvs.len(), queue_count as usize);
+    assert_eq!(ranges.buffer_id_send.len(), queue_count as usize);
+}
