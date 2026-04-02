@@ -14,6 +14,10 @@ on:
   push:
     branches:
     - main
+    paths:
+    - Guide/**
+    - .github/workflows/openvmm-docs-*.yaml
+    - flowey/flowey_hvlite/src/pipelines/build_docs.rs
 jobs:
   job0:
     name: build mdbook guide

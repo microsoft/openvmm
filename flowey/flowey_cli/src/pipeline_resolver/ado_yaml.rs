@@ -585,6 +585,8 @@ EOF
                     tags,
                     exclude_tags,
                     batch,
+                    paths,
+                    exclude_paths,
                 } = t;
 
                 if branches.is_empty() && tags.is_empty() {
@@ -625,6 +627,22 @@ EOF
                             },
                         })
                     },
+                    paths: if paths.is_empty() {
+                        if !exclude_paths.is_empty() {
+                            anyhow::bail!("exclude_paths specified without paths")
+                        }
+
+                        None
+                    } else {
+                        Some(schema_ado_yaml::TriggerPaths {
+                            include: paths,
+                            exclude: if exclude_paths.is_empty() {
+                                None
+                            } else {
+                                Some(exclude_paths)
+                            },
+                        })
+                    },
                 }
             }
         }),
@@ -636,6 +654,8 @@ EOF
                     exclude_branches,
                     run_on_draft,
                     auto_cancel,
+                    paths,
+                    exclude_paths,
                 } = t;
 
                 schema_ado_yaml::PrTrigger::Some {
@@ -648,6 +668,22 @@ EOF
                         } else {
                             Some(exclude_branches)
                         },
+                    },
+                    paths: if paths.is_empty() {
+                        if !exclude_paths.is_empty() {
+                            anyhow::bail!("exclude_paths specified without paths")
+                        }
+
+                        None
+                    } else {
+                        Some(schema_ado_yaml::TriggerPaths {
+                            include: paths,
+                            exclude: if exclude_paths.is_empty() {
+                                None
+                            } else {
+                                Some(exclude_paths)
+                            },
+                        })
                     },
                 }
             }
