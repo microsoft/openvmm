@@ -12,7 +12,6 @@ ossl_vendored = ["openssl/vendored"]
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
-zerocopy.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 openssl.workspace = true 
