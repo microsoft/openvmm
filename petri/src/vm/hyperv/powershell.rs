@@ -328,35 +328,44 @@ impl HyperVNewCustomVMArgs {
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
-
-        if self.firmware_file.is_none()
-            && (self.guest_state_lifetime.is_some()
-                || self.default_boot_always_attempt.is_some()
-                || self.management_vtl_feature_flags.is_some()
-                || self.guest_state_encryption_policy.is_some())
-        {
-            anyhow::bail!("OpenHCL is required for this configuration")
-        }
+        let is_openhcl = self.firmware_file.is_none();
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
         {
-            let lifetime_cli = match guest_state_lifetime {
-                HyperVGuestStateLifetime::Default => "DEFAULT",
-                HyperVGuestStateLifetime::ReprovisionOnFailure => "REPROVISION_ON_FAILURE",
-                HyperVGuestStateLifetime::Reprovision => "REPROVISION",
-                HyperVGuestStateLifetime::Ephemeral => "EPHEMERAL",
-            };
-            append_cmdline(
-                &mut self.firmware_parameters,
-                format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
-            );
-            self.guest_state_lifetime = None;
+            if is_openhcl {
+                let lifetime_cli = match guest_state_lifetime {
+                    HyperVGuestStateLifetime::Default => "DEFAULT",
+                    HyperVGuestStateLifetime::ReprovisionOnFailure => "REPROVISION_ON_FAILURE",
+                    HyperVGuestStateLifetime::Reprovision => "REPROVISION",
+                    HyperVGuestStateLifetime::Ephemeral => "EPHEMERAL",
+                };
+                append_cmdline(
+                    &mut self.firmware_parameters,
+                    format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
+                );
+                self.guest_state_lifetime = None;
+
+            // allow default/ephemeral/none to imply default behavior for non-openhcl VMs
+            } else if !matches!(
+                self.guest_state_lifetime,
+                None | Some(
+                    HyperVGuestStateLifetime::Default | HyperVGuestStateLifetime::Ephemeral
+                )
+            ) {
+                anyhow::bail!("OpenHCL is required to set GuestStateLifetime via commandline");
+            }
         }
 
         if let Some(default_boot_always_attempt) = self.default_boot_always_attempt.as_ref()
             && !property_exists("DefaultBootAlwaysAttempt")
         {
+            if !is_openhcl {
+                anyhow::bail!(
+                    "OpenHCL is required to set DefaultBootAlwaysAttempt via commandline"
+                );
+            }
+
             let arg = format!(
                 "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
                 if *default_boot_always_attempt { 1 } else { 0 }
@@ -375,6 +384,10 @@ impl HyperVNewCustomVMArgs {
         if let Some(management_vtl_feature_flags) = self.management_vtl_feature_flags.as_ref()
             && !property_exists("ManagementVtlFeatureFlags")
         {
+            if !is_openhcl {
+                anyhow::bail!("OpenHCL is required to set ManagementVtlFeatureFlags");
+            }
+
             let supported_flags =
                 HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(true);
             if management_vtl_feature_flags.0 & !supported_flags.0 != 0 {
@@ -395,6 +408,10 @@ impl HyperVNewCustomVMArgs {
         if let Some(guest_state_encryption_policy) = self.guest_state_encryption_policy.as_ref()
             && !property_exists("GuestStateEncryptionPolicy")
         {
+            if !is_openhcl {
+                anyhow::bail!("OpenHCL is required to set GuestStateEncryptionPolicy");
+            }
+
             let encryption_cli = match guest_state_encryption_policy {
                 HyperVGuestStateEncryptionPolicy::Default => "AUTO",
                 HyperVGuestStateEncryptionPolicy::None => "NONE",
