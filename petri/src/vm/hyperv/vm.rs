@@ -71,13 +71,9 @@ impl HyperVVM {
         }
 
         // Used to ignore `hvc restart` error on CVMs
-        let is_isolated = {
-            use powershell::HyperVGuestStateIsolationType as IsolationType;
-            matches!(
-                args.guest_state_isolation_type,
-                Some(IsolationType::Snp | IsolationType::Tdx | IsolationType::Vbs)
-            )
-        };
+        let is_isolated = args
+            .guest_state_isolation_type
+            .is_some_and(|x| x.isolated());
 
         // Delete the VM if it already exists
         let cleanup = async |vmid: &Guid| -> anyhow::Result<()> {

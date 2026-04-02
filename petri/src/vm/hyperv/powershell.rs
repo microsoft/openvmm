@@ -92,6 +92,20 @@ impl ps::AsVal for HyperVGuestStateIsolationType {
     }
 }
 
+impl HyperVGuestStateIsolationType {
+    /// Whether this VM is isolated
+    pub fn isolated(&self) -> bool {
+        match self {
+            HyperVGuestStateIsolationType::Vbs
+            | HyperVGuestStateIsolationType::Snp
+            | HyperVGuestStateIsolationType::Tdx => true,
+            HyperVGuestStateIsolationType::TrustedLaunch
+            | HyperVGuestStateIsolationType::OpenHCL
+            | HyperVGuestStateIsolationType::Disabled => false,
+        }
+    }
+}
+
 /// Hyper-V Secure Boot Template
 #[derive(Clone, Copy)]
 pub enum HyperVSecureBootTemplate {
@@ -311,11 +325,18 @@ pub struct HyperVDrive {
 
 impl HyperVNewCustomVMArgs {
     /// Check for missing WMI properties and adjust the OpenHCL command line to compensate
-    ///
-    /// All of these settings should only be set for OpenHCL VMs, which is not verified here
     pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
         let available_properties = run_get_vssd_properties().await?;
         let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
+
+        if self.firmware_file.is_none()
+            && (self.guest_state_lifetime.is_some()
+                || self.default_boot_always_attempt.is_some()
+                || self.management_vtl_feature_flags.is_some()
+                || self.guest_state_encryption_policy.is_some())
+        {
+            anyhow::bail!("OpenHCL is required for this configuration")
+        }
 
         if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
             && !property_exists("GuestStateLifetime")
