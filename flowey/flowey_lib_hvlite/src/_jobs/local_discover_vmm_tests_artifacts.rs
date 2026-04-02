@@ -5,7 +5,124 @@
 
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use std::path::Path;
 use std::path::PathBuf;
+
+/// Run artifact discovery directly (not as a flowey step).
+///
+/// Runs `cargo nextest list` and `--list-required-artifacts` to determine
+/// what artifacts the matching tests need. Returns the raw JSON string.
+///
+/// This function uses `std::process::Command` directly and can be called
+/// outside of a flowey runtime context (e.g., from `into_pipeline()`).
+pub fn discover_artifacts_sync(
+    repo_root: &Path,
+    target: &str,
+    filter: &str,
+    release: bool,
+) -> anyhow::Result<String> {
+    use std::io::Write;
+    use std::process::Command;
+    use std::process::Stdio;
+
+    // Check that cargo-nextest is available
+    let nextest_check = Command::new("cargo")
+        .args(["nextest", "--version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    match nextest_check {
+        Ok(status) if status.success() => {}
+        _ => anyhow::bail!("cargo-nextest not found. Run 'cargo xflowey restore-packages' first."),
+    }
+
+    log::info!(
+        "Discovering artifacts for filter: {} (target: {})",
+        filter,
+        target
+    );
+
+    // Step 1: Use nextest to resolve the filter expression to test names and
+    // get the binary path
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(repo_root).args([
+        "nextest",
+        "list",
+        "-p",
+        "vmm_tests",
+        "--target",
+        target,
+        "--filter-expr",
+        filter,
+        "--message-format",
+        "json",
+    ]);
+    if release {
+        cmd.arg("--release");
+    }
+    let nextest_output = cmd.output().context("failed to run cargo nextest list")?;
+    anyhow::ensure!(
+        nextest_output.status.success(),
+        "cargo nextest list failed: {}",
+        String::from_utf8_lossy(&nextest_output.stderr)
+    );
+    let nextest_stdout = String::from_utf8(nextest_output.stdout)
+        .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
+    let (test_binary, test_names) = parse_nextest_output(&nextest_stdout)?;
+
+    if test_names.is_empty() {
+        log::warn!("No tests match the filter: {}", filter);
+        let empty_output = serde_json::json!({
+            "target": target,
+            "required": [],
+            "optional": []
+        });
+        return Ok(serde_json::to_string_pretty(&empty_output)?);
+    }
+
+    log::info!("Found {} matching tests", test_names.len());
+    for name in &test_names {
+        log::debug!("  - {}", name);
+    }
+
+    // Step 2: Query petri for artifacts of each matching test
+    log::info!("Using test binary: {}", test_binary.display());
+    log::info!(
+        "Querying artifacts for {} tests in a single invocation",
+        test_names.len()
+    );
+    let stdin_data = test_names
+        .iter()
+        .map(|n| format!("{n}\n"))
+        .collect::<String>();
+    let mut child = Command::new(&test_binary)
+        .args(["--list-required-artifacts", "--tests-from-stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("failed to spawn test binary")?;
+
+    child
+        .stdin
+        .take()
+        .expect("stdin was piped")
+        .write_all(stdin_data.as_bytes())
+        .context("failed to write test names to stdin")?;
+
+    let artifact_output = child
+        .wait_with_output()
+        .context("failed to wait for test binary")?;
+    anyhow::ensure!(
+        artifact_output.status.success(),
+        "test binary failed: {}",
+        String::from_utf8_lossy(&artifact_output.stderr)
+    );
+    let artifact_stdout = String::from_utf8(artifact_output.stdout)
+        .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
+
+    parse_artifacts_output(&artifact_stdout, target)
+}
 
 flowey_request! {
     pub struct Params {
@@ -64,85 +181,14 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let openvmm_repo_path = rt.read(openvmm_repo_path);
 
-                log::info!(
-                    "Discovering artifacts for filter: {} (target: {})",
-                    filter,
-                    target_str
-                );
-
-                // Step 1: Use nextest to resolve the filter expression to test names and get binary path
-                rt.sh.change_dir(&openvmm_repo_path);
-                let mut cmd = flowey::shell_cmd!(
-                    rt,
-                    "cargo nextest list -p vmm_tests --target {target_str} --filter-expr {filter} --message-format json"
-                );
-                if release {
-                    cmd = cmd.arg("--release");
-                }
-                let nextest_output = cmd.output()?;
-                anyhow::ensure!(
-                    nextest_output.status.success(),
-                    "cargo nextest list failed: {}",
-                    String::from_utf8_lossy(&nextest_output.stderr)
-                );
-                let nextest_stdout = String::from_utf8(nextest_output.stdout)
-                    .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
-                let (test_binary, test_names) = parse_nextest_output(&nextest_stdout)?;
-
-                if test_names.is_empty() {
-                    log::warn!("No tests match the filter: {}", filter);
-                    // Output empty artifact list with target info
-                    let empty_output = serde_json::json!({
-                        "target": target_str,
-                        "required": [],
-                        "optional": []
-                    });
-                    let empty_output_str = serde_json::to_string_pretty(&empty_output)?;
-                    if let Some(output_path) = output {
-                        std::fs::write(&output_path, &empty_output_str)?;
-                        log::info!("Wrote empty artifact list to: {}", output_path.display());
-                    } else {
-                        println!("{}", empty_output_str);
-                    }
-                    if let Some(var) = artifacts_json_out {
-                        rt.write(var, &empty_output_str);
-                    }
-                    return Ok(());
-                }
-
-                log::info!("Found {} matching tests", test_names.len());
-                for name in &test_names {
-                    log::debug!("  - {}", name);
-                }
-
-                // Step 2: Query petri for artifacts of each matching test
-                log::info!("Using test binary: {}", test_binary.display());
-                log::info!(
-                    "Querying artifacts for {} tests in a single invocation",
-                    test_names.len()
-                );
-                let stdin_data = test_names.iter().map(|n| format!("{n}\n")).collect::<String>();
-                let artifact_output = flowey::shell_cmd!(
-                    rt,
-                    "{test_binary} --list-required-artifacts --tests-from-stdin"
-                )
-                .stdin(stdin_data)
-                .output()?;
-                anyhow::ensure!(
-                    artifact_output.status.success(),
-                    "test binary failed: {}",
-                    String::from_utf8_lossy(&artifact_output.stderr)
-                );
-                let artifact_stdout = String::from_utf8(artifact_output.stdout)
-                    .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
-                let json_output = parse_artifacts_output(&artifact_stdout, &target_str)?;
+                let json_output =
+                    discover_artifacts_sync(&openvmm_repo_path, &target_str, &filter, release)?;
 
                 if let Some(output_path) = output {
                     std::fs::write(&output_path, &json_output)
                         .map_err(|e| anyhow::anyhow!("failed to write output file: {}", e))?;
                     log::info!("Wrote artifact list to: {}", output_path.display());
                 } else {
-                    // Output to stdout
                     println!("{}", json_output);
                 }
 

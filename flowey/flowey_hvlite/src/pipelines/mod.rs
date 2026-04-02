@@ -75,18 +75,7 @@ impl IntoPipeline for OpenvmmPipelines {
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTests(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsDiscover(cmd) => cmd.into_pipeline(pipeline_hint),
-            OpenvmmPipelines::VmmTestsRun(cmd) => {
-                // VmmTestsRun is a meta-command that runs discover + tests sequentially
-                // It doesn't return a pipeline, it executes directly
-                let result = cmd.run(pipeline_hint);
-                match result {
-                    Ok(()) => std::process::exit(0),
-                    Err(e) => {
-                        log::error!("{:?}", e);
-                        std::process::exit(1);
-                    }
-                }
-            }
+            OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
         }
     }
 }

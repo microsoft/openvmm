@@ -1,17 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Combined pipeline to discover artifacts and run VMM tests in a single command.
+//! Pipeline to discover artifacts and run VMM tests in a single command.
 //!
 //! This combines the functionality of `vmm-tests-discover` and `vmm-tests` into
-//! a single convenient command that:
-//! 1. Discovers required artifacts for the specified test filter
+//! a single convenient pipeline that:
+//! 1. Discovers required artifacts for the specified test filter (at pipeline
+//!    construction time)
 //! 2. Builds the necessary dependencies
 //! 3. Runs the tests
 
 use crate::pipelines::vmm_tests::VmmTestTargetCli;
-use anyhow::Context;
-use flowey::pipeline::prelude::PipelineBackendHint;
+use crate::pipelines::vmm_tests::VmmTestsPipelineOptions;
+use crate::pipelines::vmm_tests::build_vmm_tests_pipeline;
+use crate::pipelines::vmm_tests::resolve_target;
+use crate::pipelines::vmm_tests::selections_from_resolved;
+use crate::pipelines::vmm_tests::validate_wsl_dir;
+use anyhow::Context as _;
+use flowey::pipeline::prelude::*;
+use flowey_lib_hvlite::_jobs::local_discover_vmm_tests_artifacts::discover_artifacts_sync;
+use flowey_lib_hvlite::artifact_to_build_mapping::ResolvedArtifactSelections;
 use std::path::PathBuf;
 
 /// Build and run VMM tests with automatic artifact discovery
@@ -76,9 +84,8 @@ pub struct VmmTestsRunCli {
     custom_kernel: Option<PathBuf>,
 }
 
-impl VmmTestsRunCli {
-    /// Execute the combined discover + run workflow
-    pub fn run(self, backend_hint: PipelineBackendHint) -> anyhow::Result<()> {
+impl IntoPipeline for VmmTestsRunCli {
+    fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
             anyhow::bail!("vmm-tests-run is for local use only")
         }
@@ -98,110 +105,63 @@ impl VmmTestsRunCli {
             skip_vhd_prompt,
         } = self;
 
-        // Create output directory if it doesn't exist
+        // 1. Resolve target
+        let target = resolve_target(target, backend_hint)?;
+        let target_os = target.as_triple().operating_system;
+        let target_architecture = target.as_triple().architecture;
+        let target_str = target.as_triple().to_string();
+
+        // 2. Validate output directory for WSL
+        validate_wsl_dir(&dir, target_os)?;
         std::fs::create_dir_all(&dir).context("failed to create output directory")?;
 
-        // Use a deterministic path in the output directory for the artifacts file
-        let artifacts_file = dir.join(".vmm_tests_artifacts.json");
-
-        // Build the target argument
-        let target_arg = target.map(|t| match t {
-            VmmTestTargetCli::WindowsAarch64 => "windows-aarch64",
-            VmmTestTargetCli::WindowsX64 => "windows-x64",
-            VmmTestTargetCli::LinuxX64 => "linux-x64",
-        });
-
-        // Step 1: Run vmm-tests-discover
+        // 3. Run artifact discovery inline at pipeline construction time
         log::info!("Step 1: Discovering required artifacts...");
-        let mut discover_cmd = std::process::Command::new("cargo");
-        discover_cmd
-            .arg("xflowey")
-            .arg("vmm-tests-discover")
-            .arg("--filter")
-            .arg(&filter)
-            .arg("--output")
-            .arg(&artifacts_file);
+        let repo_root = crate::repo_root();
+        let artifacts_json = discover_artifacts_sync(&repo_root, &target_str, &filter, release)
+            .context("during artifact discovery")?;
 
-        if let Some(target) = target_arg {
-            discover_cmd.arg("--target").arg(target);
-        }
-        if release {
-            discover_cmd.arg("--release");
-        }
-        if verbose {
-            discover_cmd.arg("--verbose");
-        }
+        // 4. Resolve to build selections
+        let resolved = ResolvedArtifactSelections::from_artifact_list_json(
+            &artifacts_json,
+            target_architecture,
+            target_os,
+        )
+        .context("failed to parse discovered artifacts")?;
 
-        discover_cmd.current_dir(crate::repo_root());
-
-        log::info!("Running: {:?}", discover_cmd);
-        let status = discover_cmd
-            .status()
-            .context("failed to run vmm-tests-discover")?;
-
-        if !status.success() {
+        if !resolved.unknown.is_empty() {
             anyhow::bail!(
-                "vmm-tests-discover failed with exit code: {:?}",
-                status.code()
+                "Unknown artifacts found (mapping needs to be updated):\n  {}",
+                resolved.unknown.join("\n  ")
             );
         }
 
-        log::info!("Artifacts file written to: {}", artifacts_file.display());
+        log::info!("Resolved build selections: {:?}", resolved.build);
+        log::info!(
+            "Resolved downloads: {:?}",
+            resolved.downloads.iter().collect::<Vec<_>>()
+        );
 
-        // Step 2: Run vmm-tests with the discovered artifacts
+        let selections = selections_from_resolved(filter, resolved, target_os);
+
+        // 5. Construct and return the pipeline
         log::info!("Step 2: Building and running tests...");
-        let mut test_cmd = std::process::Command::new("cargo");
-        test_cmd
-            .arg("xflowey")
-            .arg("vmm-tests")
-            .arg("--filter")
-            .arg(&filter)
-            .arg("--artifacts-file")
-            .arg(&artifacts_file)
-            .arg("--dir")
-            .arg(&dir);
-
-        if let Some(target) = target_arg {
-            test_cmd.arg("--target").arg(target);
-        }
-        if verbose {
-            test_cmd.arg("--verbose");
-        }
-        if install_missing_deps {
-            test_cmd.arg("--install-missing-deps");
-        }
-        if unstable_whp {
-            test_cmd.arg("--unstable-whp");
-        }
-        if release {
-            test_cmd.arg("--release");
-        }
-        if build_only {
-            test_cmd.arg("--build-only");
-        }
-        if copy_extras {
-            test_cmd.arg("--copy-extras");
-        }
-        if let Some(kernel_modules) = custom_kernel_modules {
-            test_cmd.arg("--custom-kernel-modules").arg(kernel_modules);
-        }
-        if let Some(kernel) = custom_kernel {
-            test_cmd.arg("--custom-kernel").arg(kernel);
-        }
-        if skip_vhd_prompt {
-            test_cmd.arg("--skip-vhd-prompt");
-        }
-
-        test_cmd.current_dir(crate::repo_root());
-
-        log::info!("Running: {:?}", test_cmd);
-        let status = test_cmd.status().context("failed to run vmm-tests")?;
-
-        if !status.success() {
-            anyhow::bail!("vmm-tests failed with exit code: {:?}", status.code());
-        }
-
-        log::info!("VMM tests completed successfully!");
-        Ok(())
+        build_vmm_tests_pipeline(
+            backend_hint,
+            target,
+            selections,
+            dir,
+            VmmTestsPipelineOptions {
+                verbose,
+                install_missing_deps,
+                unstable_whp,
+                release,
+                build_only,
+                copy_extras,
+                skip_vhd_prompt,
+                custom_kernel_modules,
+                custom_kernel,
+            },
+        )
     }
 }

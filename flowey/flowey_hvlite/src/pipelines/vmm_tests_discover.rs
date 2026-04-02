@@ -7,9 +7,9 @@
 //! outputting the result as JSON that can be passed to `vmm-tests --artifacts-file`.
 
 use crate::pipelines::vmm_tests::VmmTestTargetCli;
+use crate::pipelines::vmm_tests::resolve_target;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::path::PathBuf;
 
 /// Discover required artifacts for VMM tests
@@ -53,25 +53,7 @@ impl IntoPipeline for VmmTestsDiscoverCli {
             verbose,
         } = self;
 
-        let target = if let Some(t) = target {
-            t
-        } else {
-            match (
-                FlowArch::host(backend_hint),
-                FlowPlatform::host(backend_hint),
-            ) {
-                (FlowArch::Aarch64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsAarch64,
-                (FlowArch::X86_64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsX64,
-                (FlowArch::X86_64, FlowPlatform::Linux(_)) => VmmTestTargetCli::LinuxX64,
-                _ => anyhow::bail!("unsupported host"),
-            }
-        };
-
-        let target_triple = match target {
-            VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
-            VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
-            VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
-        };
+        let target_triple = resolve_target(target, backend_hint)?;
 
         // Canonicalize output path to absolute path relative to current working directory
         let output = output.map(|p| {
