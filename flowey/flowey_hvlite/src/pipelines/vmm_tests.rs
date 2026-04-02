@@ -50,9 +50,13 @@ pub(crate) fn resolve_target(
     })
 }
 
-/// Validate that the output directory is a Windows path when targeting Windows
-/// from WSL.
-pub(crate) fn validate_wsl_dir(
+/// Validate the output directory path based on the current platform.
+///
+/// When running under WSL and targeting Windows, the output directory must be a
+/// Windows-accessible path (DrvFs mount like `/mnt/c/...`) because Windows
+/// requires VHDs to reside on a Windows filesystem. On native Windows or Linux
+/// this check is a no-op.
+pub(crate) fn validate_output_dir(
     dir: &std::path::Path,
     target_os: target_lexicon::OperatingSystem,
 ) -> anyhow::Result<()> {
@@ -337,7 +341,7 @@ impl IntoPipeline for VmmTestsCli {
                 (String::new(), Vec::new(), BuildSelections::default(), true)
             };
 
-        validate_wsl_dir(&dir, target_os)?;
+        validate_output_dir(&dir, target_os)?;
 
         // Determine test selections based on mode
         let selections = if using_artifacts_file {
