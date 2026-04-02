@@ -613,6 +613,7 @@ impl PetriVmConfigSetupCore<'_> {
         );
         serial_tasks.push(serial0_task);
 
+        // let use_serial2 = self.firmware.is_openhcl();
         // manually overrride for testing
         let use_serial2 = false;
 
