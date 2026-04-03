@@ -99,6 +99,10 @@ pub enum Error {
     MissingRequiredMemory(MemoryRange),
     #[error("IGVM file requires at least two mmio ranges")]
     UnsupportedMmio,
+    #[error("failed to write e820 map to zero page")]
+    WriteE820(#[source] guestmem::GuestMemoryError),
+    #[error("too many RAM ranges for e820 table ({0}, max 128)")]
+    TooManyE820Entries(usize),
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -841,6 +845,7 @@ fn load_igvm_x86(
     vtl2_protectable_ram.sort_by_key(|r| r.start());
 
     let mut page_table_cpu_state: Option<CpuPagingState> = None;
+    let mut native_zero_page_gpa: Option<u64> = None;
 
     // If requested, filter to VTL2-related directives only.
     let pt_range = page_table_fixup.as_ref().map_or(MemoryRange::EMPTY, |x| {
@@ -1222,6 +1227,9 @@ fn load_igvm_x86(
                 vp_index: _,
                 ref context,
             } => {
+                // Track the zero page GPA (RSI) for e820 post-processing.
+                native_zero_page_gpa = Some(context.rsi);
+
                 let code_seg = SegmentRegister {
                     selector: context.code_selector,
                     base: context.code_base as u64,
@@ -1274,6 +1282,46 @@ fn load_igvm_x86(
     }
 
     page_data.flush(&mut loader)?;
+    // For native IGVM files, write e820 entries into the Linux zero page.
+    // The IGVM MemoryMap parameter populates a separate GPA range, but
+    // Linux reads the e820 table from boot_params in the zero page.
+    if let Some(zero_page_gpa) = native_zero_page_gpa {
+        let e820_count = all_ram.len();
+        if e820_count > 128 {
+            return Err(Error::TooManyE820Entries(e820_count));
+        }
+
+        // Write e820_entries count.
+        let e820_entries_offset =
+            std::mem::offset_of!(loader_defs::linux::boot_params, e820_entries);
+        gm.write_at(
+            zero_page_gpa + e820_entries_offset as u64,
+            &[e820_count as u8],
+        )
+        .map_err(Error::WriteE820)?;
+
+        // Write e820 map entries.
+        let e820_map_offset = std::mem::offset_of!(loader_defs::linux::boot_params, e820_map);
+        for (i, ram) in all_ram.iter().enumerate() {
+            let entry = loader_defs::linux::e820entry {
+                addr: (ram.range.start()).into(),
+                size: (ram.range.len()).into(),
+                typ: loader_defs::linux::E820_RAM.into(),
+            };
+            let entry_offset = e820_map_offset + i * size_of::<loader_defs::linux::e820entry>();
+            gm.write_at(
+                zero_page_gpa + entry_offset as u64,
+                IntoBytes::as_bytes(&entry),
+            )
+            .map_err(Error::WriteE820)?;
+        }
+
+        tracing::info!(
+            zero_page_gpa,
+            e820_count,
+            "wrote e820 entries to zero page for native IGVM"
+        );
+    }
 
     // Apply page table relocations after all headers have been scanned.
     if let Some(offset) = relocation_offset {
