@@ -251,7 +251,7 @@ impl BasicNic {
                 // include the V4 fields added at the end of ManaQueryDeviceCfgResp.
                 // Truncate the response to whatever the guest can accept.
                 let resp_bytes = resp.as_bytes();
-                let write_len = MemoryWrite::len(&write).min(resp_bytes.len());
+                let write_len = write.len().min(resp_bytes.len());
                 write.write(&resp_bytes[..write_len])?;
                 write_len
             }
