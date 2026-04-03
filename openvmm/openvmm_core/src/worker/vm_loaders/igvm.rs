@@ -21,6 +21,7 @@ use loader::importer::Aarch64Register;
 use loader::importer::BootPageAcceptance;
 use loader::importer::GuestArch;
 use loader::importer::ImageLoad;
+use loader::importer::SegmentRegister;
 use loader::importer::StartupMemoryType;
 use loader::importer::TableRegister;
 use loader::importer::X86Register;
@@ -880,9 +881,9 @@ fn load_igvm_x86(
                 | IgvmDirectiveHeader::VbsMeasurement { .. }
                 | IgvmDirectiveHeader::DeviceTree { .. }
                 | IgvmDirectiveHeader::EnvironmentInfo { .. } => true,
-                IgvmDirectiveHeader::X64NativeVpContext { .. } => {
-                    todo!("native igvm type not supported yet")
-                }
+                // Native VP context has no VTL field — it always targets the
+                // highest VTL in the file, so include it unconditionally.
+                IgvmDirectiveHeader::X64NativeVpContext { .. } => true,
             }
         } else {
             panic!("no relocation region, cannot filter to VTL2");
@@ -1216,8 +1217,58 @@ fn load_igvm_x86(
             IgvmDirectiveHeader::ErrorRange { .. } => {
                 todo!("Error Range not supported")
             }
-            IgvmDirectiveHeader::X64NativeVpContext { .. } => {
-                todo!("native vp context not supported")
+            IgvmDirectiveHeader::X64NativeVpContext {
+                compatibility_mask: _,
+                vp_index: _,
+                ref context,
+            } => {
+                let code_seg = SegmentRegister {
+                    selector: context.code_selector,
+                    base: context.code_base as u64,
+                    limit: context.code_limit,
+                    attributes: context.code_attributes,
+                };
+                let data_seg = SegmentRegister {
+                    selector: context.data_selector,
+                    base: context.data_base as u64,
+                    limit: context.data_limit,
+                    attributes: context.data_attributes,
+                };
+
+                let native_regs = [
+                    X86Register::Cr0(context.cr0),
+                    X86Register::Cr3(context.cr3),
+                    X86Register::Cr4(context.cr4),
+                    X86Register::Efer(context.efer),
+                    X86Register::Rip(context.rip),
+                    X86Register::Rflags(context.rflags),
+                    X86Register::Rsi(context.rsi),
+                    X86Register::Rsp(context.rsp),
+                    X86Register::Rbp(context.rbp),
+                    X86Register::R8(context.r8),
+                    X86Register::R9(context.r9),
+                    X86Register::R10(context.r10),
+                    X86Register::R11(context.r11),
+                    X86Register::R12(context.r12),
+                    X86Register::Gdtr(TableRegister {
+                        base: context.gdtr_base,
+                        limit: context.gdtr_limit,
+                    }),
+                    X86Register::Idtr(TableRegister {
+                        base: context.idtr_base,
+                        limit: context.idtr_limit,
+                    }),
+                    X86Register::Cs(code_seg),
+                    X86Register::Ds(data_seg),
+                    X86Register::Es(data_seg),
+                    X86Register::Fs(data_seg),
+                    X86Register::Gs(data_seg),
+                    X86Register::Ss(data_seg),
+                ];
+
+                for reg in native_regs {
+                    loader.import_vp_register(reg).map_err(Error::Loader)?;
+                }
             }
         }
     }
