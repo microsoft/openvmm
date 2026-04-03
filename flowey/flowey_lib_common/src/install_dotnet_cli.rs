@@ -39,9 +39,7 @@ impl FlowNodeWithConfig for Node {
     type Request = Request;
     type Config = Config;
 
-    fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::ado_task_use_dotnet::Node>();
-    }
+    fn imports(_ctx: &mut ImportCtx<'_>) {}
 
     fn emit(
         config: Config,
@@ -85,8 +83,28 @@ impl Node {
         broadcast_dotnet_bin: Vec<WriteVar<PathBuf>>,
         version: String,
     ) -> anyhow::Result<()> {
-        let dotnet_installed =
-            ctx.reqv(|v| crate::ado_task_use_dotnet::Request { version, done: v });
+        // UseDotNet@2 requires version in the format "major.minor.x" (e.g.
+        // "8.0.x"), not just "8.0".
+        let ado_version = if version.matches('.').count() < 2 {
+            format!("{version}.x")
+        } else {
+            version
+        };
+
+        let (dotnet_installed, claim_dotnet_installed) = ctx.new_var::<SideEffect>();
+        ctx.emit_ado_step("Install .NET SDK", move |ctx| {
+            claim_dotnet_installed.claim(ctx);
+            move |_| {
+                format!(
+                    r#"
+                    - task: UseDotNet@2
+                      inputs:
+                        packageType: sdk
+                        version: '{ado_version}'
+                "#
+                )
+            }
+        });
 
         ctx.emit_rust_step("report dotnet install", move |ctx| {
             dotnet_installed.claim(ctx);
