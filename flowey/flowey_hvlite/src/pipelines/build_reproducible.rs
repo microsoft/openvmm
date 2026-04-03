@@ -14,6 +14,7 @@ use flowey_lib_hvlite::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use std::collections::BTreeSet;
 use target_lexicon::Triple;
 
 /// A list of pre-defined OpenHCL recipes that support being built reproducibly. Each recipe has a matching CI pipeline job that can be reproduced with this local CLI.
@@ -117,6 +118,7 @@ impl IntoPipeline for BuildReproducibleCli {
                         profile: openvmm_hcl_profile,
                         recipe,
                         custom_target: Some(CommonTriple::Custom(openhcl_musl_target(recipe_arch))),
+                        extra_features: BTreeSet::new(),
                     })
                     .collect(),
                 artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
