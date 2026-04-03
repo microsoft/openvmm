@@ -12,7 +12,6 @@ generation_id.workspace = true
 chipset_device.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
-memory_range = { workspace = true, features = ["inspect"] }
 vm_topology = { workspace = true, features = ["inspect"] }
 
 guid = { workspace = true, features = ["inspect"] }
@@ -26,5 +25,9 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[dev-dependencies]
+memory_range.workspace = true
+
 [lints]
 workspace = true

@@ -3,9 +3,8 @@
 
 //! Provides processor topology related cpuid leaves.
 
-use super::CpuidFn;
+use crate::CpuidLeaf;
 use thiserror::Error;
-use virt::CpuidLeaf;
 use vm_topology::processor::ProcessorTopology;
 use x86defs::cpuid::CacheParametersEax;
 use x86defs::cpuid::CpuidFunction;
@@ -19,6 +18,10 @@ use x86defs::cpuid::TopologyLevelType;
 use x86defs::cpuid::Vendor;
 use x86defs::cpuid::VendorAndMaxFunctionEax;
 use x86defs::cpuid::VersionAndFeaturesEbx;
+
+/// A function used to query the cpuid result for a given input value (`eax`,
+/// `ecx`).
+pub type CpuidFn<'a> = &'a dyn Fn(u32, u32) -> [u32; 4];
 
 #[derive(Debug, Error)]
 #[error("unknown processor vendor {0}")]

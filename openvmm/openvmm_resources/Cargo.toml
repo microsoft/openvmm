@@ -50,9 +50,6 @@ disklayer_sqlite = { workspace = true, optional = true }
 # Chipset devices
 chipset.workspace = true
 missing_dev.workspace = true
-serial_16550.workspace = true
-serial_debugcon.workspace = true
-serial_pl011.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 
 # Non-volatile stores
@@ -80,6 +77,7 @@ virtio_net.workspace = true
 virtio_p9.workspace = true
 virtio_pmem.workspace = true
 virtio_rng.workspace = true
+virtio_vsock.workspace = true
 
 # Vmbus devices
 guest_crash_device.workspace = true
@@ -104,8 +102,16 @@ vnc_worker.workspace = true
 # on all platforms, to ensure consist sqlite behavior.
 rusqlite = { workspace = true, features = ["bundled"] }
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+serial_16550.workspace = true
+serial_debugcon.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+serial_pl011.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
+vhost_user_frontend.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 net_dio.workspace = true

@@ -292,7 +292,7 @@ impl DoorbellRegistration for VirtioTestMemoryAccess {
     }
 }
 
-type VirtioTestWorkCallback = Box<dyn Fn(VirtioQueueCallbackWork) + Sync + Send>;
+type VirtioTestWorkCallback = Box<dyn Fn(&mut VirtioQueue, VirtioQueueCallbackWork) + Sync + Send>;
 struct CreateDirectQueueParams {
     process_work: VirtioTestWorkCallback,
     notify: Interrupt,
@@ -1202,7 +1202,7 @@ impl AsyncRun<TestQueueState> for TestQueueWorker {
             let work = stop.until_stopped(state.queue.next()).await?;
             let Some(work) = work else { break };
             match work {
-                Ok(work) => (self.callback)(work),
+                Ok(work) => (self.callback)(&mut state.queue, work),
                 Err(err) => panic!("queue error: {}", err),
             }
         }
@@ -1214,7 +1214,8 @@ struct VirtioPciTestDevice {
     test_intc: Arc<TestPciInterruptController>,
 }
 
-type TestDeviceQueueWorkFn = Arc<dyn Fn(u16, VirtioQueueCallbackWork) + Send + Sync>;
+type TestDeviceQueueWorkFn =
+    Arc<dyn Fn(u16, &mut VirtioQueue, VirtioQueueCallbackWork) + Send + Sync>;
 
 /// A minimal VirtioDevice whose start_queue() always returns an error.
 /// Used to test that transports correctly handle enable failures.
@@ -1368,7 +1369,7 @@ impl AsyncRun<TestDeviceQueue> for TestDeviceTask {
             match work {
                 Ok(work) => {
                     if let Some(ref func) = self.queue_work {
-                        (func)(self.index, work);
+                        (func)(self.index, &mut state.queue, work);
                     }
                 }
                 Err(err) => {
@@ -1468,7 +1469,8 @@ async fn verify_chipset_config(driver: DefaultDriver) {
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
     // magic value
     assert_eq!(dev.read_u32(0), u32::from_le_bytes(*b"virt"));
     // version
@@ -1527,9 +1529,9 @@ async fn verify_chipset_config(driver: DefaultDriver) {
     // queue index
     assert_eq!(dev.read_u32(48), 0);
     // queue max size (queue 0)
-    assert_eq!(dev.read_u32(52), 0x40);
+    assert_eq!(dev.read_u32(52), 0x100);
     // queue size (queue 0)
-    assert_eq!(dev.read_u32(56), 0x40);
+    assert_eq!(dev.read_u32(56), 0x100);
     dev.write_u32(56, 0x20);
     assert_eq!(dev.read_u32(56), 0x20);
     // queue enable (queue 0)
@@ -1831,7 +1833,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
     // queue index, config generation and device status
     assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 0);
     // current queue size and msix vector
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x40);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x100);
     pci_test_device.write_u32(bar_address1 + 24, 0x20);
     assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0x20);
     // current queue enabled and notify offset
@@ -1919,15 +1921,17 @@ async fn verify_queue_simple_inner(mut guest: VirtioTestGuest) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].length, 0x1000);
-                match work.payload[0].address {
-                    addr if addr == base_addr => work.complete(123),
-                    addr if addr == base_addr + 0x1000 => work.complete(456),
-                    _ => panic!("Unexpected address {}", work.payload[0].address),
-                }
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), 1);
+                    assert_eq!(work.payload[0].length, 0x1000);
+                    match work.payload[0].address {
+                        addr if addr == base_addr => queue.complete(work, 123),
+                        addr if addr == base_addr + 0x1000 => queue.complete(work, 456),
+                        _ => panic!("Unexpected address {}", work.payload[0].address),
+                    }
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -1972,11 +1976,13 @@ async fn verify_queue_simple_interrupt_control_inner(mut guest: VirtioTestGuest,
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].length, 0x1000);
-                work.complete(123);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), 1);
+                    assert_eq!(work.payload[0].length, 0x1000);
+                    queue.complete(work, 123);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2067,15 +2073,17 @@ async fn verify_queue_indirect_inner(mut guest: VirtioTestGuest) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].length, 0x1000);
-                match work.payload[0].address {
-                    0xffffffff00000000u64 => work.complete(123),
-                    addr if addr == base_addr + 0x1000 => work.complete(456),
-                    _ => panic!("Unexpected address {}", work.payload[0].address),
-                }
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), 1);
+                    assert_eq!(work.payload[0].length, 0x1000);
+                    match work.payload[0].address {
+                        0xffffffff00000000u64 => queue.complete(work, 123),
+                        addr if addr == base_addr + 0x1000 => queue.complete(work, 456),
+                        _ => panic!("Unexpected address {}", work.payload[0].address),
+                    }
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2121,18 +2129,20 @@ async fn verify_queue_linked_inner(mut guest: VirtioTestGuest) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                if work.payload.len() == 3 {
-                    for i in 0..work.payload.len() {
-                        assert_eq!(work.payload[i].address, base_address + 0x1000 * i as u64);
-                        assert_eq!(work.payload[i].length, 0x1000);
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    if work.payload.len() == 3 {
+                        for i in 0..work.payload.len() {
+                            assert_eq!(work.payload[i].address, base_address + 0x1000 * i as u64);
+                            assert_eq!(work.payload[i].length, 0x1000);
+                        }
+                        queue.complete(work, 123);
+                    } else {
+                        assert_eq!(work.payload.len(), 1);
+                        queue.complete(work, 456);
                     }
-                    work.complete(123);
-                } else {
-                    assert_eq!(work.payload.len(), 1);
-                    work.complete(456);
-                }
-            }),
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2185,9 +2195,12 @@ async fn verify_packed_queue_linked_wrapping(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                work.complete(work.payload.len() as u32);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    let len = work.payload.len() as u32;
+                    queue.complete(work, len);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2233,9 +2246,12 @@ async fn verify_packed_indirect_ignores_next_flag(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                work.complete(work.payload.len() as u32);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    let len = work.payload.len() as u32;
+                    queue.complete(work, len);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2293,9 +2309,12 @@ async fn verify_packed_queue_non_power_of_two(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                work.complete(work.payload.len() as u32);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    let len = work.payload.len() as u32;
+                    queue.complete(work, len);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2330,21 +2349,23 @@ async fn verify_queue_indirect_linked_inner(mut guest: VirtioTestGuest) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                if work.payload.len() == 3 {
-                    for i in 0..work.payload.len() {
-                        assert_eq!(
-                            work.payload[i].address,
-                            0xffffffff00000000u64 + 0x1000 * i as u64
-                        );
-                        assert_eq!(work.payload[i].length, 0x1000);
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    if work.payload.len() == 3 {
+                        for i in 0..work.payload.len() {
+                            assert_eq!(
+                                work.payload[i].address,
+                                0xffffffff00000000u64 + 0x1000 * i as u64
+                            );
+                            assert_eq!(work.payload[i].length, 0x1000);
+                        }
+                        queue.complete(work, 123);
+                    } else {
+                        assert_eq!(work.payload.len(), 1);
+                        queue.complete(work, 456);
                     }
-                    work.complete(123);
-                } else {
-                    assert_eq!(work.payload.len(), 1);
-                    work.complete(456);
-                }
-            }),
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2392,20 +2413,22 @@ async fn verify_queue_avail_rollover_inner(mut guest: VirtioTestGuest) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].length, 0x1000);
-                if work.payload[0].address == base_addr {
-                    work.complete(123);
-                } else if work.payload[0].address == base_addr + 0x1000 {
-                    work.complete(456);
-                } else {
-                    panic!(
-                        "Unexpected descriptor address {:x}",
-                        work.payload[0].address
-                    );
-                }
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), 1);
+                    assert_eq!(work.payload[0].length, 0x1000);
+                    if work.payload[0].address == base_addr {
+                        queue.complete(work, 123);
+                    } else if work.payload[0].address == base_addr + 0x1000 {
+                        queue.complete(work, 456);
+                    } else {
+                        panic!(
+                            "Unexpected descriptor address {:x}",
+                            work.payload[0].address
+                        );
+                    }
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -2453,12 +2476,14 @@ async fn verify_multi_queue_inner(mut guest: VirtioTestGuest) {
         let tx = tx.clone();
         let base_addr = guest.get_queue_descriptor_backing_memory_address(queue_index);
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), 1);
-                assert_eq!(work.payload[0].address, base_addr);
-                assert_eq!(work.payload[0].length, 0x1000);
-                work.complete(123 * queue_index as u32);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), 1);
+                    assert_eq!(work.payload[0].address, base_addr);
+                    assert_eq!(work.payload[0].length, 0x1000);
+                    queue.complete(work, 123 * queue_index as u32);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(queue_index as usize);
             }),
@@ -2531,12 +2556,14 @@ async fn verify_device_queue_simple_inner(
     let target = TestLineInterruptTarget::new_arc();
     let interrupt = LineInterrupt::new_with_target("test", target.clone(), 0);
     let base_addr = guest.get_queue_descriptor_backing_memory_address(0);
-    let queue_work = Arc::new(move |_: u16, mut work: VirtioQueueCallbackWork| {
-        assert_eq!(work.payload.len(), 1);
-        assert_eq!(work.payload[0].address, base_addr);
-        assert_eq!(work.payload[0].length, 0x1000);
-        work.complete(123);
-    });
+    let queue_work = Arc::new(
+        move |_: u16, queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+            assert_eq!(work.payload.len(), 1);
+            assert_eq!(work.payload[0].address, base_addr);
+            assert_eq!(work.payload[0].length, 0x1000);
+            queue.complete(work, 123);
+        },
+    );
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(guest.driver()));
     let mut dev = VirtioMmioDevice::new(
         Box::new(TestDevice::new(
@@ -2556,7 +2583,8 @@ async fn verify_device_queue_simple_inner(
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     guest.setup_chipset_device(&mut dev, features).await;
     expect_mmio_interrupt(
@@ -2617,12 +2645,14 @@ async fn verify_device_multi_queue_inner(
     let base_addr: Vec<_> = (0..num_queues)
         .map(|i| guest.get_queue_descriptor_backing_memory_address(i))
         .collect();
-    let queue_work = Arc::new(move |i: u16, mut work: VirtioQueueCallbackWork| {
-        assert_eq!(work.payload.len(), 1);
-        assert_eq!(work.payload[0].address, base_addr[i as usize]);
-        assert_eq!(work.payload[0].length, 0x1000);
-        work.complete(123 * i as u32);
-    });
+    let queue_work = Arc::new(
+        move |i: u16, queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+            assert_eq!(work.payload.len(), 1);
+            assert_eq!(work.payload[0].address, base_addr[i as usize]);
+            assert_eq!(work.payload[0].length, 0x1000);
+            queue.complete(work, 123 * i as u32);
+        },
+    );
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(guest.driver()));
     let mut dev = VirtioMmioDevice::new(
         Box::new(TestDevice::new(
@@ -2642,7 +2672,8 @@ async fn verify_device_multi_queue_inner(
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
     guest.setup_chipset_device(&mut dev, features).await;
     expect_mmio_interrupt(
         &mut dev,
@@ -2717,11 +2748,11 @@ async fn verify_device_multi_queue_pci_inner(
         &driver,
         num_queues + 1,
         &test_mem,
-        Some(Arc::new(move |i, mut work| {
+        Some(Arc::new(move |i, queue: &mut VirtioQueue, work| {
             assert_eq!(work.payload.len(), 1);
             assert_eq!(work.payload[0].address, base_addr[i as usize]);
             assert_eq!(work.payload[0].length, 0x1000);
-            work.complete(123 * i as u32);
+            queue.complete(work, 123 * i as u32);
         })),
     );
 
@@ -2808,7 +2839,8 @@ async fn verify_enable_failure_mmio_does_not_set_driver_ok(_driver: DefaultDrive
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     // Drive through ACKNOWLEDGE -> DRIVER -> FEATURES_OK -> DRIVER_OK
     dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
@@ -2953,10 +2985,12 @@ async fn verify_chain_at_queue_size_succeeds(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), queue_size as usize);
-                work.complete(42);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), queue_size as usize);
+                    queue.complete(work, 42);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -3080,10 +3114,12 @@ async fn verify_indirect_chain_at_queue_size_succeeds(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                assert_eq!(work.payload.len(), queue_size as usize);
-                work.complete(99);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    assert_eq!(work.payload.len(), queue_size as usize);
+                    queue.complete(work, 99);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -3114,12 +3150,14 @@ async fn verify_normal_then_indirect_succeeds(driver: DefaultDriver) {
     let mut queues = guest.create_direct_queues(|i| {
         let tx = tx.clone();
         CreateDirectQueueParams {
-            process_work: Box::new(move |mut work: VirtioQueueCallbackWork| {
-                // 1 normal descriptor + 3 indirect entries = 4 payload entries.
-                // (The indirect head descriptor is not itself a payload entry.)
-                assert_eq!(work.payload.len(), 4);
-                work.complete(77);
-            }),
+            process_work: Box::new(
+                move |queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    // 1 normal descriptor + 3 indirect entries = 4 payload entries.
+                    // (The indirect head descriptor is not itself a payload entry.)
+                    assert_eq!(work.payload.len(), 4);
+                    queue.complete(work, 77);
+                },
+            ),
             notify: Interrupt::from_fn(move || {
                 tx.send(i as usize);
             }),
@@ -3233,8 +3271,8 @@ async fn verify_peek_does_not_advance(mut guest: VirtioTestGuest) {
     );
 
     // Consume the peeked work and complete it.
-    let mut work = peeked2.consume();
-    work.complete(42);
+    let work = peeked2.consume();
+    queue.complete(work, 42);
 
     // Now the used ring should have the completion.
     let (_, len) = guest.get_next_completed(0).expect("completion expected");
@@ -3311,21 +3349,21 @@ async fn verify_peek_then_next(mut guest: VirtioTestGuest) {
     }
 
     // try_next should return the same first descriptor (peek didn't advance).
-    let mut work = queue
+    let work = queue
         .try_next()
         .unwrap()
         .expect("first descriptor via next");
     let first_desc = work.descriptor_index();
-    work.complete(10);
+    queue.complete(work, 10);
 
     // Now the next descriptor should be different.
-    let mut work2 = queue.try_next().unwrap().expect("second descriptor");
+    let work2 = queue.try_next().unwrap().expect("second descriptor");
     assert_ne!(
         work2.descriptor_index(),
         first_desc,
         "second descriptor should differ"
     );
-    work2.complete(20);
+    queue.complete(work2, 20);
 
     let (_, len) = guest.get_next_completed(0).expect("first completion");
     assert_eq!(len, 10);
@@ -3396,9 +3434,9 @@ async fn verify_packed_peek_linked(mut guest: VirtioTestGuest) {
     assert_eq!(peeked2.payload().len(), desc_count as usize);
 
     // Consume and complete.
-    let mut work = peeked2.consume();
+    let work = peeked2.consume();
     assert_eq!(work.payload.len(), desc_count as usize);
-    work.complete(99);
+    queue.complete(work, 99);
 
     let (_, len) = guest.get_next_completed(0).expect("completion expected");
     assert_eq!(len, 99);
@@ -3434,11 +3472,11 @@ async fn split_queue_state_advances_on_pop(driver: DefaultDriver) {
     .unwrap();
 
     guest.queue_available_desc(0, 0);
-    let mut work = queue.try_next().unwrap().unwrap();
+    let work = queue.try_next().unwrap().unwrap();
     let state = queue.queue_state();
     assert_eq!(state.avail_index, 1);
     // Complete the descriptor → used_index advances
-    work.complete(0);
+    queue.complete(work, 0);
     let state = queue.queue_state();
     assert_eq!(state.used_index, 1);
 }
@@ -3618,7 +3656,8 @@ impl MmioTestTransport {
             Some(doorbell_registration),
             0,
             0x1000,
-        );
+        )
+        .unwrap();
 
         // Drive through ACKNOWLEDGE -> DRIVER -> features -> FEATURES_OK
         dev.write_u32(112, VIRTIO_ACKNOWLEDGE);
@@ -3969,9 +4008,11 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
                 device_register_length: 12,
                 ..Default::default()
             },
-            Some(Arc::new(|_i, mut work: VirtioQueueCallbackWork| {
-                work.complete(42);
-            })),
+            Some(Arc::new(
+                |_i, queue: &mut VirtioQueue, work: VirtioQueueCallbackWork| {
+                    queue.complete(work, 42);
+                },
+            )),
         )),
         &driver,
         mem,
@@ -4157,7 +4198,8 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Some(doorbell_registration.clone()),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     guest
         .setup_chipset_device(&mut dev, guest.queue_features())
@@ -4192,7 +4234,8 @@ async fn mmio_save_restore_round_trip(driver: DefaultDriver) {
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     dev2.restore(saved).expect("restore should succeed");
     // Verify device is active after restore — read STATUS register.
@@ -4310,7 +4353,8 @@ async fn mmio_save_not_supported_device(_driver: DefaultDriver) {
         None,
         0,
         1,
-    );
+    )
+    .unwrap();
 
     let result = dev.save();
     assert!(result.is_err(), "save should fail for unsupported device");
@@ -4404,7 +4448,8 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Some(doorbell_registration.clone()),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     guest
         .setup_chipset_device(&mut dev, guest.queue_features())
@@ -4441,7 +4486,8 @@ async fn mmio_restore_reinstalls_doorbells(driver: DefaultDriver) {
         Some(doorbell_registration),
         0,
         1,
-    );
+    )
+    .unwrap();
 
     // Reset counter to isolate restore behavior.
     test_mem.doorbell_count.store(0, Ordering::Relaxed);

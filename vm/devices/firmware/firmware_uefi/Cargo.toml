@@ -48,11 +48,11 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 ucs2.workspace = true
-wchar.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
 test_with_tracing.workspace = true
+wchar.workspace = true
 
 [lints]
 workspace = true

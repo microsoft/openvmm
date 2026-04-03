@@ -12,6 +12,8 @@ minimal_rt_reloc.workspace = true
 
 arrayvec.workspace = true
 cfg-if.workspace = true
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
 zerocopy.workspace = true
 
 [build-dependencies]

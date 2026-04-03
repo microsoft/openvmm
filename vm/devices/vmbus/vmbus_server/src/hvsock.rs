@@ -12,11 +12,12 @@ use super::Guid;
 use crate::HvsockRelayChannelHalf;
 use crate::ring::RingMem;
 use anyhow::Context;
-use fs_err::PathExt;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
+use hybrid_vsock::HYBRID_CONNECT_REQUEST_LEN;
+use hybrid_vsock::VsockPortOrId;
 use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
 use pal_async::socket::PolledSocket;
@@ -177,7 +178,7 @@ impl ListenerWorker {
 
     async fn spawn_relay(&self, connection: UnixStream) -> anyhow::Result<Task<()>> {
         let mut socket = PolledSocket::new(self.inner.driver.as_ref(), connection)?;
-        let (service_id, format) = read_hybrid_vsock_connect(&mut socket).await?;
+        let request = read_hybrid_vsock_connect(&mut socket).await?;
 
         let instance_id = Guid::new_random();
         let mut offer = Offer::new(
@@ -185,7 +186,7 @@ impl ListenerWorker {
             self.inner.vmbus.as_ref(),
             OfferParams {
                 interface_name: "hvsocket_connect".into(),
-                interface_id: service_id,
+                interface_id: request.id(),
                 instance_id,
                 channel_type: ChannelType::HvSocket {
                     is_connect: true,
@@ -208,7 +209,7 @@ impl ListenerWorker {
 
         let pipe = BytePipe::new(channel).context("failed to create vmbus pipe")?;
 
-        tracing::debug!(%service_id, endpoint_id = %instance_id, "connected host to guest");
+        tracing::debug!(service_id = %request.id(), endpoint_id = %instance_id, "connected host to guest");
 
         let task = self
             .inner
@@ -217,14 +218,16 @@ impl ListenerWorker {
                 // Keep the offer alive until the relay completes.
                 let _offer = offer;
 
-                // Notify the client that connection was successful.
-                let s = match format {
-                    ServiceIdFormat::Vsock => format!("OK {}\n", instance_id.data1),
-                    ServiceIdFormat::HyperV => format!("OK {}\n", instance_id),
+                // Notify the client that connection was successful, using a format that matches the
+                // request.
+                let response = match request {
+                    VsockPortOrId::Port(_) => VsockPortOrId::Port(instance_id.data1),
+                    VsockPortOrId::Id(_) => VsockPortOrId::Id(instance_id),
                 };
+                let s = response.get_ok_response();
                 if let Err(err) = socket.write_all(s.as_bytes()).await {
                     tracing::error!(
-                        %service_id,
+                        service_id = %request.id(),
                         error = &err as &dyn std::error::Error,
                         "failed to write OK response"
                     );
@@ -232,12 +235,12 @@ impl ListenerWorker {
 
                 if let Err(err) = relay_connected(pipe, socket).await {
                     tracing::error!(
-                        %service_id,
+                        service_id = %request.id(),
                         error = &err as &dyn std::error::Error,
                         "connection relay failed"
                     );
                 } else {
-                    tracing::debug!(%service_id, "connection relay finished");
+                    tracing::debug!(service_id = %request.id(), "connection relay finished");
                 }
             });
 
@@ -245,16 +248,10 @@ impl ListenerWorker {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum ServiceIdFormat {
-    Vsock,
-    HyperV,
-}
-
 async fn read_hybrid_vsock_connect(
     socket: &mut PolledSocket<UnixStream>,
-) -> anyhow::Result<(Guid, ServiceIdFormat)> {
-    let mut buf = [0; "CONNECT 00000000-facb-11e6-bd58-64006a7986d3\n".len()];
+) -> anyhow::Result<VsockPortOrId> {
+    let mut buf = [0; HYBRID_CONNECT_REQUEST_LEN];
     let mut i = 0;
     while i == 0 || buf[i - 1] != b'\n' {
         if i == buf.len() {
@@ -270,28 +267,9 @@ async fn read_hybrid_vsock_connect(
         i += n;
     }
 
-    let rest = buf[..i - 1]
-        .strip_prefix(b"CONNECT ")
-        .or_else(|| buf[..i - 1].strip_prefix(b"connect "))
-        .context("invalid connect request")?;
-
-    let rest = std::str::from_utf8(rest).context("invalid connect request")?;
-    let (service_id, format) = if let Ok(port) = rest.parse::<u32>() {
-        (
-            Guid {
-                data1: port,
-                ..VSOCK_TEMPLATE
-            },
-            ServiceIdFormat::Vsock,
-        )
-    } else if let Ok(service_id) = rest.parse::<Guid>() {
-        (service_id, ServiceIdFormat::HyperV)
-    } else {
-        anyhow::bail!("invalid port or service ID: {}", rest);
-    };
-
-    tracing::debug!(%service_id, ?format, "got hybrid connect request");
-    Ok((service_id, format))
+    let request = VsockPortOrId::parse_connect_request(&buf[..i - 1])?;
+    tracing::debug!(?request, "got hybrid connect request");
+    Ok(request)
 }
 
 struct PendingConnection {
@@ -312,18 +290,6 @@ impl Drop for PendingConnection {
         self.send
             .send(HvsockConnectResult::from_request(&self.request, false));
     }
-}
-
-// This GUID is an embedding of the AF_VSOCK port into an
-// AF_HYPERV service ID.
-static VSOCK_TEMPLATE: Guid = guid::guid!("00000000-facb-11e6-bd58-64006a7986d3");
-
-fn vsock_port(service_id: &Guid) -> Option<u32> {
-    let stripped_id = Guid {
-        data1: 0,
-        ..*service_id
-    };
-    (VSOCK_TEMPLATE == stripped_id).then_some(service_id.data1)
 }
 
 struct HvsockRelayWorker {
@@ -376,9 +342,9 @@ impl HvsockRelayWorker {
             send: self.guest_send.clone(),
             request,
         };
-        let (path, is_specific_path) = {
+        let path = {
             if let Some(hybrid_vsock_path) = &self.hybrid_vsock_path {
-                (hybrid_vsock_path.to_owned(), false)
+                hybrid_vsock_path.to_owned()
             } else {
                 tracing::debug!(request = ?&request, "ignoring hvsock connect request");
                 return;
@@ -394,7 +360,7 @@ impl HvsockRelayWorker {
                 let inner = self.inner.clone();
                 async move {
                     match inner
-                        .relay_guest_connect_to_host(pending, path.as_ref(), is_specific_path)
+                        .relay_guest_connect_to_host(pending, path.as_ref())
                         .await
                     {
                         Ok(()) => {
@@ -420,7 +386,6 @@ impl RelayInner {
         &self,
         pending: PendingConnection,
         base_path: &Path,
-        is_specific_path: bool,
     ) -> anyhow::Result<()> {
         let request = &pending.request;
 
@@ -428,7 +393,8 @@ impl RelayInner {
         // channel with the guest has been established, since that's a
         // failure-prone operation and we don't want the host to see a broken
         // connection.
-        let path = self.host_uds_path(request, base_path, is_specific_path)?;
+        let vsock_request = VsockPortOrId::Id(request.service_id);
+        let path = vsock_request.host_uds_path(base_path)?;
 
         let mut offer = Offer::new(
             self.driver.as_ref(),
@@ -495,36 +461,6 @@ impl RelayInner {
         // before the relay is done.
         drop(offer);
         Ok(())
-    }
-
-    fn host_uds_path(
-        &self,
-        request: &HvsockConnectRequest,
-        base_path: &Path,
-        is_specific_path: bool,
-    ) -> anyhow::Result<PathBuf> {
-        let mut path = base_path.as_os_str().to_owned();
-        if !is_specific_path {
-            if let Some(port) = vsock_port(&request.service_id) {
-                // This is a vsock connection, so try connecting after appending the
-                // port to the path.
-                path.push(format!("_{port}"));
-                if Path::new(&path).fs_err_try_exists()? {
-                    return Ok(path.into());
-                }
-                path.clear();
-                path.push(base_path);
-            }
-            path.push(format!("_{}", request.service_id));
-        }
-        if !Path::new(&path).fs_err_try_exists()? {
-            anyhow::bail!(
-                "no hybrid vsock listener based at {} for {}",
-                base_path.display(),
-                request.service_id
-            );
-        }
-        Ok(path.into())
     }
 
     async fn connect_to_guest(&self, service_id: Guid) -> anyhow::Result<(UnixStream, Task<()>)> {
@@ -607,10 +543,6 @@ async fn relay_connected<T: RingMem + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use super::Guid;
-    use super::ServiceIdFormat;
-    use super::VSOCK_TEMPLATE;
-    use super::read_hybrid_vsock_connect;
     use super::relay_connected;
     use crate::ring::FlatRingMem;
     use futures::AsyncReadExt;
@@ -713,39 +645,5 @@ mod tests {
         assert_eq!(s.read(&mut v).await.unwrap(), 0);
         drop(s);
         task.await.unwrap();
-    }
-
-    #[async_test]
-    async fn test_read_hybrid_vsock_connect_uppercase(driver: DefaultDriver) {
-        let (s1, s2) = UnixStream::pair().unwrap();
-        let mut s1 = PolledSocket::new(&driver, s1).unwrap();
-        let mut s2 = PolledSocket::new(&driver, s2).unwrap();
-        s2.write_all(b"CONNECT 1234\n").await.unwrap();
-        let (service_id, format) = read_hybrid_vsock_connect(&mut s1).await.unwrap();
-        assert_eq!(format, ServiceIdFormat::Vsock);
-        assert_eq!(
-            service_id,
-            Guid {
-                data1: 1234,
-                ..VSOCK_TEMPLATE
-            }
-        );
-    }
-
-    #[async_test]
-    async fn test_read_hybrid_vsock_connect_lowercase(driver: DefaultDriver) {
-        let (s1, s2) = UnixStream::pair().unwrap();
-        let mut s1 = PolledSocket::new(&driver, s1).unwrap();
-        let mut s2 = PolledSocket::new(&driver, s2).unwrap();
-        s2.write_all(b"connect 1234\n").await.unwrap();
-        let (service_id, format) = read_hybrid_vsock_connect(&mut s1).await.unwrap();
-        assert_eq!(format, ServiceIdFormat::Vsock);
-        assert_eq!(
-            service_id,
-            Guid {
-                data1: 1234,
-                ..VSOCK_TEMPLATE
-            }
-        );
     }
 }

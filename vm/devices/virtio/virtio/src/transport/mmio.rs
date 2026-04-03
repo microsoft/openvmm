@@ -9,7 +9,7 @@ use super::task::defer_config_read;
 use super::task::defer_config_write;
 use super::task::run_device_task;
 use crate::DynVirtioDevice;
-use crate::QUEUE_MAX_SIZE;
+use crate::MAX_QUEUE_SIZE;
 use crate::QueueResources;
 use crate::VirtioDoorbells;
 use crate::queue::QueueParams;
@@ -65,10 +65,8 @@ pub struct VirtioMmioDevice {
     driver_feature: VirtioDeviceFeatures,
     driver_feature_select: u32,
     queue_select: u32,
-    #[inspect(skip)]
-    events: Vec<pal_event::Event>,
     #[inspect(iter_by_index)]
-    queues: Vec<QueueParams>,
+    queues: Vec<MmioQueueData>,
     device_status: VirtioDeviceStatus,
     #[inspect(skip)]
     poll_waker: Option<std::task::Waker>,
@@ -76,12 +74,22 @@ pub struct VirtioMmioDevice {
     #[inspect(skip)]
     doorbells: VirtioDoorbells,
     interrupt_state: Arc<Mutex<InterruptState>>,
-    /// Cached queue states from `ChangeDeviceState::stop()` for resume.
-    #[inspect(skip)]
-    saved_queue_states: Vec<Option<QueueState>>,
     supports_save_restore: bool,
     #[inspect(skip)]
     guest_memory: GuestMemory,
+}
+
+/// Per-queue transport data.
+#[derive(Inspect)]
+struct MmioQueueData {
+    #[inspect(flatten)]
+    params: QueueParams,
+    #[inspect(skip)]
+    initial_size: u16,
+    #[inspect(skip)]
+    event: pal_event::Event,
+    #[inspect(skip)]
+    saved_state: Option<QueueState>,
 }
 
 #[derive(Inspect)]
@@ -117,17 +125,23 @@ impl VirtioMmioDevice {
         doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
         mmio_gpa: u64,
         mmio_len: u64,
-    ) -> Self {
+    ) -> std::io::Result<Self> {
         let traits = device.traits();
-        let queues = (0..traits.max_queues)
-            .map(|_| QueueParams {
-                size: QUEUE_MAX_SIZE,
-                ..Default::default()
+        let queues: Vec<MmioQueueData> = (0..traits.max_queues)
+            .map(|i| {
+                let size = device.queue_size(i);
+                super::validate_queue_size(i, size)?;
+                Ok(MmioQueueData {
+                    params: QueueParams {
+                        size,
+                        ..Default::default()
+                    },
+                    initial_size: size,
+                    event: pal_event::Event::new(),
+                    saved_state: None,
+                })
             })
-            .collect();
-        let events = (0..traits.max_queues)
-            .map(|_| pal_event::Event::new())
-            .collect();
+            .collect::<std::io::Result<Vec<_>>>()?;
         let interrupt_state = Arc::new(Mutex::new(InterruptState {
             interrupt,
             status: 0,
@@ -144,7 +158,7 @@ impl VirtioMmioDevice {
             run_device_task(device, receiver).await;
         });
 
-        Self {
+        Ok(Self {
             fixed_mmio_region: ("virtio-chipset", mmio_gpa..=(mmio_gpa + mmio_len - 1)),
             device_sender: sender,
             _device_task,
@@ -156,17 +170,15 @@ impl VirtioMmioDevice {
             driver_feature: VirtioDeviceFeatures::new(),
             driver_feature_select: 0,
             queue_select: 0,
-            events,
             queues,
             device_status: VirtioDeviceStatus::new(),
             poll_waker: None,
             config_generation: 0,
             doorbells: VirtioDoorbells::new(doorbell_registration),
             interrupt_state,
-            saved_queue_states: vec![None; traits.max_queues as usize],
             supports_save_restore,
             guest_memory,
-        }
+        })
     }
 
     fn update_config_generation(&mut self) {
@@ -192,13 +204,9 @@ impl VirtioMmioDevice {
     fn install_doorbells(&mut self) {
         let notification_address = (*self.fixed_mmio_region.1.start() & !0xfff)
             + VirtioMmioRegister::QUEUE_NOTIFY.0 as u64;
-        for i in 0..self.events.len() {
-            self.doorbells.add(
-                notification_address,
-                Some(i as u64),
-                Some(4),
-                &self.events[i],
-            );
+        for (i, qd) in self.queues.iter().enumerate() {
+            self.doorbells
+                .add(notification_address, Some(i as u64), Some(4), &qd.event);
         }
     }
 
@@ -266,7 +274,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_NUM_MAX => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    QUEUE_MAX_SIZE.into()
+                    self.queues[queue_select].initial_size.into()
                 } else {
                     0
                 }
@@ -274,7 +282,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_NUM => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].size as u32
+                    self.queues[queue_select].params.size as u32
                 } else {
                     0
                 }
@@ -282,7 +290,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_READY => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    if self.queues[queue_select].enable {
+                    if self.queues[queue_select].params.enable {
                         1
                     } else {
                         0
@@ -298,7 +306,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_DESC_LOW => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].desc_addr as u32
+                    self.queues[queue_select].params.desc_addr as u32
                 } else {
                     0
                 }
@@ -306,7 +314,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_DESC_HIGH => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].desc_addr >> 32) as u32
+                    (self.queues[queue_select].params.desc_addr >> 32) as u32
                 } else {
                     0
                 }
@@ -314,7 +322,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_AVAIL_LOW => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].avail_addr as u32
+                    self.queues[queue_select].params.avail_addr as u32
                 } else {
                     0
                 }
@@ -322,7 +330,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_AVAIL_HIGH => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].avail_addr >> 32) as u32
+                    (self.queues[queue_select].params.avail_addr >> 32) as u32
                 } else {
                     0
                 }
@@ -330,7 +338,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_USED_LOW => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    self.queues[queue_select].used_addr as u32
+                    self.queues[queue_select].params.used_addr as u32
                 } else {
                     0
                 }
@@ -338,7 +346,7 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_USED_HIGH => {
                 let queue_select = self.queue_select as usize;
                 if queue_select < self.queues.len() {
-                    (self.queues[queue_select].used_addr >> 32) as u32
+                    (self.queues[queue_select].params.used_addr >> 32) as u32
                 } else {
                     0
                 }
@@ -371,9 +379,9 @@ impl VirtioMmioDevice {
             VirtioMmioRegister::QUEUE_NUM => {
                 if !queues_locked && queue_select < self.queues.len() {
                     let val = val as u16;
-                    let queue = &mut self.queues[queue_select];
-                    if val > QUEUE_MAX_SIZE {
-                        queue.size = QUEUE_MAX_SIZE;
+                    let queue = &mut self.queues[queue_select].params;
+                    if val > MAX_QUEUE_SIZE {
+                        queue.size = MAX_QUEUE_SIZE;
                     } else {
                         queue.size = val;
                     }
@@ -381,13 +389,12 @@ impl VirtioMmioDevice {
             }
             VirtioMmioRegister::QUEUE_READY => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
-                    queue.enable = val != 0;
+                    self.queues[queue_select].params.enable = val != 0;
                 }
             }
             VirtioMmioRegister::QUEUE_NOTIFY => {
-                if (val as usize) < self.events.len() {
-                    self.events[val as usize].signal();
+                if let Some(qd) = self.queues.get(val as usize) {
+                    qd.event.signal();
                 }
             }
             VirtioMmioRegister::INTERRUPT_ACK => {
@@ -444,15 +451,15 @@ impl VirtioMmioDevice {
                         .queues
                         .iter()
                         .enumerate()
-                        .filter(|(_, q)| q.enable)
-                        .map(|(i, q)| {
+                        .filter(|(_, qd)| qd.params.enable)
+                        .map(|(i, qd)| {
                             let notify = self.create_queue_interrupt();
                             (
                                 i as u16,
                                 QueueResources {
-                                    params: *q,
+                                    params: qd.params,
                                     notify,
-                                    event: self.events[i].clone(),
+                                    event: qd.event.clone(),
                                     guest_memory: self.guest_memory.clone(),
                                 },
                             )
@@ -469,37 +476,37 @@ impl VirtioMmioDevice {
             }
             VirtioMmioRegister::QUEUE_DESC_LOW => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.desc_addr = queue.desc_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioMmioRegister::QUEUE_DESC_HIGH => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.desc_addr = (val as u64) << 32 | queue.desc_addr & 0xffffffff;
                 }
             }
             VirtioMmioRegister::QUEUE_AVAIL_LOW => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.avail_addr = queue.avail_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioMmioRegister::QUEUE_AVAIL_HIGH => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.avail_addr = (val as u64) << 32 | queue.avail_addr & 0xffffffff;
                 }
             }
             VirtioMmioRegister::QUEUE_USED_LOW => {
                 if !queues_locked && (queue_select) < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.used_addr = queue.used_addr & 0xffffffff00000000 | val as u64;
                 }
             }
             VirtioMmioRegister::QUEUE_USED_HIGH => {
                 if !queues_locked && queue_select < self.queues.len() {
-                    let queue = &mut self.queues[queue_select];
+                    let queue = &mut self.queues[queue_select].params;
                     queue.used_addr = (val as u64) << 32 | queue.used_addr & 0xffffffff;
                 }
             }
@@ -513,23 +520,29 @@ impl ChangeDeviceState for VirtioMmioDevice {
         if self.device_status.driver_ok() {
             let features = self.driver_feature.clone();
             let mut queues = Vec::new();
-            for (i, q) in self.queues.iter().enumerate() {
-                if !q.enable {
+            for (i, qd) in self.queues.iter_mut().enumerate() {
+                if !qd.params.enable {
                     continue;
                 }
-                let notify = self.create_queue_interrupt();
-                let initial_state = self.saved_queue_states[i].take();
-                queues.push((
-                    i as u16,
-                    QueueResources {
-                        params: *q,
-                        notify,
-                        event: self.events[i].clone(),
-                        guest_memory: self.guest_memory.clone(),
-                    },
-                    initial_state,
-                ));
+                let initial_state = qd.saved_state.take();
+                queues.push((i, qd.params, qd.event.clone(), initial_state));
             }
+            let queues: Vec<_> = queues
+                .into_iter()
+                .map(|(i, params, event, initial_state)| {
+                    let notify = self.create_queue_interrupt();
+                    (
+                        i as u16,
+                        QueueResources {
+                            params,
+                            notify,
+                            event,
+                            guest_memory: self.guest_memory.clone(),
+                        },
+                        initial_state,
+                    )
+                })
+                .collect();
 
             let params = StartParams { queues, features };
 
@@ -551,7 +564,7 @@ impl ChangeDeviceState for VirtioMmioDevice {
             .await
             .expect("device task is gone");
         for (i, state) in states.into_iter().enumerate() {
-            self.saved_queue_states[i] = state;
+            self.queues[i].saved_state = state;
         }
     }
 
@@ -578,7 +591,6 @@ impl ChangeDeviceState for VirtioMmioDevice {
             driver_feature,
             driver_feature_select,
             queue_select,
-            events: _,
             queues,
             // Handled by reset_status() above.
             device_status: _,
@@ -586,7 +598,6 @@ impl ChangeDeviceState for VirtioMmioDevice {
             config_generation: _,
             doorbells: _,
             interrupt_state: _,
-            saved_queue_states,
             supports_save_restore: _,
             guest_memory: _,
         } = self;
@@ -595,14 +606,16 @@ impl ChangeDeviceState for VirtioMmioDevice {
         *driver_feature = VirtioDeviceFeatures::new();
         *driver_feature_select = 0;
         *queue_select = 0;
-        for q in queues {
-            *q = QueueParams {
-                size: QUEUE_MAX_SIZE,
-                ..Default::default()
+        for qd in queues.iter_mut() {
+            *qd = MmioQueueData {
+                params: QueueParams {
+                    size: qd.initial_size,
+                    ..Default::default()
+                },
+                initial_size: qd.initial_size,
+                event: pal_event::Event::new(),
+                saved_state: None,
             };
-        }
-        for s in saved_queue_states {
-            *s = None;
         }
     }
 }
@@ -682,15 +695,14 @@ mod saved_state {
                 queues: self
                     .queues
                     .iter()
-                    .enumerate()
-                    .map(|(i, q)| state::SavedQueueState {
+                    .map(|qd| state::SavedQueueState {
                         common: common_state::CommonQueueState {
-                            size: q.size,
-                            enable: q.enable,
-                            desc_addr: q.desc_addr,
-                            avail_addr: q.avail_addr,
-                            used_addr: q.used_addr,
-                            queue_state: self.saved_queue_states[i],
+                            size: qd.params.size,
+                            enable: qd.params.enable,
+                            desc_addr: qd.params.desc_addr,
+                            avail_addr: qd.params.avail_addr,
+                            used_addr: qd.params.used_addr,
+                            queue_state: qd.saved_state,
                         },
                     })
                     .collect(),
@@ -714,7 +726,7 @@ mod saved_state {
                     .map(|(i, q)| (i, q.common.size)),
                 self.queues.len(),
                 state.queues.len(),
-                QUEUE_MAX_SIZE,
+                MAX_QUEUE_SIZE,
             )?;
 
             let new_status = VirtioDeviceStatus::from(common.device_status);
@@ -736,14 +748,15 @@ mod saved_state {
 
             // Restore per-queue transport parameters.
             for (i, sq) in state.queues.iter().enumerate() {
-                self.queues[i] = QueueParams {
+                let qd = &mut self.queues[i];
+                qd.params = QueueParams {
                     size: sq.common.size,
                     enable: sq.common.enable,
                     desc_addr: sq.common.desc_addr,
                     avail_addr: sq.common.avail_addr,
                     used_addr: sq.common.used_addr,
                 };
-                self.saved_queue_states[i] = sq.common.queue_state;
+                qd.saved_state = sq.common.queue_state;
             }
 
             self.device_status = new_status;

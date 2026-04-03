@@ -3,6 +3,7 @@
 
 //! Mesh RPC node implementations for cross-process.
 
+mod alpc_listener;
 mod alpc_node;
 mod common;
 mod point_to_point;
@@ -16,10 +17,20 @@ mod unix_node;
 pub mod windows {
     //! Windows-specific mesh functionality.
 
+    use super::alpc_listener;
     use super::alpc_node;
+    pub use alpc_listener::AlpcMeshListener;
+    pub use alpc_listener::FinishError as AlpcFinishError;
+    pub use alpc_listener::JoinBySocketError as AlpcJoinBySocketError;
+    pub use alpc_listener::PendingMeshConnection as AlpcPendingMeshConnection;
     pub use alpc_node::AlpcNode;
     pub use alpc_node::Invitation as AlpcInvitation;
+    pub use alpc_node::InvitationCredentials as AlpcInvitationCredentials;
     pub use alpc_node::InvitationHandle as AlpcInvitationHandle;
+    pub use alpc_node::InviteError as AlpcInviteError;
+    pub use alpc_node::JoinError as AlpcJoinError;
+    pub use alpc_node::NamedInvitation as AlpcNamedInvitation;
+    pub use alpc_node::NewNodeError as AlpcNewNodeError;
 }
 
 #[cfg(unix)]

@@ -124,7 +124,6 @@ watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true
 
-aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 hvdef.workspace = true
 igvm.workspace = true
@@ -184,7 +183,10 @@ tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+aarch64defs.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 firmware_pcat.workspace = true
 
 [dev-dependencies]
