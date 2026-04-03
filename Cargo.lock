@@ -5580,6 +5580,8 @@ dependencies = [
  "intel_vtd",
  "iommu_common",
  "loader",
+ "loader_defs",
+ "local_clock",
  "membacking",
  "memory_range",
  "mesh",
