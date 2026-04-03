@@ -4,6 +4,8 @@
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
 use vmm_tests::VmmTestsCli;
+use vmm_tests_discover::VmmTestsDiscoverCli;
+use vmm_tests_run::VmmTestsRunCli;
 
 pub mod build_docs;
 pub mod build_igvm;
@@ -12,6 +14,8 @@ pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
 pub mod vmm_tests;
+pub mod vmm_tests_discover;
+pub mod vmm_tests_run;
 
 #[derive(clap::Subcommand)]
 #[expect(clippy::large_enum_variant)]
@@ -36,6 +40,12 @@ pub enum OpenvmmPipelines {
 
     /// Build and run VMM tests
     VmmTests(VmmTestsCli),
+
+    /// Discover required artifacts for VMM tests
+    VmmTestsDiscover(VmmTestsDiscoverCli),
+
+    /// Build and run VMM tests with automatic artifact discovery (combines discover + run)
+    VmmTestsRun(VmmTestsRunCli),
 }
 
 #[derive(clap::Subcommand)]
@@ -64,6 +74,19 @@ impl IntoPipeline for OpenvmmPipelines {
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTests(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::VmmTestsDiscover(cmd) => cmd.into_pipeline(pipeline_hint),
+            OpenvmmPipelines::VmmTestsRun(cmd) => {
+                // VmmTestsRun is a meta-command that runs discover + tests sequentially
+                // It doesn't return a pipeline, it executes directly
+                let result = cmd.run(pipeline_hint);
+                match result {
+                    Ok(()) => std::process::exit(0),
+                    Err(e) => {
+                        log::error!("{:?}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
         }
     }
 }

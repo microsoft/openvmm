@@ -2093,10 +2093,12 @@ dependencies = [
 name = "flowey_lib_hvlite"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "crossterm",
  "flowey",
  "flowey_lib_common",
  "igvmfilegen_config",
+ "log",
  "powershell_builder",
  "serde",
  "serde_json",
