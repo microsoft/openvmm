@@ -38,7 +38,7 @@ threads-required = 4
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'
-# Limit the amount of simulataneous tests by requiring two threads per test.
+# Limit the amount of simultaneous tests by requiring two threads per test.
 # This is mostly to avoid running out of memory. Our test runners have 32 cores
 # and 128GB of memory, and most tests use 4GB, so total memory usage should be
 # about 4GB * (32 cores / (2 threads/test)) = 64GB < 128GB.
