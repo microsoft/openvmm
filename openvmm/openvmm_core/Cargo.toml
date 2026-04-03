@@ -110,6 +110,10 @@ vmswitch.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 vmgs_broker = { workspace = true, features = ["encryption"] }
+disk_blockdevice.workspace = true
+pal_uring.workspace = true
+scsi_buffers.workspace = true
+uevent.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

@@ -13,6 +13,8 @@ use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
+#[cfg(target_os = "linux")]
+use disk_blockdevice::BlockDeviceResolver;
 use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
@@ -75,10 +77,14 @@ use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+#[cfg(target_os = "linux")]
+use pal_uring::IoUringPool;
 use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
+#[cfg(target_os = "linux")]
+use scsi_buffers::BounceBufferTracker;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -91,6 +97,8 @@ use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
 use storvsp::ScsiControllerDisk;
+#[cfg(target_os = "linux")]
+use uevent::UeventListener;
 use virt::ProtoPartition;
 use virt::VpIndex;
 use virtio::PciInterruptModel;
@@ -1024,6 +1032,39 @@ impl InitializedVm {
         let halt_vps = Arc::new(halt_vps);
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+
+        #[cfg(target_os = "linux")]
+        {
+            let block_io_uring: Arc<dyn pal_uring::Initiate> = {
+                let pool = IoUringPool::new("disk_blockdevice", 16)
+                    .context("failed to create block device io_uring pool")?;
+                let initiator = Arc::new(pool.client().initiator().clone());
+                thread::Builder::new()
+                    .name("disk-blockdevice-iouring".to_string())
+                    .spawn(move || pool.run())
+                    .context("failed to spawn block device io_uring pool thread")?;
+                initiator
+            };
+
+            let uevent_listener = Arc::new(
+                UeventListener::new(&driver_source.simple())
+                    .context("failed to start block device uevent listener")?,
+            );
+
+            let bounce_buffer_tracker = Arc::new(BounceBufferTracker::new(
+                2048,
+                processor_topology.vp_count() as usize,
+            ));
+
+            resolver.add_async_resolver::<DiskHandleKind, _, disk_blockdevice::OpenBlockDeviceConfig, _>(
+                BlockDeviceResolver::new(
+                    block_io_uring,
+                    Some(uevent_listener),
+                    bounce_buffer_tracker,
+                    cfg!(guest_arch = "aarch64"),
+                ),
+            );
+        }
 
         let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
 
