@@ -239,29 +239,24 @@ async fn test_adapter_link_speed_default(driver: DefaultDriver) {
         .unwrap();
     gdma.register_device(dev_id).await.unwrap();
 
-    // Issue a query_dev_config request, which calls request_version with
-    // MANA_QUERY_DEV_CONFIG_REQUEST_V1. request_version should zero the
-    // response page before the device writes back.
+    // The default BnicConfig has adapter_link_speed_mbps = 0, so
+    // query_dev_config should return 0.
     let mut bnic = BnicDriver::new(&mut gdma, dev_id);
     let dev_config = bnic.query_dev_config().await.unwrap();
 
     assert_eq!(
         dev_config.adapter_link_speed_mbps, 0,
-        "adapter_link_speed_mbps should be zeroed by request_version"
+        "adapter_link_speed_mbps should be 0 with default BnicConfig"
     );
 }
 
-/// Calls `query_dev_config` (exercising `request_version` end-to-end), then
-/// patches `adapter_link_speed_mbps` in the response page with
-/// `link_speed_mbps` and verifies that `link_speed_bps()` returns the
-/// expected value.
+/// Configures the emulated GDMA device with a specific non-zero link speed
+/// via `BnicConfig`, then verifies that `query_dev_config` returns that speed
+/// and `link_speed_bps()` converts it correctly.
 async fn verify_adapter_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32) {
-    use gdma_defs::bnic::ManaQueryDeviceCfgResp;
-    use zerocopy::FromZeros;
-
     let mem = DeviceTestMemory::new(128, false, "test_adapter_link_speed_expected");
     let msi_conn = MsiConnection::new();
-    let device = gdma::GdmaDevice::new(
+    let device = gdma::GdmaDevice::new_with_config(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
         msi_conn.target(),
@@ -270,6 +265,9 @@ async fn verify_adapter_link_speed_expected(driver: DefaultDriver, link_speed_mb
             endpoint: Box::new(NullEndpoint::new()),
         }],
         &mut ExternallyManagedMmioIntercepts,
+        gdma::BnicConfig {
+            adapter_link_speed_mbps: link_speed_mbps,
+        },
     );
     let dma_client = mem.dma_client();
     let device = EmulatedDevice::new(device, msi_conn, dma_client);
@@ -291,36 +289,23 @@ async fn verify_adapter_link_speed_expected(driver: DefaultDriver, link_speed_mb
         .unwrap();
     gdma.register_device(dev_id).await.unwrap();
 
-    // Build an expected response with a specific non-zero link speed.
-    let expected_resp = ManaQueryDeviceCfgResp {
-        adapter_link_speed_mbps: link_speed_mbps,
-        ..ManaQueryDeviceCfgResp::new_zeroed()
-    };
-
-    // Call query_dev_config_test with the expected response. The emulator completes the
-    // full HWC round-trip first, then the expected response is written over the
-    // hardware-populated response body before it is read back.
+    // The emulator now returns the configured link speed directly.
     let mut bnic = BnicDriver::new(&mut gdma, dev_id);
-    let dev_config = bnic
-        .query_dev_config_test(Some(expected_resp))
-        .await
-        .unwrap();
+    let dev_config = bnic.query_dev_config().await.unwrap();
 
-    // The returned response should reflect the injected link speed, not the
-    // emulator's zero value.
     assert_eq!(
         dev_config.adapter_link_speed_mbps, link_speed_mbps,
-        "adapter_link_speed_mbps should match the expected value"
+        "adapter_link_speed_mbps should match the configured value"
     );
     assert_eq!(
         dev_config.link_speed_bps(),
         link_speed_mbps as u64 * 1000 * 1000,
-        "link_speed_bps() should reflect the expected adapter_link_speed_mbps"
+        "link_speed_bps() should reflect the configured adapter_link_speed_mbps"
     );
 }
 
-/// Verifies that patching `adapter_link_speed_mbps = 400,000` (400 Gbps) into
-/// the response page after `request_version` returns yields 400 Gbps from
+/// Verifies that configuring the emulated GDMA device with
+/// `adapter_link_speed_mbps = 400,000` (400 Gbps) yields 400 Gbps from
 /// `link_speed_bps()` — not zero and not the 200 Gbps fallback.
 #[async_test]
 async fn test_adapter_link_speed_expected(driver: DefaultDriver) {

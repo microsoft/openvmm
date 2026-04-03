@@ -658,7 +658,7 @@ async fn test_link_speed_default(driver: DefaultDriver) {
     endpoint.stop().await;
 }
 
-/// Verifies that a link speed injected via [`ManaDevice::new_test`] propagates
+/// Verifies that a link speed configured on the emulated GDMA device propagates
 /// through the full net_mana driver stack: `dev_config().link_speed_bps()`,
 /// `vport.link_speed_bps()`, and `endpoint.link_speed()`.
 #[async_test]
@@ -672,7 +672,7 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
     let pages = 512;
     let mem = DeviceTestMemory::new(pages, false, "test_link_speed_expected");
     let msi_conn = MsiConnection::new();
-    let device = gdma::GdmaDevice::new(
+    let device = gdma::GdmaDevice::new_with_config(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
         mem.guest_memory(),
         msi_conn.target(),
@@ -681,33 +681,19 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
             endpoint: Box::new(LoopbackEndpoint::new()),
         }],
         &mut ExternallyManagedMmioIntercepts,
+        gdma::BnicConfig {
+            adapter_link_speed_mbps: link_speed_mbps,
+        },
     );
     let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
 
-    // Inject a specific non-zero link speed so we can verify it propagates
-    // through every layer of the driver stack.
-    let expected_dev_config = ManaQueryDeviceCfgResp {
-        pf_cap_flags1: 0.into(),
-        pf_cap_flags2: 0,
-        pf_cap_flags3: 0,
-        pf_cap_flags4: 0,
-        max_num_vports: 1,
-        reserved: 0,
-        max_num_eqs: 64,
-        adapter_mtu: 0,
-        reserved2: 0,
-        adapter_link_speed_mbps: link_speed_mbps,
-    };
-
-    let thing = ManaDevice::new_test(&driver, device, 1, 1, None, Some(expected_dev_config))
-        .await
-        .unwrap();
+    let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
 
     // Layer 1: dev_config stored on ManaDevice.
     assert_eq!(
         thing.dev_config().link_speed_bps(),
         link_speed_bps,
-        "dev_config().link_speed_bps() should reflect the injected link speed"
+        "dev_config().link_speed_bps() should reflect the configured link speed"
     );
 
     let vport_dev_config = ManaQueryDeviceCfgResp {
@@ -728,7 +714,7 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
     assert_eq!(
         vport.link_speed_bps(),
         link_speed_bps,
-        "vport.link_speed_bps() should reflect the injected link speed"
+        "vport.link_speed_bps() should reflect the configured link speed"
     );
 
     // Layer 3: ManaEndpoint surfaces it via the Endpoint trait.
@@ -736,7 +722,7 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
     assert_eq!(
         endpoint.link_speed(),
         link_speed_bps,
-        "endpoint.link_speed() should reflect the injected link speed"
+        "endpoint.link_speed() should reflect the configured link speed"
     );
     endpoint.stop().await;
 }

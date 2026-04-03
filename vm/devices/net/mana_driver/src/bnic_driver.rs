@@ -74,43 +74,6 @@ impl<'a, T: DeviceBacking> BnicDriver<'a, T> {
         Ok(resp)
     }
 
-    /// Like [`query_dev_config`](Self::query_dev_config), but allows injecting
-    /// an expected response body after the hardware completes the request and
-    /// before the response is read back.
-    ///
-    /// If `expect_resp` is `Some(r)`, `r` is written over the hardware-
-    /// populated response body so callers observe the injected value. Pass
-    /// `None` for normal behaviour identical to `query_dev_config`.
-    #[cfg(any(test, feature = "testing"))]
-    #[tracing::instrument(skip(self, expect_resp), level = "debug", err)]
-    pub async fn query_dev_config_test(
-        &mut self,
-        expect_resp: Option<ManaQueryDeviceCfgResp>,
-    ) -> anyhow::Result<ManaQueryDeviceCfgResp> {
-        let (resp, _activity_id): (ManaQueryDeviceCfgResp, u32) = self
-            .gdma
-            .request_version_test(
-                ManaCommandCode::MANA_QUERY_DEV_CONFIG.0,
-                MANA_QUERY_DEV_CONFIG_REQUEST_V1,
-                ManaCommandCode::MANA_QUERY_DEV_CONFIG.0,
-                MANA_QUERY_DEV_CONFIG_RESPONSE_V4,
-                self.dev_id,
-                ManaQueryDeviceCfgReq {
-                    mn_drv_cap_flags1: 0,
-                    mn_drv_cap_flags2: 0,
-                    mn_drv_cap_flags3: 0,
-                    mn_drv_cap_flags4: 0,
-                    proto_major_ver: 1,
-                    proto_minor_ver: 0,
-                    proto_micro_ver: 0,
-                    reserved: 0,
-                },
-                expect_resp,
-            )
-            .await?;
-        Ok(resp)
-    }
-
     #[tracing::instrument(skip(self), level = "debug", err)]
     pub async fn config_vport_tx(
         &mut self,
