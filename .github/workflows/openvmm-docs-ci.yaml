@@ -8,7 +8,7 @@ on:
     inputs:
       verbose:
         description: Run with verbose output
-        default: true
+        default: false
         required: false
         type: boolean
   push:
@@ -87,7 +87,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 0 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 0 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/guide"
         echo "$AgentTempDirNormal/publish_artifacts/guide" | flowey v 0 'artifact_publish_from_guide' --is-raw-string update
@@ -245,7 +245,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey.exe v 1 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey.exe v 1 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-rustdoc"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-rustdoc" | flowey.exe v 1 'artifact_publish_from_x64-windows-rustdoc' --is-raw-string update
@@ -404,7 +404,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 2 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 2 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc" | flowey v 2 'artifact_publish_from_x64-linux-rustdoc' --is-raw-string update
@@ -538,7 +538,7 @@ jobs:
         echo "${{ runner.temp }}/work" | flowey v 3 '_internal_WORKING_DIR' --is-raw-string update
 
         cat <<'EOF' | flowey v 3 'verbose' update
-        ${{ inputs.verbose != '' && inputs.verbose || 'true' }}
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "$AgentTempDirNormal/used_artifacts/guide" | flowey v 3 'artifact_use_from_guide' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --is-raw-string update

@@ -90,6 +90,7 @@ impl SimpleFlowNode for Node {
             features: CargoFeatureSet::Specific(features),
             target: target.as_triple(),
             no_split_dbg_info: false,
+            verbose: false,
             extra_env: None,
             pre_build_deps,
             output: v,

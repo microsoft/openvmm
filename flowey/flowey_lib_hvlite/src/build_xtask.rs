@@ -43,6 +43,7 @@ impl SimpleFlowNode for Node {
             no_split_dbg_info: false,
             extra_env: None,
             pre_build_deps: Vec::new(),
+            verbose: false,
             output: v,
         });
 

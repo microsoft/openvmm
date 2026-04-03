@@ -137,6 +137,7 @@ flowey_request! {
         /// installed).
         pub pre_build_deps: Vec<ReadVar<SideEffect>>,
         pub output: WriteVar<CargoBuildOutput>,
+        pub verbose: bool,
     }
 }
 
@@ -166,6 +167,7 @@ impl FlowNode for Node {
             config,
             pre_build_deps,
             output,
+            verbose,
         } in requests
         {
             if let Some(target) = &target {
@@ -189,7 +191,7 @@ impl FlowNode for Node {
 
                     let crate::cfg_cargo_common_flags::Flags {
                         locked,
-                        verbose,
+                        verbose: _,
                         no_incremental,
                     } = flags;
 

@@ -15,7 +15,7 @@ parameters:
 - name: verbose
   displayName: Run with verbose output
   type: boolean
-  default: true
+  default: false
 jobs:
 - job: job0
   displayName: quick check [fmt, clippy x64-linux]
