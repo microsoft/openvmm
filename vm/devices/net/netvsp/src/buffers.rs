@@ -29,6 +29,8 @@ const PAGE_SIZE32: u32 = 4096;
 
 #[derive(Debug, Error)]
 pub enum GuestBuffersError {
+    #[error("invalid mtu {mtu}")]
+    InvalidMtu { mtu: u32 },
     #[error("sub_allocation_size {sub_allocation_size} is too small for mtu {mtu}")]
     SubAllocationTooSmall { sub_allocation_size: u32, mtu: u32 },
     #[error("GPADL has no ranges")]
@@ -72,6 +74,9 @@ impl GuestBuffers {
         sub_allocation_size: u32,
         mtu: u32,
     ) -> Result<(), GuestBuffersError> {
+        mtu.checked_add(RX_HEADER_LEN)
+            .and_then(|v| v.checked_add(BROKEN_CO_NETVSC_FOOTER_LEN))
+            .ok_or(GuestBuffersError::InvalidMtu { mtu })?;
         if sub_allocation_size < sub_allocation_size_for_mtu(mtu) {
             return Err(GuestBuffersError::SubAllocationTooSmall {
                 sub_allocation_size,
@@ -304,6 +309,33 @@ mod tests {
             Err(GuestBuffersError::SubAllocationTooSmall { .. }) => {}
             Err(e) => panic!("expected SubAllocationTooSmall, got {e}"),
             Ok(_) => panic!("expected SubAllocationTooSmall, got Ok"),
+        }
+    }
+
+    /// Verify that an MTU near u32::MAX returns InvalidMtu instead of
+    /// wrapping the sub_allocation_size calculation.
+    #[test]
+    fn overflowing_mtu_returns_error() {
+        let num_pages = 16;
+        let hdr = GpaRange {
+            len: (num_pages * 4096) as u32,
+            offset: 0,
+        };
+        let mut buf = vec![u64::from_le_bytes(hdr.as_bytes().try_into().unwrap())];
+        buf.extend((0..num_pages).map(|i| i as u64));
+        let multipaged_ranged_buf = MultiPagedRangeBuf::from_range_buffer(1, buf).unwrap();
+
+        let gpadl_map = GpadlMap::new();
+        let gpadl_id = GpadlId(3);
+        gpadl_map.add(gpadl_id, multipaged_ranged_buf);
+        let gpadl_view = gpadl_map.view().map(gpadl_id).unwrap();
+
+        // An MTU of u32::MAX would overflow the sub_allocation_size addition.
+        let result = GuestBuffers::validate_config(&gpadl_view, 1806, u32::MAX);
+        match result {
+            Err(GuestBuffersError::InvalidMtu { .. }) => {}
+            Err(e) => panic!("expected InvalidMtu, got {e}"),
+            Ok(_) => panic!("expected InvalidMtu, got Ok"),
         }
     }
 
