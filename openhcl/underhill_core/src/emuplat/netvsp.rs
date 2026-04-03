@@ -5,6 +5,7 @@ use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
 use crate::options::KeepAliveConfig;
 use crate::vpci::HclVpciBusControl;
 use anyhow::Context;
+use anyhow::bail;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -51,6 +52,10 @@ use user_driver::vfio::vfio_set_device_reset_method;
 use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
 use vpci::bus_control::VpciBusEvent;
+
+/// Default timeout for actions communicating with other components where an action
+/// is expected to take time, but still complete in a reasonable window.
+const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Debug)]
 enum HclNetworkVfManagerMessage {
@@ -435,7 +440,6 @@ impl HclNetworkVFManagerWorker {
     }
 
     async fn send_vf_state_change_notifications(&self) -> anyhow::Result<()> {
-        const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let all_results =
             futures::future::join_all(self.guest_state_notifications.iter().map(async |update| {
                 update
@@ -518,12 +522,14 @@ impl HclNetworkVFManagerWorker {
                 };
                 bus_control
             };
-            vpci_bus_control
-                .revoke_device()
-                .instrument(
-                    tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
-                )
-                .await
+
+            let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+
+            ctx.until_cancelled(vpci_bus_control.revoke_device().instrument(
+                tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
+            ))
+            .await
+            .unwrap_or_else(|cr| bail!("vtl0 revoke timed out: {cr}"))
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -592,14 +598,13 @@ impl HclNetworkVFManagerWorker {
         if self.guest_state.is_offered_to_guest().await {
             *self.guest_state.offered_to_guest.lock().await = false;
             if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                match vtl0_bus_control
-                    .revoke_device()
-                    .instrument(tracing::info_span!(
-                        "Removing VF from VTL0",
-                        vtl2_vfid,
-                        vtl0_vfid,
+                let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+                match ctx
+                    .until_cancelled(vtl0_bus_control.revoke_device().instrument(
+                        tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
                     ))
                     .await
+                    .unwrap_or_else(|cr| bail!("timed out: {cr}"))
                 {
                     Ok(_) => (),
                     Err(err) => {
@@ -618,6 +623,7 @@ impl HclNetworkVFManagerWorker {
     async fn disconnect_all_endpoints(&mut self) {
         let num_endpoints = self.endpoint_controls.len();
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+
         futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
             match control.disconnect().await {
                 Ok(Some(mut endpoint)) => {
