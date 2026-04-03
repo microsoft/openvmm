@@ -624,7 +624,12 @@ impl HclNetworkVFManagerWorker {
                     tracing::info!(vtl2_vfid, "Network endpoint disconnected");
                     endpoint.stop().await;
                 }
-                Ok(None) => (),
+                Ok(None) => {
+                    tracing::info!(
+                        vtl2_vfid,
+                        "network endpoint disconnect processed; no endpoint connected"
+                    );
+                }
                 Err(err) => {
                     tracing::error!(
                         vtl2_vfid,
@@ -640,6 +645,11 @@ impl HclNetworkVFManagerWorker {
             num_endpoints
         ))
         .await;
+
+        // Force the release of packet capture controls here to ensure
+        // we're not still holding a reference to a Vport, especially
+        // after we've disconnected above.
+        self.pkt_capture_controls = None;
     }
 
     async fn update_vtl2_device_bind_state(&self, is_bound: bool) -> anyhow::Result<()> {
