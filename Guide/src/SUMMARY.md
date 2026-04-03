@@ -52,7 +52,7 @@
   - [`cargo xflowey`](./dev_guide/dev_tools/xflowey.md)
   - [VmgsTool](./dev_guide/dev_tools/vmgstool.md)
   - [update-rootfs.py]()
-  - [igvmfilegen]()
+  - [igvminspect](./dev_guide/dev_tools/igvminspect.md)
   - [guest_test_uefi](./dev_guide/dev_tools/guest_test_uefi.md)
   - [hypestv](./dev_guide/dev_tools/hypestv.md)
 - [Contributing](./dev_guide/contrib.md)
