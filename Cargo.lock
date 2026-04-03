@@ -5241,6 +5241,7 @@ dependencies = [
  "input_core",
  "inspect",
  "loader",
+ "loader_defs",
  "local_clock",
  "membacking",
  "memory_range",

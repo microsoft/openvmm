@@ -35,6 +35,7 @@ ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader.workspace = true
+loader_defs.workspace = true
 virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true
