@@ -53,6 +53,7 @@ impl IntoPipeline for RestorePackagesCli {
                 verbose: ReadVar::from_static(true),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             });
 
         let arches = {

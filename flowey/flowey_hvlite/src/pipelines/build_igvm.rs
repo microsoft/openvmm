@@ -407,6 +407,7 @@ impl IntoPipeline for BuildIgvmCli {
             verbose: ReadVar::from_static(verbose),
             locked,
             deny_warnings: false,
+            no_incremental: false,
         })
         .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
             artifact_dir: ctx.publish_artifact(pub_out_dir),
