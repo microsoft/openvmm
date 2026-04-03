@@ -241,7 +241,8 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_virtiofs_request(self, &state.mem, work);
+                    let bytes = process_virtiofs_request(self, &state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracing::error!(
@@ -259,10 +260,10 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
 fn process_virtiofs_request(
     worker: &VirtioFsWorker,
     mem: &GuestMemory,
-    mut work: VirtioQueueCallbackWork,
-) {
+    work: &VirtioQueueCallbackWork,
+) -> u32 {
     // Parse the request.
-    let reader = VirtioPayloadReader::new(mem, &work);
+    let reader = VirtioPayloadReader::new(mem, work);
     let request = match fuse::Request::new(reader) {
         Ok(request) => request,
         Err(e) => {
@@ -274,8 +275,7 @@ fn process_virtiofs_request(
             (worker.notify_corruption)();
             // This only happens if even the header couldn't be parsed, so there's no way
             // to send an error reply since the request's unique ID isn't known.
-            work.complete(0);
-            return;
+            return 0;
         }
     };
 
@@ -285,7 +285,7 @@ fn process_virtiofs_request(
     // BatchForget, Destroy), send() is never called and bytes_written
     // stays 0.
     let mut sender = VirtioReplySender {
-        work: &work,
+        work,
         mem,
         bytes_written: 0,
     };
@@ -301,7 +301,7 @@ fn process_virtiofs_request(
         &mut sender,
         mapper.as_ref().map(|x| x as &dyn fuse::Mapper),
     );
-    work.complete(sender.bytes_written);
+    sender.bytes_written
 }
 /// An implementation of `ReplySender` for virtio payload.
 ///

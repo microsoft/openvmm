@@ -279,7 +279,8 @@ impl ConsoleWorker {
                     };
                     loop {
                         let work = transmitq.peek().await.map_err(WorkerError::Virtio)?;
-                        work.consume().complete(0);
+                        let work = work.consume();
+                        transmitq.complete(work, 0);
                         *partial_transmit = 0;
                     }
                 };
@@ -308,7 +309,8 @@ impl ConsoleWorker {
                             // Guest posted a zero-length buffer; complete it
                             // immediately without calling poll_read (which
                             // would return Ok(0) and look like a disconnect).
-                            work.consume().complete(0);
+                            let work = work.consume();
+                            receiveq.complete(work, 0);
                             continue 'rx;
                         }
                         let n = BUF_SIZE.min(writeable_len);
@@ -321,15 +323,15 @@ impl ConsoleWorker {
                                 break 'rx Ok(false);
                             }
                             Ok(n) => {
-                                let mut work = work.consume();
+                                let work = work.consume();
                                 if let Err(err) = work.write(mem, &buf[..n]) {
                                     tracelimit::error_ratelimited!(
                                         error = &err as &dyn std::error::Error,
                                         "failed to write to guest receive buffer"
                                     );
-                                    work.complete(0);
+                                    receiveq.complete(work, 0);
                                 } else {
-                                    work.complete(n as u32);
+                                    receiveq.complete(work, n as u32);
                                 }
                             }
                             Err(_) => {
@@ -375,7 +377,8 @@ impl ConsoleWorker {
                             }
                         }
                         *partial_transmit = 0;
-                        work.consume().complete(0);
+                        let work = work.consume();
+                        transmitq.complete(work, 0);
                     }
                 };
 

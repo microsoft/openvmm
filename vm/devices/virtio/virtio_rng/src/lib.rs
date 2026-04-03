@@ -152,7 +152,8 @@ impl AsyncRun<RngQueue> for RngWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_rng_request(&state.mem, work);
+                    let bytes = process_rng_request(&state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracelimit::error_ratelimited!(
@@ -167,25 +168,22 @@ impl AsyncRun<RngQueue> for RngWorker {
     }
 }
 
-fn process_rng_request(mem: &GuestMemory, mut work: VirtioQueueCallbackWork) {
+fn process_rng_request(mem: &GuestMemory, work: &VirtioQueueCallbackWork) -> u32 {
     let writable_len = std::cmp::min(work.get_payload_length(true) as usize, MAX_REQUEST_BYTES);
     if writable_len == 0 {
-        work.complete(0);
-        return;
+        return 0;
     }
 
     let mut buf = vec![0u8; writable_len];
     getrandom::fill(&mut buf).expect("host entropy source failure");
     match work.write(mem, &buf) {
-        Ok(()) => {
-            work.complete(writable_len as u32);
-        }
+        Ok(()) => writable_len as u32,
         Err(err) => {
             tracelimit::error_ratelimited!(
                 err = &err as &dyn std::error::Error,
                 "failed to write random bytes to guest memory"
             );
-            work.complete(0);
+            0
         }
     }
 }
