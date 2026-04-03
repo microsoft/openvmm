@@ -13,6 +13,7 @@ use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
 use crate::node::GhUserSecretVar;
+use crate::node::IntoConfig;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -606,6 +607,7 @@ impl Pipeline {
         let idx = self.jobs.len();
         self.jobs.push(PipelineJobMetadata {
             root_nodes: BTreeMap::new(),
+            root_configs: BTreeMap::new(),
             patches: ResolvedPatches::build(),
             label: label.as_ref().into(),
             platform,
@@ -1260,6 +1262,22 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Set config on a node for this job.
+    ///
+    /// This is the pipeline-level equivalent of [`NodeCtx::config`]. Config
+    /// set here is merged with any config set by nodes within the job.
+    ///
+    /// [`NodeCtx::config`]: crate::node::NodeCtx::config
+    pub fn config<C: IntoConfig + 'static>(self, config: C) -> Self {
+        self.pipeline.jobs[self.job_idx]
+            .root_configs
+            .entry(NodeHandle::from_type::<C::Node>())
+            .or_default()
+            .push(serde_json::to_vec(&config).unwrap().into());
+
+        self
+    }
+
     /// Finish describing the pipeline job.
     pub fn finish(self) -> PipelineJobHandle {
         PipelineJobHandle {
@@ -1424,6 +1442,7 @@ pub mod internal {
 
     pub struct PipelineJobMetadata {
         pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+        pub root_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         pub patches: PatchResolver,
         pub label: String,
         pub platform: FlowPlatform,
