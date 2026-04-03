@@ -75,7 +75,6 @@ use gdma_defs::SmcProtoHdr;
 use inspect::Inspect;
 use pal_async::driver::Driver;
 use std::collections::HashMap;
-use std::mem;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 use std::time::Duration;
@@ -223,7 +222,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             return;
         }
 
-        if self.hwc_failure {
+        if self.hwc_failure || self.vf_reconfiguration_pending {
             return;
         }
 
@@ -689,6 +688,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         interrupt_loss: bool,
         ms_elapsed: u32,
     ) {
+        // Don't report timeout once VF reconfiguration is pending, SoC will not respond.
+        if self.vf_reconfiguration_pending {
+            return;
+        }
         // Perform initial check for ownership, failing without wait if device
         // is not present or owns shmem region
         let data = self
@@ -783,8 +786,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.link_toggle.drain(..).collect()
     }
 
-    pub fn get_vf_reconfiguration_pending(&mut self) -> bool {
-        mem::take(&mut self.vf_reconfiguration_pending)
+    pub fn get_vf_reconfiguration_pending(&self) -> bool {
+        self.vf_reconfiguration_pending
     }
 
     pub fn device(&self) -> &T {
@@ -839,6 +842,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         dev_id: GdmaDevId,
         req: Req,
     ) -> anyhow::Result<(Resp, u32)> {
+        if self.vf_reconfiguration_pending {
+            anyhow::bail!("VF reconfiguration pending");
+        }
         if self.hwc_failure {
             anyhow::bail!("Previous hardware failure");
         }
