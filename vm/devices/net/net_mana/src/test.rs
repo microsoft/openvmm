@@ -711,11 +711,12 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
         max_num_eqs: 64,
         adapter_mtu: 0,
         reserved2: 0,
-        adapter_link_speed_mbps: link_speed_mbps,
+        adapter_link_speed_mbps: 0,
     };
     let vport = thing.new_vport(0, None, &vport_dev_config).await.unwrap();
 
-    // Layer 2: vport derives its link speed from the stored dev_config.
+    // Layer 2: vport derives its link speed from the stored dev_config,
+    // not from the per-call vport_dev_config.
     assert_eq!(
         vport.link_speed_bps(),
         link_speed_bps,
