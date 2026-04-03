@@ -1758,7 +1758,15 @@ async fn vm_config_from_command_line(
         },
     };
 
-    storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
+    // Use PCI for virtio-blk on KVM (non-Hyper-V) systems, or when specifically needed.
+    // VPCI is only available on Windows or Linux MSHV with Hyper-V support.
+    let use_pci_for_virtio_blk = !(with_hv && cfg!(windows));
+    storage.build_config(
+        &mut cfg,
+        &mut resources,
+        opt.scsi_sub_channels,
+        use_pci_for_virtio_blk,
+    )?;
     Ok((cfg, resources))
 }
 
