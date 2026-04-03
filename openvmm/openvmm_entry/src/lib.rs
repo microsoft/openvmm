@@ -990,9 +990,25 @@ async fn vm_config_from_command_line(
 
     let has_com3 = serial2_cfg.is_some();
 
+    // Native IGVM files need a full chipset (IOAPIC, PIC, etc.),
+    // whereas VBS/Underhill IGVM files use the minimal HclHost chipset.
+    let igvm_is_native = if let Some(path) = &opt.igvm {
+        let contents = std::fs::read(path).context("failed to read igvm file")?;
+        let igvm_file = igvm::IgvmFile::new_from_binary(&contents, None)
+            .map_err(|e| anyhow::anyhow!("invalid igvm file: {:?}", e))?;
+        igvm_file.platforms().iter().any(|header| {
+            let igvm::IgvmPlatformHeader::SupportedPlatform(info) = header;
+            info.platform_type == igvm_defs::IgvmPlatformType::NATIVE
+        })
+    } else {
+        false
+    };
+
     let mut chipset = VmManifestBuilder::new(
-        if opt.igvm.is_some() {
+        if opt.igvm.is_some() && !igvm_is_native {
             BaseChipsetType::HclHost
+        } else if opt.igvm.is_some() && igvm_is_native {
+            BaseChipsetType::UnenlightenedLinuxDirect
         } else if opt.pcat {
             BaseChipsetType::HypervGen1
         } else if opt.uefi {
@@ -1030,11 +1046,16 @@ async fn vm_config_from_command_line(
     let bios_guid = Guid::new_random();
 
     let VmChipsetResult {
-        chipset,
+        mut chipset,
         mut chipset_devices,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
+
+    // Enable PCI bus for native IGVM guests so virtio-pci devices work.
+    if igvm_is_native {
+        chipset.with_generic_pci_bus = true;
+    }
 
     if opt.restore_snapshot.is_some() {
         // Snapshot restore: skip firmware loading entirely. Device state and

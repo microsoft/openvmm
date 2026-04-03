@@ -5340,6 +5340,8 @@ dependencies = [
  "hyperv_secure_boot_templates",
  "hyperv_uefi_custom_vars_json",
  "ide_resources",
+ "igvm",
+ "igvm_defs",
  "input_core",
  "inspect",
  "inspect_proto",

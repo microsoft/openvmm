@@ -88,6 +88,8 @@ pub enum Error {
     Vtl2MemoryTooSmall(u64, u64),
     #[error("unsupported guest architecture")]
     UnsupportedGuestArch,
+    #[error("igvm file does not contain a supported platform (NATIVE or VBS)")]
+    NoPlatformSupport,
     #[error("igvm file does not support vbs")]
     NoVbsSupport,
     #[error("vp context for lower VTL not supported")]
@@ -125,17 +127,43 @@ fn from_igvm_vtl(vtl: igvm::hv_defs::Vtl) -> hvdef::Vtl {
     }
 }
 
-/// Read and parse an IgvmFile from a File. This assumes the file is a VBS IGVM
-/// file.
+/// Read and parse an IgvmFile from a File. Accepts both NATIVE and VBS
+/// platform types.
 pub fn read_igvm_file(mut file: &std::fs::File) -> Result<IgvmFile, Error> {
     let mut file_contents = Vec::new();
     file.rewind().map_err(Error::Igvm)?;
     file.read_to_end(&mut file_contents).map_err(Error::Igvm)?;
 
-    let igvm_file = IgvmFile::new_from_binary(&file_contents, Some(igvm::IsolationType::Vbs))
-        .map_err(Error::InvalidIgvmFile)?;
+    // Try parsing without a platform filter so both NATIVE and VBS files are
+    // accepted.
+    let igvm_file =
+        IgvmFile::new_from_binary(&file_contents, None).map_err(Error::InvalidIgvmFile)?;
+
+    // Verify the file contains at least one supported platform type.
+    if platform_header(&igvm_file).is_err() {
+        return Err(Error::NoPlatformSupport);
+    }
 
     Ok(igvm_file)
+}
+
+/// Extract the supported platform header from an igvm file. Prefers NATIVE,
+/// falls back to VSM_ISOLATION.
+fn platform_header(igvm_file: &IgvmFile) -> Result<&IgvmPlatformHeader, Error> {
+    igvm_file
+        .platforms()
+        .iter()
+        .find(|header| {
+            let IgvmPlatformHeader::SupportedPlatform(info) = header;
+            info.platform_type == IgvmPlatformType::NATIVE
+        })
+        .or_else(|| {
+            igvm_file.platforms().iter().find(|header| {
+                let IgvmPlatformHeader::SupportedPlatform(info) = header;
+                info.platform_type == IgvmPlatformType::VSM_ISOLATION
+            })
+        })
+        .ok_or(Error::NoPlatformSupport)
 }
 
 /// Extract the vbs supported platform header from an igvm file.
@@ -152,11 +180,8 @@ fn vbs_platform_header(igvm_file: &IgvmFile) -> Result<&IgvmPlatformHeader, Erro
 
 /// Determine if the given `igvm_file` supports relocations or not.
 pub fn supports_relocations(igvm_file: &IgvmFile) -> bool {
-    let (mask, _max_vtl) = match vbs_platform_header(igvm_file).unwrap() {
-        IgvmPlatformHeader::SupportedPlatform(info) => {
-            debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
-            (info.compatibility_mask, info.highest_vtl)
-        }
+    let (mask, _max_vtl) = match platform_header(igvm_file).unwrap() {
+        IgvmPlatformHeader::SupportedPlatform(info) => (info.compatibility_mask, info.highest_vtl),
     };
 
     igvm_file.relocations(mask).0.is_some()
@@ -166,11 +191,8 @@ pub fn supports_relocations(igvm_file: &IgvmFile) -> bool {
 /// [`IgvmDirectiveHeader::RequiredMemory`] structure is looked for, with the
 /// flag set for vtl2_protectable.
 pub fn vtl2_memory_info(igvm_file: &IgvmFile) -> Result<MemoryRange, Error> {
-    let (mask, _max_vtl) = match vbs_platform_header(igvm_file)? {
-        IgvmPlatformHeader::SupportedPlatform(info) => {
-            debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
-            (info.compatibility_mask, info.highest_vtl)
-        }
+    let (mask, _max_vtl) = match platform_header(igvm_file)? {
+        IgvmPlatformHeader::SupportedPlatform(info) => (info.compatibility_mask, info.highest_vtl),
     };
 
     let mut required_memory = None;
@@ -610,11 +632,8 @@ fn load_igvm_x86(
 
     let command_line = CString::new(cmdline).map_err(Error::InvalidCommandLine)?;
 
-    let (mask, max_vtl) = match vbs_platform_header(igvm_file)? {
-        IgvmPlatformHeader::SupportedPlatform(info) => {
-            debug_assert_eq!(info.platform_type, IgvmPlatformType::VSM_ISOLATION);
-            (info.compatibility_mask, info.highest_vtl)
-        }
+    let (mask, max_vtl) = match platform_header(igvm_file)? {
+        IgvmPlatformHeader::SupportedPlatform(info) => (info.compatibility_mask, info.highest_vtl),
     };
 
     let (relocation_regions, mut page_table_fixup) = igvm_file.relocations(mask);
