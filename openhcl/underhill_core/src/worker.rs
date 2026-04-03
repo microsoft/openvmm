@@ -3376,20 +3376,28 @@ async fn new_underhill_vm(
             let connection = relay_filter.take();
 
             if enable_vpci_relay {
+                let test_tdisp_flow = matches!(
+                    env_cfg.test_configuration,
+                    Some(TestScenarioConfig::VpciTdispFlow)
+                );
+
                 use openhcl_tdisp::TdispResourceValidationInterface;
                 #[cfg(feature = "dev_snp_ohcl_tio_support")]
                 use openhcl_tdisp::TdispSevTioResourceValidator;
-
-                #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
                 use openhcl_tdisp::mocks::TdispMockResourceValidator;
+
                 use vpci_relay::*;
 
                 #[cfg(feature = "dev_snp_ohcl_tio_support")]
                 let resource_validator: Option<
                     Arc<dyn TdispResourceValidationInterface>,
-                > = Some(Arc::new(TdispSevTioResourceValidator::new(
-                    vtom.unwrap_or(0),
-                )?));
+                > = if !test_tdisp_flow {
+                    Some(Arc::new(TdispSevTioResourceValidator::new(
+                        vtom.unwrap_or(0),
+                    )?))
+                } else {
+                    Some(Arc::new(TdispMockResourceValidator::new()))
+                };
 
                 #[cfg(not(feature = "dev_snp_ohcl_tio_support"))]
                 let resource_validator: Option<
@@ -3427,10 +3435,7 @@ async fn new_underhill_vm(
                     vtom,
                     VpciRelayOptions {
                         // Exercises a mocked TDISP flow for emulated TDISP devices produced by OpenVMM tests.
-                        test_tdisp_flow: matches!(
-                            env_cfg.test_configuration,
-                            Some(TestScenarioConfig::VpciTdispFlow)
-                        ),
+                        test_tdisp_flow,
                     },
                 );
 
