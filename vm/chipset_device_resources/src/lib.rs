@@ -154,6 +154,10 @@ impl ChipsetDevice for ErasedChipsetDevice {
         self.0.supports_pci()
     }
 
+    fn supports_pci_placement(&mut self) -> Option<&mut dyn chipset_device::pci::PciPlacement> {
+        self.0.supports_pci_placement()
+    }
+
     fn supports_poll_device(&mut self) -> Option<&mut dyn chipset_device::poll_device::PollDevice> {
         self.0.supports_poll_device()
     }
@@ -176,6 +180,12 @@ impl ChipsetDevice for ErasedChipsetDevice {
 
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         self.0.supports_tdisp()
+    }
+
+    fn supports_isa_dma_controller(
+        &mut self,
+    ) -> Option<&mut dyn chipset_device::isa_dma::IsaDmaController> {
+        self.0.supports_isa_dma_controller()
     }
 }
 

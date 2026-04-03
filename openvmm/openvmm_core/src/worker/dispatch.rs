@@ -46,6 +46,7 @@ use mesh_worker::WorkerRpc;
 use missing_dev::MissingDevManifest;
 use openvmm_defs::config::Aarch64TopologyConfig;
 use openvmm_defs::config::ArchTopologyConfig;
+use openvmm_defs::config::ChipsetCapabilities;
 use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
@@ -193,6 +194,7 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            chipset_capabilities: config.chipset_capabilities,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -240,6 +242,7 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    chipset_capabilities: ChipsetCapabilities,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -578,6 +581,8 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    chipset_caps: ChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1032,6 +1037,7 @@ impl InitializedVm {
         ));
 
         let mapper = memory_manager.device_memory_mapper();
+        let chipset_caps = cfg.chipset_capabilities;
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1132,10 +1138,10 @@ impl InitializedVm {
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                                with_ioapic: cfg.chipset.with_generic_ioapic,
-                                with_pic: cfg.chipset.with_generic_pic,
-                                with_pit: cfg.chipset.with_generic_pit,
-                                with_psp: cfg.chipset.with_generic_psp,
+                                with_ioapic: chipset_caps.with_ioapic,
+                                with_pic: chipset_caps.with_pic,
+                                with_pit: chipset_caps.with_pit,
+                                with_psp: chipset_caps.with_psp,
                                 pm_base: PM_BASE,
                                 acpi_irq: SYSTEM_IRQ_ACPI,
                             },
@@ -1376,9 +1382,6 @@ impl InitializedVm {
             None
         };
 
-        let deps_generic_isa_dma =
-            (cfg.chipset.with_generic_isa_dma).then_some(dev::GenericIsaDmaDeps {});
-
         let mut primary_disk_drive = floppy::DriveRibbon::None;
         let mut secondary_disk_drive = floppy::DriveRibbon::None;
         if cfg.chipset.with_winbond_super_io_and_floppy_full {
@@ -1455,7 +1458,6 @@ impl InitializedVm {
 
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
 
-        let deps_generic_pit = (cfg.chipset.with_generic_pit).then_some(dev::GenericPitDeps {});
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
         let deps_hyperv_framebuffer =
@@ -1523,10 +1525,6 @@ impl InitializedVm {
             (cfg.chipset.with_piix4_pci_isa_bridge).then_some(dev::Piix4PciIsaBridgeDeps {
                 attached_to: pci_bus_id_piix4.clone(),
             });
-        let deps_piix4_pci_usb_uhci_stub =
-            (cfg.chipset.with_piix4_pci_usb_uhci_stub).then_some(dev::Piix4PciUsbUhciStubDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
         let deps_piix4_power_management =
             (cfg.chipset.with_piix4_power_management).then_some(dev::Piix4PowerManagementDeps {
                 attached_to: pci_bus_id_piix4.clone(),
@@ -1537,11 +1535,9 @@ impl InitializedVm {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
                 deps_generic_ioapic,
-                deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_pic,
-                deps_generic_pit,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
@@ -1554,7 +1550,6 @@ impl InitializedVm {
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_piix4_pci_isa_bridge,
-                deps_piix4_pci_usb_uhci_stub,
                 deps_piix4_power_management,
                 deps_underhill_vga_proxy: None,
                 deps_winbond_super_io_and_floppy_stub: None,
@@ -2190,6 +2185,8 @@ impl InitializedVm {
         ))
         .await?;
 
+        let chipset_cfg = cfg.chipset;
+
         let mut this = LoadedVm {
             state_units,
             running: false,
@@ -2219,7 +2216,8 @@ impl InitializedVm {
                 #[cfg(windows)]
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
-                chipset_cfg: cfg.chipset,
+                chipset_cfg,
+                chipset_caps,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_count,
@@ -2251,6 +2249,11 @@ impl InitializedVm {
 }
 
 impl LoadedVmInner {
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    fn chipset_capabilities(&self) -> ChipsetCapabilities {
+        self.chipset_caps
+    }
+
     async fn load_firmware(&mut self, vtl2_only: bool) -> anyhow::Result<()> {
         let cache_topology = if cfg!(guest_arch = "aarch64") {
             Some(
@@ -2260,6 +2263,8 @@ impl LoadedVmInner {
         } else {
             None
         };
+        #[cfg(guest_arch = "x86_64")]
+        let chipset_caps = self.chipset_capabilities();
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
@@ -2267,10 +2272,10 @@ impl LoadedVmInner {
             pcie_host_bridges: &self.pcie_host_bridges,
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                with_ioapic: self.chipset_cfg.with_generic_ioapic,
-                with_psp: self.chipset_cfg.with_generic_psp,
-                with_pic: self.chipset_cfg.with_generic_pic,
-                with_pit: self.chipset_cfg.with_generic_pit,
+                with_ioapic: chipset_caps.with_ioapic,
+                with_psp: chipset_caps.with_psp,
+                with_pic: chipset_caps.with_pic,
+                with_pit: chipset_caps.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
             },
@@ -3000,9 +3005,10 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
+            debugger_rpc: None,      // TODO
+            vmbus_devices: vec![],   // TODO
+            chipset_devices: vec![], // TODO
+            chipset_capabilities: self.inner.chipset_caps,
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,

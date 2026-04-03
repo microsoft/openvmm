@@ -19,6 +19,14 @@ use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 
+#[derive(MeshPayload, Debug, Copy, Clone)]
+pub struct ChipsetCapabilities {
+    pub with_ioapic: bool,
+    pub with_pic: bool,
+    pub with_pit: bool,
+    pub with_psp: bool,
+}
+
 #[derive(MeshPayload, Debug)]
 pub struct Config {
     pub load_mode: LoadMode,
@@ -51,6 +59,7 @@ pub struct Config {
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
+    pub chipset_capabilities: ChipsetCapabilities,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,

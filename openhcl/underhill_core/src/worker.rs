@@ -2724,6 +2724,7 @@ async fn new_underhill_vm(
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
+        ..
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -2791,20 +2792,10 @@ async fn new_underhill_vm(
     #[cfg(not(guest_arch = "x86_64"))]
     let deps_generic_pic = None;
 
-    let deps_generic_isa_dma = chipset
-        .with_generic_isa_dma
-        .then_some(dev::GenericIsaDmaDeps);
-    let deps_generic_pit = chipset.with_generic_pit.then_some(dev::GenericPitDeps {});
     let deps_piix4_pci_isa_bridge =
         chipset
             .with_piix4_pci_isa_bridge
             .then(|| dev::Piix4PciIsaBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
-    let deps_piix4_pci_usb_uhci_stub =
-        chipset
-            .with_piix4_pci_usb_uhci_stub
-            .then(|| dev::Piix4PciUsbUhciStubDeps {
                 attached_to: pci_bus_id_piix4.clone(),
             });
     let deps_piix4_power_management =
@@ -2995,11 +2986,9 @@ async fn new_underhill_vm(
         deps_hyperv_firmware_uefi,
         deps_hyperv_guest_watchdog,
         deps_hyperv_power_management,
-        deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
         deps_generic_pic,
-        deps_generic_pit,
         deps_hyperv_firmware_pcat,
         deps_hyperv_framebuffer: None,
         deps_hyperv_ide,
@@ -3008,7 +2997,6 @@ async fn new_underhill_vm(
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
         deps_piix4_pci_isa_bridge,
-        deps_piix4_pci_usb_uhci_stub,
         deps_piix4_power_management,
         deps_underhill_vga_proxy,
         deps_winbond_super_io_and_floppy_stub,

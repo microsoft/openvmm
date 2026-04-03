@@ -9,6 +9,8 @@ use chipset_device::pci::PciConfigSpace;
 use inspect::InspectMut;
 use vmcore::device_state::ChangeDeviceState;
 
+pub mod resolver;
+
 /// PIIX4 (PCI device function 2) - USB configuration (stub)
 ///
 /// See section 3.3 in the PIIX4 data sheet.
@@ -39,6 +41,19 @@ impl ChangeDeviceState for Piix4UsbUhciStub {
 impl ChipsetDevice for Piix4UsbUhciStub {
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
+    }
+
+    fn supports_pci_placement(&mut self) -> Option<&mut dyn chipset_device::pci::PciPlacement> {
+        Some(self)
+    }
+}
+
+impl chipset_device::pci::PciPlacement for Piix4UsbUhciStub {
+    fn static_pci_placement(&mut self) -> chipset_device::pci::PciPlacementHint {
+        chipset_device::pci::PciPlacementHint {
+            bus_name: "i440bx",
+            bdf: Some((0, 7, 2)),
+        }
     }
 }
 

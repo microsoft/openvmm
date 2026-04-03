@@ -26,6 +26,38 @@ pub mod i8042 {
     }
 }
 
+pub mod pit {
+    //! Resource definitions for the PIT (Programmable Interval Timer).
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to a PIT (Intel 8253/8254 Programmable Interval Timer) device.
+    #[derive(MeshPayload)]
+    pub struct PitDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for PitDeviceHandle {
+        const ID: &'static str = "pit";
+    }
+}
+
+pub mod isa_dma {
+    //! Resource definitions for the generic ISA DMA controller.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to the generic dual 8237 ISA DMA controller device.
+    #[derive(MeshPayload)]
+    pub struct GenericIsaDmaDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenericIsaDmaDeviceHandle {
+        const ID: &'static str = "genericIsaDma";
+    }
+}
+
 pub mod battery {
     //! Resource definitions for the battery device
 
@@ -90,5 +122,21 @@ pub mod battery {
                 ac_online: true,
             }
         }
+    }
+}
+
+pub mod piix4_uhci {
+    //! Resource definitions for the PIIX4 USB UHCI stub device.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to the PIIX4 USB UHCI stub controller.
+    #[derive(MeshPayload)]
+    pub struct Piix4PciUsbUhciStubDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4PciUsbUhciStubDeviceHandle {
+        const ID: &'static str = "piix4PciUsbUhciStub";
     }
 }

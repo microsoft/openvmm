@@ -25,6 +25,8 @@ pub(crate) enum AddDeviceErrorKind {
 
     #[error("no pci bus address provided")]
     NoPciBusAddress,
+    #[error("no pci bus specified")]
+    NoPciBusSpecified,
     #[error("error finalizing device")]
     Finalize(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
@@ -164,6 +166,10 @@ where
         }
 
         if !self.external_pci {
+            let static_placement = typed_dev
+                .supports_pci_placement()
+                .map(|placement| placement.static_pci_placement());
+
             if let Some(dev) = typed_dev.supports_pci() {
                 if self.pci_bus_id.is_some() && self.pcie_port.is_some() {
                     panic!(
@@ -176,8 +182,26 @@ where
                     self.services.register_static_pcie(bus_id_port);
                 } else {
                     // static pci registration
-                    let bdf = match (self.pci_addr, dev.suggested_bdf()) {
-                        (Some(override_bdf), Some(suggested_bdf)) => {
+                    let bdf = match (
+                        self.pci_addr,
+                        static_placement.and_then(|placement| placement.bdf),
+                        dev.suggested_bdf(),
+                    ) {
+                        (Some(override_bdf), Some(hinted_bdf), _) => {
+                            let (ob, od, of) = override_bdf;
+                            let (hb, hd, hf) = hinted_bdf;
+                            tracing::info!(
+                                "overriding hinted bdf: using {:02x}:{:02x}:{} instead of {:02x}:{:02x}:{}",
+                                ob,
+                                od,
+                                of,
+                                hb,
+                                hd,
+                                hf
+                            );
+                            override_bdf
+                        }
+                        (Some(override_bdf), None, Some(suggested_bdf)) => {
                             let (ob, od, of) = override_bdf;
                             let (sb, sd, sf) = suggested_bdf;
                             tracing::info!(
@@ -191,20 +215,24 @@ where
                             );
                             override_bdf
                         }
-                        (None, Some(bdf)) | (Some(bdf), None) => bdf,
-                        (None, None) => {
+                        (None, Some(hinted_bdf), _) => hinted_bdf,
+                        (None, None, Some(suggested_bdf)) => suggested_bdf,
+                        (Some(override_bdf), None, None) => override_bdf,
+                        (None, None, None) => {
                             return Err(
                                 AddDeviceErrorKind::NoPciBusAddress.with_dev_name(self.dev_name)
                             );
                         }
                     };
 
-                    let bus_id = match self.pci_bus_id.take() {
-                        Some(bus_id) => bus_id,
-                        None => panic!(
-                            "wiring error: did not invoke `on_pci_bus` for `{}`",
-                            self.dev_name
-                        ),
+                    let bus_id = if let Some(bus_id) = self.pci_bus_id.take() {
+                        bus_id
+                    } else if let Some(placement) = static_placement {
+                        BusIdPci::new(placement.bus_name)
+                    } else {
+                        return Err(
+                            AddDeviceErrorKind::NoPciBusSpecified.with_dev_name(self.dev_name)
+                        );
                     };
 
                     self.services.register_static_pci(bus_id, bdf);
