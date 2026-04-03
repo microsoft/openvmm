@@ -2724,6 +2724,7 @@ async fn new_underhill_vm(
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
+        ..
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -2794,7 +2795,6 @@ async fn new_underhill_vm(
     let deps_generic_isa_dma = chipset
         .with_generic_isa_dma
         .then_some(dev::GenericIsaDmaDeps);
-    let deps_generic_pit = chipset.with_generic_pit.then_some(dev::GenericPitDeps {});
     let deps_piix4_pci_isa_bridge =
         chipset
             .with_piix4_pci_isa_bridge
@@ -2999,7 +2999,6 @@ async fn new_underhill_vm(
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
         deps_generic_pic,
-        deps_generic_pit,
         deps_hyperv_firmware_pcat,
         deps_hyperv_framebuffer: None,
         deps_hyperv_ide,
