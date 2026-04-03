@@ -249,12 +249,6 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
-
-[[package]]
-name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -1751,7 +1745,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "778e2ac28f6c47af28e4907f13ffd1e1ddbd400980a9abd7c8df189bf578a5ad"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1850,7 +1844,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix 1.0.8",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3346,7 +3340,7 @@ dependencies = [
 name = "hyperv_uefi_custom_vars_json"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "firmware_uefi_custom_vars",
  "guid",
  "serde",
@@ -3520,6 +3514,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "igvminspect"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "fs-err",
+ "igvm",
+ "igvm_defs",
+ "tracing-subscriber",
+ "zerocopy",
+]
+
+[[package]]
 name = "image"
 version = "0.25.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3555,7 +3562,7 @@ name = "inspect"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "base64 0.22.1",
+ "base64",
  "bitfield-struct 0.11.0",
  "expect-test",
  "filepath",
@@ -3668,7 +3675,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4209,7 +4216,7 @@ name = "mesh_process"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64",
  "debug_ptr",
  "futures",
  "futures-concurrency",
@@ -4276,7 +4283,7 @@ name = "mesh_rpc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64",
  "env_logger",
  "futures",
  "futures-concurrency",
@@ -5026,7 +5033,7 @@ version = "0.0.0"
 name = "openhcl_attestation_protocol"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "base64-serde",
  "bitfield-struct 0.11.0",
  "guid",
@@ -5747,17 +5754,16 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "pbjson"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "048f9ac93c1eab514f9470c4bc8d97ca2a0a236b84f45cc19d69a59fc11467f6"
+source = "git+https://github.com/justus-camp-microsoft/pbjson?branch=main#9481e17eae43ee75f25f1f79d384056125cc9ea5"
 dependencies = [
- "base64 0.13.1",
+ "base64",
  "serde",
 ]
 
 [[package]]
 name = "pbjson-build"
 version = "0.5.1"
-source = "git+https://github.com/jstarks/pbjson?branch=aliases#8896d740a44ef46a3bad8cbfccedb87ea8e7b0d3"
+source = "git+https://github.com/justus-camp-microsoft/pbjson?branch=main#9481e17eae43ee75f25f1f79d384056125cc9ea5"
 dependencies = [
  "heck 0.4.1",
  "itertools 0.10.5",
@@ -5768,8 +5774,7 @@ dependencies = [
 [[package]]
 name = "pbjson-types"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a88c8d87f99a4ac14325e7a4c24af190fca261956e3b82dd7ed67e77e6c7043"
+source = "git+https://github.com/justus-camp-microsoft/pbjson?branch=main#9481e17eae43ee75f25f1f79d384056125cc9ea5"
 dependencies = [
  "bytes",
  "chrono",
@@ -6606,7 +6611,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6619,7 +6624,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.4",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6877,7 +6882,7 @@ dependencies = [
 name = "serde_helpers"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "guid",
  "serde",
  "serde_json",
@@ -7575,7 +7580,7 @@ dependencies = [
  "getrandom 0.3.3",
  "once_cell",
  "rustix 1.0.8",
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7602,7 +7607,7 @@ dependencies = [
 name = "test_igvm_agent_lib"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "get_resources",
  "inspect",
  "openhcl_attestation_protocol",
@@ -7893,7 +7898,7 @@ name = "tpm_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
@@ -8244,7 +8249,7 @@ dependencies = [
 name = "underhill_attestation"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "base64-serde",
  "cvm_tracing",
  "disk_backend",
@@ -10463,7 +10468,7 @@ version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0978bf7171b3d90bac376700cb56d606feb40f251a475a5d6634613564460b22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

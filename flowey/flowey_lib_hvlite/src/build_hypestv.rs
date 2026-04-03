@@ -50,6 +50,7 @@ impl SimpleFlowNode for Node {
             target: target.as_triple(),
             no_split_dbg_info: false,
             extra_env: None,
+            verbose: false,
             pre_build_deps: Vec::new(),
             output: v,
         });

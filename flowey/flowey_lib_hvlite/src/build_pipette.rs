@@ -58,6 +58,7 @@ impl SimpleFlowNode for Node {
             features: Default::default(),
             target: target.as_triple(),
             no_split_dbg_info: false,
+            verbose: false,
             extra_env: None,
             pre_build_deps: Vec::new(),
             output: v,

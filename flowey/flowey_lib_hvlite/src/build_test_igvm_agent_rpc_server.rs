@@ -74,6 +74,7 @@ impl SimpleFlowNode for Node {
             profile: profile.into(),
             features: Default::default(),
             target: target_triple,
+            verbose: false,
             no_split_dbg_info: false,
             extra_env,
             pre_build_deps: Vec::new(),

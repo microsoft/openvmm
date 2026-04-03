@@ -291,6 +291,7 @@ flowey_request! {
         pub pre_build_deps: Vec<ReadVar<SideEffect>>,
         /// Resulting build output
         pub output: WriteVar<CargoBuildOutput>,
+        pub verbose: bool,
     }
 }
 
@@ -326,6 +327,7 @@ impl FlowNode for Node {
             extra_env,
             pre_build_deps: user_pre_build_deps,
             output,
+            verbose,
         } in requests
         {
             let mut pre_build_deps = base_pre_build_deps.clone();
@@ -422,6 +424,7 @@ impl FlowNode for Node {
                 extra_env: Some(extra_env),
                 config,
                 pre_build_deps,
+                verbose,
                 output: v,
             });
 

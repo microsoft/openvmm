@@ -174,6 +174,7 @@ impl FlowNode for Node {
                 target,
                 no_split_dbg_info,
                 extra_env: None,
+                verbose: false,
                 pre_build_deps,
                 output: v,
             });

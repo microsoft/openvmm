@@ -50,6 +50,7 @@ impl FlowNode for Node {
                 profile: profile.into(),
                 features: flowey_lib_common::run_cargo_build::CargoFeatureSet::default(),
                 target: target.as_triple(),
+                verbose: false,
                 no_split_dbg_info: false,
                 extra_env: None,
                 pre_build_deps: Vec::new(),

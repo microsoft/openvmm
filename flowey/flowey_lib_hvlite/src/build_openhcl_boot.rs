@@ -95,6 +95,7 @@ impl FlowNode for Node {
                 profile,
                 features: Default::default(),
                 target,
+                verbose: false,
                 no_split_dbg_info: false,
                 extra_env: Some(ReadVar::from_static(
                     [("RUSTC_BOOTSTRAP".to_string(), "1".to_string())]
