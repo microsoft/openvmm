@@ -769,6 +769,10 @@ impl HclNetworkVFManagerWorker {
                     // Prior behavior treats any uevent with a valid device path as an arrival, as long
                     // as the VTL2 device is currently missing. Otherwise, uevents are silently ignored.
                     // It would be more correct to check that the uevent action is 'add'.
+                    // While Reconfiguring, ignore uevents.
+                    // Rescan events don't reliably indicate device readiness.
+                    // If FHR occurs during Reconfiguring, ManaDeviceRemoved will transition state
+                    // to Missing, allowing the subsequent add uevent to trigger ManaDeviceArrived.
                     let exists = Path::new(&device_path).exists();
                     match (vtl2_device_state, exists) {
                         (Vtl2DeviceState::Missing, true) => NextWorkItem::ManaDeviceArrived,
@@ -1071,7 +1075,8 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     tracing::info!(vtl2_vfid, "VTL2 VF reconfiguration requested");
-                    // Remove VTL0 VF if present
+                    // Revoke the VTL0 VF from the guest if it has been offered.
+                    // Required for Guest Mana driver to remove stale SoC state.
                     *self.guest_state.vtl0_vfid.lock().await = None;
                     if self.guest_state.is_offered_to_guest().await {
                         tracing::warn!(
@@ -1156,7 +1161,7 @@ impl HclNetworkVFManagerWorker {
                     assert!(!self.is_shutdown_active);
                     assert!(
                         vf_reconfig_backoff.is_none(),
-                        "device arrival should only occur after device removal and not vf reconfiguration"
+                        "device arrival should only occur after device removal, not during vf reconfiguration"
                     );
                     tracing::info!(vtl2_vfid, "VTL2 VF arrived");
                     let mut ctx =
@@ -1181,7 +1186,7 @@ impl HclNetworkVFManagerWorker {
                         .await
                     {
                         vtl2_device_state = Vtl2DeviceState::Present;
-                    }
+                    } // else: Device arrived, but startup failed. No attempt to retry.
                 }
                 NextWorkItem::ManaDeviceRemoved => {
                     assert!(!self.is_shutdown_active);
@@ -1199,8 +1204,9 @@ impl HclNetworkVFManagerWorker {
 
                     self.shutdown_vtl2_device(false).await;
                     vtl2_device_state = Vtl2DeviceState::Missing;
-                    // If the device is being removed, remove outstanding vf reconfiguration.
-                    vf_reconfig_backoff = None;
+                    if vf_reconfig_backoff.take().is_some() {
+                        tracing::warn!(vtl2_vfid, "device removed, abandoning vf reconfiguration");
+                    }
 
                     if let Err(err) = self.update_vtl2_device_bind_state(false).await {
                         tracing::error!(
