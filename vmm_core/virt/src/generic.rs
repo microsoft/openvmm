@@ -37,6 +37,7 @@ use vm_topology::processor::ProcessorTopology;
 use vmcore::monitor::MonitorId;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
+use vmcore::synic::GuestMessagePort;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
@@ -671,8 +672,13 @@ pub trait Synic: Send + Sync {
         Ok(None)
     }
 
-    /// Posts a message to the guest.
-    fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]);
+    /// Creates a [`GuestMessagePort`] for posting messages to the guest.
+    fn new_guest_message_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn GuestMessagePort>, vmcore::synic::HypervisorError>;
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
     fn new_guest_event_port(
@@ -695,6 +701,51 @@ pub trait Synic: Send + Sync {
     /// supported.
     fn monitor_support(&self) -> Option<&dyn SynicMonitor> {
         None
+    }
+}
+
+/// A [`GuestMessagePort`] that posts messages synchronously via a closure.
+///
+/// Suitable for backends where message posting is synchronous and
+/// infallible (e.g., in-process message queues). Backends that need
+/// async retry should implement [`GuestMessagePort`] directly instead.
+pub struct SimpleMessagePort<F> {
+    post: F,
+    vp: VpIndex,
+}
+
+impl<F: Fn(u32, &[u8]) + Send + Sync> SimpleMessagePort<F> {
+    /// Creates a new `SimpleMessagePort`.
+    ///
+    /// `post` is called with `(message_type, payload)` for each message.
+    pub fn new(vp: u32, post: F) -> Self {
+        Self {
+            post,
+            vp: VpIndex::new(vp),
+        }
+    }
+}
+
+impl<F: Fn(u32, &[u8]) + Send + Sync> GuestMessagePort for SimpleMessagePort<F> {
+    fn poll_post_message(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+        typ: u32,
+        payload: &[u8],
+    ) -> Poll<()> {
+        (self.post)(typ, payload);
+        Poll::Ready(())
+    }
+
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.vp = VpIndex::new(vp);
+        Ok(())
+    }
+}
+
+impl<F> Inspect for SimpleMessagePort<F> {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.respond().field("message_port_vp", self.vp.index());
     }
 }
 

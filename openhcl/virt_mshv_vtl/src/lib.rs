@@ -983,22 +983,30 @@ impl UhPartitionInner {
 }
 
 impl virt::Synic for UhPartition {
-    fn post_message(&self, vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
-        let Some(vp) = self.inner.vp(vp_index) else {
-            tracelimit::warn_ratelimited!(
-                CVM_ALLOWED,
-                vp = vp_index.index(),
-                "invalid vp target for post_message"
+    fn new_guest_message_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn vmcore::synic::GuestMessagePort>, vmcore::synic::HypervisorError> {
+        let inner = self.inner.clone();
+        let vp_index = VpIndex::new(vp);
+        Ok(Box::new(virt::SimpleMessagePort::new(vp, move |typ, payload| {
+            let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
+            let Some(vp) = inner.vp(vp_index) else {
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    vp = vp_index.index(),
+                    "invalid vp target for post_message"
+                );
+                return;
+            };
+            vp.post_message(
+                vtl,
+                sint,
+                &hvdef::HvMessage::new(hvdef::HvMessageType(typ), 0, payload),
             );
-            return;
-        };
-
-        vp.post_message(
-            vtl,
-            sint,
-            &hvdef::HvMessage::new(hvdef::HvMessageType(typ), 0, payload),
-        );
+        })))
     }
 
     fn new_guest_event_port(

@@ -1248,19 +1248,27 @@ impl Processor for KvmProcessor<'_> {
 }
 
 impl virt::Synic for KvmPartition {
-    fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let Some(vp) = self.inner.vp(vp_index) else {
-            tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
-            return;
-        };
-
-        let wake = vp
-            .synic_message_queue
-            .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
-
-        if wake {
-            self.inner.evaluate_vp(vp_index);
-        }
+    fn new_guest_message_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn vmcore::synic::GuestMessagePort>, vmcore::synic::HypervisorError> {
+        let inner = self.inner.clone();
+        let vp_index = VpIndex::new(vp);
+        Ok(Box::new(virt::SimpleMessagePort::new(
+            vp,
+            move |typ, payload| {
+                if let Some(vp) = inner.vp(vp_index) {
+                    let wake = vp
+                        .synic_message_queue
+                        .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
+                    if wake {
+                        inner.evaluate_vp(vp_index);
+                    }
+                }
+            },
+        )))
     }
 
     fn new_guest_event_port(

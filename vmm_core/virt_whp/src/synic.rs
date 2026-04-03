@@ -80,9 +80,20 @@ impl virt::Synic for WhpPartition {
         })))
     }
 
-    fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        self.inner
-            .post_message(vtl, vp, sint, HvMessageType(typ), payload);
+    fn new_guest_message_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn vmcore::synic::GuestMessagePort>, vmcore::synic::HypervisorError> {
+        let inner = self.inner.clone();
+        let vp_index = VpIndex::new(vp);
+        Ok(Box::new(virt::SimpleMessagePort::new(
+            vp,
+            move |typ, payload| {
+                inner.post_message(vtl, vp_index, sint, HvMessageType(typ), payload);
+            },
+        )))
     }
 
     fn new_guest_event_port(

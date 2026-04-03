@@ -287,15 +287,23 @@ impl virt::irqcon::ControlGic for HvfPartitionInner {
 }
 
 impl virt::Synic for HvfPartition {
-    fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        if let Some(vp) = self.inner.vps.get(vp.index() as usize) {
-            if vp
-                .message_queues
-                .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload))
-            {
-                vp.wake();
+    fn new_guest_message_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+    ) -> Result<Box<dyn vmcore::synic::GuestMessagePort>, vmcore::synic::HypervisorError> {
+        let inner = self.inner.clone();
+        Ok(Box::new(virt::SimpleMessagePort::new(vp, move |typ, payload| {
+            if let Some(vp_state) = inner.vps.get(vp as usize) {
+                if vp_state
+                    .message_queues
+                    .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload))
+                {
+                    vp_state.wake();
+                }
             }
-        }
+        })))
     }
 
     fn new_guest_event_port(

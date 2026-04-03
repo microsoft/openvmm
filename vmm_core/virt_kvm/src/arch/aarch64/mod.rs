@@ -777,7 +777,12 @@ impl virt::PartitionAccessState for KvmPartition {
 }
 
 impl virt::Synic for KvmPartition {
-    fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
+    fn new_guest_message_port(
+        &self,
+        _vtl: Vtl,
+        _vp: u32,
+        _sint: u8,
+    ) -> Result<Box<dyn vmcore::synic::GuestMessagePort>, vmcore::synic::HypervisorError> {
         unimplemented!()
     }
 
