@@ -1852,7 +1852,8 @@ fn parse_endpoint(
         EndpointConfigCli::Tap { name } => {
             #[cfg(target_os = "linux")]
             {
-                let fd = net_tap::tap::open_tap(name).context("failed to open TAP device")?;
+                let fd = net_tap::tap::open_tap(name)
+                    .with_context(|| format!("failed to open TAP device '{name}'"))?;
                 net_backend_resources::tap::TapHandle { fd }.into_resource()
             }
 

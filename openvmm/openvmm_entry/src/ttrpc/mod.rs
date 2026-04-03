@@ -737,7 +737,8 @@ fn parse_nic_config(
         .into_resource(),
         #[cfg(target_os = "linux")]
         Backend::Tap(tap) => {
-            let fd = net_tap::tap::open_tap(&tap.name).context("failed to open TAP device")?;
+            let fd = net_tap::tap::open_tap(&tap.name)
+                .with_context(|| format!("failed to open TAP device '{}'", tap.name))?;
             net_backend_resources::tap::TapHandle { fd }.into_resource()
         }
         _ => anyhow::bail!("unsupported backend"),
