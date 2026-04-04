@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use std::mem::offset_of;
+
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
@@ -147,8 +149,17 @@ impl BufferAccess for GuestBuffers {
     }
 }
 
+/// Configuration for the emulated BNIC device.
+#[derive(Default)]
+pub struct BnicConfig {
+    /// Adapter link speed in megabits per second.
+    /// When 0, the host-side MANA stack reports a 200 Gbps fallback value.
+    pub adapter_link_speed_mbps: u32,
+}
+
 pub struct BasicNic {
     vports: Vec<Vport>,
+    config: BnicConfig,
 }
 
 impl InspectMut for BasicNic {
@@ -185,7 +196,7 @@ struct QueueCfg {
 }
 
 impl BasicNic {
-    pub fn new(vports: Vec<VportConfig>) -> Self {
+    pub fn new(vports: Vec<VportConfig>, config: BnicConfig) -> Self {
         assert!(!vports.is_empty());
 
         let vports = vports
@@ -207,7 +218,7 @@ impl BasicNic {
             )
             .collect();
 
-        Self { vports }
+        Self { vports, config }
     }
 
     pub async fn handle_req(
@@ -233,10 +244,28 @@ impl BasicNic {
                     max_num_vports: self.vports.len() as u16,
                     reserved: 0,
                     max_num_eqs: 64,
+                    adapter_mtu: 0,
+                    reserved2: 0,
+                    adapter_link_speed_mbps: self.config.adapter_link_speed_mbps,
                 };
 
-                write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                // Older guests allocate a smaller response buffer that does not
+                // include the V4 fields added at the end of ManaQueryDeviceCfgResp.
+                // Require the buffer to fit at least the pre-V4 fields, but
+                // allow truncation of the trailing V4 fields
+                // (adapter_mtu, reserved2, adapter_link_speed_mbps).
+                let resp_bytes = resp.as_bytes();
+                let guest_resp_size = MemoryWrite::len(&write);
+                let min_resp_size = offset_of!(ManaQueryDeviceCfgResp, adapter_mtu);
+                anyhow::ensure!(
+                    guest_resp_size >= min_resp_size,
+                    "Guest allocated response buffer too small: {} < {}",
+                    guest_resp_size,
+                    min_resp_size,
+                );
+                let write_len = guest_resp_size.min(resp_bytes.len());
+                write.write(&resp_bytes[..write_len])?;
+                write_len
             }
             ManaCommandCode::MANA_CONFIG_VPORT_TX => {
                 let req: ManaConfigVportReq = read

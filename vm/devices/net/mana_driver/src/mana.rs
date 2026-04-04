@@ -86,7 +86,12 @@ impl<T: DeviceBacking> ManaDevice<T> {
             let gdma_memory = memory
                 .iter()
                 .find(|m| m.pfns()[0] == mana_state.gdma.mem.base_pfn)
-                .expect("gdma restored memory not found")
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "gdma restored memory not found for base_pfn {}",
+                        mana_state.gdma.mem.base_pfn
+                    )
+                })?
                 .clone();
 
             GdmaDriver::restore(mana_state.gdma.clone(), device, gdma_memory)
@@ -388,6 +393,12 @@ impl<T: DeviceBacking> Vport<T> {
     /// Returns the number of indirection entries supported by the vport
     pub fn num_indirection_ent(&self) -> u32 {
         self.config.num_indirection_ent
+    }
+
+    /// Returns the adapter link speed in bits per second, as reported by the
+    /// device configuration.
+    pub fn link_speed_bps(&self) -> u64 {
+        self.inner.dev_config.link_speed_bps()
     }
 
     /// Creates a new event queue.
