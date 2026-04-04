@@ -5539,6 +5539,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "acpi",
+ "acpi_spec",
  "amd_iommu",
  "anyhow",
  "async-trait",
