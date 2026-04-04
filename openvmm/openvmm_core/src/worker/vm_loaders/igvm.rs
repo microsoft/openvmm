@@ -542,7 +542,6 @@ fn build_device_tree(
     Ok(buf)
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct AcpiTables<'a> {
     pub madt: &'a [u8],
@@ -850,6 +849,14 @@ fn load_igvm_x86(
 
     let mut page_table_cpu_state: Option<CpuPagingState> = None;
     let mut native_zero_page_gpa: Option<u64> = None;
+    // Track the highest GPA used by IGVM parameter inserts so we can
+    // place ACPI tables right after without hardcoding addresses.
+    let mut max_parameter_end_gpa: u64 = 0;
+    // Track which parameter area indices correspond to ACPI tables
+    // so we can reference their GPAs directly from the XSDT instead
+    // of duplicating the table data.
+    let mut acpi_param_area_indices: HashMap<u32, &'static str> = HashMap::new();
+    let mut acpi_param_gpas: HashMap<&'static str, u64> = HashMap::new();
 
     // If requested, filter to VTL2-related directives only.
     let pt_range = page_table_fixup.as_ref().map_or(MemoryRange::EMPTY, |x| {
@@ -977,13 +984,16 @@ fn load_igvm_x86(
                 import_parameter(&mut parameter_areas, info, proc_count.as_bytes())?;
             }
             IgvmDirectiveHeader::Srat(ref info) => {
+                acpi_param_area_indices.insert(info.parameter_area_index, "srat");
                 import_parameter(&mut parameter_areas, info, acpi_tables.srat)?;
             }
             IgvmDirectiveHeader::Madt(ref info) => {
+                acpi_param_area_indices.insert(info.parameter_area_index, "madt");
                 import_parameter(&mut parameter_areas, info, acpi_tables.madt)?;
             }
             IgvmDirectiveHeader::Slit(ref info) => {
                 if let Some(slit) = acpi_tables.slit {
+                    acpi_param_area_indices.insert(info.parameter_area_index, "slit");
                     import_parameter(&mut parameter_areas, info, slit)?;
                 } else {
                     tracing::warn!("igvm file requested a SLIT, but no SLIT was provided")
@@ -991,6 +1001,7 @@ fn load_igvm_x86(
             }
             IgvmDirectiveHeader::Pptt(ref info) => {
                 if let Some(pptt) = acpi_tables.pptt {
+                    acpi_param_area_indices.insert(info.parameter_area_index, "pptt");
                     import_parameter(&mut parameter_areas, info, pptt)?;
                 } else {
                     tracing::warn!("igvm file requested a PPTT, but no PPTT was provided")
@@ -1211,15 +1222,27 @@ fn load_igvm_x86(
                     .get_mut(&parameter_area_index)
                     .expect("igvmfile should be valid");
                 match std::mem::replace(area, ParameterAreaState::Inserted) {
-                    ParameterAreaState::Allocated { data, max_size } => loader
-                        .import_pages(
-                            gpa / HV_PAGE_SIZE,
-                            max_size / HV_PAGE_SIZE,
-                            "igvm-parameter",
-                            BootPageAcceptance::ExclusiveUnmeasured,
-                            &data,
-                        )
-                        .map_err(Error::Loader)?,
+                    ParameterAreaState::Allocated { data, max_size } => {
+                        if let Some(name) = acpi_param_area_indices.get(&parameter_area_index) {
+                            acpi_param_gpas.insert(name, gpa);
+                        }
+
+                        // Track the highest GPA used by parameter inserts
+                        // so we can place ACPI tables after all parameters.
+                        let end_gpa = gpa + max_size;
+                        if end_gpa > max_parameter_end_gpa {
+                            max_parameter_end_gpa = end_gpa;
+                        }
+                        loader
+                            .import_pages(
+                                gpa / HV_PAGE_SIZE,
+                                max_size / HV_PAGE_SIZE,
+                                "igvm-parameter",
+                                BootPageAcceptance::ExclusiveUnmeasured,
+                                &data,
+                            )
+                            .map_err(Error::Loader)?
+                    }
                     ParameterAreaState::Inserted => panic!("igvmfile is invalid, multiple insert"),
                 }
             }
@@ -1325,6 +1348,32 @@ fn load_igvm_x86(
             e820_count,
             "wrote e820 entries to zero page for native IGVM"
         );
+
+        // Build ACPI tables (RSDP + XSDT +  FADT + DSDT) and place them
+        // right after the last IGVM parameter area. The RSDP gets one page,
+        // and the remaining tables follow immediately after.
+        let acpi_rsdp_gpa = (max_parameter_end_gpa + HV_PAGE_SIZE - 1) & !(HV_PAGE_SIZE - 1);
+        let acpi_tables_gpa = acpi_rsdp_gpa + HV_PAGE_SIZE;
+
+        let mut builder = acpi::builder::Builder::new(acpi_tables_gpa, acpi_tables.oem_info);
+
+        // Use the pre-built DSDT from the dispatch layer (which knows
+        // the chipset config and PCI device assignments), or fall back
+        // to an empty DSDT.
+        let default_dsdt;
+        let dsdt_bytes = if let Some(dsdt) = acpi_tables.dsdt {
+            dsdt
+        } else {
+            default_dsdt = acpi::dsdt::Dsdt::new().to_bytes();
+            &default_dsdt
+        };
+        let dsdt_addr = builder.append_raw(dsdt_bytes);
+
+        // Use the pre-built FADT from dispatch, filling in x_dsdt now
+        // that we know the DSDT GPA.
+        let mut fadt = acpi_tables.fadt;
+        fadt.x_dsdt = dsdt_addr;
+        builder.append(&acpi::builder::Table::new(6, None, &fadt));
     }
 
     // Apply page table relocations after all headers have been scanned.
