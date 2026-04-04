@@ -548,6 +548,8 @@ pub struct AcpiTables<'a> {
     pub srat: &'a [u8],
     pub slit: Option<&'a [u8]>,
     pub pptt: Option<&'a [u8]>,
+    pub fadt: &'a [u8],
+    pub dsdt: Option<&'a [u8]>,
 }
 
 /// The parameters to the [`load_igvm`] function.
