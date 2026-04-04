@@ -694,6 +694,9 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(job.finish());
         }
 
+        use flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline::KernelCheck;
+        use flowey_lib_hvlite::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
+
         // emit openhcl build job
         for arch in [CommonArch::Aarch64, CommonArch::X86_64] {
             let arch_tag = match arch {
@@ -719,6 +722,23 @@ impl IntoPipeline for CheckinGatesCli {
                 } else {
                     (None, None)
                 };
+
+            let arch_kernel_checks: Vec<KernelCheck> = match arch {
+                CommonArch::X86_64 => vec![
+                    KernelCheck {
+                        kind: OpenhclKernelPackageKind::Main,
+                        label: "kernel-main".into(),
+                    },
+                    KernelCheck {
+                        kind: OpenhclKernelPackageKind::Cvm,
+                        label: "kernel-cvm".into(),
+                    },
+                ],
+                CommonArch::Aarch64 => vec![KernelCheck {
+                    kind: OpenhclKernelPackageKind::Main,
+                    label: "kernel-main".into(),
+                }],
+            };
 
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
@@ -799,6 +819,7 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras),
                         artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
+                        kernel_checks_for_baseline: arch_kernel_checks.clone(),
                         done: ctx.new_done_handle(),
                     }
                 })
@@ -839,6 +860,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 arch,
                                 platform: CommonPlatform::LinuxMusl,
                             },
+                            kernel_checks: arch_kernel_checks,
                             done: ctx.new_done_handle(),
                             pipeline_name: "openvmm-ci.yaml".into(),
                             job_name: build_openhcl_job_tag(arch_tag),

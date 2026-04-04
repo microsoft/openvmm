@@ -29,6 +29,7 @@ flowey_request! {
         pub artifact_dir_openhcl_igvm: ReadVar<PathBuf>,
         pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
         pub artifact_openhcl_verify_size_baseline: Option<ReadVar<PathBuf>>,
+        pub kernel_checks_for_baseline: Vec<build_and_publish_openvmm_hcl_baseline::KernelCheck>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -52,6 +53,7 @@ impl SimpleFlowNode for Node {
             artifact_dir_openhcl_igvm,
             artifact_dir_openhcl_igvm_extras,
             artifact_openhcl_verify_size_baseline,
+            kernel_checks_for_baseline,
             done,
         } = request;
 
@@ -145,6 +147,7 @@ impl SimpleFlowNode for Node {
                     did_publish.push(ctx.reqv(|v| {
                         build_and_publish_openvmm_hcl_baseline::Request {
                             target: custom_target,
+                            kernel_checks: kernel_checks_for_baseline,
                             artifact_dir: sizecheck_artifact,
                             done: v,
                         }

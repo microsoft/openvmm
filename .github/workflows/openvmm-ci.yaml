@@ -5867,7 +5867,7 @@ jobs:
         flowey e 8 flowey_lib_hvlite::run_cargo_build 7
         flowey e 8 flowey_lib_hvlite::build_openvmm_hcl 0
       shell: bash
-    - name: copying openhcl build to publish dir
+    - name: copying openhcl build and kernels to publish dir
       run: |-
         flowey e 8 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
         flowey e 8 flowey_lib_hvlite::init_cross_build 3
@@ -6308,7 +6308,7 @@ jobs:
         flowey e 9 flowey_lib_hvlite::run_cargo_build 7
         flowey e 9 flowey_lib_hvlite::build_openvmm_hcl 0
       shell: bash
-    - name: copying openhcl build to publish dir
+    - name: copying openhcl build and kernels to publish dir
       run: |-
         flowey e 9 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
         flowey e 9 flowey_lib_hvlite::init_cross_build 5
