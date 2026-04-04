@@ -103,6 +103,8 @@ pub enum Error {
     WriteE820(#[source] guestmem::GuestMemoryError),
     #[error("too many RAM ranges for e820 table ({0}, max 128)")]
     TooManyE820Entries(usize),
+    #[error("failed to write ACPI tables to guest memory")]
+    WriteAcpi(#[source] guestmem::GuestMemoryError),
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -1374,6 +1376,47 @@ fn load_igvm_x86(
         let mut fadt = acpi_tables.fadt;
         fadt.x_dsdt = dsdt_addr;
         builder.append(&acpi::builder::Table::new(6, None, &fadt));
+
+        // Reference MADT/SRAT/SLIT/PPTT at their IGVM parameter area
+        // GPAs directly instead of duplicating the data.
+        if let Some(&gpa) = acpi_param_gpas.get("madt") {
+            builder.register_external_table(gpa);
+        }
+        if let Some(&gpa) = acpi_param_gpas.get("srat") {
+            builder.register_external_table(gpa);
+        }
+        if let Some(&gpa) = acpi_param_gpas.get("slit") {
+            builder.register_external_table(gpa);
+        }
+        if let Some(&gpa) = acpi_param_gpas.get("pptt") {
+            builder.register_external_table(gpa);
+        }
+
+        let (rsdp_bytes, tables_bytes) = builder.build();
+
+        // Write RSDP to guest memory.
+        gm.write_at(acpi_rsdp_gpa, &rsdp_bytes)
+            .map_err(Error::WriteAcpi)?;
+
+        // Write XSDT + tables to guest memory.
+        gm.write_at(acpi_tables_gpa, &tables_bytes)
+            .map_err(Error::WriteAcpi)?;
+
+        // Write the RSDP physical address into boot_params.acpi_rsdp_addr
+        // so the kernel can find the ACPI tables.
+        let acpi_rsdp_addr_offset =
+            std::mem::offset_of!(loader_defs::linux::boot_params, acpi_rsdp_addr);
+        gm.write_at(
+            zero_page_gpa + acpi_rsdp_addr_offset as u64,
+            IntoBytes::as_bytes(&acpi_rsdp_gpa),
+        )
+        .map_err(Error::WriteAcpi)?;
+
+        tracing::info!(
+            acpi_rsdp_gpa,
+            acpi_tables_gpa,
+            "wrote ACPI tables to guest memory for native IGVM"
+        );
     }
 
     // Apply page table relocations after all headers have been scanned.
