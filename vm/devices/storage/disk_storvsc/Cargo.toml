@@ -1,0 +1,31 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "disk_storvsc"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+disk_backend.workspace = true
+storvsc_driver.workspace = true
+storvsp_protocol.workspace = true
+
+igvm_defs.workspace = true
+scsi_buffers.workspace = true
+guestmem.workspace = true
+scsi_defs.workspace = true
+vmbus_user_channel.workspace = true
+
+event-listener.workspace = true
+inspect.workspace = true
+static_assertions.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+
+[lints]
+workspace = true
