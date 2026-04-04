@@ -448,12 +448,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
         ))
     }
 
-    /// Build ACPI tables based on the supplied closure that adds devices to the DSDT.
-    ///
-    /// The RDSP is assumed to take one whole page.
-    ///
-    /// Returns tables that should be loaded at the supplied gpa.
-    pub fn build_acpi_tables<F>(&self, gpa: u64, add_devices_to_dsdt: F) -> BuiltAcpiTables
+    /// Build a DSDT with sleep states (S0/S5), chipset devices added via the
+    /// closure, and ACPI processor devices for each VP.
+    pub fn build_dsdt<F>(&self, add_devices_to_dsdt: F) -> Vec<u8>
     where
         F: FnOnce(&MemoryLayout, &mut dsdt::Dsdt),
     {
@@ -488,7 +485,20 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             dsdt_data.add_object(&proc);
         }
 
-        self.build_acpi_tables_inner(gpa, &dsdt_data.to_bytes())
+        dsdt_data.to_bytes()
+    }
+
+    /// Build ACPI tables based on the supplied closure that adds devices to the DSDT.
+    ///
+    /// The RDSP is assumed to take one whole page.
+    ///
+    /// Returns tables that should be loaded at the supplied gpa.
+    pub fn build_acpi_tables<F>(&self, gpa: u64, add_devices_to_dsdt: F) -> BuiltAcpiTables
+    where
+        F: FnOnce(&MemoryLayout, &mut dsdt::Dsdt),
+    {
+        let dsdt_bytes = self.build_dsdt(add_devices_to_dsdt);
+        self.build_acpi_tables_inner(gpa, &dsdt_bytes)
     }
 
     /// Build ACPI tables based on the supplied custom DSDT.
