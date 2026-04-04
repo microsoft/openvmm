@@ -11,6 +11,7 @@ test = []
 
 [dependencies]
 scsi_buffers.workspace = true
+scsi_defs.workspace = true
 
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
@@ -20,11 +21,16 @@ storvsp_protocol.workspace = true
 
 guestmem.workspace = true
 inspect.workspace = true
+mesh.workspace = true
 mesh_channel.workspace = true
 pal_async.workspace = true
 task_control.workspace = true
+user_driver.workspace = true
 vmcore.workspace = true
 
+anyhow.workspace = true
+cvm_tracing.workspace = true
+event-listener.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 slab.workspace = true
@@ -35,7 +41,6 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 pal_async.workspace = true
-scsi_defs.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

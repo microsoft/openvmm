@@ -180,6 +180,9 @@ fn build_kernel_command_line(
         "rdinit=/underhill-init",
         // Default to user-mode NVMe driver.
         "OPENHCL_NVME_VFIO=1",
+        // TODO(juantian): TEMP -- enable usermode storvsc to validate via CI pipeline.
+        // MUST be removed before merge. See PR description.
+        "OPENHCL_STORVSC_USERMODE=1",
         // The next three items reduce the memory overhead of the storvsc driver.
         // Since it is only used for DVD, performance is not critical.
         "hv_storvsc.storvsc_vcpus_per_sub_channel=2048",
