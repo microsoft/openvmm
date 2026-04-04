@@ -4,6 +4,7 @@
 //! Implements GSI routing management for KVM VMs.
 
 use crate::KvmPartitionInner;
+use anyhow::Context;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::os::unix::prelude::*;
@@ -11,6 +12,8 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use virt::irqfd::IrqFd;
+use virt::irqfd::IrqFdRoute;
 
 const NUM_GSIS: usize = 2048;
 
@@ -80,7 +83,6 @@ impl GsiRouting {
 
 impl KvmPartitionInner {
     /// Reserves a new route, optionally with an associated irqfd event.
-    #[expect(dead_code)]
     pub(crate) fn new_route(self: &Arc<Self>, irqfd_event: Option<Event>) -> Option<GsiRoute> {
         let gsi = self.gsi_routing.lock().alloc()?;
         Some(GsiRoute {
@@ -139,7 +141,6 @@ impl GsiRoute {
     }
 
     /// Enables the route and associated irqfd.
-    #[expect(dead_code)]
     pub fn enable(&self, entry: kvm::RoutingEntry) {
         let partition = self.set_entry(Some(entry));
         let _lock = self.enable_mutex.lock();
@@ -201,5 +202,53 @@ impl GsiRoute {
                     .expect("interrupt delivery failure");
             }
         }
+    }
+}
+
+/// irqfd routing interface for a KVM partition.
+///
+/// Wraps the existing [`GsiRoute`] infrastructure to implement the
+/// [`IrqFd`]/[`IrqFdRoute`] traits.
+pub struct KvmIrqFdState {
+    partition: Arc<KvmPartitionInner>,
+}
+
+impl KvmIrqFdState {
+    pub fn new(partition: Arc<KvmPartitionInner>) -> Self {
+        Self { partition }
+    }
+}
+
+impl IrqFd for KvmIrqFdState {
+    fn new_irqfd_route(&self, event: &Event) -> anyhow::Result<Box<dyn IrqFdRoute>> {
+        let route = self
+            .partition
+            .new_route(Some(event.clone()))
+            .context("no free GSIs available for irqfd")?;
+        Ok(Box::new(KvmIrqFdRoute { route }))
+    }
+}
+
+/// A registered irqfd route backed by a KVM [`GsiRoute`].
+///
+/// Cleanup (disable irqfd, clear route, free GSI) is handled by
+/// [`GsiRoute::drop`].
+struct KvmIrqFdRoute {
+    route: GsiRoute,
+}
+
+impl IrqFdRoute for KvmIrqFdRoute {
+    fn set_msi(&self, address: u64, data: u32) -> anyhow::Result<()> {
+        self.route.enable(kvm::RoutingEntry::Msi {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            data,
+        });
+        Ok(())
+    }
+
+    fn clear_msi(&self) -> anyhow::Result<()> {
+        self.route.disable();
+        Ok(())
     }
 }

@@ -97,6 +97,9 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     gsi_routing: Mutex<gsi::GsiRouting>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    irqfd_state: std::sync::OnceLock<Arc<dyn virt::irqfd::IrqFd>>,
     caps: virt::PartitionCapabilities,
 
     // This is used for debugging via Inspect
