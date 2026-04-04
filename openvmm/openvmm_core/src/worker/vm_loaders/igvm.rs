@@ -542,14 +542,16 @@ fn build_device_tree(
     Ok(buf)
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub struct AcpiTables<'a> {
     pub madt: &'a [u8],
     pub srat: &'a [u8],
     pub slit: Option<&'a [u8]>,
     pub pptt: Option<&'a [u8]>,
-    pub fadt: &'a [u8],
+    pub fadt: acpi_spec::fadt::Fadt,
     pub dsdt: Option<&'a [u8]>,
+    pub oem_info: acpi::builder::OemInfo,
 }
 
 /// The parameters to the [`load_igvm`] function.

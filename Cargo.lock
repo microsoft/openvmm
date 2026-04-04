@@ -5198,6 +5198,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "acpi",
+ "acpi_spec",
  "anyhow",
  "async-trait",
  "build_rs_guest_arch",

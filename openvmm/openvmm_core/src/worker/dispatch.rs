@@ -86,7 +86,6 @@ use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
-use zerocopy::IntoBytes;
 use std::fs::File;
 use std::sync::Arc;
 use std::thread;
@@ -2449,7 +2448,7 @@ impl LoadedVmInner {
                 // Build a DSDT for native IGVM guests using the
                 // actual chipset config and PCI device assignments.
                 #[cfg(guest_arch = "x86_64")]
-                let _dsdt_bytes = Some(acpi_builder.build_dsdt(|mem_layout, dsdt| {
+                let dsdt = acpi_builder.build_dsdt(|mem_layout, dsdt| {
                     if mem_layout.mmio().len() >= 2 {
                         add_devices_to_dsdt_x64(
                             mem_layout,
@@ -2461,9 +2460,11 @@ impl LoadedVmInner {
                             &self.pci_legacy_interrupts,
                         );
                     }
-                }));
+                });
+                #[cfg(guest_arch = "x86_64")]
+                let dsdt_bytes = Some(dsdt);
                 #[cfg(guest_arch = "aarch64")]
-                let _dsdt_bytes = Some(acpi_builder.build_dsdt(|mem_layout, dsdt| {
+                let dsdt_bytes = Some(acpi_builder.build_dsdt(|mem_layout, dsdt| {
                     add_devices_to_dsdt_arm64(
                         mem_layout,
                         dsdt,
@@ -2475,7 +2476,7 @@ impl LoadedVmInner {
                 // Build the FADT from the ACPI builder which knows the
                 // PM register layout. x_dsdt is left as 0; igvm.rs
                 // fills it in at assembly time once the DSDT GPA is known.
-                let _fadt = acpi_builder.build_fadt().as_bytes();
+                let fadt = acpi_builder.build_fadt();
 
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
@@ -2488,6 +2489,9 @@ impl LoadedVmInner {
                         srat: &srat,
                         slit: None,
                         pptt: None,
+                        fadt,
+                        dsdt: dsdt_bytes.as_deref(),
+                        oem_info: vmm_core::acpi_builder::OEM_INFO,
                     },
                     vtl2_base_address,
                     vtl2_framebuffer_gpa_base: self.vtl2_framebuffer_gpa_base,
