@@ -623,9 +623,7 @@ async fn test_link_speed_default(driver: DefaultDriver) {
     );
     let device = EmulatedDevice::new(device, msi_conn, mem.dma_client());
 
-    let mana_device = ManaDevice::new(&driver, device, 1, 1, None)
-        .await
-        .unwrap();
+    let mana_device = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
 
     // Verify the link speed as seen in the device config populated by
     // query_dev_config() during ManaDevice::new().
