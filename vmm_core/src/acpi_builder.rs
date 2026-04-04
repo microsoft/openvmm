@@ -6,6 +6,7 @@
 // TODO: continue to remove these hardcoded deps
 use acpi::dsdt;
 use acpi::ssdt::Ssdt;
+use acpi_spec::fadt::{AddressSpaceId, AddressWidth, GenericAddress};
 use acpi_spec::madt::InterruptPolarity;
 use acpi_spec::madt::InterruptTriggerMode;
 use cache_topology::CacheTopology;
@@ -504,94 +505,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         let dsdt = b.append_raw(dsdt);
 
-        if let AcpiArchConfig::X86 {
-            pm_base, acpi_irq, ..
-        } = self.arch
-        {
-            use acpi_spec::fadt::AddressSpaceId;
-            use acpi_spec::fadt::AddressWidth;
-            use acpi_spec::fadt::GenericAddress;
-
-            b.append(&acpi::builder::Table::new(
-                6,
-                None,
-                &acpi_spec::fadt::Fadt {
-                    flags: acpi_spec::fadt::FADT_WBINVD
-                        | acpi_spec::fadt::FADT_PROC_C1
-                        | acpi_spec::fadt::FADT_PWR_BUTTON
-                        | acpi_spec::fadt::FADT_SLP_BUTTON
-                        | acpi_spec::fadt::FADT_RTC_S4
-                        | acpi_spec::fadt::FADT_TMR_VAL_EXT
-                        | acpi_spec::fadt::FADT_RESET_REG_SUP
-                        | acpi_spec::fadt::FADT_USE_PLATFORM_CLOCK,
-                    x_dsdt: dsdt,
-                    sci_int: acpi_irq as u16,
-                    p_lvl2_lat: 101,  // disable C2
-                    p_lvl3_lat: 1001, // disable C3
-                    pm1_evt_len: 4,
-                    x_pm1a_evt_blk: GenericAddress {
-                        addr_space_id: AddressSpaceId::SystemIo,
-                        register_bit_width: 32,
-                        register_bit_offset: 0,
-                        access_size: AddressWidth::Word,
-                        address: (pm_base + chipset::pm::DynReg::STATUS.0 as u16).into(),
-                    },
-                    pm1_cnt_len: 2,
-                    x_pm1a_cnt_blk: GenericAddress {
-                        addr_space_id: AddressSpaceId::SystemIo,
-                        register_bit_width: 16,
-                        register_bit_offset: 0,
-                        access_size: AddressWidth::Word,
-                        address: (pm_base + chipset::pm::DynReg::CONTROL.0 as u16).into(),
-                    },
-                    gpe0_blk_len: 4,
-                    x_gpe0_blk: GenericAddress {
-                        addr_space_id: AddressSpaceId::SystemIo,
-                        register_bit_width: 32,
-                        register_bit_offset: 0,
-                        access_size: AddressWidth::Word,
-                        address: (pm_base + chipset::pm::DynReg::GEN_PURPOSE_STATUS.0 as u16)
-                            .into(),
-                    },
-                    reset_reg: GenericAddress {
-                        addr_space_id: AddressSpaceId::SystemIo,
-                        register_bit_width: 8,
-                        register_bit_offset: 0,
-                        access_size: AddressWidth::Byte,
-                        address: (pm_base + chipset::pm::DynReg::RESET.0 as u16).into(),
-                    },
-                    reset_value: chipset::pm::RESET_VALUE,
-                    pm_tmr_len: 4,
-                    x_pm_tmr_blk: GenericAddress {
-                        addr_space_id: AddressSpaceId::SystemIo,
-                        register_bit_width: 32,
-                        register_bit_offset: 0,
-                        access_size: AddressWidth::Dword,
-                        address: (pm_base + chipset::pm::DynReg::TIMER.0 as u16).into(),
-                    },
-                    ..Default::default()
-                },
-            ));
-        }
-
-        if let AcpiArchConfig::Aarch64 {
-            hypervisor_vendor_identity,
-            ..
-        } = self.arch
-        {
-            b.append(&acpi::builder::Table::new(
-                6,
-                None,
-                &acpi_spec::fadt::Fadt {
-                    flags: acpi_spec::fadt::FADT_HW_REDUCED_ACPI,
-                    arm_boot_arch: 0x0003, // PSCI_COMPLIANT | PSCI_USE_HVC
-                    minor_version: 3,
-                    hypervisor_vendor_identity,
-                    x_dsdt: dsdt,
-                    ..Default::default()
-                },
-            ));
-        }
+        let mut fadt = self.build_fadt();
+        fadt.x_dsdt = dsdt;
+        b.append(&acpi::builder::Table::new(6, None, &fadt));
 
         if let AcpiArchConfig::X86 { with_psp: true, .. } = self.arch {
             use acpi_spec::aspt;
@@ -695,6 +611,81 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// Panics if `self.cache_topology` is not set.
     pub fn build_pptt(&self) -> Vec<u8> {
         self.with_pptt(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Build a FADT struct with PM registers and power management support.
+    /// The `x_dsdt` field is left as 0 — the caller must fill it in once
+    /// the DSDT GPA is known.
+    pub fn build_fadt(&self) -> acpi_spec::fadt::Fadt {
+        match self.arch {
+            AcpiArchConfig::X86 {
+                pm_base, acpi_irq, ..
+            } => acpi_spec::fadt::Fadt {
+                flags: acpi_spec::fadt::FADT_WBINVD
+                    | acpi_spec::fadt::FADT_PROC_C1
+                    | acpi_spec::fadt::FADT_PWR_BUTTON
+                    | acpi_spec::fadt::FADT_SLP_BUTTON
+                    | acpi_spec::fadt::FADT_RTC_S4
+                    | acpi_spec::fadt::FADT_TMR_VAL_EXT
+                    | acpi_spec::fadt::FADT_RESET_REG_SUP
+                    | acpi_spec::fadt::FADT_USE_PLATFORM_CLOCK,
+                sci_int: acpi_irq as u16,
+                p_lvl2_lat: 101,  // disable C2
+                p_lvl3_lat: 1001, // disable C3
+                pm1_evt_len: 4,
+                x_pm1a_evt_blk: GenericAddress {
+                    addr_space_id: AddressSpaceId::SystemIo,
+                    register_bit_width: 32,
+                    register_bit_offset: 0,
+                    access_size: AddressWidth::Word,
+                    address: (pm_base + chipset::pm::DynReg::STATUS.0 as u16).into(),
+                },
+                pm1_cnt_len: 2,
+                x_pm1a_cnt_blk: GenericAddress {
+                    addr_space_id: AddressSpaceId::SystemIo,
+                    register_bit_width: 16,
+                    register_bit_offset: 0,
+                    access_size: AddressWidth::Word,
+                    address: (pm_base + chipset::pm::DynReg::CONTROL.0 as u16).into(),
+                },
+                gpe0_blk_len: 4,
+                x_gpe0_blk: GenericAddress {
+                    addr_space_id: AddressSpaceId::SystemIo,
+                    register_bit_width: 32,
+                    register_bit_offset: 0,
+                    access_size: AddressWidth::Word,
+                    address: (pm_base + chipset::pm::DynReg::GEN_PURPOSE_STATUS.0 as u16).into(),
+                },
+                reset_reg: GenericAddress {
+                    addr_space_id: AddressSpaceId::SystemIo,
+                    register_bit_width: 8,
+                    register_bit_offset: 0,
+                    access_size: AddressWidth::Byte,
+                    address: (pm_base + chipset::pm::DynReg::RESET.0 as u16).into(),
+                },
+                reset_value: chipset::pm::RESET_VALUE,
+                pm_tmr_len: 4,
+                x_pm_tmr_blk: GenericAddress {
+                    addr_space_id: AddressSpaceId::SystemIo,
+                    register_bit_width: 32,
+                    register_bit_offset: 0,
+                    access_size: AddressWidth::Dword,
+                    address: (pm_base + chipset::pm::DynReg::TIMER.0 as u16).into(),
+                },
+                ..Default::default()
+            },
+            AcpiArchConfig::Aarch64 {
+                hypervisor_vendor_identity,
+                ..
+            } => acpi_spec::fadt::Fadt {
+                flags: acpi_spec::fadt::FADT_HW_REDUCED_ACPI,
+                arm_boot_arch: 0x0003, // PSCI_COMPLIANT | PSCI_USE_HVC
+                minor_version: 3,
+                hypervisor_vendor_identity,
+                x_dsdt: 0,
+                ..Default::default()
+            },
+        }
     }
 
     fn with_gtdt<R>(&self, f: impl FnOnce(&acpi::builder::Table<'_>) -> R) -> R {
