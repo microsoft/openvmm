@@ -29,6 +29,7 @@ vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true
+acpi_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
 ide_resources.workspace = true
