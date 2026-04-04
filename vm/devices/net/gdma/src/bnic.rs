@@ -153,7 +153,7 @@ impl BufferAccess for GuestBuffers {
 #[derive(Default)]
 pub struct BnicConfig {
     /// Adapter link speed in megabits per second.
-    /// When 0, the guest driver applies a 200 Gbps fallback.
+    /// When 0, the host-side MANA stack reports a 200 Gbps fallback value.
     pub adapter_link_speed_mbps: u32,
 }
 
