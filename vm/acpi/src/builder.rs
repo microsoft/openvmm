@@ -120,6 +120,12 @@ impl Builder {
         addr
     }
 
+    /// Register an external ACPI table that already exists at a known
+    /// GPA. The address is added to the XSDT but no data is copied.
+    pub fn register_external_table(&mut self, gpa: u64) {
+        self.tables.push(gpa);
+    }
+
     pub fn append_raw(&mut self, data: &[u8]) -> u64 {
         let offset = self.v.len() as u64;
         let signature = &data[0..4];
