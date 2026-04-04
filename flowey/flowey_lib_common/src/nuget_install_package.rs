@@ -203,7 +203,15 @@ r#"<Project Sdk="Microsoft.NET.Sdk">
                     if let Some(json) = &feed_endpoints_json {
                         cmd = cmd.env("VSS_NUGET_EXTERNAL_FEED_ENDPOINTS", json);
                     }
-                    cmd.run()?;
+                    if let Err(e) = cmd.run() {
+                        if matches!(rt.backend(), FlowBackend::Local) {
+                            log::error!("HINT: NuGet restore failed. You may need to install \
+                                the Azure Artifacts Credential Provider and/or log in with \
+                                `az login`. See the repo's getting started guide for setup \
+                                instructions.");
+                        }
+                        return Err(e.into());
+                    }
 
                     // Post-process: flatten from the dotnet restore layout
                     // ({id_lower}/{version}/) into the expected layout
