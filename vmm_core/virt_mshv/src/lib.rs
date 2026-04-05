@@ -8,6 +8,7 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
+pub mod irqfd;
 mod vm_state;
 mod vp_state;
 
@@ -258,13 +259,16 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         .map_err(Error::Capabilities)?;
 
         // Attach all the resources created above to a Partition object.
+        let vmfd = Arc::new(self.vmfd);
+        let irqfd_state = Arc::new(irqfd::MshvIrqFdState::new(vmfd.clone()));
         let partition = MshvPartition {
             inner: Arc::new(MshvPartitionInner {
-                vmfd: self.vmfd,
+                vmfd,
                 memory: Default::default(),
                 gm: config.guest_memory.clone(),
                 vps: self.vps,
                 irq_routes: Default::default(),
+                irqfd_state,
                 caps,
             }),
         };
@@ -291,11 +295,12 @@ pub struct MshvPartition {
 
 #[derive(Debug)]
 struct MshvPartitionInner {
-    vmfd: VmFd,
+    vmfd: Arc<VmFd>,
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
+    irqfd_state: Arc<irqfd::MshvIrqFdState>,
     caps: virt::PartitionCapabilities,
 }
 
@@ -342,6 +347,10 @@ impl virt::Partition for MshvPartition {
 
     fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
+    }
+
+    fn irqfd(self: &Arc<Self>) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(self.inner.irqfd_state.clone())
     }
 
     fn request_yield(&self, vp_index: VpIndex) {

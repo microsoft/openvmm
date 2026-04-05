@@ -12,6 +12,7 @@ use crate::io::CpuIo;
 use crate::irqcon::ControlGic;
 use crate::irqcon::IoApicRouting;
 use crate::irqcon::MsiRequest;
+use crate::irqfd::IrqFd;
 use crate::x86::DebugState;
 use crate::x86::HardwareBreakpoint;
 use guestmem::DoorbellRegistration;
@@ -294,6 +295,17 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// Not all partitions support this.
     fn as_signal_msi(self: &Arc<Self>, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         let _ = vtl;
+        None
+    }
+
+    /// Returns an irqfd routing interface for this partition.
+    ///
+    /// irqfd allows the kernel to inject MSIs directly into the guest when an
+    /// eventfd is signaled, without a userspace transition. This is used for
+    /// device passthrough with VFIO.
+    ///
+    /// Not all partitions support this.
+    fn irqfd(self: &Arc<Self>) -> Option<Arc<dyn IrqFd>> {
         None
     }
 

@@ -431,6 +431,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                 })
                 .collect(),
             gsi_routing: Mutex::new(gsi_routing),
+            irqfd_state: std::sync::OnceLock::new(),
             caps,
             cpuid,
         };
@@ -438,6 +439,16 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         let partition = KvmPartition {
             inner: Arc::new(partition),
         };
+
+        // Initialize irqfd state now that we have the Arc.
+        partition
+            .inner
+            .irqfd_state
+            .set(Arc::new(crate::gsi::KvmIrqFdState::new(
+                partition.inner.clone(),
+            )))
+            .ok()
+            .expect("irqfd_state already initialized");
 
         let vps = self
             .config
@@ -510,6 +521,10 @@ impl Partition for KvmPartition {
 
     fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
+    }
+
+    fn irqfd(self: &Arc<Self>) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        self.inner.irqfd_state.get().cloned()
     }
 
     fn caps(&self) -> &virt::PartitionCapabilities {
