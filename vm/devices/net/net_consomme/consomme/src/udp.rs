@@ -450,12 +450,20 @@ impl<T: Client> Access<'_, T> {
             dns_query: udp.payload(),
         };
 
-        // Submit the DNS query with addressing information
-        // The response will be queued and sent later in poll_udp
-        dns.submit_udp_query(&request).map_err(|e| {
+        // Submit the DNS query with addressing information.
+        // The response will be queued and sent later in poll_udp, unless the
+        // resolver is rate-limited, in which case it returns a SERVFAIL to
+        // emit immediately.
+        let immediate_response = dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;
+
+        if let Some(response) = immediate_response {
+            if let Err(e) = self.send_dns_response(&response) {
+                tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS SERVFAIL response");
+            }
+        }
 
         Ok(true)
     }
