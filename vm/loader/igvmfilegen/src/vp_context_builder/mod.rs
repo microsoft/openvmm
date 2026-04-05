@@ -3,6 +3,7 @@
 
 //! Defines the common VP context builder traits and methods for different isolation architectures.
 
+pub mod native;
 pub mod snp;
 pub mod tdx;
 pub mod vbs;

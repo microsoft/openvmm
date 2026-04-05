@@ -106,6 +106,7 @@ pub struct IgvmLoader<R: VbsRegister + GuestArch> {
     isolation_type: LoaderIsolationType,
     paravisor_present: bool,
     imported_regions_config_page: Option<u64>,
+    use_native_vp_context: bool,
 }
 
 pub struct IgvmVtlLoader<'a, R: VbsRegister + GuestArch> {
@@ -181,6 +182,9 @@ pub trait IgvmLoaderRegister: VbsRegister {
 
     /// The IGVM file revision to use for the built igvm file.
     fn igvm_revision() -> IgvmRevision;
+
+    /// Create a native VP context builder, if supported for this architecture.
+    fn create_native_vp_context() -> Option<Box<dyn VpContextBuilder<Register = Self>>>;
 }
 
 impl IgvmLoaderRegister for X86Register {
@@ -304,6 +308,12 @@ impl IgvmLoaderRegister for X86Register {
         // understand the V2 format.
         IgvmRevision::V1
     }
+
+    fn create_native_vp_context() -> Option<Box<dyn VpContextBuilder<Register = Self>>> {
+        Some(Box::new(
+            crate::vp_context_builder::native::NativeVpContext::new(),
+        ))
+    }
 }
 
 impl IgvmLoaderRegister for Aarch64Register {
@@ -335,6 +345,10 @@ impl IgvmLoaderRegister for Aarch64Register {
             arch: igvm::Arch::AArch64,
             page_size: 4096,
         }
+    }
+
+    fn create_native_vp_context() -> Option<Box<dyn VpContextBuilder<Register = Self>>> {
+        None
     }
 }
 
@@ -490,7 +504,11 @@ pub struct IgvmOutput {
 }
 
 impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
-    pub fn new(with_paravisor: bool, isolation_type: LoaderIsolationType) -> Self {
+    pub fn new(
+        with_paravisor: bool,
+        isolation_type: LoaderIsolationType,
+        use_native_vp_context: bool,
+    ) -> Self {
         let vp_context_builder: Option<Box<dyn VpContextBuilder<Register = R>>>;
         let platform_header;
         let max_vtl = if with_paravisor { Vtl::Vtl2 } else { Vtl::Vtl0 };
@@ -498,14 +516,32 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         match isolation_type {
             LoaderIsolationType::None | LoaderIsolationType::Vbs { .. } => {
-                vp_context_builder = Some(Box::new(VbsVpContext::<R>::new(max_vtl)));
+                vp_context_builder = if use_native_vp_context {
+                    Some(
+                        R::create_native_vp_context()
+                            .expect("native VP context not supported for this architecture"),
+                    )
+                } else {
+                    Some(Box::new(VbsVpContext::<R>::new(max_vtl)))
+                };
 
-                // Add VBS platform header
+                let (platform_type, platform_version) = if use_native_vp_context {
+                    (
+                        IgvmPlatformType::NATIVE,
+                        igvm_defs::IGVM_NATIVE_PLATFORM_VERSION,
+                    )
+                } else {
+                    (
+                        IgvmPlatformType::VSM_ISOLATION,
+                        igvm_defs::IGVM_VSM_ISOLATION_PLATFORM_VERSION,
+                    )
+                };
+
                 let info = IGVM_VHS_SUPPORTED_PLATFORM {
                     compatibility_mask: DEFAULT_COMPATIBILITY_MASK,
                     highest_vtl: max_vtl as u8,
-                    platform_type: IgvmPlatformType::VSM_ISOLATION,
-                    platform_version: igvm_defs::IGVM_VSM_ISOLATION_PLATFORM_VERSION,
+                    platform_type,
+                    platform_version,
                     shared_gpa_boundary: 0,
                 };
 
@@ -536,6 +572,7 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
             isolation_type,
             paravisor_present: with_paravisor,
             imported_regions_config_page: None,
+            use_native_vp_context,
         }
     }
 
@@ -699,9 +736,18 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> IgvmLoader<R> {
 
         map_file.emit_tracing();
 
+        let revision = if self.use_native_vp_context {
+            IgvmRevision::V2 {
+                arch: igvm::Arch::X64,
+                page_size: 4096,
+            }
+        } else {
+            R::igvm_revision()
+        };
+
         // Create an IGVM file with the loader's internal state.
         let igvm_file = IgvmFile::new(
-            R::igvm_revision(),
+            revision,
             vec![self.platform_header],
             self.initialization_headers,
             self.directives,
@@ -1267,6 +1313,7 @@ mod tests {
                 policy: SnpPolicy::from((0x1 << 17) | (0x1 << 16) | (0x1f)),
                 injection_type: InjectionType::Restricted,
             },
+            false,
         );
         let data = vec![0, 5];
         loader
@@ -1305,6 +1352,7 @@ mod tests {
                     .with_debug_allowed(0u8)
                     .with_sept_ve_disable(0u8),
             },
+            false,
         );
         let data = vec![0, 5];
         loader
@@ -1340,6 +1388,7 @@ mod tests {
             LoaderIsolationType::Vbs {
                 enable_debug: false,
             },
+            false,
         );
         {
             let mut loader = loader.loader();
@@ -1372,7 +1421,7 @@ mod tests {
 
     #[test]
     fn test_accepted_regions() {
-        let mut loader = IgvmLoader::<X86Register>::new(true, LoaderIsolationType::None);
+        let mut loader = IgvmLoader::<X86Register>::new(true, LoaderIsolationType::None, false);
 
         let data = vec![0, 5];
         loader

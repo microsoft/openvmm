@@ -29,12 +29,14 @@ vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true
+acpi_spec.workspace = true
 floppy_resources.workspace = true
 hvdef.workspace = true
 ide_resources.workspace = true
 igvm.workspace = true
 igvm_defs.workspace = true
 loader.workspace = true
+loader_defs.workspace = true
 virt.workspace = true
 vm_loader.workspace = true
 vmgs.workspace = true

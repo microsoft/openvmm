@@ -150,6 +150,7 @@ use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
+use zerocopy::IntoBytes;
 
 const PM_BASE: u16 = 0x400;
 const SYSTEM_IRQ_ACPI: u32 = 9;
@@ -2445,6 +2446,40 @@ impl LoadedVmInner {
                 let mut entropy = [0u8; ENTROPY_SIZE];
                 getrandom::fill(&mut entropy).unwrap();
 
+                // Build a DSDT and FADT for native IGVM guests using the
+                // actual chipset config and PCI device assignments.
+                // Build a DSDT for native IGVM guests using the
+                // actual chipset config and PCI device assignments.
+                #[cfg(guest_arch = "x86_64")]
+                let dsdt = acpi_builder.build_dsdt(|mem_layout, dsdt| {
+                    if mem_layout.mmio().len() >= 2 {
+                        add_devices_to_dsdt_x64(
+                            mem_layout,
+                            dsdt,
+                            &self.chipset_cfg,
+                            true, // serial_uarts
+                            self.virtio_mmio_count,
+                            self.virtio_mmio_irq,
+                            &self.pci_legacy_interrupts,
+                        );
+                    }
+                });
+                let dsdt_bytes = Some(dsdt.as_bytes());
+                #[cfg(guest_arch = "aarch64")]
+                let dsdt_bytes = Some(acpi_builder.build_dsdt(|mem_layout, dsdt| {
+                    add_devices_to_dsdt_arm64(
+                        mem_layout,
+                        dsdt,
+                        true, // enable_serial
+                        self.hypervisor_cfg.with_hv,
+                    );
+                }));
+
+                // Build the FADT from the ACPI builder which knows the
+                // PM register layout. x_dsdt is left as 0; igvm.rs
+                // fills it in at assembly time once the DSDT GPA is known.
+                let fadt = acpi_builder.build_fadt();
+
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
                     gm: &self.gm,
@@ -2456,6 +2491,9 @@ impl LoadedVmInner {
                         srat: &srat,
                         slit: None,
                         pptt: None,
+                        fadt,
+                        dsdt: dsdt_bytes,
+                        oem_info: vmm_core::acpi_builder::OEM_INFO,
                     },
                     vtl2_base_address,
                     vtl2_framebuffer_gpa_base: self.vtl2_framebuffer_gpa_base,

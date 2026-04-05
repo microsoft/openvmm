@@ -38,12 +38,14 @@ use loader::linux::InitrdConfig;
 use loader::paravisor::CommandLineType;
 use loader::paravisor::Vtl0Config;
 use loader::paravisor::Vtl0Linux;
+use std::ffi::CString;
 use std::io::Seek;
 use std::io::Write;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 #[derive(Parser)]
@@ -207,7 +209,12 @@ fn create_igvm_file<R: IgvmfilegenRegister + GuestArch + 'static>(
         // Max VTL of 2 implies paravisor.
         let with_paravisor = config.max_vtl == 2;
 
-        let mut loader = IgvmLoader::<R>::new(with_paravisor, loader_isolation_type);
+        // Use native VP context for Linux direct boot without isolation.
+        let use_native_vp_context = matches!(config.image, Image::Linux(_))
+            && matches!(loader_isolation_type, LoaderIsolationType::None);
+
+        let mut loader =
+            IgvmLoader::<R>::new(with_paravisor, loader_isolation_type, use_native_vp_context);
 
         load_image(&mut loader.loader(), &config.image, &resources)?;
 
@@ -413,6 +420,14 @@ trait IgvmfilegenRegister: IgvmLoaderRegister + 'static {
         F: std::io::Read + Seek,
         Self: GuestArch;
 
+    fn load_linux_direct_boot_config(
+        importer: &mut impl ImageLoad<Self>,
+        load_info: &loader::linux::LoadInfo,
+        command_line: &CString,
+    ) -> anyhow::Result<()>
+    where
+        Self: GuestArch;
+
     fn load_openhcl<F>(
         importer: &mut dyn ImageLoad<Self>,
         kernel_image: &mut F,
@@ -453,6 +468,160 @@ impl IgvmfilegenRegister for X86Register {
             kernel_minimum_start_address,
             initrd,
         )
+    }
+
+    fn load_linux_direct_boot_config(
+        importer: &mut impl ImageLoad<Self>,
+        load_info: &loader::linux::LoadInfo,
+        command_line: &CString,
+    ) -> anyhow::Result<()> {
+        use loader::importer::BootPageAcceptance;
+        use loader::importer::IgvmParameterType;
+
+        // GPA layout for ancillary boot data (page numbers). These are
+        // placed in low memory below where the kernel is loaded (kernel
+        // loads at GPA 0x100_0000 / 16MB by default for ELF kernels).
+        const ZERO_PAGE_BASE: u64 = 0x1; // GPA 0x1000
+        const GDT_BASE: u64 = 0x2; // GPA 0x2000
+        const PAGE_TABLE_BASE: u64 = 0x3; // GPA 0x3000
+        // Parameter areas for VMM-provided data.
+        const CMDLINE_BASE: u64 = 0xa; // GPA 0xa000
+        const CMDLINE_PAGES: u32 = 1;
+        const MEMORY_MAP_BASE: u64 = 0xb; // GPA 0xb000
+        const MEMORY_MAP_PAGES: u32 = 4;
+        const MADT_BASE: u64 = 0xf; // GPA 0xf000
+        const MADT_PAGES: u32 = 1;
+        const SRAT_BASE: u64 = 0x10; // GPA 0x10000
+        const SRAT_PAGES: u32 = 2;
+        const SLIT_BASE: u64 = 0x12; // GPA 0x12000
+        const SLIT_PAGES: u32 = 1;
+        const PPTT_BASE: u64 = 0x13; // GPA 0x13000
+        const PPTT_PAGES: u32 = 1;
+
+        // Import GDT.
+        loader::common::import_default_gdt(importer, GDT_BASE).context("importing GDT")?;
+
+        // Build and import identity-mapped page tables (4GB).
+        let page_table_address = PAGE_TABLE_BASE * hvdef::HV_PAGE_SIZE;
+        let mut page_table_work_buffer: Vec<page_table::x64::PageTable> =
+            vec![page_table::x64::PageTable::new_zeroed(); page_table::x64::PAGE_TABLE_MAX_COUNT];
+        let mut page_table: Vec<u8> = vec![0; page_table::x64::PAGE_TABLE_MAX_BYTES];
+        let page_table_builder = page_table::x64::IdentityMapBuilder::new(
+            page_table_address,
+            page_table::IdentityMapSize::Size4Gb,
+            page_table_work_buffer.as_mut_slice(),
+            page_table.as_mut_slice(),
+        )
+        .context("building page tables")?;
+        let page_table_data = page_table_builder.build();
+        let page_table_pages = page_table_data.len() as u64 / hvdef::HV_PAGE_SIZE;
+        importer
+            .import_pages(
+                PAGE_TABLE_BASE,
+                page_table_pages,
+                "linux-pagetables",
+                BootPageAcceptance::Exclusive,
+                page_table_data,
+            )
+            .context("importing page tables")?;
+
+        // Build a partial zero page with static kernel boot info.
+        // The e820 map is left empty — the VMM provides memory layout
+        // via the MemoryMap IGVM parameter.
+        let cmdline_address = CMDLINE_BASE * hvdef::HV_PAGE_SIZE;
+        let zero_page = loader_defs::linux::boot_params {
+            hdr: loader_defs::linux::setup_header {
+                type_of_loader: 0xff,
+                boot_flag: 0xaa55.into(),
+                header: 0x53726448.into(),
+                cmd_line_ptr: (cmdline_address as u32).into(),
+                cmdline_size: (command_line.as_bytes().len() as u32).into(),
+                ramdisk_image: (load_info.initrd.as_ref().map(|i| i.gpa).unwrap_or(0) as u32)
+                    .into(),
+                ramdisk_size: (load_info.initrd.as_ref().map(|i| i.size).unwrap_or(0) as u32)
+                    .into(),
+                kernel_alignment: 0x100000.into(),
+                ..FromZeros::new_zeroed()
+            },
+            ..FromZeros::new_zeroed()
+        };
+        importer
+            .import_pages(
+                ZERO_PAGE_BASE,
+                1,
+                "linux-zeropage",
+                BootPageAcceptance::Exclusive,
+                zero_page.as_bytes(),
+            )
+            .context("importing zero page")?;
+
+        // Create IGVM parameter areas for VMM-provided data.
+        let cmdline_area = importer
+            .create_parameter_area(CMDLINE_BASE, CMDLINE_PAGES, "linux-cmdline")
+            .context("creating cmdline parameter area")?;
+        importer
+            .import_parameter(cmdline_area, 0, IgvmParameterType::CommandLine)
+            .context("importing cmdline parameter")?;
+
+        let memory_map_area = importer
+            .create_parameter_area(MEMORY_MAP_BASE, MEMORY_MAP_PAGES, "linux-memory-map")
+            .context("creating memory map parameter area")?;
+        importer
+            .import_parameter(memory_map_area, 0, IgvmParameterType::MemoryMap)
+            .context("importing memory map parameter")?;
+
+        let madt_area = importer
+            .create_parameter_area(MADT_BASE, MADT_PAGES, "linux-madt")
+            .context("creating MADT parameter area")?;
+        importer
+            .import_parameter(madt_area, 0, IgvmParameterType::Madt)
+            .context("importing MADT parameter")?;
+
+        let srat_area = importer
+            .create_parameter_area(SRAT_BASE, SRAT_PAGES, "linux-srat")
+            .context("creating SRAT parameter area")?;
+        importer
+            .import_parameter(srat_area, 0, IgvmParameterType::Srat)
+            .context("importing SRAT parameter")?;
+
+        let slit_area = importer
+            .create_parameter_area(SLIT_BASE, SLIT_PAGES, "linux-slit")
+            .context("creating SLIT parameter area")?;
+        importer
+            .import_parameter(slit_area, 0, IgvmParameterType::Slit)
+            .context("importing SLIT parameter")?;
+
+        let pptt_area = importer
+            .create_parameter_area(PPTT_BASE, PPTT_PAGES, "linux-pptt")
+            .context("creating PPTT parameter area")?;
+        importer
+            .import_parameter(pptt_area, 0, IgvmParameterType::Pptt)
+            .context("importing PPTT parameter")?;
+
+        // Set VP registers for 64-bit long mode entry.
+        let mut import_reg = |register| {
+            importer
+                .import_vp_register(register)
+                .context("importing VP register")
+        };
+
+        import_reg(X86Register::Cr0(x86defs::X64_CR0_PG | x86defs::X64_CR0_PE))?;
+        import_reg(X86Register::Cr3(page_table_address))?;
+        import_reg(X86Register::Cr4(x86defs::X64_CR4_PAE))?;
+        import_reg(X86Register::Efer(
+            x86defs::X64_EFER_SCE
+                | x86defs::X64_EFER_LME
+                | x86defs::X64_EFER_LMA
+                | x86defs::X64_EFER_NXE,
+        ))?;
+        import_reg(X86Register::Pat(x86defs::X86X_MSR_DEFAULT_PAT))?;
+        import_reg(X86Register::Rip(load_info.kernel.entrypoint))?;
+        import_reg(X86Register::Rsi(ZERO_PAGE_BASE * hvdef::HV_PAGE_SIZE))?;
+        import_reg(X86Register::MtrrDefType(0xc00))?;
+        import_reg(X86Register::MtrrFix64k00000(0x0606060606060606))?;
+        import_reg(X86Register::MtrrFix16k80000(0x0606060606060606))?;
+
+        Ok(())
     }
 
     fn load_openhcl<F>(
@@ -511,6 +680,16 @@ impl IgvmfilegenRegister for Aarch64Register {
         )
     }
 
+    fn load_linux_direct_boot_config(
+        importer: &mut impl ImageLoad<Self>,
+        load_info: &loader::linux::LoadInfo,
+        _command_line: &CString,
+    ) -> anyhow::Result<()> {
+        loader::linux::set_direct_boot_registers_arm64(importer, load_info)
+            .context("loading aarch64 linux direct boot registers")?;
+        Ok(())
+    }
+
     fn load_openhcl<F>(
         importer: &mut dyn ImageLoad<Self>,
         kernel_image: &mut F,
@@ -554,7 +733,8 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
             load_uefi(loader, resources, config_type)?;
         }
         Image::Linux(ref linux) => {
-            load_linux(loader, linux, resources)?;
+            let load_info = load_linux(loader, linux, resources)?;
+            R::load_linux_direct_boot_config(loader, &load_info, &linux.command_line)?;
         }
         Image::Openhcl {
             ref command_line,
