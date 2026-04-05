@@ -19,7 +19,6 @@ vmcore.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true
-pal_async.workspace = true
 guid.workspace = true
 task_control.workspace = true
 
@@ -32,6 +31,7 @@ tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
+pal_async.workspace = true
 tracing_helpers.workspace = true
 
 test_with_tracing.workspace = true

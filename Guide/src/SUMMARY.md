@@ -124,6 +124,7 @@
   - [Graphics and Input]()
   - [Storage](./reference/backends/storage.md)
   - [Networking](./reference/backends/networking.md)
+    - [Consomme](./reference/backends/consomme.md)
 - [Architecture](./reference/architecture.md)
   - [OpenVMM Architecture](./reference/architecture/openvmm.md)
     - [mesh]()

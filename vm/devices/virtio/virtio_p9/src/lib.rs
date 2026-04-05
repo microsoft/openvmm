@@ -183,9 +183,9 @@ impl AsyncRun<Plan9Queue> for Plan9Worker {
             let work = stop.until_stopped(state.queue.next()).await?;
             let Some(work) = work else { break };
             match work {
-                Ok(mut work) => {
+                Ok(work) => {
                     let bytes = process_9p_request(&state.mem, &self.fs, &work);
-                    work.complete(bytes);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");

@@ -33,6 +33,7 @@ use std::path::PathBuf;
 /// `flowey` prelude.
 pub mod user_facing {
     pub use super::AdoCiTriggers;
+    pub use super::AdoPool;
     pub use super::AdoPrTriggers;
     pub use super::AdoResourcesRepository;
     pub use super::AdoResourcesRepositoryRef;
@@ -326,6 +327,14 @@ impl GhRunner {
     pub fn is_self_hosted_with_label(&self, label: &str) -> bool {
         matches!(self, GhRunner::SelfHosted(labels) if labels.iter().any(|s| s.as_str() == label))
     }
+}
+
+// TODO: support a more structured format for demands
+// See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
+#[derive(Debug, Clone)]
+pub struct AdoPool {
+    pub name: String,
+    pub demands: Vec<String>,
 }
 
 /// Parameter type (unstable / stable).
@@ -1040,8 +1049,9 @@ pub struct PipelineJob<'a> {
 
 impl PipelineJob<'_> {
     /// (ADO only) specify which agent pool this job will be run on.
-    pub fn ado_set_pool(self, pool: impl AsRef<str>) -> Self {
-        self.ado_set_pool_with_demands(pool, Vec::new())
+    pub fn ado_set_pool(self, pool: AdoPool) -> Self {
+        self.pipeline.jobs[self.job_idx].ado_pool = Some(pool);
+        self
     }
 
     /// (ADO only) specify which agent pool this job will be run on, with
@@ -1438,14 +1448,6 @@ pub mod internal {
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-    }
-
-    // TODO: support a more structured format for demands
-    // See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
-    #[derive(Debug, Clone)]
-    pub struct AdoPool {
-        pub name: String,
-        pub demands: Vec<String>,
     }
 
     #[derive(Debug)]

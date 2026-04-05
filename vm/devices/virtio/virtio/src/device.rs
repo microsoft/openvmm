@@ -4,6 +4,7 @@
 //! Per-queue virtio device trait (`VirtioDevice`) and object-safe wrapper
 //! (`DynVirtioDevice`).
 
+use crate::DEFAULT_QUEUE_SIZE;
 use crate::DeviceTraits;
 use crate::QueueResources;
 use crate::queue::QueueState;
@@ -21,6 +22,22 @@ use std::sync::Arc;
 pub trait VirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
+
+    /// The queue size for the given queue index.
+    ///
+    /// This is the initial value the transport advertises to the guest
+    /// (e.g. via `QUEUE_NUM_MAX` on MMIO, or `QUEUE_SIZE` on PCI). The
+    /// transport does not enforce this as a per-device cap; the only hard
+    /// limit is [`crate::MAX_QUEUE_SIZE`].
+    ///
+    /// Must be a power of two, >0, and ≤ [`crate::MAX_QUEUE_SIZE`]. The
+    /// transport validates these invariants at construction time.
+    ///
+    /// Override to provide per-device or per-queue sizes. The default
+    /// returns [`DEFAULT_QUEUE_SIZE`] (256).
+    fn queue_size(&self, _queue_index: u16) -> u16 {
+        DEFAULT_QUEUE_SIZE
+    }
 
     /// Read device-specific config registers.
     fn read_registers_u32(&mut self, offset: u16) -> impl Future<Output = u32> + Send;
@@ -105,6 +122,9 @@ pub trait DynVirtioDevice: InspectMut + Send {
     /// Device identity and capabilities.
     fn traits(&self) -> DeviceTraits;
 
+    /// The queue size for the given queue index.
+    fn queue_size(&self, queue_index: u16) -> u16;
+
     /// Read device-specific config registers.
     fn read_registers_u32(&mut self, offset: u16)
     -> Pin<Box<dyn Future<Output = u32> + Send + '_>>;
@@ -147,6 +167,10 @@ pub trait DynVirtioDevice: InspectMut + Send {
 impl<T: VirtioDevice> DynVirtioDevice for T {
     fn traits(&self) -> DeviceTraits {
         VirtioDevice::traits(self)
+    }
+
+    fn queue_size(&self, queue_index: u16) -> u16 {
+        VirtioDevice::queue_size(self, queue_index)
     }
 
     fn read_registers_u32(

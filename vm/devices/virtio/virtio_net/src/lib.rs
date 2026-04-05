@@ -235,6 +235,7 @@ pub struct Device {
 }
 
 /// Tracks the state of a queue pair through the start_queue lifecycle.
+#[expect(clippy::large_enum_variant)]
 enum QueuePairState {
     /// No queues started for this pair.
     Empty,
@@ -483,7 +484,6 @@ struct QueueStats {
 
 #[derive(Inspect)]
 struct ActiveState {
-    mem: GuestMemory,
     #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
     pending_rx_packets: VirtioWorkPool,
@@ -495,10 +495,9 @@ impl ActiveState {
     fn new(mem: GuestMemory, rx_queue_size: u16, tx_queue_size: u16) -> Self {
         Self {
             pending_tx_packets: (0..tx_queue_size).map(|_| None).collect(),
-            pending_rx_packets: VirtioWorkPool::new(mem.clone(), rx_queue_size),
+            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size),
             data: ProcessingData::new(rx_queue_size, tx_queue_size),
             stats: Default::default(),
-            mem,
         }
     }
 }
@@ -726,28 +725,11 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
-        let (rx_pools, ready_packets): (Vec<_>, Vec<_>) = self
-            .workers
-            .iter()
-            .map(|worker| {
-                let pool = worker
-                    .state()
-                    .unwrap()
-                    .active_state
-                    .pending_rx_packets
-                    .clone();
-                let ready = pool.ready();
-                (pool, ready)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .unzip();
-        let mut queue_config = Vec::with_capacity(rx_pools.len());
-        for _pool in &rx_pools {
-            queue_config.push(QueueConfig {
+        let queue_config = (0..self.workers.len())
+            .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
-            });
-        }
+            })
+            .collect::<Vec<_>>();
 
         let mut queues = Vec::new();
         c_state
@@ -758,10 +740,12 @@ impl Coordinator {
 
         assert_eq!(queues.len(), self.workers.len());
 
-        for ((worker, mut queue), ready) in self.workers.iter_mut().zip(queues).zip(&ready_packets)
-        {
-            let pool = &mut worker.state_mut().unwrap().active_state.pending_rx_packets;
-            queue.rx_avail(pool, ready);
+        for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
+            let state = &mut worker.state_mut().unwrap().active_state;
+            let n = state
+                .pending_rx_packets
+                .fill_ready(&mut state.data.rx_ready);
+            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -929,7 +913,7 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) {
+    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) {
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
@@ -942,7 +926,7 @@ impl Worker {
                 );
                 self.active_state.stats.tx_dropped.increment();
                 self.active_state.data.tx_segments.truncate(seg_start);
-                work.complete(0);
+                self.virtio_state.tx_queue.complete(work, 0);
             }
         }
     }
@@ -974,7 +958,7 @@ impl Worker {
         let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
         let bytes_read = work
             .read(
-                &self.active_state.mem,
+                self.active_state.pending_rx_packets.mem(),
                 &mut peek_buf[..header_size() + ETH_PEEK],
             )
             .map_err(TxPacketError::ReadHeader)?;
@@ -1219,10 +1203,10 @@ impl Worker {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
-                Err(mut work) => {
+                Err(work) => {
                     // Reason has been traced by the callee.
                     self.active_state.stats.rx_dropped.increment();
-                    work.complete(0);
+                    self.virtio_state.rx_queue.complete(work, 0);
                 }
             }
         }
@@ -1248,7 +1232,8 @@ impl Worker {
 
         for ready_id in state.data.rx_ready[..n].iter() {
             state.stats.rx_packets.increment();
-            state.pending_rx_packets.complete_packet(*ready_id);
+            let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
+            self.virtio_state.rx_queue.complete(work, bytes);
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
@@ -1320,8 +1305,8 @@ impl Worker {
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
-        let mut tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
-        tx_packet.work.complete(0);
+        let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
+        self.virtio_state.tx_queue.complete(tx_packet.work, 0);
         self.active_state.stats.tx_packets.increment();
         Ok(())
     }

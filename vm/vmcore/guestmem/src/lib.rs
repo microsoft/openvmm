@@ -2208,17 +2208,17 @@ impl GuestMemory {
         })
     }
 
-    /// Locks the guest pages spanned by the specified `PagedRange` for the `'static` lifetime.
+    /// Locks the guest pages spanned by the specified `PagedRange`.
     ///
     /// # Arguments
     /// * 'paged_range' - The guest memory range to lock.
     /// * 'locked_range' - Receives a list of VA ranges to which each contiguous physical sub-range in `paged_range`
     ///   has been mapped. Must be initially empty.
-    pub fn lock_range<T: LockedRange>(
-        &self,
+    pub fn lock_range<'a, T: LockedRange<'a>>(
+        &'a self,
         paged_range: PagedRange<'_>,
         mut locked_range: T,
-    ) -> Result<LockedRangeImpl<T>, GuestMemoryError> {
+    ) -> Result<LockedRangeImpl<'a, T>, GuestMemoryError> {
         self.with_op(None, GuestMemoryOperation::Lock, || {
             let gpns = paged_range.gpns();
             for &gpn in gpns {
@@ -2233,7 +2233,7 @@ impl GuestMemory {
             }
             let store_gpns = self.inner.imp.lock_gpns(paged_range.gpns())?;
             Ok(LockedRangeImpl {
-                mem: self.inner.clone(),
+                mem: &self.inner,
                 gpns: store_gpns.then(|| paged_range.gpns().to_vec().into_boxed_slice()),
                 inner: locked_range,
             })
@@ -2353,24 +2353,28 @@ impl<'a> AsRef<[&'a Page]> for &'a LockedPages {
 /// to which the guest pages are mapped.
 /// The range may only partially span the first and last page and must fully span all
 /// intermediate pages.
-pub trait LockedRange {
+pub trait LockedRange<'a> {
     /// Adds a sub-range to this range.
-    fn push_sub_range(&mut self, sub_range: &[AtomicU8]);
+    fn push_sub_range(&mut self, sub_range: &'a [AtomicU8]);
 }
 
-pub struct LockedRangeImpl<T: LockedRange> {
-    mem: Arc<GuestMemoryInner>,
+pub struct LockedRangeImpl<'a, T: LockedRange<'a>> {
+    mem: &'a GuestMemoryInner,
     gpns: Option<Box<[u64]>>,
     inner: T,
 }
 
-impl<T: LockedRange> LockedRangeImpl<T> {
+impl<'a, T: LockedRange<'a>> LockedRangeImpl<'a, T> {
     pub fn get(&self) -> &T {
         &self.inner
     }
+
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
 }
 
-impl<T: LockedRange> Drop for LockedRangeImpl<T> {
+impl<'a, T: LockedRange<'a>> Drop for LockedRangeImpl<'a, T> {
     fn drop(&mut self) {
         if let Some(gpns) = &self.gpns {
             self.mem.imp.unlock_gpns(gpns);
