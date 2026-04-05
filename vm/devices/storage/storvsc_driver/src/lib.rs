@@ -729,7 +729,7 @@ impl StorvscInner {
                     };
 
                 // If CHECK CONDITION with sense UNIT ATTENTION, then notify any resize listeners and
-                // resend this request
+                // cancel so caller can retry
                 if result.scsi_status == scsi_defs::ScsiStatus::CHECK_CONDITION
                     && result.srb_status.autosense_valid()
                     && scsi_defs::SenseData::ref_from_prefix(result.payload.as_slice())

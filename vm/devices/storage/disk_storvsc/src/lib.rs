@@ -88,33 +88,62 @@ impl StorvscDisk {
             device_type: 0,
         };
         // Pre-fetch metadata while we're in an async context.
-        // Device type determines which READ_CAPACITY variant to use.
+        // Device type determines which commands to issue below.
         disk.device_type = disk
             .fetch_device_type()
             .await
             .context("failed to query device type")?;
 
-        let capacity = disk
-            .fetch_capacity()
-            .await
-            .context("failed to query disk capacity")?;
-        disk.sector_count = capacity.num_sectors;
-        disk.sector_size = capacity.sector_size;
+        // CD-ROM/DVD (0x05) only supports READ_CAPACITY(10) and a subset
+        // of VPD pages. Skip disk-specific queries for optical devices.
+        let is_optical = disk.device_type == 0x05;
 
-        disk.disk_id = disk
-            .fetch_disk_id()
-            .await
-            .context("failed to query disk ID")?;
+        if is_optical {
+            // Optical devices: only need capacity for read I/O. SimpleScsiDvd
+            // handles SCSI protocol (INQUIRY, MODE_SENSE, VPD) itself and
+            // only delegates read_vectored/eject to the backing DiskIo.
+            let capacity = disk
+                .fetch_capacity_10()
+                .await
+                .context("failed to query disk capacity")?;
+            disk.sector_count = capacity.num_sectors;
+            disk.sector_size = capacity.sector_size;
+            disk.disk_id = None;
+            disk.read_only = true;
+            disk.optimal_unmap_sectors = 0;
+        } else {
+            // Disk devices: try 16-byte capacity first (64-bit LBA),
+            // fall back to 10-byte for older devices.
+            let capacity = match disk.fetch_capacity_16().await {
+                Ok(cap) => cap,
+                Err(e) => {
+                    tracing::warn!(
+                        error = format!("{e:#}").as_str(),
+                        "READ CAPACITY(16) failed, trying READ CAPACITY(10)"
+                    );
+                    disk.fetch_capacity_10()
+                        .await
+                        .context("failed to query disk capacity")?
+                }
+            };
+            disk.sector_count = capacity.num_sectors;
+            disk.sector_size = capacity.sector_size;
 
-        disk.read_only = disk
-            .fetch_read_only()
-            .await
-            .context("failed to query read-only state")?;
+            disk.disk_id = disk
+                .fetch_disk_id()
+                .await
+                .context("failed to query disk ID")?;
 
-        disk.optimal_unmap_sectors = disk
-            .fetch_optimal_unmap_sectors()
-            .await
-            .context("failed to query optimal unmap granularity")?;
+            disk.read_only = disk
+                .fetch_read_only()
+                .await
+                .context("failed to query read-only state")?;
+
+            disk.optimal_unmap_sectors = disk
+                .fetch_optimal_unmap_sectors()
+                .await
+                .context("failed to query optimal unmap granularity")?;
+        }
 
         Ok(disk)
     }
@@ -162,59 +191,26 @@ impl StorvscDisk {
         }
     }
 
-    async fn fetch_capacity(&self) -> anyhow::Result<DiskCapacity> {
-        // Must fit in a single page -- DMA allocations may not be
-        // physically contiguous across page boundaries.
-        const_assert!(size_of::<scsi_defs::ReadCapacity16Data>() as u64 <= PAGE_SIZE_4K);
-        // Must fit in a single page -- DMA allocations may not be
-        // physically contiguous across page boundaries.
+    /// Fetches capacity via READ_CAPACITY(10) -- works for all device types
+    /// including CD-ROM/DVD. Returns 32-bit LBA (max ~2 TiB).
+    async fn fetch_capacity_10(&self) -> anyhow::Result<DiskCapacity> {
         const_assert!(size_of::<scsi_defs::ReadCapacityData>() as u64 <= PAGE_SIZE_4K);
         let data_in_size = PAGE_SIZE_4K as usize;
         let data_in = self
             .driver
             .allocate_dma_buffer(data_in_size)
-            .context("failed to allocate DMA buffer for READ CAPACITY")?;
+            .context("failed to allocate DMA buffer for READ CAPACITY(10)")?;
 
-        // CD-ROM/DVD (device_type 0x05) only supports READ_CAPACITY(10).
-        // For disk devices, try READ_CAPACITY(16) first, fall back to (10).
-        if self.device_type == 0x05 {
-            let cdb10 = scsi_defs::Cdb10 {
-                operation_code: ScsiOp::READ_CAPACITY,
-                ..FromZeros::new_zeroed()
-            };
-            return match self
-                .send_scsi_request(
-                    cdb10.as_bytes(),
-                    cdb10.operation_code,
-                    data_in.pfns(),
-                    data_in_size,
-                    true,
-                    0,
-                )
-                .await
-            {
-                Ok(resp) if resp.scsi_status == ScsiStatus::GOOD => {
-                    let cap = data_in.read_obj::<scsi_defs::ReadCapacityData>(0);
-                    Ok(DiskCapacity {
-                        num_sectors: u32::from(cap.logical_block_address) as u64 + 1,
-                        sector_size: cap.bytes_per_block.into(),
-                    })
-                }
-                _ => anyhow::bail!("READ CAPACITY(10) for CD-ROM failed"),
-            };
-        }
-        let buf_gpns = data_in.pfns();
-        let read_capacity16_cdb = scsi_defs::ServiceActionIn16 {
-            operation_code: ScsiOp::READ_CAPACITY16,
-            service_action: scsi_defs::SERVICE_ACTION_READ_CAPACITY16,
-            allocation_length: (data_in_size as u32).into(),
+        let cdb = scsi_defs::Cdb10 {
+            operation_code: ScsiOp::READ_CAPACITY,
             ..FromZeros::new_zeroed()
         };
+
         match self
             .send_scsi_request(
-                read_capacity16_cdb.as_bytes(),
-                read_capacity16_cdb.operation_code,
-                buf_gpns,
+                cdb.as_bytes(),
+                cdb.operation_code,
+                data_in.pfns(),
                 data_in_size,
                 true,
                 0,
@@ -222,61 +218,67 @@ impl StorvscDisk {
             .await
         {
             Ok(resp) if resp.scsi_status == ScsiStatus::GOOD => {
-                let capacity = data_in.read_obj::<scsi_defs::ReadCapacity16Data>(0);
-                let num_sectors: u64 = capacity.ex.logical_block_address.into();
-                return Ok(DiskCapacity {
-                    num_sectors: num_sectors + 1,
-                    sector_size: capacity.ex.bytes_per_block.into(),
-                });
+                let cap = data_in.read_obj::<scsi_defs::ReadCapacityData>(0);
+                Ok(DiskCapacity {
+                    num_sectors: u32::from(cap.logical_block_address) as u64 + 1,
+                    sector_size: cap.bytes_per_block.into(),
+                })
             }
             Ok(resp) => {
-                tracing::warn!(
-                    scsi_status = ?resp.scsi_status,
-                    "READ CAPACITY(16) failed, trying READ CAPACITY(10)"
-                );
+                anyhow::bail!(
+                    "READ CAPACITY(10) failed: scsi_status={:?}, srb_status={:?}",
+                    resp.scsi_status,
+                    resp.srb_status
+                )
             }
-            Err(err) => {
-                tracing::warn!(
-                    error = &err as &dyn std::error::Error,
-                    "READ CAPACITY(16) failed, trying READ CAPACITY(10)"
-                );
-            }
+            Err(err) => Err(err).context("READ CAPACITY(10) failed"),
         }
+    }
 
-        // Fallback: READ CAPACITY(10) for devices that don't support 16-byte CDBs.
-        let read_capacity10_cdb = scsi_defs::Cdb10 {
-            operation_code: ScsiOp::READ_CAPACITY,
+    /// Fetches capacity via READ_CAPACITY(16) -- 64-bit LBA for large disks.
+    /// Not supported by CD-ROM/DVD devices.
+    async fn fetch_capacity_16(&self) -> anyhow::Result<DiskCapacity> {
+        const_assert!(size_of::<scsi_defs::ReadCapacity16Data>() as u64 <= PAGE_SIZE_4K);
+        let data_in_size = PAGE_SIZE_4K as usize;
+        let data_in = self
+            .driver
+            .allocate_dma_buffer(data_in_size)
+            .context("failed to allocate DMA buffer for READ CAPACITY(16)")?;
+
+        let cdb = scsi_defs::ServiceActionIn16 {
+            operation_code: ScsiOp::READ_CAPACITY16,
+            service_action: scsi_defs::SERVICE_ACTION_READ_CAPACITY16,
+            allocation_length: (data_in_size as u32).into(),
             ..FromZeros::new_zeroed()
         };
+
         match self
             .send_scsi_request(
-                read_capacity10_cdb.as_bytes(),
-                read_capacity10_cdb.operation_code,
-                buf_gpns,
+                cdb.as_bytes(),
+                cdb.operation_code,
+                data_in.pfns(),
                 data_in_size,
                 true,
                 0,
             )
             .await
         {
-            Ok(resp) => match resp.scsi_status {
-                ScsiStatus::GOOD => {
-                    let capacity = data_in.read_obj::<scsi_defs::ReadCapacityData>(0);
-                    let num_sectors: u64 = u32::from(capacity.logical_block_address) as u64;
-                    Ok(DiskCapacity {
-                        num_sectors: num_sectors + 1,
-                        sector_size: capacity.bytes_per_block.into(),
-                    })
-                }
-                _ => {
-                    anyhow::bail!(
-                        "READ CAPACITY(10) failed: scsi_status={:?}, srb_status={:?}",
-                        resp.scsi_status,
-                        resp.srb_status
-                    )
-                }
-            },
-            Err(err) => Err(err).context("READ CAPACITY(10) failed"),
+            Ok(resp) if resp.scsi_status == ScsiStatus::GOOD => {
+                let cap = data_in.read_obj::<scsi_defs::ReadCapacity16Data>(0);
+                let num_sectors: u64 = cap.ex.logical_block_address.into();
+                Ok(DiskCapacity {
+                    num_sectors: num_sectors + 1,
+                    sector_size: cap.ex.bytes_per_block.into(),
+                })
+            }
+            Ok(resp) => {
+                anyhow::bail!(
+                    "READ CAPACITY(16) failed: scsi_status={:?}, srb_status={:?}",
+                    resp.scsi_status,
+                    resp.srb_status
+                )
+            }
+            Err(err) => Err(err).context("READ CAPACITY(16) failed"),
         }
     }
 
@@ -813,7 +815,7 @@ impl DiskIo for StorvscDisk {
         loop {
             let listen = self.resize_event.listen();
             // Refetch capacity from host (we're in async context here)
-            let capacity = match self.fetch_capacity().await {
+            let capacity = match self.fetch_capacity_10().await {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(
