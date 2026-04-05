@@ -3,6 +3,7 @@
 
 //! Disk backend implementation that uses a user-mode storvsc driver.
 
+#![cfg(unix)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context as _;
@@ -780,11 +781,13 @@ impl DiskIo for StorvscDisk {
             unmap_descriptor.as_bytes(),
         );
 
+        let param_list_len =
+            size_of::<scsi_defs::UnmapListHeader>() + size_of::<scsi_defs::UnmapBlockDescriptor>();
         self.send_scsi_request(
             cdb.as_bytes(),
             cdb.operation_code,
             data_out.pfns(),
-            data_out_size,
+            param_list_len,
             false,
             0,
         )
