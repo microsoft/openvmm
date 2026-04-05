@@ -269,7 +269,7 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             new_request_receiver,
             add_resize_listener_receiver,
         )?;
-        storvsc.negotiate().await.unwrap();
+        storvsc.negotiate().await?;
         self.new_request_sender = Some(new_request_sender);
         self.add_resize_listener_sender = Some(add_resize_listener_sender);
 
@@ -459,6 +459,9 @@ impl<T: 'static + Send + Sync + RingMem> InspectTask<Storvsc<T>> for StorvscStat
     fn inspect(&self, req: inspect::Request<'_>, worker: Option<&Storvsc<T>>) {
         if let Some(worker) = worker {
             let mut resp = req.respond();
+            resp.field("has_negotiated", worker.has_negotiated);
+            resp.field("version", worker.version.major_minor);
+            resp.field("pending_transactions", worker.inner.transactions.len());
         }
     }
 }
@@ -688,7 +691,7 @@ impl StorvscInner {
         packet: &IncomingPacket<'_, M>,
     ) -> Result<(), StorvscError> {
         let pkt_type = match packet {
-            IncomingPacket::Completion(c) => "completion",
+            IncomingPacket::Completion(_) => "completion",
             IncomingPacket::Data(_) => "data",
         };
         let packet = match parse_packet(packet) {
@@ -711,12 +714,10 @@ impl StorvscInner {
                 let result =
                     match storvsp_protocol::ScsiRequest::ref_from_bytes(completion.data.as_slice())
                     {
-                        Ok(r) => {
-                            let req = r.to_owned();
-                            req
-                        }
+                        Ok(r) => r.to_owned(),
                         Err(err) => {
                             tracing::error!(
+                                error = %err,
                                 transaction_id = completion.transaction_id,
                                 status = ?completion.status,
                                 data_size = completion.data_size,
@@ -728,9 +729,6 @@ impl StorvscInner {
 
                 // If CHECK CONDITION with sense UNIT ATTENTION, then notify any resize listeners and
                 // resend this request
-                if result.scsi_status == scsi_defs::ScsiStatus::CHECK_CONDITION
-                    && result.srb_status.autosense_valid()
-                {}
                 if result.scsi_status == scsi_defs::ScsiStatus::CHECK_CONDITION
                     && result.srb_status.autosense_valid()
                     && scsi_defs::SenseData::ref_from_prefix(result.payload.as_slice())
@@ -753,7 +751,7 @@ impl StorvscInner {
                     // Match completion against pending transactions
                     match self
                         .transactions
-                        .get_mut(completion.transaction_id as usize)
+                        .try_remove(completion.transaction_id as usize)
                     {
                         Some(t) => Ok(t),
                         None => Err(StorvscError(StorvscErrorInner::PacketError(
@@ -765,7 +763,7 @@ impl StorvscInner {
                     // Match completion against pending transactions
                     match self
                         .transactions
-                        .get_mut(completion.transaction_id as usize)
+                        .try_remove(completion.transaction_id as usize)
                     {
                         Some(t) => Ok(t),
                         None => Err(StorvscError(StorvscErrorInner::PacketError(
@@ -846,13 +844,25 @@ impl StorvscInner {
             byte_len,
             "Sending GPA Direct packet"
         );
-        if byte_len == 0 {}
+        // storvsp rejects GPA Direct packets with zero byte_len; callers
+        // must route no-data commands through send_packet instead.
+        assert!(byte_len > 0, "GPA Direct requires non-zero byte_len");
         let payload_bytes = payload.as_bytes();
         // Use caller-provided GPNs directly instead of computing a synthetic
         // contiguous range. DMA allocations may have non-contiguous pages.
         // gpn_offset handles sub-page-aligned guest buffers (e.g., 512-byte
         // offset within first page).
-        let pages = PagedRange::new(gpn_offset, byte_len, gpns).unwrap();
+        let pages = PagedRange::new(gpn_offset, byte_len, gpns).ok_or_else(|| {
+            tracing::error!(
+                gpn_offset,
+                byte_len,
+                gpn_count = gpns.len(),
+                "PagedRange::new failed: offset/length incompatible with provided GPNs"
+            );
+            StorvscError(StorvscErrorInner::PacketError(
+                PacketError::InvalidDataTransferLength,
+            ))
+        })?;
         self.send_vmbus_packet(
             &mut writer.batched(),
             OutgoingPacketType::GpaDirect(&[pages]),

@@ -1034,9 +1034,16 @@ async fn make_disk_type_from_physical_device(
             underhill_config::DeviceType::VScsi
         )
     {
+        let lun =
+            u8::try_from(sub_device_path).map_err(|_| Error::StorageCannotFindVtl2Device {
+                device_type: single_device.device_type,
+                instance_id: controller_instance_id,
+                sub_device_path,
+                source: anyhow::anyhow!("sub_device_path {} exceeds u8 LUN range", sub_device_path),
+            })?;
         return Ok(Resource::new(StorvscDiskConfig {
             instance_guid: controller_instance_id,
-            lun: sub_device_path as u8,
+            lun,
         }));
     }
 
