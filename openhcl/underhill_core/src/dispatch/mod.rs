@@ -956,7 +956,7 @@ impl LoadedVm {
             s.save()
                 .instrument(tracing::info_span!("storvsc_manager_save", CVM_ALLOWED))
                 .await
-                .map(|s| crate::servicing::StorvscSavedState { storvsc_state: s })
+                .map(|s| servicing::StorvscSavedState { storvsc_state: s })
         } else {
             None
         };

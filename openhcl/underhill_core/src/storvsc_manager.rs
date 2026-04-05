@@ -415,13 +415,12 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskConfig> for StorvscDiskReso
             .await
             .context("could not open storvsc disk")?;
 
-        let result = Ok(ResolvedDisk::new(
+        Ok(ResolvedDisk::new(
             disk_storvsc::StorvscDisk::new(disk, rsrc.lun, self.is_isolated)
                 .await
                 .context("failed to create StorvscDisk")?,
         )
-        .context("invalid disk")?);
-        result
+        .context("invalid disk")?)
     }
 }
 
