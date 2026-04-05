@@ -2051,6 +2051,26 @@ impl Default for ProcessorTopology {
     }
 }
 
+impl ProcessorTopology {
+    /// A large number of VPs
+    pub fn heavy() -> Self {
+        Self {
+            vp_count: 16,
+            vps_per_socket: Some(8),
+            ..Default::default()
+        }
+    }
+
+    /// A very large number of VPs
+    pub fn very_heavy() -> Self {
+        Self {
+            vp_count: 32,
+            vps_per_socket: Some(16),
+            ..Default::default()
+        }
+    }
+}
+
 /// The APIC mode for the VM.
 #[derive(Debug, Clone, Copy)]
 pub enum ApicMode {
