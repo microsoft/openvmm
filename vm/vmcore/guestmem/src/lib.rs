@@ -2322,8 +2322,9 @@ impl Debug for LockedPages {
 }
 
 #[derive(Copy, Clone, Debug)]
-// Field is read via slice transmute and pointer casts, not actually dead.
-struct PagePtr(#[expect(dead_code)] *const AtomicU8);
+// N.B. The inner field is read via unsafe pointer casting in pages(), but the
+// compiler's dead-code analysis cannot track reads through raw pointer casts.
+struct PagePtr(#[allow(dead_code)] *const AtomicU8);
 
 // SAFETY: PagePtr is just a pointer with no methods and has no inherent safety
 // constraints.

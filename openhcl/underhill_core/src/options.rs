@@ -204,6 +204,10 @@ pub struct Options {
     /// Use the user-mode VFIO NVMe driver instead of the Linux driver.
     pub nvme_vfio: bool,
 
+    /// (OPENHCL_STORVSC_USERMODE=1)
+    /// Use the user-mode StorVSC driver instead of the Linux kernel hv_storvsc.
+    pub storvsc_usermode: bool,
+
     /// (OPENHCL_MCR_DEVICE=1)
     /// MCR Device Enable
     pub mcr: bool, // TODO MCR: support closed-source ENV vars
@@ -399,6 +403,7 @@ impl Options {
         let vtl0_starts_paused = parse_legacy_env_bool("OPENHCL_VTL0_STARTS_PAUSED");
         let serial_wait_for_rts = parse_legacy_env_bool("OPENHCL_SERIAL_WAIT_FOR_RTS");
         let nvme_vfio = parse_legacy_env_bool("OPENHCL_NVME_VFIO");
+        let storvsc_usermode = parse_env_bool("OPENHCL_STORVSC_USERMODE");
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
@@ -520,6 +525,7 @@ impl Options {
             serial_wait_for_rts,
             force_load_vtl0_image,
             nvme_vfio,
+            storvsc_usermode,
             mcr,
             hide_isolation,
             halt_on_guest_halt,
