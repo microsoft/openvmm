@@ -232,25 +232,28 @@ impl StorvscManagerWorker {
             }
         };
 
-        if !self.save_restore_supported {
-            async {
-                join_all(self.drivers.drain().map(|(guid, driver)| {
-                    let guid_str = guid.to_string();
-                    async move {
-                        driver
-                            .stop()
-                            .instrument(tracing::info_span!(
-                                "shutdown_storvsc_driver",
-                                guid = guid_str
-                            ))
-                            .await
-                    }
-                }))
-                .await
-            }
-            .instrument(join_span)
-            .await;
+        // Deep defensive: always stop drivers unconditionally on shutdown. stop()
+        // is idempotent, so this is harmless when save() has already cleaned up.
+        // Ensures no driver tasks or transactions are leaked regardless of how
+        // the shutdown was triggered (normal shutdown, servicing, or unexpected
+        // teardown).
+        async {
+            join_all(self.drivers.drain().map(|(guid, driver)| {
+                let guid_str = guid.to_string();
+                async move {
+                    driver
+                        .stop()
+                        .instrument(tracing::info_span!(
+                            "shutdown_storvsc_driver",
+                            guid = guid_str
+                        ))
+                        .await
+                }
+            }))
+            .await
         }
+        .instrument(join_span)
+        .await;
     }
 
     async fn get_driver(

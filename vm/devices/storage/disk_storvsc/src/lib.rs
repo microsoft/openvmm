@@ -275,9 +275,7 @@ impl StorvscDisk {
                     )
                 }
             },
-            Err(err) => {
-                return Err(err).context("READ CAPACITY(10) failed");
-            }
+            Err(err) => Err(err).context("READ CAPACITY(10) failed"),
         }
     }
 
@@ -323,9 +321,11 @@ impl StorvscDisk {
                     while buf_pos < vpd_header.page_length as usize + 4 {
                         let designator_header =
                             data_in.read_obj::<scsi_defs::VpdIdentificationDescriptor>(buf_pos);
-                        buf_pos += size_of::<scsi_defs::VpdIdentificationDescriptor>();
                         match designator_header.identifiertype {
                             scsi_defs::VPD_IDENTIFIER_TYPE_FCPH_NAME => {
+                                // VpdNaaId includes VpdIdentificationDescriptor as its
+                                // first field (`scsi_defs::VpdNaaId::header`), so read
+                                // the full struct from the descriptor start position.
                                 let designator_naa =
                                     data_in.read_obj::<scsi_defs::VpdNaaId>(buf_pos);
                                 let mut created_disk_id = [0u8; 16];
@@ -732,7 +732,10 @@ impl DiskIo for StorvscDisk {
     ) -> Result<(), DiskError> {
         let cdb = scsi_defs::Unmap {
             operation_code: ScsiOp::UNMAP,
-            allocation_length: (size_of::<scsi_defs::UnmapBlockDescriptor>() as u16).into(),
+            allocation_length: ((size_of::<scsi_defs::UnmapListHeader>()
+                + size_of::<scsi_defs::UnmapBlockDescriptor>())
+                as u16)
+                .into(),
             ..FromZeros::new_zeroed()
         };
 
@@ -801,6 +804,8 @@ impl DiskIo for StorvscDisk {
         self.optimal_unmap_sectors
     }
 
+    // TODO: Add unit tests for wait_resize -- cover error retry with
+    // listen.await backoff, and capacity change detection.
     async fn wait_resize(&self, sector_count: u64) -> u64 {
         loop {
             let listen = self.resize_event.listen();
@@ -812,6 +817,7 @@ impl DiskIo for StorvscDisk {
                         error = e.as_ref() as &dyn std::error::Error,
                         "failed to refetch capacity on resize"
                     );
+                    listen.await;
                     continue;
                 }
             };

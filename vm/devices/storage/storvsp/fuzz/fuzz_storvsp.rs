@@ -154,7 +154,7 @@ async fn send_scsi_packet(
         }
         FuzzCdbType::Inquiry => {
             let cdb = CdbInquiry {
-                operation_code: ScsiOp::INQUIRY.0,
+                operation_code: ScsiOp::INQUIRY,
                 page_code: u.arbitrary()?,
                 allocation_length: (byte_len as u16).into(),
                 ..FromZeros::new_zeroed()

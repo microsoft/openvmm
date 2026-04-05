@@ -2340,10 +2340,6 @@ impl LockedPages {
         // the slice.
         unsafe { std::slice::from_raw_parts(self.pages.as_ptr().cast::<&Page>(), self.pages.len()) }
     }
-
-    pub fn va(&self) -> u64 {
-        self.pages.first().unwrap().0 as u64
-    }
 }
 
 impl<'a> AsRef<[&'a Page]> for &'a LockedPages {
