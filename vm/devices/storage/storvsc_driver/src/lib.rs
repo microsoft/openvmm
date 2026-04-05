@@ -268,6 +268,7 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             add_resize_listener_receiver,
         )?;
         storvsc.negotiate().await?;
+        storvsc.has_negotiated = true;
         self.new_request_sender = Some(new_request_sender);
         self.add_resize_listener_sender = Some(add_resize_listener_sender);
 
