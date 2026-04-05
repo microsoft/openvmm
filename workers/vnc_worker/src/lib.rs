@@ -217,9 +217,60 @@ impl<T: Listener> Server<T> {
                         abort: abort_send,
                     };
                 }
-                State::Connected { task, .. } => {
-                    let (view, input) = task.await;
-                    self.state = State::Listening { view, input };
+                State::Connected { .. } => {
+                    // Take ownership of the connected state so we can
+                    // move abort_send into the new-connection branch.
+                    let (mut task, abort, _old_addr) = if let State::Connected { task, abort, remote_addr } =
+                        std::mem::replace(&mut self.state, State::Invalid)
+                    {
+                        (task, abort, remote_addr)
+                    } else {
+                        unreachable!()
+                    };
+
+                    // Race: current connection vs new incoming connection.
+                    futures::select! {
+                        result = task.as_mut().fuse() => {
+                            let (view, input) = result;
+                            self.state = State::Listening { view, input };
+                        }
+                        accept = self.listener.accept().fuse() => {
+                            let (new_socket, remote_addr) = accept?;
+                            tracing::info!(address = ?remote_addr, "New VNC client, disconnecting previous");
+                            // Abort the current connection and wait for resources.
+                            abort.send(());
+                            let (view, input) = task.await;
+                            // Now set up the new connection.
+                            let socket = PolledSocket::new(driver, new_socket.into())?;
+                            let mut vncserver = vnc::Server::new("OpenVMM VM".into(), socket, view, input);
+                            let mut timer = PolledTimer::new(driver);
+                            let (abort_send, abort_recv) = mesh::oneshot();
+                            let connection = Box::pin(async move {
+                                let updater = vncserver.updater();
+                                let update_task = async {
+                                    loop {
+                                        timer.sleep(Duration::from_millis(30)).await;
+                                        updater.update();
+                                    }
+                                };
+                                let r = futures::select! {
+                                    r = vncserver.run().fuse() => r.context("VNC error"),
+                                    _ = abort_recv.fuse() => Err(anyhow!("VNC connection aborted")),
+                                    _ = update_task.fuse() => unreachable!(),
+                                };
+                                match r {
+                                    Ok(_) => tracing::info!("VNC client disconnected"),
+                                    Err(err) => tracing::error!(error = err.as_error(), "VNC client error"),
+                                }
+                                vncserver.done()
+                            });
+                            self.state = State::Connected {
+                                remote_addr,
+                                task: connection,
+                                abort: abort_send,
+                            };
+                        }
+                    }
                 }
                 State::Invalid => unreachable!(),
             }

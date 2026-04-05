@@ -10108,6 +10108,7 @@ dependencies = [
 name = "vnc"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "futures",
  "pal_async",
  "socket2",
