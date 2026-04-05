@@ -5,8 +5,12 @@
 
 use crate::CommandError;
 use crate::OpenHclServicingFlags;
+use crate::PetriVmConfig;
+use crate::PetriVmProperties;
 use crate::VmScreenshotMeta;
+use crate::Vtl;
 use crate::run_host_cmd;
+use crate::vm::append_cmdline;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
@@ -15,19 +19,21 @@ use powershell_builder as ps;
 use powershell_builder::PowerShellBuilder;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use tempfile::NamedTempFile;
 
 /// Hyper-V VM Generation
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HyperVGeneration {
     /// Generation 1 (with emulated legacy devices and PCAT BIOS)
-    One,
+    One = 1,
     /// Generation 2 (synthetic devices and UEFI)
-    Two,
+    Two = 2,
 }
 
 impl ps::AsVal for HyperVGeneration {
@@ -82,6 +88,20 @@ impl ps::AsVal for HyperVGuestStateIsolationType {
             HyperVGuestStateIsolationType::Snp => "2",
             HyperVGuestStateIsolationType::Tdx => "3",
             HyperVGuestStateIsolationType::OpenHCL => "16",
+        }
+    }
+}
+
+impl HyperVGuestStateIsolationType {
+    /// Whether this VM is isolated
+    pub fn isolated(&self) -> bool {
+        match self {
+            HyperVGuestStateIsolationType::Vbs
+            | HyperVGuestStateIsolationType::Snp
+            | HyperVGuestStateIsolationType::Tdx => true,
+            HyperVGuestStateIsolationType::TrustedLaunch
+            | HyperVGuestStateIsolationType::OpenHCL
+            | HyperVGuestStateIsolationType::Disabled => false,
         }
     }
 }
@@ -156,6 +176,533 @@ pub async fn run_new_vm(args: HyperVNewVMArgs<'_>) -> anyhow::Result<Guid> {
     Guid::from_str(&vmid).context("invalid vmid")
 }
 
+/// Hyper-V Guest State Lifetime
+#[derive(Clone, Copy)]
+pub enum HyperVGuestStateLifetime {
+    /// Standard persistent VMGS
+    Default = 0,
+    /// Reprovision the VMGS if it is corrupted
+    ReprovisionOnFailure = 1,
+    /// Reprovision the VMGS
+    Reprovision = 2,
+    /// Don't persist anything to the VMGS
+    Ephemeral = 3,
+}
+
+impl ps::AsVal for HyperVGuestStateLifetime {
+    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
+        match self {
+            HyperVGuestStateLifetime::Default => "0",
+            HyperVGuestStateLifetime::ReprovisionOnFailure => "1",
+            HyperVGuestStateLifetime::Reprovision => "2",
+            HyperVGuestStateLifetime::Ephemeral => "3",
+        }
+    }
+}
+
+/// Hyper-V Guest State Encryption Policy
+#[derive(Clone, Copy, Debug)]
+pub enum HyperVGuestStateEncryptionPolicy {
+    /// Use the best available
+    Default = 0,
+    /// Don't encrypt
+    None = 1,
+    /// Encrypt using GspById
+    GspById = 2,
+    /// Encrypt using GspKey
+    GspKey = 3,
+    /// Encrypt using hardware sealing (hash)
+    HardwareSealedSecretsHashPolicy = 4,
+    /// Encrypt using hardware sealing (signer)
+    HardwareSealedSecretsSignerPolicy = 5,
+}
+
+impl ps::AsVal for HyperVGuestStateEncryptionPolicy {
+    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
+        match self {
+            HyperVGuestStateEncryptionPolicy::Default => "0",
+            HyperVGuestStateEncryptionPolicy::None => "1",
+            HyperVGuestStateEncryptionPolicy::GspById => "2",
+            HyperVGuestStateEncryptionPolicy::GspKey => "3",
+            HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsHashPolicy => "4",
+            HyperVGuestStateEncryptionPolicy::HardwareSealedSecretsSignerPolicy => "5",
+        }
+    }
+}
+
+/// Hyper-V Management VTL Feature Flags
+#[bitfield_struct::bitfield(u64)]
+pub struct HyperVManagementVtlFeatureFlags {
+    pub strict_encryption_policy: bool,
+    pub _reserved1: bool,
+    pub control_ak_cert_provisioning: bool,
+    pub attempt_ak_cert_callback: bool,
+    pub tx_only_serial_port: bool,
+    #[bits(59)]
+    pub _reserved2: u64,
+}
+
+impl ps::AsVal for HyperVManagementVtlFeatureFlags {
+    fn as_val(&self) -> impl '_ + AsRef<OsStr> {
+        self.0.as_val()
+    }
+}
+
+/// Arguments for the New-CustomVM powershell cmdlet
+pub struct HyperVNewCustomVMArgs {
+    /// Name
+    pub name: String,
+    /// Generation
+    pub generation: Option<HyperVGeneration>,
+    /// Guest State Isolation Type
+    pub guest_state_isolation_type: Option<HyperVGuestStateIsolationType>,
+    /// Guest State Isolation Mode
+    pub guest_state_isolation_mode: Option<HyperVGuestStateIsolationMode>,
+    /// Guest State Lifetime
+    pub guest_state_lifetime: Option<HyperVGuestStateLifetime>,
+    /// Path to the VMGS file (creates a new one if not specified)
+    pub guest_state_path: Option<PathBuf>,
+    /// VMBUS message redirection
+    pub vmbus_message_redirection: Option<bool>,
+    /// Path to the OpenHCL firmware IGVM file
+    pub firmware_file: Option<PathBuf>,
+    /// OpenHCL command line parameters
+    pub firmware_parameters: Option<String>,
+    /// Whether to increase the memory available to VTL2
+    pub increase_vtl2_memory: Option<bool>,
+    /// Whether to attempt a default boot even if existing entries fail
+    pub default_boot_always_attempt: Option<bool>,
+    /// Enable secure boot
+    pub secure_boot_enabled: Option<bool>,
+    /// Secure boot template
+    pub secure_boot_template: Option<HyperVSecureBootTemplate>,
+    /// Management VTL feature flags
+    pub management_vtl_feature_flags: Option<HyperVManagementVtlFeatureFlags>,
+    /// Guest State Encryption Policy
+    pub guest_state_encryption_policy: Option<HyperVGuestStateEncryptionPolicy>,
+    /// Memory to assign to the VM (defaults to 4GB)
+    pub memory: Option<u64>,
+    /// Number of processors for the VM (defaults to 2)
+    pub vp_count: Option<u64>,
+    /// APIC mode
+    pub apic_mode: Option<HyperVApicMode>,
+    /// Threads per core
+    pub hw_threads_per_core: Option<u64>,
+    /// Processors per socket
+    pub max_processors_per_numa_node: Option<u64>,
+    /// SCSI controllers and associated drives/disks
+    pub scsi_controllers: HashMap<Guid, HyperVScsiController>,
+    /// IDE controllers and associated drives/disks
+    pub ide_controllers: HashMap<u32, HashMap<u8, HyperVDrive>>,
+    /// Temporary file containing initial machine configuration data
+    pub imc_hiv: Option<NamedTempFile>,
+    /// Enable COM1 at \\.\pipe\<VMID>-1
+    pub com_1: bool,
+    /// Enable COM3 at \\.\pipe\<VMID>-3
+    pub com_3: bool,
+    /// Enable the TPM
+    pub tpm_enabled: bool,
+    /// Temporary file containing management VTL settings
+    pub management_vtl_settings: Option<NamedTempFile>,
+}
+
+/// Hyper-V SCSI controller
+pub struct HyperVScsiController {
+    /// The VTL to assign the storage controller to
+    pub target_vtl: Vtl,
+    /// Drives (with any inserted disks) attached to this storage controller
+    pub drives: HashMap<u32, HyperVDrive>,
+}
+
+/// Hyper-V disk drive
+#[derive(Debug, Clone)]
+pub struct HyperVDrive {
+    /// Backing disk
+    pub disk: Option<PathBuf>,
+    /// Whether this is a DVD
+    pub is_dvd: bool,
+}
+
+impl HyperVNewCustomVMArgs {
+    /// Check for missing WMI properties and adjust the OpenHCL command line to compensate
+    pub async fn make_compatible(&mut self) -> anyhow::Result<()> {
+        let available_properties = run_get_vssd_properties().await?;
+        let property_exists = |name: &str| available_properties.iter().any(|x| x == name);
+        let is_openhcl = self.firmware_file.is_some();
+
+        if let Some(guest_state_lifetime) = self.guest_state_lifetime.as_ref()
+            && !property_exists("GuestStateLifetime")
+        {
+            if is_openhcl {
+                let lifetime_cli = match guest_state_lifetime {
+                    HyperVGuestStateLifetime::Default => "DEFAULT",
+                    HyperVGuestStateLifetime::ReprovisionOnFailure => "REPROVISION_ON_FAILURE",
+                    HyperVGuestStateLifetime::Reprovision => "REPROVISION",
+                    HyperVGuestStateLifetime::Ephemeral => "EPHEMERAL",
+                };
+                append_cmdline(
+                    &mut self.firmware_parameters,
+                    format!("HCL_GUEST_STATE_LIFETIME={lifetime_cli}"),
+                );
+
+            // allow default/ephemeral/none to imply default behavior for non-openhcl VMs
+            } else if !matches!(
+                self.guest_state_lifetime,
+                None | Some(
+                    HyperVGuestStateLifetime::Default | HyperVGuestStateLifetime::Ephemeral
+                )
+            ) {
+                anyhow::bail!("OpenHCL is required to set GuestStateLifetime via commandline");
+            }
+            self.guest_state_lifetime = None;
+        }
+
+        if let Some(default_boot_always_attempt) = self.default_boot_always_attempt.as_ref()
+            && !property_exists("DefaultBootAlwaysAttempt")
+        {
+            if is_openhcl {
+                let arg = format!(
+                    "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT={}",
+                    if *default_boot_always_attempt { 1 } else { 0 }
+                );
+                // In certain cases, this one may have already been added
+                if !self
+                    .firmware_parameters
+                    .as_ref()
+                    .is_some_and(|x| x.contains(&arg))
+                {
+                    append_cmdline(&mut self.firmware_parameters, arg);
+                }
+            }
+
+            // allow default behavior for non-openhcl vms
+            self.default_boot_always_attempt = None;
+        }
+
+        if let Some(management_vtl_feature_flags) = self.management_vtl_feature_flags.as_ref()
+            && !property_exists("ManagementVtlFeatureFlags")
+        {
+            if !is_openhcl {
+                anyhow::bail!("OpenHCL is required to set ManagementVtlFeatureFlags");
+            }
+
+            let supported_flags =
+                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(true);
+            if management_vtl_feature_flags.0 & !supported_flags.0 != 0 {
+                anyhow::bail!(
+                    "not all ManagementVtlFeatureFlags can be set using the command line: {}",
+                    management_vtl_feature_flags.0
+                )
+            }
+            if management_vtl_feature_flags.strict_encryption_policy() {
+                append_cmdline(
+                    &mut self.firmware_parameters,
+                    "HCL_STRICT_ENCRYPTION_POLICY=1",
+                );
+            }
+            self.management_vtl_feature_flags = None;
+        }
+
+        if let Some(guest_state_encryption_policy) = self.guest_state_encryption_policy.as_ref()
+            && !property_exists("GuestStateEncryptionPolicy")
+        {
+            if !is_openhcl {
+                anyhow::bail!("OpenHCL is required to set GuestStateEncryptionPolicy");
+            }
+
+            let encryption_cli = match guest_state_encryption_policy {
+                HyperVGuestStateEncryptionPolicy::Default => "AUTO",
+                HyperVGuestStateEncryptionPolicy::None => "NONE",
+                HyperVGuestStateEncryptionPolicy::GspById => "GSP_BY_ID",
+                HyperVGuestStateEncryptionPolicy::GspKey => "GSP_KEY",
+                policy => {
+                    anyhow::bail!("encryption policy not supported over command line: {policy:?}")
+                }
+            };
+            append_cmdline(
+                &mut self.firmware_parameters,
+                format!("HCL_GUEST_STATE_ENCRYPTION_POLICY={encryption_cli}"),
+            );
+            self.guest_state_encryption_policy = None;
+        }
+
+        Ok(())
+    }
+
+    /// Create a set of arguments for New-CustomVM from a Petri VM config
+    pub fn from_config(
+        config: &PetriVmConfig,
+        properties: &PetriVmProperties,
+    ) -> anyhow::Result<HyperVNewCustomVMArgs> {
+        use crate::ApicMode;
+        use crate::IsolationType;
+        use crate::PetriVmgsResource;
+        use crate::SecureBootTemplate;
+        use petri_artifacts_common::tags::MachineArch;
+        use vmgs_resources::GuestStateEncryptionPolicy;
+
+        let PetriVmConfig {
+            name,
+            arch,
+            firmware,
+            memory,
+            proc_topology,
+            vmgs,
+            tpm,
+            ..
+        } = config;
+
+        if firmware
+            .openhcl_config()
+            .is_some_and(|c| c.vtl2_base_address_type.is_some())
+        {
+            todo!("custom VTL2 base address type not yet supported for Hyper-V")
+        }
+
+        Ok(HyperVNewCustomVMArgs {
+            name: name.to_owned(),
+            generation: Some(if properties.is_pcat {
+                HyperVGeneration::One
+            } else {
+                HyperVGeneration::Two
+            }),
+            guest_state_isolation_type: match firmware.isolation() {
+                Some(IsolationType::Vbs) => Some(HyperVGuestStateIsolationType::Vbs),
+                Some(IsolationType::Snp) => Some(HyperVGuestStateIsolationType::Snp),
+                Some(IsolationType::Tdx) => Some(HyperVGuestStateIsolationType::Tdx),
+                None if properties.is_openhcl => Some(HyperVGuestStateIsolationType::OpenHCL),
+                None => None,
+            },
+            guest_state_isolation_mode: {
+                let no_persistent_secrets = tpm
+                    .as_ref()
+                    .map(|c| c.no_persistent_secrets)
+                    .unwrap_or(false);
+                if no_persistent_secrets && !properties.is_openhcl {
+                    anyhow::bail!("no persistent secrets requires an hcl");
+                }
+                properties.is_openhcl.then_some(if no_persistent_secrets {
+                    HyperVGuestStateIsolationMode::NoPersistentSecrets
+                } else {
+                    HyperVGuestStateIsolationMode::Default
+                })
+            },
+            guest_state_lifetime: properties.is_openhcl.then_some(match &vmgs {
+                PetriVmgsResource::Disk(_) => HyperVGuestStateLifetime::Default,
+                PetriVmgsResource::ReprovisionOnFailure(_) => {
+                    HyperVGuestStateLifetime::ReprovisionOnFailure
+                }
+                PetriVmgsResource::Reprovision(_) => HyperVGuestStateLifetime::Reprovision,
+                PetriVmgsResource::Ephemeral => HyperVGuestStateLifetime::Ephemeral,
+            }),
+            vmbus_message_redirection: firmware.openhcl_config().map(|c| c.vmbus_redirect),
+            increase_vtl2_memory: properties.is_openhcl.then_some(!properties.is_isolated),
+            default_boot_always_attempt: firmware
+                .uefi_config()
+                .map(|c| c.default_boot_always_attempt),
+            secure_boot_enabled: firmware.uefi_config().map(|c| c.secure_boot_enabled),
+            secure_boot_template: firmware
+                .uefi_config()
+                .and_then(|c| c.secure_boot_template)
+                .map(|t| match t {
+                    SecureBootTemplate::MicrosoftWindows => {
+                        HyperVSecureBootTemplate::MicrosoftWindows
+                    }
+                    SecureBootTemplate::MicrosoftUefiCertificateAuthority => {
+                        HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority
+                    }
+                }),
+            management_vtl_feature_flags: properties.is_openhcl.then(|| {
+                HyperVManagementVtlFeatureFlags::new().with_strict_encryption_policy(
+                    vmgs.encryption_policy()
+                        .map(|p| p.is_strict())
+                        .unwrap_or(false),
+                )
+            }),
+            guest_state_encryption_policy: firmware
+                .is_openhcl()
+                .then(|| vmgs.encryption_policy())
+                .flatten()
+                .map(|p| match p {
+                    GuestStateEncryptionPolicy::Auto => HyperVGuestStateEncryptionPolicy::Default,
+                    GuestStateEncryptionPolicy::None(_) => HyperVGuestStateEncryptionPolicy::None,
+                    GuestStateEncryptionPolicy::GspById(_) => {
+                        HyperVGuestStateEncryptionPolicy::GspById
+                    }
+                    GuestStateEncryptionPolicy::GspKey(_) => {
+                        HyperVGuestStateEncryptionPolicy::GspKey
+                    }
+                }),
+            memory: Some(memory.startup_bytes),
+            vp_count: Some(proc_topology.vp_count as u64),
+            // TODO: fix this mapping, and/or update petri to better match
+            // Hyper-V's capabilities.
+            apic_mode: proc_topology
+                .apic_mode
+                .map(|m| match m {
+                    ApicMode::Xapic => HyperVApicMode::Legacy,
+                    ApicMode::X2apicSupported => HyperVApicMode::X2Apic,
+                    ApicMode::X2apicEnabled => HyperVApicMode::X2Apic,
+                })
+                .or(
+                    (*arch == MachineArch::X86_64 && !properties.is_pcat).then_some({
+                        // This is necessary for some tests to pass. TODO: fix.
+                        HyperVApicMode::X2Apic
+                    }),
+                ),
+            hw_threads_per_core: proc_topology.enable_smt.map(|smt| if smt { 2 } else { 1 }),
+            max_processors_per_numa_node: proc_topology.vps_per_socket.map(|v| v as u64),
+            tpm_enabled: {
+                let tpm_enabled = tpm.is_some();
+                if properties.is_pcat && tpm_enabled {
+                    anyhow::bail!("hyper-v gen 1 VMs do not support a TPM");
+                }
+                tpm_enabled
+            },
+            com_1: true,
+
+            // specified after creation
+            firmware_file: None,
+            firmware_parameters: None,
+            guest_state_path: None,
+            scsi_controllers: HashMap::new(),
+            ide_controllers: HashMap::new(),
+            com_3: false,
+            imc_hiv: None,
+            management_vtl_settings: None,
+        })
+    }
+}
+
+/// Runs New-CustomVM with the given arguments.
+pub async fn run_new_customvm(ps_mod: &Path, args: HyperVNewCustomVMArgs) -> anyhow::Result<Guid> {
+    let (guest_state_isolation_enabled, guest_state_isolation_type) = args
+        .guest_state_isolation_type
+        .and_then(|isolation_type| match isolation_type {
+            HyperVGuestStateIsolationType::Disabled => None,
+            isolation_type => Some((true, isolation_type)),
+        })
+        .unzip();
+
+    let secure_boot_template_id = args.secure_boot_template.map(|t| match t {
+        HyperVSecureBootTemplate::MicrosoftWindows => {
+            guid::guid!("1734c6e8-3154-4dda-ba5f-a874cc483422")
+        }
+        HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority => {
+            guid::guid!("272e7447-90a4-4563-a4b9-8e4ab00526ce")
+        }
+        HyperVSecureBootTemplate::OpenSourceShieldedVM => {
+            guid::guid!("4292ae2b-ee2c-42b5-a969-dd8f8689f6f3")
+        }
+    });
+
+    let scsi_controllers = (!args.scsi_controllers.is_empty()).then(|| {
+        ps::HashTable::new(args.scsi_controllers.into_iter().map(
+            |(vsid, HyperVScsiController { target_vtl, drives })| {
+                (
+                    format!("\"{vsid}\""),
+                    ps::Value::new(ps::HashTable::new([
+                        ("Vtl", ps::Value::new(target_vtl as u32)),
+                        (
+                            "Drives",
+                            ps::Value::new(ps::HashTable::new(drives.into_iter().map(
+                                |(lun, HyperVDrive { disk, is_dvd })| {
+                                    (lun.to_string(), {
+                                        let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
+                                        if let Some(disk) = disk {
+                                            drive.push(("DiskPath", ps::Value::new(disk)));
+                                        }
+                                        ps::Value::new(ps::HashTable::new(drive))
+                                    })
+                                },
+                            ))),
+                        ),
+                    ])),
+                )
+            },
+        ))
+    });
+
+    let ide_controllers =
+        (!args.ide_controllers.is_empty()).then(|| {
+            ps::HashTable::new(args.ide_controllers.into_iter().map(
+                |(controller_number, drives)| {
+                    (
+                        controller_number.to_string(),
+                        ps::Value::new(ps::HashTable::new(drives.into_iter().map(
+                            |(lun, HyperVDrive { disk, is_dvd })| {
+                                (lun.to_string(), {
+                                    let mut drive = vec![("Dvd", ps::Value::new(is_dvd))];
+                                    if let Some(disk) = disk {
+                                        drive.push(("DiskPath", ps::Value::new(disk)));
+                                    }
+                                    ps::Value::new(ps::HashTable::new(drive))
+                                })
+                            },
+                        ))),
+                    )
+                },
+            ))
+        });
+
+    let vmid = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Import-Module")
+            .positional(ps_mod)
+            .next()
+            .cmdlet("New-CustomVM")
+            .arg("VMName", args.name)
+            .arg_opt("Generation", args.generation)
+            .arg_opt("GuestStateIsolationEnabled", guest_state_isolation_enabled)
+            .arg_opt("GuestStateIsolationType", guest_state_isolation_type)
+            .arg_opt("GuestStateIsolationMode", args.guest_state_isolation_mode)
+            .arg_opt("GuestStateLifetime", args.guest_state_lifetime)
+            .arg_opt("GuestStateFilePath", args.guest_state_path)
+            .arg_opt("VMBusMessageRedirection", args.vmbus_message_redirection)
+            .arg_opt("FirmwareFile", args.firmware_file)
+            .arg_opt("FirmwareParameters", args.firmware_parameters)
+            .flag_opt(
+                args.increase_vtl2_memory
+                    .and_then(|v| v.then_some("IncreaseVtl2Memory")),
+            )
+            .arg_opt("DefaultBootAlwaysAttempt", args.default_boot_always_attempt)
+            .arg_opt("SecureBootEnabled", args.secure_boot_enabled)
+            .arg_opt("SecureBootTemplateId", secure_boot_template_id)
+            .arg_opt(
+                "ManagementVtlFeatureFlags",
+                args.management_vtl_feature_flags,
+            )
+            .arg_opt(
+                "GuestStateEncryptionPolicy",
+                args.guest_state_encryption_policy,
+            )
+            .arg_opt("Memory", args.memory)
+            .arg_opt("VpCount", args.vp_count)
+            .arg_opt("ApicMode", args.apic_mode)
+            .arg_opt("HwThreadsPerCore", args.hw_threads_per_core)
+            .arg_opt(
+                "MaxProcessorsPerNumaNode",
+                args.max_processors_per_numa_node,
+            )
+            .arg_opt("ScsiControllers", scsi_controllers)
+            .arg_opt("IdeControllers", ide_controllers)
+            .arg_opt("ImcHive", args.imc_hiv.as_ref().map(|f| f.path()))
+            .arg("Com1", args.com_1)
+            .arg("Com3", args.com_3)
+            .arg("TpmEnabled", args.tpm_enabled)
+            .arg_opt(
+                "ManagementVtlSettings",
+                args.management_vtl_settings.as_ref().map(|f| f.path()),
+            )
+            .finish()
+            .build(),
+    )
+    .await
+    .context("new_customvm")?;
+
+    Guid::from_str(&vmid).context("invalid vmid")
+}
+
 /// Runs New-VM with the given arguments.
 pub async fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
     run_host_cmd(
@@ -194,19 +741,19 @@ pub struct HyperVSetVMProcessorArgs {
 pub enum HyperVApicMode {
     /// Default APIC mode (what is this, exactly? It seems to not always include
     /// x2apic support).
-    Default,
+    Default = 0,
     /// Legacy APIC mode (no x2apic support).
-    Legacy,
+    Legacy = 1,
     /// x2apic mode (enabled by default? or just supported? unclear)
-    X2Apic,
+    X2Apic = 2,
 }
 
 impl ps::AsVal for HyperVApicMode {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVApicMode::Default => "Default",
-            HyperVApicMode::Legacy => "Legacy",
-            HyperVApicMode::X2Apic => "x2Apic",
+            HyperVApicMode::Default => "0",
+            HyperVApicMode::Legacy => "1",
+            HyperVApicMode::X2Apic => "2",
         }
     }
 }
@@ -1184,6 +1731,28 @@ pub async fn run_get_vm_host() -> anyhow::Result<HyperVGetVmHost> {
         .map_err(|e| anyhow::anyhow!("failed to parse HyperVGetVmHost: {}", e))
 }
 
+/// Get available vssd properties
+pub async fn run_get_vssd_properties() -> anyhow::Result<Vec<String>> {
+    let output = run_host_cmd(
+        PowerShellBuilder::new()
+            .cmdlet("Get-CimClass")
+            .arg("Namespace", "root\\virtualization\\v2")
+            .arg("ClassName", "Msvm_VirtualSystemSettingData")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "CimClassProperties")
+            .pipeline()
+            .cmdlet("Select-Object")
+            .arg("ExpandProperty", "Name")
+            .finish()
+            .build(),
+    )
+    .await
+    .context("get_vssd_properties")?;
+
+    Ok(output.lines().map(|x| x.to_owned()).collect())
+}
+
 /// Runs Get-GuestStateFile with the given arguments.
 pub async fn run_get_guest_state_file(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<PathBuf> {
     let output = run_host_cmd(
@@ -1219,7 +1788,7 @@ pub async fn run_set_base_vtl2_settings(
 ) -> anyhow::Result<()> {
     // Pass the settings via a file to avoid challenges escaping the string across
     // the command line.
-    let mut tempfile = tempfile::NamedTempFile::new().context("creating tempfile")?;
+    let mut tempfile = NamedTempFile::new().context("creating tempfile")?;
     tempfile
         .write_all(serde_json::to_string(vtl2_settings)?.as_bytes())
         .context("writing settings to tempfile")?;
