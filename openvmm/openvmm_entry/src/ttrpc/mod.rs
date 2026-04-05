@@ -704,6 +704,10 @@ impl VmService {
     }
 }
 
+#[cfg_attr(
+    not(any(windows, target_os = "linux")),
+    allow(unreachable_code, unused_variables)
+)]
 fn parse_nic_config(
     nic: vmservice::NicConfig,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
@@ -724,9 +728,17 @@ fn parse_nic_config(
             },
         }
         .into_resource(),
-        #[cfg(unix)]
         Backend::Tap(tap) => {
-            net_backend_resources::tap::TapHandle { name: tap.name }.into_resource()
+            #[cfg(target_os = "linux")]
+            {
+                let fd = net_tap::tap::open_tap(&tap.name).context("failed to open TAP device")?;
+                net_backend_resources::tap::TapHandle { fd }.into_resource()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = tap;
+                anyhow::bail!("TAP backend is only supported on Linux")
+            }
         }
         _ => anyhow::bail!("unsupported backend"),
     };
