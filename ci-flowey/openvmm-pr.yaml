@@ -19,7 +19,10 @@ parameters:
 jobs:
 - job: job0
   displayName: quick check [fmt, clippy x64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
   variables:
@@ -201,7 +204,10 @@ jobs:
     artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
 - job: job12
   displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -402,7 +408,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job11
   displayName: clippy [macos], unit tests [x64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -596,7 +605,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job10
   displayName: clippy [x64-windows], unit tests [x64-windows]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -822,7 +834,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job9
   displayName: build openhcl [x64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1168,7 +1183,10 @@ jobs:
     artifact: x64-openhcl-igvm-extras
 - job: job8
   displayName: build openhcl [aarch64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1423,7 +1441,10 @@ jobs:
     artifact: aarch64-openhcl-igvm-extras
 - job: job7
   displayName: build artifacts [x64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1733,7 +1754,10 @@ jobs:
     artifact: x64-tmks
 - job: job6
   displayName: build artifacts [aarch64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -1991,7 +2015,10 @@ jobs:
     artifact: aarch64-tmks
 - job: job5
   displayName: build artifacts (for VMM tests) [x64-windows]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -2280,7 +2307,10 @@ jobs:
     artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
 - job: job15
   displayName: run vmm-tests [x64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   - job5
@@ -2504,7 +2534,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job14
   displayName: run vmm-tests [x64-windows-amd]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   - job5
@@ -2771,7 +2804,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job13
   displayName: run vmm-tests [x64-windows-intel]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   - job5
@@ -3038,7 +3074,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job4
   displayName: build artifacts (not for VMM tests) [x64-windows]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -3236,7 +3275,10 @@ jobs:
     artifact: x64-windows-vmgs_lib
 - job: job3
   displayName: build artifacts (for VMM tests) [aarch64-windows]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -3520,7 +3562,10 @@ jobs:
     artifact: aarch64-windows-vmm-tests-archive
 - job: job2
   displayName: build artifacts (not for VMM tests) [aarch64-windows]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -3714,7 +3759,10 @@ jobs:
     artifact: aarch64-windows-vmgs_lib
 - job: job1
   displayName: xtask fmt (windows)
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
