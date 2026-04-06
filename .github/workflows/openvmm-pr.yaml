@@ -4312,8 +4312,8 @@ jobs:
     name: build openhcl (mi-secure) [x64-linux]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Ubuntu24.04-AMD64
+    - 1ES.Pool=openvmm-gh-amd-westus3
+    - 1ES.ImageOverride=ubuntu2404-amd64-256gb
     - JobId=job25-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
@@ -4591,8 +4591,8 @@ jobs:
     name: run vmm-tests [x64-windows-intel-mi-secure]
     runs-on:
     - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-Intel-WestUS3
-    - 1ES.ImageOverride=OpenVMM-CI-Windows-Prerelease
+    - 1ES.Pool=openvmm-gh-intel-westus3
+    - 1ES.ImageOverride=win-amd64
     - JobId=job26-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
     permissions:
       contents: read
