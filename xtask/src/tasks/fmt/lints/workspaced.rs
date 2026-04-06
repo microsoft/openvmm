@@ -174,16 +174,7 @@ impl Lint for WorkspacedManifest {
                 member.display()
             ));
         }
-        for dependency in self.dependencies.iter() {
-            // TODO: Remove this exception once xsync no longer depends on ci_logger
-            if dependency == Path::new("../support/ci_logger/Cargo.toml") {
-                continue;
-            }
-            content.unfixable(&format!(
-                "workspace dependency {} does not exist",
-                dependency.display()
-            ));
-        }
+        // Dependencies that we didn't see may be from other workspaces, as is done in the internal repo, so they're allowed
         // Exclusions that we didn't see may be nested workspaces, which don't get visited, so they're allowed
     }
 }

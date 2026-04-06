@@ -157,14 +157,8 @@ sequenceDiagram
     SV-->>App: read data available
 ```
 
-The guest VP is **not stalled** during this process. Writing to the
-ring and signaling the host are non-blocking operations in guest
-memory and hypercall space. The VP can continue executing guest code
-immediately after the signal. The guest kernel only blocks the
-*application thread* when it does a synchronous `read()` syscall (the
-kernel puts that thread to sleep until the completion interrupt
-arrives). Other threads and other VPs continue running normally. The
-VP itself is never taken out of VTL0 by the I/O submission.
+The guest VP is not stalled while the IO executes in and below
+storvsp.
 
 ### Retargeting
 

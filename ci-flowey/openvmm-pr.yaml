@@ -204,7 +204,10 @@ jobs:
     artifact: _internal-flowey-bootstrap-x86_64-linux-uid-1
 - job: job16
   displayName: build openhcl (mi-secure) [x64-linux]
-  pool: HvLite-CI-Linux-Pool-CentralUS
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   condition: and(succeeded(), not(canceled()))
@@ -2790,7 +2793,10 @@ jobs:
     displayName: 'validate cache entry: gh-release-download'
 - job: job17
   displayName: run vmm-tests [x64-windows-intel-mi-secure]
-  pool: HvLite-CI-Win-Pool
+  pool:
+    demands:
+    - 1ES.ImageOverride -equals win-amd64
+    name: openvmm-ado-intel-centralus
   dependsOn:
   - job0
   - job16
