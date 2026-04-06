@@ -16,6 +16,9 @@ profiler = ["underhill_core/profiler"]
 # Enable profiler tracing (heap profiling) support.
 mem-profile-tracing = ["dep:dhat", "underhill_core/mem-profile-tracing"]
 
+# Enable mimalloc secure mode.
+mi-secure = ["mimalloc/secure"]
+
 # Enable vpci support.
 vpci = ["underhill_core/vpci"]
 

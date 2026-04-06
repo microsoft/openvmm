@@ -22,7 +22,7 @@ use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::FlowPlatformKind;
 use flowey_core::node::NodeHandle;
-use flowey_core::pipeline::internal::AdoPool;
+use flowey_core::pipeline::AdoPool;
 use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;

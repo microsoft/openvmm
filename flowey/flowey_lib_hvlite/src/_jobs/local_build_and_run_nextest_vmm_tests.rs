@@ -18,6 +18,7 @@ use flowey::node::prelude::*;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 use vmm_test_images::KnownTestArtifacts;
 
@@ -483,6 +484,7 @@ impl SimpleFlowNode for Node {
                     release_cfg: release,
                     recipe: recipe_to_use,
                     custom_target: None,
+                    extra_features: BTreeSet::new(),
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,

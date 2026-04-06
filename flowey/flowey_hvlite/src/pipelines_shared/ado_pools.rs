@@ -6,14 +6,21 @@
 use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::pipeline::prelude::*;
 
-pub const WINDOWS_INTEL: &str = "HvLite-CI-Win-Pool";
-pub const WINDOWS_AMD: &str = "HvLite-CI-Win-Pool-WestUS2";
-pub const LINUX: &str = "HvLite-CI-Linux-Pool-CentralUS";
+pub const INTEL_POOL: &str = "openvmm-ado-intel-centralus";
 
-pub fn default_x86_pool(platform: FlowPlatform) -> &'static str {
+fn intel_pool_with_image(image: &str) -> AdoPool {
+    AdoPool {
+        name: INTEL_POOL.into(),
+        demands: vec![format!("1ES.ImageOverride -equals {image}")],
+    }
+}
+
+pub fn default_x86_pool(platform: FlowPlatform) -> AdoPool {
     match platform {
-        FlowPlatform::Windows => WINDOWS_INTEL,
-        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => LINUX,
+        FlowPlatform::Windows => intel_pool_with_image("win-amd64"),
+        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
+            intel_pool_with_image("ubuntu2404-amd64-256gb")
+        }
         platform => panic!("unsupported platform {platform}"),
     }
 }

@@ -181,7 +181,8 @@ impl AsyncRun<PmemQueue> for PmemWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_pmem_request(self, &state.mem, work);
+                    let bytes = process_pmem_request(self, &state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");
@@ -193,7 +194,11 @@ impl AsyncRun<PmemQueue> for PmemWorker {
     }
 }
 
-fn process_pmem_request(worker: &PmemWorker, mem: &GuestMemory, mut work: VirtioQueueCallbackWork) {
+fn process_pmem_request(
+    worker: &PmemWorker,
+    mem: &GuestMemory,
+    work: &VirtioQueueCallbackWork,
+) -> u32 {
     let mut req = [0; 4];
     let err = match work.read(mem, &mut req) {
         Ok(_) => match u32::from_le_bytes(req) {
@@ -219,5 +224,5 @@ fn process_pmem_request(worker: &PmemWorker, mem: &GuestMemory, mut work: Virtio
         }
     };
     let _ = work.write(mem, &u32::to_le_bytes(err));
-    work.complete(4);
+    4
 }
