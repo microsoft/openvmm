@@ -99,6 +99,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         &mut ExternallyManagedMmioIntercepts,
         VpciInterruptMapper::new(msi_controller),
         None,
+        None,
     )
     .unwrap();
 
@@ -151,6 +152,7 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
         device,
         &mut ExternallyManagedMmioIntercepts,
         VpciInterruptMapper::new(msi_controller),
+        None,
         None,
     )
     .unwrap();

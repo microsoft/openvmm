@@ -249,7 +249,9 @@ impl MmioIntercept for VpciBusDevice {
                         ReadWriteRequestType::Write(value) => {
                             match pci.pci_cfg_write(address, value) {
                                 IoResult::Ok => {}
-                                IoResult::Err(_) => {}
+                                IoResult::Err(err) => {
+                                    panic!("error writing to PCI config space: {err:#?}");
+                                }
                                 IoResult::Defer(token) => deferred.push(token),
                             }
                             None
@@ -290,7 +292,9 @@ impl VpciBusDevice {
             .clone()
             .spawn("vpci_bus_deferred_write", async move {
                 for mut token in deferred {
-                    poll_fn(|cx| token.poll_write(cx)).await.ok();
+                    if let Err(err) = poll_fn(|cx| token.poll_write(cx)).await {
+                        panic!("deferred PCI config space write failed: {err:#?}");
+                    }
                 }
                 outer_deferred.complete();
             })
