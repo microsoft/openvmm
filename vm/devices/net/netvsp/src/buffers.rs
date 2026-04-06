@@ -35,8 +35,8 @@ pub enum GuestBuffersError {
     SubAllocationTooSmall { sub_allocation_size: u32, mtu: u32 },
     #[error("GPADL has no ranges")]
     EmptyGpadl,
-    #[error("guest memory error")]
-    Memory(#[source] GuestMemoryError),
+    #[error("failed to lock guest page numbers")]
+    GpnLock(#[source] GuestMemoryError),
 }
 
 /// A type providing access to the netvsp receive buffer.
@@ -74,6 +74,9 @@ impl GuestBuffers {
         sub_allocation_size: u32,
         mtu: u32,
     ) -> Result<(), GuestBuffersError> {
+        if gpadl.first().is_none() {
+            return Err(GuestBuffersError::EmptyGpadl);
+        }
         mtu.checked_add(RX_HEADER_LEN)
             .and_then(|v| v.checked_add(BROKEN_CO_NETVSC_FOOTER_LEN))
             .ok_or(GuestBuffersError::InvalidMtu { mtu })?;
@@ -82,9 +85,6 @@ impl GuestBuffers {
                 sub_allocation_size,
                 mtu,
             });
-        }
-        if gpadl.first().is_none() {
-            return Err(GuestBuffersError::EmptyGpadl);
         }
         Ok(())
     }
@@ -97,14 +97,10 @@ impl GuestBuffers {
     ) -> Result<Self, GuestBuffersError> {
         Self::validate_config(&gpadl, sub_allocation_size, mtu)?;
 
-        let gpns = gpadl
-            .first()
-            .ok_or(GuestBuffersError::EmptyGpadl)?
-            .gpns()
-            .to_vec();
+        let gpns = gpadl.first().unwrap().gpns().to_vec();
         let locked_pages = mem
             .lock_gpns(false, &gpns)
-            .map_err(GuestBuffersError::Memory)?;
+            .map_err(GuestBuffersError::GpnLock)?;
         Ok(Self {
             mem,
             _gpadl: gpadl,

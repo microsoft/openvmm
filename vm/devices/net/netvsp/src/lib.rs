@@ -4479,24 +4479,29 @@ impl Coordinator {
         {
             let num_queues = state.state.primary.as_ref().unwrap().requested_num_queues;
             let mut active_queues = Vec::new();
-            let active_queue_count =
-                if let Some(rss_state) = state.state.primary.as_ref().unwrap().rss_state.as_ref() {
-                    active_queues.clone_from(&rss_state.indirection_table);
-                    active_queues.sort();
-                    active_queues.dedup();
-                    active_queues = active_queues
-                        .into_iter()
-                        .filter(|&index| index < num_queues)
-                        .collect::<Vec<_>>();
-                    if !active_queues.is_empty() {
-                        active_queues.len() as u16
-                    } else {
-                        tracelimit::warn_ratelimited!("Invalid RSS indirection table");
-                        num_queues
-                    }
+            let active_queue_count = if let Some(rss_state) =
+                state.state.primary.as_ref().unwrap().rss_state.as_ref()
+            {
+                active_queues.clone_from(&rss_state.indirection_table);
+                active_queues.sort();
+                active_queues.dedup();
+                active_queues = active_queues
+                    .into_iter()
+                    .filter(|&index| index < num_queues)
+                    .collect::<Vec<_>>();
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
                 } else {
+                    tracelimit::warn_ratelimited!(
+                        num_queues,
+                        indirection_table_len = rss_state.indirection_table.len(),
+                        "RSS indirection table has no entries within the valid queue range, falling back to num_queues",
+                    );
                     num_queues
-                };
+                }
+            } else {
+                num_queues
+            };
 
             RxBufferRanges::validate_params(
                 state.buffers.recv_buffer.count,
