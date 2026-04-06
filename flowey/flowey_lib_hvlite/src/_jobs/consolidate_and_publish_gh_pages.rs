@@ -43,7 +43,6 @@ impl SimpleFlowNode for Node {
             output,
         } = request;
 
-        let repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let logview_build =
             ctx.reqv(|v| crate::_jobs::build_test_results_website::Request { path: v });
 
@@ -51,13 +50,11 @@ impl SimpleFlowNode for Node {
             let rendered_guide = rendered_guide.claim(ctx);
             let rustdoc_windows = rustdoc_windows.claim(ctx);
             let rustdoc_linux = rustdoc_linux.claim(ctx);
-            let repo = repo.claim(ctx);
             let logview_build = logview_build.claim(ctx);
             |rt| {
                 let rendered_guide = rt.read(rendered_guide);
                 let rustdoc_windows = rt.read(rustdoc_windows);
                 let rustdoc_linux = rt.read(rustdoc_linux);
-                let repo = rt.read(repo);
                 let logview_build = rt.read(logview_build);
 
                 let consolidated_html = std::env::current_dir()?.join("out").absolute()?;
