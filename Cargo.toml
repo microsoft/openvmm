@@ -359,6 +359,7 @@ virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
 virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
 virtio_vsock = { path = "vm/devices/virtio/virtio_vsock" }
+vhost_user_fs = { path = "vm/devices/virtio/vhost_user_fs" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
 vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }

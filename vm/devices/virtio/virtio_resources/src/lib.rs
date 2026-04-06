@@ -174,6 +174,30 @@ pub mod vhost_user {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub mod vhost_user_fs {
+    use mesh::MeshPayload;
+    use std::os::fd::OwnedFd;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::VirtioDeviceHandle;
+
+    /// Handle for a virtio-fs device backed by an external vhost-user-fs
+    /// backend.
+    #[derive(MeshPayload)]
+    pub struct VhostUserFsHandle {
+        /// Connected Unix socket fd to the virtio-fs backend.
+        pub socket: OwnedFd,
+        /// Guest-visible mount tag.
+        pub tag: String,
+        /// Number of request queues exposed in the virtio-fs config space.
+        pub num_request_queues: u32,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserFsHandle {
+        const ID: &'static str = "vhost-user-fs";
+    }
+}
+
 pub mod vsock {
     use mesh::MeshPayload;
     use unix_socket::UnixListener;

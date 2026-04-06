@@ -38,6 +38,23 @@ struct VirtioFsDeviceConfig {
     num_request_queues: u32,
 }
 
+fn build_config(tag: &str, num_request_queues: u32) -> VirtioFsDeviceConfig {
+    let mut config = VirtioFsDeviceConfig {
+        tag: [0; 36],
+        num_request_queues,
+    };
+
+    let length = std::cmp::min(tag.len(), config.tag.len());
+    config.tag[..length].copy_from_slice(&tag.as_bytes()[..length]);
+    config
+}
+
+/// Encode the guest-visible virtio-fs config space for the given mount tag and
+/// request queue count.
+pub fn encode_config_space(tag: &str, num_request_queues: u32) -> Vec<u8> {
+    build_config(tag, num_request_queues).as_bytes().to_vec()
+}
+
 /// A virtio-fs PCI device.
 #[derive(InspectMut)]
 pub struct VirtioFsDevice {
@@ -68,20 +85,13 @@ impl VirtioFsDevice {
     where
         Fs: 'static + fuse::Fuse + Send + Sync,
     {
-        let mut config = VirtioFsDeviceConfig {
-            tag: [0; 36],
-            num_request_queues: 1,
-        };
+        let config = build_config(tag, 1);
 
         let notify_corruption = if let Some(notify) = notify_corruption {
             notify
         } else {
             Arc::new(|| {})
         };
-
-        // Copy the tag into the config space (truncate it for now if too long).
-        let length = std::cmp::min(tag.len(), config.tag.len());
-        config.tag[..length].copy_from_slice(&tag.as_bytes()[..length]);
 
         Self {
             task_name: format!("virtiofs-{}", tag).into(),
@@ -215,6 +225,31 @@ impl VirtioDevice for VirtioFsDevice {
         }
         self.shared_memory_region = None;
         self.fs.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_config_space;
+
+    #[test]
+    fn encode_config_space_pads_tag_and_writes_queue_count() {
+        let config = encode_config_space("shared", 3);
+
+        assert_eq!(config.len(), 40);
+        assert_eq!(&config[..6], b"shared");
+        assert!(config[6..36].iter().all(|&byte| byte == 0));
+        assert_eq!(&config[36..], &3u32.to_le_bytes());
+    }
+
+    #[test]
+    fn encode_config_space_truncates_long_tags() {
+        let tag = "abcdefghijklmnopqrstuvwxyz1234567890LONG";
+        let config = encode_config_space(tag, 1);
+
+        assert_eq!(config.len(), 40);
+        assert_eq!(&config[..36], &tag.as_bytes()[..36]);
+        assert_eq!(&config[36..], &1u32.to_le_bytes());
     }
 }
 

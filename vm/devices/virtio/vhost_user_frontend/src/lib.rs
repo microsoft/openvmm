@@ -205,6 +205,7 @@ impl VirtioDevice for VhostUserFrontend {
         if !self.protocol_features.config() {
             return 0;
         }
+
         match send_get_config(&self.socket, offset as u32, 4).await {
             Ok(data) if data.len() >= 4 => u32::from_le_bytes(data[..4].try_into().unwrap()),
             Ok(_) => 0,
@@ -220,6 +221,10 @@ impl VirtioDevice for VhostUserFrontend {
     }
 
     async fn write_registers_u32(&mut self, offset: u16, val: u32) {
+        if !self.protocol_features.config() {
+            return;
+        }
+
         if let Err(e) =
             send_set_config(&self.socket, offset, &val.to_le_bytes(), self.reply_ack()).await
         {
