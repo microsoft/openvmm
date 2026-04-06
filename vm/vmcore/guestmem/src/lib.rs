@@ -2297,7 +2297,6 @@ impl GuestMemoryInner {
     }
 }
 
-#[derive(Clone)]
 pub struct LockedPages {
     pages: Box<[PagePtr]>,
     gpns: Option<Box<[u64]>>,
