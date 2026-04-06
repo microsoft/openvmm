@@ -14,13 +14,29 @@ if [ -z "$REALGXX" ]; then
     fi
 fi
 
+if [ -z "$X86_64_SYSROOT" ]; then
+    echo "error: X86_64_SYSROOT is not set" >&2
+    exit 1
+fi
+
 # Auto-detect the C++ standard library headers in the sysroot.
 # The version directory (e.g., 11.5.0) varies by toolchain.
-cxx_flags=""
-for ver_dir in "$X86_64_SYSROOT/include/c++"/*/; do
-    ver_dir="${ver_dir%/}"
-    cxx_flags="-isystem $ver_dir -isystem $ver_dir/x86_64-linux-musl"
-    break
+ver_dir=""
+for candidate in "$X86_64_SYSROOT/include/c++"/*/; do
+    candidate="${candidate%/}"
+    if [ -d "$candidate" ]; then
+        ver_dir="$candidate"
+        break
+    fi
 done
 
-MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "$REALGXX" "$@" -specs "$script_dir/musl-gcc.specs" $cxx_flags
+if [ -z "$ver_dir" ]; then
+    echo "error: could not find C++ headers under $X86_64_SYSROOT/include/c++" >&2
+    exit 1
+fi
+
+MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "$REALGXX" \
+    "$@" \
+    -specs "$script_dir/musl-gcc.specs" \
+    -isystem "$ver_dir" \
+    -isystem "$ver_dir/x86_64-linux-musl"
