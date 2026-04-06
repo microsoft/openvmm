@@ -33,6 +33,10 @@ pub enum Error {
     UnknownQemuMessage(u8),
     #[error("unsupported pixel format: {0} bits per pixel")]
     UnsupportedPixelFormat(u8),
+    #[error("unsupported security type: {0}")]
+    UnsupportedSecurityType(u8),
+    #[error("resolution changed but client does not support DesktopSize")]
+    ResizeUnsupported,
     #[error("socket error")]
     Io(#[from] std::io::Error),
 }
@@ -202,11 +206,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             )
                             .await?;
                     }
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "client selected unsupported security type",
-                    )
-                    .into());
+                    return Err(Error::UnsupportedSecurityType(chosen_type));
                 }
 
                 if version.0 == rfb::PROTOCOL_VERSION_38 {
@@ -288,11 +288,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 let (new_width, new_height) = self.fb.resolution();
                 if new_width != width || new_height != height {
                     if !self.supports_desktop_resize {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Unsupported,
-                            "framebuffer resolution changed but client does not support DesktopSize",
-                        )
-                        .into());
+                        return Err(Error::ResizeUnsupported);
                     }
                     width = new_width;
                     height = new_height;
