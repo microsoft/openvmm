@@ -220,7 +220,11 @@ impl<T: Listener> Server<T> {
                 State::Connected { .. } => {
                     // Take ownership of the connected state so we can
                     // move abort_send into the new-connection branch.
-                    let (mut task, abort, _old_addr) = if let State::Connected { task, abort, remote_addr } =
+                    let (mut task, abort, _old_addr) = if let State::Connected {
+                        task,
+                        abort,
+                        remote_addr,
+                    } =
                         std::mem::replace(&mut self.state, State::Invalid)
                     {
                         (task, abort, remote_addr)

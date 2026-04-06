@@ -177,12 +177,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
             rfb::PROTOCOL_VERSION_37 | rfb::PROTOCOL_VERSION_38 => {
                 // RFB 3.7/3.8: server sends a list of supported security types.
                 socket
-                    .write_all(
-                        rfb::Security37 {
-                            type_count: 1,
-                        }
-                        .as_bytes(),
-                    )
+                    .write_all(rfb::Security37 { type_count: 1 }.as_bytes())
                     .await?;
                 socket.write_all(&[rfb::SECURITY_TYPE_NONE]).await?;
 
@@ -416,8 +411,10 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                             for x in 0..cw as usize {
                                 let byte_i = x / 8;
                                 let bit = 7 - (x % 8);
-                                let in_mask = byte_i < mask_stride && (MASK[y][byte_i] >> bit) & 1 == 1;
-                                let in_fill = byte_i < mask_stride && (FILL[y][byte_i] >> bit) & 1 == 1;
+                                let in_mask =
+                                    byte_i < mask_stride && (MASK[y][byte_i] >> bit) & 1 == 1;
+                                let in_fill =
+                                    byte_i < mask_stride && (FILL[y][byte_i] >> bit) & 1 == 1;
                                 if in_mask && in_fill {
                                     // White fill
                                     pixels.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0x00][..bpp]);
@@ -430,7 +427,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                                 }
                             }
                         }
-                        let mask_flat: Vec<u8> = MASK.iter().flat_map(|r| r.iter().copied()).collect();
+                        let mask_flat: Vec<u8> =
+                            MASK.iter().flat_map(|r| r.iter().copied()).collect();
                         socket
                             .write_all(
                                 rfb::Rectangle {
@@ -476,7 +474,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                                 let status = zlib_stream
                                     .compress(
                                         &tile_buf[(zlib_stream.total_in() - before_in) as usize..],
-                                        &mut zlib_buf[(zlib_stream.total_out() - before_out) as usize..],
+                                        &mut zlib_buf
+                                            [(zlib_stream.total_out() - before_out) as usize..],
                                         FlushCompress::Sync,
                                     )
                                     .unwrap();
@@ -485,7 +484,8 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                                 if out_used >= zlib_buf.len() - 16 {
                                     zlib_buf.resize(zlib_buf.len() * 2, 0);
                                 }
-                                let in_done = (zlib_stream.total_in() - before_in) as usize >= tile_buf.len();
+                                let in_done =
+                                    (zlib_stream.total_in() - before_in) as usize >= tile_buf.len();
                                 if in_done && status == flate2::Status::Ok {
                                     break;
                                 }
@@ -550,8 +550,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         socket.read_exact(encodings.as_mut_bytes()).await?;
                         self.supports_desktop_resize =
                             encodings.contains(&rfb::ENCODING_TYPE_DESKTOP_SIZE.into());
-                        self.supports_zlib =
-                            encodings.contains(&rfb::ENCODING_TYPE_ZLIB.into());
+                        self.supports_zlib = encodings.contains(&rfb::ENCODING_TYPE_ZLIB.into());
                         let had_cursor = self.supports_cursor;
                         self.supports_cursor =
                             encodings.contains(&rfb::ENCODING_TYPE_CURSOR.into());
