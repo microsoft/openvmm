@@ -567,10 +567,20 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     rfb::CS_MESSAGE_SET_PIXEL_FORMAT => {
                         let mut input = rfb::SetPixelFormat::new_zeroed();
                         socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
-                        // RFB spec only defines 8, 16, and 32 bits per pixel.
-                        match input.pixel_format.bits_per_pixel {
+                        // Validate pixel format: only true-color with
+                        // spec-defined bpp, and shifts must be < 32 to
+                        // avoid panics in convert_pixels.
+                        let pf = &input.pixel_format;
+                        match pf.bits_per_pixel {
                             8 | 16 | 32 => {}
                             bpp => return Err(Error::UnsupportedPixelFormat(bpp)),
+                        }
+                        if pf.true_color_flag == 0
+                            || pf.red_shift >= 32
+                            || pf.green_shift >= 32
+                            || pf.blue_shift >= 32
+                        {
+                            return Err(Error::UnsupportedPixelFormat(pf.bits_per_pixel));
                         }
                         fmt = input.pixel_format;
                         // Pixel format changed, force a full update.
