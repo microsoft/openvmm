@@ -97,8 +97,10 @@ fn test_aes_256_gcm() {
 
     let aes = Aes256Gcm::new(&key.try_into().unwrap()).unwrap();
     let mut enc_ctx = aes.encrypt().unwrap();
-    let enc_cipher = enc_ctx.cipher(&iv, &plain, &mut tag.clone()).unwrap();
+    let mut enc_tag = vec![0u8; tag.len()];
+    let enc_cipher = enc_ctx.cipher(&iv, &plain, &mut enc_tag).unwrap();
     assert_eq!(enc_cipher, cipher);
+    assert_eq!(enc_tag, tag);
 
     let mut dec_ctx = aes.decrypt().unwrap();
     let dec_plain = dec_ctx.cipher(&iv, &cipher, &tag).unwrap();

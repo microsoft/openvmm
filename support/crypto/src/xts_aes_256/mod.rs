@@ -77,15 +77,17 @@ fn test_xts_aes_256() {
     let tweak: u128 = 0;
     let plain =
         hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap();
+    let expected_ciphertext =
+        hex::decode("3a060a8cad115a6f44572e3759e43c8fcad8bfcb233ff6ad71b7c1e7ca651508").unwrap();
 
     let data_unit_size = plain.len() as u32;
     let xts = XtsAes256::new(&key.try_into().unwrap(), data_unit_size).unwrap();
 
-    // Encrypt and verify the ciphertext differs from plaintext.
+    // Encrypt and verify against known test vector.
     let mut enc_data = plain.clone();
     let mut enc_ctx = xts.encrypt().unwrap();
     enc_ctx.cipher(tweak, &mut enc_data).unwrap();
-    assert_ne!(enc_data, plain);
+    assert_eq!(enc_data, expected_ciphertext);
 
     // Decrypt and verify we recover the original plaintext.
     let mut dec_data = enc_data.clone();
