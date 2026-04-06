@@ -26,8 +26,6 @@ guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 task_control.workspace = true
-
-futures.workspace = true
 pal_async.workspace = true
 
 anyhow.workspace = true
