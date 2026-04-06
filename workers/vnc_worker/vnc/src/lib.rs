@@ -424,9 +424,12 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         ];
                         let cw: u16 = 18;
                         let ch: u16 = 18;
-                        let bpp = fmt.bits_per_pixel as usize / 8;
                         let mask_stride = ((cw as usize) + 7) / 8;
-                        let mut pixels = Vec::with_capacity(cw as usize * ch as usize * bpp);
+                        // Build cursor as 0x00RRGGBB u32 pixels, then convert
+                        // through the negotiated pixel format.
+                        const WHITE: u32 = 0x00FFFFFF;
+                        const BLACK: u32 = 0x00000000;
+                        let mut cursor_src = Vec::with_capacity(cw as usize * ch as usize);
                         for y in 0..ch as usize {
                             for x in 0..cw as usize {
                                 let byte_i = x / 8;
@@ -435,18 +438,11 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                                     byte_i < mask_stride && (MASK[y][byte_i] >> bit) & 1 == 1;
                                 let in_fill =
                                     byte_i < mask_stride && (FILL[y][byte_i] >> bit) & 1 == 1;
-                                if in_mask && in_fill {
-                                    // White fill
-                                    pixels.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0x00][..bpp]);
-                                } else if in_mask {
-                                    // Black outline
-                                    pixels.extend_from_slice(&[0x00, 0x00, 0x00, 0x00][..bpp]);
-                                } else {
-                                    // Transparent
-                                    pixels.extend_from_slice(&[0x00; 4][..bpp]);
-                                }
+                                cursor_src.push(if in_mask && in_fill { WHITE } else { BLACK });
                             }
                         }
+                        let mut pixels = Vec::new();
+                        convert_pixels(&cursor_src, &fmt, &mut pixels);
                         let mask_flat: Vec<u8> =
                             MASK.iter().flat_map(|r| r.iter().copied()).collect();
                         socket
