@@ -1391,7 +1391,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "build openhcl (mi-secure) [x64-linux]",
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_1es())
                 .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
@@ -1451,9 +1451,7 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowArch::X86_64,
                     "run vmm-tests [x64-windows-intel-mi-secure]",
                 )
-                .gh_set_pool(
-                    crate::pipelines_shared::gh_pools::windows_intel_self_hosted_largedisk(),
-                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::windows_intel_1es())
                 .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
                     FlowPlatform::Windows,
                 ))
