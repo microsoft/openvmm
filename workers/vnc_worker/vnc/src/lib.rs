@@ -187,6 +187,24 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 let mut chosen_type = 0u8;
                 socket.read_exact(chosen_type.as_mut_bytes()).await?;
 
+                if chosen_type != rfb::SECURITY_TYPE_NONE {
+                    if version.0 == rfb::PROTOCOL_VERSION_38 {
+                        socket
+                            .write_all(
+                                rfb::SecurityResult {
+                                    status: rfb::SECURITY_RESULT_STATUS_FAILED.into(),
+                                }
+                                .as_bytes(),
+                            )
+                            .await?;
+                    }
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "client selected unsupported security type",
+                    )
+                    .into());
+                }
+
                 if version.0 == rfb::PROTOCOL_VERSION_38 {
                     // RFB 3.8: server sends SecurityResult after negotiation.
                     socket
