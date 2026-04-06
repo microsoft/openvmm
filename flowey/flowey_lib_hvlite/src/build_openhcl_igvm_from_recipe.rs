@@ -252,6 +252,8 @@ flowey_request! {
         pub release_cfg: bool,
         pub recipe: OpenhclIgvmRecipe,
         pub custom_target: Option<CommonTriple>,
+        /// Additional features to enable on top of the recipe's defaults.
+        pub extra_features: BTreeSet<OpenvmmHclFeature>,
 
         pub built_openvmm_hcl: WriteVar<crate::build_openvmm_hcl::OpenvmmHclOutput>,
         pub built_openhcl_boot: WriteVar<crate::build_openhcl_boot::OpenhclBootOutput>,
@@ -285,6 +287,7 @@ impl SimpleFlowNode for Node {
             release_cfg,
             recipe,
             custom_target,
+            extra_features,
             built_openvmm_hcl,
             built_openhcl_boot,
             built_openhcl_igvm,
@@ -295,7 +298,7 @@ impl SimpleFlowNode for Node {
             local_only,
             igvm_manifest,
             openhcl_kernel_package,
-            openvmm_hcl_features,
+            mut openvmm_hcl_features,
             target,
             vtl0_kernel_type,
             with_uefi,
@@ -303,6 +306,8 @@ impl SimpleFlowNode for Node {
             with_sidecar,
             max_trace_level,
         } = recipe.recipe_details(release_cfg);
+
+        openvmm_hcl_features.extend(extra_features);
 
         let OpenhclIgvmRecipeDetailsLocalOnly {
             openvmm_hcl_no_strip,
