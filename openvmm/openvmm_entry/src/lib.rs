@@ -744,22 +744,6 @@ async fn vm_config_from_command_line(
         vmbus_devices.push(nic_config.into_netvsp_handle());
     }
 
-    if opt.mcr {
-        tracing::info!("Instantiating MCR controller");
-
-        // Arbitrary but constant instance ID to be consistent across boots.
-        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
-
-        vpci_devices.push(VpciDeviceConfig {
-            vtl: DeviceVtl::Vtl0,
-            instance_id: MCR_INSTANCE_ID,
-            resource: mcr_resources::McrControllerHandle {
-                instance_id: MCR_INSTANCE_ID,
-            }
-            .into_resource(),
-        });
-    }
-
     // Build initial PCIe devices list from CLI options. Storage devices
     // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
     let mut pcie_devices = Vec::new();

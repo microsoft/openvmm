@@ -75,7 +75,6 @@ kmsg_defs.workspace = true
 kmsg_writer.workspace = true
 hcl.workspace = true
 mana_driver.workspace = true
-mcr_resources.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 net_packet_capture.workspace = true
