@@ -60,10 +60,15 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         tracing::info!("Worker quit, waiting for mesh");
         self.inner.mesh.shutdown().await;
 
-        tracing::info!("Mesh shutdown, waiting for logging tasks");
-        for t in self.inner.resources.log_stream_tasks {
-            t.await?;
-        }
+        tracing::info!("Mesh shutdown, stopping logging tasks");
+        futures::future::join_all(
+            self.inner
+                .resources
+                .log_stream_tasks
+                .into_iter()
+                .map(|t| t.cancel()),
+        )
+        .await;
 
         Ok(())
     }
