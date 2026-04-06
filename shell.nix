@@ -177,14 +177,18 @@ in pkgs.mkShell {
     ${if hostArch == "x86_64" then ''
     # On x64 host: native x64 + cross aarch64
     ln -sf ${nativeGcc}/bin/gcc $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-gcc
+    ln -sf ${nativeGcc}/bin/g++ $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-g++
     ln -sf ${pkgs.binutils}/bin/objcopy $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-objcopy
     ln -sf ${aarch64CrossGcc}/bin/aarch64-unknown-linux-gnu-gcc $NIX_CC_WRAPPER_DIR/aarch64-linux-gnu-gcc
+    ln -sf ${aarch64CrossGcc}/bin/aarch64-unknown-linux-gnu-g++ $NIX_CC_WRAPPER_DIR/aarch64-linux-gnu-g++
     ln -sf ${aarch64CrossGcc}/bin/aarch64-unknown-linux-gnu-objcopy $NIX_CC_WRAPPER_DIR/aarch64-linux-gnu-objcopy
     '' else ''
     # On aarch64 host: native aarch64 + cross x64
     ln -sf ${nativeGcc}/bin/gcc $NIX_CC_WRAPPER_DIR/aarch64-linux-gnu-gcc
+    ln -sf ${nativeGcc}/bin/g++ $NIX_CC_WRAPPER_DIR/aarch64-linux-gnu-g++
     ln -sf ${pkgs.binutils}/bin/objcopy $NIX_CC_WRAPPER_DIR/aarch64-linux-gnu-objcopy
     ln -sf ${x64CrossGcc}/bin/x86_64-unknown-linux-gnu-gcc $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-gcc
+    ln -sf ${x64CrossGcc}/bin/x86_64-unknown-linux-gnu-g++ $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-g++
     ln -sf ${x64CrossGcc}/bin/x86_64-unknown-linux-gnu-objcopy $NIX_CC_WRAPPER_DIR/x86_64-linux-gnu-objcopy
     ''}
     export PATH="$NIX_CC_WRAPPER_DIR:$PATH"

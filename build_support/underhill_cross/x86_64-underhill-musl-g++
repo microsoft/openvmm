@@ -1,0 +1,26 @@
+#!/bin/sh
+
+script_dir="$(dirname "$0")"
+
+# Determine the G++ binary to use.
+# - REALGXX env var takes precedence (explicit override)
+# - x86_64-linux-gnu-g++ (Ubuntu/Fedora cross-prefix)
+# - g++ (Azure Linux / native x86_64 hosts where g++ has no prefix)
+if [ -z "$REALGXX" ]; then
+    if command -v x86_64-linux-gnu-g++ >/dev/null 2>&1; then
+        REALGXX=x86_64-linux-gnu-g++
+    else
+        REALGXX=g++
+    fi
+fi
+
+# Auto-detect the C++ standard library headers in the sysroot.
+# The version directory (e.g., 11.5.0) varies by toolchain.
+cxx_flags=""
+for ver_dir in "$X86_64_SYSROOT/include/c++"/*/; do
+    ver_dir="${ver_dir%/}"
+    cxx_flags="-isystem $ver_dir -isystem $ver_dir/x86_64-linux-musl"
+    break
+done
+
+MUSL_ARCH=x86_64 MUSL_SYSROOT="$X86_64_SYSROOT" exec "$REALGXX" "$@" -specs "$script_dir/musl-gcc.specs" $cxx_flags

@@ -28,6 +28,10 @@ CC_aarch64_underhill_linux_musl = { value = "build_support/underhill_cross/aarch
 CC_aarch64_unknown_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-gcc", relative = true }
 CC_x86_64_underhill_linux_musl = { value = "build_support/underhill_cross/x86_64-underhill-musl-gcc", relative = true }
 CC_x86_64_unknown_linux_musl = { value = "build_support/underhill_cross/x86_64-underhill-musl-gcc", relative = true }
+CXX_aarch64_underhill_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-g++", relative = true }
+CXX_aarch64_unknown_linux_musl = { value = "build_support/underhill_cross/aarch64-underhill-musl-g++", relative = true }
+CXX_x86_64_underhill_linux_musl = { value = "build_support/underhill_cross/x86_64-underhill-musl-g++", relative = true }
+CXX_x86_64_unknown_linux_musl = { value = "build_support/underhill_cross/x86_64-underhill-musl-g++", relative = true }
 
 # Use the packaged verison of protoc, symlinked by repo setup tooling
 PROTOC = { value = ".packages/Google.Protobuf.Tools/tools/protoc", relative = true }
