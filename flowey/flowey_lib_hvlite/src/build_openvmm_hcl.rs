@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum OpenvmmHclFeature {
     Gdb,
+    MiSecure,
     Tpm,
     LocalOnlyCustom(String),
 }
@@ -150,6 +151,7 @@ impl FlowNode for Node {
                 .into_iter()
                 .map(|f| match f {
                     OpenvmmHclFeature::Gdb => "gdb".into(),
+                    OpenvmmHclFeature::MiSecure => "mi-secure".into(),
                     OpenvmmHclFeature::Tpm => "tpm".into(),
                     OpenvmmHclFeature::LocalOnlyCustom(s) => s,
                 })

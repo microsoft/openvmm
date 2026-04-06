@@ -121,6 +121,12 @@ pub struct BuildIgvmCliCustomizations {
     #[clap(long)]
     pub with_debuginfo: bool,
 
+    /// Build mimalloc with secure mode enabled. This adds extra security
+    /// hardening (guard pages, randomized allocation, encrypted free lists)
+    /// at a small performance cost.
+    #[clap(long)]
+    pub with_mi_secure: bool,
+
     /// Path to custom openvmm_hcl binary, none means openhcl will be built.
     #[clap(long)]
     pub custom_openvmm_hcl: Option<PathBuf>,
@@ -295,6 +301,7 @@ impl IntoPipeline for BuildIgvmCli {
                     override_manifest,
                     with_perf_tools,
                     with_debuginfo,
+                    with_mi_secure,
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,
@@ -435,6 +442,7 @@ impl IntoPipeline for BuildIgvmCli {
                 }),
                 with_perf_tools,
                 with_debuginfo,
+                with_mi_secure,
                 override_kernel_pkg: override_kernel_pkg.map(|p| match p {
                     KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
                     KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,
