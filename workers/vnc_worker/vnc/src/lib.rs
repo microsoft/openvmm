@@ -287,34 +287,39 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                 // Ensure the desktop size has not changed.
                 let (new_width, new_height) = self.fb.resolution();
                 if new_width != width || new_height != height {
+                    if !self.supports_desktop_resize {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "framebuffer resolution changed but client does not support DesktopSize",
+                        )
+                        .into());
+                    }
                     width = new_width;
                     height = new_height;
                     force_full_update = true;
-                    if self.supports_desktop_resize {
-                        // Notify the client of the new desktop size.
-                        socket
-                            .write_all(
-                                rfb::FramebufferUpdate {
-                                    message_type: rfb::SC_MESSAGE_TYPE_FRAMEBUFFER_UPDATE,
-                                    padding: 0,
-                                    rectangle_count: 1.into(),
-                                }
-                                .as_bytes(),
-                            )
-                            .await?;
-                        socket
-                            .write_all(
-                                rfb::Rectangle {
-                                    x: 0.into(),
-                                    y: 0.into(),
-                                    width: width.into(),
-                                    height: height.into(),
-                                    encoding_type: rfb::ENCODING_TYPE_DESKTOP_SIZE.into(),
-                                }
-                                .as_bytes(),
-                            )
-                            .await?;
-                    }
+                    // Notify the client of the new desktop size.
+                    socket
+                        .write_all(
+                            rfb::FramebufferUpdate {
+                                message_type: rfb::SC_MESSAGE_TYPE_FRAMEBUFFER_UPDATE,
+                                padding: 0,
+                                rectangle_count: 1.into(),
+                            }
+                            .as_bytes(),
+                        )
+                        .await?;
+                    socket
+                        .write_all(
+                            rfb::Rectangle {
+                                x: 0.into(),
+                                y: 0.into(),
+                                width: width.into(),
+                                height: height.into(),
+                                encoding_type: rfb::ENCODING_TYPE_DESKTOP_SIZE.into(),
+                            }
+                            .as_bytes(),
+                        )
+                        .await?;
                 }
 
                 // Read current framebuffer.
