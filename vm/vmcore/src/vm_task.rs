@@ -142,15 +142,17 @@ pub struct VmTaskDriverBuilder<'a> {
 }
 
 impl VmTaskDriverBuilder<'_> {
-    /// A hint to the backend specifies whether the driver should spawned tasks
-    /// that always on a thread handling the target VP.
+    /// A hint to the backend specifying whether spawned tasks should always
+    /// run on the thread handling the target VP.
     ///
     /// If `false` (the default), then when spawned tasks are awoken, they may
     /// run on any executor (such as the current one). If `true`, the backend
-    /// will run them on the same thread that would drive async IO.
+    /// will endeavor to run them on the same thread that would drive async IO.
     ///
     /// Some devices will want to override the default to reduce jitter or
-    /// ensure that IO is issued from the correct processor.
+    /// ensure that IO is issued from the correct processor. For example,
+    /// StorVSP sets this to true for its channel workers, so that all of a
+    /// channel's IO and tasks ideally run on the same VP's thread.
     pub fn run_on_target(&mut self, run_on_target: bool) -> &mut Self {
         self.run_on_target = run_on_target;
         self
@@ -160,7 +162,12 @@ impl VmTaskDriverBuilder<'_> {
     /// tasks and IO.
     ///
     /// Backends can use this to ensure that spawned tasks and async IO will run
-    /// near or on the target VP.
+    /// near or on the target VP. For example, StorVSP sets this to the VP
+    /// from the VMBus channel open request's `target_vp` field, so that
+    /// each channel's worker runs on the VP the guest specified.
+    ///
+    /// If not set, the backend uses its default scheduling (typically the
+    /// calling thread or a shared pool).
     pub fn target_vp(&mut self, target_vp: u32) -> &mut Self {
         self.target_vp = Some(target_vp);
         self
@@ -190,6 +197,11 @@ pub struct VmTaskDriver {
 
 impl VmTaskDriver {
     /// Updates the target VP for the task.
+    ///
+    /// The effectiveness of this call, and when it would take effect,
+    /// depends on the backend. For example, in the OpenHCL threadpool backend,
+    /// this will cause new IO to target the new VP's thread, but
+    /// existing IO will continue to run on the original VP's thread.
     pub fn retarget_vp(&self, target_vp: u32) {
         self.inner.retarget_vp(target_vp)
     }
