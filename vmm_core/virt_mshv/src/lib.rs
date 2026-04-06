@@ -367,7 +367,7 @@ impl virt::X86Partition for MshvPartition {
 
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
         // TODO
-        tracing::warn!(?vp_index, ?vtl, lint, "ignored lint pulse");
+        tracelimit::warn_ratelimited!(?vp_index, ?vtl, lint, "ignored lint pulse");
     }
 }
 

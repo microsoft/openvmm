@@ -56,7 +56,7 @@ burette run --test memory -o memory.json
 ### Network throughput
 
 Measures TCP throughput (Gbps) and UDP packet rate (pps) using iperf3
-with an Alpine VM and Consomme networking:
+with a linux_direct VM, an erofs tool image, and Consomme networking:
 
 ```bash
 burette run --test network -o network.json
@@ -105,8 +105,9 @@ Per-N metrics include `scale_{N}_mean_boot_ms`,
 
 ### Disk I/O
 
-Measures block I/O throughput (MiB/s) and IOPS using fio in an Alpine VM
-with a data disk. Supports virtio-blk and storvsc (synthetic SCSI) backends:
+Measures block I/O throughput (MiB/s) and IOPS using fio in a linux_direct
+VM with an erofs tool image and a data disk. Supports virtio-blk and storvsc
+(synthetic SCSI) backends:
 
 ```bash
 # Virtio-blk with RAM-backed disk (measures virtio overhead)

@@ -342,37 +342,41 @@ fn cmd_run(args: RunArgs) -> anyhow::Result<()> {
 }
 
 fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
-    use petri_artifacts_core::AsArtifactHandle;
-    use petri_artifacts_core::ResolveTestArtifact;
-
     let resolver =
         petri_artifact_resolver_openvmm_known_paths::OpenvmmKnownPathsTestArtifactResolver::new("");
 
     let bundle_name = petri_artifact_resolver_openvmm_known_paths::resolve_bundle_name;
 
-    // Each entry: (artifact ID, resolved path, bundle-relative destination).
-    // Bundle destinations come from resolve_bundle_name, which returns the
-    // same file_name that get_path uses — so VMM_TESTS_CONTENT_DIR finds them.
-    use petri_artifacts_common::tags::MachineArch;
-    let arch = MachineArch::host();
-    let artifact_ids = match arch {
-        MachineArch::X86_64 => vec![
-            petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
-            petri_artifacts_common::artifacts::PIPETTE_LINUX_X64.erase(),
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64.erase(),
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64.erase(),
-            petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64.erase(),
-            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64.erase(),
-        ],
-        MachineArch::Aarch64 => vec![
-            petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE.erase(),
-            petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64.erase(),
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64.erase(),
-            petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64.erase(),
-            petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_AARCH64.erase(),
-            petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64.erase(),
-        ],
+    // Collect the union of all artifacts needed by every test, using the
+    // same register_artifacts functions that cmd_run uses. This avoids
+    // duplicating artifact lists and automatically adapts to the host arch.
+    let all_registers: &[fn(&petri::ArtifactResolver<'_>)] = &[
+        tests::boot_time::register_artifacts,
+        tests::scale_boot::register_artifacts,
+        tests::memory::register_artifacts,
+        tests::network::register_artifacts,
+        tests::disk_io::register_artifacts,
+    ];
+
+    let mut requirements = petri::TestArtifactRequirements::new();
+    for register in all_registers {
+        register(&petri::ArtifactResolver::collector(&mut requirements));
+    }
+
+    // Deduplicate: required_artifacts may contain repeats across tests.
+    let artifact_ids: Vec<_> = {
+        let mut seen = std::collections::HashSet::new();
+        requirements
+            .required_artifacts()
+            .filter(|id| seen.insert(*id))
+            .collect()
     };
+
+    // Resolve all artifacts at once — reports every missing artifact in
+    // a single error rather than failing on the first one.
+    let artifacts = requirements
+        .resolve(&resolver)
+        .context("failed to resolve test artifacts")?;
 
     let mut files: Vec<(PathBuf, String)> = Vec::new();
 
@@ -382,39 +386,22 @@ fn cmd_package(args: PackageArgs) -> anyhow::Result<()> {
             .context("failed to find burette binary")?;
     files.push((burette_path, "burette".into()));
 
-    // Resolve each artifact and determine its bundle destination.
+    // Build the file list from resolved artifacts.
     for id in artifact_ids {
-        let path = resolver
-            .resolve(id)
-            .with_context(|| format!("failed to resolve artifact {id:?}"))?;
-
+        let path = artifacts.get(id).to_path_buf();
         let dest = if let Some(name) = bundle_name(id) {
             name.to_string()
         } else {
-            // VHD images: use the filename from the resolved path,
-            // which matches IsHostedOnHvliteAzureBlobStore::FILENAME.
             path.file_name()
-                .context("artifact path has no filename")?
-                .to_string_lossy()
-                .into_owned()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("{:?}", id))
         };
-
         files.push((path, dest));
     }
 
     // Stage files into a temporary directory.
     let staging = tempfile::tempdir().context("failed to create staging dir")?;
     let bundle = staging.path().join("burette_bundle");
-
-    // Verify all source files exist.
-    for (path, name) in &files {
-        anyhow::ensure!(
-            path.exists(),
-            "missing artifact: {} (expected at {})",
-            name,
-            path.display()
-        );
-    }
 
     // Copy files into staging directory, stripping debug symbols from
     // ELF binaries to reduce tarball size.

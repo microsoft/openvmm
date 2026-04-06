@@ -22,6 +22,7 @@ vm_resource.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
+fs-err.workspace = true
 futures.workspace = true
 jiff.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }

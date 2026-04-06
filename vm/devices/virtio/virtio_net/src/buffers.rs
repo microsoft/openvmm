@@ -95,9 +95,12 @@ impl VirtioWorkPool {
         Ok(RxId(idx.into()))
     }
 
-    /// Notify the client that a receive packet is ready (network packet available).
-    pub fn complete_packet(&mut self, rx_id: RxId) {
-        let mut packet = self.rx_packets[rx_id.0 as usize]
+    /// Take the RX work item for the given packet, returning it with the
+    /// computed payload length. The caller is responsible for completing
+    /// the descriptor via the queue.
+    #[must_use = "caller must complete the returned work via VirtioQueue::complete"]
+    pub fn take_rx_work(&mut self, rx_id: RxId) -> (VirtioQueueCallbackWork, u32) {
+        let packet = self.rx_packets[rx_id.0 as usize]
             .take()
             .expect("valid packet index");
         let payload_len = if packet.len == 0 {
@@ -107,7 +110,7 @@ impl VirtioWorkPool {
         } else {
             packet.len + header_size() as u32
         };
-        packet.work.complete(payload_len);
+        (packet.work, payload_len)
     }
 }
 
