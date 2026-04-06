@@ -27,6 +27,9 @@ inspect.workspace = true
 mesh.workspace = true
 task_control.workspace = true
 
+futures.workspace = true
+pal_async.workspace = true
+
 anyhow.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true

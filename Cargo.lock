@@ -10161,6 +10161,7 @@ dependencies = [
  "chipset_device",
  "closeable_mutex",
  "device_emulators",
+ "futures",
  "guestmem",
  "guid",
  "hvdef",
