@@ -13,11 +13,13 @@ use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclFeature;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
 use flowey_lib_hvlite::run_cargo_build::common::CommonProfile;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use target_lexicon::Triple;
 use vmm_test_images::KnownTestArtifacts;
@@ -793,6 +795,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 custom_target: Some(CommonTriple::Custom(openhcl_musl_target(
                                     arch,
                                 ))),
+                                extra_features: BTreeSet::new(),
                             })
                             .collect(),
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
@@ -1075,6 +1078,7 @@ impl IntoPipeline for CheckinGatesCli {
                 anyhow::anyhow!("missing required windows-amd vmm_tests artifact: {missing}")
             })?;
         let vmm_tests_artifacts_windows_amd_snp_x86 = vmm_tests_artifacts_windows_x86
+            .clone()
             .finish()
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
@@ -1250,7 +1254,7 @@ impl IntoPipeline for CheckinGatesCli {
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
                 nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
-                test_artifacts: standard_x64_test_artifacts,
+                test_artifacts: standard_x64_test_artifacts.clone(),
                 needs_prep_run: false,
             },
             VmmTestJobParams {
@@ -1360,6 +1364,126 @@ impl IntoPipeline for CheckinGatesCli {
                     .finish();
                 all_jobs.push(job);
             }
+        }
+
+        // Emit a mi-secure build + test gate.
+        //
+        // This builds the X64 OpenHCL recipes with mimalloc secure mode
+        // enabled, then runs a subset of basic OpenHCL tests against them.
+        // Reuses the existing x64 pipette and tmk_vmm from the main build.
+        {
+            let mi_secure_profile = if release {
+                OpenvmmHclBuildProfile::OpenvmmHclShip
+            } else {
+                OpenvmmHclBuildProfile::Debug
+            };
+
+            let mi_secure_extra_features: BTreeSet<_> = [OpenvmmHclFeature::MiSecure].into();
+
+            let (pub_mi_secure_igvm, use_mi_secure_igvm) =
+                pipeline.new_artifact("x64-mi-secure-openhcl-igvm");
+            let (pub_mi_secure_igvm_extras, _use_mi_secure_igvm_extras) =
+                pipeline.new_artifact("x64-mi-secure-openhcl-igvm-extras");
+
+            let mi_secure_build_job = pipeline
+                .new_job(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    FlowArch::X86_64,
+                    "build openhcl (mi-secure) [x64-linux]",
+                )
+                .gh_set_pool(crate::pipelines_shared::gh_pools::linux_self_hosted_largedisk())
+                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                ))
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
+                        igvm_files: [
+                            OpenhclIgvmRecipe::X64,
+                            OpenhclIgvmRecipe::X64TestLinuxDirect,
+                            OpenhclIgvmRecipe::X64Cvm,
+                        ]
+                        .into_iter()
+                        .map(|recipe| OpenhclIgvmBuildParams {
+                            profile: mi_secure_profile,
+                            recipe,
+                            custom_target: Some(CommonTriple::Custom(openhcl_musl_target(
+                                CommonArch::X86_64,
+                            ))),
+                            extra_features: mi_secure_extra_features.clone(),
+                        })
+                        .collect(),
+                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_mi_secure_igvm),
+                        artifact_dir_openhcl_igvm_extras: ctx
+                            .publish_artifact(pub_mi_secure_igvm_extras),
+                        artifact_openhcl_verify_size_baseline: None,
+                        done: ctx.new_done_handle(),
+                    }
+                });
+
+            all_jobs.push(mi_secure_build_job.finish());
+
+            // Clone the main Windows x86 builder — it already has the existing
+            // x64 pipette_linux_musl and tmk_vmm from the main OpenHCL build.
+            // Only override the IGVM files with the mi-secure variant.
+            let mut mi_secure_vmm_tests_builder = vmm_tests_artifacts_windows_x86;
+            mi_secure_vmm_tests_builder.use_openhcl_igvm_files = Some(use_mi_secure_igvm);
+            let mi_secure_vmm_tests_artifacts =
+                mi_secure_vmm_tests_builder.finish().map_err(|missing| {
+                    anyhow::anyhow!("missing required mi-secure vmm_tests artifact: {missing}")
+                })?;
+
+            let mi_secure_nextest_filter =
+                "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs)"
+                    .to_string();
+
+            let mi_secure_test_artifacts = standard_x64_test_artifacts;
+
+            let mi_secure_test_label = "x64-windows-intel-mi-secure-vmm-tests".to_string();
+            let pub_mi_secure_test_results = if matches!(backend_hint, PipelineBackendHint::Local) {
+                Some(pipeline.new_artifact(&mi_secure_test_label).0)
+            } else {
+                None
+            };
+
+            let mut mi_secure_test_job = pipeline
+                .new_job(
+                    FlowPlatform::Windows,
+                    FlowArch::X86_64,
+                    "run vmm-tests [x64-windows-intel-mi-secure]",
+                )
+                .gh_set_pool(
+                    crate::pipelines_shared::gh_pools::windows_intel_self_hosted_largedisk(),
+                )
+                .ado_set_pool(crate::pipelines_shared::ado_pools::default_x86_pool(
+                    FlowPlatform::Windows,
+                ))
+                .dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
+                        junit_test_label: mi_secure_test_label,
+                        nextest_vmm_tests_archive: ctx
+                            .use_typed_artifact(&use_vmm_tests_archive_windows_x86),
+                        target: CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
+                        nextest_profile:
+                            flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
+                        nextest_filter_expr: Some(mi_secure_nextest_filter),
+                        dep_artifact_dirs: mi_secure_vmm_tests_artifacts(ctx),
+                        test_artifacts: mi_secure_test_artifacts,
+                        fail_job_on_test_fail: true,
+                        artifact_dir: pub_mi_secure_test_results.map(|x| ctx.publish_artifact(x)),
+                        needs_prep_run: false,
+                        done: ctx.new_done_handle(),
+                    }
+                });
+
+            if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
+                mi_secure_test_job = mi_secure_test_job.dep_on(|_| {
+                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
+                        vmm_tests_disk_cache_dir,
+                    )
+                })
+            }
+
+            all_jobs.push(mi_secure_test_job.finish());
         }
 
         // ── Wire phase 2: all jobs depend on the quick-check gate ──────────
