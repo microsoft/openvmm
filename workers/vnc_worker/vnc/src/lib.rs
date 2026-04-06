@@ -86,7 +86,9 @@ fn convert_pixels(src: &[u32], fmt: &rfb::PixelFormat, out: &mut Vec<u8>) {
     let shift_r = 24 - fmt.red_max.get().count_ones();
     let shift_g = 16 - fmt.green_max.get().count_ones();
     let shift_b = 8 - fmt.red_max.get().count_ones();
+    let big_endian = fmt.big_endian_flag != 0;
     let no_convert = dest_depth == 4
+        && !big_endian
         && shift_r == fmt.red_shift as u32
         && shift_g == fmt.green_shift as u32
         && shift_b == fmt.blue_shift as u32;
@@ -101,10 +103,12 @@ fn convert_pixels(src: &[u32], fmt: &rfb::PixelFormat, out: &mut Vec<u8>) {
         let p2 = r >> shift_r << fmt.red_shift
             | g >> shift_g << fmt.green_shift
             | b >> shift_b << fmt.blue_shift;
-        match dest_depth {
-            1 => out.push(p2 as u8),
-            2 => out.extend_from_slice(&(p2 as u16).to_ne_bytes()),
-            4 => out.extend_from_slice(&p2.to_ne_bytes()),
+        match (dest_depth, big_endian) {
+            (1, _) => out.push(p2 as u8),
+            (2, false) => out.extend_from_slice(&(p2 as u16).to_le_bytes()),
+            (2, true) => out.extend_from_slice(&(p2 as u16).to_be_bytes()),
+            (4, false) => out.extend_from_slice(&p2.to_le_bytes()),
+            (4, true) => out.extend_from_slice(&p2.to_be_bytes()),
             _ => unreachable!(),
         }
     }
