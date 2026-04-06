@@ -31,6 +31,8 @@ pub enum Error {
     UnknownMessage(u8),
     #[error("unsupported qemu message type: {0:#x}")]
     UnknownQemuMessage(u8),
+    #[error("unsupported pixel format: {0} bits per pixel")]
+    UnsupportedPixelFormat(u8),
     #[error("socket error")]
     Io(#[from] std::io::Error),
 }
@@ -538,6 +540,11 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                     rfb::CS_MESSAGE_SET_PIXEL_FORMAT => {
                         let mut input = rfb::SetPixelFormat::new_zeroed();
                         socket.read_exact(&mut input.as_mut_bytes()[1..]).await?;
+                        // RFB spec only defines 8, 16, and 32 bits per pixel.
+                        match input.pixel_format.bits_per_pixel {
+                            8 | 16 | 32 => {}
+                            bpp => return Err(Error::UnsupportedPixelFormat(bpp)),
+                        }
                         fmt = input.pixel_format;
                         // Pixel format changed, force a full update.
                         force_full_update = true;
