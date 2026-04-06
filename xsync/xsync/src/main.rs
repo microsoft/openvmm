@@ -10,6 +10,7 @@ use clap::Parser;
 use clap::Subcommand;
 use std::path::PathBuf;
 
+mod log_init;
 mod tasks;
 
 /// Default location to maintain a `xsync-path` file
@@ -62,7 +63,7 @@ enum Commands {
 }
 
 fn main() {
-    ci_logger::init("XSYNC_LOG").unwrap();
+    log_init::init("XSYNC_LOG").unwrap();
 
     if let Err(e) = try_main() {
         log::error!("Error: {:#}", e);

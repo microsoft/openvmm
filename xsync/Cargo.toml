@@ -23,15 +23,6 @@ semver = "1.0"
 serde = "1.0.185"
 toml_edit = "0.22"
 
-# HACK: this is exactly the kind of dependency we _don't_ want to have in this
-# tooling, since the moment ci_logger moves on the filesystem / has an
-# incompatible API update, the tooling in this repo will stop working!
-#
-# ...that said, given the scope of this particular dep, its likelihood to stay
-# in the same place for the forseeable future, and the current time crunch...
-# we're going to risk it and take this dep anyways.
-ci_logger = { path = "../support/ci_logger" }
-
 # TODO: would be nice to enforce that these lints are also kept in-sync with
 # outer workspace
 [workspace.lints.rust]
