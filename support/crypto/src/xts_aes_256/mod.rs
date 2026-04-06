@@ -64,3 +64,38 @@ impl XtsAes256DecCtx<'_> {
         self.0.cipher(tweak, data)
     }
 }
+
+#[test]
+fn test_xts_aes_256() {
+    // Key and plaintext from IEEE Std 1619-2007 XTS-AES-256 test vectors
+    // (vectors 10–14 use this key derived from the digits of e and pi).
+    let key = hex::decode(
+        "2718281828459045235360287471352662497757247093699959574966967627\
+         3141592653589793238462643383279502884197169399375105820974944592",
+    )
+    .unwrap();
+    let tweak: u128 = 0;
+    let plain =
+        hex::decode("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f").unwrap();
+
+    let data_unit_size = plain.len() as u32;
+    let xts = XtsAes256::new(&key.try_into().unwrap(), data_unit_size).unwrap();
+
+    // Encrypt and verify the ciphertext differs from plaintext.
+    let mut enc_data = plain.clone();
+    let mut enc_ctx = xts.encrypt().unwrap();
+    enc_ctx.cipher(tweak, &mut enc_data).unwrap();
+    assert_ne!(enc_data, plain);
+
+    // Decrypt and verify we recover the original plaintext.
+    let mut dec_data = enc_data.clone();
+    let mut dec_ctx = xts.decrypt().unwrap();
+    dec_ctx.cipher(tweak, &mut dec_data).unwrap();
+    assert_eq!(dec_data, plain);
+
+    // Verify a different tweak produces different ciphertext.
+    let mut enc_data2 = plain.clone();
+    let mut enc_ctx2 = xts.encrypt().unwrap();
+    enc_ctx2.cipher(1, &mut enc_data2).unwrap();
+    assert_ne!(enc_data2, enc_data);
+}
