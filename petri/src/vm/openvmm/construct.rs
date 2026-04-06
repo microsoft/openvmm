@@ -1136,6 +1136,7 @@ async fn ide_controllers_to_openvmm(
                         } else {
                             GuestMedia::Disk {
                                 disk_type: disk,
+                                ide_direct_disk_type: None,
                                 read_only: false,
                                 disk_parameters: None,
                             }

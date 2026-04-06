@@ -542,6 +542,133 @@ impl StorvscDisk {
     }
 }
 
+impl StorvscDisk {
+    /// Read with explicit bounce control. Called by both DiskIo impl
+    /// (using self.use_bounce_buffer) and StorvscDiskBounce (forcing true).
+    pub(crate) async fn read_vectored_inner(
+        &self,
+        buffers: &scsi_buffers::RequestBuffers<'_>,
+        sector: u64,
+        force_bounce: bool,
+    ) -> Result<(), DiskError> {
+        let sector_size = self.sector_size;
+        if sector_size == 0 {
+            return Err(DiskError::IllegalBlock);
+        }
+
+        if !buffers.len().is_multiple_of(sector_size as usize) {
+            return Err(DiskError::InvalidInput);
+        }
+
+        let cdb = scsi_defs::Cdb16 {
+            operation_code: ScsiOp::READ16,
+            logical_block: sector.into(),
+            transfer_blocks: (buffers.len() as u32 / sector_size).into(),
+            ..FromZeros::new_zeroed()
+        };
+
+        if force_bounce || self.use_bounce_buffer {
+            let dma_buf = self
+                .driver
+                .allocate_dma_buffer(buffers.len())
+                .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
+
+            let result = self
+                .send_scsi_request(
+                    cdb.as_bytes(),
+                    cdb.operation_code,
+                    dma_buf.pfns(),
+                    buffers.len(),
+                    true,
+                    0,
+                )
+                .await;
+
+            if result.is_ok() {
+                let mut data = vec![0u8; buffers.len()];
+                dma_buf.read_at(0, &mut data);
+                let mut writer = buffers.writer();
+                writer.write(&data)?;
+            }
+
+            result.map(|_| ())
+        } else {
+            let range = buffers.range();
+            self.send_scsi_request(
+                cdb.as_bytes(),
+                cdb.operation_code,
+                range.gpns(),
+                range.len(),
+                true,
+                range.offset(),
+            )
+            .await
+            .map(|_| ())
+        }
+    }
+
+    /// Write with explicit bounce control.
+    pub(crate) async fn write_vectored_inner(
+        &self,
+        buffers: &scsi_buffers::RequestBuffers<'_>,
+        sector: u64,
+        fua: bool,
+        force_bounce: bool,
+    ) -> Result<(), DiskError> {
+        let sector_size = self.sector_size;
+        if sector_size == 0 {
+            return Err(DiskError::IllegalBlock);
+        }
+
+        if !buffers.len().is_multiple_of(sector_size as usize) {
+            return Err(DiskError::InvalidInput);
+        }
+
+        let cdb = scsi_defs::Cdb16 {
+            operation_code: ScsiOp::WRITE16,
+            flags: scsi_defs::Cdb16Flags::new().with_fua(fua),
+            logical_block: sector.into(),
+            transfer_blocks: (buffers.len() as u32 / sector_size).into(),
+            ..FromZeros::new_zeroed()
+        };
+
+        if force_bounce || self.use_bounce_buffer {
+            let dma_buf = self
+                .driver
+                .allocate_dma_buffer(buffers.len())
+                .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
+
+            let mut data = vec![0u8; buffers.len()];
+            let mut reader = buffers.reader();
+            reader.read(&mut data)?;
+            dma_buf.write_at(0, &data);
+
+            self.send_scsi_request(
+                cdb.as_bytes(),
+                cdb.operation_code,
+                dma_buf.pfns(),
+                buffers.len(),
+                false,
+                0,
+            )
+            .await
+            .map(|_| ())
+        } else {
+            let range = buffers.range();
+            self.send_scsi_request(
+                cdb.as_bytes(),
+                cdb.operation_code,
+                range.gpns(),
+                range.len(),
+                false,
+                range.offset(),
+            )
+            .await
+            .map(|_| ())
+        }
+    }
+}
+
 impl DiskIo for StorvscDisk {
     fn disk_type(&self) -> &str {
         "storvsc"
@@ -576,67 +703,7 @@ impl DiskIo for StorvscDisk {
         buffers: &scsi_buffers::RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
-        let sector_size = self.sector_size;
-        if sector_size == 0 {
-            // Failed to get sector size.
-            return Err(DiskError::IllegalBlock);
-        }
-
-        if !buffers.len().is_multiple_of(sector_size as usize) {
-            // Buffer length must be a multiple of sector size.
-            return Err(DiskError::InvalidInput);
-        }
-
-        let cdb = scsi_defs::Cdb16 {
-            operation_code: ScsiOp::READ16,
-            logical_block: sector.into(),
-            transfer_blocks: (buffers.len() as u32 / sector_size).into(),
-            ..FromZeros::new_zeroed()
-        };
-
-        if self.use_bounce_buffer {
-            // CVM/isolated path: must use DMA bounce buffer because guest
-            // memory is encrypted and the host can't access it directly.
-            let dma_buf = self
-                .driver
-                .allocate_dma_buffer(buffers.len())
-                .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
-
-            let result = self
-                .send_scsi_request(
-                    cdb.as_bytes(),
-                    cdb.operation_code,
-                    dma_buf.pfns(),
-                    buffers.len(),
-                    true,
-                    0,
-                )
-                .await;
-
-            if result.is_ok() {
-                let mut data = vec![0u8; buffers.len()];
-                dma_buf.read_at(0, &mut data);
-                let mut writer = buffers.writer();
-                writer.write(&data)?;
-            }
-
-            result.map(|_| ())
-        } else {
-            // Non-CVM zero-copy path: pass guest GPNs directly in the GPA
-            // Direct packet. The host/hypervisor can access guest memory,
-            // so no bounce buffer or copy needed.
-            let range = buffers.range();
-            self.send_scsi_request(
-                cdb.as_bytes(),
-                cdb.operation_code,
-                range.gpns(),
-                range.len(),
-                true,
-                range.offset(),
-            )
-            .await
-            .map(|_| ())
-        }
+        self.read_vectored_inner(buffers, sector, false).await
     }
 
     async fn write_vectored(
@@ -645,61 +712,7 @@ impl DiskIo for StorvscDisk {
         sector: u64,
         fua: bool,
     ) -> Result<(), DiskError> {
-        let sector_size = self.sector_size;
-        if sector_size == 0 {
-            // Failed to get sector size.
-            return Err(DiskError::IllegalBlock);
-        }
-
-        if !buffers.len().is_multiple_of(sector_size as usize) {
-            // Buffer length must be a multiple of sector size.
-            return Err(DiskError::InvalidInput);
-        }
-
-        let cdb = scsi_defs::Cdb16 {
-            operation_code: ScsiOp::WRITE16,
-            flags: scsi_defs::Cdb16Flags::new().with_fua(fua),
-            logical_block: sector.into(),
-            transfer_blocks: (buffers.len() as u32 / sector_size).into(),
-            ..FromZeros::new_zeroed()
-        };
-
-        if self.use_bounce_buffer {
-            // CVM/isolated path: bounce through DMA buffer.
-            let dma_buf = self
-                .driver
-                .allocate_dma_buffer(buffers.len())
-                .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
-
-            let mut data = vec![0u8; buffers.len()];
-            let mut reader = buffers.reader();
-            reader.read(&mut data)?;
-            dma_buf.write_at(0, &data);
-
-            self.send_scsi_request(
-                cdb.as_bytes(),
-                cdb.operation_code,
-                dma_buf.pfns(),
-                buffers.len(),
-                false,
-                0,
-            )
-            .await
-            .map(|_| ())
-        } else {
-            // Non-CVM zero-copy path: pass guest GPNs directly.
-            let range = buffers.range();
-            self.send_scsi_request(
-                cdb.as_bytes(),
-                cdb.operation_code,
-                range.gpns(),
-                range.len(),
-                false,
-                range.offset(),
-            )
-            .await
-            .map(|_| ())
-        }
+        self.write_vectored_inner(buffers, sector, fua, false).await
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
@@ -831,5 +844,114 @@ impl DiskIo for StorvscDisk {
             }
             listen.await;
         }
+    }
+}
+
+/// Wrapper around a shared `Arc<StorvscDisk>` that implements `DiskIo`.
+///
+/// When `force_bounce` is true, all reads and writes use DMA bounce buffers
+/// regardless of the inner disk's `use_bounce_buffer` setting. This is
+/// needed for IDE direct (port I/O) path where `RequestBuffers` contain
+/// fake GPNs from the IDE `CommandBuffer` heap allocation.
+///
+/// When `force_bounce` is false, reads and writes delegate directly to
+/// the inner disk's setting (GPA-direct for non-CVM, bounce for CVM).
+#[derive(Inspect)]
+pub struct StorvscDiskBounce {
+    #[inspect(flatten)]
+    inner: Arc<StorvscDisk>,
+    force_bounce: bool,
+}
+
+impl StorvscDiskBounce {
+    /// Wrap a shared `StorvscDisk`.
+    ///
+    /// * `force_bounce=true` - always use bounce buffers (IDE direct path)
+    /// * `force_bounce=false` - use inner disk's bounce setting (IDE accel/SCSI)
+    pub fn new(inner: Arc<StorvscDisk>, force_bounce: bool) -> Self {
+        Self {
+            inner,
+            force_bounce,
+        }
+    }
+}
+
+impl DiskIo for StorvscDiskBounce {
+    fn disk_type(&self) -> &str {
+        self.inner.disk_type()
+    }
+
+    fn sector_count(&self) -> u64 {
+        self.inner.sector_count()
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.inner.sector_size()
+    }
+
+    fn disk_id(&self) -> Option<[u8; 16]> {
+        self.inner.disk_id()
+    }
+
+    fn physical_sector_size(&self) -> u32 {
+        self.inner.physical_sector_size()
+    }
+
+    fn is_fua_respected(&self) -> bool {
+        self.inner.is_fua_respected()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    async fn read_vectored(
+        &self,
+        buffers: &scsi_buffers::RequestBuffers<'_>,
+        sector: u64,
+    ) -> Result<(), DiskError> {
+        self.inner
+            .read_vectored_inner(buffers, sector, self.force_bounce)
+            .await
+    }
+
+    async fn write_vectored(
+        &self,
+        buffers: &scsi_buffers::RequestBuffers<'_>,
+        sector: u64,
+        fua: bool,
+    ) -> Result<(), DiskError> {
+        self.inner
+            .write_vectored_inner(buffers, sector, fua, self.force_bounce)
+            .await
+    }
+
+    async fn sync_cache(&self) -> Result<(), DiskError> {
+        self.inner.sync_cache().await
+    }
+
+    async fn eject(&self) -> Result<(), DiskError> {
+        self.inner.eject().await
+    }
+
+    async fn unmap(
+        &self,
+        sector: u64,
+        count: u64,
+        block_level_only: bool,
+    ) -> Result<(), DiskError> {
+        self.inner.unmap(sector, count, block_level_only).await
+    }
+
+    fn unmap_behavior(&self) -> UnmapBehavior {
+        self.inner.unmap_behavior()
+    }
+
+    fn optimal_unmap_sectors(&self) -> u32 {
+        self.inner.optimal_unmap_sectors()
+    }
+
+    async fn wait_resize(&self, sector_count: u64) -> u64 {
+        self.inner.wait_resize(sector_count).await
     }
 }

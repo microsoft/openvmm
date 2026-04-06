@@ -54,6 +54,7 @@ use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::ServicingState;
 use crate::servicing::transposed::OptionServicingInitState;
+use crate::storvsc_manager::StorvscDiskBounceConfig;
 use crate::storvsc_manager::StorvscDiskConfig;
 use crate::storvsc_manager::StorvscDiskResolver;
 use crate::storvsc_manager::StorvscManager;
@@ -2299,9 +2300,13 @@ async fn new_underhill_vm(
             save_restore_supported,
             "StorVSC usermode manager initialized, setting up resolver"
         );
+        let storvsc_resolver =
+            StorvscDiskResolver::new(manager.client().clone(), isolation.is_isolated());
         resolver.add_async_resolver::<DiskHandleKind, _, StorvscDiskConfig, _>(
-            StorvscDiskResolver::new(manager.client().clone(), isolation.is_isolated()),
+            storvsc_resolver.clone(),
         );
+        resolver
+            .add_async_resolver::<DiskHandleKind, _, StorvscDiskBounceConfig, _>(storvsc_resolver);
 
         Some(manager)
     } else {
@@ -2712,6 +2717,7 @@ async fn new_underhill_vm(
                     }
                     GuestMedia::Disk {
                         disk_type,
+                        ide_direct_disk_type,
                         read_only,
                         disk_parameters,
                     } => {
@@ -2729,7 +2735,18 @@ async fn new_underhill_vm(
                             ScsiControllerDisk::new(scsi_disk),
                         ));
 
-                        ide::DriveMedia::hard_disk(disk)
+                        // When storvsc usermode provides a separate bounce-buffer
+                        // disk for IDE direct path (port I/O), use it. The IDE
+                        // CommandBuffer has fake GPNs that would corrupt guest
+                        // memory if passed via GPA-direct to the host.
+                        let ide_disk = if let Some(bounce_type) = ide_direct_disk_type {
+                            disk_from_disk_type(bounce_type, read_only, &resolver, &driver_source)
+                                .await?
+                        } else {
+                            disk
+                        };
+
+                        ide::DriveMedia::hard_disk(ide_disk)
                     }
                 };
 

@@ -31,6 +31,7 @@ use pal_async::task::Task;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
+use std::sync::Mutex;
 use storvsc_driver::StorvscDriver;
 use thiserror::Error;
 use tracing::Instrument;
@@ -387,6 +388,21 @@ impl StorvscManagerWorker {
 pub struct StorvscDiskResolver {
     manager: StorvscManagerClient,
     is_isolated: bool,
+    /// Cache of StorvscDisk instances keyed by (controller_guid, lun).
+    /// Shared between StorvscDiskConfig and StorvscDiskBounceConfig resolvers
+    /// so both IDE-direct (bounce) and IDE-accel (GPA-direct) paths share
+    /// the same underlying disk (same metadata, resize listeners, etc.).
+    disk_cache: Arc<Mutex<HashMap<(guid::Guid, u8), Arc<disk_storvsc::StorvscDisk>>>>,
+}
+
+impl Clone for StorvscDiskResolver {
+    fn clone(&self) -> Self {
+        Self {
+            manager: self.manager.clone(),
+            is_isolated: self.is_isolated,
+            disk_cache: self.disk_cache.clone(),
+        }
+    }
 }
 
 impl StorvscDiskResolver {
@@ -394,6 +410,7 @@ impl StorvscDiskResolver {
         Self {
             manager,
             is_isolated,
+            disk_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -409,18 +426,38 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskConfig> for StorvscDiskReso
         rsrc: StorvscDiskConfig,
         _input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let disk = self
+        let key = (rsrc.instance_guid, rsrc.lun);
+
+        // Check cache first (bounce resolver may have already created it).
+        {
+            let cache = self.disk_cache.lock().unwrap();
+            if let Some(disk) = cache.get(&key) {
+                return Ok(ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(
+                    disk.clone(),
+                    false,
+                ))
+                .context("invalid disk")?);
+            }
+        }
+
+        let driver = self
             .manager
             .get_driver(rsrc.instance_guid)
             .await
             .context("could not open storvsc disk")?;
 
-        Ok(ResolvedDisk::new(
-            disk_storvsc::StorvscDisk::new(disk, rsrc.lun, self.is_isolated)
+        let disk = Arc::new(
+            disk_storvsc::StorvscDisk::new(driver, rsrc.lun, self.is_isolated)
                 .await
                 .context("failed to create StorvscDisk")?,
+        );
+
+        self.disk_cache.lock().unwrap().insert(key, disk.clone());
+
+        Ok(
+            ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(disk, false))
+                .context("invalid disk")?,
         )
-        .context("invalid disk")?)
     }
 }
 
@@ -432,6 +469,66 @@ pub struct StorvscDiskConfig {
 
 impl ResourceId<DiskHandleKind> for StorvscDiskConfig {
     const ID: &'static str = "storvsc";
+}
+
+/// Config for resolving a StorvscDisk that always uses bounce buffers.
+/// Used for IDE direct (port I/O) path where RequestBuffers contain fake
+/// GPNs from the IDE CommandBuffer heap allocation.
+#[derive(MeshPayload, Default)]
+pub struct StorvscDiskBounceConfig {
+    pub instance_guid: guid::Guid,
+    pub lun: u8,
+}
+
+impl ResourceId<DiskHandleKind> for StorvscDiskBounceConfig {
+    const ID: &'static str = "storvsc_bounce";
+}
+
+#[async_trait]
+impl AsyncResolveResource<DiskHandleKind, StorvscDiskBounceConfig> for StorvscDiskResolver {
+    type Output = ResolvedDisk;
+    type Error = anyhow::Error;
+
+    async fn resolve(
+        &self,
+        _resolver: &ResourceResolver,
+        rsrc: StorvscDiskBounceConfig,
+        _input: ResolveDiskParameters<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        let key = (rsrc.instance_guid, rsrc.lun);
+
+        // Check cache first (GPA-direct resolver may have already created the disk).
+        let inner = {
+            let cache = self.disk_cache.lock().unwrap();
+            cache.get(&key).cloned()
+        };
+
+        let inner = match inner {
+            Some(disk) => disk,
+            None => {
+                // Cache miss: create the disk and cache it.
+                let driver = self
+                    .manager
+                    .get_driver(rsrc.instance_guid)
+                    .await
+                    .context("could not open storvsc disk for bounce")?;
+
+                let disk = Arc::new(
+                    disk_storvsc::StorvscDisk::new(driver, rsrc.lun, self.is_isolated)
+                        .await
+                        .context("failed to create StorvscDisk for bounce")?,
+                );
+
+                self.disk_cache.lock().unwrap().insert(key, disk.clone());
+                disk
+            }
+        };
+
+        Ok(
+            ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(inner, true))
+                .context("invalid bounce disk")?,
+        )
+    }
 }
 
 pub mod save_restore {

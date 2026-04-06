@@ -37,8 +37,14 @@ pub enum GuestMedia {
     Dvd(Resource<ScsiDeviceHandleKind>),
     /// An ATA disk, backed by a disk.
     Disk {
-        /// The backing disk.
+        /// The backing disk (used for IDE accelerator VMBus SCSI path).
         disk_type: Resource<DiskHandleKind>,
+        /// Alternate disk for IDE direct (port I/O) path. When set,
+        /// `disk_type` goes to IDE accelerator (VMBus SCSI, real GPNs)
+        /// and this goes to direct IDE port I/O. Needed for storvsc
+        /// usermode where IDE port I/O has fake GPNs from CommandBuffer
+        /// heap allocation -- must use bounce buffers.
+        ide_direct_disk_type: Option<Resource<DiskHandleKind>>,
         /// Whether the disk is read-only.
         read_only: bool,
         /// The disk parameters, used for the vmbus SCSI interface.

@@ -1344,6 +1344,7 @@ impl InitializedVm {
                     }
                     GuestMedia::Disk {
                         disk_type,
+                        ide_direct_disk_type: _, // Only used in OpenHCL storvsc path
                         read_only,
                         disk_parameters,
                     } => {

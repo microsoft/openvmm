@@ -5,6 +5,7 @@
 
 use super::LoadedVm;
 use crate::nvme_manager::manager::NvmeDiskConfig;
+use crate::storvsc_manager::StorvscDiskBounceConfig;
 use crate::storvsc_manager::StorvscDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
@@ -1237,11 +1238,35 @@ async fn make_ide_disk_config(
             Some(send),
         ))
     } else {
+        // When storvsc usermode is active and this IDE disk is backed by a
+        // VScsi controller, the IDE direct (port I/O) path needs a bounce
+        // wrapper because IDE CommandBuffer uses fake GPNs. The IDE accel
+        // (storvsp VMBus) path gets the normal GPA-direct disk.
+        let ide_direct = if storage_context.use_storvsc_usermode {
+            match &disk.physical_devices {
+                PhysicalDevices::Single { device }
+                    if device.device_type == underhill_config::DeviceType::VScsi =>
+                {
+                    let lun = u8::try_from(device.sub_device_path).ok();
+                    lun.map(|lun| {
+                        vm_resource::Resource::new(StorvscDiskBounceConfig {
+                            instance_guid: device.vmbus_instance_id,
+                            lun,
+                        })
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         Ok((
             IdeDeviceConfig {
                 path: ide_path_from_config(disk)?,
                 guest_media: GuestMedia::Disk {
                     disk_type: disk_type.unwrap(),
+                    ide_direct_disk_type: ide_direct,
                     read_only: false,
                     disk_parameters: Some(make_disk_config_inner(
                         disk.location,
