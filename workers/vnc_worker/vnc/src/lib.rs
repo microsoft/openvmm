@@ -433,7 +433,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                         ];
                         let cw: u16 = 18;
                         let ch: u16 = 18;
-                        let mask_stride = ((cw as usize) + 7) / 8;
+                        let mask_stride = (cw as usize).div_ceil(8);
                         // Build cursor as 0x00RRGGBB u32 pixels, then convert
                         // through the negotiated pixel format.
                         const WHITE: u32 = 0x00FFFFFF;
