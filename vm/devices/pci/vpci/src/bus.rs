@@ -285,7 +285,8 @@ impl VpciBusDevice {
     /// complete, then completes an outer deferred write.
     fn combine_deferred_as_write(&self, deferred: Vec<DeferredToken>) -> IoResult {
         let Some(spawner) = &self.spawner else {
-            return IoResult::Ok;
+            // A task spawner is required to defer writes.
+            return IoResult::Err(IoError::NoResponse);
         };
         let (outer_deferred, outer_token) = defer_write();
         spawner
