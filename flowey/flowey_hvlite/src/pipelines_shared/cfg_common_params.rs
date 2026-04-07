@@ -16,7 +16,11 @@ pub struct LocalRunArgs {
 
     /// Run builds with --locked
     #[clap(long)]
-    locked: bool,
+    pub locked: bool,
+
+    /// Disable incremental compilation (sets CARGO_INCREMENTAL=0)
+    #[clap(long)]
+    pub no_incremental: bool,
 
     /// Automatically install all required dependencies
     #[clap(long)]
@@ -37,6 +41,7 @@ fn get_params_local(
         let LocalRunArgs {
             verbose,
             locked,
+            no_incremental,
             auto_install_deps,
             non_interactive,
         } = local_run_args.clone().unwrap_or_default();
@@ -50,6 +55,7 @@ fn get_params_local(
             verbose: ReadVar::from_static(verbose),
             locked,
             deny_warnings: false,
+            no_incremental,
         }
     }))
 }
@@ -70,6 +76,7 @@ fn get_params_cloud(
             verbose: ctx.use_parameter(param_verbose.clone()),
             locked: true,
             deny_warnings: true,
+            no_incremental: true,
         }
     }))
 }
