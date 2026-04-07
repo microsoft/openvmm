@@ -1013,6 +1013,7 @@ version = "0.0.0"
 dependencies = [
  "openssl",
  "thiserror 2.0.16",
+ "tracing",
  "wchar",
  "windows 0.62.0",
  "windows-result 0.4.0",
@@ -1909,6 +1910,7 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
+ "crypto",
  "der",
  "firmware_uefi_custom_vars",
  "generation_id",
@@ -1920,7 +1922,6 @@ dependencies = [
  "local_clock",
  "mesh",
  "open_enum",
- "openssl",
  "pal_async",
  "test_with_tracing",
  "thiserror 2.0.16",
