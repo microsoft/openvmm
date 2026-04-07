@@ -290,7 +290,9 @@ impl MmioIntercept for VpciBusDevice {
                                     ReadWriteRequestType::Write(value) => {
                                         match pci.pci_cfg_write(address, value) {
                                             IoResult::Ok => {}
-                                            IoResult::Err(_) => {}
+                                            IoResult::Err(e) => {
+                                                panic!("config space write failed: {:?}", e)
+                                            }
                                             IoResult::Defer(token) => deferred.push(token),
                                         }
                                         None
