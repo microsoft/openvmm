@@ -729,6 +729,8 @@ async fn verify_link_speed_expected(driver: DefaultDriver, link_speed_mbps: u32)
         "endpoint.link_speed() should reflect the configured link speed"
     );
     endpoint.stop().await;
+}
+
 #[async_test]
 async fn test_rx_error_handling(driver: DefaultDriver) {
     // Send a packet larger than the 2048-byte RX buffer, causing the GDMA BNIC emulator
