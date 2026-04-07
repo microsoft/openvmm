@@ -4061,15 +4061,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcr_resources"
-version = "0.0.0"
-dependencies = [
- "guid",
- "mesh",
- "vm_resource",
-]
-
-[[package]]
 name = "mem_profile_tracing"
 version = "0.0.0"
 dependencies = [
@@ -5350,7 +5341,6 @@ dependencies = [
  "input_core",
  "inspect",
  "inspect_proto",
- "mcr_resources",
  "memory_range",
  "mesh",
  "mesh_process",
@@ -8358,7 +8348,6 @@ dependencies = [
  "loader_defs",
  "local_clock",
  "mana_driver",
- "mcr_resources",
  "mem_profile_tracing",
  "memory_range",
  "mesh",
