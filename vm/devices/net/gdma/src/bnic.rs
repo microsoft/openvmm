@@ -30,6 +30,8 @@ use anyhow::Context;
 use anyhow::anyhow;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
+use gdma_defs::GdmaRespHdr;
+use gdma_defs::PAGE_SIZE32;
 use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
@@ -261,14 +263,24 @@ impl BasicNic {
 
                 let resp_bytes = resp.as_bytes();
                 let guest_resp_size = MemoryWrite::len(&write);
-                let write_len = guest_resp_size.min(resp_bytes.len());
-                // When the guest has a newer, larger response struct than the
-                // emulator, zero the trailing bytes the emulator doesn't
-                // populate so they don't contain stale data.
-                if guest_resp_size > resp_bytes.len() {
-                    let mut zero_write = write.clone();
-                    zero_write.write(&vec![0u8; guest_resp_size])?;
+
+                // Reject guest-specified response sizes that exceed a single HWC response page
+                // to prevent unbounded processing driven by guest input
+                const MAX_QUERY_DEV_CONFIG_RESP_SIZE: usize =
+                    PAGE_SIZE32 as usize - size_of::<GdmaRespHdr>();
+                if guest_resp_size > MAX_QUERY_DEV_CONFIG_RESP_SIZE {
+                    anyhow::bail!(
+                        "MANA_QUERY_DEV_CONFIG response size {guest_resp_size} exceeds maximum {MAX_QUERY_DEV_CONFIG_RESP_SIZE}"
+                    );
                 }
+
+                // Zero the guest response buffer before writing the actual response
+                // to prevent leaking stale data when the guest response buffer is 
+                // larger than the response data we produce.
+                let mut zero_write = write.clone();
+                zero_write.write(&vec![0u8; guest_resp_size])?;
+
+                let write_len = guest_resp_size.min(resp_bytes.len());
                 write.write(&resp_bytes[..write_len])?;
                 write_len
             }
