@@ -534,10 +534,11 @@ mod tests {
                     device_clone.lock().poll_device(cx);
                     // Second call: inner token is now ready; completes the outer token.
                     bus_clone.lock().poll_device(cx);
+
+                    poll_ran_clone.store(true, Ordering::SeqCst);
                     Poll::Ready(())
                 })
                 .await;
-                poll_ran_clone.store(true, Ordering::SeqCst);
             })
             .detach();
 
