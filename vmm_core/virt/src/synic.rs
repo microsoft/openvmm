@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! [`SynicPortAccess`] implementatsion for backends that intercept
+//! [`SynicPortAccess`] implementation for backends that intercept
 //! `HvPostMessage` / `HvSignalEvent` hypercalls in user mode.
 //!
-//! Backends where the hypervisor handles synic in-kernel (e.g., VID)
-//! should implement [`SynicPortAccess`] directly.
+//! Backends where the hypervisor handles synic in-kernel should implement
+//! [`SynicPortAccess`] directly.
 
 use hvdef::HvError;
 use hvdef::HvResult;
