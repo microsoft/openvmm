@@ -365,6 +365,8 @@ enum Register {
 ///
 /// The returned queue contains `(config_offset, value)` pairs in order;
 /// callers issue them one at a time and handle deferred completions.
+///
+/// Mimics behavior of [`device_emulators::write_as_u32_chunks`]
 fn compute_config_writes(
     pci: &mut dyn PciConfigSpace,
     offset: u16,
@@ -552,7 +554,8 @@ mod tests {
         const OFFSET_CMD_REG: u64 = 4;
 
         let msi_controller = TestVpciInterruptController::new();
-        let device = Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
+        let device: Arc<CloseableMutex<DeferWriteDevice>> =
+            Arc::new(CloseableMutex::new(DeferWriteDevice::new()));
 
         let (bus, _channel) = VpciBusDevice::new(
             Guid::new_random(),
@@ -633,9 +636,7 @@ mod tests {
         //     needed to drive the outer Defer to completion.
         const MULTI_OFFSET: u64 = 8;
         let multi_write_addr = BASE_ADDR + protocol::MMIO_PAGE_CONFIG_SPACE + MULTI_OFFSET;
-        let multi_result = bus
-            .lock()
-            .mmio_write(multi_write_addr, &[0xAAu8; 12]);
+        let multi_result = bus.lock().mmio_write(multi_write_addr, &[0xAAu8; 12]);
         assert!(
             matches!(multi_result, IoResult::Defer(_)),
             "3-u32 write should return a single outer Defer"
