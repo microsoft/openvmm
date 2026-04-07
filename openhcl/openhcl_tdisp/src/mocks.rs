@@ -63,6 +63,15 @@ impl TdispResourceValidationInterface for TdispMockResourceValidator {
         length_in_bytes: u32,
         range_id: u16,
     ) -> anyhow::Result<()> {
+        tracing::info!(
+            ?target_vtl,
+            ?device_id,
+            ?base_gpa,
+            ?base_offset,
+            ?length_in_bytes,
+            ?range_id,
+            "mock resource validator recording MMIO unblock"
+        );
         self.unblocked_mmio_ranges.lock().push(UnblockedMmioRange {
             target_vtl,
             device_id,
@@ -74,7 +83,12 @@ impl TdispResourceValidationInterface for TdispMockResourceValidator {
         Ok(())
     }
 
-    fn tdisp_unblock_dma(&self, _target_vtl: Vtl, _device_id: u16) -> anyhow::Result<()> {
+    fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()> {
+        tracing::info!(
+            ?target_vtl,
+            ?device_id,
+            "mock resource validator recording DMA unblock"
+        );
         *self.dma_unblocked.lock() = true;
         Ok(())
     }
