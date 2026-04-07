@@ -298,32 +298,35 @@ impl MmioIntercept for VpciBusDevice {
             Register::ConfigSpace(offset) => {
                 // FUTURE: support a bus with multiple devices.
                 if u32::from(self.current_slot) == 0 {
-                    let deferred =
-                        {
-                            let mut device = self.device.lock();
-                            let pci = device.supports_pci().unwrap();
-                            let mut buf = 0;
-                            let mut deferred: VecDeque<DeferredToken> = VecDeque::new();
-                            write_as_u32_chunks(offset, data, |address, request_type| {
-                                match request_type {
-                                    ReadWriteRequestType::Write(value) => {
-                                        match pci.pci_cfg_write(address, value) {
-                                            IoResult::Ok => {}
-                                            IoResult::Err(_) => panic!("config space write failed"),
-                                            IoResult::Defer(token) => deferred.push_back(token),
-                                        }
-                                        None
+                    let deferred = {
+                        let mut device = self.device.lock();
+                        let pci = device.supports_pci().unwrap();
+                        let mut buf = 0;
+                        let mut deferred: VecDeque<DeferredToken> = VecDeque::new();
+                        write_as_u32_chunks(
+                            offset,
+                            data,
+                            |address, request_type| match request_type {
+                                ReadWriteRequestType::Write(value) => {
+                                    match pci.pci_cfg_write(address, value) {
+                                        IoResult::Ok => {}
+                                        IoResult::Err(err) => panic!(
+                                            "config space write failed: address={address:#x}, value={value:#x}, error={err:?}"
+                                        ),
+                                        IoResult::Defer(token) => deferred.push_back(token),
                                     }
-                                    ReadWriteRequestType::Read => Some(
-                                        pci.pci_cfg_read(address, &mut buf)
-                                            .now_or_never()
-                                            .map(|_| buf)
-                                            .unwrap_or(0),
-                                    ),
+                                    None
                                 }
-                            });
-                            deferred
-                        };
+                                ReadWriteRequestType::Read => Some(
+                                    pci.pci_cfg_read(address, &mut buf)
+                                        .now_or_never()
+                                        .map(|_| buf)
+                                        .unwrap_or(0),
+                                ),
+                            },
+                        );
+                        deferred
+                    };
                     if !deferred.is_empty() {
                         return self.enqueue_deferred_write(deferred);
                     }
