@@ -1063,26 +1063,27 @@ impl VpciChannel {
             }
         }
         tracing::debug!(?bars, "setting bars");
-        for (i, bar) in bars.into_iter().enumerate() {
-            let result = self
-                .device
-                .lock()
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
-            match result {
-                IoResult::Ok => (),
-                IoResult::Defer(token) => token
-                    .write_future()
-                    .await
-                    .expect("deferred BAR write failed"),
-                IoResult::Err(err) => {
-                    tracing::error!(
+
+        {
+            let mut locked_device = self.device.lock();
+            let locked_pci_config_space = locked_device.supports_pci().unwrap();
+            for (i, bar) in bars.into_iter().enumerate() {
+                let result = locked_pci_config_space
+                    .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
+                match result {
+                    IoResult::Ok => (),
+                    IoResult::Defer(token) => token
+                        .write_future()
+                        .await
+                        .expect("deferred BAR write failed"),
+                    IoResult::Err(err) => {
+                        tracing::error!(
                         ?err,
                         instance_id = %self.instance_id,
                         index = i,
                         "failed to write bar");
-                    panic!("failed to write bar");
+                        panic!("failed to write bar");
+                    }
                 }
             }
         }
