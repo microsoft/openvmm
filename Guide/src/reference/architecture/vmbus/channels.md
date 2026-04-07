@@ -10,14 +10,20 @@ A VMBus channel is:
 
 - A **ring buffer pair** — one incoming (guest → host), one outgoing (host →
   guest) — backed by a single guest-allocated GPADL (Guest Physical Address
-  Descriptor List).
+  Descriptor List) — a guest-provided description of guest-physical pages
+  shared with the host. "Incoming" and "outgoing" are always relative to the
+  local endpoint: each side's incoming ring is the other side's outgoing ring.
+  In OpenVMM (the host), the incoming ring carries data from the guest and
+  the outgoing ring carries data to the guest.
 - An **interrupt/event signal** for each direction.
-- A **target VP** — the virtual processor whose thread handles host-side
-  processing and receives completion interrupts.
+- A **target VP** — the guest vCPU targeted for channel notifications. In
+  OpenVMM's current implementation, this value also selects the host-side
+  executor used for processing that channel.
 
 Each channel is identified by a unique `channel_id` assigned by the VMBus server
-at offer time. The channel's lifecycle is: **offered → opened → active →
-closed**.
+at offer time. The channel's lifecycle is: **offered → opened → closed** (or
+**rescinded** by the host). If the host rescinds an offer, the channel is torn
+down regardless of guest state.
 
 ```text
   ┌──────────────────────────────────────────────────┐
@@ -61,12 +67,14 @@ instance_id, subchannel_index)`:
   explicitly enables them.
 - A subchannel **cannot exist without its primary channel**. If the primary
   channel closes, all subchannels are automatically revoked and closed.
+- Subchannels are opened and closed independently; closing one subchannel does
+  not inherently require closing the primary or other subchannels.
 
 ```mermaid
 stateDiagram-v2
     [*] --> PrimaryOffered: VMBus server offers device
     PrimaryOffered --> PrimaryOpen: Guest opens primary (subchannel_index=0)
-    PrimaryOpen --> SubchannelsOffered: Device calls enable_subchannels(n)
+    PrimaryOpen --> SubchannelsOffered: Device backend requests N subchannels
     SubchannelsOffered --> AllOpen: Guest opens subchannels 1..n
     AllOpen --> PrimaryOpen: Guest closes subchannels
     PrimaryOpen --> [*]: Guest closes primary → all subchannels revoked
@@ -87,15 +95,14 @@ worker — a bottleneck on multi-VP VMs.
 
 ## Target VP
 
-When a guest opens a channel, it specifies a `target_vp` in the open request.
-This tells the host which VP should:
+When a guest opens a channel, it specifies a `target_vp` — the guest vCPU that
+will receive channel interrupts and events. In OpenVMM's current implementation,
+the VMBus server also uses this value to select the executor that runs the device
+worker for that channel.
 
-- Handle interrupts for new data in the ring.
-- Run the device worker that processes requests.
-
-The guest can change the target VP at runtime via `ModifyChannel`. This is used
-when VPs come online/offline (e.g., CPU hot-remove) and the guest needs to
-rebalance channel assignments.
+The guest can change the target VP at runtime via the `ModifyChannel` VMBus
+message. This is used when VPs come online/offline (e.g., CPU hot-remove) and
+the guest needs to rebalance channel assignments.
 
 If you're curious to learn more about how the VMM and guest decide on the notion
 of a `target_vp`, see the [Processors](../concepts/procs.md) page.
@@ -105,8 +112,9 @@ of a `target_vp`, see the [Processors](../concepts/procs.md) page.
 Each ring is a fixed-size circular buffer. The size is determined at channel
 open time and cannot change while the channel is open. Key properties:
 
-- **No overflow** — if the ring is full, the sender must wait. There is no
-  backpressure signal beyond "the ring is full."
+- **No overflow** — if the ring is full, the sender must wait. The full ring
+  itself is the only backpressure mechanism; there is no explicit flow-control
+  protocol.
 - **Batched reads** — the host reads packets in batches via
   [`poll_read_batch()`](https://openvmm.dev/rustdoc/linux/vmbus_async/queue/struct.ReadHalf.html#method.poll_read_batch)
   (interrupt-driven) or
@@ -115,10 +123,17 @@ open time and cannot change while the channel is open. Key properties:
 - **Paired** — rings always come in pairs (incoming + outgoing). A channel
   without both rings is not usable.
 
+Since ring buffers reside in guest-allocated memory, the host must treat all ring
+contents as untrusted input.
+
 For the ring buffer implementation, see the [`vmbus_ring`
 rustdoc](https://openvmm.dev/rustdoc/linux/vmbus_ring/index.html).
 
 ## Key types
+
+The following Rust types are the primary building blocks in OpenVMM's VMBus
+implementation; device backends typically interact with `VmbusDevice`,
+`ChannelControl`, and `Queue`.
 
 | Type | Crate | Role |
 |------|-------|------|
