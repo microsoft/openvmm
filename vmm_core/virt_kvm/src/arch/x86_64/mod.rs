@@ -412,7 +412,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         gsi_routing.update_routes(&self.vm);
 
-        let partition = KvmPartitionInner {
+        let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
             hv1_enabled: self.config.hv_config.is_some(),
@@ -433,10 +433,12 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             gsi_routing: Mutex::new(gsi_routing),
             caps,
             cpuid,
-        };
+            synic_ports: Default::default(),
+        });
 
         let partition = KvmPartition {
-            inner: Arc::new(partition),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            inner: partition,
         };
 
         let vps = self
@@ -508,7 +510,7 @@ impl Partition for KvmPartition {
         Some(self.clone())
     }
 
-    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
     }
 
@@ -576,6 +578,10 @@ impl Hv1 for KvmPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -924,8 +930,8 @@ impl DoorbellRegistration for KvmPartition {
     }
 }
 
-struct KvmHypercallExit<'a, T> {
-    bus: &'a T,
+struct KvmHypercallExit<'a> {
+    partition: &'a KvmPartitionInner,
     registers: KvmHypercallRegisters,
 }
 
@@ -935,22 +941,20 @@ struct KvmHypercallRegisters {
     result: u64,
 }
 
-impl<T: CpuIo> KvmHypercallExit<'_, T> {
+impl KvmHypercallExit<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
-impl<'a, T: CpuIo> hv1_hypercall::AsHandler<KvmHypercallExit<'a, T>>
-    for &mut KvmHypercallExit<'a, T>
-{
-    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a, T> {
+impl<'a> hv1_hypercall::AsHandler<KvmHypercallExit<'a>> for &mut KvmHypercallExit<'a> {
+    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a> {
         self
     }
 }
 
-impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::HypercallIo for KvmHypercallExit<'_> {
     fn advance_ip(&mut self) {
         // KVM automatically does this.
     }
@@ -1007,16 +1011,19 @@ impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::PostMessage for KvmHypercallExit<'_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.bus
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for KvmHypercallExit<'_, T> {
+impl hv1_hypercall::SignalEvent for KvmHypercallExit<'_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.bus.signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -1182,7 +1189,7 @@ impl Processor for KvmProcessor<'_> {
                     } => {
                         // N.B. this can only be SIGNAL_EVENT or POST_MESSAGE.
                         let mut handler = KvmHypercallExit {
-                            bus: dev,
+                            partition: self.partition,
                             registers: KvmHypercallRegisters {
                                 input,
                                 params,
@@ -1247,9 +1254,13 @@ impl Processor for KvmProcessor<'_> {
     }
 }
 
-impl virt::Synic for KvmPartition {
+impl virt::synic::Synic for KvmPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let Some(vp) = self.inner.vp(vp_index) else {
+        let Some(vp) = self.vp(vp_index) else {
             tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
             return;
         };
@@ -1259,20 +1270,20 @@ impl virt::Synic for KvmPartition {
             .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
 
         if wake {
-            self.inner.evaluate_vp(vp_index);
+            self.evaluate_vp(vp_index);
         }
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
-            gm: self.inner.gm.clone(),
+            partition: Arc::downgrade(&self),
+            gm: self.gm.clone(),
             params: Arc::new(Mutex::new(KvmEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,

@@ -8,7 +8,6 @@ use crate::load;
 use anyhow::Context as _;
 use futures::StreamExt as _;
 use guestmem::GuestMemory;
-use hvdef::HvError;
 use hvdef::Vtl;
 use pal_async::DefaultDriver;
 use std::sync::Arc;
@@ -261,22 +260,6 @@ impl CpuIo for IoHandler<'_> {
 
     fn handle_eoi(&self, irq: u32) {
         tracing::info!(irq, "eoi");
-    }
-
-    fn signal_synic_event(&self, vtl: Vtl, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        let _ = (vtl, connection_id, flag);
-        Err(HvError::InvalidConnectionId)
-    }
-
-    fn post_synic_message(
-        &self,
-        vtl: Vtl,
-        connection_id: u32,
-        secure: bool,
-        message: &[u8],
-    ) -> hvdef::HvResult<()> {
-        let _ = (vtl, connection_id, secure, message);
-        Err(HvError::InvalidConnectionId)
     }
 
     async fn read_mmio(&self, vp: VpIndex, address: u64, data: &mut [u8]) {
