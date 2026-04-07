@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::mem::offset_of;
-
 use self::bnic_defs::CQE_TX_GDMA_ERR;
 use self::bnic_defs::CQE_TX_OKAY;
 use self::bnic_defs::MANA_CQE_COMPLETION;
@@ -256,13 +254,9 @@ impl BasicNic {
                 // (adapter_mtu, reserved2, adapter_link_speed_mbps).
                 let resp_bytes = resp.as_bytes();
                 let guest_resp_size = MemoryWrite::len(&write);
-                let min_resp_size = offset_of!(ManaQueryDeviceCfgResp, adapter_mtu);
-                anyhow::ensure!(
-                    guest_resp_size >= min_resp_size,
-                    "Guest allocated response buffer too small: {} < {}",
-                    guest_resp_size,
-                    min_resp_size,
-                );
+                let mut zero_write = write.clone();
+                let zeros = vec![0u8; resp_bytes.len()];
+                zero_write.write(&zeros)?;
                 let write_len = guest_resp_size.min(resp_bytes.len());
                 write.write(&resp_bytes[..write_len])?;
                 write_len
