@@ -1335,11 +1335,12 @@ impl IntoPipeline for CheckinGatesCli {
             });
 
             if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
-                vmm_tests_run_job = vmm_tests_run_job.dep_on(|_| {
-                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
-                        vmm_tests_disk_cache_dir,
-                    )
-                })
+                vmm_tests_run_job = vmm_tests_run_job.config(
+                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Config {
+                        custom_cache_dir: Some(vmm_tests_disk_cache_dir),
+                        ..Default::default()
+                    },
+                );
             }
 
             all_jobs.push(vmm_tests_run_job.finish());
@@ -1474,11 +1475,12 @@ impl IntoPipeline for CheckinGatesCli {
                 });
 
             if let Some(vmm_tests_disk_cache_dir) = vmm_tests_disk_cache_dir.clone() {
-                mi_secure_test_job = mi_secure_test_job.dep_on(|_| {
-                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
-                        vmm_tests_disk_cache_dir,
-                    )
-                })
+                mi_secure_test_job = mi_secure_test_job.config(
+                    flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts::Config {
+                        custom_cache_dir: Some(vmm_tests_disk_cache_dir),
+                        ..Default::default()
+                    },
+                );
             }
 
             all_jobs.push(mi_secure_test_job.finish());

@@ -165,6 +165,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             vmtime: self.config.vmtime.access("hvf"),
             hv1,
             mappings: Default::default(),
+            synic_ports: Default::default(),
         });
 
         let mut vps = Vec::new();
@@ -190,7 +191,9 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             });
         }
 
-        let partition = HvfPartition { inner };
+        let synic_ports = Arc::new(virt::synic::SynicPorts::new(inner.clone()));
+
+        let partition = HvfPartition { inner, synic_ports };
         Ok((partition, vps))
     }
 
@@ -204,6 +207,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
 #[inspect(transparent)]
 pub struct HvfPartition {
     inner: Arc<HvfPartitionInner>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<HvfPartitionInner>>,
 }
 
 impl Drop for HvfPartitionInner {
@@ -257,6 +262,10 @@ impl virt::Hv1 for HvfPartition {
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
     }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
+    }
 }
 
 impl virt::DeviceBuilder for HvfPartition {
@@ -286,9 +295,13 @@ impl virt::irqcon::ControlGic for HvfPartitionInner {
     }
 }
 
-impl virt::Synic for HvfPartition {
+impl virt::synic::Synic for HvfPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        if let Some(vp) = self.inner.vps.get(vp.index() as usize) {
+        if let Some(vp) = self.vps.get(vp.index() as usize) {
             if vp
                 .message_queues
                 .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload))
@@ -299,14 +312,14 @@ impl virt::Synic for HvfPartition {
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(HvfEventPort {
-            partition: Arc::downgrade(&self.inner),
+            partition: Arc::downgrade(&self),
             params: Arc::new(RwLock::new(HvfEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,
@@ -448,6 +461,7 @@ struct HvfPartitionInner {
     hv1: HvfHv1State,
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.lock()).inspect(req))")]
     mappings: Mutex<Vec<MemoryRange>>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -700,9 +714,9 @@ impl Drop for HvfVcpu {
 }
 
 impl HvfProcessor<'_> {
-    fn hypercall(&mut self, dev: &impl CpuIo, smccc: bool) {
+    fn hypercall(&mut self, _dev: &impl CpuIo, smccc: bool) {
         let guest_memory = &self.partition.guest_memory;
-        let handler = HvfHypercallHandler::new(self, dev);
+        let handler = HvfHypercallHandler::new(self);
         HvfHypercallHandler::DISPATCHER.dispatch(
             guest_memory,
             hv1_hypercall::Arm64RegisterIo::new(handler, true, smccc),

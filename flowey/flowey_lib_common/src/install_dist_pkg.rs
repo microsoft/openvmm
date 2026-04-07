@@ -11,13 +11,18 @@
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
 
+flowey_config! {
+    /// Config for the install_dist_pkg node.
+    pub struct Config {
+        /// Whether to prompt the user before installing packages
+        pub interactive: Option<bool>,
+        /// Whether to skip the `apt-update` step, and allow stale packages
+        pub skip_update: Option<bool>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Whether to prompt the user before installing packages
-        LocalOnlyInteractive(bool),
-        /// Whether to skip the `apt-update` step, and allow stale
-        /// packages
-        LocalOnlySkipUpdate(bool),
         /// Install the specified package(s)
         Install {
             package_names: Vec<String>,
@@ -123,16 +128,19 @@ fn install_packages(
     Ok(())
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut skip_update = None;
-        let mut interactive = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut packages = BTreeSet::new();
         let mut did_install = Vec::new();
 
@@ -145,39 +153,29 @@ impl FlowNode for Node {
                     packages.extend(package_names);
                     did_install.push(done);
                 }
-                Request::LocalOnlyInteractive(v) => {
-                    same_across_all_reqs("LocalOnlyInteractive", &mut interactive, v)?
-                }
-                Request::LocalOnlySkipUpdate(v) => {
-                    same_across_all_reqs("LocalOnlySkipUpdate", &mut skip_update, v)?
-                }
             }
         }
 
         let packages = packages;
         let (skip_update, interactive) =
             if matches!(ctx.backend(), FlowBackend::Ado | FlowBackend::Github) {
-                if interactive.is_some() {
-                    anyhow::bail!(
-                        "can only use `LocalOnlyInteractive` when using the Local backend"
-                    );
+                if config.interactive.is_some() {
+                    anyhow::bail!("can only use `interactive` config when using the Local backend");
                 }
 
-                if skip_update.is_some() {
-                    anyhow::bail!(
-                        "can only use `LocalOnlySkipUpdate` when using the Local backend"
-                    );
+                if config.skip_update.is_some() {
+                    anyhow::bail!("can only use `skip_update` config when using the Local backend");
                 }
 
                 (false, false)
             } else if matches!(ctx.backend(), FlowBackend::Local) {
                 (
-                    skip_update.ok_or(anyhow::anyhow!(
-                        "Missing essential request: LocalOnlySkipUpdate",
-                    ))?,
-                    interactive.ok_or(anyhow::anyhow!(
-                        "Missing essential request: LocalOnlyInteractive",
-                    ))?,
+                    config
+                        .skip_update
+                        .ok_or(anyhow::anyhow!("missing config: skip_update",))?,
+                    config
+                        .interactive
+                        .ok_or(anyhow::anyhow!("missing config: interactive",))?,
                 )
             } else {
                 anyhow::bail!("unsupported backend")

@@ -22,5 +22,8 @@ windows = { workspace = true, features = ["Win32_Foundation","Win32_Security_Cry
 windows-result.workspace = true
 zerocopy.workspace = true
 
+[dev-dependencies]
+hex.workspace = true
+
 [lints]
 workspace = true

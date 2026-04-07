@@ -34,9 +34,7 @@ use std::task::Poll;
 use std::task::Waker;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
-use vmcore::monitor::MonitorId;
 use vmcore::reference_time::ReferenceTimeSource;
-use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
@@ -292,7 +290,7 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// create MSI interrupts.
     ///
     /// Not all partitions support this.
-    fn as_signal_msi(self: &Arc<Self>, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         let _ = vtl;
         None
     }
@@ -628,6 +626,12 @@ pub trait Hv1 {
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn DeviceBuilder<Device = Self::Device, Error = Self::Error>>;
+
+    /// Returns the partition's synic port access implementation.
+    ///
+    /// This is used by VMBus and other synic consumers to register message
+    /// and event ports for communication with the guest.
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
 }
 
 pub trait DeviceBuilder: Hv1 {
@@ -653,71 +657,6 @@ impl MapVpciInterrupt for UnimplementedDevice {
 impl SignalMsi for UnimplementedDevice {
     fn signal_msi(&self, _rid: u32, _address: u64, _data: u32) {
         match *self {}
-    }
-}
-
-pub trait Synic: Send + Sync {
-    /// Adds a fast path to signal `event` when the guest signals
-    /// `connection_id` from VTL >= `minimum_vtl`.
-    ///
-    /// Returns Ok(None) if this acceleration is not supported.
-    fn new_host_event_port(
-        &self,
-        connection_id: u32,
-        minimum_vtl: Vtl,
-        event: &pal_event::Event,
-    ) -> Result<Option<Box<dyn Sync + Send>>, vmcore::synic::Error> {
-        let _ = (connection_id, minimum_vtl, event);
-        Ok(None)
-    }
-
-    /// Posts a message to the guest.
-    fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]);
-
-    /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(
-        &self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Box<dyn GuestEventPort>;
-
-    /// Returns whether callers should pass an OS event when creating event
-    /// ports, as opposed to passing a function to call.
-    ///
-    /// This is true when the hypervisor can more quickly dispatch an OS event
-    /// and resume the VP than it can take an intercept into user mode and call
-    /// a function.
-    fn prefer_os_events(&self) -> bool;
-
-    /// Returns an object for manipulating the monitor page, or None if monitor pages aren't
-    /// supported.
-    fn monitor_support(&self) -> Option<&dyn SynicMonitor> {
-        None
-    }
-}
-
-/// Provides monitor page functionality for a `Synic` implementation.
-pub trait SynicMonitor: Synic {
-    /// Registers a monitored interrupt. The returned struct will unregister the ID when dropped.
-    ///
-    /// # Panics
-    ///
-    /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
-
-    /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
-
-    /// Allocates a monitor page and sets it as the monitor page currently in use. If allocating
-    /// monitor pages is not supported, returns `Ok(None)`.
-    ///
-    /// The page will be deallocated if the monitor page is subsequently changed or cleared using
-    /// [`SynicMonitor::set_monitor_page`].
-    fn allocate_monitor_page(&self, vtl: Vtl) -> anyhow::Result<Option<u64>> {
-        let _ = vtl;
-        Ok(None)
     }
 }
 

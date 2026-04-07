@@ -173,11 +173,7 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
 )]
 async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let (vm, agent) = config
-        .with_processor_topology(ProcessorTopology {
-            vp_count: 16,
-            vps_per_socket: Some(8),
-            ..Default::default()
-        })
+        .with_processor_topology(ProcessorTopology::heavy())
         .run()
         .await?;
     agent.power_off().await?;
