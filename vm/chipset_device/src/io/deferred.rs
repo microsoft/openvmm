@@ -88,6 +88,14 @@ impl DeferredToken {
     pub async fn write_future(mut self) -> Result<(), IoError> {
         std::future::poll_fn(|cx| self.poll_write(cx)).await
     }
+
+    /// Returns a future that waits for the deferred read to complete, and
+    /// copies the results into `bytes`.
+    ///
+    /// Panics if the deferred token was for a write operation.
+    pub async fn read_future(mut self, bytes: &mut [u8]) -> Result<(), IoError> {
+        std::future::poll_fn(|cx| self.poll_read(cx, bytes)).await
+    }
 }
 
 /// A deferred read operation.
