@@ -275,7 +275,7 @@ impl BasicNic {
                 }
 
                 // Zero the guest response buffer before writing the actual response
-                // to prevent leaking stale data when the guest response buffer is 
+                // to prevent leaking stale data when the guest response buffer is
                 // larger than the response data we produce.
                 let mut zero_write = write.clone();
                 zero_write.write(&vec![0u8; guest_resp_size])?;
