@@ -1072,6 +1072,8 @@ impl VpciChannel {
                 .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
             if let IoResult::Defer(token) = result {
                 token.write_future().await.ok();
+            } else if let IoResult::Err(err) = result {
+                tracing::error!(?err, index = i, "failed to write bar");
             }
         }
         self.bars_set = true;
@@ -1102,6 +1104,8 @@ impl VpciChannel {
 
         if let IoResult::Defer(token) = result {
             token.write_future().await.ok();
+        } else if let IoResult::Err(err) = result {
+            tracing::error!(?err, on, "failed to set power state");
         }
 
         // TODO: set power cap, too, on devices that support it.
