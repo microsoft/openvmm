@@ -242,6 +242,7 @@ struct UhPartitionInner {
     #[inspect(hex, with = "|x| inspect::iter_by_index(x.read().into_inner())")]
     device_vector_table: RwLock<IrrBitmap>,
     vmbus_relay: bool,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -982,7 +983,11 @@ impl UhPartitionInner {
     }
 }
 
-impl virt::Synic for UhPartition {
+impl virt::synic::Synic for UhPartition {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.inner.synic_ports
+    }
+
     fn post_message(&self, vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
         let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         let Some(vp) = self.inner.vp(vp_index) else {
@@ -1024,12 +1029,12 @@ impl virt::Synic for UhPartition {
         false
     }
 
-    fn monitor_support(&self) -> Option<&dyn virt::SynicMonitor> {
+    fn monitor_support(&self) -> Option<&dyn virt::synic::SynicMonitor> {
         Some(self)
     }
 }
 
-impl virt::SynicMonitor for UhPartition {
+impl virt::synic::SynicMonitor for UhPartition {
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
         // Keep this locked the whole function to avoid racing with allocate_monitor_page.
         let mut allocated_block = self.inner.allocated_monitor_page.lock();
@@ -1274,6 +1279,10 @@ impl virt::Hv1 for UhPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         self.inner.software_devices.is_some().then_some(self)
+    }
+
+    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        Arc::new(virt::synic::SynicPorts::new(self))
     }
 }
 
@@ -1933,6 +1942,7 @@ impl<'a> UhProtoPartition<'a> {
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
             vmbus_relay: late_params.vmbus_relay,
+            synic_ports: Default::default(),
         });
 
         if cfg!(guest_arch = "x86_64") {

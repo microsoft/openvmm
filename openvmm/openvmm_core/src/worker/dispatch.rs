@@ -132,7 +132,6 @@ use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
-use vmm_core::synic::SynicPorts;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
 use vmm_core::vmbus_unit::offer_channel_unit;
@@ -1192,8 +1191,6 @@ impl InitializedVm {
             _ => {}
         };
 
-        let synic = Arc::new(SynicPorts::new(partition.clone()));
-
         let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
             // calculate a safe place to put the framebuffer mapping in GPA space
             // this places it after the end of ram at the first place it won't overlap with MMIO
@@ -1756,6 +1753,8 @@ impl InitializedVm {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
 
+            let synic = partition.clone().into_synic();
+
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();
 
@@ -2126,8 +2125,7 @@ impl InitializedVm {
 
         let (chipset, devices) = chipset_builder.build()?;
         let (fatal_error_send, _fatal_error_recv) = mesh::channel();
-        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
-            synic.clone(),
+        let chipset = vmm_core::vmotherboard_adapter::AdaptedChipset::new(
             chipset,
             // TODO: Support this being a cmd line option
             vmm_core::vmotherboard_adapter::FatalErrorPolicy::DebugBreak(fatal_error_send),

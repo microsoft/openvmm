@@ -114,6 +114,7 @@ pub struct WhpPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -1091,6 +1092,7 @@ impl WhpPartitionInner {
             isolation: proto_config.isolation,
             #[cfg(guest_arch = "aarch64")]
             gic_v2m: proto_config.processor_topology.gic_v2m(),
+            synic_ports: Default::default(),
         };
 
         Ok(inner)
@@ -1623,6 +1625,10 @@ impl virt::Hv1 for WhpPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
+    }
+
+    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        Arc::new(virt::synic::SynicPorts::new(self))
     }
 }
 

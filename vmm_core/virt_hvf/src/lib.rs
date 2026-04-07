@@ -165,6 +165,7 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
             vmtime: self.config.vmtime.access("hvf"),
             hv1,
             mappings: Default::default(),
+            synic_ports: Default::default(),
         });
 
         let mut vps = Vec::new();
@@ -257,6 +258,10 @@ impl virt::Hv1 for HvfPartition {
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
     }
+
+    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        Arc::new(virt::synic::SynicPorts::new(self))
+    }
 }
 
 impl virt::DeviceBuilder for HvfPartition {
@@ -286,7 +291,11 @@ impl virt::irqcon::ControlGic for HvfPartitionInner {
     }
 }
 
-impl virt::Synic for HvfPartition {
+impl virt::synic::Synic for HvfPartition {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.inner.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
         if let Some(vp) = self.inner.vps.get(vp.index() as usize) {
             if vp
@@ -448,6 +457,7 @@ struct HvfPartitionInner {
     hv1: HvfHv1State,
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_index(&*x.lock()).inspect(req))")]
     mappings: Mutex<Vec<MemoryRange>>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -700,9 +710,9 @@ impl Drop for HvfVcpu {
 }
 
 impl HvfProcessor<'_> {
-    fn hypercall(&mut self, dev: &impl CpuIo, smccc: bool) {
+    fn hypercall(&mut self, _dev: &impl CpuIo, smccc: bool) {
         let guest_memory = &self.partition.guest_memory;
-        let handler = HvfHypercallHandler::new(self, dev);
+        let handler = HvfHypercallHandler::new(self);
         HvfHypercallHandler::DISPATCHER.dispatch(
             guest_memory,
             hv1_hypercall::Arm64RegisterIo::new(handler, true, smccc),

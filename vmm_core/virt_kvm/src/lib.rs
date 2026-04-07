@@ -106,6 +106,7 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 // TODO: Chunk this up into smaller types.

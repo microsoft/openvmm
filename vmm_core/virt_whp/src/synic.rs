@@ -18,8 +18,8 @@ use std::os::windows::prelude::*;
 use std::sync::Arc;
 use std::sync::Weak;
 use tracing_helpers::ErrorValueExt;
-use virt::SynicMonitor;
 use virt::VpIndex;
+use virt::synic::SynicMonitor;
 use vmcore::interrupt::Interrupt;
 use vmcore::monitor::MonitorId;
 use vmcore::synic::GuestEventPort;
@@ -41,7 +41,11 @@ impl Drop for RegisteredPort {
     }
 }
 
-impl virt::Synic for WhpPartition {
+impl virt::synic::Synic for WhpPartition {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.inner.synic_ports
+    }
+
     fn new_host_event_port(
         &self,
         connection_id: u32,

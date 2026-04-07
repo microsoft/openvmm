@@ -658,6 +658,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 .collect(),
             caps,
             gic_v2m: self.config.processor_topology.gic_v2m(),
+            synic_ports: Default::default(),
         };
 
         let partition = KvmPartition {
@@ -732,6 +733,10 @@ impl virt::Hv1 for KvmPartition {
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
     }
+
+    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        unimplemented!()
+    }
 }
 
 const KVM_ARM_IRQ_TYPE_PPI: u32 = 2;
@@ -776,7 +781,11 @@ impl virt::PartitionAccessState for KvmPartition {
     }
 }
 
-impl virt::Synic for KvmPartition {
+impl virt::synic::Synic for KvmPartition {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        unimplemented!()
+    }
+
     fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
         unimplemented!()
     }

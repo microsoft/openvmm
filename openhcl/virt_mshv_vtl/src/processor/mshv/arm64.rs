@@ -187,7 +187,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
                     &mut this.backing.stats.unaccepted_gpa
                 }
                 HvMessageType::HvMessageTypeHypercallIntercept => {
-                    this.handle_hypercall_exit(dev)?;
+                    this.handle_hypercall_exit()?;
                     &mut this.backing.stats.hypercall
                 }
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
@@ -330,7 +330,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         self.deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
-    fn handle_hypercall_exit(&mut self, bus: &impl CpuIo) -> Result<(), VpHaltReason> {
+    fn handle_hypercall_exit(&mut self) -> Result<(), VpHaltReason> {
         let message = self
             .runner
             .exit_message()
@@ -344,7 +344,6 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
 
         let handler = UhHypercallHandler {
             vp: self,
-            bus,
             trusted: false,
             intercepted_vtl,
         };
@@ -399,7 +398,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
                     if let Some(connection_id) =
                         self.partition.monitor_page.write_bit(bit_offset + bit)
                     {
-                        signal_mnf(dev, connection_id);
+                        signal_mnf(&self.partition.synic_ports, connection_id);
                     }
                 }
                 return Ok(());
@@ -800,7 +799,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedArm64> {
+impl UhHypercallHandler<'_, '_, HypervisorBackedArm64> {
     const MSHV_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -812,9 +811,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedArm64> {
     );
 }
 
-impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
-    for UhHypercallHandler<'_, '_, T, HypervisorBackedArm64>
-{
+impl hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, HypervisorBackedArm64> {
     fn retarget_interrupt(
         &mut self,
         device_id: u64,

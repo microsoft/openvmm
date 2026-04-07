@@ -266,6 +266,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 vps: self.vps,
                 irq_routes: Default::default(),
                 caps,
+                synic_ports: Default::default(),
             }),
         };
 
@@ -297,6 +298,7 @@ struct MshvPartitionInner {
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
     caps: virt::PartitionCapabilities,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Debug)]
@@ -393,6 +395,10 @@ impl Hv1 for MshvPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        Arc::new(virt::synic::SynicPorts::new(self))
     }
 }
 
@@ -556,7 +562,7 @@ impl MshvProcessor<'_> {
         self.flush_messages(info.deliverable_sints);
     }
 
-    fn handle_hypercall_intercept(&self, message: &hv_message, devices: &impl CpuIo) {
+    fn handle_hypercall_intercept(&self, message: &hv_message, _devices: &impl CpuIo) {
         let info = message.to_hypercall_intercept_info().unwrap();
         let execution_state = info.header.execution_state;
         // SAFETY: Accessing the raw field of this union is always safe.
@@ -573,7 +579,7 @@ impl MshvProcessor<'_> {
             xmm: info.xmmregisters,
         };
         let mut handler = MshvHypercallHandler {
-            bus: devices,
+            partition: self.partition,
             context: &mut hpc_context,
             rip: info.header.rip,
             rip_dirty: false,
@@ -1281,7 +1287,7 @@ pub struct MshvHypercallContext {
     pub xmm: [hv_u128; 6],
 }
 
-impl<T> hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     fn rip(&mut self) -> u64 {
         self.rip
     }
@@ -1351,8 +1357,8 @@ mod tests {
     }
 }
 
-struct MshvHypercallHandler<'a, T> {
-    bus: &'a T,
+struct MshvHypercallHandler<'a> {
+    partition: &'a MshvPartitionInner,
     context: &'a mut MshvHypercallContext,
     rip: u64,
     rip_dirty: bool,
@@ -1360,23 +1366,26 @@ struct MshvHypercallHandler<'a, T> {
     gp_dirty: bool,
 }
 
-impl<T: CpuIo> MshvHypercallHandler<'_, T> {
+impl MshvHypercallHandler<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::PostMessage for MshvHypercallHandler<'_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.bus
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.bus.signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -1490,7 +1499,11 @@ fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
     }
 }
 
-impl virt::Synic for MshvPartition {
+impl virt::synic::Synic for MshvPartition {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.inner.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
         self.inner
             .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));

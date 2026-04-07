@@ -31,13 +31,13 @@ use virt::PartitionMemoryMap;
 use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::StopVp;
-use virt::Synic;
 use virt::VpHaltReason;
 #[cfg(guest_arch = "x86_64")]
 use virt::X86Partition as ArchPartition;
 use virt::io::CpuIo;
 #[cfg(guest_arch = "x86_64")]
 use virt::irqcon::MsiRequest;
+use virt::synic::Synic;
 use virt::vm::AccessVmState;
 use virt::vm::VmSavedState;
 use virt::vp::AccessVpState;
@@ -104,6 +104,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
 
     /// Returns the reference time source.
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
+
+    /// Returns the partition's synic port access implementation.
+    fn into_synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -229,6 +232,10 @@ where
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
         self.reference_time_source()
+    }
+
+    fn into_synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic()
     }
 
     #[cfg(all(windows, feature = "virt_whp"))]
@@ -379,7 +386,7 @@ pub trait HvliteVp {
     async fn run(
         &mut self,
         runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     );
 }
 
@@ -388,7 +395,7 @@ impl<T: Processor> HvliteVp for T {
     async fn run(
         &mut self,
         mut runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     ) {
         while let Err(RunCancelled { .. }) = runner.run(&mut WrappedVp(self), chipset).await {}
     }
