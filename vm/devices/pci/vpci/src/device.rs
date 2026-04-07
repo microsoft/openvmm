@@ -1473,11 +1473,15 @@ mod tests {
 
     // Helper to complete deferred write tokens if needed.
     async fn complete_write(result: IoResult) {
-        if let IoResult::Defer(token) = result {
-            token
+        match result {
+            IoResult::Ok => (),
+            IoResult::Err(_err) => {
+                panic!("complete_write received IoResult::Err during test");
+            }
+            IoResult::Defer(token) => token
                 .write_future()
                 .await
-                .expect("deferred write should complete successfully");
+                .expect("deferred write should complete successfully"),
         }
     }
 
