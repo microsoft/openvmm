@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 // The version in this crate's Cargo.toml file should be updated using the
 // semver standard when changes are made, which triggers CI to automatically
 // publish a new version.

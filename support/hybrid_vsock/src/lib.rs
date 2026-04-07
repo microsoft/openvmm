@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Provides helper functions for bridging between vsock/hvsocket and Unix domain sockets, utilized
 //! by VMBus-based hvsocket and virtio-vsock.
 

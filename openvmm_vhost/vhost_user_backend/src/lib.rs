@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! vhost-user backend device server.
 //!
 //! Implements the vhost-user backend protocol, driving a
