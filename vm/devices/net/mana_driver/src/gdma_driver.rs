@@ -210,7 +210,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
-        tracing::info!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
+        tracing::info!(?self.state_saved, ?self.hwc_failure, ?self.vf_reconfiguration_pending, "dropping gdma driver");
+
+        if self.vf_reconfiguration_pending {
+            return;
+        }
 
         // Don't destroy anything if we're saving its state for restoration.
         if self.state_saved {
@@ -222,7 +226,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             return;
         }
 
-        if self.hwc_failure || self.vf_reconfiguration_pending {
+        if self.hwc_failure {
             return;
         }
 
