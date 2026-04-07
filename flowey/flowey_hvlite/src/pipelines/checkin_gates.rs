@@ -796,6 +796,7 @@ impl IntoPipeline for CheckinGatesCli {
                                     arch,
                                 ))),
                                 extra_features: BTreeSet::new(),
+                                release_cfg: release,
                             })
                             .collect(),
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
@@ -1371,12 +1372,12 @@ impl IntoPipeline for CheckinGatesCli {
         // This builds the X64 OpenHCL recipes with mimalloc secure mode
         // enabled, then runs a subset of basic OpenHCL tests against them.
         // Reuses the existing x64 pipette and tmk_vmm from the main build.
+        //
+        // Always use the debug profile so that the dev manifests (with larger
+        // VTL2 memory) are selected — mi-secure adds overhead that may not
+        // fit in the tighter release memory budget.
         {
-            let mi_secure_profile = if release {
-                OpenvmmHclBuildProfile::OpenvmmHclShip
-            } else {
-                OpenvmmHclBuildProfile::Debug
-            };
+            let mi_secure_profile = OpenvmmHclBuildProfile::Debug;
 
             let mi_secure_extra_features: BTreeSet<_> = [OpenvmmHclFeature::MiSecure].into();
 
@@ -1410,6 +1411,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 CommonArch::X86_64,
                             ))),
                             extra_features: mi_secure_extra_features.clone(),
+                            release_cfg: false,
                         })
                         .collect(),
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_mi_secure_igvm),
