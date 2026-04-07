@@ -7,8 +7,10 @@ use super::build_and_publish_openvmm_hcl_baseline;
 use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use std::collections::BTreeSet;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmfirmwareigvmDllParams {
@@ -21,6 +23,8 @@ pub struct OpenhclIgvmBuildParams {
     pub profile: OpenvmmHclBuildProfile,
     pub recipe: OpenhclIgvmRecipe,
     pub custom_target: Option<CommonTriple>,
+    /// Additional features to enable on top of the recipe's defaults.
+    pub extra_features: BTreeSet<OpenvmmHclFeature>,
 }
 
 flowey_request! {
@@ -62,6 +66,7 @@ impl SimpleFlowNode for Node {
             profile,
             recipe,
             custom_target,
+            extra_features,
         } in &igvm_files
         {
             let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
@@ -78,6 +83,7 @@ impl SimpleFlowNode for Node {
                     }
                 },
                 recipe: recipe.clone(),
+                extra_features: extra_features.clone(),
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,

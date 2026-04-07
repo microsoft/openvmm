@@ -7,6 +7,7 @@
 
 use flowey::node::prelude::*;
 use std::collections::BTreeSet;
+use std::io::IsTerminal;
 use vmm_test_images::KnownTestArtifacts;
 
 const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
@@ -221,14 +222,42 @@ If running locally, you can re-run with `--help` for info on how to:
 - tweak the selected download folder (e.g: download images to an external HDD)
 - skip this warning prompt in the future
 
-If you're OK with starting the download, please press <enter>.
-Otherwise, press `ctrl-c` to cancel the run.
+If you're OK with starting the download, please press just <enter>.
+Otherwise, press anything else with <enter> to cancel the run.
 ================================================================================
 "#
                         );
                         log::warn!("{}", msg.trim());
-                        if !skip_prompt {
-                            let _ = std::io::stdin().read_line(&mut String::new());
+
+                        // If this is not an interactive terminal, just allow the download to proceed
+                        let is_terminal = std::io::stdin().is_terminal();
+
+                        if !skip_prompt && is_terminal {
+                            // Only display the prompt for 30s before timing out
+                            let result = crossterm::event::poll(std::time::Duration::from_secs(30));
+                            match result {
+                                Ok(true) => {
+                                    if let crossterm::event::Event::Key(key_event) =
+                                        crossterm::event::read().unwrap()
+                                    {
+                                        if key_event.code == crossterm::event::KeyCode::Enter {
+                                            // proceed with download
+                                        } else {
+                                            anyhow::bail!("user cancelled the run");
+                                        }
+                                    } else {
+                                        anyhow::bail!(
+                                            "unexpected event while waiting for user input"
+                                        );
+                                    }
+                                }
+                                Ok(false) => {
+                                    anyhow::bail!("timed out waiting for user input");
+                                }
+                                Err(e) => {
+                                    anyhow::bail!("error while waiting for user input: {e}");
+                                }
+                            }
                         }
                     }
                 }

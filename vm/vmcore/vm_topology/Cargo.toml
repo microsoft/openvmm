@@ -14,13 +14,15 @@ mesh = ["dep:mesh_protobuf", "memory_range/mesh"]
 [dependencies]
 aarch64defs.workspace = true
 memory_range.workspace = true
-safe_intrinsics.workspace = true
 inspect = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 x86defs.workspace = true
 
 cfg-if.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+safe_intrinsics.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

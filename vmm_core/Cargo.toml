@@ -20,7 +20,6 @@ aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 acpi.workspace = true
 chipset_device_resources.workspace = true
-cvm_tracing.workspace = true
 hcl_compat_uefi_nvram_storage.workspace = true
 hvdef.workspace = true
 memory_range = { workspace = true, features = ["inspect"] }
@@ -50,12 +49,16 @@ anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
-iced-x86 = { optional = true, workspace = true, features = ["std", "fast_fmt"] }
 parking_lot.workspace = true
 slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+cvm_tracing.workspace = true
+iced-x86 = { optional = true, workspace = true, features = ["std", "fast_fmt"] }
+
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

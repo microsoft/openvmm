@@ -22,6 +22,10 @@ pub(crate) async fn spawn_vps(
     // Start the VP tasks on the thread pool.
     let _: Vec<()> = try_join_all(vps.into_iter().zip(runners).map(|(vp, runner)| {
         // TODO: get CPU index for VP
+        // Today, VP index is used directly as the Linux CPU number.
+        // This is a simplifying assumption — APIC IDs may differ from
+        // VP indices, but the threadpool's CPU slots are indexed by VP
+        // index, not APIC ID.
         let cpu = vp.vp_index().index();
         let spawner = VpSpawner {
             vp,

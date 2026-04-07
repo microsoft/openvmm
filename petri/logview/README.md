@@ -16,8 +16,8 @@ Follow these steps to set up the project from scratch:
 Navigate to the project directory and install all required packages:
 
 ```powershell
-# Navigate to the logview_new directory
-cd .\petri\logview_new
+# Navigate to the logview directory
+cd .\petri\logview
 
 # Install all dependencies
 npm install
@@ -62,7 +62,7 @@ npx eslint .
 ## Project Structure
 
 ```text
-logview_new/
+logview/
 ├── src/
 │   ├── main.tsx          # Application entry point
 │   ├── style/            # All CSS and global styles (CSS, PostCSS, or other style assets)
@@ -97,7 +97,7 @@ npm run build
 
 - Where the output goes:
   - The build artifacts will be written to the `assets/` folder at the project
-    root (e.g. `logview_new/assets/`).
+    root (e.g. `logview/assets/`).
 
   - You can run `npm run preview` to verify the production build locally.
 

@@ -801,14 +801,6 @@ impl virt::Hypervisor for Kvm {
     type Partition = KvmPartition;
     type Error = KvmError;
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/kvm") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(KvmError::AvailableCheck(err)),
-        }
-    }
-
     fn new_partition<'a>(
         &'a mut self,
         config: ProtoPartitionConfig<'a>,

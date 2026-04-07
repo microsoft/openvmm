@@ -21,6 +21,7 @@ vmcore.workspace = true
 zerocopy.workspace = true
 
 [dev-dependencies]
+pal_async.workspace = true
 parking_lot.workspace = true
 
 [features]
