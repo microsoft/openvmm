@@ -27,6 +27,7 @@ use inspect::InspectMut;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::task::Context;
+use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
 use vmbus_channel::simple::SimpleDeviceHandle;
@@ -221,8 +222,16 @@ impl PollDevice for VpciBusDevice {
             .filter_map(|mut pending| {
                 // Drain tokens one at a time in order; stop at the first still-pending one.
                 while let Some(token) = pending.inner_tokens.front_mut() {
-                    if token.poll_write(cx).is_pending() {
-                        return Some(pending);
+                    match token.poll_write(cx) {
+                        Poll::Pending => return Some(pending),
+                        Poll::Ready(Ok(())) => {}
+                        Poll::Ready(Err(e)) => {
+                            // If any of the inner tokens error, error the entire deferred write and drop any remaining tokens.
+                            if let Some(deferred) = pending.outer_deferred.take() {
+                                deferred.complete_error(e);
+                            }
+                            return None;
+                        }
                     }
                     pending.inner_tokens.pop_front();
                 }
