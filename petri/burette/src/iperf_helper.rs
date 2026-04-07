@@ -86,13 +86,20 @@ async fn serve_requests(mut recv: mesh::Receiver<IperfRequest>) {
                     let iperf3 = std::env::var("IPERF3").unwrap_or_else(|_| "iperf3".into());
                     let output = std::process::Command::new(&iperf3)
                         .args(&args.args)
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
                         .output()
                         .map_err(|e| format!("failed to spawn iperf3: {e}"))?;
 
+                    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+
                     if !output.status.success() {
                         let stderr = String::from_utf8_lossy(&output.stderr);
+                        if stdout.is_empty() {
+                            return Err(format!(
+                                "iperf3 exited with {} and produced no output: {}",
+                                output.status,
+                                stderr.trim()
+                            ));
+                        }
                         tracing::warn!(
                             status = %output.status,
                             stderr = %stderr.trim(),
@@ -100,7 +107,7 @@ async fn serve_requests(mut recv: mesh::Receiver<IperfRequest>) {
                         );
                     }
 
-                    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+                    Ok(stdout)
                 })
                 .await;
             }
@@ -133,7 +140,14 @@ pub mod linux {
         let ret = unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) };
         if ret != 0 {
             let err = std::io::Error::last_os_error();
-            eprintln!("unshare(CLONE_NEWUSER | CLONE_NEWNET) failed: {err}");
+            // Print a detailed message so the parent can diagnose the failure.
+            // The parent will see "iperf helper did not respond" — this
+            // stderr line is the only clue about the real cause.
+            eprintln!(
+                "unshare(CLONE_NEWUSER | CLONE_NEWNET) failed: {err}\n\
+                 hint: unprivileged user namespaces may be disabled \
+                 (sysctl kernel.unprivileged_userns_clone=1)"
+            );
             std::process::exit(1);
         }
 
