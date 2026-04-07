@@ -247,11 +247,8 @@ impl BasicNic {
                     adapter_link_speed_mbps: self.config.adapter_link_speed_mbps,
                 };
 
-                // Older guests allocate a smaller response buffer that does not
-                // include the V4 fields added at the end of ManaQueryDeviceCfgResp.
-                // Require the buffer to fit at least the pre-V4 fields, but
-                // allow truncation of the trailing V4 fields
-                // (adapter_mtu, reserved2, adapter_link_speed_mbps).
+                // Match socmana behavior by zeroing response buffer before
+                // writing truncated response
                 let resp_bytes = resp.as_bytes();
                 let guest_resp_size = MemoryWrite::len(&write);
                 let mut zero_write = write.clone();
