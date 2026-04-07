@@ -37,6 +37,8 @@ pub enum Error {
     UnsupportedSecurityType(u8),
     #[error("resolution changed but client does not support DesktopSize")]
     ResizeUnsupported,
+    #[error("zlib compression failed")]
+    ZlibCompression,
     #[error("socket error")]
     Io(#[from] std::io::Error),
 }
@@ -499,11 +501,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
                                             [(zlib_stream.total_out() - before_out) as usize..],
                                         FlushCompress::Sync,
                                     )
-                                    .map_err(|e| {
-                                        std::io::Error::other(format!(
-                                            "zlib compression failed: {e}"
-                                        ))
-                                    })?;
+                                    .map_err(|_| Error::ZlibCompression)?;
                                 // Grow output buffer if needed.
                                 let out_used = (zlib_stream.total_out() - before_out) as usize;
                                 if out_used >= zlib_buf.len() - 16 {
