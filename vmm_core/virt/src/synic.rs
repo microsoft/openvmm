@@ -168,7 +168,7 @@ pub trait Synic: 'static + Send + Sync {
     ///
     /// Returns Ok(None) if this acceleration is not supported.
     fn new_host_event_port(
-        &self,
+        self: Arc<Self>,
         connection_id: u32,
         minimum_vtl: Vtl,
         event: &pal_event::Event,
@@ -182,7 +182,7 @@ pub trait Synic: 'static + Send + Sync {
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         vtl: Vtl,
         vp: u32,
         sint: u8,
@@ -231,6 +231,7 @@ pub trait SynicMonitor: Synic {
 ///
 /// Wraps a shared [`SynicPortMap`] (stored on the partition inner struct)
 /// with the [`Synic`] trait methods needed for port registration.
+#[derive(Debug)]
 pub struct SynicPorts<T> {
     synic: Arc<T>,
 }
@@ -270,6 +271,7 @@ impl<T: Synic> SynicPortAccess for SynicPorts<T> {
         // Create a direct port mapping in the hypervisor if an event was provided.
         let inner_handle = if let Some(event) = port.os_event() {
             self.synic
+                .clone()
                 .new_host_event_port(connection_id, minimum_vtl, event)?
         } else {
             None
@@ -316,7 +318,7 @@ impl<T: Synic> SynicPortAccess for SynicPorts<T> {
         flag: u16,
         _monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn GuestEventPort>, vmcore::synic::HypervisorError> {
-        Ok(self.synic.new_guest_event_port(vtl, vp, sint, flag))
+        Ok(self.synic.clone().new_guest_event_port(vtl, vp, sint, flag))
     }
 
     fn prefer_os_events(&self) -> bool {

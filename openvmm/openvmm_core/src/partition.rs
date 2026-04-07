@@ -37,7 +37,6 @@ use virt::X86Partition as ArchPartition;
 use virt::io::CpuIo;
 #[cfg(guest_arch = "x86_64")]
 use virt::irqcon::MsiRequest;
-use virt::synic::Synic;
 use virt::vm::AccessVmState;
 use virt::vm::VmSavedState;
 use virt::vp::AccessVpState;
@@ -56,7 +55,7 @@ use vmm_core::partition_unit::VmPartition;
 use vmm_core::partition_unit::VpRunner;
 
 /// A base partition, with methods needed at rutnime along with methods to initialize the vm.
-pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
+pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets a line set target to trigger local APIC LINTs.
     ///
     /// The line number is the VP index times 2, plus the LINT number (0 or 1).
@@ -91,7 +90,7 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
     /// Gets the [`SignalMsi`] interface for a particular VTL.
-    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
 
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
@@ -106,7 +105,7 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     /// Returns the partition's synic port access implementation.
-    fn into_synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess>;
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -169,7 +168,7 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
 
 impl<T> HvlitePartition for T
 where
-    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + Synic,
+    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper,
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
@@ -210,7 +209,7 @@ where
         self.doorbell_registration(minimum_vtl)
     }
 
-    fn into_signal_msi(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         self.as_signal_msi(minimum_vtl)
     }
 
@@ -234,7 +233,7 @@ where
         self.reference_time_source()
     }
 
-    fn into_synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
         self.synic()
     }
 

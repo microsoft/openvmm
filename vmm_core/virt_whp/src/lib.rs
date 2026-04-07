@@ -88,10 +88,12 @@ pub struct WhpPartition {
     with_vtl0: Arc<WhpPartitionAndVtl>,
     #[inspect(skip)]
     with_vtl2: Option<Arc<WhpPartitionAndVtl>>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<WhpPartitionInner>>,
 }
 
 #[derive(Inspect)]
-pub struct WhpPartitionInner {
+struct WhpPartitionInner {
     vtl0: VtlPartition,
     vtl2: Option<VtlPartition>,
     #[inspect(skip)]
@@ -541,18 +543,12 @@ impl virt::Partition for WhpPartition {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn as_signal_msi(
-        self: &Arc<Self>,
-        minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         Some(self.with_vtl(minimum_vtl).clone())
     }
 
     #[cfg(guest_arch = "aarch64")]
-    fn as_signal_msi(
-        self: &Arc<Self>,
-        minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         let v2m = self.inner.gic_v2m.as_ref()?;
         let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
         Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
@@ -834,10 +830,13 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             })
         });
 
+        let synic_ports = Arc::new(virt::synic::SynicPorts::new(inner.clone()));
+
         let partition = WhpPartition {
             inner,
             with_vtl0,
             with_vtl2,
+            synic_ports,
         };
         partition.validate_is_reset(Vtl::Vtl0);
         if partition.inner.vtl2.is_some() {
@@ -1627,8 +1626,8 @@ impl virt::Hv1 for WhpPartition {
         Some(self)
     }
 
-    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        Arc::new(virt::synic::SynicPorts::new(self))
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 

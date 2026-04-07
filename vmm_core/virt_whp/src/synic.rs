@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use crate::Hv1State;
-use crate::WhpPartition;
 use crate::WhpPartitionAndVtl;
 use crate::WhpPartitionInner;
 use guestmem::DoorbellRegistration;
@@ -41,20 +40,19 @@ impl Drop for RegisteredPort {
     }
 }
 
-impl virt::synic::Synic for WhpPartition {
+impl virt::synic::Synic for WhpPartitionInner {
     fn port_map(&self) -> &virt::synic::SynicPortMap {
-        &self.inner.synic_ports
+        &self.synic_ports
     }
 
     fn new_host_event_port(
-        &self,
+        self: Arc<Self>,
         connection_id: u32,
         minimum_vtl: Vtl,
         event: &Event,
     ) -> Result<Option<Box<dyn Sync + Send>>, vmcore::synic::Error> {
         // Try to register the event directly with WHP.
         let handles = self
-            .inner
             .vtlps()
             .filter_map(|(vtl, vtlp)| {
                 if vtl < minimum_vtl {
@@ -79,28 +77,26 @@ impl virt::synic::Synic for WhpPartition {
             .collect::<Result<_, _>>()?;
 
         Ok(Some(Box::new(RegisteredPort {
-            partition: Arc::downgrade(&self.inner),
+            partition: Arc::downgrade(&self),
             handles,
         })))
     }
 
     fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        self.inner
-            .post_message(vtl, vp, sint, HvMessageType(typ), payload);
+        self.post_message(vtl, vp, sint, HvMessageType(typ), payload);
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
-        match &self.inner.hvstate {
+        match &self.hvstate {
             Hv1State::Offloaded | Hv1State::Disabled => {
-                if self.inner.vtl2.is_none() {
+                if self.vtl2.is_none() {
                     let (trigger, event) = self
-                        .inner
                         .vtl0
                         .whp
                         .create_trigger(whp::TriggerParameters::SynicEvent {
@@ -111,7 +107,7 @@ impl virt::synic::Synic for WhpPartition {
                         .expect("oom creating trigger");
 
                     Box::new(OffloadedGuestEventPort {
-                        partition: Arc::downgrade(&self.inner),
+                        partition: Arc::downgrade(&self),
                         trigger: Some(trigger),
                         event: event.into(),
                         sint,
@@ -119,7 +115,7 @@ impl virt::synic::Synic for WhpPartition {
                     })
                 } else {
                     Box::new(OffloadedGuestEventPortNoTrigger {
-                        partition: Arc::downgrade(&self.inner),
+                        partition: Arc::downgrade(&self),
                         params: Arc::new(Mutex::new(WhpEventPortParams {
                             vtl,
                             vp: VpIndex::new(vp),
@@ -130,7 +126,7 @@ impl virt::synic::Synic for WhpPartition {
                 }
             }
             Hv1State::Emulated(_) => Box::new(EmulatedGuestEventPort {
-                partition: Arc::downgrade(&self.inner),
+                partition: Arc::downgrade(&self),
                 params: Arc::new(Mutex::new(WhpEventPortParams {
                     vtl,
                     vp: VpIndex::new(vp),
@@ -152,7 +148,7 @@ impl virt::synic::Synic for WhpPartition {
         if cfg!(guest_arch = "aarch64") {
             return None;
         }
-        if self.inner.vtl0.mapper.overlays_supported() {
+        if self.vtl0.mapper.overlays_supported() {
             Some(self)
         } else {
             None
@@ -160,18 +156,17 @@ impl virt::synic::Synic for WhpPartition {
     }
 }
 
-impl SynicMonitor for WhpPartition {
+impl SynicMonitor for WhpPartitionInner {
     fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send> {
-        self.inner
-            .monitor_page
+        self.monitor_page
             .register_monitor(monitor_id, connection_id)
     }
 
     fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
         // Monitor pages are not supported at all when VTL2 is enabled.
         assert_eq!(vtl, Vtl::Vtl0);
-        let mut overlays = crate::memory::OverlayMapper::new(&self.inner.vtl0);
-        let old_gpa = self.inner.monitor_page.set_gpa(gpa);
+        let mut overlays = crate::memory::OverlayMapper::new(&self.vtl0);
+        let old_gpa = self.monitor_page.set_gpa(gpa);
         if let Some(old_gpa) = old_gpa {
             tracing::debug!(old_gpa, "unregistered monitor page");
             overlays.remove_overlay_page(old_gpa);
@@ -182,7 +177,7 @@ impl SynicMonitor for WhpPartition {
             if !overlays.add_overlay_page(gpa, mem, false, false) {
                 // Unset the monitor page so we won't try to remove a registration that doesn't
                 // belong to us.
-                self.inner.monitor_page.set_gpa(None);
+                self.monitor_page.set_gpa(None);
                 anyhow::bail!("monitor page overlay already existed");
             }
 

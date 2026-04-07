@@ -258,16 +258,19 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         .map_err(Error::Capabilities)?;
 
         // Attach all the resources created above to a Partition object.
+        let inner = Arc::new(MshvPartitionInner {
+            vmfd: self.vmfd,
+            memory: Default::default(),
+            gm: config.guest_memory.clone(),
+            vps: self.vps,
+            irq_routes: Default::default(),
+            caps,
+            synic_ports: Default::default(),
+        });
+
         let partition = MshvPartition {
-            inner: Arc::new(MshvPartitionInner {
-                vmfd: self.vmfd,
-                memory: Default::default(),
-                gm: config.guest_memory.clone(),
-                vps: self.vps,
-                irq_routes: Default::default(),
-                caps,
-                synic_ports: Default::default(),
-            }),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(inner.clone())),
+            inner,
         };
 
         let vps = self
@@ -288,6 +291,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 #[derive(Debug)]
 pub struct MshvPartition {
     inner: Arc<MshvPartitionInner>,
+    synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
 }
 
 #[derive(Debug)]
@@ -342,7 +346,7 @@ impl virt::Partition for MshvPartition {
         self.inner.request_msi(request)
     }
 
-    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
     }
 
@@ -397,8 +401,8 @@ impl Hv1 for MshvPartition {
         None
     }
 
-    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        Arc::new(virt::synic::SynicPorts::new(self))
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -1499,25 +1503,24 @@ fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
     }
 }
 
-impl virt::synic::Synic for MshvPartition {
+impl virt::synic::Synic for MshvPartitionInner {
     fn port_map(&self) -> &virt::synic::SynicPortMap {
-        &self.inner.synic_ports
+        &self.synic_ports
     }
 
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        self.inner
-            .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
+        self.post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(MshvGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
+            partition: Arc::downgrade(&self),
             params: Arc::new(Mutex::new(MshvEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,

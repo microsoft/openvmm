@@ -412,7 +412,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         gsi_routing.update_routes(&self.vm);
 
-        let partition = KvmPartitionInner {
+        let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
             hv1_enabled: self.config.hv_config.is_some(),
@@ -434,10 +434,11 @@ impl ProtoPartition for KvmProtoPartition<'_> {
             caps,
             cpuid,
             synic_ports: Default::default(),
-        };
+        });
 
         let partition = KvmPartition {
-            inner: Arc::new(partition),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            inner: partition,
         };
 
         let vps = self
@@ -509,7 +510,7 @@ impl Partition for KvmPartition {
         Some(self.clone())
     }
 
-    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
     }
 
@@ -579,8 +580,8 @@ impl Hv1 for KvmPartition {
         None
     }
 
-    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess> {
-        Arc::new(virt::synic::SynicPorts::new(self))
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -1253,13 +1254,13 @@ impl Processor for KvmProcessor<'_> {
     }
 }
 
-impl virt::synic::Synic for KvmPartition {
+impl virt::synic::Synic for KvmPartitionInner {
     fn port_map(&self) -> &virt::synic::SynicPortMap {
-        &self.inner.synic_ports
+        &self.synic_ports
     }
 
     fn post_message(&self, _vtl: Vtl, vp_index: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        let Some(vp) = self.inner.vp(vp_index) else {
+        let Some(vp) = self.vp(vp_index) else {
             tracelimit::warn_ratelimited!(?vp_index, "post_message for invalid vp_index");
             return;
         };
@@ -1269,20 +1270,20 @@ impl virt::synic::Synic for KvmPartition {
             .enqueue_message(sint, &HvMessage::new(HvMessageType(typ), 0, payload));
 
         if wake {
-            self.inner.evaluate_vp(vp_index);
+            self.evaluate_vp(vp_index);
         }
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
-            gm: self.inner.gm.clone(),
+            partition: Arc::downgrade(&self),
+            gm: self.gm.clone(),
             params: Arc::new(Mutex::new(KvmEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,

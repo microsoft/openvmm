@@ -9,20 +9,19 @@
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]
 
+mod arch;
+#[cfg(guest_arch = "x86_64")]
+mod gsi;
+
+pub use arch::Kvm;
+
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use std::sync::Arc;
-
-mod arch;
-#[cfg(guest_arch = "x86_64")]
-mod gsi;
-
 use thiserror::Error;
 use virt::state::StateError;
-
-pub use arch::Kvm;
 
 /// Returns whether KVM is available on this machine.
 pub fn is_available() -> Result<bool, KvmError> {
@@ -83,6 +82,8 @@ struct KvmMemoryRangeState {
 pub struct KvmPartition {
     #[inspect(flatten)]
     inner: Arc<KvmPartitionInner>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
 }
 
 #[derive(Inspect)]

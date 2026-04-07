@@ -2671,7 +2671,7 @@ async fn new_underhill_vm(
 
     let emuplat_adjust_gpa_range;
 
-    let synic = virt::Hv1::synic(partition.clone());
+    let synic = virt::Hv1::synic(partition.as_ref());
 
     let mut chipset = vm_manifest_builder::VmManifestBuilder::new(
         match firmware_type {

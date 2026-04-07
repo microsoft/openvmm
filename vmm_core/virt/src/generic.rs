@@ -290,7 +290,7 @@ pub trait Partition: 'static + Hv1 + Inspect + Send + Sync {
     /// create MSI interrupts.
     ///
     /// Not all partitions support this.
-    fn as_signal_msi(self: &Arc<Self>, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         let _ = vtl;
         None
     }
@@ -631,7 +631,7 @@ pub trait Hv1 {
     ///
     /// This is used by VMBus and other synic consumers to register message
     /// and event ports for communication with the guest.
-    fn synic(self: Arc<Self>) -> Arc<dyn vmcore::synic::SynicPortAccess>;
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
 }
 
 pub trait DeviceBuilder: Hv1 {

@@ -1692,7 +1692,7 @@ impl InitializedVm {
                             )
                         })?;
 
-                if let Some(signal_msi) = partition.clone().into_signal_msi(Vtl::Vtl0) {
+                if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
                     msi_conn.connect(signal_msi);
                 }
 
@@ -1743,7 +1743,7 @@ impl InitializedVm {
                 dev_cfg.resource,
                 partition.clone().into_doorbell_registration(Vtl::Vtl0),
                 Some(&mapper),
-                partition.clone().into_signal_msi(Vtl::Vtl0),
+                partition.as_signal_msi(Vtl::Vtl0),
             )
             .await?;
         }
@@ -1753,7 +1753,7 @@ impl InitializedVm {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
 
-            let synic = partition.clone().into_synic();
+            let synic = partition.synic();
 
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();
@@ -2750,7 +2750,7 @@ impl LoadedVm {
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
                             let msi_conn = pci_core::msi::MsiConnection::new();
-                            let signal_msi = self.inner.partition.clone().into_signal_msi(Vtl::Vtl0);
+                            let signal_msi = self.inner.partition.as_signal_msi(Vtl::Vtl0);
 
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
