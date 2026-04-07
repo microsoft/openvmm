@@ -81,6 +81,13 @@ impl DeferredToken {
             Err(_) => Poll::Ready(Err(IoError::NoResponse)),
         }
     }
+
+    /// Returns a future that waits for the deferred write to complete.
+    ///
+    /// Panics if the deferred token was for a read operation.
+    pub async fn write_future(mut self) -> Result<(), IoError> {
+        std::future::poll_fn(|cx| self.poll_write(cx)).await
+    }
 }
 
 /// A deferred read operation.

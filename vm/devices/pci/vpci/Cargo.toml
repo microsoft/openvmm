@@ -26,6 +26,7 @@ guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 task_control.workspace = true
+
 pal_async.workspace = true
 
 anyhow.workspace = true
@@ -39,7 +40,6 @@ zerocopy.workspace = true
 [dev-dependencies]
 chipset_arc_mutex_device.workspace = true
 openhcl_tdisp.workspace = true
-pal_async.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

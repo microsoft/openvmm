@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
@@ -822,6 +823,7 @@ impl ReadyState {
                         reply_type,
                     } => {
                         dev.set_bars(&resources.mmio_ranges)
+                            .await
                             .map_err(PacketError::InvalidBars)?;
 
                         let mut tr = Vec::<u8>::new();
@@ -895,8 +897,8 @@ impl ReadyState {
                     DeviceRequest::DevicePowerChange { target_state } => {
                         let mut status = protocol::Status::SUCCESS;
                         match target_state {
-                            protocol::DevicePowerState::D0 => dev.set_power(true),
-                            protocol::DevicePowerState::D3 => dev.set_power(false),
+                            protocol::DevicePowerState::D0 => dev.set_power(true).await,
+                            protocol::DevicePowerState::D3 => dev.set_power(false).await,
                             _ => status = protocol::Status::BAD_DATA,
                         }
                         conn.send_completion(transaction_id, &status, &[])?;
@@ -1024,7 +1026,7 @@ impl VpciChannel {
         resources
     }
 
-    fn set_bars(&mut self, resources: &[MmioResource; 6]) -> Result<(), InvalidBars> {
+    async fn set_bars(&mut self, resources: &[MmioResource; 6]) -> Result<(), InvalidBars> {
         let mut bars = [0; 6];
         let mut high64 = false;
         for (i, resource) in resources.iter().enumerate() {
@@ -1061,49 +1063,46 @@ impl VpciChannel {
             }
         }
         tracing::debug!(?bars, "setting bars");
-        {
-            let mut device = self.device.lock();
-            for (i, bar) in bars.into_iter().enumerate() {
-                {
-                    device
-                        .supports_pci()
-                        .unwrap()
-                        .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar)
-                        .unwrap();
-                };
+        for (i, bar) in bars.into_iter().enumerate() {
+            let result = self
+                .device
+                .lock()
+                .supports_pci()
+                .unwrap()
+                .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
+            if let IoResult::Defer(token) = result {
+                token.write_future().await.ok();
             }
         }
         self.bars_set = true;
         Ok(())
     }
 
-    fn set_power(&mut self, on: bool) {
-        let mut device = self.device.lock();
-        let mut command = {
-            let mut value = 0;
-            device
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, &mut value)
-                .now_or_never()
-                .map(|_| value)
-                .unwrap_or(0)
+    async fn set_power(&mut self, on: bool) {
+        let result = {
+            let mut device = self.device.lock();
+            let pci = device.supports_pci().unwrap();
+            let mut command = {
+                let mut value = 0;
+                pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, &mut value)
+                    .now_or_never()
+                    .map(|_| value)
+                    .unwrap_or(0)
+            };
+            let mmio = cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32;
+            if on {
+                command |= mmio;
+            } else {
+                command &= !mmio;
+            }
+            pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
-        let mmio = cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32;
-        if on {
-            command |= mmio;
-        } else {
-            command &= !mmio;
+
+        if let IoResult::Defer(token) = result {
+            token.write_future().await.ok();
         }
-        {
-            device
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
-                .unwrap();
-        };
 
         // TODO: set power cap, too, on devices that support it.
     }
@@ -1167,7 +1166,7 @@ impl VpciChannel {
     /// Release all resources associated with the device (not the bus).
     async fn release_all(&mut self) {
         // Power off the device.
-        self.set_power(false);
+        self.set_power(false).await;
 
         // Unmap all interrupts.
         for MsiAddressData { address, data } in self.interrupts.drain(..) {
@@ -1175,7 +1174,7 @@ impl VpciChannel {
         }
 
         // Clear the BARs.
-        self.set_bars(&[MmioResource::default(); 6]).unwrap();
+        self.set_bars(&[MmioResource::default(); 6]).await.unwrap();
         self.bars_set = false;
     }
 }
@@ -1403,6 +1402,8 @@ mod tests {
     use chipset_arc_mutex_device::test_chipset::TestChipset;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
+    use chipset_device::io::deferred::DeferredWrite;
+    use chipset_device::io::deferred::defer_write;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
@@ -1421,6 +1422,7 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
+    use pal_async::task::Spawn;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1433,6 +1435,7 @@ mod tests {
     use ring::FlatRingMem;
     use ring::OutgoingPacketType;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     use tdisp::GuestToHostResponseExt;
@@ -1455,6 +1458,13 @@ mod tests {
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
+
+    // Helper to complete deferred write tokens if needed.
+    async fn complete_write(result: IoResult) {
+        if let IoResult::Defer(token) = result {
+            token.write_future().await.ok();
+        }
+    }
 
     enum ReadPacketInfo {
         None,
@@ -1929,46 +1939,48 @@ mod tests {
 
         let base_address = 0x80000000;
         guest_driver.start_device(base_address).await;
-        let mut pci = pci.lock();
         for i in 0..6 {
-            pci.pci_cfg_write(0x10 + 4 * i, 0xffffffff).unwrap();
+            let result = pci.lock().pci_cfg_write(0x10 + 4 * i, 0xffffffff);
+            complete_write(result).await;
         }
 
         let mut value = 0;
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
         assert_eq!(value, 0xfffff004);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0xffffffff);
-        pci.pci_cfg_read(0x18, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x18, &mut value).unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x1c, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x1c, &mut value).unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x20, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x20, &mut value).unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x24, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x24, &mut value).unwrap();
         assert_eq!(value, 0);
 
-        pci.pci_cfg_write(0x14, 0x20).unwrap();
-        pci.pci_cfg_write(0x10, 0x0).unwrap();
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
+        complete_write(pci.lock().pci_cfg_write(0x14, 0x20)).await;
+        complete_write(pci.lock().pci_cfg_write(0x10, 0x0)).await;
+        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
         assert_eq!(value, 0x4);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
 
-        pci.pci_cfg_write(
-            0x4,
-            pci_core::spec::cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+        complete_write(
+            pci.lock().pci_cfg_write(
+                0x4,
+                pci_core::spec::cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+            ),
         )
-        .unwrap();
+        .await;
 
         // Writes to BAR address are not allowed once MMIO is enabled.
-        pci.pci_cfg_write(0x14, 0xffffffff).unwrap();
-        pci.pci_cfg_write(0x10, 0xffffffff).unwrap();
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
+        complete_write(pci.lock().pci_cfg_write(0x14, 0xffffffff)).await;
+        complete_write(pci.lock().pci_cfg_write(0x10, 0xffffffff)).await;
+        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
         assert_eq!(value, 0x4);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
     }
 
@@ -2119,29 +2131,38 @@ mod tests {
         };
 
         let bar_address1 = 0x2000000000;
-        pci.lock()
-            .pci_cfg_write(0x14, u32::try_from(bar_address1 >> 32).unwrap())
-            .unwrap();
-        pci.lock()
-            .pci_cfg_write(0x10, u32::try_from(bar_address1 & 0xffffffff).unwrap())
-            .unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x14, u32::try_from(bar_address1 >> 32).unwrap()),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x10, u32::try_from(bar_address1 & 0xffffffff).unwrap()),
+        )
+        .await;
 
         let bar_address2: u64 = 0x4000;
-        pci.lock()
-            .pci_cfg_write(0x1c, u32::try_from(bar_address2 >> 32).unwrap())
-            .unwrap();
-        pci.lock()
-            .pci_cfg_write(0x18, u32::try_from(bar_address2 & 0xffffffff).unwrap())
-            .unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x1c, u32::try_from(bar_address2 >> 32).unwrap()),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x18, u32::try_from(bar_address2 & 0xffffffff).unwrap()),
+        )
+        .await;
 
-        pci.lock()
-            .pci_cfg_write(
+        complete_write(
+            pci.lock().pci_cfg_write(
                 0x4,
                 pci_core::spec::cfg_space::Command::new()
                     .with_mmio_enabled(true)
                     .into_bits() as u32,
-            )
-            .unwrap();
+            ),
+        )
+        .await;
 
         assert_eq!(read_u32(bar_address1), 1);
         assert_eq!(read_u32(bar_address1 + 4), 2);
@@ -2151,6 +2172,100 @@ mod tests {
         write_u32(bar_address1 + 4, 2);
         write_u32(bar_address2, 3);
         write_u32(bar_address2 + HV_PAGE_SIZE, 4);
+    }
+
+    /// A PCI device where every `pci_cfg_write` defers completion until the caller explicitly
+    /// drives it. Used to test that deferred writes are properly awaited.
+    struct TestDeviceAsyncDeferral {
+        config_space: ConfigSpaceType0Emulator,
+        pending_write: Option<DeferredWrite>,
+    }
+
+    impl TestDeviceAsyncDeferral {
+        fn new() -> Self {
+            Self {
+                config_space: ConfigSpaceType0Emulator::new(
+                    HardwareIds {
+                        vendor_id: 0x1234,
+                        device_id: 0x5678,
+                        revision_id: 0,
+                        prog_if: ProgrammingInterface::NONE,
+                        base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
+                        sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
+                        type0_sub_vendor_id: 0,
+                        type0_sub_system_id: 0,
+                    },
+                    Vec::new(),
+                    DeviceBars::new(),
+                ),
+                pending_write: None,
+            }
+        }
+    }
+
+    impl InspectMut for TestDeviceAsyncDeferral {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    impl ChipsetDevice for TestDeviceAsyncDeferral {
+        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+            Some(self)
+        }
+    }
+
+    impl PciConfigSpace for TestDeviceAsyncDeferral {
+        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+            self.config_space.read_u32(offset, value)
+        }
+
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+            let res = self.config_space.write_u32(offset, value);
+            assert!(
+                matches!(res, IoResult::Ok),
+                "config space emulator write should succeed immediately"
+            );
+
+            let (deferred, token) = defer_write();
+            assert!(
+                self.pending_write.replace(deferred).is_none(),
+                "previous write was not yet completed"
+            );
+            IoResult::Defer(token)
+        }
+    }
+
+    /// Verifies that `complete_write` properly awaits a deferred `pci_cfg_write`.
+    ///
+    /// A concurrent task is responsible for completing the deferred write. The test
+    /// asserts that `complete_write` does not return until after that task has run.
+    #[async_test]
+    async fn verify_deferred_pci_cfg_write(driver: DefaultDriver) {
+        let pci = Arc::new(CloseableMutex::new(TestDeviceAsyncDeferral::new()));
+
+        let result = pci.lock().pci_cfg_write(0x4, 0x2);
+        assert!(matches!(result, IoResult::Defer(_)));
+
+        // Spawn a task that completes the deferred write and records that it ran.
+        let completer_ran = Arc::new(AtomicBool::new(false));
+        let pci_clone = pci.clone();
+        let completer_ran_clone = completer_ran.clone();
+        driver
+            .spawn("complete-deferred", async move {
+                pci_clone.lock().pending_write.take().unwrap().complete();
+                completer_ran_clone.store(true, Ordering::SeqCst);
+            })
+            .detach();
+
+        // complete_write must await the token; the executor will run the completer
+        // task to unblock it.
+        complete_write(result).await;
+
+        assert!(
+            completer_ran.load(Ordering::SeqCst),
+            "complete_write returned before the deferred write was completed"
+        );
     }
 
     /// Verifies that the TDISP guest protocol can be negotiated correctly over a hosted VMBUS channel.

@@ -12,9 +12,11 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::DeferredToken;
+use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
+use chipset_device::poll_device::PollDevice;
 use closeable_mutex::CloseableMutex;
 use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
@@ -22,9 +24,9 @@ use device_emulators::write_as_u32_chunks;
 use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use inspect::InspectMut;
-use pal_async::task::Spawn;
-use std::future::poll_fn;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Waker;
 use thiserror::Error;
 use vmbus_channel::simple::SimpleDeviceHandle;
 use vmbus_channel::simple::offer_simple_device;
@@ -33,7 +35,6 @@ use vmcore::save_restore::NoSavedState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
-use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vpci_protocol as protocol;
@@ -66,10 +67,21 @@ pub struct VpciBusDevice {
     /// Track vtom as when isolated with vtom enabled, guests may access mmio
     /// with or without vtom set.
     vtom: Option<u64>,
-    /// Spawner used to drive combined deferred IO tasks when config space
-    /// operations return [`IoResult::Defer`]. `None` in test contexts.
+    /// Deferred config space writes waiting for inner tokens to complete.
     #[inspect(skip)]
-    spawner: Option<VmTaskDriver>,
+    pending_writes: Vec<PendingDeferredWrite>,
+    /// Waker registered by the chipset's poll loop. Used to re-schedule
+    /// polling when a new pending write is added from [`MmioIntercept::mmio_write`].
+    /// `None` until the first [`PollDevice::poll_device`] call (i.e. in test contexts).
+    #[inspect(skip)]
+    waker: Option<Waker>,
+}
+
+struct PendingDeferredWrite {
+    /// Inner tokens from `pci_cfg_write` calls that returned [`IoResult::Defer`].
+    inner_tokens: Vec<DeferredToken>,
+    /// Outer deferred write to complete once all inner tokens are ready.
+    outer_deferred: Option<DeferredWrite>,
 }
 
 /// An error creating a VPCI bus.
@@ -92,7 +104,6 @@ impl VpciBusDevice {
         register_mmio: &mut dyn RegisterMmioIntercept,
         msi_controller: VpciInterruptMapper,
         vtom: Option<u64>,
-        spawner: Option<VmTaskDriver>,
     ) -> Result<(Self, VpciChannel), NotPciDevice> {
         let config_space = VpciConfigSpace::new(
             register_mmio.new_io_region(&format!("vpci-{instance_id}-config"), 2 * HV_PAGE_SIZE),
@@ -110,7 +121,8 @@ impl VpciBusDevice {
             config_space_offset,
             current_slot: SlotNumber::from(0),
             vtom,
-            spawner,
+            pending_writes: Vec::new(),
+            waker: None,
         };
 
         Ok((this, channel))
@@ -134,7 +146,6 @@ impl VpciBus {
             register_mmio,
             msi_controller.clone(),
             vtom,
-            Some(driver_source.simple()),
         )
         .map_err(CreateBusError::NotPci)?;
         let channel = offer_simple_device(driver_source, vmbus, channel)
@@ -179,11 +190,38 @@ impl ChipsetDevice for VpciBus {
     fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
         self.bus_device.supports_mmio()
     }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+        self.bus_device.supports_poll_device()
+    }
 }
 
 impl ChipsetDevice for VpciBusDevice {
     fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
         Some(self)
+    }
+
+    fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+        Some(self)
+    }
+}
+
+impl PollDevice for VpciBusDevice {
+    fn poll_device(&mut self, cx: &mut Context<'_>) {
+        self.waker = Some(cx.waker().clone());
+        self.pending_writes.retain_mut(|pending| {
+            pending
+                .inner_tokens
+                .retain_mut(|token| token.poll_write(cx).is_pending());
+            if pending.inner_tokens.is_empty() {
+                if let Some(deferred) = pending.outer_deferred.take() {
+                    deferred.complete();
+                }
+                false
+            } else {
+                true
+            }
+        });
     }
 }
 
@@ -241,30 +279,34 @@ impl MmioIntercept for VpciBusDevice {
             Register::ConfigSpace(offset) => {
                 // FUTURE: support a bus with multiple devices.
                 if u32::from(self.current_slot) == 0 {
-                    let mut device = self.device.lock();
-                    let pci = device.supports_pci().unwrap();
-                    let mut buf = 0;
-                    let mut deferred: Vec<DeferredToken> = Vec::new();
-                    write_as_u32_chunks(offset, data, |address, request_type| match request_type {
-                        ReadWriteRequestType::Write(value) => {
-                            match pci.pci_cfg_write(address, value) {
-                                IoResult::Ok => {}
-                                IoResult::Err(err) => {
-                                    panic!("error writing to PCI config space: {err:#?}");
+                    let deferred =
+                        {
+                            let mut device = self.device.lock();
+                            let pci = device.supports_pci().unwrap();
+                            let mut buf = 0;
+                            let mut deferred: Vec<DeferredToken> = Vec::new();
+                            write_as_u32_chunks(offset, data, |address, request_type| {
+                                match request_type {
+                                    ReadWriteRequestType::Write(value) => {
+                                        match pci.pci_cfg_write(address, value) {
+                                            IoResult::Ok => {}
+                                            IoResult::Err(_) => {}
+                                            IoResult::Defer(token) => deferred.push(token),
+                                        }
+                                        None
+                                    }
+                                    ReadWriteRequestType::Read => Some(
+                                        pci.pci_cfg_read(address, &mut buf)
+                                            .now_or_never()
+                                            .map(|_| buf)
+                                            .unwrap_or(0),
+                                    ),
                                 }
-                                IoResult::Defer(token) => deferred.push(token),
-                            }
-                            None
-                        }
-                        ReadWriteRequestType::Read => Some(
-                            pci.pci_cfg_read(address, &mut buf)
-                                .now_or_never()
-                                .map(|_| buf)
-                                .unwrap_or(0),
-                        ),
-                    });
+                            });
+                            deferred
+                        };
                     if !deferred.is_empty() {
-                        return self.combine_deferred_as_write(deferred);
+                        return self.enqueue_deferred_write(deferred);
                     }
                 } else {
                     tracelimit::warn_ratelimited!(slot = ?self.current_slot, offset, "no device at slot for config space write");
@@ -281,25 +323,20 @@ enum Register {
 }
 
 impl VpciBusDevice {
-    /// Spawns a task that waits for all inner deferred write tokens to
-    /// complete, then completes an outer deferred write.
-    fn combine_deferred_as_write(&self, deferred: Vec<DeferredToken>) -> IoResult {
-        let Some(spawner) = &self.spawner else {
-            // A task spawner is required to defer writes.
-            return IoResult::Err(IoError::NoResponse);
+    /// Stores a pending deferred write and wakes the poll loop to drive it.
+    ///
+    /// Returns [`IoResult::Ok`] immediately if no poll waker is registered
+    /// (i.e. in test contexts where the chipset state unit is absent).
+    fn enqueue_deferred_write(&mut self, deferred: Vec<DeferredToken>) -> IoResult {
+        let Some(waker) = &self.waker else {
+            return IoResult::Ok;
         };
         let (outer_deferred, outer_token) = defer_write();
-        spawner
-            .clone()
-            .spawn("vpci_bus_deferred_write", async move {
-                for mut token in deferred {
-                    if let Err(err) = poll_fn(|cx| token.poll_write(cx)).await {
-                        panic!("deferred PCI config space write failed: {err:#?}");
-                    }
-                }
-                outer_deferred.complete();
-            })
-            .detach();
+        self.pending_writes.push(PendingDeferredWrite {
+            inner_tokens: deferred,
+            outer_deferred: Some(outer_deferred),
+        });
+        waker.wake_by_ref();
         IoResult::Defer(outer_token)
     }
 
