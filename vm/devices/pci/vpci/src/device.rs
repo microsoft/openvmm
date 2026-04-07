@@ -1065,10 +1065,12 @@ impl VpciChannel {
         tracing::debug!(?bars, "setting bars");
 
         {
-            let mut locked_device = self.device.lock();
-            let locked_pci_config_space = locked_device.supports_pci().unwrap();
             for (i, bar) in bars.into_iter().enumerate() {
-                let result = locked_pci_config_space
+                let result = self
+                    .device
+                    .lock()
+                    .supports_pci()
+                    .unwrap()
                     .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
                 match result {
                     IoResult::Ok => (),
