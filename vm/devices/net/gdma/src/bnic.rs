@@ -255,7 +255,7 @@ impl BasicNic {
                 // populate so they don't contain stale data.
                 if guest_resp_size > resp_bytes.len() {
                     let mut zero_write = write.clone();
-                    zero_write.write(&vec![0u8; guest_resp_size])?;
+                    zero_write.zero()?;
                 }
                 write.write(&resp_bytes[..write_len])?;
                 write_len
