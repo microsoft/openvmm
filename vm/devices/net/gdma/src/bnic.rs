@@ -247,14 +247,16 @@ impl BasicNic {
                     adapter_link_speed_mbps: self.config.adapter_link_speed_mbps,
                 };
 
-                // Match socmana behavior by zeroing response buffer before
-                // writing truncated response
                 let resp_bytes = resp.as_bytes();
                 let guest_resp_size = MemoryWrite::len(&write);
-                let mut zero_write = write.clone();
-                let zeros = vec![0u8; resp_bytes.len()];
-                zero_write.write(&zeros)?;
                 let write_len = guest_resp_size.min(resp_bytes.len());
+                // When the guest has a newer, larger response struct than the
+                // emulator, zero the trailing bytes the emulator doesn't
+                // populate so they don't contain stale data.
+                if guest_resp_size > resp_bytes.len() {
+                    let mut zero_write = write.clone();
+                    zero_write.write(&vec![0u8; guest_resp_size])?;
+                }
                 write.write(&resp_bytes[..write_len])?;
                 write_len
             }
