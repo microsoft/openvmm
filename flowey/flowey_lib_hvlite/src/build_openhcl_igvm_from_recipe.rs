@@ -459,19 +459,31 @@ impl SimpleFlowNode for Node {
         };
 
         // build openvmm_hcl bin
-        let openvmm_hcl_bin = ctx.reqv(|v| {
-            crate::build_openvmm_hcl::Request {
-                build_params: crate::build_openvmm_hcl::OpenvmmHclBuildParams {
-                    target: target.clone(),
-                    profile: build_profile,
-                    features: openvmm_hcl_features,
-                    // manually strip later, depending on provided igvm flags
-                    no_split_dbg_info: true,
-                    max_trace_level,
-                },
-                openvmm_hcl_output: v,
-            }
-        });
+        let openvmm_hcl_bin = if let Some(ref path) = custom_openvmm_hcl {
+            let path = path.clone();
+            ctx.emit_rust_stepv("set custom_openvmm_hcl", |_ctx| {
+                |_rt| {
+                    Ok(crate::build_openvmm_hcl::OpenvmmHclOutput {
+                        bin: path,
+                        dbg: None,
+                    })
+                }
+            })
+        } else {
+            ctx.reqv(|v| {
+                crate::build_openvmm_hcl::Request {
+                    build_params: crate::build_openvmm_hcl::OpenvmmHclBuildParams {
+                        target: target.clone(),
+                        profile: build_profile,
+                        features: openvmm_hcl_features,
+                        // manually strip later, depending on provided igvm flags
+                        no_split_dbg_info: true,
+                        max_trace_level,
+                    },
+                    openvmm_hcl_output: v,
+                }
+            })
+        };
 
         // build igvmfilegen (always built for host arch)
         let igvmfilegen_arch = match ctx.arch() {
