@@ -15,7 +15,7 @@ default = []
 # TODO: this feature ought to be unconditionally enabled, but doing so would
 # require figuring out the openSSL story on Windows, which is a undertaking in
 # and of itself...
-auth-var-verify-crypto = ["openssl", "der"]
+auth-var-verify-crypto = ["crypto", "der"]
 
 # exposes private modules so that they can be fuzzed
 fuzzing = []
@@ -34,6 +34,7 @@ vmcore.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true
+crypto = { workspace = true, optional = true }
 der = { workspace = true, features = ["derive", "alloc", "oid"], optional = true }
 getrandom.workspace = true
 guid.workspace = true
@@ -42,7 +43,6 @@ jiff.workspace = true
 local_clock.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
-openssl = { optional = true, workspace = true }
 pal_async.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true

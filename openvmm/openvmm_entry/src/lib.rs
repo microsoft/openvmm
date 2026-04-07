@@ -1850,7 +1850,18 @@ fn parse_endpoint(
             }
         }
         EndpointConfigCli::Tap { name } => {
-            net_backend_resources::tap::TapHandle { name: name.clone() }.into_resource()
+            #[cfg(target_os = "linux")]
+            {
+                let fd = net_tap::tap::open_tap(name)
+                    .with_context(|| format!("failed to open TAP device '{name}'"))?;
+                net_backend_resources::tap::TapHandle { fd }.into_resource()
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = name;
+                bail!("TAP backend is only supported on Linux")
+            }
         }
     };
 

@@ -92,9 +92,9 @@ PCIe root port. The syntax varies slightly between device types:
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
 ```sh
---virtio-net pcie_port=rp0:tap:tap0
+--virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
---mana pcie_port=rp0:tap:tap0
+--mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
 ```
 
 **Filesystems and other virtio devices** (colon-prefixed):
