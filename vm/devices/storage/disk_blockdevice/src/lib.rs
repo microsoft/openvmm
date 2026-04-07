@@ -648,7 +648,7 @@ impl DiskIo for BlockDevice {
                     io_vecs.len() as _,
                 )
                 .offset((sector * self.sector_size() as u64) as _)
-                .rw_flags(if fua { RWF_DSYNC } else { 0 })
+                .rw_flags(if fua { RWF_DSYNC } else { 0 } as _)
                 .build()
             })
         }
