@@ -28,10 +28,10 @@ use openhcl_dma_manager::DmaClientSpawner;
 use openhcl_dma_manager::LowerVtlPermissionPolicy;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
-use std::sync::Mutex;
 use storvsc_driver::StorvscDriver;
 use thiserror::Error;
 use tracing::Instrument;
@@ -430,13 +430,13 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskConfig> for StorvscDiskReso
 
         // Check cache first (bounce resolver may have already created it).
         {
-            let cache = self.disk_cache.lock().unwrap();
+            let cache = self.disk_cache.lock();
             if let Some(disk) = cache.get(&key) {
-                return Ok(ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(
+                return ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(
                     disk.clone(),
                     false,
                 ))
-                .context("invalid disk")?);
+                .context("invalid disk");
             }
         }
 
@@ -452,12 +452,9 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskConfig> for StorvscDiskReso
                 .context("failed to create StorvscDisk")?,
         );
 
-        self.disk_cache.lock().unwrap().insert(key, disk.clone());
+        self.disk_cache.lock().insert(key, disk.clone());
 
-        Ok(
-            ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(disk, false))
-                .context("invalid disk")?,
-        )
+        ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(disk, false)).context("invalid disk")
     }
 }
 
@@ -499,7 +496,7 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskBounceConfig> for StorvscDi
 
         // Check cache first (GPA-direct resolver may have already created the disk).
         let inner = {
-            let cache = self.disk_cache.lock().unwrap();
+            let cache = self.disk_cache.lock();
             cache.get(&key).cloned()
         };
 
@@ -519,15 +516,13 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskBounceConfig> for StorvscDi
                         .context("failed to create StorvscDisk for bounce")?,
                 );
 
-                self.disk_cache.lock().unwrap().insert(key, disk.clone());
+                self.disk_cache.lock().insert(key, disk.clone());
                 disk
             }
         };
 
-        Ok(
-            ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(inner, true))
-                .context("invalid bounce disk")?,
-        )
+        ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(inner, true))
+            .context("invalid bounce disk")
     }
 }
 
@@ -605,13 +600,21 @@ fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
             );
         }
         Err(e) => {
-            // ENODEV means the device isn't on hv_storvsc -- maybe it's
-            // already on UIO or unbound. Not an error.
-            tracing::debug!(
-                %instance_guid,
-                error = %e,
-                "hv_storvsc unbind skipped (device may not be bound there)"
-            );
+            if e.raw_os_error() == Some(libc::ENODEV) {
+                // ENODEV: device not bound to hv_storvsc -- expected
+                // when already on UIO or unbound.
+                tracing::debug!(
+                    %instance_guid,
+                    "hv_storvsc unbind skipped (device not bound there)"
+                );
+            } else {
+                // Unexpected error (EPERM, EACCES, etc.)
+                tracing::warn!(
+                    %instance_guid,
+                    error = %e,
+                    "hv_storvsc unbind failed unexpectedly"
+                );
+            }
         }
     }
 
@@ -624,12 +627,20 @@ fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
             );
         }
         Err(e) => {
-            // EBUSY means already bound to UIO -- fine.
-            tracing::debug!(
-                %instance_guid,
-                error = %e,
-                "UIO bind skipped (device may already be bound)"
-            );
+            if e.raw_os_error() == Some(libc::EBUSY) {
+                // EBUSY: already bound to UIO -- expected.
+                tracing::debug!(
+                    %instance_guid,
+                    "UIO bind skipped (device already bound)"
+                );
+            } else {
+                // Unexpected error -- may cause open_uio_device to fail.
+                tracing::warn!(
+                    %instance_guid,
+                    error = %e,
+                    "UIO bind failed unexpectedly"
+                );
+            }
         }
     }
 }

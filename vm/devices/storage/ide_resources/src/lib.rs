@@ -44,7 +44,7 @@ pub enum GuestMedia {
         /// and this goes to direct IDE port I/O. Needed for storvsc
         /// usermode where IDE port I/O has fake GPNs from CommandBuffer
         /// heap allocation -- must use bounce buffers.
-        ide_direct_disk_type: Option<Resource<DiskHandleKind>>,
+        ide_direct_disk_type: Option<Box<Resource<DiskHandleKind>>>,
         /// Whether the disk is read-only.
         read_only: bool,
         /// The disk parameters, used for the vmbus SCSI interface.

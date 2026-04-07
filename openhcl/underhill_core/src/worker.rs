@@ -2740,7 +2740,7 @@ async fn new_underhill_vm(
                         // CommandBuffer has fake GPNs that would corrupt guest
                         // memory if passed via GPA-direct to the host.
                         let ide_disk = if let Some(bounce_type) = ide_direct_disk_type {
-                            disk_from_disk_type(bounce_type, read_only, &resolver, &driver_source)
+                            disk_from_disk_type(*bounce_type, read_only, &resolver, &driver_source)
                                 .await?
                         } else {
                             disk

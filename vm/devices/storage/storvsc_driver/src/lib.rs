@@ -305,7 +305,7 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
                 has_negotiated: state.has_negotiated,
             })
         } else {
-            // Task was not running, so not state to save
+            // Task was not running, so no state to save
             Ok(StorvscDriverSavedState {
                 version: 0,
                 has_negotiated: false,

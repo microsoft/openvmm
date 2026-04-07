@@ -321,7 +321,15 @@ impl StorvscDisk {
                     let mut buf_pos = 0;
                     let vpd_header = data_in.read_obj::<scsi_defs::VpdPageHeader>(0);
                     buf_pos += size_of::<scsi_defs::VpdPageHeader>();
-                    while buf_pos < vpd_header.page_length as usize + 4 {
+                    // Cap at DMA buffer size to guard against
+                    // untrusted host-provided page_length.
+                    let vpd_end = (vpd_header.page_length as usize + 4).min(data_in_size);
+                    while buf_pos < vpd_end {
+                        if buf_pos + size_of::<scsi_defs::VpdIdentificationDescriptor>()
+                            > data_in_size
+                        {
+                            break;
+                        }
                         let designator_header =
                             data_in.read_obj::<scsi_defs::VpdIdentificationDescriptor>(buf_pos);
                         match designator_header.identifiertype {
@@ -329,6 +337,9 @@ impl StorvscDisk {
                                 // VpdNaaId includes VpdIdentificationDescriptor as its
                                 // first field (`scsi_defs::VpdNaaId::header`), so read
                                 // the full struct from the descriptor start position.
+                                if buf_pos + size_of::<scsi_defs::VpdNaaId>() > data_in_size {
+                                    break;
+                                }
                                 let designator_naa =
                                     data_in.read_obj::<scsi_defs::VpdNaaId>(buf_pos);
                                 let mut created_disk_id = [0u8; 16];
@@ -828,7 +839,17 @@ impl DiskIo for StorvscDisk {
         loop {
             let listen = self.resize_event.listen();
             // Refetch capacity from host (we're in async context here)
-            let capacity = match self.fetch_capacity_10().await {
+            // Use the same capacity CDB variant as the constructor:
+            // READ_CAPACITY(16) for disk, READ_CAPACITY(10) for optical.
+            let fetch_result = if self.device_type == 0x05 {
+                self.fetch_capacity_10().await
+            } else {
+                match self.fetch_capacity_16().await {
+                    Ok(cap) => Ok(cap),
+                    Err(_) => self.fetch_capacity_10().await,
+                }
+            };
+            let capacity = match fetch_result {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::error!(

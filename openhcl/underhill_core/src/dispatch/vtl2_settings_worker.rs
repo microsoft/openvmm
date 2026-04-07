@@ -1249,7 +1249,7 @@ async fn make_ide_disk_config(
                 {
                     let lun = u8::try_from(device.sub_device_path).ok();
                     lun.map(|lun| {
-                        vm_resource::Resource::new(StorvscDiskBounceConfig {
+                        Resource::new(StorvscDiskBounceConfig {
                             instance_guid: device.vmbus_instance_id,
                             lun,
                         })
@@ -1266,7 +1266,7 @@ async fn make_ide_disk_config(
                 path: ide_path_from_config(disk)?,
                 guest_media: GuestMedia::Disk {
                     disk_type: disk_type.unwrap(),
-                    ide_direct_disk_type: ide_direct,
+                    ide_direct_disk_type: ide_direct.map(Box::new),
                     read_only: false,
                     disk_parameters: Some(make_disk_config_inner(
                         disk.location,
