@@ -8,27 +8,26 @@ use flowey::node::prelude::*;
 use std::collections::BTreeSet;
 use std::io::Write;
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-flowey_request! {
-    pub enum Request {
+flowey_config! {
+    /// Config for the install_rust node.
+    pub struct Config {
         /// Automatically install all required Rust tools and components.
         ///
         /// If false - will check for pre-existing Rust installation, and fail
         /// if it doesn't meet the current job's requirements.
-        AutoInstall(bool),
-
+        pub auto_install: Option<bool>,
         /// Ignore the Version requirement, and build using whatever version of
         /// the Rust toolchain the user has installed locally.
-        IgnoreVersion(bool),
-
+        pub ignore_version: Option<bool>,
         /// Install a specific Rust toolchain version.
-        // FUTURE: support installing / using multiple versions of the Rust
-        // toolchain at the same time, e.g: for stable and nightly, or to
-        // support regression tests between a pinned rust version and current
-        // stable.
-        Version(String),
+        pub version: Option<String>,
+    }
+}
 
+flowey_request! {
+    pub enum Request {
         /// Specify an additional target-triple to install the toolchain for.
         ///
         /// By default, only the native target will be installed.
@@ -50,18 +49,20 @@ flowey_request! {
     }
 }
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(dep: &mut ImportCtx<'_>) {
         dep.import::<crate::check_needs_relaunch::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut ensure_installed = Vec::new();
-        let mut rust_toolchain = None;
-        let mut auto_install = None;
-        let mut ignore_version = None;
         let mut additional_target_triples = BTreeSet::new();
         let mut additional_components = BTreeSet::new();
         let mut get_rust_toolchain = Vec::new();
@@ -70,13 +71,6 @@ impl FlowNode for Node {
         for req in requests {
             match req {
                 Request::EnsureInstalled(v) => ensure_installed.push(v),
-                Request::AutoInstall(v) => {
-                    same_across_all_reqs("AutoInstall", &mut auto_install, v)?
-                }
-                Request::IgnoreVersion(v) => {
-                    same_across_all_reqs("IgnoreVersion", &mut ignore_version, v)?
-                }
-                Request::Version(v) => same_across_all_reqs("Version", &mut rust_toolchain, v)?,
                 Request::InstallTargetTriple(s) => {
                     additional_target_triples.insert(s.to_string());
                 }
@@ -89,18 +83,21 @@ impl FlowNode for Node {
         }
 
         let ensure_installed = ensure_installed;
-        let auto_install =
-            auto_install.ok_or(anyhow::anyhow!("Missing essential request: AutoInstall",))?;
+        let auto_install = config
+            .auto_install
+            .ok_or(anyhow::anyhow!("missing config: auto_install"))?;
         if !auto_install && matches!(ctx.backend(), FlowBackend::Github) {
             anyhow::bail!("`AutoInstall` must be true when using the Github backend");
         }
-        let ignore_version =
-            ignore_version.ok_or(anyhow::anyhow!("Missing essential request: IgnoreVersion",))?;
+        let ignore_version = config
+            .ignore_version
+            .ok_or(anyhow::anyhow!("missing config: ignore_version"))?;
         if ignore_version && matches!(ctx.backend(), FlowBackend::Github) {
             anyhow::bail!("`IgnoreVersion` must be false when using the Github backend");
         }
-        let rust_toolchain =
-            rust_toolchain.ok_or(anyhow::anyhow!("Missing essential request: RustToolchain"))?;
+        let rust_toolchain = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let additional_target_triples = additional_target_triples;
         let additional_components = additional_components;
         let get_rust_toolchain = get_rust_toolchain;

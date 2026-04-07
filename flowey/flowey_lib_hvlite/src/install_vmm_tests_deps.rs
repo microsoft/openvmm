@@ -16,7 +16,7 @@ const WHP_TESTS_REQUIRED_FEATURES: [&str; 1] = ["HypervisorPlatform"];
 
 const VIRT_REG_PATH: &str = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization"#;
 
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum VmmTestsDepSelections {
     Windows {
         hyperv: bool,
@@ -26,10 +26,16 @@ pub enum VmmTestsDepSelections {
     Linux,
 }
 
+flowey_config! {
+    /// Config for the install_vmm_tests_deps node.
+    pub struct Config {
+        /// Specify the necessary dependencies
+        pub selections: Option<VmmTestsDepSelections>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Specify the necessary dependencies
-        Select(VmmTestsDepSelections),
         /// Install the dependencies
         Install(WriteVar<SideEffect>),
         /// Generate a list of commands that would install the dependencies
@@ -37,25 +43,30 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut selections = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut installed = Vec::new();
         let mut write_commands = Vec::new();
         for req in requests {
             match req {
-                Request::Select(v) => same_across_all_reqs("Select", &mut selections, v)?,
                 Request::Install(v) => installed.push(v),
                 Request::GetCommands(v) => write_commands.push(v),
             }
         }
-        let selections = selections.ok_or(anyhow::anyhow!("Missing essential request: Select"))?;
+        let selections = config
+            .selections
+            .ok_or(anyhow::anyhow!("missing config: selections"))?;
         let installed = installed;
         let write_commands = write_commands;
         if installed.is_empty() && write_commands.is_empty() {

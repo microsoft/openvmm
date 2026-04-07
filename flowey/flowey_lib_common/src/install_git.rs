@@ -5,43 +5,49 @@
 
 use flowey::node::prelude::*;
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
+
+flowey_config! {
+    /// Config for the install_git node.
+    pub struct Config {
+        /// Automatically install Git
+        pub auto_install: Option<bool>,
+    }
+}
 
 flowey_request! {
     pub enum Request {
         /// Ensure that Git was installed and is available on $PATH
         EnsureInstalled(WriteVar<SideEffect>),
-
-        /// Automatically install Git
-        LocalOnlyAutoInstall(bool),
     }
 }
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(dep: &mut ImportCtx<'_>) {
         dep.import::<crate::check_needs_relaunch::Node>();
         dep.import::<crate::install_dist_pkg::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut ensure_installed = Vec::new();
-        let mut auto_install = None;
 
         for req in requests {
             match req {
                 Request::EnsureInstalled(v) => ensure_installed.push(v),
-                Request::LocalOnlyAutoInstall(v) => {
-                    same_across_all_reqs("LocalOnlyAutoInstall", &mut auto_install, v)?
-                }
             }
         }
 
         let ensure_installed = ensure_installed;
-        let auto_install = auto_install.ok_or(anyhow::anyhow!(
-            "Missing essential request: LocalOnlyAutoInstall",
-        ))?;
+        let auto_install = config
+            .auto_install
+            .ok_or(anyhow::anyhow!("missing config: auto_install"))?;
 
         // -- end of req processing -- //
 

@@ -61,6 +61,7 @@ pub struct ResolvedJobUseParameter {
 #[derive(Debug, Clone)] // Clone is because of shoddy viz code
 pub struct ResolvedPipelineJob {
     pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+    pub root_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     pub patches: ResolvedPatches,
     pub label: String,
     pub platform: FlowPlatform,
@@ -165,6 +166,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         job_idx,
         PipelineJobMetadata {
             root_nodes,
+            root_configs,
             patches,
             label,
             platform,
@@ -221,6 +223,7 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
 
         let idx = graph.add_node(ResolvedPipelineJob {
             root_nodes,
+            root_configs,
             patches: patches.finalize(),
             label,
             timeout_minutes,

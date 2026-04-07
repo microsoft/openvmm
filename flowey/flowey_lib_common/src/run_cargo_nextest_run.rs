@@ -97,22 +97,29 @@ pub struct Run {
     pub results: WriteVar<TestResults>,
 }
 
-flowey_request! {
-    pub enum Request {
+flowey_config! {
+    /// Config for the run_cargo_nextest_run node.
+    pub struct Config {
         /// Set the default nextest fast fail behavior. Defaults to not
         /// fast-failing when a single test fails.
-        DefaultNextestFailFast(bool),
+        pub fail_fast: Option<bool>,
         /// Set the default behavior when a test failure is encountered.
         /// Defaults to not terminating the job when a single test fails.
-        DefaultTerminateJobOnFail(bool),
+        pub terminate_job_on_fail: Option<bool>,
+    }
+}
+
+flowey_request! {
+    pub enum Request {
         Run(Run),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cfg_cargo_common_flags::Node>();
@@ -122,24 +129,21 @@ impl FlowNode for Node {
         ctx.import::<crate::gen_cargo_nextest_run_cmd::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut run = Vec::new();
-        let mut fail_fast = None;
-        let mut terminate_job_on_fail = None;
 
         for req in requests {
             match req {
-                Request::DefaultNextestFailFast(v) => {
-                    same_across_all_reqs("OverrideFailFast", &mut fail_fast, v)?
-                }
-                Request::DefaultTerminateJobOnFail(v) => {
-                    same_across_all_reqs("TerminateJobOnFail", &mut terminate_job_on_fail, v)?
-                }
                 Request::Run(v) => run.push(v),
             }
         }
 
-        let terminate_job_on_fail = terminate_job_on_fail.unwrap_or(false);
+        let fail_fast = config.fail_fast;
+        let terminate_job_on_fail = config.terminate_job_on_fail.unwrap_or(false);
 
         for Run {
             friendly_name,

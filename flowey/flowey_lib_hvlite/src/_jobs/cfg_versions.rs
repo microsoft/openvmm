@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 // a `Version(ReadVar<String>)`, but that shouldn't be a serious blocker.
 pub const AZCOPY: &str = "10.27.1";
 pub const AZURE_CLI: &str = "2.56.0";
+pub const DOTNET: &str = "8.0";
 pub const FUZZ: &str = "0.12.0";
 pub const GH_CLI: &str = "2.52.0";
 pub const MDBOOK: &str = "0.4.40";
@@ -72,6 +73,7 @@ impl FlowNode for Node {
         ctx.import::<flowey_lib_common::download_mdbook::Node>();
         ctx.import::<flowey_lib_common::resolve_protoc::Node>();
         ctx.import::<flowey_lib_common::install_azure_cli::Node>();
+        ctx.import::<flowey_lib_common::install_dotnet_cli::Node>();
         ctx.import::<flowey_lib_common::install_nodejs::Node>();
     }
 
@@ -130,73 +132,131 @@ impl FlowNode for Node {
         let has_local_uefi = !local_uefi.is_empty();
 
         // Set up local paths for openvmm_deps if provided
-        for (arch, path) in local_openvmm_deps {
-            let openvmm_deps_arch = match arch {
-                CommonArch::X86_64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
-                CommonArch::Aarch64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::Aarch64,
-            };
-
-            ctx.req(crate::resolve_openvmm_deps::Request::LocalPath(
-                openvmm_deps_arch,
-                path,
-            ));
+        if !local_openvmm_deps.is_empty() {
+            let deps_local_paths = local_openvmm_deps
+                .into_iter()
+                .map(|(arch, path)| {
+                    let openvmm_deps_arch = match arch {
+                        CommonArch::X86_64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::X86_64,
+                        CommonArch::Aarch64 => crate::resolve_openvmm_deps::OpenvmmDepsArch::Aarch64,
+                    };
+                    (openvmm_deps_arch, ConfigVar(path))
+                })
+                .collect();
+            ctx.config(crate::resolve_openvmm_deps::Config {
+                local_paths: deps_local_paths,
+                ..Default::default()
+            });
         }
 
         // Set up local path for protoc if provided
         if let Some(protoc_path) = local_protoc {
-            ctx.req(flowey_lib_common::resolve_protoc::Request::LocalPath(
-                protoc_path,
-            ));
+            ctx.config(flowey_lib_common::resolve_protoc::Config {
+                local_path: Some(ConfigVar(protoc_path)),
+                ..Default::default()
+            });
         }
 
         // Set up local paths for kernel if provided
-        for (arch, (kernel, modules)) in local_kernel {
-            let kernel_arch = match arch {
-                CommonArch::X86_64 => crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch::X86_64,
-                CommonArch::Aarch64 => crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch::Aarch64,
-            };
-            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetLocal {
-                arch: kernel_arch,
-                kernel,
-                modules,
+        if !local_kernel.is_empty() {
+            let kernel_local_paths = local_kernel
+                .into_iter()
+                .map(|(arch, (kernel, modules))| {
+                    let kernel_arch = match arch {
+                        CommonArch::X86_64 => crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch::X86_64,
+                        CommonArch::Aarch64 => crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch::Aarch64,
+                    };
+                    (kernel_arch, (ConfigVar(kernel), ConfigVar(modules)))
+                })
+                .collect();
+            ctx.config(crate::resolve_openhcl_kernel_package::Config {
+                local_paths: kernel_local_paths,
+                ..Default::default()
             });
         }
 
         // Set up local paths for UEFI if provided
-        for (arch, path) in local_uefi {
-            let uefi_arch = match arch {
-                CommonArch::X86_64 => crate::download_uefi_mu_msvm::MuMsvmArch::X86_64,
-                CommonArch::Aarch64 => crate::download_uefi_mu_msvm::MuMsvmArch::Aarch64,
-            };
-            ctx.req(crate::download_uefi_mu_msvm::Request::LocalPath(uefi_arch, path));
+        if !local_uefi.is_empty() {
+            let uefi_local_paths = local_uefi
+                .into_iter()
+                .map(|(arch, path)| {
+                    let uefi_arch = match arch {
+                        CommonArch::X86_64 => crate::download_uefi_mu_msvm::MuMsvmArch::X86_64,
+                        CommonArch::Aarch64 => crate::download_uefi_mu_msvm::MuMsvmArch::Aarch64,
+                    };
+                    (uefi_arch, ConfigVar(path))
+                })
+                .collect();
+            ctx.config(crate::download_uefi_mu_msvm::Config {
+                local_paths: uefi_local_paths,
+                ..Default::default()
+            });
         }
 
         // Only set kernel versions if we don't have local paths
         // (versions are only needed for downloading)
         if !has_local_kernel {
-            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()));
-            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()));
-            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()));
-            ctx.req(crate::resolve_openhcl_kernel_package::Request::SetVersion(OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()));
+            ctx.config(crate::resolve_openhcl_kernel_package::Config {
+                versions: [
+                    (OpenhclKernelPackageKind::Dev, OPENHCL_KERNEL_DEV_VERSION.into()),
+                    (OpenhclKernelPackageKind::Main, OPENHCL_KERNEL_STABLE_VERSION.into()),
+                    (OpenhclKernelPackageKind::Cvm, OPENHCL_KERNEL_STABLE_VERSION.into()),
+                    (OpenhclKernelPackageKind::CvmDev, OPENHCL_KERNEL_DEV_VERSION.into()),
+                ].into(),
+                ..Default::default()
+            });
         }
         if !has_local_openvmm_deps {
-            ctx.req(crate::resolve_openvmm_deps::Request::Version(OPENVMM_DEPS.into()));
+            ctx.config(crate::resolve_openvmm_deps::Config {
+                version: Some(OPENVMM_DEPS.into()),
+                ..Default::default()
+            });
         }
         if !has_local_uefi {
-            ctx.req(crate::download_uefi_mu_msvm::Request::Version(MU_MSVM.into()));
+            ctx.config(crate::download_uefi_mu_msvm::Config {
+                version: Some(MU_MSVM.into()),
+                ..Default::default()
+            });
         }
-        ctx.req(flowey_lib_common::download_azcopy::Request::Version(AZCOPY.into()));
-        ctx.req(flowey_lib_common::download_cargo_fuzz::Request::Version(FUZZ.into()));
-        ctx.req(flowey_lib_common::download_cargo_nextest::Request::Version(NEXTEST.into()));
-        ctx.req(flowey_lib_common::download_gh_cli::Request::Version(GH_CLI.into()));
-        ctx.req(flowey_lib_common::download_mdbook::Request::Version(MDBOOK.into()));
-        ctx.req(flowey_lib_common::download_mdbook_admonish::Request::Version(MDBOOK_ADMONISH.into()));
-        ctx.req(flowey_lib_common::download_mdbook_mermaid::Request::Version(MDBOOK_MERMAID.into()));
+        ctx.config(flowey_lib_common::download_azcopy::Config {
+            version: Some(AZCOPY.into()),
+        });
+        ctx.config(flowey_lib_common::download_cargo_fuzz::Config {
+            version: Some(FUZZ.into()),
+        });
+        ctx.config(flowey_lib_common::download_cargo_nextest::Config {
+            version: Some(NEXTEST.into()),
+        });
+        ctx.config(flowey_lib_common::download_gh_cli::Config {
+            version: Some(GH_CLI.into()),
+        });
+        ctx.config(flowey_lib_common::download_mdbook::Config {
+            version: Some(MDBOOK.into()),
+        });
+        ctx.config(flowey_lib_common::download_mdbook_admonish::Config {
+            version: Some(MDBOOK_ADMONISH.into()),
+        });
+        ctx.config(flowey_lib_common::download_mdbook_mermaid::Config {
+            version: Some(MDBOOK_MERMAID.into()),
+        });
         if !has_local_protoc {
-            ctx.req(flowey_lib_common::resolve_protoc::Request::Version(PROTOC.into()));
+            ctx.config(flowey_lib_common::resolve_protoc::Config {
+                version: Some(PROTOC.into()),
+                ..Default::default()
+            });
         }
-        ctx.req(flowey_lib_common::install_azure_cli::Request::Version(AZURE_CLI.into()));
-        ctx.req(flowey_lib_common::install_nodejs::Request::Version(NODEJS.into()));
+        ctx.config(flowey_lib_common::install_azure_cli::Config {
+            version: Some(AZURE_CLI.into()),
+            ..Default::default()
+        });
+        ctx.config(flowey_lib_common::install_dotnet_cli::Config {
+            version: Some(DOTNET.into()),
+            ..Default::default()
+        });
+        ctx.config(flowey_lib_common::install_nodejs::Config {
+            version: Some(NODEJS.into()),
+            ..Default::default()
+        });
         ctx.req(crate::cfg_rustup_version::Request::Init);
         Ok(())
     }
