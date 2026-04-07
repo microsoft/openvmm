@@ -38,24 +38,10 @@ use vmcore::synic::SynicPortAccess;
 ///
 /// Hypercall handlers should call [`SynicPortMap::handle_post_message`] /
 /// [`SynicPortMap::handle_signal_event`] to dispatch guest hypercalls.
-#[derive(Inspect)]
+#[derive(Inspect, Debug, Default)]
 pub struct SynicPortMap {
     #[inspect(with = "|x| inspect::adhoc(|req| inspect::iter_by_key(&*x.lock()).inspect(req))")]
     ports: Mutex<HashMap<u32, Port>>,
-}
-
-impl Debug for SynicPortMap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SynicPortMap").finish_non_exhaustive()
-    }
-}
-
-impl Default for SynicPortMap {
-    fn default() -> Self {
-        Self {
-            ports: Default::default(),
-        }
-    }
 }
 
 impl SynicPortMap {
