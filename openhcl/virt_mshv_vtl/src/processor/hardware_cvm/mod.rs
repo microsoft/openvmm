@@ -1083,9 +1083,7 @@ impl<B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, B> {
     }
 }
 
-impl<B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters
-    for UhHypercallHandler<'_, '_, B>
-{
+impl<B: HardwareIsolatedBacking> hv1_hypercall::GetVpRegisters for UhHypercallHandler<'_, '_, B> {
     fn get_vp_registers(
         &mut self,
         partition_id: u64,
@@ -1154,9 +1152,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrupt
     }
 }
 
-impl<B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
-    for UhHypercallHandler<'_, '_, B>
-{
+impl<B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, B> {
     fn set_vp_registers(
         &mut self,
         partition_id: u64,
@@ -1485,8 +1481,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
     }
 }
 
-impl<B: HardwareIsolatedBacking>
-    hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
+impl<B: HardwareIsolatedBacking> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
     for UhHypercallHandler<'_, '_, B>
 {
     fn enable_vp_vtl(
@@ -2828,9 +2823,7 @@ impl<B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
     }
 }
 
-impl<B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
-    for UhHypercallHandler<'_, '_, B>
-{
+impl<B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept for UhHypercallHandler<'_, '_, B> {
     fn install_intercept(
         &mut self,
         partition_id: u64,

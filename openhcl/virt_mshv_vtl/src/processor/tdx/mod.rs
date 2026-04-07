@@ -4396,9 +4396,7 @@ impl hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, TdxBa
     }
 }
 
-impl hv1_hypercall::FlushVirtualAddressListEx
-    for UhHypercallHandler<'_, '_, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressListEx for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_list_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4443,9 +4441,7 @@ impl hv1_hypercall::FlushVirtualAddressListEx
     }
 }
 
-impl hv1_hypercall::FlushVirtualAddressSpace
-    for UhHypercallHandler<'_, '_, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpace for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_space(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4459,9 +4455,7 @@ impl hv1_hypercall::FlushVirtualAddressSpace
     }
 }
 
-impl hv1_hypercall::FlushVirtualAddressSpaceEx
-    for UhHypercallHandler<'_, '_, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpaceEx for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_space_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,

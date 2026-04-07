@@ -1737,10 +1737,7 @@ mod aarch64 {
                         &mut self.state.exits.sint_deliverable
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
-                        crate::hypercalls::WhpHypercallExit::handle(
-                            self,
-                            message_ref(message),
-                        );
+                        crate::hypercalls::WhpHypercallExit::handle(self, message_ref(message));
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
