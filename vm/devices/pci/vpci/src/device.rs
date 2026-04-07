@@ -1302,6 +1302,13 @@ impl VpciConfigSpaceOffset {
         let v = self.0.load(Ordering::Relaxed);
         (v != Self::INVALID).then_some(v)
     }
+
+    /// Sets the config space base address. Used in tests to simulate the
+    /// address negotiated during channel protocol.
+    #[cfg(test)]
+    pub(crate) fn set(&self, addr: u64) {
+        self.0.store(addr, Ordering::Relaxed);
+    }
 }
 
 impl VpciChannel {
@@ -1411,8 +1418,6 @@ mod tests {
     use chipset_arc_mutex_device::test_chipset::TestChipset;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
-    use chipset_device::io::deferred::DeferredWrite;
-    use chipset_device::io::deferred::defer_write;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
@@ -1431,7 +1436,6 @@ mod tests {
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
-    use pal_async::task::Spawn;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1444,7 +1448,6 @@ mod tests {
     use ring::FlatRingMem;
     use ring::OutgoingPacketType;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
     use tdisp::GuestToHostResponseExt;
@@ -1471,7 +1474,10 @@ mod tests {
     // Helper to complete deferred write tokens if needed.
     async fn complete_write(result: IoResult) {
         if let IoResult::Defer(token) = result {
-            token.write_future().await.ok();
+            token
+                .write_future()
+                .await
+                .expect("deferred write should complete successfully");
         }
     }
 
@@ -2181,100 +2187,6 @@ mod tests {
         write_u32(bar_address1 + 4, 2);
         write_u32(bar_address2, 3);
         write_u32(bar_address2 + HV_PAGE_SIZE, 4);
-    }
-
-    /// A PCI device where every `pci_cfg_write` defers completion until the caller explicitly
-    /// drives it. Used to test that deferred writes are properly awaited.
-    struct TestDeviceAsyncDeferral {
-        config_space: ConfigSpaceType0Emulator,
-        pending_write: Option<DeferredWrite>,
-    }
-
-    impl TestDeviceAsyncDeferral {
-        fn new() -> Self {
-            Self {
-                config_space: ConfigSpaceType0Emulator::new(
-                    HardwareIds {
-                        vendor_id: 0x1234,
-                        device_id: 0x5678,
-                        revision_id: 0,
-                        prog_if: ProgrammingInterface::NONE,
-                        base_class: ClassCode::BASE_SYSTEM_PERIPHERAL,
-                        sub_class: Subclass::BASE_SYSTEM_PERIPHERAL_OTHER,
-                        type0_sub_vendor_id: 0,
-                        type0_sub_system_id: 0,
-                    },
-                    Vec::new(),
-                    DeviceBars::new(),
-                ),
-                pending_write: None,
-            }
-        }
-    }
-
-    impl InspectMut for TestDeviceAsyncDeferral {
-        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-            req.ignore();
-        }
-    }
-
-    impl ChipsetDevice for TestDeviceAsyncDeferral {
-        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
-            Some(self)
-        }
-    }
-
-    impl PciConfigSpace for TestDeviceAsyncDeferral {
-        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-            self.config_space.read_u32(offset, value)
-        }
-
-        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-            let res = self.config_space.write_u32(offset, value);
-            assert!(
-                matches!(res, IoResult::Ok),
-                "config space emulator write should succeed immediately"
-            );
-
-            let (deferred, token) = defer_write();
-            assert!(
-                self.pending_write.replace(deferred).is_none(),
-                "previous write was not yet completed"
-            );
-            IoResult::Defer(token)
-        }
-    }
-
-    /// Verifies that `complete_write` properly awaits a deferred `pci_cfg_write`.
-    ///
-    /// A concurrent task is responsible for completing the deferred write. The test
-    /// asserts that `complete_write` does not return until after that task has run.
-    #[async_test]
-    async fn verify_deferred_pci_cfg_write(driver: DefaultDriver) {
-        let pci = Arc::new(CloseableMutex::new(TestDeviceAsyncDeferral::new()));
-
-        let result = pci.lock().pci_cfg_write(0x4, 0x2);
-        assert!(matches!(result, IoResult::Defer(_)));
-
-        // Spawn a task that completes the deferred write and records that it ran.
-        let completer_ran = Arc::new(AtomicBool::new(false));
-        let pci_clone = pci.clone();
-        let completer_ran_clone = completer_ran.clone();
-        driver
-            .spawn("complete-deferred", async move {
-                pci_clone.lock().pending_write.take().unwrap().complete();
-                completer_ran_clone.store(true, Ordering::SeqCst);
-            })
-            .detach();
-
-        // complete_write must await the token; the executor will run the completer
-        // task to unblock it.
-        complete_write(result).await;
-
-        assert!(
-            completer_ran.load(Ordering::SeqCst),
-            "complete_write returned before the deferred write was completed"
-        );
     }
 
     /// Verifies that the TDISP guest protocol can be negotiated correctly over a hosted VMBUS channel.
