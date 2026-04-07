@@ -543,7 +543,10 @@ mod tests {
 
         // Await the outer deferred token; unblocked once poll_device completes it.
         if let IoResult::Defer(token) = result {
-            token.write_future().await.ok();
+            token
+                .write_future()
+                .await
+                .expect("deferred PCI config write should complete successfully");
         }
 
         assert!(
