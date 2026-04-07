@@ -27,8 +27,6 @@ inspect.workspace = true
 mesh.workspace = true
 task_control.workspace = true
 
-pal_async.workspace = true
-
 anyhow.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
@@ -41,6 +39,7 @@ zerocopy.workspace = true
 chipset_arc_mutex_device.workspace = true
 openhcl_tdisp.workspace = true
 test_with_tracing.workspace = true
+pal_async.workspace = true
 
 [lints]
 workspace = true
