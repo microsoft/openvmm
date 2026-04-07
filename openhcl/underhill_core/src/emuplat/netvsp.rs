@@ -874,7 +874,10 @@ impl HclNetworkVFManagerWorker {
                             tracing::info!(
                                 vtl2_vfid,
                                 vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
-                                "Vtl0Bus not present, nothing to add"
+                            tracing::info!(
+                                vtl2_vfid,
+                                %vtl0_bus_control,
+                                "Ignoring VTL0 device request from guest"
                             );
                         }
                     }
