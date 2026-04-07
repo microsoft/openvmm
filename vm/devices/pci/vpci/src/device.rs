@@ -1070,10 +1070,13 @@ impl VpciChannel {
                 .supports_pci()
                 .unwrap()
                 .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
-            if let IoResult::Defer(token) = result {
-                token.write_future().await.ok();
-            } else if let IoResult::Err(err) = result {
-                tracing::error!(?err, index = i, "failed to write bar");
+            match result {
+                IoResult::Ok => (),
+                IoResult::Defer(token) => token
+                    .write_future()
+                    .await
+                    .expect("deferred BAR write failed"),
+                IoResult::Err(err) => tracing::error!(?err, index = i, "failed to write bar"),
             }
         }
         self.bars_set = true;
@@ -1101,11 +1104,13 @@ impl VpciChannel {
             }
             pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
-
-        if let IoResult::Defer(token) = result {
-            token.write_future().await.ok();
-        } else if let IoResult::Err(err) = result {
-            tracing::error!(?err, on, "failed to set power state");
+        match result {
+            IoResult::Ok => (),
+            IoResult::Defer(token) => token
+                .write_future()
+                .await
+                .expect("deferred power state change failed"),
+            IoResult::Err(err) => tracing::error!(?err, "failed to change power state"),
         }
 
         // TODO: set power cap, too, on devices that support it.
