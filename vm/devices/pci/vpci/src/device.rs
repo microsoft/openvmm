@@ -1076,7 +1076,14 @@ impl VpciChannel {
                     .write_future()
                     .await
                     .expect("deferred BAR write failed"),
-                IoResult::Err(err) => tracing::error!(?err, index = i, "failed to write bar"),
+                IoResult::Err(err) => {
+                    tracing::error!(
+                        ?err,
+                        instance_id = %self.instance_id,
+                        index = i,
+                        "failed to write bar");
+                    panic!("failed to write bar");
+                }
             }
         }
         self.bars_set = true;
@@ -1110,7 +1117,14 @@ impl VpciChannel {
                 .write_future()
                 .await
                 .expect("deferred power state change failed"),
-            IoResult::Err(err) => tracing::error!(?err, "failed to change power state"),
+            IoResult::Err(err) => {
+                tracing::error!(
+                    ?err,
+                    instance_id = %self.instance_id,
+                    "failed to change power state"
+                );
+                panic!("failed to change power state");
+            }
         }
 
         // TODO: set power cap, too, on devices that support it.
