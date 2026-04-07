@@ -343,9 +343,6 @@ enum Register {
 
 impl VpciBusDevice {
     /// Stores a pending deferred write and wakes the poll loop to drive it.
-    ///
-    /// Returns [`IoResult::Ok`] immediately if no poll waker is registered
-    /// (i.e. in test contexts where the chipset state unit is absent).
     fn enqueue_deferred_write(&mut self, deferred: VecDeque<DeferredToken>) -> IoResult {
         let (outer_deferred, outer_token) = defer_write();
         self.pending_writes.push(PendingDeferredWrite {
