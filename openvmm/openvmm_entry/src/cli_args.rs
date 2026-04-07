@@ -680,10 +680,6 @@ flags:
     #[clap(long)]
     pub imc: Option<PathBuf>,
 
-    /// Expose MCR device
-    #[clap(long)]
-    pub mcr: bool, // TODO MCR: support closed source CLI flags
-
     /// expose a battery device
     #[clap(long)]
     pub battery: bool,
