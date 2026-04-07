@@ -604,7 +604,7 @@ impl HclNetworkVFManagerWorker {
                         tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
                     ))
                     .await
-                    .unwrap_or_else(|cr| bail!("timed out: {cr}"))
+                    .unwrap_or_else(|cr| bail!("vtl0 revoke timed out: {cr}"))
                 {
                     Ok(_) => (),
                     Err(err) => {
