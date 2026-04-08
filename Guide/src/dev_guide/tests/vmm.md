@@ -123,20 +123,6 @@ Hyper-V Administrators group.
 
 To see all available options: `cargo xflowey vmm-tests-run --help`.
 
-### Advanced: `vmm-tests` (lower-level)
-
-The `cargo xflowey vmm-tests` command is a lower-level alternative that gives
-more control over artifact management. It builds or downloads all test
-dependencies and copies them to a self-contained folder that can be copied to
-another system for testing. The folder will contain scripts for installing
-dependencies (install_deps.ps1 on Windows) and running the tests (run.ps1 on
-Windows). You can specify flags to disable certain tests and avoid
-building/downloading some dependencies, or you can specify a custom nextest
-filter and list of artifacts.
-
-For most local development, prefer `vmm-tests-run` — it handles artifact
-discovery automatically.
-
 ## Running VMM Tests (Manual)
 
 ```admonish tip

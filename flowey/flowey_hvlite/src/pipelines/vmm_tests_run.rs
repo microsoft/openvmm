@@ -3,22 +3,20 @@
 
 //! Pipeline to discover artifacts and run VMM tests in a single command.
 //!
-//! This combines the functionality of `vmm-tests-discover` and `vmm-tests` into
-//! a single convenient pipeline that:
+//! This pipeline:
 //! 1. Discovers required artifacts for the specified test filter (at pipeline
 //!    construction time)
 //! 2. Builds the necessary dependencies
 //! 3. Runs the tests
 
-use crate::pipelines::vmm_tests::VmmTestTargetCli;
-use crate::pipelines::vmm_tests::VmmTestsPipelineOptions;
-use crate::pipelines::vmm_tests::build_vmm_tests_pipeline;
-use crate::pipelines::vmm_tests::resolve_target;
-use crate::pipelines::vmm_tests::selections_from_resolved;
-use crate::pipelines::vmm_tests::validate_output_dir;
 use anyhow::Context as _;
+use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
+use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
 use flowey_lib_hvlite::artifact_to_build_mapping::ResolvedArtifactSelections;
+use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
+use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
+use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -241,10 +239,7 @@ fn discover_artifacts(
 
     // Step 2: Query petri for artifacts of each matching test
     log::info!("Using test binary: {}", test_binary.display());
-    log::info!(
-        "Querying artifacts for {} tests in a single invocation",
-        test_names.len()
-    );
+    log::info!("Querying artifacts for {} tests", test_names.len());
     let stdin_data = test_names
         .iter()
         .map(|n| format!("{n}\n"))
@@ -352,4 +347,181 @@ fn parse_artifacts_output(stdout: &str, target: &str) -> anyhow::Result<String> 
     });
 
     Ok(serde_json::to_string_pretty(&output)?)
+}
+
+// Target resolution and pipeline construction helpers
+
+#[derive(clap::ValueEnum, Copy, Clone)]
+enum VmmTestTargetCli {
+    /// Windows Aarch64
+    WindowsAarch64,
+    /// Windows X64
+    WindowsX64,
+    /// Linux X64
+    LinuxX64,
+}
+
+/// Resolve a CLI target option to a CommonTriple, defaulting to the host.
+fn resolve_target(
+    target: Option<VmmTestTargetCli>,
+    backend_hint: PipelineBackendHint,
+) -> anyhow::Result<CommonTriple> {
+    let target = if let Some(t) = target {
+        t
+    } else {
+        match (
+            FlowArch::host(backend_hint),
+            FlowPlatform::host(backend_hint),
+        ) {
+            (FlowArch::Aarch64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsAarch64,
+            (FlowArch::X86_64, FlowPlatform::Windows) => VmmTestTargetCli::WindowsX64,
+            (FlowArch::X86_64, FlowPlatform::Linux(_)) => VmmTestTargetCli::LinuxX64,
+            _ => anyhow::bail!("unsupported host"),
+        }
+    };
+
+    Ok(match target {
+        VmmTestTargetCli::WindowsAarch64 => CommonTriple::AARCH64_WINDOWS_MSVC,
+        VmmTestTargetCli::WindowsX64 => CommonTriple::X86_64_WINDOWS_MSVC,
+        VmmTestTargetCli::LinuxX64 => CommonTriple::X86_64_LINUX_GNU,
+    })
+}
+
+/// Validate the output directory path based on the current platform.
+///
+/// When running under WSL and targeting Windows, the output directory must be a
+/// Windows-accessible path (DrvFs mount like `/mnt/c/...`) because Windows
+/// requires VHDs to reside on a Windows filesystem. On native Windows or Linux
+/// this check is a no-op.
+fn validate_output_dir(
+    dir: &Path,
+    target_os: target_lexicon::OperatingSystem,
+) -> anyhow::Result<()> {
+    if flowey_cli::running_in_wsl()
+        && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+        && !flowey_cli::is_wsl_windows_path(dir)
+    {
+        anyhow::bail!(
+            "When targeting Windows from WSL, --dir must be a path on Windows \
+                 (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
+                 Got: {}",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Resolve `ResolvedArtifactSelections` to `VmmTestSelections`.
+fn selections_from_resolved(
+    filter: String,
+    resolved: ResolvedArtifactSelections,
+    target_os: target_lexicon::OperatingSystem,
+) -> VmmTestSelections {
+    VmmTestSelections {
+        filter,
+        artifacts: resolved.downloads.into_iter().collect(),
+        build: resolved.build.clone(),
+        deps: match target_os {
+            target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
+                hyperv: true,
+                whp: resolved.build.openvmm,
+                hardware_isolation: resolved.build.prep_steps,
+            },
+            target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
+            _ => unreachable!(),
+        },
+        needs_release_igvm: resolved.needs_release_igvm,
+    }
+}
+
+struct VmmTestsPipelineOptions {
+    verbose: bool,
+    install_missing_deps: bool,
+    unstable_whp: bool,
+    release: bool,
+    build_only: bool,
+    copy_extras: bool,
+    skip_vhd_prompt: bool,
+    custom_kernel_modules: Option<PathBuf>,
+    custom_kernel: Option<PathBuf>,
+}
+
+/// Construct the pipeline job for building and running VMM tests.
+fn build_vmm_tests_pipeline(
+    backend_hint: PipelineBackendHint,
+    target: CommonTriple,
+    selections: VmmTestSelections,
+    dir: PathBuf,
+    opts: VmmTestsPipelineOptions,
+) -> anyhow::Result<Pipeline> {
+    let target_architecture = target.as_triple().architecture;
+    let recipe_arch = match target_architecture {
+        target_lexicon::Architecture::X86_64 => CommonArch::X86_64,
+        target_lexicon::Architecture::Aarch64(_) => CommonArch::Aarch64,
+        _ => anyhow::bail!("Unsupported architecture: {:?}", target_architecture),
+    };
+
+    let openvmm_repo = flowey_lib_common::git_checkout::RepoSource::ExistingClone(
+        ReadVar::from_static(crate::repo_root()),
+    );
+
+    let mut pipeline = Pipeline::new();
+
+    let mut job = pipeline.new_job(
+        FlowPlatform::host(backend_hint),
+        FlowArch::host(backend_hint),
+        "build vmm test dependencies",
+    );
+
+    job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+
+    if let (Some(kernel_path), Some(modules_path)) = (
+        opts.custom_kernel.clone(),
+        opts.custom_kernel_modules.clone(),
+    ) {
+        job = job.dep_on(
+            move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
+                arch: recipe_arch,
+                kernel: ReadVar::from_static(kernel_path),
+                modules: ReadVar::from_static(modules_path),
+            },
+        );
+    }
+
+    job = job
+        .dep_on(
+            |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
+                hvlite_repo_source: openvmm_repo.clone(),
+            },
+        )
+        .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_common::Params {
+            local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
+                interactive: true,
+                auto_install: opts.install_missing_deps,
+                ignore_rust_version: true,
+            }),
+            verbose: ReadVar::from_static(opts.verbose),
+            locked: false,
+            deny_warnings: false,
+            no_incremental: false,
+        })
+        .dep_on(
+            |ctx| flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
+                target,
+                test_content_dir: dir,
+                selections,
+                unstable_whp: opts.unstable_whp,
+                release: opts.release,
+                build_only: opts.build_only,
+                copy_extras: opts.copy_extras,
+                custom_kernel_modules: opts.custom_kernel_modules,
+                custom_kernel: opts.custom_kernel,
+                skip_vhd_prompt: opts.skip_vhd_prompt,
+                done: ctx.new_done_handle(),
+            },
+        );
+
+    job.finish();
+
+    Ok(pipeline)
 }

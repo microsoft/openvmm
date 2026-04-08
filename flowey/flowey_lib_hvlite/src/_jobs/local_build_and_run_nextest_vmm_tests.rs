@@ -19,91 +19,20 @@ use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use std::str::FromStr;
 use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Serialize, Deserialize)]
-pub enum VmmTestSelections {
-    Custom {
-        /// Custom test filter
-        filter: String,
-        /// Custom list of artifacts to download
-        artifacts: Vec<KnownTestArtifacts>,
-        /// Custom list of artifacts to build
-        build: BuildSelections,
-        /// Dependencies to install
-        deps: VmmTestsDepSelections,
-        /// Whether to download release IGVM files from GitHub
-        needs_release_igvm: bool,
-    },
-    Flags(VmmTestSelectionFlags),
-}
-
-/// Define VMM test selection flags
-macro_rules! define_vmm_test_selection_flags {
-    {
-        $(
-            $name:ident: $default_value:literal,
-        )*
-    } => {
-        #[derive(Serialize, Deserialize, Clone)]
-        pub struct VmmTestSelectionFlags {
-            $(
-                pub $name: bool,
-            )*
-        }
-
-        impl Default for VmmTestSelectionFlags {
-            fn default() -> Self {
-                Self {
-                    $(
-                        $name: $default_value,
-                    )*
-                }
-            }
-        }
-
-        impl FromStr for VmmTestSelectionFlags {
-            type Err = anyhow::Error;
-
-            fn from_str(s: &str) -> Result<Self, Self::Err> {
-                let mut flags = Self::default();
-                for flag in s.split(',') {
-                    let (sign, flag) = flag.split_at_checked(1).context("get sign")?;
-                    let val = match sign {
-                        "+" => true,
-                        "-" => false,
-                        s => anyhow::bail!("invalid sign: {s}"),
-                    };
-                    match flag {
-                        $(
-                            stringify!($name) => flags.$name = val,
-                        )*
-                        f => anyhow::bail!("invalid flag: {f}"),
-                    }
-                }
-                Ok(flags)
-            }
-        }
-    };
-}
-
-define_vmm_test_selection_flags! {
-    tdx: true,
-    snp: true,
-    hyperv_vbs: true,
-    windows: true,
-    ubuntu: true,
-    freebsd: true,
-    linux: true,
-    openhcl: true,
-    openvmm: true,
-    hyperv: true,
-    uefi: true,
-    pcat: true,
-    tmk: true,
-    guest_test_uefi: true,
-    vmgstool: true,
+pub struct VmmTestSelections {
+    /// Test filter
+    pub filter: String,
+    /// List of artifacts to download
+    pub artifacts: Vec<KnownTestArtifacts>,
+    /// List of artifacts to build
+    pub build: BuildSelections,
+    /// Dependencies to install
+    pub deps: VmmTestsDepSelections,
+    /// Whether to download release IGVM files from GitHub
+    pub needs_release_igvm: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -268,195 +197,13 @@ impl SimpleFlowNode for Node {
         let mut copy_to_dir = Vec::new();
         let extras_dir = Path::new("extras");
 
-        let (nextest_filter_expr, test_artifacts, mut build, deps, needs_release_igvm) =
-            match selections {
-                VmmTestSelections::Custom {
-                    filter,
-                    artifacts,
-                    build,
-                    deps,
-                    needs_release_igvm,
-                } => (filter, artifacts, build, deps, needs_release_igvm),
-                VmmTestSelections::Flags(VmmTestSelectionFlags {
-                    tdx,
-                    snp,
-                    hyperv_vbs,
-                    windows,
-                    mut ubuntu,
-                    freebsd,
-                    linux,
-                    mut openhcl,
-                    openvmm,
-                    hyperv,
-                    uefi,
-                    pcat,
-                    tmk,
-                    guest_test_uefi,
-                    vmgstool,
-                }) => {
-                    let mut build = BuildSelections::default();
-
-                    if !linux_host {
-                        log::warn!(
-                            "Cannot build for linux on windows. Skipping all tests that rely on linux artifacts."
-                        );
-                        ubuntu = false;
-                        openhcl = false;
-                    }
-
-                    // VTL2 not supported on Linux
-                    if !matches!(
-                        target_triple.operating_system,
-                        target_lexicon::OperatingSystem::Windows
-                    ) {
-                        openhcl = false;
-                    }
-
-                    let mut filter = "all()".to_string();
-                    if !tdx {
-                        filter.push_str(" & !test(tdx)");
-                    }
-                    if !snp {
-                        filter.push_str(" & !test(snp)");
-                    }
-                    if !hyperv_vbs {
-                        filter.push_str(" & !(test(vbs) & test(hyperv))");
-                    }
-                    if !ubuntu {
-                        filter.push_str(" & !test(ubuntu)");
-                    }
-                    if !windows {
-                        filter.push_str(" & !test(windows)");
-                        build.pipette_windows = false;
-                        build.tpm_guest_tests_windows = false;
-                        build.test_igvm_agent_rpc_server = false;
-                    }
-                    if !freebsd {
-                        filter.push_str(" & !test(freebsd)");
-                    }
-                    if !linux {
-                        filter.push_str(" & !test(linux)");
-                        build.tpm_guest_tests_linux = false;
-                    }
-                    if !linux && !ubuntu {
-                        build.pipette_linux = false;
-                    }
-                    if !openhcl {
-                        filter.push_str(" & !test(openhcl)");
-                        build.openhcl = false;
-                    }
-                    if !openvmm {
-                        filter.push_str(" & !test(openvmm)");
-                        build.openvmm = false;
-                    }
-                    if !hyperv {
-                        filter.push_str(" & !test(hyperv)");
-                    }
-                    if !uefi {
-                        filter.push_str(" & !test(uefi)");
-                    }
-                    if !pcat {
-                        filter.push_str(" & !test(pcat)");
-                    }
-                    if !tmk {
-                        filter.push_str(" & !test(tmk)");
-                        build.tmks = false;
-                        build.tmk_vmm_linux = false;
-                        build.tmk_vmm_windows = false;
-                    }
-                    if !guest_test_uefi {
-                        filter.push_str(" & !test(guest_test_uefi)");
-                        build.guest_test_uefi = false;
-                    }
-                    // prep_steps is Windows-only
-                    if !tdx && !snp && !hyperv_vbs
-                        || !matches!(
-                            target_triple.operating_system,
-                            target_lexicon::OperatingSystem::Windows
-                        )
-                    {
-                        build.prep_steps = false;
-                    }
-                    if !vmgstool {
-                        filter.push_str(" & !test(vmgstool)");
-                        build.vmgstool = false;
-                    }
-
-                    let artifacts = match arch {
-                        CommonArch::X86_64 => {
-                            let mut artifacts = Vec::new();
-
-                            if windows && (tdx || snp || hyperv_vbs) {
-                                artifacts
-                                    .push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
-                                artifacts
-                                    .push(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
-                            }
-                            if ubuntu {
-                                artifacts.push(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
-                                artifacts.push(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
-                                artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
-                            }
-                            if windows && uefi {
-                                artifacts
-                                    .push(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
-                            }
-                            if windows && pcat {
-                                artifacts
-                                    .push(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
-                            }
-                            if freebsd && pcat {
-                                artifacts.extend_from_slice(&[
-                                    KnownTestArtifacts::FreeBsd13_2X64Vhd,
-                                    KnownTestArtifacts::FreeBsd13_2X64Iso,
-                                ]);
-                            }
-                            if windows || ubuntu {
-                                artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
-                            }
-                            if linux {
-                                artifacts.push(KnownTestArtifacts::Alpine323X64Vhd);
-                            }
-
-                            artifacts
-                        }
-                        CommonArch::Aarch64 => {
-                            let mut artifacts = Vec::new();
-
-                            if ubuntu {
-                                artifacts.push(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
-                                artifacts.push(KnownTestArtifacts::VmgsWith16kTpm);
-                            }
-                            if windows {
-                                artifacts.push(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);
-                            }
-                            if windows || ubuntu {
-                                artifacts.push(KnownTestArtifacts::VmgsWithBootEntry);
-                            }
-                            if linux {
-                                artifacts.push(KnownTestArtifacts::Alpine323Aarch64Vhd);
-                            }
-
-                            artifacts
-                        }
-                    };
-
-                    let deps = match target_triple.operating_system {
-                        target_lexicon::OperatingSystem::Windows => {
-                            VmmTestsDepSelections::Windows {
-                                hyperv,
-                                whp: openvmm,
-                                hardware_isolation: tdx || snp,
-                            }
-                        }
-                        target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
-                        _ => unreachable!(),
-                    };
-
-                    // Flags mode always downloads release IGVM for potential servicing tests
-                    (filter, artifacts, build, deps, true)
-                }
-            };
+        let VmmTestSelections {
+            filter: nextest_filter_expr,
+            artifacts: test_artifacts,
+            mut build,
+            deps,
+            needs_release_igvm,
+        } = selections;
 
         if !linux_host {
             build.openhcl = false;
