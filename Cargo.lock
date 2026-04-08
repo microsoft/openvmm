@@ -249,6 +249,12 @@ dependencies = [
 
 [[package]]
 name = "base64"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
+
+[[package]]
+name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -1292,7 +1298,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1361,7 +1367,7 @@ dependencies = [
  "io-uring",
  "libc",
  "mesh",
- "nix 0.31.2",
+ "nix 0.30.1",
  "nvme_common",
  "nvme_spec",
  "once_cell",
@@ -1681,9 +1687,9 @@ dependencies = [
 
 [[package]]
 name = "endian-type"
-version = "0.2.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "869b0adbda23651a9c5c0c3d270aac9fcb52e8622a8f2b17e57802d7791962f2"
+checksum = "c34f04666d835ff5d62e058c3995147c06f42fe86ff053337632bca83e42702d"
 
 [[package]]
 name = "enumflags2"
@@ -1836,6 +1842,17 @@ dependencies = [
  "bitflags 1.3.2",
  "byteorder",
  "log",
+]
+
+[[package]]
+name = "fd-lock"
+version = "4.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
+dependencies = [
+ "cfg-if",
+ "rustix 1.0.8",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2696,11 +2713,12 @@ dependencies = [
 [[package]]
 name = "gptman"
 version = "2.0.2"
-source = "git+https://github.com/justus-camp-microsoft/gptman?branch=nix-0.31#c46f89dde9e04e4155f9ae1d8cca56aa57996889"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5dcd4e9e48c72692b83e45284679794a7272eacd302825e6bff9abc53c6c17b"
 dependencies = [
  "bincode",
  "crc",
- "nix 0.31.2",
+ "nix 0.30.1",
  "serde",
  "thiserror 2.0.16",
 ]
@@ -2982,7 +3000,7 @@ dependencies = [
  "inspect",
  "libc",
  "memory_range",
- "nix 0.31.2",
+ "nix 0.30.1",
  "open_enum",
  "pal",
  "parking_lot",
@@ -3330,7 +3348,7 @@ dependencies = [
 name = "hyperv_uefi_custom_vars_json"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "firmware_uefi_custom_vars",
  "guid",
  "serde",
@@ -3539,7 +3557,7 @@ name = "inspect"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
- "base64",
+ "base64 0.22.1",
  "bitfield-struct 0.11.0",
  "expect-test",
  "filepath",
@@ -3717,7 +3735,7 @@ version = "0.0.0"
 dependencies = [
  "kvm-bindings",
  "libc",
- "nix 0.31.2",
+ "nix 0.30.1",
  "pal",
  "parking_lot",
  "signal-hook",
@@ -3860,7 +3878,7 @@ checksum = "cd945864f07fe9f5371a27ad7b52a172b4b499999f1d97574c9fa68373937e12"
 name = "linux_net_bindings"
 version = "0.0.0"
 dependencies = [
- "nix 0.31.2",
+ "nix 0.30.1",
 ]
 
 [[package]]
@@ -4184,7 +4202,7 @@ name = "mesh_process"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.22.1",
  "debug_ptr",
  "futures",
  "futures-concurrency",
@@ -4251,7 +4269,7 @@ name = "mesh_rpc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.22.1",
  "env_logger",
  "futures",
  "futures-concurrency",
@@ -5001,7 +5019,7 @@ version = "0.0.0"
 name = "openhcl_attestation_protocol"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "base64-serde",
  "bitfield-struct 0.11.0",
  "guid",
@@ -5722,16 +5740,17 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "pbjson"
 version = "0.5.1"
-source = "git+https://github.com/justus-camp-microsoft/pbjson?branch=main#9481e17eae43ee75f25f1f79d384056125cc9ea5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "048f9ac93c1eab514f9470c4bc8d97ca2a0a236b84f45cc19d69a59fc11467f6"
 dependencies = [
- "base64",
+ "base64 0.13.1",
  "serde",
 ]
 
 [[package]]
 name = "pbjson-build"
 version = "0.5.1"
-source = "git+https://github.com/justus-camp-microsoft/pbjson?branch=main#9481e17eae43ee75f25f1f79d384056125cc9ea5"
+source = "git+https://github.com/jstarks/pbjson?branch=aliases#8896d740a44ef46a3bad8cbfccedb87ea8e7b0d3"
 dependencies = [
  "heck 0.4.1",
  "itertools 0.10.5",
@@ -5742,7 +5761,8 @@ dependencies = [
 [[package]]
 name = "pbjson-types"
 version = "0.5.1"
-source = "git+https://github.com/justus-camp-microsoft/pbjson?branch=main#9481e17eae43ee75f25f1f79d384056125cc9ea5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a88c8d87f99a4ac14325e7a4c24af190fca261956e3b82dd7ed67e77e6c7043"
 dependencies = [
  "bytes",
  "chrono",
@@ -6367,9 +6387,9 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "radix_trie"
-version = "0.3.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b4431027dcd37fc2a73ef740b5f233aa805897935b8bce0195e41bbf9a3289a"
+checksum = "c069c179fcdc6a2fe24d8d18305cf085fdbd4f922c041943e203685d6a1c58fd"
 dependencies = [
  "endian-type",
  "nibble_vec",
@@ -6604,31 +6624,32 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "rustyline"
-version = "18.0.0"
+version = "17.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a990b25f351b25139ddc7f21ee3f6f56f86d6846b74ac8fad3a719a287cd4a0"
+checksum = "e902948a25149d50edc1a8e0141aad50f54e22ba83ff988cf8f7c9ef07f50564"
 dependencies = [
  "bitflags 2.11.0",
  "cfg-if",
  "clipboard-win",
+ "fd-lock",
  "home",
  "libc",
  "log",
  "memchr",
- "nix 0.31.2",
+ "nix 0.30.1",
  "radix_trie",
  "rustyline-derive",
  "unicode-segmentation",
  "unicode-width",
  "utf8parse",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "rustyline-derive"
-version = "0.12.0"
+version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64e5587417a3c4e16a4415e8d7d07f80998ed835ade621d19dfbe9fbe3205b0f"
+checksum = "5d66de233f908aebf9cc30ac75ef9103185b4b715c6f2fb7a626aa5e5ede53ab"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6850,7 +6871,7 @@ dependencies = [
 name = "serde_helpers"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "guid",
  "serde",
  "serde_json",
@@ -7009,7 +7030,7 @@ dependencies = [
 name = "sev_guest_device"
 version = "0.0.0"
 dependencies = [
- "nix 0.31.2",
+ "nix 0.30.1",
  "sev_guest_device_tio",
  "static_assertions",
  "thiserror 2.0.16",
@@ -7080,7 +7101,7 @@ dependencies = [
  "fs-err",
  "hvdef",
  "libc",
- "nix 0.31.2",
+ "nix 0.30.1",
  "pal_async",
  "parking_lot",
  "sidecar_defs",
@@ -7518,7 +7539,7 @@ dependencies = [
 name = "tdx_guest_device"
 version = "0.0.0"
 dependencies = [
- "nix 0.31.2",
+ "nix 0.30.1",
  "thiserror 2.0.16",
  "x86defs",
  "zerocopy",
@@ -7575,7 +7596,7 @@ dependencies = [
 name = "test_igvm_agent_lib"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "get_resources",
  "inspect",
  "openhcl_attestation_protocol",
@@ -7866,7 +7887,7 @@ name = "tpm_device"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "chipset_device",
  "chipset_device_resources",
  "cvm_tracing",
@@ -8217,7 +8238,7 @@ dependencies = [
 name = "underhill_attestation"
 version = "0.0.0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "base64-serde",
  "cvm_tracing",
  "disk_backend",
@@ -8480,7 +8501,7 @@ dependencies = [
  "kmsg_defs",
  "libc",
  "log",
- "nix 0.31.2",
+ "nix 0.30.1",
  "underhill_confidentiality",
  "walkdir",
 ]
@@ -8684,7 +8705,7 @@ dependencies = [
  "anyhow",
  "bitfield-struct 0.11.0",
  "libc",
- "nix 0.31.2",
+ "nix 0.30.1",
  "pal_async",
  "tracing",
  "vfio-bindings",
