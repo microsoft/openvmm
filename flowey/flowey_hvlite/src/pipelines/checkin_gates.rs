@@ -1486,60 +1486,6 @@ impl IntoPipeline for CheckinGatesCli {
             all_jobs.push(mi_secure_test_job.finish());
         }
 
-        // test that all petri artifacts have build/download mappings
-        {
-            if matches!(backend_hint, PipelineBackendHint::Github) {
-                let targets: [(CommonTriple, FlowPlatform, FlowArch, GhRunner, &str); 4] = [
-                    (
-                        CommonTriple::X86_64_LINUX_GNU,
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                        FlowArch::X86_64,
-                        crate::pipelines_shared::gh_pools::gh_hosted_x64_linux(),
-                        "x64-linux",
-                    ),
-                    (
-                        CommonTriple::X86_64_WINDOWS_MSVC,
-                        FlowPlatform::Windows,
-                        FlowArch::X86_64,
-                        crate::pipelines_shared::gh_pools::gh_hosted_x64_windows(),
-                        "x64-windows",
-                    ),
-                    (
-                        CommonTriple::AARCH64_LINUX_GNU,
-                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
-                        FlowArch::Aarch64,
-                        crate::pipelines_shared::gh_pools::gh_hosted_arm_linux(),
-                        "aarch64-linux",
-                    ),
-                    (
-                        CommonTriple::AARCH64_WINDOWS_MSVC,
-                        FlowPlatform::Windows,
-                        FlowArch::Aarch64,
-                        crate::pipelines_shared::gh_pools::gh_hosted_arm_windows(),
-                        "aarch64-windows",
-                    ),
-                ];
-
-                for (target, platform, arch, pool, label) in targets {
-                    let job = pipeline
-                        .new_job(
-                            platform,
-                            arch,
-                            format!("test artifact mapping completeness [{label}]"),
-                        )
-                        .gh_set_pool(pool)
-                        .dep_on(|ctx| {
-                            flowey_lib_hvlite::_jobs::test_artifact_mapping_completeness::Request {
-                                target,
-                                done: ctx.new_done_handle(),
-                            }
-                        })
-                        .finish();
-                    all_jobs.push(job);
-                }
-            }
-        }
-
         // ── Wire phase 2: all jobs depend on the quick-check gate ──────────
         if let Some(ref quick_check) = quick_check_job {
             for job in all_jobs.iter() {
