@@ -587,6 +587,20 @@ EOF
         })
     }
 
+    fn resolve_trigger_paths(
+        paths: Vec<String>,
+        exclude_paths: Vec<String>,
+    ) -> anyhow::Result<Option<schema_ado_yaml::TriggerPaths>> {
+        match (paths.is_empty(), exclude_paths.is_empty()) {
+            (true, true) => Ok(None),
+            (true, false) => anyhow::bail!("exclude_paths specified without paths"),
+            (false, _) => Ok(Some(schema_ado_yaml::TriggerPaths {
+                include: paths,
+                exclude: (!exclude_paths.is_empty()).then_some(exclude_paths),
+            })),
+        }
+    }
+
     let ado_pipeline = schema_ado_yaml::Pipeline {
         name: ado_name,
         trigger: Some(match ado_ci_triggers {
@@ -640,22 +654,7 @@ EOF
                             },
                         })
                     },
-                    paths: if paths.is_empty() {
-                        if !exclude_paths.is_empty() {
-                            anyhow::bail!("exclude_paths specified without paths")
-                        }
-
-                        None
-                    } else {
-                        Some(schema_ado_yaml::TriggerPaths {
-                            include: paths,
-                            exclude: if exclude_paths.is_empty() {
-                                None
-                            } else {
-                                Some(exclude_paths)
-                            },
-                        })
-                    },
+                    paths: resolve_trigger_paths(paths, exclude_paths)?,
                 }
             }
         }),
@@ -682,22 +681,7 @@ EOF
                             Some(exclude_branches)
                         },
                     },
-                    paths: if paths.is_empty() {
-                        if !exclude_paths.is_empty() {
-                            anyhow::bail!("exclude_paths specified without paths")
-                        }
-
-                        None
-                    } else {
-                        Some(schema_ado_yaml::TriggerPaths {
-                            include: paths,
-                            exclude: if exclude_paths.is_empty() {
-                                None
-                            } else {
-                                Some(exclude_paths)
-                            },
-                        })
-                    },
+                    paths: resolve_trigger_paths(paths, exclude_paths)?,
                 }
             }
         }),
