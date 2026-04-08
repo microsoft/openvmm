@@ -292,7 +292,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                     &mut this.backing.stats.unaccepted_gpa
                 }
                 HvMessageType::HvMessageTypeHypercallIntercept => {
-                    intercept_handler.handle_hypercall_exit(dev);
+                    intercept_handler.handle_hypercall_exit();
                     &mut this.backing.stats.hypercall
                 }
                 HvMessageType::HvMessageTypeSynicSintDeliverable => {
@@ -627,7 +627,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             .deliver_synic_messages(GuestVtl::Vtl0, message.deliverable_sints);
     }
 
-    fn handle_hypercall_exit(&mut self, bus: &impl CpuIo) {
+    fn handle_hypercall_exit(&mut self) {
         let message = self
             .vp
             .runner
@@ -642,7 +642,6 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let guest_memory = &self.vp.partition.gm[self.intercepted_vtl];
         let handler = UhHypercallHandler {
             vp: self.vp,
-            bus,
             trusted: false,
             intercepted_vtl: self.intercepted_vtl,
         };
@@ -687,7 +686,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 tlb_lock_held,
             ) {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
-                    signal_mnf(dev, connection_id);
+                    signal_mnf(&self.vp.partition.synic_ports, connection_id);
                 }
                 return Ok(());
             }
@@ -1379,7 +1378,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {
+impl UhHypercallHandler<'_, '_, HypervisorBackedX86> {
     const MSHV_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -1394,7 +1393,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {
     );
 }
 
-impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {
+impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, HypervisorBackedX86> {
     fn rip(&mut self) -> u64 {
         self.vp
             .runner
@@ -1713,9 +1712,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, HypervisorBackedX86> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
-    for UhHypercallHandler<'_, '_, T, HypervisorBackedX86>
-{
+impl hv1_hypercall::RetargetDeviceInterrupt for UhHypercallHandler<'_, '_, HypervisorBackedX86> {
     fn retarget_interrupt(
         &mut self,
         device_id: u64,
@@ -1734,7 +1731,7 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
     }
 }
 
-impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, HypervisorBackedX86> {
+impl hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, HypervisorBackedX86> {
     fn set_vp_registers(
         &mut self,
         partition_id: u64,
@@ -1769,9 +1766,7 @@ impl<T> hv1_hypercall::SetVpRegisters for UhHypercallHandler<'_, '_, T, Hypervis
     }
 }
 
-impl<T> hv1_hypercall::ModifyVtlProtectionMask
-    for UhHypercallHandler<'_, '_, T, HypervisorBackedX86>
-{
+impl hv1_hypercall::ModifyVtlProtectionMask for UhHypercallHandler<'_, '_, HypervisorBackedX86> {
     fn modify_vtl_protection_mask(
         &mut self,
         partition_id: u64,

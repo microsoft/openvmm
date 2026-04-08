@@ -641,7 +641,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             }
         };
 
-        let partition = KvmPartitionInner {
+        let partition = Arc::new(KvmPartitionInner {
             kvm: self.vm,
             memory: Default::default(),
             hv1_enabled: self.config.hv_config.is_some(),
@@ -658,10 +658,12 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 .collect(),
             caps,
             gic_v2m: self.config.processor_topology.gic_v2m(),
-        };
+            synic_ports: Default::default(),
+        });
 
         let partition = KvmPartition {
-            inner: Arc::new(partition),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            inner: partition,
         };
 
         kvm::init();
@@ -699,10 +701,7 @@ impl virt::Partition for KvmPartition {
         tracelimit::warn_ratelimited!("msis not supported");
     }
 
-    fn as_signal_msi(
-        self: &Arc<Self>,
-        _minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+    fn as_signal_msi(&self, _minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         let v2m = self.inner.gic_v2m.as_ref()?;
         let irqcon = self.inner.clone() as Arc<dyn virt::irqcon::ControlGic>;
         Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
@@ -731,6 +730,10 @@ impl virt::Hv1 for KvmPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -776,13 +779,17 @@ impl virt::PartitionAccessState for KvmPartition {
     }
 }
 
-impl virt::Synic for KvmPartition {
+impl virt::synic::Synic for KvmPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        unimplemented!()
+    }
+
     fn post_message(&self, _vtl: Vtl, _vp: VpIndex, _sint: u8, _typ: u32, _payload: &[u8]) {
         unimplemented!()
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         _vp: u32,
         _sint: u8,

@@ -16,7 +16,7 @@ pub(crate) async fn spawn_vps(
     tp: &AffinitizedThreadpool,
     vps: Vec<virt_mshv_vtl::UhProcessorBox>,
     runners: Vec<vmm_core::partition_unit::VpRunner>,
-    chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+    chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     isolation: virt::IsolationType,
 ) -> anyhow::Result<()> {
     // Start the VP tasks on the thread pool.
@@ -46,7 +46,7 @@ pub(crate) async fn spawn_vps(
 struct VpSpawner {
     vp: virt_mshv_vtl::UhProcessorBox,
     cpu: u32,
-    chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+    chipset: vmm_core::vmotherboard_adapter::AdaptedChipset,
     runner: vmm_core::partition_unit::VpRunner,
     isolation: virt::IsolationType,
     tp: AffinitizedThreadpool,
