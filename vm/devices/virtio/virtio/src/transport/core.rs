@@ -185,7 +185,7 @@ impl VirtioTransportCore {
         let Self {
             // Immutable / long-lived — not reset.
             device_sender: _,
-            _device_task,
+            _device_task: _,
             device_feature: _,
             supports_save_restore: _,
             guest_memory: _,
@@ -223,11 +223,21 @@ impl VirtioTransportCore {
         *queue_select = 0;
 
         for qd in queues.iter_mut() {
-            qd.params = QueueParams {
-                size: qd.initial_size,
+            let QueueData {
+                params,
+                initial_size,
+                msix_vector,
+                // Event is reused — the device task drains any pending
+                // signal during stop_queue before reset_status runs.
+                event: _,
+                saved_state,
+            } = qd;
+            *saved_state = None;
+            *params = QueueParams {
+                size: *initial_size,
                 ..Default::default()
             };
-            qd.msix_vector = 0;
+            *msix_vector = 0;
         }
     }
 
