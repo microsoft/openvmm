@@ -262,12 +262,24 @@ impl VirtioTransportCore {
     ///
     /// Writing 0 resets the device if it is currently initialized.
     /// Writing a non-zero value sets the corresponding status bits.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `self.state.is_busy()`.  The PCI and MMIO transports
+    /// enforce this by stalling and deferring all guest MMIO writes to
+    /// transport registers while an enable or disable is in flight, so
+    /// the writing VCPU blocks until the operation completes before this
+    /// function is called.
     pub fn write_device_status(&mut self, ops: &mut dyn TransportOps, val: u8) {
+        assert!(
+            !self.state.is_busy(),
+            "caller must not write STATUS while busy"
+        );
+
         if val == 0 {
             if self.device_status.as_u32() == 0 {
                 return;
             }
-            assert!(!self.state.is_busy());
             if !self.device_status.driver_ok() {
                 self.reset_status(ops);
             } else {
@@ -297,7 +309,6 @@ impl VirtioTransportCore {
         }
 
         if !self.device_status.driver_ok() && new_status.driver_ok() {
-            assert!(!self.state.is_busy());
             self.install_doorbells(ops);
 
             let features = self.driver_feature.clone();
