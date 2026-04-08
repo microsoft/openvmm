@@ -6,6 +6,11 @@
 //! This module defines a lookup table that maps the string representation of
 //! petri `ArtifactHandle` IDs (as output by `--list-required-artifacts`) to
 //! their corresponding build selections and download artifacts.
+//!
+//! FUTURE: This is currently a manual lookup table that requires fixups each
+//! time a new artifact is added, but this requires a rearchitecture of petri's
+//! artifact system and type erasure. Live with this for now since this is only
+//! used in the local vmm-test-run workflow, and is straightforward to fix.
 
 use crate::_jobs::local_build_and_run_nextest_vmm_tests::BuildSelections;
 use std::collections::BTreeSet;
