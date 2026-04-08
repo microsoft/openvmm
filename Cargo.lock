@@ -10121,6 +10121,7 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "pal_async",
+ "socket2",
  "tracing",
  "tracing_helpers",
  "vmsocket",
