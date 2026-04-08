@@ -487,9 +487,8 @@ impl VirtioPciDevice {
                         deferred.complete(&buf);
                     } else {
                         // BAR was remapped via PCI config write while
-                        // the IO was stalled.  Complete with all-ones
-                        // (unmapped read).
-                        deferred.complete(&vec![0xff; len]);
+                        // the IO was stalled.
+                        deferred.complete_error(chipset_device::io::IoError::InvalidRegister);
                     }
                 }
                 StalledIo::Write {
@@ -500,13 +499,12 @@ impl VirtioPciDevice {
                 } => {
                     if let Some((_, offset)) = self.pci.config_space.find_bar(address) {
                         self.write_transport(offset as u16, &data[..len]);
+                        if self.core.state.is_busy() {
+                            self.core.pending_status_deferred = Some(deferred);
+                            break;
+                        }
                     }
-                    // If the BAR was remapped, the write is silently
-                    // dropped (no device register at this address).
-                    if self.core.state.is_busy() {
-                        self.core.pending_status_deferred = Some(deferred);
-                        break;
-                    }
+                    // If the BAR was remapped, the write is dropped.
                     deferred.complete();
                 }
             }
@@ -647,87 +645,89 @@ mod saved_state {
 
 impl MmioIntercept for VirtioPciDevice {
     fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
-        if let Some((bar, offset)) = self.pci.config_space.find_bar(address) {
-            let offset = offset as u16;
-            if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
-                return defer_config_read(
-                    &self.core.device_sender,
-                    offset - BAR0_DEVICE_CFG_OFFSET,
-                    data.len() as u8,
-                );
-            }
-            if bar == 0 && self.core.state.is_busy() {
-                let (deferred, token) = defer_read();
-                self.core.stalled_io.push(StalledIo::Read {
-                    address,
-                    len: data.len(),
-                    deferred,
-                });
-                return IoResult::Defer(token);
-            }
-            match bar {
-                0 => self.read_transport(offset, data),
-                2 => read_as_u32_chunks(offset, data, |offset| {
-                    if let InterruptKind::Msix(msix) = &self.pci.interrupt_kind {
-                        msix.read_u32(offset as u64)
-                    } else {
-                        !0
-                    }
-                }),
-                _ => {}
-            }
+        let Some((bar, offset)) = self.pci.config_space.find_bar(address) else {
+            return IoResult::Err(chipset_device::io::IoError::InvalidRegister);
+        };
+        let offset = offset as u16;
+        if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
+            return defer_config_read(
+                &self.core.device_sender,
+                offset - BAR0_DEVICE_CFG_OFFSET,
+                data.len() as u8,
+            );
+        }
+        if bar == 0 && self.core.state.is_busy() {
+            let (deferred, token) = defer_read();
+            self.core.stalled_io.push(StalledIo::Read {
+                address,
+                len: data.len(),
+                deferred,
+            });
+            return IoResult::Defer(token);
+        }
+        match bar {
+            0 => self.read_transport(offset, data),
+            2 => read_as_u32_chunks(offset, data, |offset| {
+                if let InterruptKind::Msix(msix) = &self.pci.interrupt_kind {
+                    msix.read_u32(offset as u64)
+                } else {
+                    !0
+                }
+            }),
+            _ => return IoResult::Err(chipset_device::io::IoError::InvalidRegister),
         }
         IoResult::Ok
     }
 
     fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
-        if let Some((bar, offset)) = self.pci.config_space.find_bar(address) {
-            let offset = offset as u16;
-            if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
-                return defer_config_write(
-                    &self.core.device_sender,
-                    offset - BAR0_DEVICE_CFG_OFFSET,
-                    data,
-                );
-            }
-            if bar == 0 && self.core.state.is_busy() {
-                let (deferred, token) = defer_write();
-                let mut buf = [0u8; 8];
-                buf[..data.len()].copy_from_slice(data);
-                self.core.stalled_io.push(StalledIo::Write {
-                    address,
-                    data: buf,
-                    len: data.len(),
-                    deferred,
+        let Some((bar, offset)) = self.pci.config_space.find_bar(address) else {
+            return IoResult::Err(chipset_device::io::IoError::InvalidRegister);
+        };
+        let offset = offset as u16;
+        if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
+            return defer_config_write(
+                &self.core.device_sender,
+                offset - BAR0_DEVICE_CFG_OFFSET,
+                data,
+            );
+        }
+        if bar == 0 && self.core.state.is_busy() {
+            let (deferred, token) = defer_write();
+            let mut buf = [0u8; 8];
+            buf[..data.len()].copy_from_slice(data);
+            self.core.stalled_io.push(StalledIo::Write {
+                address,
+                data: buf,
+                len: data.len(),
+                deferred,
+            });
+            return IoResult::Defer(token);
+        }
+        match bar {
+            0 => self.write_transport(offset, data),
+            2 => {
+                write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
+                    ReadWriteRequestType::Write(value) => {
+                        if let InterruptKind::Msix(msix) = &mut self.pci.interrupt_kind {
+                            msix.write_u32(offset as u64, value)
+                        }
+                        None
+                    }
+                    ReadWriteRequestType::Read => {
+                        if let InterruptKind::Msix(msix) = &self.pci.interrupt_kind {
+                            Some(msix.read_u32(offset as u64))
+                        } else {
+                            Some(!0)
+                        }
+                    }
                 });
-                return IoResult::Defer(token);
             }
-            match bar {
-                0 => self.write_transport(offset, data),
-                2 => {
-                    write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
-                        ReadWriteRequestType::Write(value) => {
-                            if let InterruptKind::Msix(msix) = &mut self.pci.interrupt_kind {
-                                msix.write_u32(offset as u64, value)
-                            }
-                            None
-                        }
-                        ReadWriteRequestType::Read => {
-                            if let InterruptKind::Msix(msix) = &self.pci.interrupt_kind {
-                                Some(msix.read_u32(offset as u64))
-                            } else {
-                                Some(!0)
-                            }
-                        }
-                    });
-                }
-                _ => {}
-            }
-            if bar == 0 && self.core.state.is_busy() {
-                let (deferred, token) = defer_write();
-                self.core.pending_status_deferred = Some(deferred);
-                return IoResult::Defer(token);
-            }
+            _ => return IoResult::Err(chipset_device::io::IoError::InvalidRegister),
+        }
+        if bar == 0 && self.core.state.is_busy() {
+            let (deferred, token) = defer_write();
+            self.core.pending_status_deferred = Some(deferred);
+            return IoResult::Defer(token);
         }
         IoResult::Ok
     }
