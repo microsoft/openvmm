@@ -170,7 +170,8 @@ pub fn openvmm_main() {
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let exit_code = match do_main() {
+    let mut pidfile_path = None;
+    let exit_code = match do_main(&mut pidfile_path) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -182,6 +183,12 @@ pub fn openvmm_main() {
     #[cfg(unix)]
     if let Some(orig_termios) = orig_termios {
         term::set_termios(orig_termios);
+    }
+
+    // Clean up the pidfile before terminating, since pal::process::terminate
+    // skips destructors.
+    if let Some(ref path) = pidfile_path {
+        let _ = std::fs::remove_file(path);
     }
 
     // Terminate the process immediately without graceful shutdown of DLLs or
@@ -2187,7 +2194,7 @@ async fn save_snapshot(
     Ok(())
 }
 
-fn do_main() -> anyhow::Result<()> {
+fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2204,6 +2211,12 @@ fn do_main() -> anyhow::Result<()> {
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
         return Ok(());
+    }
+
+    if let Some(ref path) = opt.pidfile {
+        std::fs::write(path, format!("{}\n", std::process::id()))
+            .context("failed to write pidfile")?;
+        *pidfile_path = Some(path.clone());
     }
 
     if let Some(path) = opt.relay_console_path {

@@ -473,6 +473,12 @@ options:
     #[clap(long, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
 
+    /// write the process ID to the specified file on startup, and remove it on
+    /// exit. the file is not removed if the process is killed with SIGKILL or
+    /// crashes. no file locking is performed.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
+
     /// run as a ttrpc server on the specified Unix socket
     #[clap(long, value_name = "SOCKETPATH")]
     pub ttrpc: Option<PathBuf>,
