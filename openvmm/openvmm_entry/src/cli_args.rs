@@ -2875,4 +2875,10 @@ mod tests {
         assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
         assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
     }
+
+    #[test]
+    fn test_pidfile_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
+    }
 }
