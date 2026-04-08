@@ -3,6 +3,10 @@
 
 //! An executor based on epoll.
 
+use super::epoll_uring::EPOLL_URING_STATE;
+use super::epoll_uring::EPOLL_URING_TOKEN;
+use super::epoll_uring::EpollIoUring;
+use super::epoll_uring::EpollUringThreadState;
 use super::wait::FdWait;
 use crate::fd::FdReadyDriver;
 use crate::fd::PollFdReady;
@@ -34,6 +38,7 @@ use std::io;
 use std::os::unix::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::task::Context;
 use std::task::Poll;
 
@@ -48,6 +53,7 @@ pub struct EpollBackend {
     epfd: EpollFd,
     wake_event: Event,
     state: Mutex<EpollState>,
+    io_uring: OnceLock<EpollIoUring>,
 }
 
 impl Default for EpollBackend {
@@ -71,6 +77,7 @@ impl Default for EpollBackend {
                 timers: TimerQueue::default(),
                 fd_ready_to_delete: Vec::new(),
             }),
+            io_uring: OnceLock::new(),
         }
     }
 }
@@ -178,71 +185,92 @@ impl IoBackend for EpollBackend {
         let mut to_delete: Vec<_> = Vec::new();
         let mut wakers = WakerList::default();
 
-        let mut state = self.state.lock();
-        loop {
-            state.state.reset();
+        // Set up thread-local state for on-thread io-uring access.
+        // The io-uring may not be initialized yet (it's lazy), so we
+        // use a null pointer initially and update it on first use.
+        let uring_thread_state = EpollUringThreadState::new(std::ptr::null());
 
-            // Wake timers.
-            state.timers.wake_expired(&mut wakers);
-            drop(state);
+        EPOLL_URING_STATE.with(|cell| {
+            cell.lend(&uring_thread_state, || {
+                let mut state = self.state.lock();
+                loop {
+                    state.state.reset();
 
-            wakers.wake();
-            to_delete.clear();
+                    // Wake timers.
+                    state.timers.wake_expired(&mut wakers);
+                    drop(state);
 
-            match fut.poll_unpin(&mut cx) {
-                Poll::Ready(r) => break r,
-                Poll::Pending => {}
-            }
+                    wakers.wake();
+                    to_delete.clear();
 
-            state = self.state.lock();
-            // This list is only populated while in the Sleeping state.
-            assert!(state.fd_ready_to_delete.is_empty());
+                    match fut.poll_unpin(&mut cx) {
+                        Poll::Ready(r) => break r,
+                        Poll::Pending => {}
+                    }
 
-            if state.state.can_sleep() {
-                let deadline = state.timers.next_deadline();
-                state.state.sleep(deadline);
-                drop(state);
+                    state = self.state.lock();
+                    // This list is only populated while in the Sleeping state.
+                    assert!(state.fd_ready_to_delete.is_empty());
 
-                let timeout = deadline
-                    .map(|deadline| {
-                        let now = Instant::now();
-                        (deadline.max(now) - now)
-                            .as_millis()
-                            .try_into()
-                            .unwrap_or(i32::MAX)
-                    })
-                    .unwrap_or(-1);
+                    if state.state.can_sleep() {
+                        let deadline = state.timers.next_deadline();
+                        state.state.sleep(deadline);
+                        drop(state);
 
-                let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
-                let n = while_eintr(|| self.epfd.wait(&mut events, timeout))
-                    .expect("epoll_wait failed unexpectedly");
+                        // Flush any queued io-uring SQEs before sleeping.
+                        if let Some(uring) = self.io_uring.get() {
+                            // Update the thread-local pointer if this is the first
+                            // time we see the ring initialized.
+                            uring_thread_state.set_ring(uring);
+                            uring.flush(&uring_thread_state);
+                        }
 
-                // Block unnecessary wakeups.
-                let _ = self.state.lock().state.wake();
+                        let timeout = deadline
+                            .map(|deadline| {
+                                let now = Instant::now();
+                                (deadline.max(now) - now)
+                                    .as_millis()
+                                    .try_into()
+                                    .unwrap_or(i32::MAX)
+                            })
+                            .unwrap_or(-1);
 
-                for event in &events[..n] {
-                    if event.u64 == 0 {
-                        self.wake_event.try_wait();
-                    } else {
-                        // SAFETY: the operation context is still alive and
-                        // can be dereferenced. It's possible the underlying
-                        // FdReady has been dropped, but in that case the
-                        // associated operation context will have been added
-                        // to the fd_ready_to_delete list.
-                        //
-                        // Note that this is only true until state reverts
-                        // to the Running state, which occurs below.
-                        let op = unsafe { &*(event.u64 as usize as *const FdReadyOp) };
-                        op.wake_ready(event.events, &mut wakers);
+                        let mut events = [libc::epoll_event { events: 0, u64: 0 }; 8];
+                        let n = while_eintr(|| self.epfd.wait(&mut events, timeout))
+                            .expect("epoll_wait failed unexpectedly");
+
+                        // Block unnecessary wakeups.
+                        let _ = self.state.lock().state.wake();
+
+                        for event in &events[..n] {
+                            if event.u64 == 0 {
+                                self.wake_event.try_wait();
+                            } else if event.u64 == EPOLL_URING_TOKEN {
+                                if let Some(uring) = self.io_uring.get() {
+                                    uring.process_completions();
+                                }
+                            } else {
+                                // SAFETY: the operation context is still alive and
+                                // can be dereferenced. It's possible the underlying
+                                // FdReady has been dropped, but in that case the
+                                // associated operation context will have been added
+                                // to the fd_ready_to_delete list.
+                                //
+                                // Note that this is only true until state reverts
+                                // to the Running state, which occurs below.
+                                let op = unsafe { &*(event.u64 as usize as *const FdReadyOp) };
+                                op.wake_ready(event.events, &mut wakers);
+                            }
+                        }
+
+                        state = self.state.lock();
+
+                        // Free any FdReadyOp objects that were deleted while in the epoll_wait call.
+                        to_delete.append(&mut state.fd_ready_to_delete);
                     }
                 }
-
-                state = self.state.lock();
-
-                // Free any FdReadyOp objects that were deleted while in the epoll_wait call.
-                to_delete.append(&mut state.fd_ready_to_delete);
-            }
-        }
+            }) // cell.lend
+        }) // EPOLL_URING_STATE.with
     }
 }
 
@@ -415,6 +443,21 @@ impl TimerDriver for EpollDriver {
         Timer {
             epoll: self.inner.clone(),
             id,
+        }
+    }
+}
+
+impl crate::driver::IoUringDriver for EpollDriver {
+    fn io_uring_submit(&self) -> Option<&dyn crate::io_uring::IoUringSubmit> {
+        if let Some(uring) = self.inner.io_uring.get() {
+            return Some(uring);
+        }
+        match EpollIoUring::new(
+            self.inner.epfd.0.as_raw_fd(),
+            self.inner.wake_event.as_fd().as_raw_fd(),
+        ) {
+            Ok(uring) => Some(self.inner.io_uring.get_or_init(|| uring)),
+            Err(_) => None,
         }
     }
 }

@@ -651,6 +651,12 @@ impl TimerDriver for ThreadpoolDriver {
     }
 }
 
+impl pal_async::driver::IoUringDriver for ThreadpoolDriver {
+    fn io_uring_submit(&self) -> Option<&dyn pal_async::io_uring::IoUringSubmit> {
+        Some(self.client(None).initiator())
+    }
+}
+
 /// A driver for [`AffinitizedThreadpool`] that can be retargeted to different
 /// CPUs.
 #[derive(Debug, Clone)]
@@ -744,5 +750,11 @@ impl TimerDriver for RetargetableDriver {
 
     fn new_timer(&self) -> Self::Timer {
         Timer::new(self.clone())
+    }
+}
+
+impl pal_async::driver::IoUringDriver for RetargetableDriver {
+    fn io_uring_submit(&self) -> Option<&dyn pal_async::io_uring::IoUringSubmit> {
+        Some(self.inner.current_driver().initiator())
     }
 }
