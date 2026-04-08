@@ -4214,6 +4214,8 @@ dependencies = [
  "pal",
  "pal_async",
  "slab",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
  "unicycle",
 ]
