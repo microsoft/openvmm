@@ -276,4 +276,50 @@ mod tests {
         client_node.shutdown().await;
         leader.shutdown().await;
     }
+
+    #[async_test]
+    async fn test_unix_socket_bidirectional(driver: DefaultDriver) {
+        let mut name_bytes = [0u8; 16];
+        getrandom::fill(&mut name_bytes).unwrap();
+        let socket_name = format!("mesh-test-{:0x}.sock", u128::from_ne_bytes(name_bytes));
+        let socket_path = std::env::temp_dir().join(&socket_name);
+
+        let leader = AlpcNode::new_named(driver.clone()).unwrap();
+        let mut listener = leader.listen(&driver, &socket_path).unwrap();
+
+        let client_driver = driver.clone();
+        let client_socket_path = socket_path.clone();
+
+        // Use raw port pairs so that the bridge is bidirectional.
+        let (server_port, bridge_server) = mesh_node::local_node::Port::new_pair();
+        let (client_port, bridge_client) = mesh_node::local_node::Port::new_pair();
+
+        let client_node = futures::join!(
+            async {
+                let pending = listener.accept(&driver).await.unwrap();
+                pending.finish(bridge_server).await.unwrap();
+            },
+            async {
+                AlpcNode::join_by_socket(client_driver, &client_socket_path, bridge_client)
+                    .await
+                    .unwrap()
+            }
+        )
+        .1;
+
+        // Wrap the local ends in typed channels.
+        let server_send = mesh_channel::Sender::<TestMessage>::from(server_port);
+        let mut client_recv = mesh_channel::Receiver::<TestMessage>::from(client_port);
+
+        // Server -> client exercises the path where the leader must connect
+        // to the client's ALPC port (requires DIRECTORY_CREATE_OBJECT).
+        server_send.send(TestMessage { value: 42 });
+        let msg = client_recv.recv().await.unwrap();
+        assert_eq!(msg.value, 42);
+
+        drop(server_send);
+        drop(client_recv);
+        client_node.shutdown().await;
+        leader.shutdown().await;
+    }
 }

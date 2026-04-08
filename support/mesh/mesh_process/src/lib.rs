@@ -427,7 +427,10 @@ impl Mesh {
         #[cfg(windows)]
         let node_driver = pal_async::windows::TpPool::system();
         #[cfg(windows)]
-        let node = mesh_remote::windows::AlpcNode::new(pal_async::windows::TpPool::system())
+        // Use new_named so that the ALPC directory has a path in the Ob
+        // namespace. This is required for listen() — the listener handshake
+        // creates named invitations, which need a named directory.
+        let node = mesh_remote::windows::AlpcNode::new_named(node_driver.clone())
             .context("AlpcNode creation failure")?;
         #[cfg(unix)]
         let (node, node_driver) = {
@@ -523,6 +526,15 @@ impl Mesh {
     /// Returns a [`Listener<T>`] that yields items from connecting clients.
     /// Each client gets a `Sender<T>` bridged to this listener's queue.
     /// Dropping the [`Listener`] stops accepting new connections.
+    ///
+    /// # Security
+    ///
+    /// The socket at `path` is an external entry point for other local
+    /// processes to join the mesh. On Unix, `path` must reside in a
+    /// directory accessible only to the intended user (e.g. mode `0700`).
+    /// On Windows, the socket's parent directory should be ACL'd to
+    /// restrict access. Any local user who can connect to the socket can
+    /// join the mesh.
     pub async fn listen<T: 'static + MeshField + Send>(
         &self,
         path: &Path,
@@ -575,25 +587,20 @@ impl<T: 'static + MeshField + Send> Stream for Listener<T> {
 /// [`Connection`] that keeps the underlying IPC node alive. Drop
 /// [`Connection`] to disconnect.
 pub async fn connect<T: 'static + MeshField + Send>(
+    driver: impl pal_async::driver::Driver + Spawn + Clone,
     path: &Path,
 ) -> anyhow::Result<(mesh::Sender<T>, Connection)> {
     let (send, recv) = mesh::channel::<T>();
 
     #[cfg(windows)]
-    let node = {
-        let driver = pal_async::windows::TpPool::system();
-        mesh_remote::windows::AlpcNode::join_by_socket(driver, path, recv.into())
-            .await
-            .context("failed to connect to mesh listener")?
-    };
+    let node = mesh_remote::windows::AlpcNode::join_by_socket(driver, path, recv.into())
+        .await
+        .context("failed to connect to mesh listener")?;
 
     #[cfg(unix)]
-    let node = {
-        let (_, driver) = DefaultPool::spawn_on_thread("mesh-connect-pool");
-        mesh_remote::unix::UnixNode::join_by_path(driver, path, recv.into())
-            .await
-            .context("failed to connect to mesh listener")?
-    };
+    let node = mesh_remote::unix::UnixNode::join_by_path(driver, path, recv.into())
+        .await
+        .context("failed to connect to mesh listener")?;
 
     Ok((send, Connection { node }))
 }
@@ -734,6 +741,11 @@ impl MeshInner {
     }
 
     fn start_listener(&self, params: ListenParams) -> anyhow::Result<Task<()>> {
+        // Remove a stale socket file if one exists, so that bind doesn't fail.
+        if let Ok(true) = Self::is_socket(&params.path) {
+            let _ = std::fs::remove_file(&params.path);
+        }
+
         let mut listener = self
             .node
             .listen(&self.node_driver, &params.path)
@@ -770,6 +782,19 @@ impl MeshInner {
         });
 
         Ok(task)
+    }
+
+    /// Checks whether `path` is a socket file.
+    #[cfg(unix)]
+    fn is_socket(path: &Path) -> std::io::Result<bool> {
+        use std::os::unix::fs::FileTypeExt;
+        Ok(std::fs::symlink_metadata(path)?.file_type().is_socket())
+    }
+
+    /// Checks whether `path` is a socket file.
+    #[cfg(windows)]
+    fn is_socket(path: &Path) -> std::io::Result<bool> {
+        pal::windows::fs::is_unix_socket(path)
     }
 
     /// Spawns a new process with a mesh channel associated with this `Mesh` instance.
@@ -945,7 +970,7 @@ impl MeshInner {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use pal_async::DefaultDriver;
@@ -962,18 +987,25 @@ mod tests {
         let mut listener = mesh.listen::<String>(&sock_path).await.unwrap();
 
         // Spawn a client task that connects and sends a message.
+        let client_driver = driver.clone();
         let client_path = sock_path.clone();
         let client_task = driver.spawn("client", async move {
-            let (sender, conn) = connect::<String>(&client_path).await.unwrap();
+            let (sender, conn) = connect::<String>(client_driver, &client_path)
+                .await
+                .unwrap();
             sender.send("hello from client".to_string());
-            conn.shutdown().await;
+            // Return the connection to keep the node alive until the server
+            // has received the message. Shutting down immediately can race
+            // with the server establishing a back-connection for port
+            // bridging on Windows (ALPC).
+            conn
         });
 
         // Receive the message via the listener stream.
         let msg = listener.next().await.unwrap();
         assert_eq!(msg, "hello from client");
 
-        client_task.await;
+        client_task.await.shutdown().await;
 
         // Drop the listener and verify the accept loop stops.
         drop(listener);
