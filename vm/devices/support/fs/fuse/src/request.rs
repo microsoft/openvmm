@@ -45,7 +45,7 @@ fuse_operations! {
     FUSE_SETLK SetLock arg:fuse_lk_in;
     FUSE_SETLKW SetLockSleep arg:fuse_lk_in;
     FUSE_ACCESS Access arg:fuse_access_in;
-    FUSE_CREATE Create arg:fuse_create_in name:str;
+    FUSE_CREATE Create arg:fuse_create_in name:name;
     FUSE_INTERRUPT Interrupt arg:fuse_interrupt_in;
     FUSE_BMAP BMap arg:fuse_bmap_in;
     FUSE_DESTROY Destroy;
@@ -478,5 +478,33 @@ pub(crate) mod tests {
         let result = reader.name();
 
         assert_eq!(result, Err(lx::Error::ENAMETOOLONG));
+    }
+
+    #[test]
+    fn name_rejects_path_traversal() {
+        // ".." must be rejected to prevent directory traversal
+        let data = b"..\0";
+        let mut reader: &[u8] = &data[..];
+        assert_eq!(reader.name(), Err(lx::Error::EINVAL));
+
+        // "." must be rejected
+        let data = b".\0";
+        let mut reader: &[u8] = &data[..];
+        assert_eq!(reader.name(), Err(lx::Error::EINVAL));
+
+        // Names containing "/" must be rejected
+        let data = b"../host_secret.txt\0";
+        let mut reader: &[u8] = &data[..];
+        assert_eq!(reader.name(), Err(lx::Error::EINVAL));
+
+        // Empty names must be rejected
+        let data = b"\0";
+        let mut reader: &[u8] = &data[..];
+        assert_eq!(reader.name(), Err(lx::Error::EINVAL));
+
+        // Valid single-component names must be accepted
+        let data = b"valid_file.txt\0";
+        let mut reader: &[u8] = &data[..];
+        assert!(reader.name().is_ok());
     }
 }
