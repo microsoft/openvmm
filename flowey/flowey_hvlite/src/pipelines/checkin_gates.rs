@@ -1434,7 +1434,7 @@ impl IntoPipeline for CheckinGatesCli {
                 })?;
 
             let mi_secure_nextest_filter =
-                "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs)"
+                "test(openhcl) & !test(servicing) & !test(cvm) & !test(memory_validation) & !test(very_heavy) & !test(boot_heavy) & !test(hyperv_openhcl_pcat) & !test(prepped_vbs)"
                     .to_string();
 
             let mi_secure_test_artifacts = standard_x64_test_artifacts;
