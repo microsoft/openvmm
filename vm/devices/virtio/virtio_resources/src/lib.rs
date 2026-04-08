@@ -161,6 +161,12 @@ pub mod vhost_user {
     ///
     /// The socket must already be connected. The CLI layer connects
     /// to the backend and passes the connected fd here.
+    ///
+    /// Config reads/writes are forwarded to the backend via
+    /// `GET_CONFIG`/`SET_CONFIG` if the backend supports it. For
+    /// device types that need frontend-owned config (e.g., virtiofs
+    /// with a tag), use a device-specific handle like
+    /// [`VhostUserFsHandle`] instead.
     #[derive(MeshPayload)]
     pub struct VhostUserDeviceHandle {
         /// Connected Unix socket fd to the vhost-user backend.
@@ -171,6 +177,24 @@ pub mod vhost_user {
 
     impl ResourceId<VirtioDeviceHandle> for VhostUserDeviceHandle {
         const ID: &'static str = "vhost-user";
+    }
+
+    /// Handle for a vhost-user virtio-fs device.
+    ///
+    /// The frontend owns the config space (tag + num_request_queues)
+    /// and does not negotiate `VHOST_USER_PROTOCOL_F_CONFIG` with the
+    /// backend. The tag is specified by the host, matching the
+    /// behavior of cloud-hypervisor.
+    #[derive(MeshPayload)]
+    pub struct VhostUserFsHandle {
+        /// Connected Unix socket fd to the vhost-user backend.
+        pub socket: OwnedFd,
+        /// The mount tag exposed to the guest (max 36 bytes).
+        pub tag: String,
+    }
+
+    impl ResourceId<VirtioDeviceHandle> for VhostUserFsHandle {
+        const ID: &'static str = "vhost-user-fs";
     }
 }
 
