@@ -8916,6 +8916,7 @@ dependencies = [
  "arrayvec",
  "build_rs_guest_arch",
  "guestmem",
+ "headervec",
  "hv1_emulator",
  "hv1_hypercall",
  "hvdef",

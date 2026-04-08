@@ -8,6 +8,7 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
+pub mod irqfd;
 mod vm_state;
 mod vp_state;
 
@@ -264,6 +265,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             gm: config.guest_memory.clone(),
             vps: self.vps,
             irq_routes: Default::default(),
+            gsi_states: Mutex::new(Box::new([irqfd::GsiState::Unallocated; irqfd::NUM_GSIS])),
             caps,
             synic_ports: Default::default(),
         });
@@ -301,6 +303,7 @@ struct MshvPartitionInner {
     gm: GuestMemory,
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
+    gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
 }
@@ -348,6 +351,10 @@ impl virt::Partition for MshvPartition {
 
     fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(Arc::new(irqfd::MshvIrqFd::new(self.inner.clone())))
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
