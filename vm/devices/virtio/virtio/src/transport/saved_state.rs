@@ -50,8 +50,6 @@ pub mod state {
         pub queue_select: u32,
         #[mesh(6)]
         pub config_generation: u32,
-        #[mesh(7)]
-        pub interrupt_status: u32,
     }
 }
 

@@ -159,6 +159,42 @@ struct Server<T: Listener> {
 }
 
 impl<T: Listener> Server<T> {
+    /// Creates a VNC connection task for the given socket and resources.
+    fn start_connection(
+        driver: &LocalDriver,
+        socket: PolledSocket<socket2::Socket>,
+        view: ViewWrapper,
+        input: VncInput,
+    ) -> (
+        mesh::OneshotSender<()>,
+        Pin<Box<dyn Future<Output = (ViewWrapper, VncInput)>>>,
+    ) {
+        let mut vncserver = vnc::Server::new("OpenVMM VM".into(), socket, view, input);
+        let mut timer = PolledTimer::new(driver);
+        let (abort_send, abort_recv) = mesh::oneshot();
+        let connection = Box::pin(async move {
+            let updater = vncserver.updater();
+            let update_task = async {
+                // Mark the framebuffer as updated every 30ms (~30 fps).
+                loop {
+                    timer.sleep(Duration::from_millis(30)).await;
+                    updater.update();
+                }
+            };
+            let r = futures::select! { // race semantics
+                r = vncserver.run().fuse() => r.context("VNC error"),
+                _ = abort_recv.fuse() => Err(anyhow!("VNC connection aborted")),
+                _ = update_task.fuse() => unreachable!(),
+            };
+            match r {
+                Ok(_) => tracing::info!("VNC client disconnected"),
+                Err(err) => tracing::error!(error = err.as_error(), "VNC client error"),
+            }
+            vncserver.done()
+        });
+        (abort_send, connection)
+    }
+
     /// Runs the state machine forward, either advancing the current connection
     /// task or waiting for a new connection.
     ///
@@ -168,7 +204,6 @@ impl<T: Listener> Server<T> {
         loop {
             match &mut self.state {
                 State::Listening { .. } => {
-                    // Accept the connection if one is really ready.
                     let (socket, remote_addr) = self.listener.accept().await?;
                     let socket = PolledSocket::new(driver, socket.into())?;
 
@@ -182,44 +217,45 @@ impl<T: Listener> Server<T> {
                         unreachable!()
                     };
 
-                    let mut vncserver = vnc::Server::new("OpenVMM VM".into(), socket, view, input);
-                    let mut timer = PolledTimer::new(driver);
-
-                    let (abort_send, abort_recv) = mesh::oneshot();
-                    let connection = Box::pin(async move {
-                        let updater = vncserver.updater();
-                        let update_task = async {
-                            // For now, just mark the framebuffer as updated
-                            // every 30ms (about 30 frames per second).
-                            loop {
-                                timer.sleep(Duration::from_millis(30)).await;
-                                updater.update();
-                            }
-                        };
-                        let r = futures::select! { // race semantics
-                            r = vncserver.run().fuse() => r.context("VNC error"),
-                            _ = abort_recv.fuse() => Err(anyhow!("VNC connection aborted")),
-                            _ = update_task.fuse() => unreachable!(),
-                        };
-                        match r {
-                            Ok(_) => {
-                                tracing::info!("VNC client disconnected");
-                            }
-                            Err(err) => {
-                                tracing::error!(error = err.as_error(), "VNC client error");
-                            }
-                        }
-                        vncserver.done()
-                    });
+                    let (abort, task) = Self::start_connection(driver, socket, view, input);
                     self.state = State::Connected {
                         remote_addr,
-                        task: connection,
-                        abort: abort_send,
+                        task,
+                        abort,
                     };
                 }
-                State::Connected { task, .. } => {
-                    let (view, input) = task.await;
-                    self.state = State::Listening { view, input };
+                State::Connected { .. } => {
+                    let (mut task, abort, _old_addr) = if let State::Connected {
+                        task,
+                        abort,
+                        remote_addr,
+                    } =
+                        std::mem::replace(&mut self.state, State::Invalid)
+                    {
+                        (task, abort, remote_addr)
+                    } else {
+                        unreachable!()
+                    };
+
+                    futures::select! {
+                        result = task.as_mut().fuse() => {
+                            let (view, input) = result;
+                            self.state = State::Listening { view, input };
+                        }
+                        accept = self.listener.accept().fuse() => {
+                            let (new_socket, remote_addr) = accept?;
+                            tracing::info!(address = ?remote_addr, "New VNC client, disconnecting previous");
+                            abort.send(());
+                            let (view, input) = task.await;
+                            let socket = PolledSocket::new(driver, new_socket.into())?;
+                            let (abort, task) = Self::start_connection(driver, socket, view, input);
+                            self.state = State::Connected {
+                                remote_addr,
+                                task,
+                                abort,
+                            };
+                        }
+                    }
                 }
                 State::Invalid => unreachable!(),
             }

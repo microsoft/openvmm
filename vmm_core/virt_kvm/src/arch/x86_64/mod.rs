@@ -438,6 +438,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         let partition = KvmPartition {
             synic_ports: Arc::new(virt::synic::SynicPorts::new(partition.clone())),
+            irqfd_state: Arc::new(crate::gsi::KvmIrqFdState::new(partition.clone())),
             inner: partition,
         };
 
@@ -512,6 +513,10 @@ impl Partition for KvmPartition {
 
     fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(self.irqfd_state.clone())
     }
 
     fn caps(&self) -> &virt::PartitionCapabilities {
@@ -739,14 +744,14 @@ impl KvmProcessor<'_> {
     }
 }
 
-struct KvmMsi {
-    address_lo: u32,
-    address_hi: u32,
-    data: u32,
+pub(crate) struct KvmMsi {
+    pub(crate) address_lo: u32,
+    pub(crate) address_hi: u32,
+    pub(crate) data: u32,
 }
 
 impl KvmMsi {
-    fn new(request: MsiRequest) -> Self {
+    pub(crate) fn new(request: MsiRequest) -> Self {
         let request_address = MsiAddress::from(request.address as u32);
         let request_data = MsiData::from(request.data);
 

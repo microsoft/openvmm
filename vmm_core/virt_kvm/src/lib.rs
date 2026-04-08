@@ -84,6 +84,9 @@ pub struct KvmPartition {
     inner: Arc<KvmPartitionInner>,
     #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<KvmPartitionInner>>,
+    #[cfg(guest_arch = "x86_64")]
+    #[inspect(skip)]
+    irqfd_state: Arc<dyn virt::irqfd::IrqFd>,
 }
 
 #[derive(Inspect)]

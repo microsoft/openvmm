@@ -21,6 +21,12 @@ as well as the generated CLI help (via `cargo run -- --help`).
   instead of shared file-backed sections.
 * `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only).
   Requires `--private-memory`.
+* `--pidfile <PATH>`: Write the process ID to the specified file on startup,
+  and remove it on clean exit. If the process is killed with `SIGKILL` or
+  crashes, the pidfile is not removed — consumers should verify the PID is
+  still alive. No file locking is performed; concurrent launches with the same
+  pidfile path will overwrite each other. Not written for short-lived utility
+  modes such as `--write-saved-state-proto`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
