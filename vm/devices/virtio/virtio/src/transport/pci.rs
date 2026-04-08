@@ -124,6 +124,7 @@ impl TransportOps for PciTransport {
         if let InterruptKind::IntX(line) = &self.interrupt_kind {
             line.set_level(false);
         }
+        self.msix_config_vector = 0;
     }
 
     fn doorbell_region(&mut self) -> Option<(u64, u32)> {
@@ -480,10 +481,16 @@ impl VirtioPciDevice {
                     len,
                     deferred,
                 } => {
-                    let (_, offset) = self.pci.config_space.find_bar(address).unwrap();
-                    let mut buf = vec![0u8; len];
-                    self.read_transport(offset as u16, &mut buf);
-                    deferred.complete(&buf);
+                    if let Some((_, offset)) = self.pci.config_space.find_bar(address) {
+                        let mut buf = vec![0u8; len];
+                        self.read_transport(offset as u16, &mut buf);
+                        deferred.complete(&buf);
+                    } else {
+                        // BAR was remapped via PCI config write while
+                        // the IO was stalled.  Complete with all-ones
+                        // (unmapped read).
+                        deferred.complete(&vec![0xff; len]);
+                    }
                 }
                 StalledIo::Write {
                     address,
@@ -491,8 +498,11 @@ impl VirtioPciDevice {
                     len,
                     deferred,
                 } => {
-                    let (_, offset) = self.pci.config_space.find_bar(address).unwrap();
-                    self.write_transport(offset as u16, &data[..len]);
+                    if let Some((_, offset)) = self.pci.config_space.find_bar(address) {
+                        self.write_transport(offset as u16, &data[..len]);
+                    }
+                    // If the BAR was remapped, the write is silently
+                    // dropped (no device register at this address).
                     if self.core.state.is_busy() {
                         self.core.pending_status_deferred = Some(deferred);
                         break;

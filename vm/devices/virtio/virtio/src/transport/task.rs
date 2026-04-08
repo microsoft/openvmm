@@ -75,17 +75,14 @@ pub struct StartParams {
 /// When the guest writes DRIVER_OK, the transport sends an Enable RPC to
 /// the device task and transitions to `Enabling`.  The guest's MMIO/PCI
 /// write is deferred (via [`chipset_device::io::IoResult::Defer`]) so the
-/// writing VCPU blocks until the enable completes.  Any concurrent MMIO
-/// accesses from other VCPUs while the transport is busy are stalled and
-/// replayed once the operation finishes.
+/// writing VCPU blocks until the enable completes.  Concurrent transport
+/// register accesses from other VCPUs are stalled and replayed once the
+/// operation finishes.  Device-config register accesses are not stalled —
+/// they are forwarded to the device task via the channel and serialized
+/// with Enable/Disable naturally.
 ///
 /// Similarly, when the guest writes STATUS=0 with queues active, a Disable
 /// RPC is sent and the write is deferred until teardown is complete.
-///
-/// Because the writing VCPU blocks and concurrent accesses are stalled,
-/// the old `pending_reset` race (guest writes STATUS=0 while enable is
-/// in-flight) is no longer possible — the STATUS=0 write from another
-/// CPU is stalled until the enable completes, then replayed normally.
 #[derive(Inspect)]
 #[inspect(tag = "state")]
 pub enum TransportState {

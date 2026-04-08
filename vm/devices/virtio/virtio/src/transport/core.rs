@@ -325,10 +325,13 @@ impl VirtioTransportCore {
         self.poll_waker = Some(cx.waker().clone());
 
         if let Poll::Ready(result) = self.state.poll(cx) {
-            self.apply_transport_result(ops, result);
+            // Complete the deferred STATUS write before applying the
+            // result, since apply_transport_result may call reset_status
+            // which would drop the deferred (giving the VCPU NoResponse).
             if let Some(deferred) = self.pending_status_deferred.take() {
                 deferred.complete();
             }
+            self.apply_transport_result(ops, result);
         }
     }
 
@@ -440,9 +443,9 @@ impl VirtioTransportCore {
     /// Restore the transport-agnostic portion of the common configuration.
     ///
     /// Validates the saved state, then restores feature negotiation, queue
-    /// parameters, and device status. The caller must restore transport-
-    /// specific fields (interrupt status, MSI-X vectors, etc.) and call
-    /// `install_doorbells` if `device_status.driver_ok()`.
+    /// parameters, device status, and doorbells. The caller must restore
+    /// transport-specific fields (interrupt status, MSI-X vectors, etc.)
+    /// afterward.
     pub fn restore_common(
         &mut self,
         ops: &mut dyn TransportOps,
