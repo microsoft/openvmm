@@ -18,6 +18,8 @@ use scsi_defs::ScsiOp;
 use scsi_defs::ScsiStatus;
 use static_assertions::const_assert;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use storvsc_driver::StorvscDriver;
 use storvsc_driver::StorvscErrorKind;
 use vmbus_user_channel::MappedRingMem;
@@ -42,8 +44,9 @@ pub struct StorvscDisk {
     /// in GPA Direct packets (zero-copy).
     use_bounce_buffer: bool,
     // Pre-fetched metadata: queried once at construction to avoid block_on in
-    // sync DiskIo methods. Capacity is refetched on resize via wait_resize().
-    sector_count: u64,
+    // sync DiskIo methods. sector_count is AtomicU64 because wait_resize()
+    // updates it when the host signals a capacity change.
+    sector_count: AtomicU64,
     sector_size: u32,
     disk_id: Option<[u8; 16]>,
     read_only: bool,
@@ -80,7 +83,7 @@ impl StorvscDisk {
             lun,
             resize_event,
             use_bounce_buffer,
-            sector_count: 0,
+            sector_count: AtomicU64::new(0),
             sector_size: 0,
             disk_id: None,
             read_only: false,
@@ -106,7 +109,8 @@ impl StorvscDisk {
                 .fetch_capacity_10()
                 .await
                 .context("failed to query disk capacity")?;
-            disk.sector_count = capacity.num_sectors;
+            disk.sector_count
+                .store(capacity.num_sectors, Ordering::Relaxed);
             disk.sector_size = capacity.sector_size;
             disk.disk_id = None;
             disk.read_only = true;
@@ -126,7 +130,8 @@ impl StorvscDisk {
                         .context("failed to query disk capacity")?
                 }
             };
-            disk.sector_count = capacity.num_sectors;
+            disk.sector_count
+                .store(capacity.num_sectors, Ordering::Relaxed);
             disk.sector_size = capacity.sector_size;
 
             disk.disk_id = disk
@@ -536,6 +541,7 @@ impl StorvscDisk {
                         ))),
                         StorvscErrorKind::CancelledRetry => {
                             if num_tries < MAX_RETRIES {
+                                tracing::debug!(num_tries, "SCSI request cancelled, retrying");
                                 Ok(())
                             } else {
                                 break Err(DiskError::Io(std::io::Error::new(
@@ -579,9 +585,17 @@ impl StorvscDisk {
         };
 
         if force_bounce || self.use_bounce_buffer {
+            // TODO: Pool DMA buffers to avoid per-I/O allocation overhead.
+            // This path runs on every CVM read (is_isolated=true), not just
+            // IDE early boot. The kernel mmap/munmap in allocate_dma_buffer
+            // is the dominant cost; the intermediate Vec copy is secondary.
+            //
+            // Round up to page size -- DMA allocator requires page-aligned sizes,
+            // but callers (e.g. IDE boot sector reads) may request sub-page I/O.
+            let dma_len = buffers.len().next_multiple_of(PAGE_SIZE_4K as usize);
             let dma_buf = self
                 .driver
-                .allocate_dma_buffer(buffers.len())
+                .allocate_dma_buffer(dma_len)
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
 
             let result = self
@@ -644,9 +658,11 @@ impl StorvscDisk {
         };
 
         if force_bounce || self.use_bounce_buffer {
+            // TODO: Pool DMA buffers (same as read path above).
+            let dma_len = buffers.len().next_multiple_of(PAGE_SIZE_4K as usize);
             let dma_buf = self
                 .driver
-                .allocate_dma_buffer(buffers.len())
+                .allocate_dma_buffer(dma_len)
                 .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
 
             let mut data = vec![0u8; buffers.len()];
@@ -686,7 +702,7 @@ impl DiskIo for StorvscDisk {
     }
 
     fn sector_count(&self) -> u64 {
-        self.sector_count
+        self.sector_count.load(Ordering::Relaxed)
     }
 
     fn sector_size(&self) -> u32 {
@@ -861,6 +877,8 @@ impl DiskIo for StorvscDisk {
                 }
             };
             if capacity.num_sectors != sector_count {
+                self.sector_count
+                    .store(capacity.num_sectors, Ordering::Relaxed);
                 break capacity.num_sectors;
             }
             listen.await;

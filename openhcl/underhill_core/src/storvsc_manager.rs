@@ -267,7 +267,7 @@ impl StorvscManagerWorker {
                 // Claim this SCSI controller for UIO from hv_storvsc.
                 // hv_storvsc binds all SCSI channels at boot. We need to
                 // steal specific relay controllers for usermode operation.
-                claim_vmbus_device_for_uio(&instance_guid);
+                claim_vmbus_device_for_uio(&instance_guid).await;
 
                 let file = vmbus_user_channel::open_uio_device(&instance_guid)
                     .map_err(InnerError::Vmbus)?;
@@ -341,7 +341,7 @@ impl StorvscManagerWorker {
         self.drivers = HashMap::new();
         for driver_state in &saved_state.storvsc_drivers {
             // Claim this SCSI controller for UIO (restore path).
-            claim_vmbus_device_for_uio(&driver_state.instance_guid);
+            claim_vmbus_device_for_uio(&driver_state.instance_guid).await;
 
             let file = vmbus_user_channel::open_uio_device(&driver_state.instance_guid)
                 .map_err(InnerError::Vmbus)?;
@@ -572,75 +572,80 @@ const SCSI_CLASS_GUID: &str = "ba6163d9-04a1-4d29-b605-72e2ffb1dc7f";
 /// via the kernel driver path (slower but functional). The fallback would
 /// need to be wired into `StorvscDiskResolver::resolve()` to re-route the
 /// device through `get_vscsi_devname()` instead.
-fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
+async fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
     let device_id = instance_guid.to_string();
+    let guid_for_log = *instance_guid;
 
-    // Step 1: Ensure UIO knows about SCSI class (idempotent).
-    // This is needed so uio_hv_generic will accept the bind.
-    if let Err(e) = std::fs::write(
-        "/sys/bus/vmbus/drivers/uio_hv_generic/new_id",
-        SCSI_CLASS_GUID,
-    ) {
-        // EEXIST is fine -- means it's already registered.
-        if e.kind() != std::io::ErrorKind::AlreadyExists {
-            tracing::warn!(
-                %instance_guid,
-                error = %e,
-                "failed to register SCSI class for UIO (may already be registered)"
-            );
-        }
-    }
-
-    // Step 2: Unbind from hv_storvsc (if currently bound there).
-    match std::fs::write("/sys/bus/vmbus/drivers/hv_storvsc/unbind", &device_id) {
-        Ok(()) => {
-            tracing::info!(
-                %instance_guid,
-                "unbound SCSI channel from hv_storvsc for usermode relay"
-            );
-        }
-        Err(e) => {
-            if e.raw_os_error() == Some(libc::ENODEV) {
-                // ENODEV: device not bound to hv_storvsc -- expected
-                // when already on UIO or unbound.
-                tracing::debug!(
-                    %instance_guid,
-                    "hv_storvsc unbind skipped (device not bound there)"
-                );
-            } else {
-                // Unexpected error (EPERM, EACCES, etc.)
+    // All sysfs writes are blocking I/O -- run them off the async executor.
+    blocking::unblock(move || {
+        // Step 1: Ensure UIO knows about SCSI class (idempotent).
+        // This is needed so uio_hv_generic will accept the bind.
+        if let Err(e) = std::fs::write(
+            "/sys/bus/vmbus/drivers/uio_hv_generic/new_id",
+            SCSI_CLASS_GUID,
+        ) {
+            // EEXIST is fine -- means it's already registered.
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
                 tracing::warn!(
-                    %instance_guid,
+                    instance_guid = %guid_for_log,
                     error = %e,
-                    "hv_storvsc unbind failed unexpectedly"
+                    "failed to register SCSI class for UIO (may already be registered)"
                 );
             }
         }
-    }
 
-    // Step 3: Bind to uio_hv_generic.
-    match std::fs::write("/sys/bus/vmbus/drivers/uio_hv_generic/bind", &device_id) {
-        Ok(()) => {
-            tracing::info!(
-                %instance_guid,
-                "bound SCSI channel to UIO for usermode relay"
-            );
-        }
-        Err(e) => {
-            if e.raw_os_error() == Some(libc::EBUSY) {
-                // EBUSY: already bound to UIO -- expected.
-                tracing::debug!(
-                    %instance_guid,
-                    "UIO bind skipped (device already bound)"
-                );
-            } else {
-                // Unexpected error -- may cause open_uio_device to fail.
-                tracing::warn!(
-                    %instance_guid,
-                    error = %e,
-                    "UIO bind failed unexpectedly"
+        // Step 2: Unbind from hv_storvsc (if currently bound there).
+        match std::fs::write("/sys/bus/vmbus/drivers/hv_storvsc/unbind", &device_id) {
+            Ok(()) => {
+                tracing::info!(
+                    instance_guid = %guid_for_log,
+                    "unbound SCSI channel from hv_storvsc for usermode relay"
                 );
             }
+            Err(e) => {
+                if e.raw_os_error() == Some(libc::ENODEV) {
+                    // ENODEV: device not bound to hv_storvsc -- expected
+                    // when already on UIO or unbound.
+                    tracing::debug!(
+                        instance_guid = %guid_for_log,
+                        "hv_storvsc unbind skipped (device not bound there)"
+                    );
+                } else {
+                    // Unexpected error (EPERM, EACCES, etc.)
+                    tracing::warn!(
+                        instance_guid = %guid_for_log,
+                        error = %e,
+                        "hv_storvsc unbind failed unexpectedly"
+                    );
+                }
+            }
         }
-    }
+
+        // Step 3: Bind to uio_hv_generic.
+        match std::fs::write("/sys/bus/vmbus/drivers/uio_hv_generic/bind", &device_id) {
+            Ok(()) => {
+                tracing::info!(
+                    instance_guid = %guid_for_log,
+                    "bound SCSI channel to UIO for usermode relay"
+                );
+            }
+            Err(e) => {
+                if e.raw_os_error() == Some(libc::EBUSY) {
+                    // EBUSY: already bound to UIO -- expected.
+                    tracing::debug!(
+                        instance_guid = %guid_for_log,
+                        "UIO bind skipped (device already bound)"
+                    );
+                } else {
+                    // Unexpected error -- may cause open_uio_device to fail.
+                    tracing::warn!(
+                        instance_guid = %guid_for_log,
+                        error = %e,
+                        "UIO bind failed unexpectedly"
+                    );
+                }
+            }
+        }
+    })
+    .await;
 }
