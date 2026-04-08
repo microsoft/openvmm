@@ -144,6 +144,7 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
         if device.supports_acknowledge_pic_interrupt().is_some()
             || device.supports_handle_eoi().is_some()
             || device.supports_line_interrupt_target().is_some()
+            || device.supports_tdisp().is_some()
         {
             anyhow::bail!("remote device requires unimplemented functionality");
         }
