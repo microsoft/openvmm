@@ -17,6 +17,7 @@ use crate::spec::pci::VIRTIO_VENDOR_ID;
 use crate::spec::pci::VirtioPciCapType;
 use crate::spec::pci::VirtioPciCommonCfg;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
@@ -488,7 +489,7 @@ impl VirtioPciDevice {
                     } else {
                         // BAR was remapped via PCI config write while
                         // the IO was stalled.
-                        deferred.complete_error(chipset_device::io::IoError::InvalidRegister);
+                        deferred.complete_error(IoError::InvalidRegister);
                     }
                 }
                 StalledIo::Write {
@@ -503,9 +504,10 @@ impl VirtioPciDevice {
                             self.core.pending_status_deferred = Some(deferred);
                             break;
                         }
+                        deferred.complete();
+                    } else {
+                        deferred.complete_error(IoError::InvalidRegister);
                     }
-                    // If the BAR was remapped, the write is dropped.
-                    deferred.complete();
                 }
             }
         }
@@ -646,7 +648,7 @@ mod saved_state {
 impl MmioIntercept for VirtioPciDevice {
     fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
         let Some((bar, offset)) = self.pci.config_space.find_bar(address) else {
-            return IoResult::Err(chipset_device::io::IoError::InvalidRegister);
+            return IoResult::Err(IoError::InvalidRegister);
         };
         let offset = offset as u16;
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
@@ -674,14 +676,14 @@ impl MmioIntercept for VirtioPciDevice {
                     !0
                 }
             }),
-            _ => return IoResult::Err(chipset_device::io::IoError::InvalidRegister),
+            _ => return IoResult::Err(IoError::InvalidRegister),
         }
         IoResult::Ok
     }
 
     fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
         let Some((bar, offset)) = self.pci.config_space.find_bar(address) else {
-            return IoResult::Err(chipset_device::io::IoError::InvalidRegister);
+            return IoResult::Err(IoError::InvalidRegister);
         };
         let offset = offset as u16;
         if bar == 0 && offset >= BAR0_DEVICE_CFG_OFFSET {
@@ -722,7 +724,7 @@ impl MmioIntercept for VirtioPciDevice {
                     }
                 });
             }
-            _ => return IoResult::Err(chipset_device::io::IoError::InvalidRegister),
+            _ => return IoResult::Err(IoError::InvalidRegister),
         }
         if bar == 0 && self.core.state.is_busy() {
             let (deferred, token) = defer_write();
