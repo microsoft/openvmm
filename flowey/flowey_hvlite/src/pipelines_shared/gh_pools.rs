@@ -80,6 +80,25 @@ pub fn windows_tdx_self_hosted_baremetal() -> GhRunner {
     ])
 }
 
+pub fn linux_self_hosted_largedisk() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Linux".to_string(),
+        "X64".to_string(),
+        "LargeDisk".to_string(),
+    ])
+}
+
+pub fn windows_intel_self_hosted_largedisk() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Windows".to_string(),
+        "X64".to_string(),
+        "Intel".to_string(),
+        "LargeDisk".to_string(),
+    ])
+}
+
 pub fn windows_snp_self_hosted_baremetal() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),
