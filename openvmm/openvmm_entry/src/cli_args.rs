@@ -473,6 +473,12 @@ options:
     #[clap(long, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
 
+    /// write the process ID to the specified file on startup, and remove it on
+    /// exit. the file is not removed if the process is killed with SIGKILL or
+    /// crashes. no file locking is performed.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
+
     /// run as a ttrpc server on the specified Unix socket
     #[clap(long, value_name = "SOCKETPATH")]
     pub ttrpc: Option<PathBuf>,
@@ -2868,5 +2874,11 @@ mod tests {
         assert!(PcieRemoteCli::from_str("port,controller=").is_err());
         assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
         assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
+    }
+
+    #[test]
+    fn test_pidfile_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
     }
 }
