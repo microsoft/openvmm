@@ -771,7 +771,7 @@ impl<T: CpuIo> ApicClient for SnpApicClient<'_, T> {
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
+impl UhHypercallHandler<'_, '_, SnpBacked> {
     // Trusted hypercalls from the guest.
     const TRUSTED_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
@@ -811,23 +811,23 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
     );
 }
 
-struct GhcbEnlightenedHypercall<'a, 'b, T> {
-    handler: UhHypercallHandler<'a, 'b, T, SnpBacked>,
+struct GhcbEnlightenedHypercall<'a, 'b> {
+    handler: UhHypercallHandler<'a, 'b, SnpBacked>,
     control: u64,
     output_gpa: u64,
     input_gpa: u64,
     result: u64,
 }
 
-impl<'a, 'b, T> hv1_hypercall::AsHandler<UhHypercallHandler<'a, 'b, T, SnpBacked>>
-    for &mut GhcbEnlightenedHypercall<'a, 'b, T>
+impl<'a, 'b> hv1_hypercall::AsHandler<UhHypercallHandler<'a, 'b, SnpBacked>>
+    for &mut GhcbEnlightenedHypercall<'a, 'b>
 {
-    fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, T, SnpBacked> {
+    fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, SnpBacked> {
         &mut self.handler
     }
 }
 
-impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
+impl HypercallIo for GhcbEnlightenedHypercall<'_, '_> {
     fn advance_ip(&mut self) {
         // No-op for GHCB hypercall ABI
     }
@@ -951,7 +951,7 @@ impl UhProcessor<'_, SnpBacked> {
 
     fn handle_vmgexit(
         &mut self,
-        dev: &impl CpuIo,
+        _dev: &impl CpuIo,
         intercepted_vtl: GuestVtl,
     ) -> Result<(), SnpGhcbError> {
         let message = self
@@ -1005,7 +1005,6 @@ impl UhProcessor<'_, SnpBacked> {
                         let mut handler = GhcbEnlightenedHypercall {
                             handler: UhHypercallHandler {
                                 vp: self,
-                                bus: dev,
                                 trusted: false,
                                 intercepted_vtl,
                             },
@@ -1413,7 +1412,6 @@ impl UhProcessor<'_, SnpBacked> {
                 let handler = UhHypercallHandler {
                     trusted: !self.cvm_partition().hide_isolation,
                     vp: &mut *self,
-                    bus: dev,
                     intercepted_vtl: entered_from_vtl,
                 };
 
@@ -1974,7 +1972,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
     }
 }
 
-impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, SnpBacked> {
+impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, SnpBacked> {
     fn rip(&mut self) -> u64 {
         self.vp.runner.vmsa(self.intercepted_vtl).rip()
     }
@@ -2564,7 +2562,7 @@ impl UhProcessor<'_, SnpBacked> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, SnpBacked> {
+impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, SnpBacked> {
     fn advance_ip(&mut self) {
         let is_64bit = self.vp.long_mode(self.intercepted_vtl);
         let mut io = hv1_hypercall::X64RegisterIo::new(self, is_64bit);
@@ -2584,7 +2582,7 @@ impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, Snp
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, SnpBacked> {
+impl hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, SnpBacked> {
     fn flush_virtual_address_list(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -2600,9 +2598,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_,
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
-    for UhHypercallHandler<'_, '_, T, SnpBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressListEx for UhHypercallHandler<'_, '_, SnpBacked> {
     fn flush_virtual_address_list_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -2626,9 +2622,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
-    for UhHypercallHandler<'_, '_, T, SnpBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpace for UhHypercallHandler<'_, '_, SnpBacked> {
     fn flush_virtual_address_space(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -2642,9 +2636,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
-    for UhHypercallHandler<'_, '_, T, SnpBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpaceEx for UhHypercallHandler<'_, '_, SnpBacked> {
     fn flush_virtual_address_space_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -2660,7 +2652,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
+impl UhHypercallHandler<'_, '_, SnpBacked> {
     fn do_flush_virtual_address_list(&mut self, flags: HvFlushFlags, gva_ranges: &[HvGvaRange]) {
         for range in gva_ranges {
             let mut rax = SevInvlpgbRax::new()
