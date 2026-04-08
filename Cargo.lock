@@ -9116,7 +9116,6 @@ dependencies = [
  "test_with_tracing",
  "thiserror 2.0.16",
  "tracelimit",
- "tracing",
  "virtio_resources",
  "virtio_spec",
  "vm_resource",

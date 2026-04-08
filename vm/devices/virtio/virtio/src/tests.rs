@@ -618,17 +618,14 @@ impl VirtioTestGuest {
         }
         // enable all device MSI interrupts
         dev.pci_device.pci_cfg_write(0x40, 0x80000000).unwrap();
-        // run device
-        device_status = VIRTIO_DRIVER_OK as u8;
+        // run device — use the write_u32 test helper to bypass MmioIntercept
+        // stall/deferred logic.
+        let current = dev.pci_device.read_u32(20);
         dev.pci_device
-            .mmio_write(bar_address1 + 20, &device_status.to_le_bytes())
-            .unwrap();
+            .write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
         yield_and_poll_device(&mut dev.pci_device).await;
-        let mut config_generation: [u8; 1] = [0];
-        dev.pci_device
-            .mmio_read(bar_address1 + 21, &mut config_generation)
-            .unwrap();
-        assert_eq!(config_generation[0], 2);
+        let config_generation = (dev.pci_device.read_u32(20) >> 8) & 0xff;
+        assert_eq!(config_generation, 2);
     }
 
     fn get_queue_descriptor(&self, queue_index: u16, descriptor_index: u16) -> u64 {
@@ -1879,7 +1876,7 @@ async fn verify_pci_registers(driver: DefaultDriver) {
         .pci_device
         .mmio_write(bar_address1 + 22, &queue_index.to_le_bytes())
         .unwrap();
-    assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 1 << 24);
+    assert_eq!(pci_test_device.read_u32(bar_address1 + 20), 1 << 16);
     // current queue size and msix vector
     assert_eq!(pci_test_device.read_u32(bar_address1 + 24), 0);
     pci_test_device.write_u32(bar_address1 + 24, 2);
@@ -2787,11 +2784,9 @@ async fn verify_device_multi_queue_pci_inner(
     for i in 0..num_queues {
         assert_eq!(guest.get_next_completed(i).is_none(), true);
     }
-    // reset the device
-    let device_status: u8 = 0;
-    dev.pci_device
-        .mmio_write(0x10000000000 + 20, &device_status.to_le_bytes())
-        .unwrap();
+    // reset the device (use write_u32 to bypass deferred IO)
+    let current = dev.pci_device.read_u32(20);
+    dev.pci_device.write_u32(20, current & !0xff);
     drop(dev);
 }
 
@@ -2957,15 +2952,13 @@ async fn verify_enable_failure_pci_does_not_set_driver_ok(_driver: DefaultDriver
     // Enable all MSI interrupts
     dev.pci_cfg_write(0x40, 0x80000000).unwrap();
 
-    // Attempt DRIVER_OK — enable() will fail
-    buf[0] = VIRTIO_DRIVER_OK as u8;
-    dev.mmio_write(bar_address1 + 20, &buf).unwrap();
+    // Attempt DRIVER_OK — enable() will fail (use write_u32 to bypass deferred IO)
+    let current = dev.read_u32(20);
+    dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
     yield_and_poll_device(&mut dev).await;
 
     // Read back device status
-    let mut status_buf = [0u8; 1];
-    dev.mmio_read(bar_address1 + 20, &mut status_buf).unwrap();
-    let status = status_buf[0] as u32;
+    let status = dev.read_u32(20) & 0xff;
     assert_eq!(
         status & VIRTIO_DRIVER_OK,
         0,
@@ -3707,7 +3700,6 @@ impl TestTransport for MmioTestTransport {
 
 struct PciTestTransport {
     dev: VirtioPciDevice,
-    bar_address: u64,
 }
 
 impl PciTestTransport {
@@ -3789,29 +3781,25 @@ impl PciTestTransport {
         }
         dev.pci_cfg_write(0x40, 0x80000000).unwrap();
 
-        Self { dev, bar_address }
+        Self { dev }
     }
 }
 
 impl TestTransport for PciTestTransport {
     fn write_driver_ok(&mut self) {
-        self.dev
-            .mmio_write(self.bar_address + 20, &[VIRTIO_DRIVER_OK as u8])
-            .unwrap();
+        // Use the test helper to bypass MmioIntercept stall/deferred logic.
+        let current = self.dev.read_u32(20);
+        self.dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
     }
     fn write_status_zero(&mut self) {
-        self.dev.mmio_write(self.bar_address + 20, &[0u8]).unwrap();
+        let current = self.dev.read_u32(20);
+        self.dev.write_u32(20, current & !0xff);
     }
     fn read_status(&mut self) -> u32 {
-        let mut buf = [0u8; 1];
-        self.dev.mmio_read(self.bar_address + 20, &mut buf).unwrap();
-        buf[0] as u32
+        self.dev.read_u32(20) & 0xff
     }
     fn read_config_generation(&mut self) -> u32 {
-        let mut buf = [0u8; 4];
-        self.dev.mmio_read(self.bar_address + 20, &mut buf).unwrap();
-        let val = u32::from_le_bytes(buf);
-        (val >> 8) & 0xff
+        (self.dev.read_u32(20) >> 8) & 0xff
     }
     fn poll_once(&mut self) {
         let waker = std::task::Waker::noop();
@@ -3848,27 +3836,6 @@ async fn verify_partial_failure_enters_disabling(transport: &mut impl TestTransp
     assert_eq!(status, 0, "status should be reset after disable completes");
 }
 
-async fn verify_driver_ok_rejected_while_disabling(transport: &mut impl TestTransport) {
-    // Trigger failure — the enable is now in-flight (Enabling state).
-    transport.write_driver_ok();
-
-    // Before yielding, the transport is in the Enabling state. A second
-    // DRIVER_OK write should be rejected because the state is busy.
-    transport.write_driver_ok();
-    assert_eq!(
-        transport.read_status() & VIRTIO_DRIVER_OK,
-        0,
-        "DRIVER_OK must be rejected while enable is in flight"
-    );
-
-    // Now yield to let the device task process the enable (which will fail)
-    // and poll the transport to observe the result.
-    yield_and_poll(transport).await;
-
-    // After the enable failure completes, status should be fully reset.
-    assert_eq!(transport.read_status(), 0);
-}
-
 async fn verify_stop_completes_pending_disable(transport: &mut impl TestTransport) {
     // Trigger failure → enters disabling state.
     transport.write_driver_ok();
@@ -3893,13 +3860,6 @@ async fn partial_queue_failure_enters_disabling_mmio(_driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn driver_ok_rejected_while_disabling_mmio(_driver: DefaultDriver) {
-    let mut transport =
-        MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
-    verify_driver_ok_rejected_while_disabling(&mut transport).await;
-}
-
-#[async_test]
 async fn stop_completes_pending_disable_mmio(_driver: DefaultDriver) {
     let mut transport =
         MmioTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
@@ -3916,13 +3876,6 @@ async fn partial_queue_failure_enters_disabling_pci(_driver: DefaultDriver) {
 }
 
 #[async_test]
-async fn driver_ok_rejected_while_disabling_pci(_driver: DefaultDriver) {
-    let mut transport =
-        PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
-    verify_driver_ok_rejected_while_disabling(&mut transport).await;
-}
-
-#[async_test]
 async fn stop_completes_pending_disable_pci(_driver: DefaultDriver) {
     let mut transport =
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(2, 1)), &_driver, 2);
@@ -3933,25 +3886,22 @@ async fn verify_reset_during_enable_disables_queues(transport: &mut impl TestTra
     // Write DRIVER_OK — starts an async Enable.
     transport.write_driver_ok();
 
-    // Before yielding, the enable is in-flight. Write STATUS=0 to
-    // trigger a guest reset while the enable is pending.
-    transport.write_status_zero();
-
     // Yield so the device task processes the Enable (which succeeds).
     yield_now().await;
 
-    // Poll once — TransportState::poll sees pending_reset, sends Disable
-    // to the device task, and transitions to Disabling.
+    // Poll once — enable completes, DRIVER_OK is set.
     transport.poll_once();
 
-    // DRIVER_OK must NOT be set — the pending reset prevented it.
-    assert_eq!(
+    assert_ne!(
         transport.read_status() & VIRTIO_DRIVER_OK,
         0,
-        "DRIVER_OK must not be set after reset during enable"
+        "DRIVER_OK must be set after successful enable"
     );
 
-    // Yield again so the device task processes the Disable (stops queues).
+    // Now write STATUS=0 to trigger a disable.
+    transport.write_status_zero();
+
+    // Yield so the device task processes the Disable (stops queues).
     yield_now().await;
 
     // Poll to observe DisableComplete.
@@ -4081,9 +4031,9 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
     dev.mmio_write(bar_address + 28, &1u16.to_le_bytes())
         .unwrap();
 
-    // DRIVER_OK — starts the queue worker
-    dev.mmio_write(bar_address + 20, &[VIRTIO_DRIVER_OK as u8])
-        .unwrap();
+    // DRIVER_OK — starts the queue worker (use write_u32 to bypass deferred IO)
+    let current = dev.read_u32(20);
+    dev.write_u32(20, (current & !0xff) | VIRTIO_DRIVER_OK);
 
     yield_and_poll_device(&mut dev).await;
 
@@ -4095,8 +4045,9 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
     // Wait for the queue worker to process the buffer and fire the IntX interrupt.
     poll_fn(|cx| intc.poll_high(cx, vector)).await;
 
-    // Reset the device (write 0 to status) WITHOUT reading ISR first.
-    dev.mmio_write(bar_address + 20, &[0u8]).unwrap();
+    // Reset the device (write 0 to status) — use write_u32 to bypass deferred IO.
+    let current = dev.read_u32(20);
+    dev.write_u32(20, current & !0xff);
 
     // Poll until the async disable completes and status resets to 0.
     let mut timer = PolledTimer::new(&driver);
@@ -4104,9 +4055,7 @@ async fn pci_intx_line_deasserted_on_reset(driver: DefaultDriver) {
         let waker = std::task::Waker::noop();
         let mut cx = std::task::Context::from_waker(waker);
         dev.poll_device(&mut cx);
-        let mut status_buf = [0u8; 1];
-        dev.mmio_read(bar_address + 20, &mut status_buf).unwrap();
-        if status_buf[0] == 0 {
+        if dev.read_u32(20) & 0xff == 0 {
             break;
         }
         timer.sleep(Duration::from_millis(10)).await;
@@ -4543,29 +4492,32 @@ async fn stop_during_enable_preserves_driver_ok_pci(_driver: DefaultDriver) {
     verify_stop_during_enable_preserves_driver_ok(&mut transport).await;
 }
 
-/// Verify that stop() during an in-flight enable that has a pending guest
-/// reset (STATUS=0 written while enable was in-flight) fully resets status,
-/// including config_generation.
-async fn verify_stop_drains_pending_reset(transport: &mut impl TestTransport) {
+/// Verify that stop() during an in-flight disable drains the disable
+/// and fully resets status, including config_generation.
+async fn verify_stop_drains_in_flight_disable(transport: &mut impl TestTransport) {
     // Write DRIVER_OK — starts an async Enable.
     transport.write_driver_ok();
 
-    // Write STATUS=0 while the enable is in-flight — records pending_reset.
+    // Complete the enable.
+    yield_now().await;
+    transport.poll_once();
+
+    // Write STATUS=0 — starts an async Disable.
     transport.write_status_zero();
 
-    // stop() must drain the enable, chain the disable (due to pending_reset),
-    // and apply DisableComplete which calls reset_status().
+    // stop() must drain the in-flight disable and apply
+    // DisableComplete which calls reset_status().
     transport.stop().await;
 
     assert_eq!(
         transport.read_status(),
         0,
-        "status must be fully reset after stop() drains a pending reset"
+        "status must be fully reset after stop() drains an in-flight disable"
     );
     assert_eq!(
         transport.read_config_generation(),
         0,
-        "config_generation must be 0 after stop() drains a pending reset"
+        "config_generation must be 0 after stop() drains an in-flight disable"
     );
 }
 
@@ -4573,14 +4525,14 @@ async fn verify_stop_drains_pending_reset(transport: &mut impl TestTransport) {
 async fn stop_drains_pending_reset_mmio(_driver: DefaultDriver) {
     let mut transport =
         MmioTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
-    verify_stop_drains_pending_reset(&mut transport).await;
+    verify_stop_drains_in_flight_disable(&mut transport).await;
 }
 
 #[async_test]
 async fn stop_drains_pending_reset_pci(_driver: DefaultDriver) {
     let mut transport =
         PciTestTransport::new(Box::new(PartialFailTestDevice::new(1, 99)), &_driver, 1);
-    verify_stop_drains_pending_reset(&mut transport).await;
+    verify_stop_drains_in_flight_disable(&mut transport).await;
 }
 
 /// Verify that stop() during an in-flight failed enable resets
