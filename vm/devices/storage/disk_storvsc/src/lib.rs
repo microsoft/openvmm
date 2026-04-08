@@ -224,9 +224,17 @@ impl StorvscDisk {
         {
             Ok(resp) if resp.scsi_status == ScsiStatus::GOOD => {
                 let cap = data_in.read_obj::<scsi_defs::ReadCapacityData>(0);
+                let sector_size: u32 = cap.bytes_per_block.into();
+                let num_sectors = u32::from(cap.logical_block_address) as u64 + 1;
+                tracing::info!(sector_size, num_sectors, "READ CAPACITY(10) response");
+                if sector_size == 0 {
+                    anyhow::bail!(
+                        "READ CAPACITY(10) returned sector_size=0 (num_sectors={num_sectors})"
+                    );
+                }
                 Ok(DiskCapacity {
-                    num_sectors: u32::from(cap.logical_block_address) as u64 + 1,
-                    sector_size: cap.bytes_per_block.into(),
+                    num_sectors,
+                    sector_size,
                 })
             }
             Ok(resp) => {
@@ -271,9 +279,21 @@ impl StorvscDisk {
             Ok(resp) if resp.scsi_status == ScsiStatus::GOOD => {
                 let cap = data_in.read_obj::<scsi_defs::ReadCapacity16Data>(0);
                 let num_sectors: u64 = cap.ex.logical_block_address.into();
+                let sector_size: u32 = cap.ex.bytes_per_block.into();
+                tracing::info!(
+                    sector_size,
+                    num_sectors = num_sectors + 1,
+                    "READ CAPACITY(16) response"
+                );
+                if sector_size == 0 {
+                    anyhow::bail!(
+                        "READ CAPACITY(16) returned sector_size=0 (num_sectors={})",
+                        num_sectors + 1
+                    );
+                }
                 Ok(DiskCapacity {
                     num_sectors: num_sectors + 1,
-                    sector_size: cap.ex.bytes_per_block.into(),
+                    sector_size,
                 })
             }
             Ok(resp) => {
