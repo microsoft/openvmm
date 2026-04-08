@@ -46,6 +46,7 @@ impl IntoPipeline for BuildDocsCli {
             let branches = vec!["main".into()];
             let paths = vec![
                 "Guide/**".into(),
+                "petri/logview/**".into(),
                 ".github/workflows/openvmm-docs-*.yaml".into(),
                 "flowey/flowey_hvlite/src/pipelines/build_docs.rs".into(),
             ];

@@ -21,6 +21,7 @@ on:
     - ready_for_review
     paths:
     - Guide/**
+    - petri/logview/**
     - .github/workflows/openvmm-docs-*.yaml
     - flowey/flowey_hvlite/src/pipelines/build_docs.rs
 concurrency:
