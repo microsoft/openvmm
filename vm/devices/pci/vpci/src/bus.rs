@@ -86,6 +86,9 @@ pub struct VpciBusDevice {
 struct PendingConfigWrite {
     /// Token for the currently in-flight `pci_cfg_write` call.
     device_write: DeferredToken,
+    deferred_address: u16,
+    deferred_value: u32,
+
     /// Outer write completed once every entry in `remaining` has finished.
     bus_write: DeferredWrite,
     /// Remaining `(config_offset, value)` pairs to write, in order.
@@ -225,42 +228,43 @@ impl PollDevice for VpciBusDevice {
         self.pending_actions = std::mem::take(&mut self.pending_actions)
             .into_iter()
             .filter_map(|mut action| {
-                loop {
-                    // If the current write is still pending, poll it for completion.
-                    match action.device_write.poll_write(cx) {
-                        Poll::Pending => return Some(action),
-                        Poll::Ready(Err(e)) => {
-                            action.bus_write.complete_error(e);
-                            return None;
-                        }
-                        Poll::Ready(Ok(())) => {}
+                // If the current write is still pending, poll it for completion.
+                match action.device_write.poll_write(cx) {
+                    Poll::Pending => return Some(action),
+                    Poll::Ready(Err(e)) => {
+                        panic!(
+                            "deferred config space write failed: address={:#x}, value={:#x}, error={e:?}", 
+                            action.deferred_address,
+                            action.deferred_value);
                     }
-
-                    // The current write completed. Issue the next writes until
-                    // another deferral or exhaustion.
-                    let mut device = self.device.lock();
-                    let pci = device.supports_pci().unwrap();
-                    loop {
-                        match action.remaining.pop_front() {
-                            None => {
-                                action.bus_write.complete();
-                                return None;
-                            }
-                            Some((address, value)) => match pci.pci_cfg_write(address, value) {
-                                IoResult::Ok => {} // continue to next write
-                                IoResult::Err(e) => {
-                                    action.bus_write.complete_error(e);
-                                    return None;
-                                }
-                                IoResult::Defer(token) => {
-                                    action.device_write = token;
-                                    break; // poll the new token next outer iteration
-                                }
-                            },
-                        }
-                    }
-                    // device lock released here; loop to poll the new token
+                    Poll::Ready(Ok(())) => {}
                 }
+
+                // The current write completed. Issue the next writes until
+                // another deferral or exhaustion. Complete non-deferred writes immediately
+                // in this loop to avoid unnecessary context switches.
+                let mut device = self.device.lock();
+                let pci = device.supports_pci().unwrap();
+                while let Some((address, value)) = action.remaining.pop_front() {
+                    match pci.pci_cfg_write(address, value) {
+                        IoResult::Ok => {} // continue to next write
+                        IoResult::Err(e) => {
+                            panic!(
+                                "config space write failed: address={address:#x}, value={value:#x}, error={e:?}"
+                            );
+                        }
+                        IoResult::Defer(token) => {
+                            action.device_write = token;
+                            action.deferred_address = address;
+                            action.deferred_value = value;
+                            return Some(action);
+                        }
+                    }
+                }
+
+                // If there are no more writes to issue, complete the outer token and finish.
+                action.bus_write.complete();
+                None
             })
             .collect();
     }
@@ -338,6 +342,8 @@ impl MmioIntercept for VpciBusDevice {
                                 let (bus_write, bus_token) = defer_write();
                                 self.pending_actions.push(PendingConfigWrite {
                                     device_write,
+                                    deferred_address: address,
+                                    deferred_value: value,
                                     bus_write,
                                     remaining: writes,
                                 });
