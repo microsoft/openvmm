@@ -125,6 +125,7 @@ impl IntoPipeline for BuildReproducibleCli {
                         recipe,
                         custom_target: Some(CommonTriple::Custom(openhcl_musl_target(recipe_arch))),
                         extra_features: BTreeSet::new(),
+                        release_cfg: release,
                     })
                     .collect(),
                 artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
