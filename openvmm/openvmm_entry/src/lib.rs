@@ -5,7 +5,7 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 
 mod cli_args;
 mod crash_dump;
@@ -742,22 +742,6 @@ async fn vm_config_from_command_line(
             &mut resources,
         )?;
         vmbus_devices.push(nic_config.into_netvsp_handle());
-    }
-
-    if opt.mcr {
-        tracing::info!("Instantiating MCR controller");
-
-        // Arbitrary but constant instance ID to be consistent across boots.
-        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
-
-        vpci_devices.push(VpciDeviceConfig {
-            vtl: DeviceVtl::Vtl0,
-            instance_id: MCR_INSTANCE_ID,
-            resource: mcr_resources::McrControllerHandle {
-                instance_id: MCR_INSTANCE_ID,
-            }
-            .into_resource(),
-        });
     }
 
     // Build initial PCIe devices list from CLI options. Storage devices
@@ -1850,7 +1834,18 @@ fn parse_endpoint(
             }
         }
         EndpointConfigCli::Tap { name } => {
-            net_backend_resources::tap::TapHandle { name: name.clone() }.into_resource()
+            #[cfg(target_os = "linux")]
+            {
+                let fd = net_tap::tap::open_tap(name)
+                    .with_context(|| format!("failed to open TAP device '{name}'"))?;
+                net_backend_resources::tap::TapHandle { fd }.into_resource()
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = name;
+                bail!("TAP backend is only supported on Linux")
+            }
         }
     };
 

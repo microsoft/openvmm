@@ -76,6 +76,7 @@ pub fn github_yaml(
         flow_backend: crate::cli::FlowBackendCli::Github,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_configs: BTreeMap::new(),
         job_command_wrappers: BTreeMap::new(),
         job_platforms: BTreeMap::new(),
         job_archs: BTreeMap::new(),
@@ -86,6 +87,7 @@ pub fn github_yaml(
     for job_idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
@@ -112,12 +114,17 @@ pub fn github_yaml(
         }
 
         let flowey_bin = platform.binary("flowey");
-        let (steps, req_db) = resolve_flow_as_github_yaml_steps(
+        let super::common_yaml::ResolvedFlowSteps {
+            steps,
+            request_db: req_db,
+            config_db: cfg_db,
+        } = resolve_flow_as_github_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
                 .map(|(node, requests)| (node, (true, requests)))
                 .collect(),
+            root_configs.clone(),
             patches.clone(),
             external_read_vars.clone(),
             platform,
@@ -131,6 +138,12 @@ pub fn github_yaml(
         {
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
+        }
+
+        if !cfg_db.is_empty() {
+            pipeline_static_db
+                .job_configs
+                .insert(job_idx.index(), cfg_db);
         }
 
         if let Some(wrapper_kind) = command_wrapper_kind {
@@ -737,6 +750,7 @@ EOF
 // pub(crate) so that internal debug CLI tooling can use it
 fn resolve_flow_as_github_yaml_steps(
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     resolved_patches: flowey_core::patch::ResolvedPatches,
     external_read_vars: BTreeSet<String>,
     platform: FlowPlatform,
@@ -744,25 +758,27 @@ fn resolve_flow_as_github_yaml_steps(
     job_idx: usize,
     flowey_bin: &str,
     gh_permissions: &BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-) -> anyhow::Result<(
-    Vec<serde_yaml::Value>,
-    BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
-)> {
+) -> anyhow::Result<super::common_yaml::ResolvedFlowSteps> {
     let mut output_steps = Vec::new();
 
-    let (mut output_graph, request_db, err_unreachable_nodes) =
-        crate::flow_resolver::stage1_dag::stage1_dag(
-            FlowBackend::Github,
-            platform,
-            arch,
-            resolved_patches,
-            seed_nodes,
-            external_read_vars,
-            // TODO: support GitHub agents with persistent storage
-            None,
-        )?;
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes,
+    } = crate::flow_resolver::stage1_dag::stage1_dag(
+        FlowBackend::Github,
+        platform,
+        arch,
+        resolved_patches,
+        seed_nodes,
+        seed_configs,
+        external_read_vars,
+        // TODO: support GitHub agents with persistent storage
+        None,
+    )?;
 
-    if err_unreachable_nodes.is_some() {
+    if found_unreachable_nodes {
         anyhow::bail!("detected unreachable nodes")
     }
 
@@ -902,5 +918,22 @@ fn resolve_flow_as_github_yaml_steps(
         })
         .collect();
 
-    Ok((output_steps, request_db))
+    let config_db = config_db
+        .into_iter()
+        .map(|(node_handle, configs)| {
+            (
+                node_handle.modpath().to_owned(),
+                configs
+                    .into_iter()
+                    .map(crate::cli::exec_snippet::SerializedRequest)
+                    .collect(),
+            )
+        })
+        .collect();
+
+    Ok(super::common_yaml::ResolvedFlowSteps {
+        steps: output_steps,
+        request_db,
+        config_db,
+    })
 }

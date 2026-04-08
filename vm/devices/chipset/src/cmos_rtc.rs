@@ -843,11 +843,11 @@ impl Rtc {
     /// Write-back the current contents of the CMOS RTC registers into the
     /// backing `real_time_source`
     fn sync_cmos_to_clock(&mut self) {
-        let cmos_time: jiff::Timestamp = match self.read_cmos_date_time() {
-            Ok(cmos_time) => cmos_time
-                .to_zoned(jiff::tz::TimeZone::UTC)
-                .unwrap()
-                .timestamp(),
+        let cmos_time: jiff::Timestamp = match self
+            .read_cmos_date_time()
+            .and_then(|cmos_time| cmos_time.to_zoned(jiff::tz::TimeZone::UTC))
+        {
+            Ok(zoned) => zoned.timestamp(),
             Err(e) => {
                 tracelimit::warn_ratelimited!(?e, "invalid date/time in RTC registers!");
                 return;

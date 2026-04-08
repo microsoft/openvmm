@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Types and constants defined by the virtio specification.
 //!
 //! Reference: <https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html>

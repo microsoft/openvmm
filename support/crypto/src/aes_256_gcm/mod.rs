@@ -76,3 +76,38 @@ impl Aes256GcmDecCtx<'_> {
         self.0.cipher(iv, data, tag)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_aes_256_gcm() {
+        // Test Case 14 from the NIST GCM specification (gcm-spec.pdf).
+        let key = hex::decode("feffe9928665731c6d6a8f9467308308feffe9928665731c6d6a8f9467308308")
+            .unwrap();
+        let iv = hex::decode("cafebabefacedbaddecaf888").unwrap();
+        let plain = hex::decode(
+            "d9313225f88406e5a55909c5aff5269a86a7a9531534f7da2e4c303d8a318a72\
+             1c3c0c95956809532fcf0e2449a6b525b16aedf5aa0de657ba637b391aafd255",
+        )
+        .unwrap();
+        let cipher = hex::decode(
+            "522dc1f099567d07f47f37a32a84427d643a8cdcbfe5c0c97598a2bd2555d1aa\
+             8cb08e48590dbb3da7b08b1056828838c5f61e6393ba7a0abcc9f662898015ad",
+        )
+        .unwrap();
+        let tag = hex::decode("b094dac5d93471bdec1a502270e3cc6c").unwrap();
+
+        let aes = Aes256Gcm::new(&key.try_into().unwrap()).unwrap();
+        let mut enc_ctx = aes.encrypt().unwrap();
+        let mut enc_tag = vec![0u8; tag.len()];
+        let enc_cipher = enc_ctx.cipher(&iv, &plain, &mut enc_tag).unwrap();
+        assert_eq!(enc_cipher, cipher);
+        assert_eq!(enc_tag, tag);
+
+        let mut dec_ctx = aes.decrypt().unwrap();
+        let dec_plain = dec_ctx.cipher(&iv, &cipher, &tag).unwrap();
+        assert_eq!(dec_plain, plain);
+    }
+}

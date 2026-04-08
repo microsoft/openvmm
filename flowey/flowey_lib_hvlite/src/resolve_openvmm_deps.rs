@@ -39,42 +39,46 @@ impl OpenvmmDepFile {
     }
 }
 
+flowey_config! {
+    /// Config for the resolve_openvmm_deps node.
+    pub struct Config {
+        /// Specify version of the github release to pull from
+        pub version: Option<String>,
+        /// Use locally downloaded openvmm-deps, keyed by architecture
+        pub local_paths: BTreeMap<OpenvmmDepsArch, ConfigVar<PathBuf>>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Use a locally downloaded openvmm-deps for a specific architecture
-        LocalPath(OpenvmmDepsArch, ReadVar<PathBuf>),
-        /// Specify version of the github release to pull from
-        Version(String),
         /// Get the path to a specific dep file
         Get(OpenvmmDepFile, OpenvmmDepsArch, WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
-        let mut local_paths: BTreeMap<OpenvmmDepsArch, ReadVar<PathBuf>> = BTreeMap::new();
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
+        let version = config.version;
+        let local_paths = config.local_paths;
         let mut deps: BTreeMap<(OpenvmmDepFile, OpenvmmDepsArch), Vec<WriteVar<PathBuf>>> =
             BTreeMap::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
-                Request::LocalPath(arch, path) => {
-                    if local_paths.contains_key(&arch) {
-                        anyhow::bail!("Duplicate LocalPath requests for {:?}", arch,);
-                    }
-                    local_paths.insert(arch, path);
-                }
                 Request::Get(dep, arch, var) => {
                     deps.entry((dep, arch)).or_default().push(var);
                 }

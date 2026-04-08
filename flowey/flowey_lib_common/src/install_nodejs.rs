@@ -5,39 +5,44 @@
 
 use flowey::node::prelude::*;
 
-flowey_request! {
-    pub enum Request {
+flowey_config! {
+    /// Config for the install_nodejs node.
+    pub struct Config {
+        /// Which version of nodejs to install (e.g: `6.0.0`)
+        pub version: Option<String>,
         /// Automatically install all required nodejs tools and components.
         ///
         /// This must be set to true/false when running locally.
-        AutoInstall(bool),
-        /// Which version of nodejs to install (e.g: `6.0.0`)
-        Version(String),
+        pub auto_install: Option<bool>,
+    }
+}
+
+flowey_request! {
+    pub enum Request {
         /// Ensure node is installed
         EnsureInstalled(WriteVar<SideEffect>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::ado_task_npm_authenticate::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut auto_install = None;
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut done = Vec::new();
 
         for req in requests {
             match req {
-                Request::AutoInstall(v) => {
-                    same_across_all_reqs("AutoInstall", &mut auto_install, v)?
-                }
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::EnsureInstalled(v) => done.push(v),
             }
         }
@@ -48,8 +53,10 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let auto_install = auto_install;
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: NodeVersion"))?;
+        let auto_install = config.auto_install;
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let done = done;
 
         // -- end of req processing -- //

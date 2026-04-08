@@ -897,10 +897,10 @@ impl PetriVmConfigSetupCore<'_> {
             _ => anyhow::bail!("not a supported openhcl firmware config"),
         };
 
-        let test_gsp_by_id = self
-            .vmgs
-            .disk()
-            .is_some_and(|x| matches!(x.encryption_policy, GuestStateEncryptionPolicy::GspById(_)));
+        let test_gsp_by_id = matches!(
+            self.vmgs.encryption_policy(),
+            Some(GuestStateEncryptionPolicy::GspById(_))
+        );
 
         // Save the GED handle to add later after configuration is complete.
         let ged = get_resources::ged::GuestEmulationDeviceHandle {

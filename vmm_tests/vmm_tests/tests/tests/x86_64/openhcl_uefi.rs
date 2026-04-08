@@ -219,10 +219,7 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
         config,
         NvmeRelayTestParams {
             openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
@@ -250,10 +247,7 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
         config,
         NvmeRelayTestParams {
             openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(256 * 1024 * 1024),
             }),
@@ -284,10 +278,7 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
         config,
         NvmeRelayTestParams {
             openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::very_heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(500 * 1024 * 1024),
             }),
@@ -317,10 +308,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
         }),
         NvmeRelayTestParams {
             openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::very_heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
