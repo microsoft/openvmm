@@ -1515,4 +1515,71 @@ mod tests {
         drop(frontend);
         backend_task.await;
     }
+
+    /// When `config_space` is provided, the frontend owns config reads
+    /// locally and does not negotiate VHOST_USER_PROTOCOL_F_CONFIG.
+    #[async_test]
+    async fn frontend_owned_config_space(driver: DefaultDriver) {
+        use virtio::spec::fs as virtio_fs;
+        use zerocopy::IntoBytes;
+
+        let (frontend_stream, backend_stream) = socket_pair();
+
+        let backend_polled = PolledSocket::new(&driver, backend_stream).unwrap();
+        let backend_socket = VhostUserSocket::new(backend_polled);
+
+        let server = VhostUserDeviceServer::new(Box::new(MockBackendDevice::new()));
+        let backend_task = driver.spawn("backend", async move {
+            server.serve_connection(backend_socket).await.unwrap();
+        });
+
+        let frontend_polled = PolledSocket::new(&driver, frontend_stream).unwrap();
+        let frontend_socket = VhostUserSocket::new(frontend_polled);
+
+        // Build a virtio-fs config with a known tag.
+        let mut config = virtio_fs::Config {
+            tag: [0; virtio_fs::TAG_LEN],
+            num_request_queues: 1.into(),
+        };
+        let tag = b"myfs";
+        config.tag[..tag.len()].copy_from_slice(tag);
+        let config_bytes = config.as_bytes().to_vec();
+
+        let vm_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
+        let mut frontend = VhostUserFrontend::from_socket(
+            vm_driver,
+            frontend_socket,
+            VirtioDeviceType::FS,
+            Some(config_bytes.clone()),
+        )
+        .await
+        .expect("frontend handshake failed");
+
+        // CONFIG should NOT be negotiated.
+        assert!(!frontend.protocol_features.config());
+
+        // Config register length should match the provided config.
+        assert_eq!(
+            frontend.traits().device_register_length,
+            config_bytes.len() as u32
+        );
+
+        // read_registers_u32 at offset 0 should return the first 4 tag bytes.
+        let val = frontend.read_registers_u32(0).await;
+        assert_eq!(val, u32::from_le_bytes(*b"myfs"));
+
+        // read_registers_u32 at the tag[4..8] region should be zero-padded.
+        let val = frontend.read_registers_u32(4).await;
+        assert_eq!(val, 0);
+
+        // read_registers_u32 at the num_request_queues offset (36).
+        let val = frontend.read_registers_u32(virtio_fs::TAG_LEN as u16).await;
+        assert_eq!(val, 1);
+
+        // write_registers_u32 should be a no-op (no panic, no backend call).
+        frontend.write_registers_u32(0, 0xdeadbeef).await;
+
+        drop(frontend);
+        backend_task.await;
+    }
 }

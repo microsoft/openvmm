@@ -15,5 +15,5 @@ pub const TAG_LEN: usize = 36;
 #[derive(IntoBytes, Immutable, KnownLayout)]
 pub struct Config {
     pub tag: [u8; TAG_LEN],
-    pub num_request_queues: u32,
+    pub num_request_queues: crate::u32_le,
 }

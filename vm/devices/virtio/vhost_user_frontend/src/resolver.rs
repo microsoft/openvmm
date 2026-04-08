@@ -93,7 +93,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserFsHandle> for VhostUserFr
         // decision, not sourced from the backend.
         let mut config = virtio_fs::Config {
             tag: [0; virtio_fs::TAG_LEN],
-            num_request_queues: 1,
+            num_request_queues: 1.into(),
         };
         config.tag[..resource.tag.len()].copy_from_slice(resource.tag.as_bytes());
 

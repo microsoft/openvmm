@@ -246,7 +246,7 @@ options:
     /// The first positional argument is the socket path. Options:
     ///
     /// ```text
-    ///   type=blk|net|rng|console|fs|pmem  — device type (shorthand)
+    ///   type=blk|fs                        — device type (shorthand)
     ///   device_id=N                        — numeric virtio device ID
     ///   tag=NAME                           — mount tag (required for type=fs)
     ///   pcie_port=NAME                     — present on PCIe under the specified port
