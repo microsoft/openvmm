@@ -8,6 +8,7 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
+pub mod irqfd;
 mod vm_state;
 mod vp_state;
 
@@ -258,15 +259,20 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         .map_err(Error::Capabilities)?;
 
         // Attach all the resources created above to a Partition object.
+        let inner = Arc::new(MshvPartitionInner {
+            vmfd: self.vmfd,
+            memory: Default::default(),
+            gm: config.guest_memory.clone(),
+            vps: self.vps,
+            irq_routes: Default::default(),
+            gsi_states: Mutex::new(Box::new([irqfd::GsiState::Unallocated; irqfd::NUM_GSIS])),
+            caps,
+            synic_ports: Default::default(),
+        });
+
         let partition = MshvPartition {
-            inner: Arc::new(MshvPartitionInner {
-                vmfd: self.vmfd,
-                memory: Default::default(),
-                gm: config.guest_memory.clone(),
-                vps: self.vps,
-                irq_routes: Default::default(),
-                caps,
-            }),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(inner.clone())),
+            inner,
         };
 
         let vps = self
@@ -287,6 +293,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 #[derive(Debug)]
 pub struct MshvPartition {
     inner: Arc<MshvPartitionInner>,
+    synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
 }
 
 #[derive(Debug)]
@@ -296,7 +303,9 @@ struct MshvPartitionInner {
     gm: GuestMemory,
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
+    gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
     caps: virt::PartitionCapabilities,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Debug)]
@@ -340,8 +349,12 @@ impl virt::Partition for MshvPartition {
         self.inner.request_msi(request)
     }
 
-    fn as_signal_msi(self: &Arc<Self>, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         Some(self.inner.clone())
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(Arc::new(irqfd::MshvIrqFd::new(self.inner.clone())))
     }
 
     fn request_yield(&self, vp_index: VpIndex) {
@@ -393,6 +406,10 @@ impl Hv1 for MshvPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -556,7 +573,7 @@ impl MshvProcessor<'_> {
         self.flush_messages(info.deliverable_sints);
     }
 
-    fn handle_hypercall_intercept(&self, message: &hv_message, devices: &impl CpuIo) {
+    fn handle_hypercall_intercept(&self, message: &hv_message, _devices: &impl CpuIo) {
         let info = message.to_hypercall_intercept_info().unwrap();
         let execution_state = info.header.execution_state;
         // SAFETY: Accessing the raw field of this union is always safe.
@@ -573,7 +590,7 @@ impl MshvProcessor<'_> {
             xmm: info.xmmregisters,
         };
         let mut handler = MshvHypercallHandler {
-            bus: devices,
+            partition: self.partition,
             context: &mut hpc_context,
             rip: info.header.rip,
             rip_dirty: false,
@@ -1281,7 +1298,7 @@ pub struct MshvHypercallContext {
     pub xmm: [hv_u128; 6],
 }
 
-impl<T> hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     fn rip(&mut self) -> u64 {
         self.rip
     }
@@ -1351,8 +1368,8 @@ mod tests {
     }
 }
 
-struct MshvHypercallHandler<'a, T> {
-    bus: &'a T,
+struct MshvHypercallHandler<'a> {
+    partition: &'a MshvPartitionInner,
     context: &'a mut MshvHypercallContext,
     rip: u64,
     rip_dirty: bool,
@@ -1360,23 +1377,26 @@ struct MshvHypercallHandler<'a, T> {
     gp_dirty: bool,
 }
 
-impl<T: CpuIo> MshvHypercallHandler<'_, T> {
+impl MshvHypercallHandler<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::PostMessage for MshvHypercallHandler<'_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.bus
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.bus.signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -1490,21 +1510,24 @@ fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
     }
 }
 
-impl virt::Synic for MshvPartition {
+impl virt::synic::Synic for MshvPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        self.inner
-            .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
+        self.post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(MshvGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
+            partition: Arc::downgrade(&self),
             params: Arc::new(Mutex::new(MshvEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,

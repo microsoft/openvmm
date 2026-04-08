@@ -175,7 +175,6 @@ use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::partition_unit::PartitionUnitParams;
-use vmm_core::synic::SynicPorts;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
 use vmm_core::vmbus_unit::offer_channel_unit;
@@ -2652,7 +2651,7 @@ async fn new_underhill_vm(
 
     let emuplat_adjust_gpa_range;
 
-    let synic = Arc::new(SynicPorts::new(partition.clone()));
+    let synic = virt::Hv1::synic(partition.as_ref());
 
     let mut chipset = vm_manifest_builder::VmManifestBuilder::new(
         match firmware_type {
@@ -3532,11 +3531,7 @@ async fn new_underhill_vm(
             block_on(wait_for_flush_logs(&control_send_clone));
         }))
     };
-    let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
-        synic.clone(),
-        chipset,
-        fatal_error_policy,
-    );
+    let chipset = vmm_core::vmotherboard_adapter::AdaptedChipset::new(chipset, fatal_error_policy);
 
     if let Some(vpci_relay) = &mut vpci_relay {
         // Relay the initial set of VPCI devices.
