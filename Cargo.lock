@@ -10100,6 +10100,7 @@ dependencies = [
 name = "vnc"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "futures",
  "pal_async",
  "socket2",
@@ -10119,6 +10120,7 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "pal_async",
+ "socket2",
  "tracing",
  "tracing_helpers",
  "vmsocket",
