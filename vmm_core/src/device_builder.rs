@@ -101,16 +101,9 @@ pub async fn build_pcie_device(
     interrupt_target: Option<Arc<dyn SignalMsi>>,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, resource.id());
-    let mut device_builder = chipset_builder
+    let device_builder = chipset_builder
         .arc_mutex_device(dev_name)
         .on_pcie_port(vmotherboard::BusId::new(&port_name));
-
-    // Some PCIe endpoints do not yet support device-local save/restore. Skip
-    // their saved state during the startup pulse save/restore probe so the VM
-    // can still boot and enumerate them.
-    if matches!(resource.id(), "nvme" | "gdma") {
-        device_builder = device_builder.omit_saved_state();
-    }
 
     let (_, msi_conn) = resolve_and_add_pci_device(
         device_builder,
