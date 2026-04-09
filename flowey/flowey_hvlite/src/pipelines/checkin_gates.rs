@@ -891,7 +891,7 @@ impl IntoPipeline for CheckinGatesCli {
                                 CommonArch::X86_64,
                             ))),
                             extra_features: BTreeSet::new(),
-                            release_cfg: release,
+                            release_cfg: true,
                         }],
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
