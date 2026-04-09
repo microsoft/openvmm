@@ -1649,12 +1649,28 @@ async fn vm_config_from_command_line(
                 )
             })?;
 
-        let resource: Resource<VirtioDeviceHandle> =
-            virtio_resources::vhost_user::VhostUserDeviceHandle {
-                socket: stream.into(),
-                device_id: vhost_cli.device_id,
+        use crate::cli_args::VhostUserDeviceTypeCli;
+        let resource: Resource<VirtioDeviceHandle> = match vhost_cli.device_type {
+            VhostUserDeviceTypeCli::Fs { ref tag } => {
+                virtio_resources::vhost_user::VhostUserFsHandle {
+                    socket: stream.into(),
+                    tag: tag.clone(),
+                }
+                .into_resource()
             }
-            .into_resource();
+            VhostUserDeviceTypeCli::Blk => virtio_resources::vhost_user::VhostUserDeviceHandle {
+                socket: stream.into(),
+                device_id: virtio::spec::VirtioDeviceType::BLK.0,
+            }
+            .into_resource(),
+            VhostUserDeviceTypeCli::Other { device_id } => {
+                virtio_resources::vhost_user::VhostUserDeviceHandle {
+                    socket: stream.into(),
+                    device_id,
+                }
+                .into_resource()
+            }
+        };
         if let Some(pcie_port) = &vhost_cli.pcie_port {
             pcie_devices.push(PcieDeviceConfig {
                 port_name: pcie_port.clone(),

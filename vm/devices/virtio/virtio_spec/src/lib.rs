@@ -9,6 +9,8 @@
 
 #![expect(missing_docs)]
 
+pub mod fs;
+
 use bitfield_struct::bitfield;
 use inspect::Inspect;
 use zerocopy::FromBytes;

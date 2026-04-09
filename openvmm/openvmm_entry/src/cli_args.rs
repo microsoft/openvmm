@@ -246,8 +246,9 @@ options:
     /// The first positional argument is the socket path. Options:
     ///
     /// ```text
-    ///   type=blk|net|rng|console|fs|pmem  — device type (shorthand)
+    ///   type=blk|fs                        — device type (shorthand)
     ///   device_id=N                        — numeric virtio device ID
+    ///   tag=NAME                           — mount tag (required for type=fs)
     ///   pcie_port=NAME                     — present on PCIe under the specified port
     /// ```
     ///
@@ -257,6 +258,7 @@ options:
     ///   --vhost-user /tmp/vhost.sock,type=blk
     ///   --vhost-user /tmp/vhost.sock,device_id=2
     ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
+    ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
     /// ```
     #[cfg(target_os = "linux")]
     #[clap(long = "vhost-user")]
@@ -1974,9 +1976,20 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
+pub enum VhostUserDeviceTypeCli {
+    /// Block device — config from backend via GET_CONFIG.
+    Blk,
+    /// Filesystem device — frontend-owned config with mount tag.
+    Fs { tag: String },
+    /// Generic device identified by numeric virtio device ID.
+    Other { device_id: u16 },
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
 pub struct VhostUserCli {
     pub socket_path: String,
-    pub device_id: u16,
+    pub device_type: VhostUserDeviceTypeCli,
     pub pcie_port: Option<String>,
 }
 
@@ -1989,24 +2002,20 @@ impl FromStr for VhostUserCli {
         let socket_path = opts.next().context("missing socket path")?.to_string();
 
         let mut device_id: Option<u16> = None;
+        let mut tag: Option<String> = None;
         let mut pcie_port: Option<String> = None;
+        let mut type_name = None;
         for opt in opts {
             let (key, val) = opt.split_once('=').context("expected key=value option")?;
             match key {
                 "type" => {
-                    use virtio::spec::VirtioDeviceType;
-                    device_id = Some(match val {
-                        "net" => VirtioDeviceType::NET.0,
-                        "blk" => VirtioDeviceType::BLK.0,
-                        "console" => VirtioDeviceType::CONSOLE.0,
-                        "rng" => VirtioDeviceType::RNG.0,
-                        "fs" => VirtioDeviceType::FS.0,
-                        "pmem" => VirtioDeviceType::PMEM.0,
-                        other => anyhow::bail!("unknown vhost-user device type: '{other}'"),
-                    });
+                    type_name = Some(val);
                 }
                 "device_id" => {
                     device_id = Some(val.parse().context("invalid device_id")?);
+                }
+                "tag" => {
+                    tag = Some(val.to_string());
                 }
                 "pcie_port" => {
                     pcie_port = Some(val.to_string());
@@ -2015,11 +2024,30 @@ impl FromStr for VhostUserCli {
             }
         }
 
-        let device_id = device_id.context("must specify type=<name> or device_id=<N>")?;
+        if type_name.is_some() == device_id.is_some() {
+            anyhow::bail!("must specify type=<name> or device_id=<N>");
+        }
+
+        // Build the typed device variant.
+        let device_type = match type_name {
+            Some("fs") => {
+                let tag = tag.take().context("type=fs requires tag=<name>")?;
+                VhostUserDeviceTypeCli::Fs { tag }
+            }
+            Some("blk") => VhostUserDeviceTypeCli::Blk,
+            Some(ty) => anyhow::bail!("unknown vhost-user device type: '{ty}'"),
+            None => VhostUserDeviceTypeCli::Other {
+                device_id: device_id.unwrap(),
+            },
+        };
+
+        if tag.is_some() {
+            anyhow::bail!("tag= is only valid for type=fs");
+        }
 
         Ok(VhostUserCli {
             socket_path,
-            device_id,
+            device_type,
             pcie_port,
         })
     }
