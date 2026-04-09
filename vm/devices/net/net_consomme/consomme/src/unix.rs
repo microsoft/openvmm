@@ -118,6 +118,15 @@ pub fn send_to(
     let sockaddr = socket2::SockAddr::from(*dst);
     let seg_size = seg_size as usize;
 
+    // Guard against guest-controlled seg_size of 0, which would panic in
+    // chunks(), and degenerate sizes that would produce excessive allocations.
+    if seg_size == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "GSO segment size must be non-zero",
+        ));
+    }
+
     // Build one iovec per segment.
     let iovecs: Vec<libc::iovec> = data
         .chunks(seg_size)

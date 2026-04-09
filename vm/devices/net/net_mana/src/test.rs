@@ -689,9 +689,9 @@ fn build_tx_segments(
         id: TxId(tx_id),
         segment_count: num_segments as u8,
         len: packet_len as u32,
-        l2_len: 14,                 // Ethernet header
-        l3_len: 20,                 // IPv4 header
-        l4_len: 20,                 // TCP header
+        l2_len: 14,             // Ethernet header
+        l3_len: 20,             // IPv4 header
+        l4_len: 20,             // TCP header
         max_segment_size: 1460, // Typical MSS for Ethernet
         ..Default::default()
     };
