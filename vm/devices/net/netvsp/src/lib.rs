@@ -414,7 +414,7 @@ struct RxBufferRanges {
 
 impl RxBufferRanges {
     /// Validates that the given parameters produce a valid RX buffer configuration.
-    fn validate_params(buffer_count: u32, queue_count: u32) -> Result<(), WorkerError> {
+    fn validate_params(buffer_count: u32, queue_count: u32) -> Result<u32, WorkerError> {
         if queue_count == 0 {
             return Err(WorkerError::InvalidRxBufferConfig(
                 RxBufferConfigError::ZeroQueueCount,
@@ -431,15 +431,14 @@ impl RxBufferRanges {
                 RxBufferConfigError::ZeroBuffersPerQueue,
             ));
         }
-        Ok(())
+        Ok(buffers_per_queue)
     }
 
     fn new(
         buffer_count: u32,
         queue_count: u32,
     ) -> Result<(Self, Vec<mpsc::UnboundedReceiver<u32>>), WorkerError> {
-        Self::validate_params(buffer_count, queue_count)?;
-        let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
+        let buffers_per_queue = Self::validate_params(buffer_count, queue_count)?;
         #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
         Ok((
