@@ -130,6 +130,13 @@ impl ResolvedArtifactSelections {
                 true
             }
 
+            // OpenVMM vhost binary (Linux only)
+            "petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_X64"
+            | "petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_LINUX_AARCH64" => {
+                self.build.openvmm_vhost = true;
+                true
+            }
+
             // OpenHCL IGVM files
             "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64"
             | "petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64"
