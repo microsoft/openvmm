@@ -257,16 +257,12 @@ impl VirtioDevice for Device {
         // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
         let csum = offloads.tcp && offloads.udp;
         // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
-        // TSO4 also requires IPv4 header checksum support since the backend
-        // must compute per-segment IPv4 header checksums.
-        let host_tso4 = offloads.tso && offloads.tcp && offloads.ipv4_header;
-        let host_tso6 = offloads.tso && offloads.tcp;
+        let host_tso = offloads.tso && offloads.tcp;
         // VIRTIO_NET_F_HOST_USO (bank 1): we can handle UDP segmentation from
         // the guest. This is the modern USO feature (bit 56); the legacy
         // HOST_UFO (bit 14) is not offered because it is deprecated in modern
         // Linux kernels.
         let host_uso = offloads.uso && offloads.udp;
-        let host_tso = offloads.tso && offloads.tcp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
