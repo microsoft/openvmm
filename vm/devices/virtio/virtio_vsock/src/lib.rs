@@ -318,7 +318,7 @@ struct VsockWorker {
 
 impl VsockWorker {
     /// Handle a work item from the tx virtqueue (guest -> host).
-    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, mut work: VirtioQueueCallbackWork) {
+    fn handle_guest_tx(&mut self, state: &mut VsockWorkerState, work: VirtioQueueCallbackWork) {
         if let Err(err) = self.handle_guest_tx_inner(state, &work) {
             tracelimit::error_ratelimited!(
                 error = err.as_ref() as &dyn std::error::Error,
@@ -326,7 +326,7 @@ impl VsockWorker {
             );
         }
 
-        work.complete(0);
+        state.tx_queue.get_mut().complete(work, 0);
     }
 
     /// Handle a work item from the TX virtqueue (guest -> host).
@@ -397,12 +397,13 @@ impl VsockWorker {
         Ok(())
     }
 
-    /// Helper to write a packet to the RX queue.
+    /// Helper to write a packet to the RX queue. Returns the number of bytes
+    /// written. The caller is responsible for completing the work item.
     fn write_packet(
-        state: &mut VsockWorkerState,
-        mut queue_work: VirtioQueueCallbackWork,
+        state: &VsockWorkerState,
+        queue_work: &VirtioQueueCallbackWork,
         packet: &VsockPacketBuf,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<u32> {
         tracing::trace!(?packet.header, "sending reply");
         let header_bytes = packet.header.as_bytes();
         queue_work
@@ -417,8 +418,7 @@ impl VsockWorker {
                 .context("failed to write vsock data to guest rx")?;
         }
 
-        queue_work.complete(header_bytes.len() as u32 + packet.header.len);
-        Ok(())
+        Ok(header_bytes.len() as u32 + packet.header.len)
     }
 
     /// Try to deliver pending rx packets to the guest via the rx virtqueue.
@@ -441,18 +441,23 @@ impl VsockWorker {
         // If there's a packet to send, write it to the guest.
         if let Some(packet) = packet {
             let queue_work = peeked_work.consume();
-            if let Err(err) = Self::write_packet(state, queue_work, &packet) {
-                tracelimit::error_ratelimited!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to write vsock packet"
-                );
+            let bytes = match Self::write_packet(state, &queue_work, &packet) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    tracelimit::error_ratelimited!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "failed to write vsock packet"
+                    );
 
-                // We can't recover from this. Remove the connection so any future attempts to use
-                // it will fail.
-                state
-                    .connections
-                    .remove(&ConnectionKey::from_rx_packet(&packet.header));
-            }
+                    // We can't recover from this. Remove the connection so any future attempts to use
+                    // it will fail.
+                    state
+                        .connections
+                        .remove(&ConnectionKey::from_rx_packet(&packet.header));
+                    0
+                }
+            };
+            state.rx_queue.complete(queue_work, bytes);
         }
 
         state.queue_pending(pending);

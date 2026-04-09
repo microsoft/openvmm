@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Test IGVM Agent
 //!
 //! This module contains a test version of the IGVM agent for handling

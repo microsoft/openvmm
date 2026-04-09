@@ -2051,6 +2051,26 @@ impl Default for ProcessorTopology {
     }
 }
 
+impl ProcessorTopology {
+    /// A large number of VPs
+    pub fn heavy() -> Self {
+        Self {
+            vp_count: 16,
+            vps_per_socket: Some(8),
+            ..Default::default()
+        }
+    }
+
+    /// A very large number of VPs
+    pub fn very_heavy() -> Self {
+        Self {
+            vp_count: 32,
+            vps_per_socket: Some(16),
+            ..Default::default()
+        }
+    }
+}
+
 /// The APIC mode for the VM.
 #[derive(Debug, Clone, Copy)]
 pub enum ApicMode {
@@ -2599,6 +2619,16 @@ impl Firmware {
         }
     }
 
+    #[cfg_attr(not(windows), expect(dead_code))]
+    fn openhcl_firmware(&self) -> Option<&Path> {
+        match self {
+            Firmware::OpenhclLinuxDirect { igvm_path, .. }
+            | Firmware::OpenhclUefi { igvm_path, .. }
+            | Firmware::OpenhclPcat { igvm_path, .. } => Some(igvm_path.get()),
+            Firmware::LinuxDirect { .. } | Firmware::Pcat { .. } | Firmware::Uefi { .. } => None,
+        }
+    }
+
     fn into_runtime_config(
         self,
         vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
@@ -2892,13 +2922,23 @@ pub enum PetriVmgsResource {
 
 impl PetriVmgsResource {
     /// get the inner vmgs disk if one exists
-    pub fn disk(&self) -> Option<&PetriVmgsDisk> {
+    pub fn vmgs(&self) -> Option<&PetriVmgsDisk> {
         match self {
             PetriVmgsResource::Disk(vmgs)
             | PetriVmgsResource::ReprovisionOnFailure(vmgs)
             | PetriVmgsResource::Reprovision(vmgs) => Some(vmgs),
             PetriVmgsResource::Ephemeral => None,
         }
+    }
+
+    /// get the inner disk if one exists
+    pub fn disk(&self) -> Option<&Disk> {
+        self.vmgs().map(|vmgs| &vmgs.disk)
+    }
+
+    /// get the encryption policy of the vmgs
+    pub fn encryption_policy(&self) -> Option<GuestStateEncryptionPolicy> {
+        self.vmgs().map(|vmgs| vmgs.encryption_policy)
     }
 }
 

@@ -187,7 +187,11 @@ impl FlowNode for Node {
                     let in_folder = rt.read(in_folder);
                     let with_env = rt.read(extra_env).unwrap_or_default();
 
-                    let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
+                    let crate::cfg_cargo_common_flags::Flags {
+                        locked,
+                        verbose,
+                        no_incremental,
+                    } = flags;
 
                     let cargo_profile = match &profile {
                         CargoBuildProfile::Debug => "dev",
@@ -265,12 +269,10 @@ impl FlowNode for Node {
 
                     rt.sh.change_dir(cargo_work_dir);
                     let mut cmd = flowey::shell_cmd!(rt, "{argv0} {params...}");
-                    if !matches!(rt.backend(), FlowBackend::Local) {
-                        // if running in CI, no need to waste time with incremental
-                        // build artifacts
+                    if no_incremental {
                         with_env.insert("CARGO_INCREMENTAL".to_owned(), "0".to_owned());
-                    } else {
-                        // if build locally, use per-package target dirs
+                    } else if matches!(rt.backend(), FlowBackend::Local) {
+                        // if building locally, use per-package target dirs
                         // to avoid rebuilding
                         // TODO: remove this once cargo's caching improves
                         cmd = cmd

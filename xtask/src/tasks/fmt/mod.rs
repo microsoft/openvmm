@@ -5,7 +5,6 @@ mod lints;
 mod rustfmt;
 mod unused_deps;
 mod verify_flowey;
-mod workspace;
 
 use crate::Xtask;
 use anyhow::Context;
@@ -57,7 +56,6 @@ enum PassName {
     Rustfmt,
     Lints,
     UnusedDeps,
-    VerifyWorkspace,
     VerifyFuzzers,
     VerifyFlowey,
 }
@@ -97,7 +95,6 @@ impl Xtask for Fmt {
                     PassName::Rustfmt,
                     PassName::Lints,
                     PassName::UnusedDeps,
-                    PassName::VerifyWorkspace,
                     PassName::VerifyFuzzers,
                     PassName::VerifyFlowey,
                 ]
@@ -126,9 +123,6 @@ impl Xtask for Fmt {
                         }),
                         PassName::UnusedDeps => wrapper(&ctx, name, {
                             move |ctx| unused_deps::UnusedDeps { fix: ctx.fix }.run(ctx.ctx)
-                        }),
-                        PassName::VerifyWorkspace => wrapper(&ctx, name, {
-                            move |ctx| workspace::VerifyWorkspace.run(ctx.ctx)
                         }),
                     }
                 })

@@ -473,6 +473,12 @@ options:
     #[clap(long, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
 
+    /// write the process ID to the specified file on startup, and remove it on
+    /// exit. the file is not removed if the process is killed with SIGKILL or
+    /// crashes. no file locking is performed.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
+
     /// run as a ttrpc server on the specified Unix socket
     #[clap(long, value_name = "SOCKETPATH")]
     pub ttrpc: Option<PathBuf>,
@@ -679,10 +685,6 @@ flags:
     /// specify the IMC hive file for booting Windows
     #[clap(long)]
     pub imc: Option<PathBuf>,
-
-    /// Expose MCR device
-    #[clap(long)]
-    pub mcr: bool, // TODO MCR: support closed source CLI flags
 
     /// expose a battery device
     #[clap(long)]
@@ -1026,6 +1028,23 @@ fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
     })
 }
 
+impl DiskCliKind {
+    /// Parse an `autocache:[key]:<kind>` disk spec, given the cache path
+    /// (normally read from `OPENVMM_AUTO_CACHE_PATH`).
+    fn parse_autocache(
+        arg: &str,
+        cache_path: Result<String, std::env::VarError>,
+    ) -> anyhow::Result<Self> {
+        let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+        let cache_path = cache_path.context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
+        Ok(DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key: (!key.is_empty()).then(|| key.to_string()),
+            disk: Box::new(kind.parse()?),
+        })
+    }
+}
+
 impl FromStr for DiskCliKind {
     type Err = anyhow::Error;
 
@@ -1072,14 +1091,7 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "autocache" => {
-                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
-                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
-                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
-                    DiskCliKind::AutoCacheSqlite {
-                        cache_path,
-                        key: (!key.is_empty()).then(|| key.to_string()),
-                        disk: Box::new(kind.parse()?),
-                    }
+                    Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => {
@@ -2014,28 +2026,8 @@ impl FromStr for VhostUserCli {
 }
 
 #[cfg(test)]
-// UNSAFETY: Needed to set and remove environment variables in tests
-#[expect(unsafe_code)]
 mod tests {
     use super::*;
-
-    fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::set_var(name, value);
-        }
-        let result = f();
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var(name);
-        }
-        result
-    }
 
     #[test]
     fn test_parse_file_disk_with_create() {
@@ -2207,10 +2199,9 @@ mod tests {
 
     #[test]
     fn test_parse_autocache_sqlite_disk() {
-        // Test with environment variable set
-        let disk = with_env_var("OPENVMM_AUTO_CACHE_PATH", "/tmp/cache", || {
-            DiskCliKind::from_str("autocache::file:disk.vhd").unwrap()
-        });
+        // Test with cache path provided
+        let disk =
+            DiskCliKind::parse_autocache(":file:disk.vhd", Ok("/tmp/cache".to_string())).unwrap();
         assert!(matches!(
             disk,
             DiskCliKind::AutoCacheSqlite {
@@ -2220,8 +2211,24 @@ mod tests {
             } if cache_path == "/tmp/cache" && key.is_none()
         ));
 
-        // Test without environment variable
-        assert!(DiskCliKind::from_str("autocache::file:disk.vhd").is_err());
+        // Test with key
+        let disk =
+            DiskCliKind::parse_autocache("mykey:file:disk.vhd", Ok("/tmp/cache".to_string()))
+                .unwrap();
+        assert!(matches!(
+            disk,
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key: Some(key),
+                disk: _disk,
+            } if cache_path == "/tmp/cache" && key == "mykey"
+        ));
+
+        // Test without cache path
+        assert!(
+            DiskCliKind::parse_autocache(":file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2242,12 +2249,10 @@ mod tests {
         assert!(DiskCliKind::from_str("sqldiff:path").is_err());
 
         // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
-        }
-        assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
+        assert!(
+            DiskCliKind::parse_autocache("key:file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
 
         // Invalid blob kind
         assert!(DiskCliKind::from_str("blob:invalid:url").is_err());
@@ -2869,5 +2874,11 @@ mod tests {
         assert!(PcieRemoteCli::from_str("port,controller=").is_err());
         assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
         assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
+    }
+
+    #[test]
+    fn test_pidfile_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
     }
 }

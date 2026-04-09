@@ -2112,7 +2112,6 @@ impl UhProcessor<'_, TdxBacked> {
                     let handler = UhHypercallHandler {
                         trusted: !self.cvm_partition().hide_isolation,
                         vp: &mut *self,
-                        bus: dev,
                         intercepted_vtl,
                     };
 
@@ -2630,7 +2629,7 @@ impl UhProcessor<'_, TdxBacked> {
         self.backing.vtls[vtl].exception_error_code = 0;
     }
 
-    fn handle_tdvmcall(&mut self, dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
+    fn handle_tdvmcall(&mut self, _dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
         let regs = self.runner.tdx_enter_guest_gps();
         if regs[TdxGp::R10] == 0 {
             // Architectural VMCALL.
@@ -2703,7 +2702,6 @@ impl UhProcessor<'_, TdxBacked> {
             let guest_memory = &self.shared.cvm.shared_memory;
             let handler = UhHypercallHandler {
                 vp: &mut *self,
-                bus: dev,
                 trusted: false,
                 intercepted_vtl,
             };
@@ -3679,7 +3677,7 @@ fn pull_apic_offload(page: &mut ApicPage) -> ([u32; 8], [u32; 8]) {
     (irr, isr)
 }
 
-impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, TdxBacked> {
     fn rip(&mut self) -> u64 {
         self.vp.backing.vtls[self.intercepted_vtl].private_regs.rip
     }
@@ -3724,7 +3722,7 @@ impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, TdxBac
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl UhHypercallHandler<'_, '_, TdxBacked> {
     const TDX_DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [
@@ -4288,15 +4286,15 @@ fn top_vector(reg: &[ApicRegister; 8]) -> u8 {
         .unwrap_or(0)
 }
 
-struct TdHypercall<'a, 'b, T>(UhHypercallHandler<'a, 'b, T, TdxBacked>);
+struct TdHypercall<'a, 'b>(UhHypercallHandler<'a, 'b, TdxBacked>);
 
-impl<'a, 'b, T> AsHandler<UhHypercallHandler<'a, 'b, T, TdxBacked>> for TdHypercall<'a, 'b, T> {
-    fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, T, TdxBacked> {
+impl<'a, 'b> AsHandler<UhHypercallHandler<'a, 'b, TdxBacked>> for TdHypercall<'a, 'b> {
+    fn as_handler(&mut self) -> &mut UhHypercallHandler<'a, 'b, TdxBacked> {
         &mut self.0
     }
 }
 
-impl<T> HypercallIo for TdHypercall<'_, '_, T> {
+impl HypercallIo for TdHypercall<'_, '_> {
     fn advance_ip(&mut self) {
         self.0.vp.runner.tdx_enter_guest_gps_mut()[TdxGp::R10] = 0;
         self.0.vp.backing.vtls[self.0.intercepted_vtl]
@@ -4366,7 +4364,7 @@ impl<T> HypercallIo for TdHypercall<'_, '_, T> {
     }
 }
 
-impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, TdxBacked> {
     fn advance_ip(&mut self) {
         let long_mode = self.vp.long_mode(self.intercepted_vtl);
         let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
@@ -4382,7 +4380,7 @@ impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked>
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_list(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4398,9 +4396,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_,
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
-    for UhHypercallHandler<'_, '_, T, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressListEx for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_list_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4445,9 +4441,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
-    for UhHypercallHandler<'_, '_, T, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpace for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_space(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4461,9 +4455,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
-    for UhHypercallHandler<'_, '_, T, TdxBacked>
-{
+impl hv1_hypercall::FlushVirtualAddressSpaceEx for UhHypercallHandler<'_, '_, TdxBacked> {
     fn flush_virtual_address_space_ex(
         &mut self,
         processor_set: ProcessorSet<'_>,
@@ -4500,7 +4492,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
     }
 }
 
-impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
+impl UhHypercallHandler<'_, '_, TdxBacked> {
     fn add_ranges_to_tlb_flush_list(
         flush_state: &TdxPartitionFlushState,
         gva_ranges: &[HvGvaRange],

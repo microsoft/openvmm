@@ -10,6 +10,7 @@ mod package_info;
 mod repr_packed;
 mod trailing_newline;
 mod unsafe_code_comment;
+mod workspaced;
 
 use crate::fs_helpers::git_diffed;
 use crate::tasks::fmt::FmtCtx;
@@ -146,11 +147,7 @@ impl<T> Lintable<T> {
             op(&mut self.content);
             self.modified = true;
         } else {
-            log::error!(
-                "{}: {}",
-                self.workspace_dir.join(&self.path).display(),
-                description
-            );
+            log::error!("{}: {}", self.path.display(), description);
             self.failed
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -158,11 +155,7 @@ impl<T> Lintable<T> {
 
     /// Report an error with the given description that cannot be automatically fixed.
     pub fn unfixable(&self, description: &str) {
-        log::error!(
-            "{}: {}",
-            self.workspace_dir.join(&self.path).display(),
-            description
-        );
+        log::error!("{}: {}", self.path.display(), description);
         self.failed
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -288,6 +281,7 @@ fn lint_workspace(
         Box::new(repr_packed::ReprPacked::new(&lint_ctx)),
         Box::new(trailing_newline::TrailingNewline::new(&lint_ctx)),
         Box::new(unsafe_code_comment::UnsafeCodeComment::new(&lint_ctx)),
+        Box::new(workspaced::WorkspacedManifest::new(&lint_ctx)),
     ];
 
     let workspace_manifest_path = workspace_dir.join("Cargo.toml");
