@@ -105,15 +105,14 @@ mod tests {
     use super::*;
 
     use crate::test_helpers::CIPHERTEXT;
-    use openssl::pkey::PKey;
+    use crypto::rsa::RsaKeyPair;
 
     #[test]
     fn get_wrapped_key_from_jwt() {
-        let rsa_key = openssl::rsa::Rsa::generate(2048).unwrap();
-        let private = PKey::from_rsa(rsa_key).unwrap();
+        let rsa_key = RsaKeyPair::generate(2048).unwrap();
 
         let (header, body, signature) =
-            crate::test_helpers::generate_base64_encoded_jwt_components(&private);
+            crate::test_helpers::generate_base64_encoded_jwt_components(&rsa_key);
 
         let jwt = format!("{}.{}.{}", header, body, signature);
         let jwt = JwtHelper::<akv::AkvKeyReleaseJwtBody>::from(jwt.as_bytes()).unwrap();

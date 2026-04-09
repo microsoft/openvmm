@@ -5,12 +5,10 @@
 //! sealing using the derived key. The sealed DEK is written to the [FileId::HW_KEY_PROTECTOR`]
 //! entry of the VMGS file, which can be unsealed later.
 
-use crate::crypto;
 use cvm_tracing::CVM_ALLOWED;
 use openhcl_attestation_protocol::igvm_attest;
 use openhcl_attestation_protocol::vmgs;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
-use openssl_kdf::kdf::Kbkdf;
 use thiserror::Error;
 use zerocopy::IntoBytes;
 
@@ -19,23 +17,23 @@ pub(crate) enum HardwareDerivedKeysError {
     #[error("failed to initialize hardware secret")]
     InitializeHardwareSecret(#[source] tee_call::Error),
     #[error("KDF derivation with hardware secret failed")]
-    KdfWithHardwareSecret(#[source] openssl_kdf::kdf::KdfError),
+    KdfWithHardwareSecret(#[source] crypto::kdf::KdfError),
 }
 
 #[derive(Debug, Error)]
 pub(crate) enum HardwareKeySealingError {
     #[error("failed to encrypt the egress key")]
-    EncryptEgressKey(#[source] crypto::Aes256CbcError),
+    EncryptEgressKey(#[source] crypto::aes_256_cbc::Aes256CbcError),
     #[error("invalid egress key encryption size {0}, expected {1}")]
     InvalidEgressKeyEncryptionSize(usize, usize),
     #[error("HMAC-SHA-256 after encryption failed")]
-    HmacAfterEncrypt(#[source] crypto::HmacSha256Error),
+    HmacAfterEncrypt(#[source] crypto::hmac_sha_256::HmacSha256Error),
     #[error("HMAC-SHA-256 before ecryption failed")]
-    HmacBeforeDecrypt(#[source] crypto::HmacSha256Error),
+    HmacBeforeDecrypt(#[source] crypto::hmac_sha_256::HmacSha256Error),
     #[error("Hardware key protector HMAC verification failed")]
     HardwareKeyProtectorHmacVerificationFailed,
     #[error("failed to decrypt the ingress key")]
-    DecryptIngressKey(#[source] crypto::Aes256CbcError),
+    DecryptIngressKey(#[source] crypto::aes_256_cbc::Aes256CbcError),
     #[error("invalid ingress key decryption size {0}, expected {1}")]
     InvalidIngressKeyDecryptionSize(usize, usize),
 }
@@ -61,16 +59,13 @@ impl HardwareDerivedKeys {
 
         let vm_config = serde_json::to_string(vm_config).expect("JSON serialization failed");
 
-        let mut kdf = Kbkdf::new(
-            openssl::hash::MessageDigest::sha256(),
-            label.to_vec(),
-            hardware_secret.to_vec(),
-        );
-        kdf.set_context(vm_config.as_bytes().to_vec());
-
-        let mut output = [0u8; vmgs::AES_CBC_KEY_LENGTH + vmgs::HMAC_SHA_256_KEY_LENGTH];
-        openssl_kdf::kdf::derive(kdf, &mut output)
-            .map_err(HardwareDerivedKeysError::KdfWithHardwareSecret)?;
+        let output = crypto::kdf::kbkdf_hmac_sha256(
+            &hardware_secret,
+            vm_config.as_bytes(),
+            label,
+            vmgs::AES_CBC_KEY_LENGTH + vmgs::HMAC_SHA_256_KEY_LENGTH,
+        )
+        .map_err(HardwareDerivedKeysError::KdfWithHardwareSecret)?;
 
         let mut aes_key = [0u8; vmgs::AES_CBC_KEY_LENGTH];
         let mut hmac_key = [0u8; vmgs::HMAC_SHA_256_KEY_LENGTH];
@@ -116,7 +111,8 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         getrandom::fill(&mut iv).expect("rng failure");
 
         let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
-        let output = crypto::aes_256_cbc_encrypt(&hardware_derived_keys.aes_key, egress_key, &iv)
+        let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
+            .and_then(|aes| aes.encrypt()?.cipher(&iv, egress_key))
             .map_err(HardwareKeySealingError::EncryptEgressKey)?;
         if output.len() != vmgs::AES_GCM_KEY_LENGTH {
             Err(HardwareKeySealingError::InvalidEgressKeyEncryptionSize(
@@ -133,7 +129,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
             hmac: [0u8; vmgs::HMAC_SHA_256_KEY_LENGTH],
         };
         let offset = std::mem::offset_of!(Self, hmac);
-        hardware_key_protector.hmac = crypto::hmac_sha_256(
+        hardware_key_protector.hmac = crypto::hmac_sha_256::hmac_sha_256(
             &hardware_derived_keys.hmac_key,
             &hardware_key_protector.as_bytes()[..offset],
         )
@@ -149,18 +145,20 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         hardware_derived_keys: &HardwareDerivedKeys,
     ) -> Result<[u8; vmgs::AES_CBC_KEY_LENGTH], HardwareKeySealingError> {
         let offset = std::mem::offset_of!(HardwareKeyProtector, hmac);
-        let hmac =
-            crypto::hmac_sha_256(&hardware_derived_keys.hmac_key, &self.as_bytes()[..offset])
-                .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
+        let hmac = crypto::hmac_sha_256::hmac_sha_256(
+            &hardware_derived_keys.hmac_key,
+            &self.as_bytes()[..offset],
+        )
+        .map_err(HardwareKeySealingError::HmacBeforeDecrypt)?;
 
         if hmac != self.hmac {
             Err(HardwareKeySealingError::HardwareKeyProtectorHmacVerificationFailed)?
         }
 
         let mut decrypted_ingress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
-        let output =
-            crypto::aes_256_cbc_decrypt(&hardware_derived_keys.aes_key, &self.ciphertext, &self.iv)
-                .map_err(HardwareKeySealingError::DecryptIngressKey)?;
+        let output = crypto::aes_256_cbc::Aes256Cbc::new(&hardware_derived_keys.aes_key)
+            .and_then(|aes| aes.decrypt()?.cipher(&self.iv, &self.ciphertext))
+            .map_err(HardwareKeySealingError::DecryptIngressKey)?;
         if output.len() != vmgs::AES_GCM_KEY_LENGTH {
             Err(HardwareKeySealingError::InvalidIngressKeyDecryptionSize(
                 output.len(),
