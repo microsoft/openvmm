@@ -600,11 +600,12 @@ inherits = 'release'
 codegen-units = 1
 lto = 'fat'
 
-# There's an issue with reproducibility and lto = 'fat'. This profile is the same
-# as underhill-ship but inherits lto = 'thin' instead
+# There's an issue with reproducibility and lto (both 'fat' and 'thin').
+# This profile disables LTO entirely to ensure deterministic builds.
 [profile.underhill-ship-reproducible]
 inherits = 'release'
 codegen-units = 1
+lto = 'off'
 
 [profile.dev]
 panic = 'abort'
@@ -639,13 +640,14 @@ codegen-units = 1
 opt-level = 'z'
 lto = 'fat'
 
-# There's an issue with reproducibility and lto = 'fat'. This profile is the same
-# as boot-release but inherits lto = 'thin' instead
+# There's an issue with reproducibility and lto (both 'fat' and 'thin').
+# This profile disables LTO entirely to ensure deterministic builds.
 [profile.boot-release-reproducible]
 inherits = 'release'
 panic = 'abort'
 codegen-units = 1
 opt-level = 'z'
+lto = 'off'
 
 # Optimize minimal_rt_reloc even in the dev profile to ensure no relocations
 # creep into the relocate function.
