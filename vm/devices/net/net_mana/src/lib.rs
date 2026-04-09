@@ -1191,7 +1191,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     return Ok(None);
                 }
                 builder.set_client_oob_in_sgl(header_len as u8);
-                builder.set_gd_client_unit_data(meta.max_tcp_segment_size);
+                builder.set_gd_client_unit_data(meta.max_segment_size);
 
                 let (head_iova, used_segments, used_segments_len) =
                     if header_len > head.len || self.force_tx_header_bounce {

@@ -665,7 +665,7 @@ fn build_tx_segments(
         l2_len: 14,                 // Ethernet header
         l3_len: 20,                 // IPv4 header
         l4_len: 20,                 // TCP header
-        max_tcp_segment_size: 1460, // Typical MSS for Ethernet
+        max_segment_size: 1460, // Typical MSS for Ethernet
         ..Default::default()
     };
 

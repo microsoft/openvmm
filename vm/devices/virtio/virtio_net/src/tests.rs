@@ -1189,7 +1189,7 @@ fn tx_offload_no_offloads() {
     );
     assert_eq!(meta.l2_len, 0);
     assert_eq!(meta.l3_len, 0);
-    assert_eq!(meta.max_tcp_segment_size, 0);
+    assert_eq!(meta.max_segment_size, 0);
 }
 
 /// No header at all → default TxMetadata.
@@ -1318,7 +1318,7 @@ fn tx_offload_tso4() {
     assert_eq!(meta.l2_len, 14);
     assert_eq!(meta.l3_len, 20);
     assert_eq!(meta.l4_len, 32); // 66 - 14 - 20 = 32
-    assert_eq!(meta.max_tcp_segment_size, 1460);
+    assert_eq!(meta.max_segment_size, 1460);
 }
 
 /// TSO6: gso_type=TCPV6 with needs_csum.
@@ -1351,7 +1351,7 @@ fn tx_offload_tso6() {
     assert_eq!(meta.l2_len, 14);
     assert_eq!(meta.l3_len, 40);
     assert_eq!(meta.l4_len, 20); // 74 - 14 - 40 = 20
-    assert_eq!(meta.max_tcp_segment_size, 1440);
+    assert_eq!(meta.max_segment_size, 1440);
 }
 
 /// TSO without needs_csum: GSO fields should still be parsed.
@@ -1374,7 +1374,7 @@ fn tx_offload_tso_without_needs_csum() {
     );
     assert!(meta.flags.offload_tcp_segmentation());
     assert!(meta.flags.is_ipv4());
-    assert_eq!(meta.max_tcp_segment_size, 1460);
+    assert_eq!(meta.max_segment_size, 1460);
 }
 
 /// USO4: gso_type=UDP_L4 with IPv4 EtherType.
@@ -1409,7 +1409,7 @@ fn tx_offload_uso4() {
     assert!(!meta.flags.is_ipv6());
     assert_eq!(meta.l2_len, 14);
     assert_eq!(meta.l3_len, 20);
-    assert_eq!(meta.max_udp_segment_size, 1472);
+    assert_eq!(meta.max_segment_size, 1472);
     assert!(!meta.flags.offload_tcp_segmentation());
 }
 
@@ -1442,7 +1442,7 @@ fn tx_offload_uso6() {
     assert!(meta.flags.is_ipv6());
     assert_eq!(meta.l2_len, 14);
     assert_eq!(meta.l3_len, 40);
-    assert_eq!(meta.max_udp_segment_size, 1452);
+    assert_eq!(meta.max_segment_size, 1452);
     assert!(!meta.flags.offload_tcp_segmentation());
 }
 

@@ -544,15 +544,14 @@ impl TxRxTask {
             l2_len: 14,
             l3_len: oob.s_oob.trans_off().clamp(14, 255) - 14,
             l4_len: 0,
-            max_tcp_segment_size: 0,
-            max_udp_segment_size: 0,
+            max_segment_size: 0,
         };
 
         if sqe.header.params.client_oob_in_sgl() {
             meta.l4_len =
                 sge0.size
                     .saturating_sub(meta.l2_len as u32 + meta.l3_len as u32) as u8;
-            meta.max_tcp_segment_size = sqe.header.params.gd_client_unit_data();
+            meta.max_segment_size = sqe.header.params.gd_client_unit_data();
             meta.flags.set_offload_tcp_segmentation(true);
         }
 

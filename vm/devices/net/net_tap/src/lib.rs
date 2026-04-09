@@ -185,7 +185,7 @@ impl Endpoint for TapEndpoint {
             tcp: true,
             udp: true,
             tso: true,
-            uso: false,
+            uso: true,
         }
     }
 }
@@ -435,7 +435,7 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(protocol),
             hdr_len: meta.l2_len as u16 + meta.l3_len + meta.l4_len as u16,
-            gso_size: meta.max_tcp_segment_size,
+            gso_size: meta.max_segment_size,
             csum_start: meta.l2_len as u16 + meta.l3_len,
             csum_offset: 16, // TCP checksum field offset
             num_buffers: 0,
@@ -531,7 +531,7 @@ mod tests {
             l2_len: 14,
             l3_len: 20,
             l4_len: 32,
-            max_tcp_segment_size: 1460,
+            max_segment_size: 1460,
             ..Default::default()
         };
         let hdr = build_vnet_hdr(&meta);

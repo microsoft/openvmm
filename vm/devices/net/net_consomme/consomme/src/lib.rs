@@ -399,6 +399,9 @@ pub enum DropReason {
     /// E.g. a TCP packet with both SYN and FIN flags set.
     #[error("packet is malformed")]
     MalformedPacket,
+    /// The IP total-length field does not match the buffer size.
+    #[error("ip length mismatch")]
+    IpLengthMismatch,
     /// An incoming IP packet has been split into several IP fragments and was dropped,
     /// since IP reassembly is not supported.
     #[error("packet fragmentation is not supported")]
@@ -610,7 +613,7 @@ impl<T: Client> Access<'_, T> {
         // instead.
         let segmentation_offload = checksum.tso.is_some() || checksum.gso.is_some();
         if !segmentation_offload && payload.len() < ipv4.total_len().into() {
-            return Err(DropReason::MalformedPacket);
+            return Err(DropReason::IpLengthMismatch);
         }
 
         let total_len = if segmentation_offload {

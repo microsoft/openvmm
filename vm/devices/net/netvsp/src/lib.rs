@@ -2576,7 +2576,7 @@ impl<T: RingMem> NetChannel<T> {
                             reader.read(std::slice::from_mut(&mut b))?;
                             (b >> 4) * 4
                         };
-                        metadata.max_tcp_segment_size = n.mss() as u16;
+                        metadata.max_segment_size = n.mss() as u16;
 
                         if request.data_length >= rndisprot::LSO_MAX_OFFLOAD_SIZE {
                             // Not strictly enforced.

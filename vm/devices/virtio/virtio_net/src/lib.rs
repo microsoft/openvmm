@@ -1074,8 +1074,7 @@ impl Worker {
         let mut l2_len: u8 = 0;
         let mut l3_len: u16 = 0;
         let mut l4_len: u8 = 0;
-        let mut max_tcp_segment_size: u16 = 0;
-        let mut max_udp_segment_size: u16 = 0;
+        let mut max_segment_size: u16 = 0;
 
         // Parse the Ethernet header to determine IP version and L2 length.
         let (parsed_l2_len, is_ipv4_from_eth, is_ipv6_from_eth) =
@@ -1184,12 +1183,12 @@ impl Worker {
                         // the backend to fill it in.
                         flags.set_offload_udp_checksum(true);
                         flags.set_offload_tcp_checksum(false);
-                        max_udp_segment_size = header.gso_size;
+                        max_segment_size = header.gso_size;
                     } else {
                         flags.set_offload_tcp_segmentation(true);
                         flags.set_offload_tcp_checksum(true);
                         flags.set_offload_udp_checksum(false);
-                        max_tcp_segment_size = header.gso_size;
+                        max_segment_size = header.gso_size;
                     }
 
                     flags.set_is_ipv4(is_ipv4);
@@ -1206,8 +1205,7 @@ impl Worker {
             l2_len,
             l3_len,
             l4_len,
-            max_tcp_segment_size,
-            max_udp_segment_size,
+            max_segment_size,
             ..Default::default()
         }
     }
