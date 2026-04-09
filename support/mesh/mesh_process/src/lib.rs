@@ -53,16 +53,19 @@ use tracing::instrument;
 use unicycle::FuturesUnordered;
 
 #[cfg(windows)]
-type IpcNode = mesh_remote::windows::AlpcNode;
+mod plat {
+    pub type IpcNode = mesh_remote::windows::AlpcNode;
+    pub type IpcNodeDriver = pal_async::windows::TpPool;
+}
 
 #[cfg(unix)]
-type IpcNode = mesh_remote::unix::UnixNode;
+mod plat {
+    pub type IpcNode = mesh_remote::unix::UnixNode;
+    pub type IpcNodeDriver = pal_async::DefaultDriver;
+}
 
-#[cfg(windows)]
-type IpcNodeDriver = pal_async::windows::TpPool;
-
-#[cfg(unix)]
-type IpcNodeDriver = pal_async::DefaultDriver;
+use plat::IpcNode;
+use plat::IpcNodeDriver;
 
 #[cfg(unix)]
 const IPC_FD: i32 = 3;
@@ -425,13 +428,15 @@ impl Mesh {
         };
 
         #[cfg(windows)]
-        let node_driver = pal_async::windows::TpPool::system();
-        #[cfg(windows)]
-        // Use new_named so that the ALPC directory has a path in the Ob
-        // namespace. This is required for listen() — the listener handshake
-        // creates named invitations, which need a named directory.
-        let node = mesh_remote::windows::AlpcNode::new_named(node_driver.clone())
-            .context("AlpcNode creation failure")?;
+        let (node, node_driver) = {
+            let driver = pal_async::windows::TpPool::system();
+            // Use new_named so that the ALPC directory has a path in the Ob
+            // namespace. This is required for listen() — the listener handshake
+            // creates named invitations, which need a named directory.
+            let node = mesh_remote::windows::AlpcNode::new_named(driver.clone())
+                .context("AlpcNode creation failure")?;
+            (node, driver)
+        };
         #[cfg(unix)]
         let (node, node_driver) = {
             // FUTURE: use pool provided by the caller.

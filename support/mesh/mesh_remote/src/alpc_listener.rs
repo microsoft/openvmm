@@ -279,10 +279,8 @@ mod tests {
 
     #[async_test]
     async fn test_unix_socket_bidirectional(driver: DefaultDriver) {
-        let mut name_bytes = [0u8; 16];
-        getrandom::fill(&mut name_bytes).unwrap();
-        let socket_name = format!("mesh-test-{:0x}.sock", u128::from_ne_bytes(name_bytes));
-        let socket_path = std::env::temp_dir().join(&socket_name);
+        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_path = socket_dir.path().join("mesh-test.sock");
 
         let leader = AlpcNode::new_named(driver.clone()).unwrap();
         let mut listener = leader.listen(&driver, &socket_path).unwrap();
@@ -291,8 +289,8 @@ mod tests {
         let client_socket_path = socket_path.clone();
 
         // Use raw port pairs so that the bridge is bidirectional.
-        let (server_port, bridge_server) = mesh_node::local_node::Port::new_pair();
-        let (client_port, bridge_client) = mesh_node::local_node::Port::new_pair();
+        let (server_port, bridge_server) = Port::new_pair();
+        let (client_port, bridge_client) = Port::new_pair();
 
         let client_node = futures::join!(
             async {
