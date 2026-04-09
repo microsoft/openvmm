@@ -25,8 +25,9 @@
 
 [[profile.default.overrides]]
 filter = 'package(~vmm_tests) and test(very_heavy)'
-# Extra heavy tests have even more VPs
-threads-required = 8
+# Extra heavy tests have even more VPs. Internal runners fail when 32vp tests
+# are not run one at a time.
+threads-required = 32
 
 [[profile.default.overrides]]
 filter = 'package(~vmm_tests) and test(heavy) and not (test(very_heavy))'
