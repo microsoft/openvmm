@@ -229,28 +229,18 @@ impl ResolvedArtifactSelections {
             {
                 self.downloads
                     .insert(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd);
-                // Requires pipette for Windows guests
-                if is_windows {
-                    self.build.pipette_windows = true;
-                }
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64" =>
             {
                 self.downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd);
-                if is_windows {
-                    self.build.pipette_windows = true;
-                }
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64" =>
             {
                 self.downloads
                     .insert(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd);
-                if is_windows {
-                    self.build.pipette_windows = true;
-                }
                 // Requires prep_steps for CVM tests
                 self.build.prep_steps = is_windows && is_x64;
                 true
@@ -259,9 +249,6 @@ impl ResolvedArtifactSelections {
             {
                 // This is created by prep_steps, not downloaded
                 self.build.prep_steps = is_windows && is_x64;
-                if is_windows {
-                    self.build.pipette_windows = true;
-                }
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64" => {
@@ -270,39 +257,31 @@ impl ResolvedArtifactSelections {
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64" => {
                 self.downloads.insert(KnownTestArtifacts::Alpine323X64Vhd);
-                self.build.pipette_linux = true;
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64" => {
                 self.downloads
                     .insert(KnownTestArtifacts::Alpine323Aarch64Vhd);
-                self.build.pipette_linux = true;
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64" => {
                 self.downloads
                     .insert(KnownTestArtifacts::Ubuntu2404ServerX64Vhd);
-                self.build.pipette_linux = true;
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64" => {
                 self.downloads
                     .insert(KnownTestArtifacts::Ubuntu2504ServerX64Vhd);
-                self.build.pipette_linux = true;
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64" => {
                 self.downloads
                     .insert(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd);
-                self.build.pipette_linux = true;
                 true
             }
             "petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64" => {
                 self.downloads
                     .insert(KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx);
-                if is_windows {
-                    self.build.pipette_windows = true;
-                }
                 true
             }
 
@@ -386,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_resolve_with_downloads() {
-        let json = r#"{"required":["petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64"],"optional":[]}"#;
+        let json = r#"{"required":["petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64","petri_artifacts_common::artifacts::PIPETTE_LINUX_X64"],"optional":[]}"#;
         let result = ResolvedArtifactSelections::from_artifact_list_json(
             json,
             target_lexicon::Architecture::X86_64,
