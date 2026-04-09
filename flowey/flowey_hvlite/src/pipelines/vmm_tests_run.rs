@@ -24,13 +24,6 @@ use std::process::Command;
 use std::process::Stdio;
 
 /// Build and run VMM tests with automatic artifact discovery
-///
-/// This is a convenience command that combines `vmm-tests-discover` and `vmm-tests`
-/// into a single step. It automatically discovers required artifacts for the
-/// specified filter and then builds and runs the tests.
-///
-/// Example usage:
-///   cargo xflowey vmm-tests-run --filter "test(ubuntu)" --target windows-x64 --dir /mnt/q/vmm_tests_out/
 #[derive(clap::Args)]
 pub struct VmmTestsRunCli {
     /// Specify what target to build the VMM tests for
