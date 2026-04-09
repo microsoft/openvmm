@@ -14,7 +14,9 @@
 // sendmsg_x (private Apple API) with a manually built msghdr_x array.
 #![expect(unsafe_code)]
 
+#[cfg(target_os = "linux")]
 use std::mem::size_of;
+
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
@@ -25,7 +27,7 @@ use std::os::unix::io::AsRawFd;
 /// On Linux this calls `setsockopt(IPPROTO_UDP, UDP_SEGMENT, size)`, which
 /// persists for the lifetime of the connection. When `size` is 0 the option
 /// is cleared and normal (non-GSO) sends resume.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
     // SAFETY: setsockopt with a valid u16 optval per Linux udp(7) documentation
     // for UDP_SEGMENT.
@@ -48,7 +50,10 @@ pub fn set_udp_gso_size(socket: &UdpSocket, size: u16) -> std::io::Result<()> {
 ///
 /// On macOS the segment size is conveyed per-send via `sendmsg_x`, so there
 /// is nothing to configure on the socket itself. This is a no-op.
-#[cfg(target_os = "macos")]
+///
+/// On other Unix targets (e.g. *BSD), UDP GSO is not supported, so this is
+/// also a no-op.
+#[cfg(not(target_os = "linux"))]
 pub fn set_udp_gso_size(_socket: &UdpSocket, _size: u16) -> std::io::Result<()> {
     Ok(())
 }
@@ -59,6 +64,9 @@ pub fn set_udp_gso_size(_socket: &UdpSocket, _size: u16) -> std::io::Result<()> 
 /// [`set_udp_gso_size`]. The kernel then automatically splits the outgoing
 /// buffer into datagrams of that size, so this is just a plain `send_to`
 /// regardless of the `gso` value.
+///
+/// On other non-macOS Unix targets, this is also a plain `send_to` (GSO is
+/// not supported).
 #[cfg(not(target_os = "macos"))]
 pub fn send_to(
     socket: &UdpSocket,
@@ -127,6 +135,20 @@ pub fn send_to(
         ));
     }
 
+    // Cap the number of segments to avoid large allocations and excessive CPU
+    // from guest-controlled small segment sizes (e.g., seg_size = 1 on a 64 KB
+    // buffer would produce 65 535 entries). When the cap is exceeded, fall back
+    // to sending each chunk individually.
+    const MAX_BATCH_SEGMENTS: usize = 64;
+    let num_segments = data.len().div_ceil(seg_size);
+    if num_segments > MAX_BATCH_SEGMENTS {
+        let mut total = 0;
+        for chunk in data.chunks(seg_size) {
+            total += socket.send_to(chunk, *dst)?;
+        }
+        return Ok(total);
+    }
+
     // Build one iovec per segment.
     let iovecs: Vec<libc::iovec> = data
         .chunks(seg_size)
@@ -168,9 +190,13 @@ pub fn send_to(
         return Err(std::io::Error::last_os_error());
     }
 
+    // Clamp to the number of messages we actually submitted. sendmsg_x is a
+    // private API, so defensively guard against an out-of-range return value.
+    let sent = (sent as usize).min(iovecs.len());
+
     // sendmsg_x returns the number of messages queued. Sum the byte counts of
     // the successfully sent entries to produce the total byte count.
-    Ok(iovecs[..sent as usize].iter().map(|iov| iov.iov_len).sum())
+    Ok(iovecs[..sent].iter().map(|iov| iov.iov_len).sum())
 }
 
 /// Checks whether the host has at least one non-link-local, non-loopback

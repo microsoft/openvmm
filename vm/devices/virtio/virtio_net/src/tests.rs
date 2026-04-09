@@ -1301,9 +1301,11 @@ fn tx_offload_tso6() {
     assert_eq!(meta.max_segment_size, 1440);
 }
 
-/// TSO without needs_csum: GSO fields should still be parsed.
+/// TSO without needs_csum: per the virtio spec, all GSO features require
+/// VIRTIO_NET_F_CSUM and packets must set NEEDS_CSUM. When needs_csum is
+/// false, segmentation offload must not be enabled.
 #[test]
-fn tx_offload_tso_without_needs_csum() {
+fn tx_offload_tso_without_needs_csum_ignored() {
     let header = make_virtio_header(
         false, // no needs_csum
         VirtioNetHeaderGsoProtocol::TCPV4,
@@ -1319,9 +1321,14 @@ fn tx_offload_tso_without_needs_csum() {
         features_tso(),
         no_bank1(),
     );
-    assert!(meta.flags.offload_tcp_segmentation());
-    assert!(meta.flags.is_ipv4());
-    assert_eq!(meta.max_segment_size, 1460);
+    assert!(
+        !meta.flags.offload_tcp_segmentation(),
+        "TSO must not be set without NEEDS_CSUM"
+    );
+    assert_eq!(
+        meta.max_segment_size, 0,
+        "no segmentation without NEEDS_CSUM"
+    );
 }
 
 /// USO4: gso_type=UDP_L4 with IPv4 EtherType.
