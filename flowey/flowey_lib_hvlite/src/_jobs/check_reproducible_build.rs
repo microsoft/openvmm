@@ -46,22 +46,10 @@ impl SimpleFlowNode for Node {
                 log::info!("  dir b: {}", dir_b.display());
 
                 for name in &file_names {
-                    let bytes_a = fs_err::read(dir_a.join(name))?;
-                    let bytes_b = fs_err::read(dir_b.join(name))?;
-
-                    if bytes_a != bytes_b {
-                        let first_diff =
-                            bytes_a.iter().zip(bytes_b.iter()).position(|(a, b)| a != b);
-                        anyhow::bail!(
-                            "file {name} is not byte-identical \
-                             ({} vs {} bytes, first diff at offset {:?})",
-                            bytes_a.len(),
-                            bytes_b.len(),
-                            first_diff,
-                        );
-                    }
-
-                    log::info!("  {name}: OK ({} bytes)", bytes_a.len());
+                    let file_a = dir_a.join(name);
+                    let file_b = dir_b.join(name);
+                    flowey::shell_cmd!(rt, "cmp {file_a} {file_b}").run()?;
+                    log::info!("  {name}: OK");
                 }
 
                 log::info!("all artifacts match!");

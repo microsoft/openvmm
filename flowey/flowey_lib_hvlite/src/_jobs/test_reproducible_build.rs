@@ -8,7 +8,7 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        /// Recipe name to pass to `cargo xflowey build-reproducible` (e.g. "x64-cvm").
+        /// Recipe name to pass to `build-reproducible` (e.g. "x64-cvm").
         pub recipe: String,
         /// Directory to publish the local build-reproducible igvm output to.
         pub artifact_dir_local_igvm: ReadVar<PathBuf>,
@@ -55,27 +55,17 @@ impl SimpleFlowNode for Node {
 
                 rt.sh.change_dir(&hvlite_repo);
 
-                let shell_nix = hvlite_repo.join("shell.nix");
-                log::info!("compiling flowey_hvlite inside nix-shell");
-                flowey::shell_cmd!(rt, "nix-shell {shell_nix} --pure --run")
-                    .arg("cargo build -p flowey_hvlite")
+                flowey::shell_cmd!(rt, "cargo xflowey build-reproducible {recipe} --release")
+                    .env(
+                        "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_REPRODUCIBLE_IN_CI",
+                        "true",
+                    )
                     .run()?;
 
-                let flowey_bin = hvlite_repo.join("target/debug/flowey_hvlite");
-                log::info!("running {flowey_bin:?} pipeline run build-reproducible {recipe}");
-                flowey::shell_cmd!(
-                    rt,
-                    "{flowey_bin} pipeline run build-reproducible {recipe} --release"
-                )
-                .env(
-                    "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_REPRODUCIBLE_IN_CI",
-                    "true",
-                )
-                .run()?;
-
-                let local_igvm_dir = hvlite_repo.join("flowey-out/artifacts/x64-cvm-openhcl-igvm");
+                let local_igvm_dir =
+                    hvlite_repo.join(format!("flowey-out/artifacts/{recipe}-openhcl-igvm"));
                 let local_igvm_extras_dir =
-                    hvlite_repo.join("flowey-out/artifacts/x64-cvm-openhcl-igvm-extras");
+                    hvlite_repo.join(format!("flowey-out/artifacts/{recipe}-openhcl-igvm-extras"));
 
                 log::info!("publishing local build output");
                 flowey::util::copy_dir_all(&local_igvm_dir, &publish_dir)?;
