@@ -71,16 +71,19 @@ impl FlowNodeWithConfig for Node {
                 Request::GetCommands(v) => write_commands.push(v),
             }
         }
+
+        let installed = installed;
+        let write_commands = write_commands;
+
+        // Return if no requests specified
+        if installed.is_empty() && write_commands.is_empty() {
+            return Ok(());
+        }
+
         let selections = config
             .selections
             .ok_or(anyhow::anyhow!("missing config: selections"))?;
         let auto_install = config.auto_install;
-        let installed = installed;
-        let write_commands = write_commands;
-        // Early return if no install or command requests - Select is not required in this case
-        if installed.is_empty() && write_commands.is_empty() {
-            return Ok(());
-        }
         let installing = !installed.is_empty();
 
         match selections {
