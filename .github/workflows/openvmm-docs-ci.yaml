@@ -18,7 +18,7 @@ on:
     - Guide/**
     - petri/logview/**
     - .github/workflows/openvmm-docs-*.yaml
-    - flowey/flowey_hvlite/src/pipelines/build_docs.rs
+    - flowey/**
 jobs:
   job0:
     name: build mdbook guide

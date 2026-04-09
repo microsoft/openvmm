@@ -48,7 +48,7 @@ impl IntoPipeline for BuildDocsCli {
                 "Guide/**".into(),
                 "petri/logview/**".into(),
                 ".github/workflows/openvmm-docs-*.yaml".into(),
-                "flowey/flowey_hvlite/src/pipelines/build_docs.rs".into(),
+                "flowey/**".into(),
             ];
             match config {
                 PipelineConfig::Ci => {
