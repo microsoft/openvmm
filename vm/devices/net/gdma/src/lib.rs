@@ -359,9 +359,7 @@ impl ChangeDeviceState for GdmaDevice {
 
     async fn stop(&mut self) {}
 
-    async fn reset(&mut self) {
-        todo!()
-    }
+    async fn reset(&mut self) {}
 }
 
 impl ChipsetDevice for GdmaDevice {
@@ -375,10 +373,11 @@ impl ChipsetDevice for GdmaDevice {
 }
 
 impl SaveRestore for GdmaDevice {
+    // This device should be constructed with `omit_saved_state`.
     type SavedState = SavedStateNotSupported;
 
     fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-        todo!()
+        Err(SaveError::NotSupported)
     }
 
     fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
