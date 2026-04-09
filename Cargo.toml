@@ -596,7 +596,7 @@ lto = 'thin'
 [profile.underhill-ship]
 inherits = 'release'
 codegen-units = 1
-lto = 'fat'
+lto = 'thin'
 
 [profile.dev]
 panic = 'abort'
@@ -629,7 +629,7 @@ inherits = 'release'
 panic = 'abort'
 codegen-units = 1
 opt-level = 'z'
-lto = 'fat'
+lto = 'thin'
 
 # Optimize minimal_rt_reloc even in the dev profile to ensure no relocations
 # creep into the relocate function.

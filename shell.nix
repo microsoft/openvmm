@@ -69,6 +69,7 @@ let
     # Include both musl targets for cross-compilation
     targets = [
       "x86_64-unknown-linux-musl"
+      "x86_64-unknown-linux-gnu"
       "x86_64-unknown-none"
       "aarch64-unknown-linux-musl"
       "aarch64-unknown-none"
