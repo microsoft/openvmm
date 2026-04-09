@@ -147,7 +147,7 @@ impl SimpleFlowNode for Node {
                 });
                 ctx.config(crate::install_vmm_tests_deps::Config {
                     auto_install: Some(auto_install),
-                    ..Default::default()
+                    selections: None,
                 });
             }
 

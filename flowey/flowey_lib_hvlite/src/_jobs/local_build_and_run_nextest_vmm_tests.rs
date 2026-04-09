@@ -649,7 +649,7 @@ impl SimpleFlowNode for Node {
 
         ctx.config(crate::install_vmm_tests_deps::Config {
             selections: Some(deps),
-            ..Default::default()
+            auto_install: None,
         });
         let dep_install_cmds = ctx.reqv(crate::install_vmm_tests_deps::Request::GetCommands);
 

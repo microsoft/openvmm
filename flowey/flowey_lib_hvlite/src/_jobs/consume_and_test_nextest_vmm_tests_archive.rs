@@ -146,7 +146,7 @@ impl SimpleFlowNode for Node {
                 target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                 os => anyhow::bail!("unsupported target operating system: {os}"),
             }),
-            ..Default::default()
+            auto_install: None,
         });
 
         let arch = match target.architecture {
