@@ -593,8 +593,7 @@ EOF
     ) -> anyhow::Result<Option<schema_ado_yaml::TriggerPaths>> {
         match (paths.is_empty(), exclude_paths.is_empty()) {
             (true, true) => Ok(None),
-            (true, false) => anyhow::bail!("exclude_paths specified without paths"),
-            (false, _) => Ok(Some(schema_ado_yaml::TriggerPaths {
+            (true, false) | (false, _) => Ok(Some(schema_ado_yaml::TriggerPaths {
                 include: paths,
                 exclude: (!exclude_paths.is_empty()).then_some(exclude_paths),
             })),
