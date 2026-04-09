@@ -572,7 +572,7 @@ mod tap_tests {
                 l2_len: 14,
                 l3_len: 20,
                 l4_len: 20,
-                max_tcp_segment_size: 1460,
+                max_segment_size: 1460,
             }),
             gpa: 0,
             len: frame_len,

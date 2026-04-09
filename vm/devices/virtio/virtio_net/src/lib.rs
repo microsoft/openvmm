@@ -1131,9 +1131,13 @@ impl Worker {
 
         // GSO (segmentation offload) — only honor if the corresponding
         // HOST_TSO/HOST_USO feature was negotiated. Per the virtio spec, all
-        // GSO features require VIRTIO_NET_F_CSUM; guard against a misbehaving
-        // guest that negotiates GSO without CSUM.
-        let gso_enabled = features.csum()
+        // GSO features require VIRTIO_NET_F_CSUM and packets must set
+        // NEEDS_CSUM; guard against a misbehaving guest that sends GSO
+        // packets without CSUM negotiated or without the per-packet flag.
+        // Requiring NEEDS_CSUM ensures that the checksum-field validation
+        // above has run and produced validated l2_len/l3_len values.
+        let gso_enabled = flags_byte.needs_csum()
+            && features.csum()
             && match gso_protocol {
                 VirtioNetHeaderGsoProtocol::TCPV4 => features.host_tso4(),
                 VirtioNetHeaderGsoProtocol::TCPV6 => features.host_tso6(),
@@ -1147,10 +1151,9 @@ impl Worker {
 
             // Validate gso_size and l2_len before enabling segmentation.
             if l2_len > 0 && header.gso_size > 0 {
-                // Derive l3_len from csum_start if we haven't already.
-                if l3_len == 0 && header.csum_start > l2_len as u16 {
-                    l3_len = header.csum_start - l2_len as u16;
-                }
+                // l3_len was derived from the validated csum_start in the
+                // NEEDS_CSUM block above. Do not re-derive it here from
+                // unvalidated header fields.
 
                 let is_udp = gso_protocol == VirtioNetHeaderGsoProtocol::UDP_L4;
 
@@ -1167,7 +1170,11 @@ impl Worker {
 
                 // For UDP GSO, hdr_len==0 is acceptable (fixed 8-byte header).
                 // For TCP GSO, we need a valid l4_len to proceed.
-                let valid_lengths = l3_len > 0 && (l4_len > 0 || (is_udp && header.hdr_len == 0));
+                // Also require a known IP version; backends need consistent
+                // is_ipv4/is_ipv6 flags for correct offload processing.
+                let valid_lengths = l3_len > 0
+                    && (is_ipv4 || is_ipv6)
+                    && (l4_len > 0 || (is_udp && header.hdr_len == 0));
 
                 if valid_lengths {
                     if is_udp {
