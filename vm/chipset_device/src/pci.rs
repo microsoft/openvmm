@@ -13,52 +13,94 @@ pub trait PciConfigSpace: ChipsetDevice {
     /// Dispatch a PCI config space write to the device with the given address.
     fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult;
 
-    /// Forward a PCI configuration space read to a downstream device.
+    /// Handle a PCI configuration space read with full routing context.
     ///
-    /// Default implementation returns `None`, indicating this device doesn't support routing.
-    /// Routing components like switches and bridges should override this method.
+    /// This method receives configuration space accesses with the target bus
+    /// and function number. The interpretation of `function` depends on the
+    /// bus topology: on a legacy PCI bus it carries packed device/function
+    /// bits (0..=255), while downstream of a PCIe port the device number is
+    /// always zero so all 8 bits represent functions within a single
+    /// endpoint.
+    ///
+    /// A device can distinguish Type 0 (local) from Type 1 (forwarded)
+    /// configuration cycles by comparing `target_bus` and `secondary_bus`:
+    /// when they are equal the access targets this device directly (Type 0),
+    /// otherwise it should be routed downstream (Type 1). An SR-IOV
+    /// capable device can use `secondary_bus` together with `target_bus` and
+    /// `function` to compute the VF number.
+    ///
+    /// The default implementation dispatches function 0 to
+    /// [`pci_cfg_read`](Self::pci_cfg_read) and returns all-1s for other
+    /// functions (the standard "no device present" response). Routing
+    /// components (switches, bridges) and multi-function devices should
+    /// override this method.
     ///
     /// # Parameters
-    /// - `bus`: Target bus number for the downstream device
-    /// - `device_function`: Combined device and function number (device << 3 | function)
-    /// - `offset`: Configuration space offset within the target device
+    /// - `secondary_bus`: The secondary bus number of the downstream port
+    ///   that forwarded this access
+    /// - `target_bus`: The bus number targeted by the configuration access
+    /// - `function`: Device/function identifier — packed device/function on
+    ///   a legacy bus, or flat function number on PCIe
+    /// - `offset`: Configuration space offset
     /// - `value`: Pointer to receive the read value
-    ///
-    /// # Returns
-    /// `Some(IoResult)` if the routing component handled the forward, `None` if
-    /// the component doesn't support routing or the target is not reachable.
-    fn pci_cfg_read_forward(
+    fn pci_cfg_read_with_routing(
         &mut self,
-        _bus: u8,
-        _device_function: u8,
-        _offset: u16,
-        _value: &mut u32,
-    ) -> Option<IoResult> {
-        None
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: &mut u32,
+    ) -> IoResult {
+        if secondary_bus == target_bus && function == 0 {
+            self.pci_cfg_read(offset, value)
+        } else {
+            *value = !0;
+            IoResult::Ok
+        }
     }
 
-    /// Forward a PCI configuration space write to a downstream device.
+    /// Handle a PCI configuration space write with full routing context.
     ///
-    /// Default implementation returns `None`, indicating this device doesn't support routing.
-    /// Routing components like switches and bridges should override this method.
+    /// This method receives configuration space accesses with the target bus
+    /// and function number. The interpretation of `function` depends on the
+    /// bus topology: on a legacy PCI bus it carries packed device/function
+    /// bits (0..=255), while downstream of a PCIe port the device number is
+    /// always zero so all 8 bits represent functions within a single
+    /// endpoint.
+    ///
+    /// A device can distinguish Type 0 (local) from Type 1 (forwarded)
+    /// configuration cycles by comparing `target_bus` and `secondary_bus`:
+    /// when they are equal the access targets this device directly (Type 0),
+    /// otherwise it should be routed downstream (Type 1). An SR-IOV
+    /// capable device can use `secondary_bus` together with `target_bus` and
+    /// `function` to compute the VF number.
+    ///
+    /// The default implementation dispatches function 0 to
+    /// [`pci_cfg_write`](Self::pci_cfg_write) and silently drops writes to
+    /// other functions. Routing components (switches, bridges) and
+    /// multi-function devices should override this method.
     ///
     /// # Parameters
-    /// - `bus`: Target bus number for the downstream device
-    /// - `device_function`: Combined device and function number (device << 3 | function)
-    /// - `offset`: Configuration space offset within the target device
-    /// - `value`: Value to write to the target device
-    ///
-    /// # Returns
-    /// `Some(IoResult)` if the routing component handled the forward, `None` if
-    /// the component doesn't support routing or the target is not reachable.
-    fn pci_cfg_write_forward(
+    /// - `secondary_bus`: The secondary bus number of the downstream port
+    ///   that forwarded this access
+    /// - `target_bus`: The bus number targeted by the configuration access
+    /// - `function`: Device/function identifier — packed device/function on
+    ///   a legacy bus, or flat function number on PCIe
+    /// - `offset`: Configuration space offset
+    /// - `value`: Value to write
+    fn pci_cfg_write_with_routing(
         &mut self,
-        _bus: u8,
-        _device_function: u8,
-        _offset: u16,
-        _value: u32,
-    ) -> Option<IoResult> {
-        None
+        secondary_bus: u8,
+        target_bus: u8,
+        function: u8,
+        offset: u16,
+        value: u32,
+    ) -> IoResult {
+        if secondary_bus == target_bus && function == 0 {
+            self.pci_cfg_write(offset, value)
+        } else {
+            IoResult::Ok
+        }
     }
 
     /// Check if the device has a suggested (bus, device, function) it expects

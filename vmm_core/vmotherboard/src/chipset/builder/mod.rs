@@ -67,7 +67,7 @@ impl ChipsetDevices {
         driver_source: &VmTaskDriverSource,
         units: &StateUnits,
         name: impl Into<Arc<str>>,
-        f: impl AsyncFnOnce(&mut dyn RegisterMmioIntercept) -> anyhow::Result<T>,
+        f: impl AsyncFnOnce(&mut (dyn RegisterMmioIntercept + Send)) -> anyhow::Result<T>,
     ) -> anyhow::Result<(DynamicDeviceUnit, Arc<CloseableMutex<T>>)> {
         let name = name.into();
         let arc_builder = Arc::<CloseableMutex<T>>::new_cyclic_builder();

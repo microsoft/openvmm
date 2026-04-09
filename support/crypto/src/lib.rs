@@ -7,19 +7,25 @@
 //! Unix, BCrypt on Windows) so that callers never interact with the underlying
 //! backend directly.
 
+// UNSAFETY: calling BCrypt APIs
+#![cfg_attr(windows, expect(unsafe_code))]
+
 // TODO: Symcrypt somehow
 // TODO: Rustcrypto backend for ease of use
 
 // pub mod aes_256_cbc;
-// pub mod aes_256_gcm;
+pub mod aes_256_gcm;
 // pub mod aes_key_wrap;
 // pub mod hmac_sha_256;
 // pub mod kdf;
-// pub mod pkcs7;
+#[cfg(unix)]
+pub mod pkcs7;
 // pub mod rsa;
 // pub mod sha_256;
 // pub mod x509;
 pub mod xts_aes_256;
+
+pub(crate) mod win;
 
 use thiserror::Error;
 

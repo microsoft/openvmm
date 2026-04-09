@@ -5,7 +5,7 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
-#![cfg_attr(not(test), forbid(unsafe_code))]
+#![forbid(unsafe_code)]
 
 mod cli_args;
 mod crash_dump;
@@ -170,7 +170,8 @@ pub fn openvmm_main() {
     #[cfg(unix)]
     let orig_termios = io::stderr().is_terminal().then(term::get_termios);
 
-    let exit_code = match do_main() {
+    let mut pidfile_path = None;
+    let exit_code = match do_main(&mut pidfile_path) {
         Ok(_) => 0,
         Err(err) => {
             eprintln!("fatal error: {:?}", err);
@@ -182,6 +183,12 @@ pub fn openvmm_main() {
     #[cfg(unix)]
     if let Some(orig_termios) = orig_termios {
         term::set_termios(orig_termios);
+    }
+
+    // Clean up the pidfile before terminating, since pal::process::terminate
+    // skips destructors.
+    if let Some(ref path) = pidfile_path {
+        let _ = std::fs::remove_file(path);
     }
 
     // Terminate the process immediately without graceful shutdown of DLLs or
@@ -744,22 +751,6 @@ async fn vm_config_from_command_line(
         vmbus_devices.push(nic_config.into_netvsp_handle());
     }
 
-    if opt.mcr {
-        tracing::info!("Instantiating MCR controller");
-
-        // Arbitrary but constant instance ID to be consistent across boots.
-        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
-
-        vpci_devices.push(VpciDeviceConfig {
-            vtl: DeviceVtl::Vtl0,
-            instance_id: MCR_INSTANCE_ID,
-            resource: mcr_resources::McrControllerHandle {
-                instance_id: MCR_INSTANCE_ID,
-            }
-            .into_resource(),
-        });
-    }
-
     // Build initial PCIe devices list from CLI options. Storage devices
     // (e.g., NVMe controllers on PCIe ports) are added later by storage_builder.
     let mut pcie_devices = Vec::new();
@@ -1125,6 +1116,7 @@ async fn vm_config_from_command_line(
         if !console_str.is_empty() {
             let _ = write!(&mut cmdline, " console={}", console_str);
         }
+
         if opt.gfx {
             cmdline += " console=tty";
         }
@@ -1162,6 +1154,11 @@ async fn vm_config_from_command_line(
             cmdline,
             custom_dsdt,
             enable_serial: any_serial_configured,
+            boot_mode: if opt.device_tree {
+                openvmm_defs::config::LinuxDirectBootMode::DeviceTree
+            } else {
+                openvmm_defs::config::LinuxDirectBootMode::Acpi
+            },
         };
     }
 
@@ -1422,8 +1419,8 @@ async fn vm_config_from_command_line(
         }
     };
 
-    let vtl0_vsock_listener = vsock_listener(opt.vsock_path.as_deref())?;
-    let vtl2_vsock_listener = vsock_listener(opt.vtl2_vsock_path.as_deref())?;
+    let vtl0_vsock_listener = vsock_listener(opt.vmbus_vsock_path.as_deref())?;
+    let vtl2_vsock_listener = vsock_listener(opt.vmbus_vtl2_vsock_path.as_deref())?;
 
     if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
@@ -1633,6 +1630,48 @@ async fn vm_config_from_command_line(
         }
     }
 
+    // Handle --vhost-user arguments.
+    #[cfg(target_os = "linux")]
+    for vhost_cli in &opt.vhost_user {
+        let stream =
+            unix_socket::UnixStream::connect(&vhost_cli.socket_path).with_context(|| {
+                format!(
+                    "failed to connect to vhost-user socket: {}",
+                    vhost_cli.socket_path
+                )
+            })?;
+
+        let resource: Resource<VirtioDeviceHandle> =
+            virtio_resources::vhost_user::VhostUserDeviceHandle {
+                socket: stream.into(),
+                device_id: vhost_cli.device_id,
+            }
+            .into_resource();
+        if let Some(pcie_port) = &vhost_cli.pcie_port {
+            pcie_devices.push(PcieDeviceConfig {
+                port_name: pcie_port.clone(),
+                resource: VirtioPciDeviceHandle(resource).into_resource(),
+            });
+        } else {
+            add_virtio_device(VirtioBusCli::Auto, resource);
+        }
+    }
+
+    if let Some(vsock_path) = &opt.virtio_vsock_path {
+        let listener = vsock_listener(Some(vsock_path))?.unwrap();
+        add_virtio_device(
+            VirtioBusCli::Auto,
+            virtio_resources::vsock::VirtioVsockHandle {
+                // The guest CID does not matter since the UDS relay does not use it. It just needs
+                // to be some non-reserved value for the guest to use.
+                guest_cid: 0x3,
+                base_path: vsock_path.clone(),
+                listener,
+            }
+            .into_resource(),
+        );
+    }
+
     let mut cfg = Config {
         chipset,
         load_mode,
@@ -1687,7 +1726,7 @@ async fn vm_config_from_command_line(
         virtio_devices,
         vmbus: with_hv.then_some(VmbusConfig {
             vsock_listener: vtl0_vsock_listener,
-            vsock_path: opt.vsock_path.clone(),
+            vsock_path: opt.vmbus_vsock_path.clone(),
             vtl2_redirect: opt.vmbus_redirect,
             vmbus_max_version: opt.vmbus_max_version,
             #[cfg(windows)]
@@ -1695,7 +1734,7 @@ async fn vm_config_from_command_line(
         }),
         vtl2_vmbus: (with_hv && opt.vtl2).then_some(VmbusConfig {
             vsock_listener: vtl2_vsock_listener,
-            vsock_path: opt.vtl2_vsock_path.clone(),
+            vsock_path: opt.vmbus_vtl2_vsock_path.clone(),
             ..Default::default()
         }),
         vmbus_devices,
@@ -1802,7 +1841,18 @@ fn parse_endpoint(
             }
         }
         EndpointConfigCli::Tap { name } => {
-            net_backend_resources::tap::TapHandle { name: name.clone() }.into_resource()
+            #[cfg(target_os = "linux")]
+            {
+                let fd = net_tap::tap::open_tap(name)
+                    .with_context(|| format!("failed to open TAP device '{name}'"))?;
+                net_backend_resources::tap::TapHandle { fd }.into_resource()
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = name;
+                bail!("TAP backend is only supported on Linux")
+            }
         }
     };
 
@@ -2144,7 +2194,7 @@ async fn save_snapshot(
     Ok(())
 }
 
-fn do_main() -> anyhow::Result<()> {
+fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
     #[cfg(windows)]
     pal::windows::disable_hard_error_dialog();
 
@@ -2161,6 +2211,12 @@ fn do_main() -> anyhow::Result<()> {
             .write_to_path(path)
             .context("failed to write protobuf descriptors")?;
         return Ok(());
+    }
+
+    if let Some(ref path) = opt.pidfile {
+        std::fs::write(path, format!("{}\n", std::process::id()))
+            .context("failed to write pidfile")?;
+        *pidfile_path = Some(path.clone());
     }
 
     if let Some(path) = opt.relay_console_path {
@@ -2621,7 +2677,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         };
 
         let params = VmWorkerParameters {
-            hypervisor: opt.hypervisor,
+            hypervisor: match &opt.hypervisor {
+                Some(name) => openvmm_helpers::hypervisor::hypervisor_resource(name)?,
+                None => openvmm_helpers::hypervisor::choose_hypervisor()?,
+            },
             cfg: vm_config,
             saved_state,
             shared_memory,

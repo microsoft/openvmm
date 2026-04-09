@@ -69,7 +69,13 @@ impl VirtioDevice for Device {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::PMEM,
-            device_features: VirtioDeviceFeatures::new(),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::new()
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 1,
             device_register_length: size_of::<PmemConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -175,7 +181,8 @@ impl AsyncRun<PmemQueue> for PmemWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_pmem_request(self, &state.mem, work);
+                    let bytes = process_pmem_request(self, &state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "queue error");
@@ -187,7 +194,11 @@ impl AsyncRun<PmemQueue> for PmemWorker {
     }
 }
 
-fn process_pmem_request(worker: &PmemWorker, mem: &GuestMemory, mut work: VirtioQueueCallbackWork) {
+fn process_pmem_request(
+    worker: &PmemWorker,
+    mem: &GuestMemory,
+    work: &VirtioQueueCallbackWork,
+) -> u32 {
     let mut req = [0; 4];
     let err = match work.read(mem, &mut req) {
         Ok(_) => match u32::from_le_bytes(req) {
@@ -213,5 +224,5 @@ fn process_pmem_request(worker: &PmemWorker, mem: &GuestMemory, mut work: Virtio
         }
     };
     let _ = work.write(mem, &u32::to_le_bytes(err));
-    work.complete(4);
+    4
 }

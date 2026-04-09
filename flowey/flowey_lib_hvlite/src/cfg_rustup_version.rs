@@ -20,9 +20,10 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(_: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        ctx.req(flowey_lib_common::install_rust::Request::Version(
-            RUSTUP_TOOLCHAIN.into(),
-        ));
+        ctx.config(flowey_lib_common::install_rust::Config {
+            version: Some(RUSTUP_TOOLCHAIN.into()),
+            ..Default::default()
+        });
         Ok(())
     }
 }

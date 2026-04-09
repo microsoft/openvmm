@@ -75,7 +75,6 @@ kmsg_defs.workspace = true
 kmsg_writer.workspace = true
 hcl.workspace = true
 mana_driver.workspace = true
-mcr_resources.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 net_packet_capture.workspace = true
@@ -124,7 +123,6 @@ watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true
 
-aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 hvdef.workspace = true
 igvm.workspace = true
@@ -136,8 +134,8 @@ vm_topology.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
-vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
-vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+vmgs = { workspace = true, features = ["encryption", "save_restore"] }
+vmgs_broker = { workspace = true, features = ["encryption"] }
 vmgs_format.workspace = true
 vmgs_resources.workspace = true
 x86defs.workspace = true
@@ -184,7 +182,10 @@ tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
 
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+aarch64defs.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 firmware_pcat.workspace = true
 
 [dev-dependencies]

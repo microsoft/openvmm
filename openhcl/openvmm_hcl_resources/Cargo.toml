@@ -9,12 +9,14 @@ rust-version.workspace = true
 [features]
 # Enable building with TPM device support.
 tpm = ["dep:tpm_device"]
+vnc_worker = ["dep:vnc_worker", "dep:vmsocket"]
+debug_worker = ["dep:debug_worker", "dep:vmsocket"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 mesh_worker.workspace = true
 vm_resource.workspace = true
 vmcore.workspace = true
-vmsocket.workspace = true
+vmsocket = { workspace = true, optional = true }
 
 serial_core.workspace = true
 vmbus_serial_guest.workspace = true
@@ -30,7 +32,6 @@ chipset.workspace = true
 hyperv_ic.workspace = true
 missing_dev.workspace = true
 serial_16550.workspace = true
-serial_pl011.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 vmgs_broker.workspace = true
 
@@ -40,6 +41,9 @@ nvme = { workspace = true, optional = true }
 # Workers
 debug_worker = { workspace = true, optional = true }
 vnc_worker = { workspace = true, optional = true }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+serial_pl011.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

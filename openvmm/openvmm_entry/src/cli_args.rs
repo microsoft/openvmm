@@ -23,7 +23,6 @@ use clap::Parser;
 use clap::ValueEnum;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::Hypervisor;
 use openvmm_defs::config::PcatBootDevice;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::X2ApicConfig;
@@ -100,6 +99,12 @@ pub struct Options {
     #[clap(long)]
     pub hv: bool,
 
+    /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
+    /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
+    /// This flag selects the legacy DT-only path. Rejected on x86.
+    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
+    pub device_tree: bool,
+
     /// enable vtl2 - only supported in WHP and simulated without hypervisor support currently
     ///
     /// Currently implies --get.
@@ -125,12 +130,12 @@ pub struct Options {
     pub isolation: Option<IsolationCli>,
 
     /// the hybrid vsock listener path
-    #[clap(long, value_name = "PATH")]
-    pub vsock_path: Option<String>,
+    #[clap(long, value_name = "PATH", alias = "vsock-path")]
+    pub vmbus_vsock_path: Option<String>,
 
     /// the VTL2 hybrid vsock listener path
-    #[clap(long, value_name = "PATH", requires("vtl2"))]
-    pub vtl2_vsock_path: Option<String>,
+    #[clap(long, value_name = "PATH", requires("vtl2"), alias = "vtl2-vsock-path")]
+    pub vmbus_vtl2_vsock_path: Option<String>,
 
     /// the late map vtl0 ram access policy when vtl2 is enabled
     #[clap(long, requires("vtl2"), default_value = "halt")]
@@ -235,6 +240,27 @@ options:
 "#)]
     #[clap(long = "virtio-blk")]
     pub virtio_blk: Vec<DiskCli>,
+
+    /// Attach a vhost-user device via a Unix socket.
+    ///
+    /// The first positional argument is the socket path. Options:
+    ///
+    /// ```text
+    ///   type=blk|net|rng|console|fs|pmem  — device type (shorthand)
+    ///   device_id=N                        — numeric virtio device ID
+    ///   pcie_port=NAME                     — present on PCIe under the specified port
+    /// ```
+    ///
+    /// Examples:
+    ///
+    /// ```text
+    ///   --vhost-user /tmp/vhost.sock,type=blk
+    ///   --vhost-user /tmp/vhost.sock,device_id=2
+    ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
+    /// ```
+    #[cfg(target_os = "linux")]
+    #[clap(long = "vhost-user")]
+    pub vhost_user: Vec<VhostUserCli>,
 
     /// number of sub-channels for the SCSI controller
     #[clap(long, value_name = "COUNT", default_value = "0")]
@@ -430,6 +456,10 @@ options:
     #[clap(long, value_name = "PORT", requires("virtio_console"))]
     pub virtio_console_pcie_port: Option<String>,
 
+    /// add a virtio vsock device with the given Unix socket base path
+    #[clap(long, value_name = "PATH")]
+    pub virtio_vsock_path: Option<String>,
+
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///
@@ -442,6 +472,12 @@ options:
     /// send log output from the worker process to a file instead of stderr. the file will be overwritten.
     #[clap(long, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
+
+    /// write the process ID to the specified file on startup, and remove it on
+    /// exit. the file is not removed if the process is killed with SIGKILL or
+    /// crashes. no file locking is performed.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
 
     /// run as a ttrpc server on the specified Unix socket
     #[clap(long, value_name = "SOCKETPATH")]
@@ -551,8 +587,8 @@ flags:
     pub mana: Vec<NicConfigCli>,
 
     /// use a specific hypervisor interface
-    #[clap(long, value_parser = parse_hypervisor)]
-    pub hypervisor: Option<Hypervisor>,
+    #[clap(long)]
+    pub hypervisor: Option<String>,
 
     /// (dev utility) boot linux using a custom (raw) DSDT table.
     ///
@@ -649,10 +685,6 @@ flags:
     /// specify the IMC hive file for booting Windows
     #[clap(long)]
     pub imc: Option<PathBuf>,
-
-    /// Expose MCR device
-    #[clap(long)]
-    pub mcr: bool, // TODO MCR: support closed source CLI flags
 
     /// expose a battery device
     #[clap(long)]
@@ -996,6 +1028,23 @@ fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
     })
 }
 
+impl DiskCliKind {
+    /// Parse an `autocache:[key]:<kind>` disk spec, given the cache path
+    /// (normally read from `OPENVMM_AUTO_CACHE_PATH`).
+    fn parse_autocache(
+        arg: &str,
+        cache_path: Result<String, std::env::VarError>,
+    ) -> anyhow::Result<Self> {
+        let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+        let cache_path = cache_path.context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
+        Ok(DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key: (!key.is_empty()).then(|| key.to_string()),
+            disk: Box::new(kind.parse()?),
+        })
+    }
+}
+
 impl FromStr for DiskCliKind {
     type Err = anyhow::Error;
 
@@ -1042,14 +1091,7 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "autocache" => {
-                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
-                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
-                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
-                    DiskCliKind::AutoCacheSqlite {
-                        cache_path,
-                        key: (!key.is_empty()).then(|| key.to_string()),
-                        disk: Box::new(kind.parse()?),
-                    }
+                    Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => {
@@ -1501,19 +1543,6 @@ impl FromStr for NicConfigCli {
 }
 
 #[derive(Debug, Error)]
-#[error("unknown hypervisor: {0}")]
-pub struct UnknownHypervisor(String);
-
-fn parse_hypervisor(s: &str) -> Result<Hypervisor, UnknownHypervisor> {
-    match s {
-        "kvm" => Ok(Hypervisor::Kvm),
-        "mshv" => Ok(Hypervisor::MsHv),
-        "whp" => Ok(Hypervisor::Whp),
-        _ => Err(UnknownHypervisor(s.to_owned())),
-    }
-}
-
-#[derive(Debug, Error)]
 #[error("unknown VTL2 relocation type: {0}")]
 pub struct UnknownVtl2RelocationType(String);
 
@@ -1943,29 +1972,62 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct VhostUserCli {
+    pub socket_path: String,
+    pub device_id: u16,
+    pub pcie_port: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl FromStr for VhostUserCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut opts = s.split(',');
+        let socket_path = opts.next().context("missing socket path")?.to_string();
+
+        let mut device_id: Option<u16> = None;
+        let mut pcie_port: Option<String> = None;
+        for opt in opts {
+            let (key, val) = opt.split_once('=').context("expected key=value option")?;
+            match key {
+                "type" => {
+                    use virtio::spec::VirtioDeviceType;
+                    device_id = Some(match val {
+                        "net" => VirtioDeviceType::NET.0,
+                        "blk" => VirtioDeviceType::BLK.0,
+                        "console" => VirtioDeviceType::CONSOLE.0,
+                        "rng" => VirtioDeviceType::RNG.0,
+                        "fs" => VirtioDeviceType::FS.0,
+                        "pmem" => VirtioDeviceType::PMEM.0,
+                        other => anyhow::bail!("unknown vhost-user device type: '{other}'"),
+                    });
+                }
+                "device_id" => {
+                    device_id = Some(val.parse().context("invalid device_id")?);
+                }
+                "pcie_port" => {
+                    pcie_port = Some(val.to_string());
+                }
+                other => anyhow::bail!("unknown vhost-user option: '{other}'"),
+            }
+        }
+
+        let device_id = device_id.context("must specify type=<name> or device_id=<N>")?;
+
+        Ok(VhostUserCli {
+            socket_path,
+            device_id,
+            pcie_port,
+        })
+    }
+}
+
 #[cfg(test)]
-// UNSAFETY: Needed to set and remove environment variables in tests
-#[expect(unsafe_code)]
 mod tests {
     use super::*;
-
-    fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::set_var(name, value);
-        }
-        let result = f();
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var(name);
-        }
-        result
-    }
 
     #[test]
     fn test_parse_file_disk_with_create() {
@@ -2137,10 +2199,9 @@ mod tests {
 
     #[test]
     fn test_parse_autocache_sqlite_disk() {
-        // Test with environment variable set
-        let disk = with_env_var("OPENVMM_AUTO_CACHE_PATH", "/tmp/cache", || {
-            DiskCliKind::from_str("autocache::file:disk.vhd").unwrap()
-        });
+        // Test with cache path provided
+        let disk =
+            DiskCliKind::parse_autocache(":file:disk.vhd", Ok("/tmp/cache".to_string())).unwrap();
         assert!(matches!(
             disk,
             DiskCliKind::AutoCacheSqlite {
@@ -2150,8 +2211,24 @@ mod tests {
             } if cache_path == "/tmp/cache" && key.is_none()
         ));
 
-        // Test without environment variable
-        assert!(DiskCliKind::from_str("autocache::file:disk.vhd").is_err());
+        // Test with key
+        let disk =
+            DiskCliKind::parse_autocache("mykey:file:disk.vhd", Ok("/tmp/cache".to_string()))
+                .unwrap();
+        assert!(matches!(
+            disk,
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key: Some(key),
+                disk: _disk,
+            } if cache_path == "/tmp/cache" && key == "mykey"
+        ));
+
+        // Test without cache path
+        assert!(
+            DiskCliKind::parse_autocache(":file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2172,12 +2249,10 @@ mod tests {
         assert!(DiskCliKind::from_str("sqldiff:path").is_err());
 
         // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
-        }
-        assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
+        assert!(
+            DiskCliKind::parse_autocache("key:file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
 
         // Invalid blob kind
         assert!(DiskCliKind::from_str("blob:invalid:url").is_err());
@@ -2799,5 +2874,11 @@ mod tests {
         assert!(PcieRemoteCli::from_str("port,controller=").is_err());
         assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
         assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
+    }
+
+    #[test]
+    fn test_pidfile_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
     }
 }

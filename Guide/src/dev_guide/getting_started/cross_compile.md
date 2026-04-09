@@ -203,7 +203,7 @@ if [[ $1 == "build" || $1 == "run" ]]; then
         ohcl_path="$base_igvm/debug/$recipe"
         ohcl_symbols="openvmm_hcl"
 
-        args+=" --hv --vtl2 --igvm $windows_temp_win\\$ohcl_name --vtl2-vsock-path $uhdiag_path --com3 term"
+        args+=" --hv --vtl2 --igvm $windows_temp_win\\$ohcl_name --vmbus-vtl2-vsock-path $uhdiag_path --com3 term"
 
         echo "Building OpenHCL..."
         (

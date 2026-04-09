@@ -1301,6 +1301,16 @@ impl ConfigSpaceType1Emulator {
         }
         // If no PCIe Express capability is found, silently ignore the call
     }
+
+    /// Get the list of PCI capabilities.
+    pub fn capabilities(&self) -> &[Box<dyn PciCapability>] {
+        self.common.capabilities()
+    }
+
+    /// Get the list of PCI capabilities (mutable).
+    pub fn capabilities_mut(&mut self) -> &mut [Box<dyn PciCapability>] {
+        self.common.capabilities_mut()
+    }
 }
 
 mod save_restore {

@@ -100,7 +100,13 @@ impl VirtioDevice for VirtioFsDevice {
     fn traits(&self) -> DeviceTraits {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::FS,
-            device_features: VirtioDeviceFeatures::new(),
+            device_features: VirtioDeviceFeatures::new()
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::new()
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
             max_queues: 2,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -235,7 +241,8 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
             let Some(work) = work else { break };
             match work {
                 Ok(work) => {
-                    process_virtiofs_request(self, &state.mem, work);
+                    let bytes = process_virtiofs_request(self, &state.mem, &work);
+                    state.queue.complete(work, bytes);
                 }
                 Err(err) => {
                     tracing::error!(
@@ -253,10 +260,10 @@ impl AsyncRun<VirtioFsQueue> for VirtioFsWorker {
 fn process_virtiofs_request(
     worker: &VirtioFsWorker,
     mem: &GuestMemory,
-    mut work: VirtioQueueCallbackWork,
-) {
+    work: &VirtioQueueCallbackWork,
+) -> u32 {
     // Parse the request.
-    let reader = VirtioPayloadReader::new(mem, &work);
+    let reader = VirtioPayloadReader::new(mem, work);
     let request = match fuse::Request::new(reader) {
         Ok(request) => request,
         Err(e) => {
@@ -268,13 +275,20 @@ fn process_virtiofs_request(
             (worker.notify_corruption)();
             // This only happens if even the header couldn't be parsed, so there's no way
             // to send an error reply since the request's unique ID isn't known.
-            work.complete(0);
-            return;
+            return 0;
         }
     };
 
-    // Dispatch to the file system.
-    let mut sender = VirtioReplySender { work, mem };
+    // Dispatch to the file system. The sender writes the reply into guest
+    // memory but does not complete the descriptor—completion happens once,
+    // after dispatch returns. For FUSE no-reply operations (Forget,
+    // BatchForget, Destroy), send() is never called and bytes_written
+    // stays 0.
+    let mut sender = VirtioReplySender {
+        work,
+        mem,
+        bytes_written: 0,
+    };
     let mapper = worker
         .shared_memory_region
         .as_ref()
@@ -287,16 +301,21 @@ fn process_virtiofs_request(
         &mut sender,
         mapper.as_ref().map(|x| x as &dyn fuse::Mapper),
     );
+    sender.bytes_written
 }
 /// An implementation of `ReplySender` for virtio payload.
+///
+/// Writes the FUSE reply into guest memory and records the byte count.
+/// Does not complete the descriptor—the caller is responsible for that.
 struct VirtioReplySender<'a> {
-    work: VirtioQueueCallbackWork,
+    work: &'a VirtioQueueCallbackWork,
     mem: &'a GuestMemory,
+    bytes_written: u32,
 }
 
 impl fuse::ReplySender for VirtioReplySender<'_> {
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
-        let mut writer = VirtioPayloadWriter::new(self.mem, &self.work);
+        let mut writer = VirtioPayloadWriter::new(self.mem, self.work);
         let mut size = 0;
 
         // Write all the slices to the payload buffers.
@@ -306,7 +325,7 @@ impl fuse::ReplySender for VirtioReplySender<'_> {
             size += buf.len();
         }
 
-        self.work.complete(size as u32);
+        self.bytes_written = size as u32;
         Ok(())
     }
 }

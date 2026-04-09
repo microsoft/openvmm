@@ -10,16 +10,14 @@
 
 use crate::report::MetricResult;
 use anyhow::Context as _;
-
-pub const ARCH: petri_artifacts_common::tags::MachineArch =
-    petri_artifacts_common::tags::MachineArch::X86_64;
+use petri_artifacts_common::tags::MachineArch;
 
 /// Boot time configuration profile.
 ///
 /// Each profile defines a specific combination of VM features to measure.
 /// This lets us track boot time across different configurations and
 /// detect regressions in specific code paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum BootProfile {
     /// Full device set, serial agent, CIDATA disk, shared memory.
     /// The "standard" configuration that vmm_tests use.
@@ -36,22 +34,6 @@ pub enum BootProfile {
 }
 
 impl BootProfile {
-    /// Parse a profile name from a string.
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "standard" => Some(Self::Standard),
-            "quiet-serial" => Some(Self::QuietSerial),
-            "minimal" => Some(Self::Minimal),
-            "minimal-private" => Some(Self::MinimalPrivate),
-            _ => None,
-        }
-    }
-
-    /// List all available profile names.
-    pub fn all_names() -> &'static [&'static str] {
-        &["standard", "quiet-serial", "minimal", "minimal-private"]
-    }
-
     /// Whether this profile uses private memory.
     pub fn uses_private_memory(&self) -> bool {
         matches!(self, Self::MinimalPrivate)
@@ -154,7 +136,7 @@ pub struct BootTimeTest {
 
 /// Build the firmware configuration for Linux direct boot.
 pub fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    petri::Firmware::linux_direct(resolver, ARCH)
+    petri::Firmware::linux_direct(resolver, MachineArch::host())
 }
 
 /// Build artifacts for the OpenVMM backend.
@@ -163,7 +145,10 @@ pub fn build_artifacts(
 ) -> anyhow::Result<petri::PetriVmArtifacts<petri::openvmm::OpenVmmPetriBackend>> {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        MachineArch::host(),
+        true,
     )
     .context("firmware/arch not compatible with OpenVMM backend")
 }
@@ -172,7 +157,10 @@ pub fn build_artifacts(
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        MachineArch::host(),
+        true,
     );
 }
 
@@ -222,10 +210,6 @@ impl crate::harness::ColdPerfTest for BootTimeTest {
 
     fn warmup_iterations(&self) -> u32 {
         1
-    }
-
-    fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
-        register_artifacts(resolver);
     }
 
     async fn run_once(

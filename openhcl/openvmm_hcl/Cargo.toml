@@ -14,6 +14,9 @@ gdb = ["underhill_entry/gdb", "openvmm_hcl_resources/debug_worker"]
 tpm = ["openvmm_hcl_resources/tpm"]
 mem-profile-tracing = ["underhill_entry/mem-profile-tracing"]
 
+# Enable mimalloc secure mode.
+mi-secure = ["underhill_entry/mi-secure"]
+
 # Enable vmbus UI devices.
 uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worker"]
 

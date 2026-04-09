@@ -345,7 +345,21 @@ impl TestArtifactRequirements {
         let mut failed = String::new();
         let mut resolved = HashMap::new();
 
+        // Merge duplicate registrations by handle, keeping the strictest
+        // requirement (treat as required if any registration is required).
+        let mut merged: HashMap<ErasedArtifactHandle, bool> = HashMap::new();
         for &(a, optional) in &self.artifacts {
+            merged
+                .entry(a)
+                .and_modify(|existing_optional| {
+                    // `optional == true` means optional; `false` means required.
+                    // We want the strictest semantics: required if any registration is required.
+                    *existing_optional = *existing_optional && optional;
+                })
+                .or_insert(optional);
+        }
+
+        for (a, optional) in merged {
             match resolver.resolve(a) {
                 Ok(p) => {
                     resolved.insert(a, p);

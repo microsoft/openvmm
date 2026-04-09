@@ -88,10 +88,12 @@ pub struct WhpPartition {
     with_vtl0: Arc<WhpPartitionAndVtl>,
     #[inspect(skip)]
     with_vtl2: Option<Arc<WhpPartitionAndVtl>>,
+    #[inspect(skip)]
+    synic_ports: Arc<virt::synic::SynicPorts<WhpPartitionInner>>,
 }
 
 #[derive(Inspect)]
-pub struct WhpPartitionInner {
+struct WhpPartitionInner {
     vtl0: VtlPartition,
     vtl2: Option<VtlPartition>,
     #[inspect(skip)]
@@ -111,6 +113,10 @@ pub struct WhpPartitionInner {
     monitor_page: MonitorPage,
     hvstate: Hv1State,
     isolation: IsolationType,
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Inspect)]
@@ -134,6 +140,19 @@ struct VtlPartition {
     lapic: LocalApicKind,
 
     hypervisor_enlightened: bool,
+}
+
+impl VtlPartition {
+    /// Query the default CPUID result for the given leaf/subleaf from VP0.
+    #[cfg(guest_arch = "x86_64")]
+    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
+        let output = self
+            .whp
+            .vp(0)
+            .get_cpuid_output(eax, ecx)
+            .expect("cpuid should not fail");
+        [output.Eax, output.Ebx, output.Ecx, output.Edx]
+    }
 }
 
 #[derive(Inspect)]
@@ -524,11 +543,17 @@ impl virt::Partition for WhpPartition {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn as_signal_msi(
-        self: &Arc<Self>,
-        minimum_vtl: Vtl,
-    ) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
         Some(self.with_vtl(minimum_vtl).clone())
+    }
+
+    #[cfg(guest_arch = "aarch64")]
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn pci_core::msi::SignalMsi>> {
+        let v2m = self.inner.gic_v2m.as_ref()?;
+        let irqcon = self.with_vtl(minimum_vtl).clone() as Arc<dyn virt::irqcon::ControlGic>;
+        Some(Arc::new(virt::aarch64::gic_v2m::GicV2mSignalMsi::new(
+            v2m, irqcon,
+        )))
     }
 
     fn request_msi(&self, vtl: Vtl, request: MsiRequest) {
@@ -705,6 +730,8 @@ pub enum Error {
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 trait WhpResultExt<T> {
@@ -743,9 +770,15 @@ impl virt::Hypervisor for Whp {
         Ok(WhpProtoPartition { vtl0, vtl2, config })
     }
 
-    fn is_available(&self) -> Result<bool, Error> {
-        whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
+    #[cfg(guest_arch = "aarch64")]
+    fn platform_gsiv(&self) -> Option<u32> {
+        Some(WHP_PMU_GSIV)
     }
+}
+
+/// Returns whether WHP is available on this machine.
+pub fn is_available() -> Result<bool, Error> {
+    whp::capabilities::hypervisor_present().for_op("query hypervisor presence")
 }
 
 /// The prototype partition.
@@ -761,22 +794,8 @@ impl ProtoPartition for WhpProtoPartition<'_> {
     type Error = Error;
 
     #[cfg(guest_arch = "x86_64")]
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        // This call should never fail unless there is a kernel or hypervisor
-        // bug.
-        let output = self
-            .vtl0
-            .whp
-            .vp(0)
-            .get_cpuid_output(eax, ecx)
-            .expect("cpuid should not fail");
-
-        [output.Eax, output.Ebx, output.Ecx, output.Edx]
-    }
-
-    #[cfg(guest_arch = "x86_64")]
     fn max_physical_address_size(&self) -> u8 {
-        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        virt::x86::max_physical_address_size_from_cpuid(&|eax, ecx| self.vtl0.cpuid(eax, ecx))
     }
 
     #[cfg(not(guest_arch = "x86_64"))]
@@ -811,10 +830,13 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             })
         });
 
+        let synic_ports = Arc::new(virt::synic::SynicPorts::new(inner.clone()));
+
         let partition = WhpPartition {
             inner,
             with_vtl0,
             with_vtl2,
+            synic_ports,
         };
         partition.validate_is_reset(Vtl::Vtl0);
         if partition.inner.vtl2.is_some() {
@@ -927,6 +949,15 @@ impl WhpPartitionInner {
             }
 
             cpuid.extend(config.cpuid);
+
+            // Add topology CPUID leaves.
+            virt::x86::topology::topology_cpuid(
+                proto_config.processor_topology,
+                &|eax, ecx| vtl0.cpuid(eax, ecx),
+                &mut cpuid,
+            )
+            .map_err(Error::TopologyCpuid)?;
+
             virt::CpuidLeafSet::new(cpuid)
         };
 
@@ -992,18 +1023,7 @@ impl WhpPartitionInner {
         let caps = {
             let mut caps = virt::x86::X86PartitionCapabilities::from_cpuid(
                 proto_config.processor_topology,
-                &mut |function, index| {
-                    let output = vtl0
-                        .whp
-                        .vp(0)
-                        .get_cpuid_output(function, index)
-                        .expect("cpuid should not fail");
-                    cpuid.result(
-                        function,
-                        index,
-                        &[output.Eax, output.Ebx, output.Ecx, output.Edx],
-                    )
-                },
+                &mut |function, index| cpuid.result(function, index, &vtl0.cpuid(function, index)),
             )
             .map_err(Error::Capabilities)?;
             caps.can_freeze_time = true;
@@ -1012,7 +1032,15 @@ impl WhpPartitionInner {
             caps
         };
         #[cfg(guest_arch = "aarch64")]
-        let caps = virt::aarch64::Aarch64PartitionCapabilities {};
+        let caps = {
+            let features =
+                whp::capabilities::processor_features().for_op("get processor features")?;
+            virt::aarch64::Aarch64PartitionCapabilities {
+                supports_aarch32_el0: features
+                    .bank0
+                    .is_set(whp::abi::WHV_PROCESSOR_FEATURES::El0Aarch32),
+            }
+        };
 
         let vendor = match whp::capabilities::processor_vendor().for_op("get processor vendor")? {
             whp::abi::WHvProcessorVendorIntel => Vendor::INTEL,
@@ -1061,6 +1089,9 @@ impl WhpPartitionInner {
             monitor_page: MonitorPage::new(),
             hvstate,
             isolation: proto_config.isolation,
+            #[cfg(guest_arch = "aarch64")]
+            gic_v2m: proto_config.processor_topology.gic_v2m(),
+            synic_ports: Default::default(),
         };
 
         Ok(inner)
@@ -1236,14 +1267,20 @@ impl VtlPartition {
             let gic_params = whp::abi::WHV_ARM64_IC_PARAMETERS {
                 EmulationMode: whp::abi::WHV_ARM64_IC_EMULATION_MODE::GicV3,
                 Reserved: 0,
-                // TODO: Make all of these values configurable.
-                // Using legacy Hyper-V defaults for now.
                 GicV3Parameters: whp::abi::WHV_ARM64_IC_GIC_V3_PARAMETERS {
                     GicdBaseAddress: config.processor_topology.gic_distributor_base(),
                     GitsTranslatorBaseAddress: 0,
                     Reserved: 0,
-                    GicLpiIntIdBits: 1,
-                    GicPpiOverflowInterruptFromCntv: 0x14,
+                    // When v2m is configured, disable LPI support
+                    // (GICD_TYPER.LPIS=0) so Linux uses the GICv2m MSI frame
+                    // instead of ITS for PCIe MSIs. Otherwise keep LPI
+                    // enabled (1 ID bit minimum).
+                    GicLpiIntIdBits: if config.processor_topology.gic_v2m().is_some() {
+                        0
+                    } else {
+                        1
+                    },
+                    GicPpiOverflowInterruptFromCntv: config.processor_topology.virt_timer_ppi(),
                     GicPpiPerformanceMonitorsInterrupt: 0x17,
                     Reserved1: [0; 6],
                 },
@@ -1587,6 +1624,10 @@ impl virt::Hv1 for WhpPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 

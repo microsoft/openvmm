@@ -18,6 +18,7 @@ use flowey::node::prelude::*;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 use vmm_test_images::KnownTestArtifacts;
 
@@ -107,6 +108,7 @@ define_vmm_test_selection_flags! {
 pub struct BuildSelections {
     pub openhcl: bool,
     pub openvmm: bool,
+    pub openvmm_vhost: bool,
     pub pipette_windows: bool,
     pub pipette_linux: bool,
     pub prep_steps: bool,
@@ -127,6 +129,7 @@ impl Default for BuildSelections {
             prep_steps: true,
             openhcl: true,
             openvmm: true,
+            openvmm_vhost: true,
             pipette_windows: true,
             pipette_linux: true,
             guest_test_uefi: true,
@@ -178,6 +181,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_nextest_vmm_tests::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
+        ctx.import::<crate::build_openvmm_vhost::Node>();
         ctx.import::<crate::build_pipette::Node>();
         ctx.import::<crate::build_prep_steps::Node>();
         ctx.import::<crate::build_tmks::Node>();
@@ -420,6 +424,7 @@ impl SimpleFlowNode for Node {
         if !linux_host {
             build.openhcl = false;
             build.pipette_linux = false;
+            build.openvmm_vhost = false;
             build.tmk_vmm_linux = false;
             build.tpm_guest_tests_linux = false;
             build.test_igvm_agent_rpc_server = false;
@@ -479,6 +484,7 @@ impl SimpleFlowNode for Node {
                     release_cfg: release,
                     recipe: recipe_to_use,
                     custom_target: None,
+                    extra_features: BTreeSet::new(),
                     built_openvmm_hcl,
                     built_openhcl_boot,
                     built_openhcl_igvm,
@@ -555,6 +561,16 @@ impl SimpleFlowNode for Node {
                 ));
             }
             output
+        });
+
+        let register_openvmm_vhost = build.openvmm_vhost.then(|| {
+            ctx.reqv(|v| crate::build_openvmm_vhost::Request {
+                params: crate::build_openvmm_vhost::OpenvmmVhostBuildParams {
+                    target: target.clone(),
+                    profile: CommonProfile::from_release(release),
+                },
+                openvmm_vhost: v,
+            })
         });
 
         let register_pipette_windows = build.pipette_windows.then(|| {
@@ -837,17 +853,18 @@ impl SimpleFlowNode for Node {
 
         let vmm_test_artifacts_dir = test_content_dir.join("images");
         fs_err::create_dir_all(&vmm_test_artifacts_dir)?;
-        ctx.req(
-            crate::download_openvmm_vmm_tests_artifacts::Request::CustomCacheDir(
-                vmm_test_artifacts_dir,
-            ),
-        );
+        ctx.config(crate::download_openvmm_vmm_tests_artifacts::Config {
+            custom_cache_dir: Some(vmm_test_artifacts_dir),
+            ..Default::default()
+        });
 
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
         let test_artifacts_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        ctx.req(crate::install_vmm_tests_deps::Request::Select(deps));
+        ctx.config(crate::install_vmm_tests_deps::Config {
+            selections: Some(deps),
+        });
         let dep_install_cmds = ctx.reqv(crate::install_vmm_tests_deps::Request::GetCommands);
 
         // use the copied archive file
@@ -904,6 +921,7 @@ impl SimpleFlowNode for Node {
             test_content_dir: ReadVar::from_static(test_content_dir.clone()),
             vmm_tests_target: target_triple.clone(),
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,

@@ -136,6 +136,21 @@ impl IntoPipeline for VmmTestsCli {
             _ => anyhow::bail!("Unsupported architecture: {:?}", target_architecture),
         };
 
+        // When running Windows binaries under WSL, the output directory must be
+        // a Windows path (e.g., /mnt/c/..., /mnt/d/...) because Windows
+        // requires the VHDs to live in a Windows directory.
+        if flowey_cli::running_in_wsl()
+            && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+            && !flowey_cli::is_wsl_windows_path(&dir)
+        {
+            anyhow::bail!(
+                "When targeting Windows from WSL, --dir must be a path on Windows \
+                     (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
+                     Got: {}",
+                dir.display()
+            );
+        }
+
         let mut job = pipeline.new_job(
             FlowPlatform::host(backend_hint),
             FlowArch::host(backend_hint),
@@ -173,6 +188,7 @@ impl IntoPipeline for VmmTestsCli {
                 verbose: ReadVar::from_static(verbose),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             })
             .dep_on(|ctx| {
                 flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {

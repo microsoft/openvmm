@@ -235,6 +235,7 @@ pub struct Device {
 }
 
 /// Tracks the state of a queue pair through the start_queue lifecycle.
+#[expect(clippy::large_enum_variant)]
 enum QueuePairState {
     /// No queues started for this pair.
     Empty,
@@ -254,7 +255,7 @@ impl VirtioDevice for Device {
         let offloads = &self.adapter.tx_offload_support;
 
         // VIRTIO_NET_F_CSUM: we can handle partial checksum from the guest
-        let csum = offloads.tcp || offloads.udp;
+        let csum = offloads.tcp && offloads.udp;
         // VIRTIO_NET_F_HOST_TSO4/6: we can handle TSO from the guest
         // TSO4 also requires IPv4 header checksum support since the backend
         // must compute per-segment IPv4 header checksums.
@@ -265,21 +266,29 @@ impl VirtioDevice for Device {
         // HOST_UFO (bit 14) is not offered because it is deprecated in modern
         // Linux kernels.
         let host_uso = offloads.uso && offloads.udp;
+        let host_tso = offloads.tso && offloads.tcp;
 
         let features_bank0 = NetworkFeaturesBank0::new()
             .with_mac(true)
             .with_csum(csum)
             .with_guest_csum(true)
-            .with_host_tso4(host_tso4)
-            .with_host_tso6(host_tso6);
+            .with_host_tso4(host_tso)
+            .with_host_tso6(host_tso);
 
         let features_bank1 = NetworkFeaturesBank1::new().with_host_uso(host_uso);
 
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::NET,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank(0, features_bank0.into_bits())
-                .with_bank(1, features_bank1.into_bits()),
+                .with_bank0(
+                    virtio::spec::VirtioDeviceFeaturesBank0::from_bits(features_bank0.into_bits())
+                        .with_ring_event_idx(true)
+                        .with_ring_indirect_desc(true),
+                )
+                .with_bank1(
+                    virtio::spec::VirtioDeviceFeaturesBank1::from_bits(features_bank1.into_bits())
+                        .with_ring_packed(true),
+                ),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
@@ -496,7 +505,6 @@ struct QueueStats {
 
 #[derive(Inspect)]
 struct ActiveState {
-    mem: GuestMemory,
     #[inspect(with = "|x| x.iter().flatten().count()")]
     pending_tx_packets: Vec<Option<PendingTxPacket>>,
     pending_rx_packets: VirtioWorkPool,
@@ -508,10 +516,9 @@ impl ActiveState {
     fn new(mem: GuestMemory, rx_queue_size: u16, tx_queue_size: u16) -> Self {
         Self {
             pending_tx_packets: (0..tx_queue_size).map(|_| None).collect(),
-            pending_rx_packets: VirtioWorkPool::new(mem.clone(), rx_queue_size),
+            pending_rx_packets: VirtioWorkPool::new(mem, rx_queue_size),
             data: ProcessingData::new(rx_queue_size, tx_queue_size),
             stats: Default::default(),
-            mem,
         }
     }
 }
@@ -741,30 +748,11 @@ impl Coordinator {
             worker.task_mut().state = None;
         }
 
-        let (rx_pools, ready_packets): (Vec<_>, Vec<_>) = self
-            .workers
-            .iter()
-            .map(|worker| {
-                let pool = worker
-                    .state()
-                    .unwrap()
-                    .active_state
-                    .pending_rx_packets
-                    .clone();
-                let ready = pool.ready();
-                (pool, ready)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .unzip();
-        let mut queue_config = Vec::with_capacity(rx_pools.len());
-        for (i, pool) in rx_pools.into_iter().enumerate() {
-            queue_config.push(QueueConfig {
-                pool: Box::new(pool),
-                initial_rx: ready_packets[i].as_slice(),
+        let queue_config = (0..self.workers.len())
+            .map(|_| QueueConfig {
                 driver: Box::new(c_state.adapter.driver.clone()),
-            });
-        }
+            })
+            .collect::<Vec<_>>();
 
         let mut queues = Vec::new();
         c_state
@@ -775,7 +763,12 @@ impl Coordinator {
 
         assert_eq!(queues.len(), self.workers.len());
 
-        for (worker, queue) in self.workers.iter_mut().zip(queues) {
+        for (worker, mut queue) in self.workers.iter_mut().zip(queues) {
+            let state = &mut worker.state_mut().unwrap().active_state;
+            let n = state
+                .pending_rx_packets
+                .fill_ready(&mut state.data.rx_ready);
+            queue.rx_avail(&mut state.pending_rx_packets, &state.data.rx_ready[..n]);
             worker.task_mut().state = Some(EndpointQueueState { queue });
         }
 
@@ -890,18 +883,22 @@ impl Worker {
             // This should be the only await point waiting on network traffic or
             // guest actions. Wrap it in `stop.until_stopped` to allow
             // cancellation.
+            let pending_rx_packets = &mut self.active_state.pending_rx_packets;
+            let tx_segments = &self.active_state.data.tx_segments;
+            let tx_queue = &mut self.virtio_state.tx_queue;
+            let rx_queue = &mut self.virtio_state.rx_queue;
             stop.until_stopped(std::future::poll_fn(|cx| {
-                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx) {
+                if let Poll::Ready(()) = epqueue_state.queue.poll_ready(cx, pending_rx_packets) {
                     return Poll::Ready(());
                 }
 
-                if self.active_state.data.tx_segments.is_empty()
-                    && let Poll::Ready(()) = self.virtio_state.tx_queue.poll_kick(cx)
+                if tx_segments.is_empty()
+                    && let Poll::Ready(()) = tx_queue.poll_kick(cx)
                 {
                     return Poll::Ready(());
                 }
 
-                if let Poll::Ready(()) = self.virtio_state.rx_queue.poll_kick(cx) {
+                if let Poll::Ready(()) = rx_queue.poll_kick(cx) {
                     return Poll::Ready(());
                 }
 
@@ -941,7 +938,7 @@ impl Worker {
         Ok(did_work)
     }
 
-    fn queue_tx_packet(&mut self, mut work: VirtioQueueCallbackWork) {
+    fn queue_tx_packet(&mut self, work: VirtioQueueCallbackWork) {
         let seg_start = self.active_state.data.tx_segments.len();
         match self.try_queue_tx_packet(&work) {
             Ok(idx) => {
@@ -954,7 +951,7 @@ impl Worker {
                 );
                 self.active_state.stats.tx_dropped.increment();
                 self.active_state.data.tx_segments.truncate(seg_start);
-                work.complete(0);
+                self.virtio_state.tx_queue.complete(work, 0);
             }
         }
     }
@@ -986,7 +983,7 @@ impl Worker {
         let mut peek_buf = [0u8; size_of::<VirtioNetHeader>() + ETH_PEEK];
         let bytes_read = work
             .read(
-                &self.active_state.mem,
+                self.active_state.pending_rx_packets.mem(),
                 &mut peek_buf[..header_size() + ETH_PEEK],
             )
             .map_err(TxPacketError::ReadHeader)?;
@@ -1250,17 +1247,15 @@ impl Worker {
             tracing::trace!("rx packet");
             match self.active_state.pending_rx_packets.queue_work(work) {
                 Ok(rx_id) => rx_ids.push(rx_id),
-                Err(mut work) => {
-                    tracelimit::warn_ratelimited!(
-                        "dropping RX buffer: descriptor index already in use"
-                    );
+                Err(work) => {
+                    // Reason has been traced by the callee.
                     self.active_state.stats.rx_dropped.increment();
-                    work.complete(0);
+                    self.virtio_state.rx_queue.complete(work, 0);
                 }
             }
         }
         if !rx_ids.is_empty() {
-            epqueue.rx_avail(rx_ids.as_slice());
+            epqueue.rx_avail(&mut self.active_state.pending_rx_packets, rx_ids.as_slice());
             Ok(true)
         } else {
             Ok(false)
@@ -1273,7 +1268,7 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         let state = &mut self.active_state;
         let n = epqueue
-            .rx_poll(&mut state.data.rx_ready)
+            .rx_poll(&mut state.pending_rx_packets, &mut state.data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
             return Ok(false);
@@ -1281,7 +1276,8 @@ impl Worker {
 
         for ready_id in state.data.rx_ready[..n].iter() {
             state.stats.rx_packets.increment();
-            state.pending_rx_packets.complete_packet(*ready_id);
+            let (work, bytes) = state.pending_rx_packets.take_rx_work(*ready_id);
+            self.virtio_state.rx_queue.complete(work, bytes);
         }
 
         state.stats.rx_packets_per_wake.add_sample(n as u64);
@@ -1294,7 +1290,10 @@ impl Worker {
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
         let n = epqueue
-            .tx_poll(&mut self.active_state.data.tx_done)
+            .tx_poll(
+                &mut self.active_state.pending_rx_packets,
+                &mut self.active_state.data.tx_done,
+            )
             .map_err(|tx_error| WorkerError::Endpoint(tx_error.into()))?;
         if n == 0 {
             return Ok(false);
@@ -1321,7 +1320,10 @@ impl Worker {
         }
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(&self.active_state.data.tx_segments)
+            .tx_avail(
+                &mut self.active_state.pending_rx_packets,
+                &self.active_state.data.tx_segments,
+            )
             .map_err(WorkerError::Endpoint)?;
 
         if sync {
@@ -1347,8 +1349,8 @@ impl Worker {
 
     fn complete_tx_packet(&mut self, id: TxId) -> Result<(), WorkerError> {
         let state = &mut self.active_state;
-        let mut tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
-        tx_packet.work.complete(0);
+        let tx_packet = state.pending_tx_packets[id.0 as usize].take().unwrap();
+        self.virtio_state.tx_queue.complete(tx_packet.work, 0);
         self.active_state.stats.tx_packets.increment();
         Ok(())
     }

@@ -370,10 +370,11 @@ impl StateElement<Aarch64PartitionCapabilities, Aarch64VpInfo> for SystemRegiste
         true
     }
 
-    fn at_reset(_caps: &Aarch64PartitionCapabilities, _vp: &Aarch64VpInfo) -> Self {
+    fn at_reset(caps: &Aarch64PartitionCapabilities, _vp: &Aarch64VpInfo) -> Self {
+        // ITD and SED are RES1 when aarch32 is not supported. When aarch32 is
+        // supported, they reset to 0.
+        let no_aarch32 = !caps.supports_aarch32_el0;
         Self {
-            // TODO-aarch64: the spec specifies additional 1 bits at reset, but
-            // mshv doesn't seem to match. Investigate.
             sctlr_el1: u64::from(
                 SctlrEl1::new()
                     .with_eos(true)
@@ -381,7 +382,9 @@ impl StateElement<Aarch64PartitionCapabilities, Aarch64VpInfo> for SystemRegiste
                     .with_eis(true)
                     .with_span(true)
                     .with_n_tlsmd(true)
-                    .with_lsmaoe(true),
+                    .with_lsmaoe(true)
+                    .with_itd(no_aarch32)
+                    .with_sed(no_aarch32),
             ),
             ttbr0_el1: 0,
             ttbr1_el1: 0,

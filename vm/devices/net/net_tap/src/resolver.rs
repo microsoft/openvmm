@@ -26,10 +26,7 @@ impl ResolveResource<NetEndpointHandleKind, TapHandle> for TapResolver {
         resource: TapHandle,
         _input: ResolveEndpointParams,
     ) -> Result<Self::Output, Self::Error> {
-        // TODO: accept a pre-opened fd from the resource handle instead of
-        // opening by name here, to support fd passing from Kata and similar.
-        let fd = tap::open_tap(&resource.name)?;
-        let tap = tap::Tap::new(fd)?;
+        let tap = tap::Tap::new(resource.fd)?;
 
         Ok(TapEndpoint::new(tap)?.into())
     }

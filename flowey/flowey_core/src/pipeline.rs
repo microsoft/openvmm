@@ -13,6 +13,7 @@ use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
 use crate::node::GhUserSecretVar;
+use crate::node::IntoConfig;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -33,6 +34,7 @@ use std::path::PathBuf;
 /// `flowey` prelude.
 pub mod user_facing {
     pub use super::AdoCiTriggers;
+    pub use super::AdoPool;
     pub use super::AdoPrTriggers;
     pub use super::AdoResourcesRepository;
     pub use super::AdoResourcesRepositoryRef;
@@ -328,6 +330,14 @@ impl GhRunner {
     }
 }
 
+// TODO: support a more structured format for demands
+// See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
+#[derive(Debug, Clone)]
+pub struct AdoPool {
+    pub name: String,
+    pub demands: Vec<String>,
+}
+
 /// Parameter type (unstable / stable).
 #[derive(Debug, Clone)]
 pub enum ParameterKind {
@@ -606,6 +616,7 @@ impl Pipeline {
         let idx = self.jobs.len();
         self.jobs.push(PipelineJobMetadata {
             root_nodes: BTreeMap::new(),
+            root_configs: BTreeMap::new(),
             patches: ResolvedPatches::build(),
             label: label.as_ref().into(),
             platform,
@@ -1040,8 +1051,9 @@ pub struct PipelineJob<'a> {
 
 impl PipelineJob<'_> {
     /// (ADO only) specify which agent pool this job will be run on.
-    pub fn ado_set_pool(self, pool: impl AsRef<str>) -> Self {
-        self.ado_set_pool_with_demands(pool, Vec::new())
+    pub fn ado_set_pool(self, pool: AdoPool) -> Self {
+        self.pipeline.jobs[self.job_idx].ado_pool = Some(pool);
+        self
     }
 
     /// (ADO only) specify which agent pool this job will be run on, with
@@ -1260,6 +1272,22 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Set config on a node for this job.
+    ///
+    /// This is the pipeline-level equivalent of [`NodeCtx::config`]. Config
+    /// set here is merged with any config set by nodes within the job.
+    ///
+    /// [`NodeCtx::config`]: crate::node::NodeCtx::config
+    pub fn config<C: IntoConfig + 'static>(self, config: C) -> Self {
+        self.pipeline.jobs[self.job_idx]
+            .root_configs
+            .entry(NodeHandle::from_type::<C::Node>())
+            .or_default()
+            .push(serde_json::to_vec(&config).unwrap().into());
+
+        self
+    }
+
     /// Finish describing the pipeline job.
     pub fn finish(self) -> PipelineJobHandle {
         PipelineJobHandle {
@@ -1424,6 +1452,7 @@ pub mod internal {
 
     pub struct PipelineJobMetadata {
         pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+        pub root_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         pub patches: PatchResolver,
         pub label: String,
         pub platform: FlowPlatform,
@@ -1438,14 +1467,6 @@ pub mod internal {
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-    }
-
-    // TODO: support a more structured format for demands
-    // See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
-    #[derive(Debug, Clone)]
-    pub struct AdoPool {
-        pub name: String,
-        pub demands: Vec<String>,
     }
 
     #[derive(Debug)]
