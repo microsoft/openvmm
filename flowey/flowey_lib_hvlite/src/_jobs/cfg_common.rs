@@ -145,9 +145,10 @@ impl SimpleFlowNode for Node {
                     auto_install: Some(auto_install),
                     ..Default::default()
                 });
-                ctx.req(crate::install_vmm_tests_deps::Request::AutoInstall(
-                    auto_install,
-                ));
+                ctx.config(crate::install_vmm_tests_deps::Config {
+                    auto_install: Some(auto_install),
+                    ..Default::default()
+                });
             }
 
             // FUTURE: if we ever spin up a openvmm setup utility - it might be

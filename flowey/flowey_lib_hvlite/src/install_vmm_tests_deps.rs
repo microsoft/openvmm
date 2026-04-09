@@ -31,16 +31,18 @@ flowey_config! {
     pub struct Config {
         /// Specify the necessary dependencies
         pub selections: Option<VmmTestsDepSelections>,
+        /// Automatically install dependencies (requires admin privileges).
+        ///
+        /// When false, assume all dependencies are already present and skip
+        /// checks that require admin privileges (e.g., DISM.exe).
+        ///
+        /// Must be set to true/false when running locally.
+        pub auto_install: Option<bool>,
     }
 }
 
 flowey_request! {
     pub enum Request {
-        /// Automatically install dependencies (requires admin privileges).
-        ///
-        /// When false, assume all dependencies are already present and skip
-        /// checks that require admin privileges (e.g., DISM.exe).
-        AutoInstall(bool),
         /// Install the dependencies
         Install(WriteVar<SideEffect>),
         /// Generate a list of commands that would install the dependencies
@@ -61,14 +63,10 @@ impl FlowNodeWithConfig for Node {
         requests: Vec<Self::Request>,
         ctx: &mut NodeCtx<'_>,
     ) -> anyhow::Result<()> {
-        let mut auto_install = None;
         let mut installed = Vec::new();
         let mut write_commands = Vec::new();
         for req in requests {
             match req {
-                Request::AutoInstall(v) => {
-                    same_across_all_reqs("AutoInstall", &mut auto_install, v)?
-                }
                 Request::Install(v) => installed.push(v),
                 Request::GetCommands(v) => write_commands.push(v),
             }
@@ -76,7 +74,7 @@ impl FlowNodeWithConfig for Node {
         let selections = config
             .selections
             .ok_or(anyhow::anyhow!("missing config: selections"))?;
-        let auto_install = auto_install;
+        let auto_install = config.auto_install;
         let installed = installed;
         let write_commands = write_commands;
         // Early return if no install or command requests - Select is not required in this case
