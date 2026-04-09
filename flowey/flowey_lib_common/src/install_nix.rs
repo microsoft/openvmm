@@ -5,6 +5,14 @@
 
 use flowey::node::prelude::*;
 
+/// Pinned Nix installer version. Update both this and
+/// [`INSTALLER_SHA256`] when bumping.
+const NIX_VERSION: &str = "2.34.5";
+
+/// SHA256 hash of the install script at
+/// `https://releases.nixos.org/nix/nix-{NIX_VERSION}/install`.
+const INSTALLER_SHA256: &str = "56aabba6d78b930dc12d9b788263e515b3cd9dbe4dd041a6832d75d6b121b4f3";
+
 flowey_request! {
     pub enum Request {
         /// Ensure Nix is installed and `nix-shell` is available on `$PATH`.
@@ -82,19 +90,53 @@ impl FlowNode for Node {
                             return Ok(());
                         }
 
-                        log::info!("installing Nix package manager...");
+                        // Pinned Nix installer version and SHA256 hash of the
+                        // install script. Update both when bumping.
+                        let installer_url = format!(
+                            "https://releases.nixos.org/nix/nix-{NIX_VERSION}/install"
+                        );
 
-                        // Install nix - this is ripped straight from Nix documentation here https://nixos.org/download/
-                        #[expect(clippy::disallowed_methods, reason = "can't use the nix xshell wrapper if nix isn't installed yet")]
+                        log::info!("installing Nix {NIX_VERSION}...");
+
+                        let installer_dir = tempfile::tempdir()
+                            .context("failed to create temp dir for nix installer")?;
+                        let installer_path = installer_dir.path().join("install.sh");
+
+                        // Download the installer to disk so we can verify its
+                        // hash before executing it.
+                        #[expect(clippy::disallowed_methods, reason = "nix is not installed yet")]
                         let sh = xshell::Shell::new()?;
-                        #[expect(clippy::disallowed_macros, reason = "can't use the nix xshell wrapper if nix isn't installed yet")]
+                        #[expect(clippy::disallowed_macros, reason = "nix is not installed yet")]
                         xshell::cmd!(
                             sh,
-                            "sh -c 'curl --proto =https --tlsv1.2 -sSf -L https://nixos.org/nix/install | sh -s -- --no-daemon'"
+                            "curl --proto =https --tlsv1.2 -sSf -L {installer_url} -o {installer_path}"
                         )
                         .run()?;
 
-                        log::info!("nix installed successfully");
+                        // Verify the SHA256 hash of the downloaded script.
+                        #[expect(clippy::disallowed_macros, reason = "nix is not installed yet")]
+                        let actual_hash = xshell::cmd!(sh, "sha256sum {installer_path}")
+                            .read()?;
+                        let actual_hash = actual_hash
+                            .split_whitespace()
+                            .next()
+                            .context("unexpected sha256sum output")?;
+
+                        if actual_hash != INSTALLER_SHA256 {
+                            anyhow::bail!(
+                                "Nix installer hash mismatch!\n  \
+                                 expected: {INSTALLER_SHA256}\n  \
+                                 actual:   {actual_hash}"
+                            );
+                        }
+
+                        log::info!("installer hash verified: {actual_hash}");
+
+                        #[expect(clippy::disallowed_macros, reason = "nix is not installed yet")]
+                        xshell::cmd!(sh, "sh {installer_path} --no-daemon")
+                            .run()?;
+
+                        log::info!("nix {NIX_VERSION} installed successfully");
                         Ok(())
                     }
                 })
