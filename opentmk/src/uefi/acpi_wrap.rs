@@ -110,18 +110,23 @@ impl XSdtParser {
 
         let sdt_address = xsdt as *const Header as usize;
 
-        // get number of entries pointing to other SDTs
-        let entries_count = (sdt_length - sdt_header_size) / size_of::<u64>();
+        let entries_region_size = sdt_length - sdt_header_size;
+        let entries_count = entries_region_size / size_of::<u64>();
+        let entries_byte_len = entries_count * size_of::<u64>();
 
-        // pointer to pointer table of other SDTs
+        // Ensure the computed entries region does not extend beyond the table.
+        if entries_byte_len > entries_region_size {
+            return Err(AcpiWrapError::InvalidXsdtStructure.into());
+        }
+
         let entries_ptr = sdt_address + sdt_header_size;
 
-        // SAFETY: The XSDT header length field describes the total table size per the
-        // ACPI specification. The entry region starts immediately after the header and
-        // contains entries_count 64-bit physical addresses. The caller obtains the XSDT
-        // pointer from the RSDP, which the firmware guarantees is a valid, mapped table.
+        // SAFETY: We validated that sdt_length >= sdt_header_size and that
+        // entries_byte_len <= sdt_length - sdt_header_size, so the slice stays
+        // within the XSDT table boundary. The XSDT pointer was obtained from the
+        // RSDP, which the firmware guarantees is a valid, mapped table.
         let entries_ptr_bytes = unsafe {
-            core::slice::from_raw_parts(entries_ptr as *const u8, entries_count * size_of::<u64>())
+            core::slice::from_raw_parts(entries_ptr as *const u8, entries_byte_len)
         };
 
         // create slice of u64 pointers
@@ -195,9 +200,14 @@ impl AcpiTableContext {
         // table memory is in the ACPI reclaim region and remains mapped. The Header
         // at this address is valid and properly aligned per the ACPI specification.
         let madt_table_size: usize = unsafe { madt_ptr.as_ref().length.get() } as usize;
+
+        if madt_table_size < size_of::<Header>() {
+            return Err(AcpiWrapError::InvalidMadtStructure.into());
+        }
+
         // SAFETY: madt_ptr points to a valid MADT in the ACPI reclaim region (stored
-        // during init). madt_table_size comes from the ACPI Header length field which
-        // describes the total table size. The entire table is contiguous and mapped.
+        // during init). We validated that madt_table_size >= size_of::<Header>(), so
+        // the slice does not extend beyond the table boundary.
         let madt_table_bytes =
             unsafe { core::slice::from_raw_parts(madt_ptr.as_ptr() as *const u8, madt_table_size) };
         let madt_parser = MadtParser::new(madt_table_bytes).map_err(|e| {
