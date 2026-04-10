@@ -11,6 +11,10 @@ pr:
     - main
     - release/*
     - embargo/*
+  paths:
+    exclude:
+    - Guide/**
+    - petri/logview/**
 parameters:
 - name: verbose
   displayName: Run with verbose output
