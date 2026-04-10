@@ -1278,7 +1278,7 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
             },
             VmmTestJobParams {
-                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_mshv_1es(),
                 label: "x64-linux-mshv",
@@ -1336,19 +1336,24 @@ impl IntoPipeline for CheckinGatesCli {
                 .new_job(platform, arch, format!("run vmm-tests [{label}]"))
                 .gh_set_pool(gh_pool);
 
-            // Only add ADO pool for x86_64 jobs (ARM not supported in ADO org)
+            // Only add ADO pool for x86_64 jobs that have a matching ADO pool
             if matches!(arch, FlowArch::X86_64) {
-                vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(match platform {
-                    FlowPlatform::Windows => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows)
-                    }
+                let ado_pool = match platform {
+                    FlowPlatform::Windows => Some(
+                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Windows),
+                    ),
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu) => {
-                        crate::pipelines_shared::ado_pools::default_x86_pool(FlowPlatform::Linux(
-                            FlowPlatformLinuxDistro::Ubuntu,
+                        Some(crate::pipelines_shared::ado_pools::default_x86_pool(
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                         ))
                     }
+                    // No ADO pool for AzureLinux (MSHV jobs are GH-only)
+                    FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux) => None,
                     _ => anyhow::bail!("unsupported platform"),
-                });
+                };
+                if let Some(pool) = ado_pool {
+                    vmm_tests_run_job = vmm_tests_run_job.ado_set_pool(pool);
+                }
             }
 
             vmm_tests_run_job = vmm_tests_run_job.dep_on(|ctx| {

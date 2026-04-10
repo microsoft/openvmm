@@ -3829,7 +3829,7 @@ jobs:
     - name: setting up vmm_tests env
       run: flowey e 22 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
-    - name: ensure /dev/kvm is accessible
+    - name: ensure hypervisor device is accessible
       run: flowey e 22 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: create cargo-nextest cache dir
@@ -3953,21 +3953,70 @@ jobs:
     - job7
     if: github.event.pull_request.draft == false
     steps:
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.94.0 -y
+        . "$HOME/.cargo/env"
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show
+      if: runner.os == 'Linux'
+      name: rustup (Linux)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.94.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      name: rustup (Windows X64)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.94.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      name: rustup (Windows ARM64)
+      shell: bash
+    - uses: actions/checkout@v6
+      with:
+        path: flowey_bootstrap
+    - name: Build flowey
+      run: |
+        set -x
+        CARGO_INCREMENTAL=0 cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
+        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v8
       with:
-        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-1,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-openvmm_vhost,x64-linux-vmm-tests-archive,x64-tmks,x64-windows-pipette}'
+        pattern: '{x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-musl-tmk_vmm,x64-linux-openvmm,x64-linux-openvmm_vhost,x64-linux-vmm-tests-archive,x64-tmks,x64-windows-pipette}'
         path: ${{ runner.temp }}/used_artifacts/
-    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1" >> $GITHUB_PATH
+    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey pipeline github --runtime $ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml --out .github/workflows/openvmm-pr.yaml ci checkin-gates --config=pr
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/flowey
+        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
 
         echo '"debug"' | flowey v 23 'FLOWEY_LOG' update
         echo "${{ runner.temp }}/work" | flowey v 23 '_internal_WORKING_DIR' --is-raw-string update
@@ -4082,7 +4131,7 @@ jobs:
     - name: setting up vmm_tests env
       run: flowey e 23 flowey_lib_hvlite::init_vmm_tests_env 0
       shell: bash
-    - name: ensure /dev/kvm is accessible
+    - name: ensure hypervisor device is accessible
       run: flowey e 23 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: create cargo-nextest cache dir
