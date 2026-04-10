@@ -64,7 +64,10 @@ pub fn init() -> Result<(), Status> {
     // Initialize ACPI table context before exit_boot_services (called
     // within enable_uefi_vtl_protection) so that the UEFI system table
     // configuration entries are still accessible.
-    acpi_wrap::AcpiTableContext::init().map_err(|_| Status::ABORTED)?;
+    acpi_wrap::AcpiTableContext::init().map_err(|err| {
+        log::error!("Failed to initialize ACPI table context: {:?}", err);
+        Status::ABORTED
+    })?;
     enable_uefi_vtl_protection();
     Ok(())
 }

@@ -8,8 +8,6 @@ use core::sync::atomic::AtomicPtr;
 
 use acpi_spec::Header;
 use acpi_spec::Rsdp;
-use acpi_spec::madt::MADT_APIC_ENABLED;
-use acpi_spec::madt::MadtEntry;
 use acpi_spec::madt::MadtParser;
 use alloc::vec::Vec;
 use spin::Once;
@@ -229,32 +227,15 @@ impl AcpiTableContext {
             log::error!("Failed to parse MADT table: {:?}", e);
             AcpiWrapError::InvalidMadtStructure
         })?;
-        let mut processor_count = 0;
-        for entry_result in madt_parser.entries() {
-            match entry_result {
-                Ok(entry) => {
-                    log::trace!("MADT Entry: {:?}", entry);
-                    match entry {
-                        MadtEntry::Apic(apic) => {
-                            if apic.flags & MADT_APIC_ENABLED != 0 {
-                                processor_count += 1;
-                            }
-                        }
-                        MadtEntry::X2Apic(x2apic) => {
-                            if x2apic.flags & MADT_APIC_ENABLED != 0 {
-                                processor_count += 1;
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Failed to parse MADT entry: {:?}", e);
-                }
-            }
-        }
+        let apic_ids = madt_parser.parse_apic_ids().map_err(|e| {
+            log::error!("Failed to parse MADT APIC IDs: {:?}", e);
+            AcpiWrapError::InvalidMadtStructure
+        })?;
+
+        let processor_count = apic_ids.iter().filter(|id| id.is_some()).count();
 
         if processor_count == 0 {
-            log::warn!("MADT contains no APIC/X2APIC entries; processor count is 0");
+            log::warn!("MADT contains no enabled APIC/X2APIC entries; processor count is 0");
         }
 
         Ok(processor_count)
