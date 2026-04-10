@@ -11,6 +11,7 @@ use anyhow::Context;
 use base64::Engine;
 use debug_ptr::DebugPtr;
 use futures::FutureExt;
+use futures::Stream;
 use futures::StreamExt;
 use futures::executor::block_on;
 use futures_concurrency::future::Race;
@@ -18,9 +19,10 @@ use inspect::Inspect;
 use inspect::SensitivityLevel;
 use mesh::MeshPayload;
 use mesh::OneshotReceiver;
+use mesh::local_node::Port;
 use mesh::message::MeshField;
 use mesh::payload::Protobuf;
-use mesh::rpc::Rpc;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
 #[cfg(unix)]
 use mesh_remote::InvitationAddress;
@@ -30,6 +32,7 @@ use pal::unix::process::Builder as ProcessBuilder;
 use pal::windows::process;
 #[cfg(windows)]
 use pal::windows::process::Builder as ProcessBuilder;
+#[cfg(unix)]
 use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -41,17 +44,28 @@ use std::fs::File;
 use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
+use std::path::Path;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::thread;
 use tracing::Instrument;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
 
 #[cfg(windows)]
-type IpcNode = mesh_remote::windows::AlpcNode;
+mod plat {
+    pub type IpcNode = mesh_remote::windows::AlpcNode;
+    pub type IpcNodeDriver = pal_async::windows::TpPool;
+}
 
 #[cfg(unix)]
-type IpcNode = mesh_remote::unix::UnixNode;
+mod plat {
+    pub type IpcNode = mesh_remote::unix::UnixNode;
+    pub type IpcNodeDriver = pal_async::DefaultDriver;
+}
+
+use plat::IpcNode;
+use plat::IpcNodeDriver;
 
 #[cfg(unix)]
 const IPC_FD: i32 = 3;
@@ -141,7 +155,7 @@ fn set_program_name(name: &str) {
 struct NodeResult {
     node_name: String,
     node: IpcNode,
-    initial_port: mesh::local_node::Port,
+    initial_port: Port,
 }
 
 /// Create an IPC node from an invitation provided via the process environment.
@@ -176,7 +190,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
     )
     .context("failed to protobuf decode invitation")?;
 
-    let (left, right) = mesh::local_node::Port::new_pair();
+    let (left, right) = Port::new_pair();
 
     let node;
     #[cfg(windows)]
@@ -365,6 +379,10 @@ struct MeshInner {
     waiters: FuturesUnordered<OneshotReceiver<usize>>,
     /// Mesh node for host process communication.
     node: IpcNode,
+    /// IO driver for the mesh node, used for listener accept loops,
+    /// handshakes, and general async task spawning. This is the same
+    /// driver that was passed to the node on creation.
+    node_driver: IpcNodeDriver,
     /// Name for this mesh instance, used for tracing/debugging.
     mesh_name: String,
     /// Job object. When closed, it will terminate all the child processes. This
@@ -381,14 +399,20 @@ struct MeshHostInner {
 }
 
 enum MeshRequest {
-    NewHost(Rpc<NewHostParams, anyhow::Result<i32>>),
+    NewHost(FailableRpc<NewHostParams, i32>),
+    Listen(FailableRpc<ListenParams, Task<()>>),
     Inspect(inspect::Deferred),
     Crash(i32),
 }
 
+struct ListenParams {
+    path: PathBuf,
+    port_factory: Box<dyn Fn() -> Port + Send>,
+}
+
 struct NewHostParams {
     config: ProcessConfig,
-    recv: mesh::local_node::Port,
+    recv: Port,
     request_send: mesh::Sender<HostRequest>,
 }
 
@@ -404,30 +428,37 @@ impl Mesh {
         };
 
         #[cfg(windows)]
-        let node = mesh_remote::windows::AlpcNode::new(pal_async::windows::TpPool::system())
-            .context("AlpcNode creation failure")?;
+        let (node, node_driver) = {
+            let driver = pal_async::windows::TpPool::system();
+            // Use new_named so that the ALPC directory has a path in the Ob
+            // namespace. This is required for listen() — the listener handshake
+            // creates named invitations, which need a named directory.
+            let node = mesh_remote::windows::AlpcNode::new_named(driver.clone())
+                .context("AlpcNode creation failure")?;
+            (node, driver)
+        };
         #[cfg(unix)]
-        let node = {
+        let (node, node_driver) = {
             // FUTURE: use pool provided by the caller.
             let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
-            mesh_remote::unix::UnixNode::new(driver)
+            let node = mesh_remote::unix::UnixNode::new(driver.clone());
+            (node, driver)
         };
 
         let (request, requests) = mesh::channel();
+
         let mut inner = MeshInner {
             requests,
             hosts: Default::default(),
             waiters: Default::default(),
             node,
+            node_driver: node_driver.clone(),
             mesh_name: mesh_name.clone(),
             #[cfg(windows)]
             job,
         };
 
-        // Spawn a separate thread for launching mesh processes to avoid bad
-        // interactions with any other pools.
-        let (_, driver) = DefaultPool::spawn_on_thread("mesh");
-        let task = driver.spawn(
+        let task = node_driver.spawn(
             format!("mesh-{}", &mesh_name),
             async move { inner.run().await },
         );
@@ -460,7 +491,7 @@ impl Mesh {
         });
 
         self.request
-            .call(
+            .call_failable(
                 MeshRequest::NewHost,
                 NewHostParams {
                     config,
@@ -469,7 +500,7 @@ impl Mesh {
                 },
             )
             .await
-            .context("mesh failed")?
+            .context("failed to launch new host")
     }
 
     /// Shutdown the mesh and wait for any spawned processes to exit.
@@ -493,6 +524,104 @@ impl Mesh {
     /// Crashes the child process with the given process ID.
     pub fn crash(&self, pid: i32) {
         self.request.send(MeshRequest::Crash(pid));
+    }
+
+    /// Listen for mesh connections on a Unix socket.
+    ///
+    /// Returns a [`Listener<T>`] that yields items from connecting clients.
+    /// Each client gets a `Sender<T>` bridged to this listener's queue.
+    /// Dropping the [`Listener`] stops accepting new connections.
+    ///
+    /// # Security
+    ///
+    /// The socket at `path` is an external entry point for other local
+    /// processes to join the mesh. On Unix, `path` must reside in a
+    /// directory accessible only to the intended user (e.g. mode `0700`).
+    /// On Windows, the socket's parent directory should be ACL'd to
+    /// restrict access. Any local user who can connect to the socket can
+    /// join the mesh.
+    pub async fn listen<T: 'static + MeshField + Send>(
+        &self,
+        path: &Path,
+    ) -> anyhow::Result<Listener<T>> {
+        let (send, recv) = mesh::channel::<T>();
+        let port_factory: Box<dyn Fn() -> Port + Send> = Box::new(move || send.clone().into());
+
+        let task = self
+            .request
+            .call_failable(
+                MeshRequest::Listen,
+                ListenParams {
+                    path: path.to_owned(),
+                    port_factory,
+                },
+            )
+            .await
+            .context("listen failed")?;
+
+        Ok(Listener { recv, _task: task })
+    }
+}
+
+/// A listener for incoming mesh connections.
+///
+/// Each connecting client gets a `Sender<T>` bridged into this listener's
+/// queue. When the client sends a `T`, it appears in the stream.
+///
+/// Implements [`Stream`]`<Item = T>`. Dropping the listener stops accepting
+/// new connections.
+pub struct Listener<T> {
+    recv: mesh::Receiver<T>,
+    _task: Task<()>,
+}
+
+impl<T: 'static + MeshField + Send> Stream for Listener<T> {
+    type Item = T;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.recv.poll_next_unpin(cx)
+    }
+}
+
+/// Connect to a mesh listener at `path`.
+///
+/// Returns a [`mesh::Sender<T>`] for sending messages to the listener, and a
+/// [`Connection`] that keeps the underlying IPC node alive. Drop
+/// [`Connection`] to disconnect.
+pub async fn connect<T: 'static + MeshField + Send>(
+    driver: impl pal_async::driver::Driver + Spawn + Clone,
+    path: &Path,
+) -> anyhow::Result<(mesh::Sender<T>, Connection)> {
+    let (send, recv) = mesh::channel::<T>();
+
+    #[cfg(windows)]
+    let node = mesh_remote::windows::AlpcNode::join_by_socket(driver, path, recv.into())
+        .await
+        .context("failed to connect to mesh listener")?;
+
+    #[cfg(unix)]
+    let node = mesh_remote::unix::UnixNode::join_by_path(driver, path, recv.into())
+        .await
+        .context("failed to connect to mesh listener")?;
+
+    Ok((send, Connection { node }))
+}
+
+/// An active connection to a mesh listener.
+///
+/// Keeps the underlying IPC node alive. Drop to disconnect.
+pub struct Connection {
+    node: IpcNode,
+}
+
+impl Connection {
+    /// Gracefully shut down the connection, waiting for pending messages to be
+    /// delivered.
+    pub async fn shutdown(self) {
+        self.node.shutdown().await;
     }
 }
 
@@ -541,7 +670,11 @@ impl MeshInner {
             match event {
                 Event::Request(request) => match request {
                     MeshRequest::NewHost(rpc) => {
-                        rpc.handle(async |params| self.spawn_process(params).await)
+                        rpc.handle_failable(async |params| self.spawn_process(params).await)
+                            .await
+                    }
+                    MeshRequest::Listen(rpc) => {
+                        rpc.handle_failable(async |params| self.start_listener(params))
                             .await
                     }
                     MeshRequest::Inspect(deferred) => {
@@ -610,6 +743,63 @@ impl MeshInner {
                 }
             }
         }
+    }
+
+    fn start_listener(&self, params: ListenParams) -> anyhow::Result<Task<()>> {
+        // Remove a stale socket file if one exists, so that bind doesn't fail.
+        if let Ok(true) = Self::is_socket(&params.path) {
+            let _ = std::fs::remove_file(&params.path);
+        }
+
+        let mut listener = self
+            .node
+            .listen(&self.node_driver, &params.path)
+            .context("failed to bind mesh listener")?;
+
+        let driver = self.node_driver.clone();
+        let port_factory = params.port_factory;
+
+        let task = self.node_driver.spawn("mesh-listener", async move {
+            loop {
+                match listener.accept(&driver).await {
+                    Ok(pending) => {
+                        let port = port_factory();
+                        driver
+                            .spawn("mesh-listener-handshake", async move {
+                                if let Err(e) = pending.finish(port).await {
+                                    tracing::warn!(
+                                        error = &e as &dyn std::error::Error,
+                                        "mesh listener handshake failed",
+                                    );
+                                }
+                            })
+                            .detach();
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = &e as &dyn std::error::Error,
+                            "mesh listener accept failed",
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(task)
+    }
+
+    /// Checks whether `path` is a socket file.
+    #[cfg(unix)]
+    fn is_socket(path: &Path) -> std::io::Result<bool> {
+        use std::os::unix::fs::FileTypeExt;
+        Ok(std::fs::symlink_metadata(path)?.file_type().is_socket())
+    }
+
+    /// Checks whether `path` is a socket file.
+    #[cfg(windows)]
+    fn is_socket(path: &Path) -> std::io::Result<bool> {
+        pal::windows::fs::is_unix_socket(path)
     }
 
     /// Spawns a new process with a mesh channel associated with this `Mesh` instance.
@@ -681,7 +871,10 @@ impl MeshInner {
                 sandbox_profile.apply(&mut builder);
             }
 
-            let child = builder.spawn().context("failed to launch mesh process")?;
+            // Launch the child process on a separate thread to isolate
+            // the CreateProcess call from other IO pools.
+            let child = thread::scope(|s| s.spawn(|| builder.spawn()).join().unwrap())
+                .context("failed to launch mesh process")?;
             // Wait for the child to connect to the mesh. TODO: timeout
             handle.await;
             pid = child.id() as i32;
@@ -739,7 +932,10 @@ impl MeshInner {
                 sandbox_profile.apply(&mut command);
             }
 
-            let mut child = command.spawn().context("failed to launch mesh process")?;
+            // Launch the child process on a separate thread to isolate
+            // the fork() call from other IO pools.
+            let mut child = thread::scope(|s| s.spawn(|| command.spawn()).join().unwrap())
+                .context("failed to launch mesh process")?;
             pid = child.id();
             tracing::Span::current().record("pid", pid);
             move || {
@@ -776,5 +972,49 @@ impl MeshInner {
 
         self.waiters.push(wait_recv);
         Ok(pid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pal_async::task::Spawn;
+    use test_with_tracing::test;
+
+    #[async_test]
+    async fn test_listen(driver: DefaultDriver) {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("mesh-listen.sock");
+
+        let mesh = Mesh::new("test-listen".to_string()).unwrap();
+        let mut listener = mesh.listen::<String>(&sock_path).await.unwrap();
+
+        // Spawn a client task that connects and sends a message.
+        let client_driver = driver.clone();
+        let client_path = sock_path.clone();
+        let client_task = driver.spawn("client", async move {
+            let (sender, conn) = connect::<String>(client_driver, &client_path)
+                .await
+                .unwrap();
+            sender.send("hello from client".to_string());
+            // Return the connection to keep the node alive until the server
+            // has received the message. Shutting down immediately can race
+            // with the server establishing a back-connection for port
+            // bridging on Windows (ALPC).
+            conn
+        });
+
+        // Receive the message via the listener stream.
+        let msg = listener.next().await.unwrap();
+        assert_eq!(msg, "hello from client");
+
+        client_task.await.shutdown().await;
+
+        // Drop the listener and verify the accept loop stops.
+        drop(listener);
+
+        mesh.shutdown().await;
     }
 }
