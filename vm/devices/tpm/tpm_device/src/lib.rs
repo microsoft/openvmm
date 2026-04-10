@@ -102,6 +102,11 @@ const REPORT_TIMER_PERIOD: std::time::Duration = std::time::Duration::new(2, 0);
 const LEGACY_VTPM_SIZE: usize = 16 * 1024;
 const STANDARD_VTPM_SIZE: usize = 32 * 1024;
 
+// Default vTPM NVRAM size provisioned for a new VMGS.
+pub const DEFAULT_VTPM_SIZE: usize = ms_tpm_20_ref::NV_MEMORY_SIZE;
+
+static_assertions::const_assert_eq!(DEFAULT_VTPM_SIZE, STANDARD_VTPM_SIZE);
+
 /// Operation types for provisioning telemetry.
 #[expect(clippy::enum_variant_names)]
 #[derive(Debug)]
@@ -264,6 +269,7 @@ pub struct Tpm {
     mmio_region: Vec<(&'static str, RangeInclusive<u64>)>,
     allow_ak_cert_renewal: bool,
     handle_ak_cert_renewal: bool,
+    nvram_size: usize, // for inspect
 
     // For logging
     bios_guid: Guid,
@@ -381,6 +387,7 @@ impl Tpm {
         mem: GuestMemory,
         ppi_store: Box<dyn NonVolatileStore>,
         nvram_store: Box<dyn NonVolatileStore>,
+        nvram_size: Option<usize>,
         monotonic_timer: MonotonicTimer,
         refresh_tpm_seeds: bool,
         is_restoring: bool,
@@ -394,12 +401,14 @@ impl Tpm {
 
         let pending_nvram = Arc::new(Mutex::new(Vec::new()));
 
+        let nvram_size = nvram_size.unwrap_or(DEFAULT_VTPM_SIZE);
+
         let tpm_engine = MsTpm20RefPlatform::initialize(
             Box::new(TpmPlatformCallbacks {
                 pending_nvram: pending_nvram.clone(),
                 monotonic_timer,
             }),
-            ms_tpm_20_ref::InitKind::ColdInit,
+            ms_tpm_20_ref::InitKind::ColdInitWithSize(nvram_size),
         )
         .map_err(TpmErrorKind::InstantiateTpm)?;
 
@@ -441,6 +450,7 @@ impl Tpm {
             mmio_region,
             allow_ak_cert_renewal: false,
             handle_ak_cert_renewal: false,
+            nvram_size,
             bios_guid,
             ak_pub_hash: [0; SHA_256_OUTPUT_SIZE_BYTES],
 
@@ -2064,6 +2074,7 @@ mod tests {
             gm,
             ppi_store,
             store,
+            None,
             monotonic_timer,
             false,
             false,

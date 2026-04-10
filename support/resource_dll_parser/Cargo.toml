@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "resource_dll_parser"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+fs-err.workspace = true
+object = { workspace = true, features = ["pe", "read_core", "std"] }
+
+[lints]
+workspace = true

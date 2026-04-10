@@ -30,10 +30,9 @@ use std::os::windows::prelude::*;
 use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
-use winapi::shared::ntdef::LUID;
-use winapi::shared::winerror;
-use winapi::um::winnt::DEVICE_POWER_STATE;
-use winerror::ERROR_BAD_PATHNAME;
+use windows_sys::Win32::Foundation::ERROR_BAD_PATHNAME;
+use windows_sys::Win32::Foundation::LUID;
+use windows_sys::Win32::System::Power::DEVICE_POWER_STATE;
 
 /// Functions to get the WHP platform's capabilities.
 pub mod capabilities {
@@ -1174,13 +1173,13 @@ impl Device<'_> {
     pub fn read_register(
         &self,
         location: abi::WHV_VPCI_DEVICE_REGISTER_SPACE,
-        offset: u16,
+        offset: u64,
         data: &mut [u8],
     ) -> Result<()> {
         let register = abi::WHV_VPCI_DEVICE_REGISTER {
             Location: location,
             SizeInBytes: data.len() as u32,
-            OffsetInBytes: offset.into(),
+            OffsetInBytes: offset,
         };
         unsafe {
             check_hresult(api::WHvReadVpciDeviceRegister(
@@ -1195,13 +1194,13 @@ impl Device<'_> {
     pub fn write_register(
         &self,
         location: abi::WHV_VPCI_DEVICE_REGISTER_SPACE,
-        offset: u16,
+        offset: u64,
         data: &[u8],
     ) -> Result<()> {
         let register = abi::WHV_VPCI_DEVICE_REGISTER {
             Location: location,
             SizeInBytes: data.len() as u32,
-            OffsetInBytes: offset.into(),
+            OffsetInBytes: offset,
         };
         unsafe {
             check_hresult(api::WHvWriteVpciDeviceRegister(

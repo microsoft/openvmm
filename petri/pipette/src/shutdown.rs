@@ -3,11 +3,43 @@
 
 //! Handler for the power off request.
 
-// UNSAFETY: required for Windows shutdown API
-#![cfg_attr(windows, expect(unsafe_code))]
+// UNSAFETY: required for Windows and Linux shutdown APIs
+#![cfg_attr(any(windows, target_os = "linux"), expect(unsafe_code))]
 
 #[cfg(target_os = "linux")]
 pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
+    if crate::init::was_forked_from_pid1() {
+        handle_shutdown_via_reboot(request)
+    } else {
+        handle_shutdown_via_command(request)
+    }
+}
+
+/// Shutdown when running as a child forked from PID 1.
+///
+/// Calls `reboot(2)` directly since no external `poweroff` binary
+/// exists in the initrd.
+#[cfg(target_os = "linux")]
+fn handle_shutdown_via_reboot(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
+    let cmd = match request.shutdown_type {
+        pipette_protocol::ShutdownType::PowerOff => libc::RB_POWER_OFF,
+        pipette_protocol::ShutdownType::Reboot => libc::RB_AUTOBOOT,
+    };
+
+    // Flush any pending writes before powering off.
+    //
+    // SAFETY: calling as documented.
+    unsafe { libc::sync() };
+    // reboot(2) with RB_POWER_OFF / RB_AUTOBOOT does not return on success.
+    //
+    // SAFETY: calling as documented with a valid cmd.
+    unsafe { libc::reboot(cmd) };
+    anyhow::bail!("reboot(2) syscall returned unexpectedly");
+}
+
+/// Shutdown by executing an external command (`poweroff` or `reboot`).
+#[cfg(target_os = "linux")]
+fn handle_shutdown_via_command(request: pipette_protocol::ShutdownRequest) -> anyhow::Result<()> {
     use anyhow::Context;
 
     let program = match request.shutdown_type {
@@ -15,14 +47,18 @@ pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Re
         pipette_protocol::ShutdownType::Reboot => "reboot",
     };
     let mut command = std::process::Command::new(program);
-    if std::fs::read("/proc/1/cmdline")
-        .context("failed to read cmdline")?
-        .starts_with(b"/bin/sh")
-    {
-        // init is just a shell and can't handle power requests, so pass the
-        // force flag.
+
+    // Check if we should use the force flag. This is needed when:
+    // 1. init is just a shell (linux-direct boot)
+    // 2. We're not running under systemd (e.g., OpenRC on Alpine)
+    let init_cmdline = std::fs::read("/proc/1/cmdline").context("failed to read cmdline")?;
+    let is_shell_init = init_cmdline.starts_with(b"/bin/sh");
+    let is_systemd = std::path::Path::new("/run/systemd/system").exists();
+
+    if is_shell_init || !is_systemd {
         command.arg("-f");
     }
+
     let output = command
         .output()
         .with_context(|| format!("failed to launch {}", program))?;

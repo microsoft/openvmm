@@ -42,6 +42,7 @@ open_enum! {
         X2APIC = 0x9,
         GICC = 0xb,
         GICD = 0xc,
+        GIC_MSI_FRAME = 0xd,
     }
 }
 
@@ -231,6 +232,39 @@ impl MadtGicd {
             reserved2: 0,
             gic_version,
             reserved3: [0; 3],
+        }
+    }
+}
+
+/// ACPI 6.5 MADT GIC MSI Frame structure (Table 5-67).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct MadtGicMsiFrame {
+    pub typ: MadtType,
+    pub length: u8,
+    pub reserved: u16,
+    pub gic_msi_frame_id: u32,
+    pub base_address: u64,
+    pub flags: u32,
+    pub spi_count: u16,
+    pub spi_base: u16,
+}
+
+const_assert_eq!(size_of::<MadtGicMsiFrame>(), 24);
+
+pub const GIC_MSI_FRAME_FLAGS_SPI_SELECT: u32 = 1 << 0;
+
+impl MadtGicMsiFrame {
+    pub fn new(gic_msi_frame_id: u32, base_address: u64, spi_base: u16, spi_count: u16) -> Self {
+        Self {
+            typ: MadtType::GIC_MSI_FRAME,
+            length: size_of::<Self>() as u8,
+            reserved: 0,
+            gic_msi_frame_id,
+            base_address,
+            flags: GIC_MSI_FRAME_FLAGS_SPI_SELECT,
+            spi_count,
+            spi_base,
         }
     }
 }

@@ -5,37 +5,42 @@
 
 use flowey::node::prelude::*;
 
-flowey_request! {
-    pub enum Request {
+flowey_config! {
+    /// Config for the install_azure_cli node.
+    pub struct Config {
+        /// Which version of azure-cli to install (e.g: 2.57.0)
+        pub version: Option<String>,
         /// Automatically install all required azure-cli tools and components.
         ///
         /// This must be set to true/false when running locally.
-        AutoInstall(bool),
-        /// Which version of azure-cli to install (e.g: 2.57.0)
-        Version(String),
+        pub auto_install: Option<bool>,
+    }
+}
+
+flowey_request! {
+    pub enum Request {
         /// Get a path to `az`
         GetAzureCli(WriteVar<PathBuf>),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut auto_install = None;
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut get_az_cli = Vec::new();
 
         for req in requests {
             match req {
-                Request::AutoInstall(v) => {
-                    same_across_all_reqs("AutoInstall", &mut auto_install, v)?
-                }
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::GetAzureCli(v) => get_az_cli.push(v),
             }
         }
@@ -46,8 +51,10 @@ impl FlowNode for Node {
             return Ok(());
         }
 
-        let auto_install = auto_install;
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        let auto_install = config.auto_install;
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let get_az_cli = get_az_cli;
 
         // -- end of req processing -- //
@@ -120,32 +127,31 @@ impl FlowNode for Node {
                 ctx.emit_rust_step("installing azure-cli", |ctx| {
                     let get_az_cli = get_az_cli.claim(ctx);
                     move |rt| {
-                        let sh = xshell::Shell::new()?;
                         if let Ok(path) = check_az_install(rt) {
                             rt.write_all(get_az_cli, &path);
                             return Ok(());
                         }
                         match rt.platform() {
                             FlowPlatform::Windows => {
-                                let az_dir = sh.current_dir().join("az");
-                                sh.create_dir(&az_dir)?;
-                                sh.change_dir(&az_dir);
-                                xshell::cmd!(
-                                    sh,
+                                let az_dir = rt.sh.current_dir().join("az");
+                                rt.sh.create_dir(&az_dir)?;
+                                rt.sh.change_dir(&az_dir);
+                                flowey::shell_cmd!(
+                                    rt,
                                     "curl --fail -L https://aka.ms/installazurecliwindowszipx64 -o az.zip"
                                 )
                                 .run()?;
-                                xshell::cmd!(sh, "tar -xf az.zip").run()?;
+                                flowey::shell_cmd!(rt, "tar -xf az.zip").run()?;
                                 rt.write_all(get_az_cli, &az_dir.join("bin\\az.cmd"));
                             }
                             FlowPlatform::Linux(_) => {
-                                xshell::cmd!(
-                                    sh,
+                                flowey::shell_cmd!(
+                                    rt,
                                     "curl --fail -sL https://aka.ms/InstallAzureCLIDeb -o InstallAzureCLIDeb.sh"
                                 )
                                 .run()?;
-                                xshell::cmd!(sh, "chmod +x ./InstallAzureCLIDeb.sh").run()?;
-                                xshell::cmd!(sh, "sudo ./InstallAzureCLIDeb.sh").run()?;
+                                flowey::shell_cmd!(rt, "chmod +x ./InstallAzureCLIDeb.sh").run()?;
+                                flowey::shell_cmd!(rt, "sudo ./InstallAzureCLIDeb.sh").run()?;
                                 let path = check_az_install(rt)?;
                                 rt.write_all(get_az_cli, &path);
                             }

@@ -76,6 +76,10 @@ pub fn github_yaml(
         flow_backend: crate::cli::FlowBackendCli::Github,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_configs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
+        job_platforms: BTreeMap::new(),
+        job_archs: BTreeMap::new(),
     };
 
     let mut github_jobs = BTreeMap::new();
@@ -83,6 +87,7 @@ pub fn github_yaml(
     for job_idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
@@ -90,6 +95,7 @@ pub fn github_yaml(
             ref external_read_vars,
             ado_pool: _,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             ref gh_override_if,
             ref gh_global_env,
             ref gh_pool,
@@ -108,12 +114,17 @@ pub fn github_yaml(
         }
 
         let flowey_bin = platform.binary("flowey");
-        let (steps, req_db) = resolve_flow_as_github_yaml_steps(
+        let super::common_yaml::ResolvedFlowSteps {
+            steps,
+            request_db: req_db,
+            config_db: cfg_db,
+        } = resolve_flow_as_github_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
                 .map(|(node, requests)| (node, (true, requests)))
                 .collect(),
+            root_configs.clone(),
             patches.clone(),
             external_read_vars.clone(),
             platform,
@@ -128,6 +139,23 @@ pub fn github_yaml(
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
         }
+
+        if !cfg_db.is_empty() {
+            pipeline_static_db
+                .job_configs
+                .insert(job_idx.index(), cfg_db);
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
+        }
+
+        pipeline_static_db
+            .job_platforms
+            .insert(job_idx.index(), platform);
+        pipeline_static_db.job_archs.insert(job_idx.index(), arch);
 
         let mut gh_steps = Vec::new();
 
@@ -188,22 +216,38 @@ pub fn github_yaml(
         // download any artifacts that'll be used
         artifact_names.extend(artifacts_used.iter().map(|a| a.name.as_str()));
         if !artifact_names.is_empty() {
-            let pattern = if let &[name] = artifact_names.as_slice() {
-                name.to_string()
-            } else {
-                format!("{{{}}}", artifact_names.join(","))
-            };
+            // When downloading a single artifact by name, the contents are
+            // extracted directly to `path/` without a subdirectory. For
+            // multiple artifacts with `merge-multiple: false` (the default),
+            // named subdirectories are created automatically.
+            //
+            // Use `name:` with an explicit subdirectory path for single
+            // artifacts, and `pattern:` for multiple artifacts.
             gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
-                    r#"
-                        name: '🌼📦 Download artifacts'
-                        uses: actions/download-artifact@v4
-                        with:
-                          pattern: '{pattern}'
-                          path: {RUNNER_TEMP}/used_artifacts/
-                    "#
-                ))
-                .unwrap();
+                let map: serde_yaml::Mapping = if let &[name] = artifact_names.as_slice() {
+                    serde_yaml::from_str(&format!(
+                        r#"
+                            name: '🌼📦 Download artifacts'
+                            uses: actions/download-artifact@v8
+                            with:
+                              name: '{name}'
+                              path: {RUNNER_TEMP}/used_artifacts/{name}/
+                        "#
+                    ))
+                    .unwrap()
+                } else {
+                    let pattern = format!("{{{}}}", artifact_names.join(","));
+                    serde_yaml::from_str(&format!(
+                        r#"
+                            name: '🌼📦 Download artifacts'
+                            uses: actions/download-artifact@v8
+                            with:
+                              pattern: '{pattern}'
+                              path: {RUNNER_TEMP}/used_artifacts/
+                        "#
+                    ))
+                    .unwrap()
+                };
                 map.into()
             });
         }
@@ -443,7 +487,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                         name: 🌼📦 Publish {name}
-                        uses: actions/upload-artifact@v4
+                        uses: actions/upload-artifact@v7
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
@@ -477,7 +521,7 @@ EOF
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
                     name: 🌼🥾 Publish bootstrapped flowey
-                    uses: actions/upload-artifact@v4
+                    uses: actions/upload-artifact@v7
                     with:
                         name: {artifact}
                         path: {RUNNER_TEMP}/{flowey_path}
@@ -534,17 +578,14 @@ EOF
         let mut job_permissions = BTreeMap::new();
         for permission_map in gh_permissions.values() {
             for (permission, value) in permission_map {
-                if let Some(old_value) = job_permissions.insert(permission.clone(), value.clone()) {
-                    if old_value != *value {
-                        anyhow::bail!(
-                            "permission {:?} was to conflicting values in job {:?}: {:?} and {:?}",
-                            permission,
-                            label,
-                            old_value,
-                            value
-                        )
-                    }
-                };
+                // Use the most permissible value set (this allows individual
+                // jobs to override the value set in inject_all_jobs_with)
+                if job_permissions
+                    .get(permission)
+                    .is_none_or(|old_value| *old_value < *value)
+                {
+                    job_permissions.insert(permission.clone(), value.clone());
+                }
             }
         }
 
@@ -553,7 +594,18 @@ EOF
             github_yaml_defs::Job {
                 name: label.clone(),
                 timeout_minutes,
-                runs_on: gh_pool.clone().map(|runner| runner_kind_to_yaml(&runner)),
+                runs_on: gh_pool.clone().map(|runner| {
+                    let mut yaml_runner = runner_kind_to_yaml(&runner);
+                    if let github_yaml_defs::Runner::SelfHosted(ref mut labels) = yaml_runner {
+                        if labels.iter().any(|l| l.starts_with("1ES.Pool=")) {
+                            labels.push(format!(
+                                "JobId=job{}-${{{{ github.run_id }}}}-${{{{ github.run_number }}}}-${{{{ github.run_attempt }}}}",
+                                job_idx.index()
+                            ));
+                        }
+                    }
+                    yaml_runner
+                }),
                 permissions: job_permissions
                     .iter()
                     .map(|k| (perm_kind_to_yaml(k.0), perm_val_to_yaml(k.1)))
@@ -698,6 +750,7 @@ EOF
 // pub(crate) so that internal debug CLI tooling can use it
 fn resolve_flow_as_github_yaml_steps(
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     resolved_patches: flowey_core::patch::ResolvedPatches,
     external_read_vars: BTreeSet<String>,
     platform: FlowPlatform,
@@ -705,25 +758,27 @@ fn resolve_flow_as_github_yaml_steps(
     job_idx: usize,
     flowey_bin: &str,
     gh_permissions: &BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-) -> anyhow::Result<(
-    Vec<serde_yaml::Value>,
-    BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
-)> {
+) -> anyhow::Result<super::common_yaml::ResolvedFlowSteps> {
     let mut output_steps = Vec::new();
 
-    let (mut output_graph, request_db, err_unreachable_nodes) =
-        crate::flow_resolver::stage1_dag::stage1_dag(
-            FlowBackend::Github,
-            platform,
-            arch,
-            resolved_patches,
-            seed_nodes,
-            external_read_vars,
-            // TODO: support GitHub agents with persistent storage
-            None,
-        )?;
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes,
+    } = crate::flow_resolver::stage1_dag::stage1_dag(
+        FlowBackend::Github,
+        platform,
+        arch,
+        resolved_patches,
+        seed_nodes,
+        seed_configs,
+        external_read_vars,
+        // TODO: support GitHub agents with persistent storage
+        None,
+    )?;
 
-    if err_unreachable_nodes.is_some() {
+    if found_unreachable_nodes {
         anyhow::bail!("detected unreachable nodes")
     }
 
@@ -863,5 +918,22 @@ fn resolve_flow_as_github_yaml_steps(
         })
         .collect();
 
-    Ok((output_steps, request_db))
+    let config_db = config_db
+        .into_iter()
+        .map(|(node_handle, configs)| {
+            (
+                node_handle.modpath().to_owned(),
+                configs
+                    .into_iter()
+                    .map(crate::cli::exec_snippet::SerializedRequest)
+                    .collect(),
+            )
+        })
+        .collect();
+
+    Ok(super::common_yaml::ResolvedFlowSteps {
+        steps: output_steps,
+        request_db,
+        config_db,
+    })
 }

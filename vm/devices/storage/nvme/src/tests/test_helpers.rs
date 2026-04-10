@@ -11,13 +11,12 @@ use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use guestmem::GuestMemory;
 use parking_lot::Mutex;
-use pci_core::msi::MsiControl;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// A test-only interrupt controller that simply stashes incoming interrupt
-/// requests in a FIFO queue. Implements [`MsiInterruptTarget`].
+/// requests in a FIFO queue. Implements [`SignalMsi`].
 #[derive(Debug, Clone)]
 pub struct TestPciInterruptController {
     inner: Arc<TestPciInterruptControllerInner>,
@@ -46,10 +45,10 @@ impl TestPciInterruptController {
     }
 }
 
-impl MsiInterruptTarget for TestPciInterruptController {
-    fn new_interrupt(&self) -> Box<dyn MsiControl> {
-        let controller = self.inner.clone();
-        Box::new(move |address, data| controller.msi_requests.lock().push_back((address, data)))
+impl SignalMsi for TestPciInterruptController {
+    fn signal_msi(&self, rid: u32, address: u64, data: u32) {
+        assert_eq!(rid, 0);
+        self.inner.msi_requests.lock().push_back((address, data));
     }
 }
 

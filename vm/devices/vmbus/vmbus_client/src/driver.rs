@@ -115,7 +115,7 @@ impl<D: SpawnDriver> ChannelWorker<D> {
                 ChannelRequest::Open,
                 OpenRequest {
                     open_data: OpenData {
-                        target_vp: 0, // TODO: improve
+                        target_vp: Some(0), // TODO: improve
                         ring_offset: input.ring_offset_in_pages.into(),
                         ring_gpadl_id: self.ring_gpadl_id,
                         event_flag: !0,

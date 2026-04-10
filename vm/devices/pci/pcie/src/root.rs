@@ -21,7 +21,9 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
 use pci_bus::GenericPciBusDevice;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::caps::pci_express::DevicePortType;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
@@ -92,17 +94,25 @@ enum DecodedEcamAccess<'a> {
 
 impl GenericPcieRootComplex {
     /// Constructs a new `GenericPcieRootComplex` emulator.
+    ///
+    /// `msi_target` is the MSI target for all root ports in this complex.
+    /// The caller is responsible for creating the `MsiConnection` and
+    /// connecting it to the platform's interrupt controller.
     pub fn new(
         register_mmio: &mut dyn RegisterMmioIntercept,
         start_bus: u8,
         end_bus: u8,
-        ecam_base: u64,
+        ecam_range: MemoryRange,
         ports: Vec<GenericPcieRootPortDefinition>,
+        msi_target: &MsiTarget,
     ) -> Self {
-        let ecam_size = ecam_size_from_bus_numbers(start_bus, end_bus);
+        assert_eq!(
+            ecam_size_from_bus_numbers(start_bus, end_bus),
+            ecam_range.len()
+        );
 
-        let mut ecam = register_mmio.new_io_region("ecam", ecam_size);
-        ecam.map(ecam_base);
+        let mut ecam = register_mmio.new_io_region("ecam", ecam_range.len());
+        ecam.map(ecam_range.start());
 
         let port_map: HashMap<u8, (Arc<str>, RootPort)> = ports
             .into_iter()
@@ -115,7 +125,8 @@ impl GenericPcieRootComplex {
                 } else {
                     None
                 };
-                let root_port = RootPort::new(definition.name.clone(), hotplug_slot_number);
+                let root_port =
+                    RootPort::new(definition.name.clone(), hotplug_slot_number, msi_target);
                 (device_number, (definition.name, root_port))
             })
             .collect();
@@ -166,6 +177,31 @@ impl GenericPcieRootComplex {
             .collect();
 
         ports
+    }
+
+    /// Hot-add a device to a named port.
+    pub fn hotplug_add_device(
+        &mut self,
+        port_name: &str,
+        device_name: &str,
+        device: Box<dyn GenericPciBusDevice>,
+    ) -> anyhow::Result<()> {
+        let (_, (_, root_port)) = self
+            .ports
+            .iter_mut()
+            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.hotplug_add_device(device_name, device)
+    }
+
+    /// Hot-remove the device from a named port.
+    pub fn hotplug_remove_device(&mut self, port_name: &str) -> anyhow::Result<()> {
+        let (_, (_, root_port)) = self
+            .ports
+            .iter_mut()
+            .find(|(_, (name, _))| name.as_ref() == port_name)
+            .ok_or_else(|| anyhow::anyhow!("port '{}' not found", port_name))?;
+        root_port.port.hotplug_remove_device()
     }
 
     /// Returns the size of the ECAM MMIO region this root complex is emulating.
@@ -288,10 +324,10 @@ impl MmioIntercept for GenericPcieRootComplex {
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.read_u32(cfg_offset, &mut dword_value));
             }
-            DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
+            DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_read(
                     &bus_number,
-                    &device_function,
+                    &function,
                     cfg_offset & !3,
                     &mut dword_value,
                 ));
@@ -348,10 +384,10 @@ impl MmioIntercept for GenericPcieRootComplex {
             DecodedEcamAccess::InternalBus(port, cfg_offset) => {
                 check_result!(port.port.cfg_space.write_u32(cfg_offset, write_dword));
             }
-            DecodedEcamAccess::DownstreamPort(port, bus_number, device_function, cfg_offset) => {
+            DecodedEcamAccess::DownstreamPort(port, bus_number, function, cfg_offset) => {
                 check_result!(port.forward_cfg_write(
                     &bus_number,
-                    &device_function,
+                    &function,
                     cfg_offset,
                     write_dword,
                 ));
@@ -375,7 +411,12 @@ impl RootPort {
     /// # Arguments
     /// * `name` - The name for this root port
     /// * `hotplug_slot_number` - The slot number for hotplug support. `Some(slot_number)` enables hotplug, `None` disables it
-    pub fn new(name: impl Into<Arc<str>>, hotplug_slot_number: Option<u32>) -> Self {
+    /// * `msi_target` - MSI target for interrupt delivery
+    pub fn new(
+        name: impl Into<Arc<str>>,
+        hotplug_slot_number: Option<u32>,
+        msi_target: &MsiTarget,
+    ) -> Self {
         let name_str = name.into();
         let hardware_ids = HardwareIds {
             vendor_id: VENDOR_ID,
@@ -394,6 +435,7 @@ impl RootPort {
             DevicePortType::RootPort,
             false,
             hotplug_slot_number,
+            msi_target,
         );
 
         Self { port }
@@ -438,44 +480,140 @@ impl RootPort {
     fn forward_cfg_read(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: &mut u32,
     ) -> IoResult {
         self.port
-            .forward_cfg_read_with_routing(bus, device_function, cfg_offset, value)
+            .forward_cfg_read_with_routing(bus, function, cfg_offset, value)
     }
 
     fn forward_cfg_write(
         &mut self,
         bus: &u8,
-        device_function: &u8,
+        function: &u8,
         cfg_offset: u16,
         value: u32,
     ) -> IoResult {
         self.port
-            .forward_cfg_write_with_routing(bus, device_function, cfg_offset, value)
+            .forward_cfg_write_with_routing(bus, function, cfg_offset, value)
     }
 }
 
 mod save_restore {
     use super::*;
+    use pci_core::cfg_space_emu::ConfigSpaceType1Emulator;
+    use std::collections::HashSet;
+    use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
-    use vmcore::save_restore::SavedStateNotSupported;
 
-    impl SaveRestore for GenericPcieRootComplex {
-        type SavedState = SavedStateNotSupported;
+    mod state {
+        use super::ConfigSpaceType1Emulator;
+        use super::SaveRestore;
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
 
-        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Err(SaveError::NotSupported)
+        type RootPortCfgSpaceSavedState = <ConfigSpaceType1Emulator as SaveRestore>::SavedState;
+
+        /// Saved state for a single root port.
+        #[derive(Protobuf)]
+        #[mesh(package = "pcie.root")]
+        pub struct PortSavedState {
+            /// The port number (device_function index in the ports HashMap).
+            #[mesh(1)]
+            pub port_number: u8,
+            /// The root port Type 1 configuration space state.
+            #[mesh(2)]
+            pub cfg_space: RootPortCfgSpaceSavedState,
         }
 
-        fn restore(
-            &mut self,
-            state: Self::SavedState,
-        ) -> Result<(), vmcore::save_restore::RestoreError> {
-            match state {}
+        /// Saved state for the GenericPcieRootComplex.
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.root")]
+        pub struct SavedState {
+            /// The lowest valid bus number under the root complex.
+            #[mesh(1)]
+            pub start_bus: u8,
+            /// The highest valid bus number under the root complex.
+            #[mesh(2)]
+            pub end_bus: u8,
+            /// Saved state for each root port.
+            #[mesh(3)]
+            pub ports: Vec<PortSavedState>,
+        }
+    }
+
+    impl SaveRestore for GenericPcieRootComplex {
+        type SavedState = state::SavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            // Save all root ports and sort by port number for stable ordering.
+            let mut ports = Vec::with_capacity(self.ports.len());
+            for (&port_number, (_, root_port)) in self.ports.iter_mut() {
+                ports.push(state::PortSavedState {
+                    port_number,
+                    cfg_space: root_port.port.cfg_space.save()?,
+                });
+            }
+            ports.sort_by_key(|p| p.port_number);
+
+            Ok(state::SavedState {
+                start_bus: self.start_bus,
+                end_bus: self.end_bus,
+                ports,
+            })
+        }
+
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState {
+                start_bus,
+                end_bus,
+                ports,
+            } = state;
+
+            // Validate that bus numbers match
+            if start_bus != self.start_bus || end_bus != self.end_bus {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "bus number mismatch: saved ({}-{}), current ({}-{})",
+                    start_bus,
+                    end_bus,
+                    self.start_bus,
+                    self.end_bus
+                )));
+            }
+
+            // Validate port count matches
+            if ports.len() != self.ports.len() {
+                return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                    "root port count mismatch: saved {}, current {}",
+                    ports.len(),
+                    self.ports.len()
+                )));
+            }
+
+            let mut seen_ports = HashSet::with_capacity(ports.len());
+
+            // Restore each saved port by explicit port number.
+            for port_state in ports {
+                if !seen_ports.insert(port_state.port_number) {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "duplicate root port {} in saved state",
+                        port_state.port_number
+                    )));
+                }
+
+                if let Some((_, root_port)) = self.ports.get_mut(&port_state.port_number) {
+                    root_port.port.cfg_space.restore(port_state.cfg_space)?;
+                } else {
+                    return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
+                        "root port {} not found",
+                        port_state.port_number
+                    )));
+                }
+            }
+
+            Ok(())
         }
     }
 }
@@ -499,7 +637,16 @@ mod tests {
             .collect();
 
         let mut register_mmio = TestPcieMmioRegistration {};
-        GenericPcieRootComplex::new(&mut register_mmio, start_bus, end_bus, 0, port_defs)
+        let ecam = MemoryRange::new(0..ecam_size_from_bus_numbers(start_bus, end_bus));
+        let msi_conn = pci_core::msi::MsiConnection::new();
+        GenericPcieRootComplex::new(
+            &mut register_mmio,
+            start_bus,
+            end_bus,
+            ecam,
+            port_defs,
+            msi_conn.target(),
+        )
     }
 
     #[test]
@@ -746,7 +893,10 @@ mod tests {
     #[test]
     fn test_root_port_hotplug_options() {
         // Test with hotplug disabled (None)
-        let root_port_no_hotplug = RootPort::new("test-port-no-hotplug", None);
+        let root_port_no_hotplug = {
+            let c = pci_core::msi::MsiConnection::new();
+            RootPort::new("test-port-no-hotplug", None, c.target())
+        };
         // We can't easily verify hotplug is disabled without accessing internal state,
         // but we can verify the port was created successfully
         let mut vendor_device_id: u32 = 0;
@@ -759,7 +909,10 @@ mod tests {
         assert_eq!(vendor_device_id, expected);
 
         // Test with hotplug enabled (Some(slot_number))
-        let root_port_with_hotplug = RootPort::new("test-port-hotplug", Some(5));
+        let root_port_with_hotplug = {
+            let c = pci_core::msi::MsiConnection::new();
+            RootPort::new("test-port-hotplug", Some(5), c.target())
+        };
         let mut vendor_device_id_hotplug: u32 = 0;
         root_port_with_hotplug
             .port
@@ -773,7 +926,10 @@ mod tests {
 
     #[test]
     fn test_root_port_invalid_bus_range_handling() {
-        let mut root_port = RootPort::new("test-port", None);
+        let mut root_port = {
+            let c = pci_core::msi::MsiConnection::new();
+            RootPort::new("test-port", None, c.target())
+        };
 
         // Don't configure bus numbers, so the range should be 0..=0 (invalid)
         let bus_range = root_port.port.cfg_space.assigned_bus_range();
@@ -790,5 +946,142 @@ mod tests {
             .port
             .forward_cfg_write_with_routing(&1, &0, 0x0, value);
         assert!(matches!(result, IoResult::Ok));
+    }
+
+    #[test]
+    fn test_save_restore_basic() {
+        use vmcore::save_restore::SaveRestore;
+
+        let mut rc = instantiate_root_complex(0, 255, 4);
+
+        // Save the initial state
+        let saved_state = rc.save().expect("save should succeed");
+
+        // Verify the saved state has the correct values
+        assert_eq!(saved_state.start_bus, 0);
+        assert_eq!(saved_state.end_bus, 255);
+        assert_eq!(saved_state.ports.len(), 4);
+
+        // Restore the state to a new root complex
+        let mut rc2 = instantiate_root_complex(0, 255, 4);
+        rc2.restore(saved_state).expect("restore should succeed");
+    }
+
+    #[test]
+    fn test_save_restore_with_bus_configuration() {
+        use vmcore::save_restore::SaveRestore;
+        use zerocopy::IntoBytes;
+
+        const SECONDARY_BUS_NUM_REG: u64 = 0x19;
+        const SUBORDINATE_BUS_NUM_REG: u64 = 0x1A;
+
+        let mut rc = instantiate_root_complex(0, 255, 2);
+
+        // Configure bus numbers on port 0
+        rc.mmio_write(SECONDARY_BUS_NUM_REG, &[1]).unwrap();
+        rc.mmio_write(SUBORDINATE_BUS_NUM_REG, &[10]).unwrap();
+
+        // Configure bus numbers on port 1 (at device 1, so offset by 8*4096)
+        const PORT1_ECAM: u64 = (1 << 3) * 4096;
+        rc.mmio_write(PORT1_ECAM + SECONDARY_BUS_NUM_REG, &[11])
+            .unwrap();
+        rc.mmio_write(PORT1_ECAM + SUBORDINATE_BUS_NUM_REG, &[20])
+            .unwrap();
+
+        // Verify the bus numbers are set
+        let mut bus_number: u8 = 0;
+        rc.mmio_read(SECONDARY_BUS_NUM_REG, bus_number.as_mut_bytes())
+            .unwrap();
+        assert_eq!(bus_number, 1);
+        rc.mmio_read(SUBORDINATE_BUS_NUM_REG, bus_number.as_mut_bytes())
+            .unwrap();
+        assert_eq!(bus_number, 10);
+
+        rc.mmio_read(
+            PORT1_ECAM + SECONDARY_BUS_NUM_REG,
+            bus_number.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(bus_number, 11);
+        rc.mmio_read(
+            PORT1_ECAM + SUBORDINATE_BUS_NUM_REG,
+            bus_number.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(bus_number, 20);
+
+        // Save the state
+        let saved_state = rc.save().expect("save should succeed");
+
+        // Create a new root complex and restore the state
+        let mut rc2 = instantiate_root_complex(0, 255, 2);
+
+        // Verify the new root complex has default bus numbers before restore
+        let mut default_bus: u8 = 0xFF;
+        rc2.mmio_read(SECONDARY_BUS_NUM_REG, default_bus.as_mut_bytes())
+            .unwrap();
+        assert_eq!(default_bus, 0);
+
+        // Restore the state
+        rc2.restore(saved_state).expect("restore should succeed");
+
+        // Verify the bus numbers are restored
+        let mut restored_bus: u8 = 0;
+        rc2.mmio_read(SECONDARY_BUS_NUM_REG, restored_bus.as_mut_bytes())
+            .unwrap();
+        assert_eq!(restored_bus, 1);
+        rc2.mmio_read(SUBORDINATE_BUS_NUM_REG, restored_bus.as_mut_bytes())
+            .unwrap();
+        assert_eq!(restored_bus, 10);
+
+        rc2.mmio_read(
+            PORT1_ECAM + SECONDARY_BUS_NUM_REG,
+            restored_bus.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(restored_bus, 11);
+        rc2.mmio_read(
+            PORT1_ECAM + SUBORDINATE_BUS_NUM_REG,
+            restored_bus.as_mut_bytes(),
+        )
+        .unwrap();
+        assert_eq!(restored_bus, 20);
+    }
+
+    #[test]
+    fn test_save_restore_bus_number_mismatch_error() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a root complex with specific bus range
+        let mut rc = instantiate_root_complex(0, 255, 2);
+
+        // Save the state
+        let saved_state = rc.save().expect("save should succeed");
+
+        // Create a new root complex with different bus range
+        let mut rc2 = instantiate_root_complex(0, 127, 2);
+
+        // Restore should fail because bus numbers don't match
+        let result = rc2.restore(saved_state);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_restore_port_count_mismatch_error() {
+        use vmcore::save_restore::SaveRestore;
+
+        // Create a root complex with 4 ports
+        let mut rc = instantiate_root_complex(0, 255, 4);
+
+        // Save the state
+        let saved_state = rc.save().expect("save should succeed");
+        assert_eq!(saved_state.ports.len(), 4);
+
+        // Create a new root complex with only 2 ports
+        let mut rc2 = instantiate_root_complex(0, 255, 2);
+
+        // Restore should fail because port counts don't match
+        let result = rc2.restore(saved_state);
+        assert!(result.is_err());
     }
 }

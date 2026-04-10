@@ -13,6 +13,7 @@ use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
 use crate::node::GhUserSecretVar;
+use crate::node::IntoConfig;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -33,6 +34,7 @@ use std::path::PathBuf;
 /// `flowey` prelude.
 pub mod user_facing {
     pub use super::AdoCiTriggers;
+    pub use super::AdoPool;
     pub use super::AdoPrTriggers;
     pub use super::AdoResourcesRepository;
     pub use super::AdoResourcesRepositoryRef;
@@ -61,11 +63,24 @@ pub mod user_facing {
 }
 
 fn linux_distro() -> FlowPlatformLinuxDistro {
+    // Check for nix environment first - takes precedence over distro detection
+    if std::env::var("IN_NIX_SHELL").is_ok() {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
+    // A `nix develop` shell doesn't set `IN_NIX_SHELL`, but the PATH should include a nix store path
+    if std::env::var("PATH").is_ok_and(|path| path.contains("/nix/store")) {
+        return FlowPlatformLinuxDistro::Nix;
+    }
+
     if let Ok(etc_os_release) = fs_err::read_to_string("/etc/os-release") {
         if etc_os_release.contains("ID=ubuntu") {
             FlowPlatformLinuxDistro::Ubuntu
         } else if etc_os_release.contains("ID=fedora") {
             FlowPlatformLinuxDistro::Fedora
+        } else if etc_os_release.contains("ID=azurelinux") || etc_os_release.contains("ID=mariner")
+        {
+            FlowPlatformLinuxDistro::AzureLinux
         } else if etc_os_release.contains("ID=arch") {
             FlowPlatformLinuxDistro::Arch
         } else {
@@ -313,6 +328,14 @@ impl GhRunner {
     pub fn is_self_hosted_with_label(&self, label: &str) -> bool {
         matches!(self, GhRunner::SelfHosted(labels) if labels.iter().any(|s| s.as_str() == label))
     }
+}
+
+// TODO: support a more structured format for demands
+// See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
+#[derive(Debug, Clone)]
+pub struct AdoPool {
+    pub name: String,
+    pub demands: Vec<String>,
 }
 
 /// Parameter type (unstable / stable).
@@ -593,12 +616,14 @@ impl Pipeline {
         let idx = self.jobs.len();
         self.jobs.push(PipelineJobMetadata {
             root_nodes: BTreeMap::new(),
+            root_configs: BTreeMap::new(),
             patches: ResolvedPatches::build(),
             label: label.as_ref().into(),
             platform,
             arch,
             cond_param_idx: None,
             timeout_minutes: None,
+            command_wrapper: None,
             ado_pool: None,
             ado_variables: BTreeMap::new(),
             gh_override_if: None,
@@ -1026,8 +1051,9 @@ pub struct PipelineJob<'a> {
 
 impl PipelineJob<'_> {
     /// (ADO only) specify which agent pool this job will be run on.
-    pub fn ado_set_pool(self, pool: impl AsRef<str>) -> Self {
-        self.ado_set_pool_with_demands(pool, Vec::new())
+    pub fn ado_set_pool(self, pool: AdoPool) -> Self {
+        self.pipeline.jobs[self.job_idx].ado_pool = Some(pool);
+        self
     }
 
     /// (ADO only) specify which agent pool this job will be run on, with
@@ -1213,6 +1239,19 @@ impl PipelineJob<'_> {
         self
     }
 
+    /// Set a [`CommandWrapperKind`] that will be applied to all shell
+    /// commands executed in this job's steps.
+    ///
+    /// The wrapper is applied both when running locally (via direct run)
+    /// and when running in CI (the kind is serialized into
+    /// `pipeline.json` and reconstructed at runtime).
+    ///
+    /// [`CommandWrapperKind`]: crate::shell::CommandWrapperKind
+    pub fn set_command_wrapper(self, wrapper: crate::shell::CommandWrapperKind) -> Self {
+        self.pipeline.jobs[self.job_idx].command_wrapper = Some(wrapper);
+        self
+    }
+
     /// Add a flow node which will be run as part of the job.
     pub fn dep_on<R: IntoRequest + 'static>(
         self,
@@ -1229,6 +1268,22 @@ impl PipelineJob<'_> {
             .entry(NodeHandle::from_type::<R::Node>())
             .or_default()
             .push(serde_json::to_vec(&req.into_request()).unwrap().into());
+
+        self
+    }
+
+    /// Set config on a node for this job.
+    ///
+    /// This is the pipeline-level equivalent of [`NodeCtx::config`]. Config
+    /// set here is merged with any config set by nodes within the job.
+    ///
+    /// [`NodeCtx::config`]: crate::node::NodeCtx::config
+    pub fn config<C: IntoConfig + 'static>(self, config: C) -> Self {
+        self.pipeline.jobs[self.job_idx]
+            .root_configs
+            .entry(NodeHandle::from_type::<C::Node>())
+            .or_default()
+            .push(serde_json::to_vec(&config).unwrap().into());
 
         self
     }
@@ -1288,7 +1343,7 @@ pub enum PipelineBackendHint {
 /// impl IntoPipeline for MyPipeline {
 ///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
 ///         let mut pipeline = Pipeline::new();
-///         
+///
 ///         // Define a job that runs on Linux x86_64
 ///         let _job = pipeline
 ///             .new_job(
@@ -1297,7 +1352,7 @@ pub enum PipelineBackendHint {
 ///                 "build"
 ///             )
 ///             .finish();
-///         
+///
 ///         Ok(pipeline)
 ///     }
 /// }
@@ -1314,7 +1369,7 @@ pub enum PipelineBackendHint {
 /// impl IntoPipeline for BuildPipeline {
 ///     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
 ///         let mut pipeline = Pipeline::new();
-///         
+///
 ///         // Define a runtime parameter
 ///         let enable_tests = pipeline.new_parameter_bool(
 ///             "enable_tests",
@@ -1322,10 +1377,10 @@ pub enum PipelineBackendHint {
 ///             ParameterKind::Stable,
 ///             Some(true) // default value
 ///         );
-///         
+///
 ///         // Create an artifact for passing data between jobs
 ///         let (publish_build, use_build) = pipeline.new_artifact("build-output");
-///         
+///
 ///         // Job 1: Build
 ///         let build_job = pipeline
 ///             .new_job(
@@ -1338,7 +1393,7 @@ pub enum PipelineBackendHint {
 ///                 output_dir: ctx.publish_artifact(publish_build),
 ///             })
 ///             .finish();
-///         
+///
 ///         // Job 2: Test (conditionally run based on parameter)
 ///         let _test_job = pipeline
 ///             .new_job(
@@ -1351,7 +1406,7 @@ pub enum PipelineBackendHint {
 ///                 input_dir: ctx.use_artifact(&use_build),
 ///             })
 ///             .finish();
-///         
+///
 ///         Ok(pipeline)
 ///     }
 /// }
@@ -1397,12 +1452,14 @@ pub mod internal {
 
     pub struct PipelineJobMetadata {
         pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+        pub root_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
         pub patches: PatchResolver,
         pub label: String,
         pub platform: FlowPlatform,
         pub arch: FlowArch,
         pub cond_param_idx: Option<usize>,
         pub timeout_minutes: Option<u32>,
+        pub command_wrapper: Option<crate::shell::CommandWrapperKind>,
         // backend specific
         pub ado_pool: Option<AdoPool>,
         pub ado_variables: BTreeMap<String, String>,
@@ -1410,14 +1467,6 @@ pub mod internal {
         pub gh_pool: Option<GhRunner>,
         pub gh_global_env: BTreeMap<String, String>,
         pub gh_permissions: BTreeMap<NodeHandle, BTreeMap<GhPermission, GhPermissionValue>>,
-    }
-
-    // TODO: support a more structured format for demands
-    // See https://learn.microsoft.com/en-us/azure/devops/pipelines/yaml-schema/pool-demands
-    #[derive(Debug, Clone)]
-    pub struct AdoPool {
-        pub name: String,
-        pub demands: Vec<String>,
     }
 
     #[derive(Debug)]

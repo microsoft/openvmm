@@ -12,8 +12,7 @@ use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
 use petri::openvmm::OpenVmmPetriBackend;
 use vmm_test_macros::openvmm_test;
-use vmm_test_macros::openvmm_test_no_agent;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 #[derive(Debug)]
 struct ExpectedNvmeDeviceProperties {
@@ -220,10 +219,7 @@ async fn nvme_relay_heuristic_debug_16vp_768mb_heavy(
         config,
         NvmeRelayTestParams {
             openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
@@ -251,10 +247,7 @@ async fn nvme_relay_heuristic_release_16vp_256mb_heavy(
         config,
         NvmeRelayTestParams {
             openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 16,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(256 * 1024 * 1024),
             }),
@@ -285,10 +278,7 @@ async fn nvme_relay_heuristic_release_32vp_500mb_very_heavy(
         config,
         NvmeRelayTestParams {
             openhcl_cmdline: "",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::very_heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(500 * 1024 * 1024),
             }),
@@ -318,10 +308,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
         }),
         NvmeRelayTestParams {
             openhcl_cmdline: "OPENHCL_ENABLE_VTL2_GPA_POOL=10240",
-            processor_topology: Some(ProcessorTopology {
-                vp_count: 32,
-                ..Default::default()
-            }),
+            processor_topology: Some(ProcessorTopology::very_heavy()),
             vtl2_base_address_type: Some(openvmm_defs::config::Vtl2BaseAddressType::Vtl2Allocate {
                 size: Some(768 * 1024 * 1024),
             }),
@@ -337,7 +324,7 @@ async fn nvme_relay_32vp_768mb_very_heavy(
 
 /// Boot the UEFI firmware, with a VTL2 range automatically configured by
 /// OpenVMM.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<(), anyhow::Error> {
     let vm = config
         .modify_backend(|b| {
@@ -358,7 +345,7 @@ async fn auto_vtl2_range(config: PetriVmBuilder<OpenVmmPetriBackend>) -> Result<
 ///
 /// TODO: OpenVMM doesn't support multiple numa nodes yet, but when it does, we
 /// should also validate that the kernel gets two different numa nodes.
-#[vmm_test_no_agent(openvmm_openhcl_uefi_x64(none))]
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
 async fn no_numa_errors<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {

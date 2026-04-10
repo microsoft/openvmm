@@ -6,7 +6,7 @@ name = "hypestv"
 edition.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
 diag_client.workspace = true

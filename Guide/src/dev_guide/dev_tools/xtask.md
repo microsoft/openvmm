@@ -8,6 +8,7 @@ For more info on how `xtask` is different from `xflowey`, see [`xflowey` vs
 
 Some examples of tools that you can find under `xtask`:
 
+- `cargo xtask clean` cleans build system artifacts (flowey, packages, test results)
 - `cargo xtask fmt` implements various OpenVMM-specific style / linting rules
 - `cargo xtask fuzz` implements various OpenVMM-specific `cargo fuzz` extensions
 - `cargo xtask install-git-hooks` sets up git hooks for developers

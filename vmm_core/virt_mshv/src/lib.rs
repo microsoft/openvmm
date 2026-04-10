@@ -8,6 +8,7 @@
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
+pub mod irqfd;
 mod vm_state;
 mod vp_state;
 
@@ -50,6 +51,7 @@ use pal::unix::pthread::*;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::io;
 use std::sync::Arc;
@@ -193,13 +195,14 @@ impl virt::Hypervisor for LinuxMshv {
 
         Ok(MshvProtoPartition { config, vmfd, vps })
     }
+}
 
-    fn is_available(&self) -> Result<bool, Self::Error> {
-        match std::fs::metadata("/dev/mshv") {
-            Ok(_) => Ok(true),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(Error::AvailableCheck(err)),
-        }
+/// Returns whether MSHV is available on this machine.
+pub fn is_available() -> Result<bool, Error> {
+    match std::fs::metadata("/dev/mshv") {
+        Ok(_) => Ok(true),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(Error::AvailableCheck(err)),
     }
 }
 
@@ -215,24 +218,33 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     type ProcessorBinder = MshvProcessorBinder;
     type Error = Error;
 
-    fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4] {
-        // This call should never fail unless there is a kernel or hypervisor
-        // bug.
-        self.vps[0]
-            .vcpufd
-            .get_cpuid_values(eax, ecx, 0, 0)
-            .expect("cpuid should not fail")
-    }
-
     fn max_physical_address_size(&self) -> u8 {
-        max_physical_address_size_from_cpuid(&|eax, ecx| self.cpuid(eax, ecx))
+        max_physical_address_size_from_cpuid(&|eax, ecx| {
+            self.vps[0]
+                .vcpufd
+                .get_cpuid_values(eax, ecx, 0, 0)
+                .expect("cpuid should not fail")
+        })
     }
 
     fn build(
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        // TODO: do something with cpuid.
+        // Build topology CPUID leaves.
+        // TODO: actually apply these to the partition's CPUID results.
+        let mut cpuid_leaves: Vec<virt::CpuidLeaf> = config.cpuid.to_vec();
+        virt::x86::topology::topology_cpuid(
+            self.config.processor_topology,
+            &|eax, ecx| {
+                self.vps[0]
+                    .vcpufd
+                    .get_cpuid_values(eax, ecx, 0, 0)
+                    .expect("cpuid should not fail")
+            },
+            &mut cpuid_leaves,
+        )
+        .map_err(Error::TopologyCpuid)?;
 
         // Get caps via cpuid
         let caps = virt::PartitionCapabilities::from_cpuid(
@@ -247,15 +259,20 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         .map_err(Error::Capabilities)?;
 
         // Attach all the resources created above to a Partition object.
+        let inner = Arc::new(MshvPartitionInner {
+            vmfd: self.vmfd,
+            memory: Default::default(),
+            gm: config.guest_memory.clone(),
+            vps: self.vps,
+            irq_routes: Default::default(),
+            gsi_states: Mutex::new(Box::new([irqfd::GsiState::Unallocated; irqfd::NUM_GSIS])),
+            caps,
+            synic_ports: Default::default(),
+        });
+
         let partition = MshvPartition {
-            inner: Arc::new(MshvPartitionInner {
-                vmfd: self.vmfd,
-                memory: Default::default(),
-                gm: config.guest_memory.clone(),
-                vps: self.vps,
-                irq_routes: Default::default(),
-                caps,
-            }),
+            synic_ports: Arc::new(virt::synic::SynicPorts::new(inner.clone())),
+            inner,
         };
 
         let vps = self
@@ -276,6 +293,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 #[derive(Debug)]
 pub struct MshvPartition {
     inner: Arc<MshvPartitionInner>,
+    synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
 }
 
 #[derive(Debug)]
@@ -285,7 +303,9 @@ struct MshvPartitionInner {
     gm: GuestMemory,
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
+    gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
     caps: virt::PartitionCapabilities,
+    synic_ports: virt::synic::SynicPortMap,
 }
 
 #[derive(Debug)]
@@ -329,6 +349,14 @@ impl virt::Partition for MshvPartition {
         self.inner.request_msi(request)
     }
 
+    fn as_signal_msi(&self, _vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        Some(self.inner.clone())
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Some(Arc::new(irqfd::MshvIrqFd::new(self.inner.clone())))
+    }
+
     fn request_yield(&self, vp_index: VpIndex) {
         let vp = self.inner.vp(vp_index);
         if vp.needs_yield.request_yield() {
@@ -352,7 +380,7 @@ impl virt::X86Partition for MshvPartition {
 
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
         // TODO
-        tracing::warn!(?vp_index, ?vtl, lint, "ignored lint pulse");
+        tracelimit::warn_ratelimited!(?vp_index, ?vtl, lint, "ignored lint pulse");
     }
 }
 
@@ -378,6 +406,10 @@ impl Hv1 for MshvPartition {
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic_ports.clone()
     }
 }
 
@@ -541,7 +573,7 @@ impl MshvProcessor<'_> {
         self.flush_messages(info.deliverable_sints);
     }
 
-    fn handle_hypercall_intercept(&self, message: &hv_message, devices: &impl CpuIo) {
+    fn handle_hypercall_intercept(&self, message: &hv_message, _devices: &impl CpuIo) {
         let info = message.to_hypercall_intercept_info().unwrap();
         let execution_state = info.header.execution_state;
         // SAFETY: Accessing the raw field of this union is always safe.
@@ -558,7 +590,7 @@ impl MshvProcessor<'_> {
             xmm: info.xmmregisters,
         };
         let mut handler = MshvHypercallHandler {
-            bus: devices,
+            partition: self.partition,
             context: &mut hpc_context,
             rip: info.header.rip,
             rip_dirty: false,
@@ -1097,6 +1129,8 @@ pub enum Error {
     InstallIntercept(#[source] MshvError),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("failed to compute topology cpuid")]
+    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
 
 impl MshvPartitionInner {
@@ -1120,6 +1154,12 @@ impl MshvPartitionInner {
                 "failed to request msi"
             );
         }
+    }
+}
+
+impl SignalMsi for MshvPartitionInner {
+    fn signal_msi(&self, _rid: u32, address: u64, data: u32) {
+        self.request_msi(MsiRequest { address, data });
     }
 }
 
@@ -1258,7 +1298,7 @@ pub struct MshvHypercallContext {
     pub xmm: [hv_u128; 6],
 }
 
-impl<T> hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     fn rip(&mut self) -> u64 {
         self.rip
     }
@@ -1328,8 +1368,8 @@ mod tests {
     }
 }
 
-struct MshvHypercallHandler<'a, T> {
-    bus: &'a T,
+struct MshvHypercallHandler<'a> {
+    partition: &'a MshvPartitionInner,
     context: &'a mut MshvHypercallContext,
     rip: u64,
     rip_dirty: bool,
@@ -1337,23 +1377,26 @@ struct MshvHypercallHandler<'a, T> {
     gp_dirty: bool,
 }
 
-impl<T: CpuIo> MshvHypercallHandler<'_, T> {
+impl MshvHypercallHandler<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
         [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
     );
 }
 
-impl<T: CpuIo> hv1_hypercall::PostMessage for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::PostMessage for MshvHypercallHandler<'_> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
-        self.bus
-            .post_synic_message(Vtl::Vtl0, connection_id, false, message)
+        self.partition
+            .synic_ports
+            .handle_post_message(Vtl::Vtl0, connection_id, false, message)
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::SignalEvent for MshvHypercallHandler<'_, T> {
+impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        self.bus.signal_synic_event(Vtl::Vtl0, connection_id, flag)
+        self.partition
+            .synic_ports
+            .handle_signal_event(Vtl::Vtl0, connection_id, flag)
     }
 }
 
@@ -1467,21 +1510,24 @@ fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
     }
 }
 
-impl virt::Synic for MshvPartition {
+impl virt::synic::Synic for MshvPartitionInner {
+    fn port_map(&self) -> &virt::synic::SynicPortMap {
+        &self.synic_ports
+    }
+
     fn post_message(&self, _vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]) {
-        self.inner
-            .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
+        self.post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
     }
 
     fn new_guest_event_port(
-        &self,
+        self: Arc<Self>,
         _vtl: Vtl,
         vp: u32,
         sint: u8,
         flag: u16,
     ) -> Box<dyn GuestEventPort> {
         Box::new(MshvGuestEventPort {
-            partition: Arc::downgrade(&self.inner),
+            partition: Arc::downgrade(&self),
             params: Arc::new(Mutex::new(MshvEventPortParams {
                 vp: VpIndex::new(vp),
                 sint,

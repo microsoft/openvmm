@@ -1047,11 +1047,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_crash_msr(&self, msr: u32, _vtl: GuestVtl) -> Result<u64, MsrError> {
         let v = match msr {
-            // Reads of CRASH_CTL report our supported capabilities, not the
-            // current value.
+            // Reads of CRASH_CTL report our supported capabilities, not any
+            // previously written value.
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => hvdef::GuestCrashCtl::new()
                 .with_crash_notify(true)
                 .with_crash_message(true)
+                .with_no_crash_dump(true)
+                .with_pre_os_id(0b111)
                 .into(),
             hvdef::HV_X64_MSR_GUEST_CRASH_P0 => self.crash_reg[0],
             hvdef::HV_X64_MSR_GUEST_CRASH_P1 => self.crash_reg[1],
@@ -1154,8 +1156,8 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 }
 
-fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
-    if let Err(err) = dev.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
+fn signal_mnf(synic_ports: &virt::synic::SynicPortMap, connection_id: u32) {
+    if let Err(err) = synic_ports.handle_signal_event(Vtl::Vtl0, connection_id, 0) {
         tracelimit::warn_ratelimited!(
             CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
@@ -1184,6 +1186,7 @@ async fn yield_now() {
 struct UhEmulationState<'a, 'b, T: CpuIo, U: Backing> {
     vp: &'a mut UhProcessor<'b, U>,
     interruption_pending: bool,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     devices: &'a T,
     vtl: GuestVtl,
     cache: U::EmulationCache,
@@ -1195,7 +1198,7 @@ impl<T: CpuIo, U: Backing> EmulatorMonitorSupport for UhEmulationState<'_, '_, T
             .partition
             .monitor_page
             .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id);
+                signal_mnf(&self.vp.partition.synic_ports, connection_id);
             })
     }
 
@@ -1204,9 +1207,8 @@ impl<T: CpuIo, U: Backing> EmulatorMonitorSupport for UhEmulationState<'_, '_, T
     }
 }
 
-struct UhHypercallHandler<'a, 'b, T, B: Backing> {
+struct UhHypercallHandler<'a, 'b, B: Backing> {
     vp: &'a mut UhProcessor<'b, B>,
-    bus: &'a T,
     /// Indicates if the handler is for trusted hypercalls in case hardware isolation is in use. A
     /// hypercall is trusted if it was made by the guest using a regular vmcall instruction, without
     /// using any host-visible mechanisms. An untrusted hypercall was intercepted from the
@@ -1219,7 +1221,7 @@ struct UhHypercallHandler<'a, 'b, T, B: Backing> {
     intercepted_vtl: GuestVtl,
 }
 
-impl<T, B: Backing> UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> UhHypercallHandler<'_, '_, B> {
     fn target_vtl_no_higher(&self, target_vtl: Vtl) -> Result<GuestVtl, HvError> {
         if Vtl::from(self.intercepted_vtl) < target_vtl {
             return Err(HvError::AccessDenied);
@@ -1228,7 +1230,7 @@ impl<T, B: Backing> UhHypercallHandler<'_, '_, T, B> {
     }
 }
 
-impl<T, B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'_, '_, B> {
     fn get_vp_index_from_apic_id(
         &mut self,
         partition_id: u64,
@@ -1271,7 +1273,7 @@ impl<T, B: Backing> hv1_hypercall::GetVpIndexFromApicId for UhHypercallHandler<'
 }
 
 #[cfg(guest_arch = "aarch64")]
-impl<T: CpuIo, B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, B> {
     fn pc(&mut self) -> u64 {
         self.vp
             .runner
@@ -1310,7 +1312,7 @@ impl<T: CpuIo, B: Backing> Arm64RegisterState for UhHypercallHandler<'_, '_, T, 
     }
 }
 
-impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_, '_, B> {
     fn post_message(&mut self, connection_id: u32, message: &[u8]) -> hvdef::HvResult<()> {
         tracing::trace!(
             connection_id,
@@ -1318,7 +1320,7 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_,
             "handling post message intercept"
         );
 
-        self.bus.post_synic_message(
+        self.vp.partition.synic_ports.handle_post_message(
             self.intercepted_vtl.into(),
             connection_id,
             self.trusted,
@@ -1327,16 +1329,19 @@ impl<T: CpuIo, B: Backing> hv1_hypercall::PostMessage for UhHypercallHandler<'_,
     }
 }
 
-impl<T: CpuIo, B: Backing> hv1_hypercall::SignalEvent for UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> hv1_hypercall::SignalEvent for UhHypercallHandler<'_, '_, B> {
     fn signal_event(&mut self, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
         tracing::trace!(connection_id, "handling signal event intercept");
 
-        self.bus
-            .signal_synic_event(self.intercepted_vtl.into(), connection_id, flag)
+        self.vp.partition.synic_ports.handle_signal_event(
+            self.intercepted_vtl.into(),
+            connection_id,
+            flag,
+        )
     }
 }
 
-impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> UhHypercallHandler<'_, '_, B> {
     fn retarget_virtual_interrupt(
         &mut self,
         device_id: u64,
@@ -1362,11 +1367,60 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
     }
 }
 
-impl<T, B: Backing> hv1_hypercall::ExtendedQueryCapabilities for UhHypercallHandler<'_, '_, T, B> {
+impl<B: Backing> hv1_hypercall::ExtendedQueryCapabilities for UhHypercallHandler<'_, '_, B> {
     fn query_extended_capabilities(&mut self) -> hvdef::HvResult<u64> {
         // This capability is not actually supported. However Windows may unconditionally issue this
         // hypercall. Return InvalidHypercallCode as the error status. This is the same as not
         // implementing this at all, but has the advantage of not causing generating error messages.
         Err(HvError::InvalidHypercallCode)
+    }
+}
+
+impl<B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, '_, B> {
+    fn restore_partition_time(
+        &mut self,
+        partition_id: u64,
+        tsc_sequence: u32,
+        reference_time_in_100_ns: u64,
+        tsc: u64,
+    ) -> hvdef::HvResult<()> {
+        // Temporarily ignore restore_partition_time intercepts on Intel processors,
+        // until a new Linux kernel with proper support is ingested.
+        // xtask-fmt allow-target-arch cpu-intrinsic
+        #[cfg(target_arch = "x86_64")]
+        {
+            let result =
+                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::ExtendedFeatures.0, 0);
+            if x86defs::cpuid::ExtendedFeatureSubleaf0Ebx::from(result.ebx).tsc_adjust() {
+                tracelimit::info_ratelimited!(
+                    "restore_partition_time ignored due to TSC adjustment support"
+                );
+                return Err(HvError::OperationDenied);
+            }
+        }
+
+        tracelimit::info_ratelimited!(
+            partition_id,
+            tsc_sequence,
+            reference_time_in_100_ns,
+            tsc,
+            "handling restore partition time intercept"
+        );
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidParameter);
+        }
+
+        if let Err(e) = self.vp.partition.hcl.restore_partition_time(
+            tsc_sequence,
+            reference_time_in_100_ns,
+            tsc,
+        ) {
+            tracelimit::error_ratelimited!(
+                error = &e as &dyn std::error::Error,
+                "failed to restore partition time"
+            );
+            return Err(HvError::InvalidParameter);
+        }
+        Ok(())
     }
 }

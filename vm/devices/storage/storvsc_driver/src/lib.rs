@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![forbid(unsafe_code)]
+
 //! Storvsc driver for use as a disk backend.
 
 #[cfg(feature = "test")]
@@ -235,8 +237,8 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             .await
             .map_err(|err| StorvscError(StorvscErrorInner::CompletionError(err)))?;
 
-        if resp.completion.is_some() {
-            Ok(resp.completion.unwrap())
+        if let Some(completion) = resp.completion {
+            Ok(completion)
         } else {
             Err(StorvscError(StorvscErrorInner::Cancelled))
         }

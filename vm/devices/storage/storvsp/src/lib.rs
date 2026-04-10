@@ -1,6 +1,46 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! VMBus SCSI controller emulator (StorVSP).
+//!
+//! StorVSP implements the Hyper-V synthetic SCSI protocol — a VMBus-based
+//! transport that carries SCSI CDBs between the guest's `storvsc` driver and
+//! the VMM. This is not a standard SCSI transport (like iSCSI or SAS); it's a
+//! Hyper-V-specific wire format defined in [`storvsp_protocol`].
+//!
+//! # Architecture
+//!
+//! The crate uses a multi-worker model. The primary VMBus channel handles
+//! protocol version negotiation (Win6 through Blue); sub-channels process I/O
+//! in parallel. Each worker owns a VMBus ring and processes packets
+//! concurrently via `FuturesUnordered`.
+//!
+//! StorVSP handles the transport (ring buffer management, GPADL setup, packet
+//! framing, sub-channel lifecycle) and a few SCSI control commands directly
+//! (`REPORT_LUNS`, `INQUIRY` for absent targets). All actual I/O is delegated
+//! to [`AsyncScsiDisk`] implementations — StorVSP
+//! never interprets SCSI data CDBs itself.
+//!
+//! For the channel/sub-channel model, CPU affinity, and performance
+//! characteristics, see the
+//! [StorVSP Channels & Subchannels](https://openvmm.dev/reference/devices/vmbus/storvsp_channels.html)
+//! page in the OpenVMM Guide.
+//!
+//! # Key types
+//!
+//! - [`StorageDevice`] — the VMBus device. Implements `VmbusDevice` and
+//!   `SaveRestoreVmbusDevice`.
+//! - [`ScsiController`] — manages attached disks by [`ScsiPath`]. Supports
+//!   runtime attach/remove.
+//! - [`ScsiControllerDisk`] — wraps `Arc<dyn AsyncScsiDisk>`.
+//!
+//! # Performance
+//!
+//! Poll-mode optimization: when pending I/O count exceeds
+//! `poll_mode_queue_depth`, the worker switches from interrupt-driven to
+//! busy-poll for new requests, reducing guest exit frequency. Future storage
+//! for SCSI request processing is pooled to avoid allocation on the hot path.
+
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
@@ -893,6 +933,7 @@ impl<T: RingMem> Worker<T> {
                             _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
                                 if version >= Version::Win7
                                 {
+                                    tracing::debug!("rescan notification received, sending ENUMERATE_BUS");
                                     self.inner.send_packet(&mut self.queue.split().1, storvsp_protocol::Operation::ENUMERATE_BUS, storvsp_protocol::NtStatus::SUCCESS, &())?;
                                 }
                             }
@@ -1522,10 +1563,13 @@ impl StorageDevice {
     ) -> anyhow::Result<&mut Worker> {
         let controller = self.controller.clone();
 
+        // VMBus doesn't provide a target VP if the channel is not using interrupts. Run on VP 0 in
+        // that case.
+        let target_vp = open_request.open_data.target_vp.unwrap_or_default();
         let driver = self
             .driver_source
             .builder()
-            .target_vp(open_request.open_data.target_vp)
+            .target_vp(target_vp)
             .run_on_target(true)
             .build(format!("storvsp-{}-{}", self.instance_id, channel_index));
 
@@ -1562,7 +1606,7 @@ impl StorageDevice {
 
         self.workers[channel_index as usize]
             .driver
-            .retarget_vp(open_request.open_data.target_vp);
+            .retarget_vp(target_vp);
 
         Ok(self.workers[channel_index as usize].worker.insert(
             &driver,

@@ -10,11 +10,8 @@ rust-version.workspace = true
 gdb = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aarch64emu.workspace = true
-aarch64defs.workspace = true
 hcl.workspace = true
 virt.workspace = true
-virt_support_aarch64emu.workspace = true
 virt_support_apic.workspace = true
 virt_support_x86emu.workspace = true
 pci_core.workspace = true
@@ -54,6 +51,11 @@ thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+aarch64defs.workspace = true
+aarch64emu.workspace = true
+virt_support_aarch64emu.workspace = true
 
 [build-dependencies]
 build_rs_guest_arch.workspace = true

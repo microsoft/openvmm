@@ -397,17 +397,7 @@ impl From<VersionResponse> for VersionResponse3 {
 
 /// User-defined data provided by a device as part of an offer or open request.
 #[derive(
-    Copy,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    IntoBytes,
-    FromBytes,
-    Immutable,
-    KnownLayout,
-    Protobuf,
-    Inspect,
+    Copy, Clone, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout, Protobuf, Inspect,
 )]
 #[repr(C, align(4))]
 #[mesh(transparent)]
@@ -473,6 +463,22 @@ impl From<UserDefinedData> for [u8; 120] {
 impl Default for UserDefinedData {
     fn default() -> Self {
         Self::new_zeroed()
+    }
+}
+
+impl std::fmt::Debug for UserDefinedData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.iter().all(|&b| b == 0) {
+            // Compact output for all-zeroes
+            write!(f, "UserDefinedData([<all-zeroes>])")
+        } else {
+            // Compact output as uppercase hex
+            write!(f, "UserDefinedData([")?;
+            for byte in &self.0 {
+                write!(f, "{:02X}", byte)?;
+            }
+            write!(f, "])")
+        }
     }
 }
 
@@ -650,6 +656,11 @@ pub struct GpadlCreated {
 
 /// Target VP index value that indicates that interrupts should be disabled for the channel.
 pub const VP_INDEX_DISABLE_INTERRUPT: u32 = u32::MAX;
+
+/// Helper that returns `None` if the VP index indicates interrupts should be disabled.
+pub fn vp_index_if_enabled(vp_index: u32) -> Option<u32> {
+    (vp_index != VP_INDEX_DISABLE_INTERRUPT).then_some(vp_index)
+}
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]

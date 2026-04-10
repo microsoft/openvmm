@@ -47,8 +47,8 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
-use winapi::um::winbase::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
-use winapi::um::winbase::FILE_SKIP_SET_EVENT_ON_HANDLE;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_COMPLETION_PORT_ON_SUCCESS;
+use windows_sys::Win32::System::WindowsProgramming::FILE_SKIP_SET_EVENT_ON_HANDLE;
 
 /// A single-threaded task pool backed by an IO completion port.
 pub type IocpPool = IoPool<IocpBackend>;

@@ -1270,7 +1270,7 @@ impl SimpleScsiDvd {
             .writer()
             .write(&track_information.as_bytes()[..tx])
             .map_err(ScsiDvdError::MemoryAccess)?;
-        Ok(0)
+        Ok(tx)
     }
 
     fn handle_read_dvd_structure(

@@ -31,6 +31,7 @@ pub struct Shell<'a, T: Utf8Encoding> {
     client: &'a PipetteClient,
     cwd: Utf8PathBuf<T>,
     env: HashMap<String, String>,
+    chroot: Option<String>,
 }
 
 /// A shell for a Windows guest.
@@ -45,6 +46,7 @@ impl<'a> UnixShell<'a> {
             client,
             cwd: Utf8PathBuf::from("/"),
             env: HashMap::new(),
+            chroot: None,
         }
     }
 }
@@ -55,6 +57,7 @@ impl<'a> WindowsShell<'a> {
             client,
             cwd: Utf8PathBuf::from("C:/"),
             env: HashMap::new(),
+            chroot: None,
         }
     }
 }
@@ -74,11 +77,26 @@ where
         self.cwd = self.path(path);
     }
 
+    /// Set the chroot directory for commands run by this shell.
+    ///
+    /// Each spawned process will chroot into this directory before exec
+    /// (Linux only). The shell itself is unaffected.
+    pub fn chroot(&mut self, root: impl Into<String>) {
+        self.chroot = Some(root.into());
+    }
+
     /// Reads a file from the guest into a string.
     pub async fn read_file(&self, path: impl AsRef<Utf8Path<T>>) -> anyhow::Result<String> {
         let path = self.path(path);
         let v = self.client.read_file(path.as_str()).await?;
         String::from_utf8(v).with_context(|| format!("file '{}' is not valid utf-8", path.as_str()))
+    }
+
+    /// Reads a file from the guest into a raw byte vector.
+    pub async fn read_file_raw(&self, path: impl AsRef<Utf8Path<T>>) -> anyhow::Result<Vec<u8>> {
+        let path = self.path(path);
+        let v = self.client.read_file(path.as_str()).await?;
+        Ok(v)
     }
 
     /// Creates a builder to execute a command inside the guest.
@@ -254,6 +272,9 @@ impl<'a, T: Utf8Encoding> Cmd<'a, T> {
         let mut command = self.shell.client.command(&self.prog);
         command.args(&self.args);
         command.current_dir(&self.shell.cwd);
+        if let Some(ref root) = self.shell.chroot {
+            command.chroot(root);
+        }
         for (name, value) in &self.shell.env {
             command.env(name, value);
         }

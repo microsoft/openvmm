@@ -21,19 +21,18 @@ use pal::unix::affinity::get_cpu_number;
 #[cfg(windows)]
 use pal::windows::affinity::get_cpu_number;
 use std::io;
-use std::sync::Arc;
 
 #[derive(Debug, Inspect)]
 pub struct NvmeDisk {
     /// NVMe namespace mapped to the disk representation.
     #[inspect(flatten)]
-    namespace: Arc<nvme_driver::Namespace>,
+    namespace: nvme_driver::NamespaceHandle,
     #[inspect(skip)]
     block_shift: u32,
 }
 
 impl NvmeDisk {
-    pub fn new(namespace: Arc<nvme_driver::Namespace>) -> Self {
+    pub fn new(namespace: nvme_driver::NamespaceHandle) -> Self {
         Self {
             block_shift: namespace.block_size().trailing_zeros(),
             namespace,

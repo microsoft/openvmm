@@ -65,7 +65,7 @@ impl Endpoint for NullEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         _rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -101,25 +101,33 @@ impl Endpoint for NullEndpoint {
 struct NullQueue;
 
 impl Queue for NullQueue {
-    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+    fn poll_ready(&mut self, _cx: &mut Context<'_>, _pool: &mut dyn BufferAccess) -> Poll<()> {
         Poll::Pending
     }
 
-    fn rx_avail(&mut self, _done: &[RxId]) {}
+    fn rx_avail(&mut self, _pool: &mut dyn BufferAccess, _done: &[RxId]) {}
 
-    fn rx_poll(&mut self, _packets: &mut [RxId]) -> anyhow::Result<usize> {
+    fn rx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        _packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
         Ok(0)
     }
 
-    fn tx_avail(&mut self, packets: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        packets: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         Ok((true, packets.len()))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
+    fn tx_poll(
+        &mut self,
+        _pool: &mut dyn BufferAccess,
+        _done: &mut [TxId],
+    ) -> Result<usize, TxError> {
         Ok(0)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        None
     }
 }

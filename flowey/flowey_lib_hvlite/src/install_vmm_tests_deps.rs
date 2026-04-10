@@ -16,7 +16,7 @@ const WHP_TESTS_REQUIRED_FEATURES: [&str; 1] = ["HypervisorPlatform"];
 
 const VIRT_REG_PATH: &str = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization"#;
 
-#[derive(Serialize, Deserialize, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum VmmTestsDepSelections {
     Windows {
         hyperv: bool,
@@ -26,10 +26,16 @@ pub enum VmmTestsDepSelections {
     Linux,
 }
 
+flowey_config! {
+    /// Config for the install_vmm_tests_deps node.
+    pub struct Config {
+        /// Specify the necessary dependencies
+        pub selections: Option<VmmTestsDepSelections>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Specify the necessary dependencies
-        Select(VmmTestsDepSelections),
         /// Install the dependencies
         Install(WriteVar<SideEffect>),
         /// Generate a list of commands that would install the dependencies
@@ -37,25 +43,30 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(_ctx: &mut ImportCtx<'_>) {}
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut selections = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut installed = Vec::new();
         let mut write_commands = Vec::new();
         for req in requests {
             match req {
-                Request::Select(v) => same_across_all_reqs("Select", &mut selections, v)?,
                 Request::Install(v) => installed.push(v),
                 Request::GetCommands(v) => write_commands.push(v),
             }
         }
-        let selections = selections.ok_or(anyhow::anyhow!("Missing essential request: Select"))?;
+        let selections = config
+            .selections
+            .ok_or(anyhow::anyhow!("missing config: selections"))?;
         let installed = installed;
         let write_commands = write_commands;
         if installed.is_empty() && write_commands.is_empty() {
@@ -74,7 +85,6 @@ impl FlowNode for Node {
                     let write_commands = write_commands.claim(ctx);
 
                     move |rt| {
-                        let sh = xshell::Shell::new()?;
                         let mut commands = Vec::new();
 
                         if !matches!(rt.platform(), FlowPlatform::Windows)
@@ -96,7 +106,7 @@ impl FlowNode for Node {
 
                         // Check if features are already enabled
                         if installing && !features_to_enable.is_empty() {
-                            let features = xshell::cmd!(sh, "DISM.exe /Online /Get-Features").output()?;
+                            let features = flowey::shell_cmd!(rt, "DISM.exe /Online /Get-Features").output()?;
                             assert!(features.status.success());
                             let features = String::from_utf8_lossy(&features.stdout).to_string();
                             let mut feature = None;
@@ -147,7 +157,7 @@ Otherwise, press `ctrl-c` to cancel the run.
                         // Install the features
                         for feature in features_to_enable {
                             if installing {
-                                xshell::cmd!(sh, "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}").run()?;
+                                flowey::shell_cmd!(rt, "DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}").run()?;
                             }
                             commands.push(format!("DISM.exe /Online /NoRestart /Enable-Feature /All /FeatureName:{feature}"));
                         }
@@ -167,7 +177,7 @@ Otherwise, press `ctrl-c` to cancel the run.
 
                         // Check if reg keys are set
                         if installing && !reg_keys_to_set.is_empty() {
-                            let output = xshell::cmd!(sh, "reg.exe query {VIRT_REG_PATH}").output()?;
+                            let output = flowey::shell_cmd!(rt, "reg.exe query {VIRT_REG_PATH}").output()?;
                             if output.status.success() {
                                 let output = String::from_utf8_lossy(&output.stdout).to_string();
                                 for line in output.lines() {
@@ -210,7 +220,7 @@ Otherwise, press `ctrl-c` to cancel the run.
                             // TODO: figure out why reg.exe is not found if I
                             // render the command as a string first and share
                             if installing {
-                                xshell::cmd!(sh, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
+                                flowey::shell_cmd!(rt, "reg.exe add {VIRT_REG_PATH} /v {v} /t REG_DWORD /d 1 /f").run()?;
                             }
                             commands.push(format!("reg.exe add \"{VIRT_REG_PATH}\" /v {v} /t REG_DWORD /d 1 /f"));
                         }

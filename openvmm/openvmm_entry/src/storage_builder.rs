@@ -25,7 +25,11 @@ use std::collections::BTreeMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
+use virtio_resources::VirtioPciDeviceHandle;
+use virtio_resources::blk::VirtioBlkHandle;
 use vm_resource::IntoResource;
+use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
@@ -37,9 +41,16 @@ pub(super) struct StorageBuilder {
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
     pcie_nvme_controllers: BTreeMap<String, Vec<NamespaceDefinition>>,
+    pcie_virtio_blk_disks: Vec<(String, VirtioBlkDisk)>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
+    vtl0_virtio_blk_disks: Vec<VirtioBlkDisk>,
     openhcl_vtl: Option<DeviceVtl>,
+}
+
+struct VirtioBlkDisk {
+    disk: Resource<DiskHandleKind>,
+    read_only: bool,
 }
 
 #[derive(Clone)]
@@ -47,6 +58,7 @@ pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
     Nvme(Option<u32>, Option<String>),
+    VirtioBlk(Option<String>),
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
@@ -61,10 +73,13 @@ impl From<UnderhillDiskSource> for DiskLocation {
 // Arbitrary but constant instance IDs to maintain the same device IDs
 // across reboots.
 const NVME_VTL0_INSTANCE_ID: Guid = guid::guid!("008091f6-9688-497d-9091-af347dc9173c");
-const NVME_VTL2_INSTANCE_ID: Guid = guid::guid!("f9b90f6f-b129-4596-8171-a23481b8f718");
+/// The VTL2 NVMe controller instance ID used by OpenVMM.
+pub const NVME_VTL2_INSTANCE_ID: Guid = guid::guid!("f9b90f6f-b129-4596-8171-a23481b8f718");
 const SCSI_VTL0_INSTANCE_ID: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
-const SCSI_VTL2_INSTANCE_ID: Guid = guid::guid!("73d3aa59-b82b-4fe7-9e15-e2b0b5575cf8");
-const UNDERHILL_VTL0_SCSI_INSTANCE: Guid = guid::guid!("e1c5bd94-d0d6-41d4-a2b0-88095a16ded7");
+/// The VTL2 SCSI controller instance ID used by OpenVMM.
+pub const SCSI_VTL2_INSTANCE_ID: Guid = guid::guid!("73d3aa59-b82b-4fe7-9e15-e2b0b5575cf8");
+/// The VTL0 SCSI controller instance ID used by OpenHCL to expose disks to VTL0.
+pub const UNDERHILL_VTL0_SCSI_INSTANCE: Guid = guid::guid!("e1c5bd94-d0d6-41d4-a2b0-88095a16ded7");
 const UNDERHILL_VTL0_NVME_INSTANCE: Guid = guid::guid!("09a59b81-2bf6-4164-81d7-3a0dc977ba65");
 
 // PCIe controllers don't have VMBUS channel instance IDs the way VPCI
@@ -90,6 +105,11 @@ const PCIE_NVME_SUBSYSTEM_IDS: [Guid; 16] = [
     guid::guid!("5864e1e4-bb70-40d2-900c-2128034960d2"),
 ];
 
+/// Template GUID for virtio-blk VPCI instance IDs. `data1` is set to the
+/// disk index to produce a unique ID per device. The remaining fields are
+/// an arbitrarily generated fixed value.
+const VIRTIO_BLK_INSTANCE_ID_TEMPLATE: Guid = guid::guid!("00000000-a4e7-4b53-b702-1f42d938647e");
+
 impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
         Self {
@@ -99,8 +119,10 @@ impl StorageBuilder {
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
             pcie_nvme_controllers: BTreeMap::new(),
+            pcie_virtio_blk_disks: Vec::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
+            vtl0_virtio_blk_disks: Vec::new(),
             openhcl_vtl,
         }
     }
@@ -239,6 +261,21 @@ impl StorageBuilder {
                 });
                 Some(nsid)
             }
+            DiskLocation::VirtioBlk(pcie_port) => {
+                if vtl != DeviceVtl::Vtl0 {
+                    anyhow::bail!("virtio-blk only supported for VTL0");
+                }
+                if is_dvd {
+                    anyhow::bail!("dvd not supported with virtio-blk");
+                }
+                let vblk = VirtioBlkDisk { disk, read_only };
+                if let Some(port) = pcie_port {
+                    self.pcie_virtio_blk_disks.push((port, vblk));
+                } else {
+                    self.vtl0_virtio_blk_disks.push(vblk);
+                }
+                None
+            }
         };
         Ok(location)
     }
@@ -277,6 +314,9 @@ impl StorageBuilder {
                     NVME_VTL0_INSTANCE_ID
                 },
             ),
+            DiskLocation::VirtioBlk(_) => {
+                anyhow::bail!("underhill not supported with virtio-blk")
+            }
         };
 
         let (luns, location) = match target {
@@ -294,6 +334,9 @@ impl StorageBuilder {
             DiskLocation::Nvme(nsid, None) => {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
+            }
+            DiskLocation::VirtioBlk(_) => {
+                anyhow::bail!("underhill not supported with virtio-blk")
             }
         };
 
@@ -379,6 +422,7 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: None,
                 }
                 .into_resource(),
             });
@@ -394,15 +438,19 @@ impl StorageBuilder {
             }
         }
 
-        if !self.vtl2_nvme_namespaces.is_empty() {
-            if config
-                .hypervisor
-                .with_vtl2
-                .as_ref()
-                .is_none_or(|c| c.vtl0_alias_map)
-            {
+        if config
+            .hypervisor
+            .with_vtl2
+            .as_ref()
+            .is_none_or(|c| c.vtl0_alias_map)
+        {
+            if !self.vtl2_nvme_namespaces.is_empty() {
                 anyhow::bail!("must specify --vtl2 and --no-alias-map to offer disks to VTL2");
             }
+        } else {
+            // If VTL2 is being used, always add an NVMe controller, even
+            // if there are no namespaces, to allow for hot-plugging.
+            let (send, recv) = mesh::channel();
             config.vpci_devices.push(VpciDeviceConfig {
                 vtl: DeviceVtl::Vtl2,
                 instance_id: NVME_VTL2_INSTANCE_ID,
@@ -411,9 +459,11 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: Some(recv),
                 }
                 .into_resource(),
             });
+            resources.nvme_vtl2_rpc = Some(send);
         }
 
         let owned_pcie_controllers = std::mem::take(&mut self.pcie_nvme_controllers);
@@ -434,7 +484,42 @@ impl StorageBuilder {
                     namespaces,
                     max_io_queues: 64,
                     msix_count: 64,
+                    requests: None,
                 }
+                .into_resource(),
+            });
+        }
+
+        for (i, vblk) in std::mem::take(&mut self.vtl0_virtio_blk_disks)
+            .into_iter()
+            .enumerate()
+        {
+            let mut instance_id = VIRTIO_BLK_INSTANCE_ID_TEMPLATE;
+            instance_id.data1 = i as u32;
+            config.vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl0,
+                instance_id,
+                resource: VirtioPciDeviceHandle(
+                    VirtioBlkHandle {
+                        disk: vblk.disk,
+                        read_only: vblk.read_only,
+                    }
+                    .into_resource(),
+                )
+                .into_resource(),
+            });
+        }
+
+        for (port_name, vblk) in std::mem::take(&mut self.pcie_virtio_blk_disks) {
+            config.pcie_devices.push(PcieDeviceConfig {
+                port_name,
+                resource: VirtioPciDeviceHandle(
+                    VirtioBlkHandle {
+                        disk: vblk.disk,
+                        read_only: vblk.read_only,
+                    }
+                    .into_resource(),
+                )
                 .into_resource(),
             });
         }
@@ -444,9 +529,11 @@ impl StorageBuilder {
 
     /// Generate VTL2 settings for storage devices offered to the guest via
     /// OpenHCL.
-    pub fn build_underhill(&self) -> Vec<StorageController> {
+    pub fn build_underhill(&self, vmbus_redirect: bool) -> Vec<StorageController> {
         let mut storage_controllers = Vec::new();
-        if !self.underhill_scsi_luns.is_empty() {
+        // Only create a SCSI controller if there are LUNs configured, or if
+        // vmbus redirection is enabled (to allow hot-plugging at runtime).
+        if !self.underhill_scsi_luns.is_empty() || vmbus_redirect {
             let controller = StorageController {
                 instance_id: UNDERHILL_VTL0_SCSI_INSTANCE.to_string(),
                 protocol: storage_controller::StorageProtocol::Scsi.into(),

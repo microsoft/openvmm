@@ -8,7 +8,6 @@ use crate::load;
 use anyhow::Context as _;
 use futures::StreamExt as _;
 use guestmem::GuestMemory;
-use hvdef::HvError;
 use hvdef::Vtl;
 use pal_async::DefaultDriver;
 use std::sync::Arc;
@@ -60,18 +59,20 @@ impl CommonState {
             .context("failed to build processor topology")?;
 
         #[cfg(guest_arch = "aarch64")]
-        let processor_topology = TopologyBuilder::new_aarch64(
-            vm_topology::processor::arch::GicInfo {
+        let processor_topology =
+            TopologyBuilder::new_aarch64(vm_topology::processor::arch::Aarch64PlatformConfig {
                 gic_distributor_base: 0xff000000,
                 gic_redistributors_base: 0xff020000,
-            },
-            0,
-        )
-        .build(1)
-        .context("failed to build processor topology")?;
+                gic_v2m: None,
+                pmu_gsiv: None,
+                virt_timer_ppi: 20, // DEFAULT_VIRT_TIMER_PPI
+            })
+            .build(1)
+            .context("failed to build processor topology")?;
 
         let ram_size = 0x400000;
-        let memory_layout = MemoryLayout::new(ram_size, &[], None).context("bad memory layout")?;
+        let memory_layout =
+            MemoryLayout::new(ram_size, &[], &[], &[], None).context("bad memory layout")?;
 
         Ok(Self {
             driver,
@@ -259,22 +260,6 @@ impl CpuIo for IoHandler<'_> {
 
     fn handle_eoi(&self, irq: u32) {
         tracing::info!(irq, "eoi");
-    }
-
-    fn signal_synic_event(&self, vtl: Vtl, connection_id: u32, flag: u16) -> hvdef::HvResult<()> {
-        let _ = (vtl, connection_id, flag);
-        Err(HvError::InvalidConnectionId)
-    }
-
-    fn post_synic_message(
-        &self,
-        vtl: Vtl,
-        connection_id: u32,
-        secure: bool,
-        message: &[u8],
-    ) -> hvdef::HvResult<()> {
-        let _ = (vtl, connection_id, secure, message);
-        Err(HvError::InvalidConnectionId)
     }
 
     async fn read_mmio(&self, vp: VpIndex, address: u64, data: &mut [u8]) {

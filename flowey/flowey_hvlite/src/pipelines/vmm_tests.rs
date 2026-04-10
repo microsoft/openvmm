@@ -6,6 +6,7 @@ use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelectionFlags;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
+use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::path::PathBuf;
 use vmm_test_images::KnownTestArtifacts;
@@ -129,13 +130,50 @@ impl IntoPipeline for VmmTestsCli {
         let target_os = target.as_triple().operating_system;
         let target_architecture = target.as_triple().architecture;
 
-        pipeline
-            .new_job(
-                FlowPlatform::host(backend_hint),
-                FlowArch::host(backend_hint),
-                "build vmm test dependencies",
-            )
-            .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init)
+        let recipe_arch = match target_architecture {
+            target_lexicon::Architecture::X86_64 => CommonArch::X86_64,
+            target_lexicon::Architecture::Aarch64(_) => CommonArch::Aarch64,
+            _ => anyhow::bail!("Unsupported architecture: {:?}", target_architecture),
+        };
+
+        // When running Windows binaries under WSL, the output directory must be
+        // a Windows path (e.g., /mnt/c/..., /mnt/d/...) because Windows
+        // requires the VHDs to live in a Windows directory.
+        if flowey_cli::running_in_wsl()
+            && matches!(target_os, target_lexicon::OperatingSystem::Windows)
+            && !flowey_cli::is_wsl_windows_path(&dir)
+        {
+            anyhow::bail!(
+                "When targeting Windows from WSL, --dir must be a path on Windows \
+                     (i.e., on a DrvFs mount like /mnt/c/vmm_tests). \
+                     Got: {}",
+                dir.display()
+            );
+        }
+
+        let mut job = pipeline.new_job(
+            FlowPlatform::host(backend_hint),
+            FlowArch::host(backend_hint),
+            "build vmm test dependencies",
+        );
+
+        job = job.dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request::Init);
+
+        // Override kernel with local paths if both kernel and modules are specified
+        if let (Some(kernel_path), Some(modules_path)) =
+            (custom_kernel.clone(), custom_kernel_modules.clone())
+        {
+            job =
+                job.dep_on(
+                    move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
+                        arch: recipe_arch,
+                        kernel: ReadVar::from_static(kernel_path),
+                        modules: ReadVar::from_static(modules_path),
+                    },
+                );
+        }
+
+        job = job
             .dep_on(
                 |_| flowey_lib_hvlite::_jobs::cfg_hvlite_reposource::Params {
                     hvlite_repo_source: openvmm_repo.clone(),
@@ -145,16 +183,15 @@ impl IntoPipeline for VmmTestsCli {
                 local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                     interactive: true,
                     auto_install: install_missing_deps,
-                    force_nuget_mono: false,
-                    external_nuget_auth: false,
                     ignore_rust_version: true,
                 }),
                 verbose: ReadVar::from_static(verbose),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             })
-            .dep_on(
-                |ctx| flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
+            .dep_on(|ctx| {
+                flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::Params {
                     target,
                     test_content_dir: dir,
                     selections: if let Some(filter) = filter {
@@ -197,9 +234,10 @@ impl IntoPipeline for VmmTestsCli {
                     custom_kernel_modules,
                     custom_kernel,
                     done: ctx.new_done_handle(),
-                },
-            )
-            .finish();
+                }
+            });
+
+        job.finish();
 
         Ok(pipeline)
     }

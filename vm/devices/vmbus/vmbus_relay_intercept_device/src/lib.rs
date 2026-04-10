@@ -366,12 +366,12 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             return;
         };
 
-        if state.vtl_pages.is_some() {
+        if let Some(vtl_pages) = &state.vtl_pages {
             match offer
                 .request_send
                 .call(
                     ChannelRequest::TeardownGpadl,
-                    GpadlId(state.vtl_pages.as_ref().unwrap().pfns()[1] as u32),
+                    GpadlId(vtl_pages.pfns()[1] as u32),
                 )
                 .await
             {
@@ -475,7 +475,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     ) -> Result<OpenOutput> {
         let open_request = OpenRequest {
             open_data: OpenData {
-                target_vp: 0,
+                target_vp: Some(0),
                 ring_offset: 2,
                 ring_gpadl_id,
                 event_flag: !0,

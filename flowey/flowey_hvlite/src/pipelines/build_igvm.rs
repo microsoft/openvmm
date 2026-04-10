@@ -121,6 +121,12 @@ pub struct BuildIgvmCliCustomizations {
     #[clap(long)]
     pub with_debuginfo: bool,
 
+    /// Build mimalloc with secure mode enabled. This adds extra security
+    /// hardening (guard pages, randomized allocation, encrypted free lists)
+    /// at a small performance cost.
+    #[clap(long)]
+    pub with_mi_secure: bool,
+
     /// Path to custom openvmm_hcl binary, none means openhcl will be built.
     #[clap(long)]
     pub custom_openvmm_hcl: Option<PathBuf>,
@@ -140,7 +146,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// Path to kernel modules, none means the packaged kernel modules will be
     /// used.
-    #[clap(long)]
+    #[clap(long, requires = "custom_kernel")]
     pub custom_kernel_modules: Option<PathBuf>,
 
     /// Path to custom vtl0 linux kernel to use if the manifest includes a
@@ -178,7 +184,7 @@ pub struct BuildIgvmCliCustomizations {
 
     /// (experimental) Only use local dependencies to build. Keeps flowey from
     /// downloading any dependencies from the internet.
-    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc"])]
+    #[clap(long, requires_all = ["custom_openvmm_deps", "custom_protoc", "custom_kernel", "custom_kernel_modules", "custom_uefi"])]
     pub use_local_deps: bool,
 
     /// Use a custom openvmm_deps directory.
@@ -295,6 +301,7 @@ impl IntoPipeline for BuildIgvmCli {
                     override_manifest,
                     with_perf_tools,
                     with_debuginfo,
+                    with_mi_secure,
                     custom_openvmm_hcl,
                     custom_openhcl_boot,
                     custom_uefi,
@@ -332,6 +339,14 @@ impl IntoPipeline for BuildIgvmCli {
             OpenhclRecipeCli::Aarch64 | OpenhclRecipeCli::Aarch64Devkern => CommonArch::Aarch64,
         };
 
+        // Use the effective arch, accounting for any --override-arch
+        let effective_arch = override_arch
+            .map(|a| match a {
+                BuildIgvmArch::X86_64 => CommonArch::X86_64,
+                BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
+            })
+            .unwrap_or(recipe_arch);
+
         let mut job = pipeline.new_job(
             FlowPlatform::host(backend_hint),
             FlowArch::host(backend_hint),
@@ -346,8 +361,8 @@ impl IntoPipeline for BuildIgvmCli {
         if let Some(openvmm_deps_path) = custom_openvmm_deps {
             job = job.dep_on(move |_| {
                 flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalOpenvmmDeps(
-                    recipe_arch,
-                    openvmm_deps_path,
+                    effective_arch,
+                    ReadVar::from_static(openvmm_deps_path),
                 )
             });
         }
@@ -355,7 +370,33 @@ impl IntoPipeline for BuildIgvmCli {
         // Override protoc with a local path if specified
         if let Some(protoc_path) = custom_protoc {
             job = job.dep_on(move |_| {
-                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(protoc_path)
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalProtoc(ReadVar::from_static(
+                    protoc_path,
+                ))
+            });
+        }
+
+        // Override kernel with local paths if both kernel and modules are specified
+        if let (Some(kernel_path), Some(modules_path)) =
+            (custom_kernel.clone(), custom_kernel_modules.clone())
+        {
+            job =
+                job.dep_on(
+                    move |_| flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalKernel {
+                        arch: effective_arch,
+                        kernel: ReadVar::from_static(kernel_path),
+                        modules: ReadVar::from_static(modules_path),
+                    },
+                );
+        }
+
+        // Override UEFI with a local path if specified
+        if let Some(uefi_path) = custom_uefi {
+            job = job.dep_on(move |_| {
+                flowey_lib_hvlite::_jobs::cfg_versions::Request::LocalUefi(
+                    effective_arch,
+                    ReadVar::from_static(uefi_path),
+                )
             });
         }
 
@@ -368,13 +409,12 @@ impl IntoPipeline for BuildIgvmCli {
             local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                 interactive: true,
                 auto_install: install_missing_deps,
-                force_nuget_mono: false, // no oss nuget packages
-                external_nuget_auth: false,
                 ignore_rust_version: true,
             }),
             verbose: ReadVar::from_static(verbose),
             locked,
             deny_warnings: false,
+            no_incremental: false,
         })
         .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
             artifact_dir: ctx.publish_artifact(pub_out_dir),
@@ -403,6 +443,7 @@ impl IntoPipeline for BuildIgvmCli {
                 }),
                 with_perf_tools,
                 with_debuginfo,
+                with_mi_secure,
                 override_kernel_pkg: override_kernel_pkg.map(|p| match p {
                     KernelPackageKindCli::Main => OpenhclKernelPackage::Main,
                     KernelPackageKindCli::Cvm => OpenhclKernelPackage::Cvm,
@@ -417,9 +458,7 @@ impl IntoPipeline for BuildIgvmCli {
                 override_max_trace_level: max_trace_level.map(Into::into),
                 custom_openvmm_hcl,
                 custom_openhcl_boot,
-                custom_uefi,
                 custom_kernel,
-                custom_kernel_modules,
                 custom_vtl0_kernel,
                 custom_layer,
                 custom_directory,

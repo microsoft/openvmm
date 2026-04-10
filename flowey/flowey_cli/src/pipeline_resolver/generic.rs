@@ -9,6 +9,7 @@ use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::patch::ResolvedPatches;
 use flowey_core::pipeline::AdoCiTriggers;
+use flowey_core::pipeline::AdoPool;
 use flowey_core::pipeline::AdoPrTriggers;
 use flowey_core::pipeline::AdoScheduleTriggers;
 use flowey_core::pipeline::GhCiTriggers;
@@ -16,7 +17,6 @@ use flowey_core::pipeline::GhPrTriggers;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhScheduleTriggers;
 use flowey_core::pipeline::Pipeline;
-use flowey_core::pipeline::internal::AdoPool;
 use flowey_core::pipeline::internal::ArtifactMeta;
 use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
 use flowey_core::pipeline::internal::Parameter;
@@ -61,12 +61,14 @@ pub struct ResolvedJobUseParameter {
 #[derive(Debug, Clone)] // Clone is because of shoddy viz code
 pub struct ResolvedPipelineJob {
     pub root_nodes: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
+    pub root_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     pub patches: ResolvedPatches,
     pub label: String,
     pub platform: FlowPlatform,
     pub arch: FlowArch,
     pub ado_pool: Option<AdoPool>,
     pub timeout_minutes: Option<u32>,
+    pub command_wrapper: Option<flowey_core::shell::CommandWrapperKind>,
     pub ado_variables: BTreeMap<String, String>,
     pub gh_override_if: Option<String>,
     pub gh_global_env: BTreeMap<String, String>,
@@ -164,12 +166,14 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
         job_idx,
         PipelineJobMetadata {
             root_nodes,
+            root_configs,
             patches,
             label,
             platform,
             arch,
             cond_param_idx,
             timeout_minutes,
+            command_wrapper,
             ado_pool,
             ado_variables,
             gh_override_if,
@@ -219,9 +223,11 @@ pub fn resolve_pipeline(pipeline: Pipeline) -> anyhow::Result<ResolvedPipeline> 
 
         let idx = graph.add_node(ResolvedPipelineJob {
             root_nodes,
+            root_configs,
             patches: patches.finalize(),
             label,
             timeout_minutes,
+            command_wrapper,
             ado_pool,
             ado_variables,
             gh_override_if,

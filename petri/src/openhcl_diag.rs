@@ -115,6 +115,14 @@ impl OpenHclDiagHandler {
             .await
     }
 
+    pub async fn inspect_update(
+        &self,
+        path: impl Into<String>,
+        value: impl Into<String>,
+    ) -> anyhow::Result<inspect::Value> {
+        self.diag_client().await?.update(path, value).await
+    }
+
     pub async fn kmsg(&self) -> anyhow::Result<KmsgStream> {
         self.diag_client().await?.kmsg(false).await
     }

@@ -89,6 +89,11 @@ impl LxVolume {
 
     /// Retrieves the attributes of a file. Symlinks are not followed.
     pub fn lstat(&self, path: impl AsRef<Path>) -> lx::Result<lx::Stat> {
+        self.inner.lstat(path.as_ref()).map(|x| x.into())
+    }
+
+    /// Retrieves the statx details of a file. Symlinks are not followed.
+    pub fn statx(&self, path: impl AsRef<Path>) -> lx::Result<lx::StatEx> {
         self.inner.lstat(path.as_ref())
     }
 
@@ -530,7 +535,7 @@ pub struct LxFile {
 
 impl LxFile {
     /// Retrieves the attributes of the file.
-    pub fn fstat(&self) -> lx::Result<lx::Stat> {
+    pub fn fstat(&self) -> lx::Result<lx::StatEx> {
         self.inner.fstat()
     }
 
@@ -699,6 +704,7 @@ pub struct LxVolumeOptions {
     sandbox_disallowed_extensions: Vec<OsString>,
     symlink_root: String,
     override_xattrs: HashMap<String, Vec<u8>>,
+    readonly: bool,
 }
 
 impl LxVolumeOptions {
@@ -719,6 +725,7 @@ impl LxVolumeOptions {
             sandbox_disallowed_extensions: Vec::new(),
             symlink_root: "".to_string(),
             override_xattrs: HashMap::new(),
+            readonly: false,
         }
     }
 
@@ -892,6 +899,13 @@ impl LxVolumeOptions {
                         tracing::warn!("'sandbox_disallowed_extensions' option requires value");
                     }
                 }
+                "ro" => {
+                    if value.is_none() {
+                        options.readonly(true);
+                    } else {
+                        tracing::warn!(value, "'ro' option does not support value");
+                    }
+                }
                 _ => tracing::warn!(option = %next, keyword, "Unrecognized mount option"),
             }
         }
@@ -1015,6 +1029,21 @@ impl LxVolumeOptions {
         val_data.extend_from_slice(val);
         self.override_xattrs.insert(name.to_string(), val_data);
         self
+    }
+
+    /// Enable or disable readonly mode for the volume.
+    ///
+    /// This flag is not enforced by `LxVolume` itself. It is intended to be
+    /// read by higher-level layers (e.g., virtio-fs) via [`is_readonly`](Self::is_readonly)
+    /// to reject write operations with `EROFS`.
+    pub fn readonly(&mut self, readonly: bool) -> &mut Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// Returns whether the volume is configured as readonly.
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
     }
 }
 
@@ -1151,7 +1180,7 @@ mod tests {
         env.create_file("testfile", "test");
         let stat = env.volume.lstat("testfile").unwrap();
         let file = env.volume.open("testfile", lx::O_RDONLY, None).unwrap();
-        let fstat = file.fstat().unwrap();
+        let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
         assert_eq!(stat, fstat);
 
@@ -1161,7 +1190,7 @@ mod tests {
             .open("", lx::O_RDONLY | lx::O_DIRECTORY, None)
             .unwrap();
 
-        let fstat = file.fstat().unwrap();
+        let fstat = file.fstat().unwrap().into();
         println!("{:#?}", fstat);
         assert_eq!(stat, fstat);
     }
@@ -1355,7 +1384,7 @@ mod tests {
             .unwrap();
 
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o640);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o640);
         // Only Windows uses the uid/gid
         if cfg!(windows) {
             assert_eq!(stat.uid, 1000);
@@ -1518,7 +1547,8 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(file.fstat().unwrap(), env.volume.lstat(&path).unwrap());
+        let file_stat: lx::Stat = file.fstat().unwrap().into();
+        assert_eq!(file_stat, env.volume.lstat(&path).unwrap());
     }
 
     #[test]
@@ -1685,7 +1715,7 @@ mod tests {
             .unwrap();
 
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         let write_result = if cfg!(windows) || !is_lx_root() {
             lx::S_IFREG | 0o777
@@ -1696,45 +1726,45 @@ mod tests {
         // Write clears it (except for root).
         file.pwrite(b"hello", 0, 1000).unwrap();
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, write_result);
+        assert_eq!(stat.mode as u32, write_result);
         if cfg!(windows) {
             // Write does not clear it for root.
             file.chmod(lx::S_IFREG | 0o6777).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
             file.pwrite(b"hello", 0, 0).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
         }
 
         file.chmod(lx::S_IFREG | 0o6777).unwrap();
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         // Truncate clears it (except for root).
         file.truncate(2, 1000).unwrap();
         let stat = file.fstat().unwrap();
         assert_eq!(stat.file_size, 2);
-        assert_eq!(stat.mode, write_result);
+        assert_eq!(stat.mode as u32, write_result);
         if cfg!(windows) {
             // Truncate does not clear it as root.
             file.chmod(lx::S_IFREG | 0o6777).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
             file.truncate(2, 0).unwrap();
             let stat = file.fstat().unwrap();
             assert_eq!(stat.file_size, 2);
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
         }
 
         file.chmod(lx::S_IFREG | 0o6777).unwrap();
         let stat = file.fstat().unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         // Chown no changes does not clear it.
         let stat = file.fstat().unwrap();
         file.chown(None, None).unwrap();
-        assert_eq!(stat.mode, lx::S_IFREG | 0o6777);
+        assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6777);
 
         // Chown clears it.
         // N.B. Only perform this test if we have permissions to do so.
@@ -1743,17 +1773,17 @@ mod tests {
             let stat = file.fstat().unwrap();
             assert_eq!(stat.uid, 1001);
             assert_eq!(stat.gid, 2001);
-            assert_eq!(stat.mode, lx::S_IFREG | 0o777);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o777);
 
             // Chown doesn't clear setgid if not group executable.
             file.chmod(lx::S_IFREG | 0o6767).unwrap();
             let stat = file.fstat().unwrap();
-            assert_eq!(stat.mode, lx::S_IFREG | 0o6767);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o6767);
             file.chown(Some(1001), Some(2001)).unwrap();
             let stat = file.fstat().unwrap();
             assert_eq!(stat.uid, 1001);
             assert_eq!(stat.gid, 2001);
-            assert_eq!(stat.mode, lx::S_IFREG | 0o2767);
+            assert_eq!(stat.mode as u32, lx::S_IFREG | 0o2767);
         }
     }
 

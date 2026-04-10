@@ -4,8 +4,7 @@
 //! MSI-X Capability.
 
 use super::PciCapability;
-use crate::msi::MsiInterrupt;
-use crate::msi::RegisterMsi;
+use crate::msi::MsiTarget;
 use crate::spec::caps::CapabilityId;
 use crate::spec::caps::msix::MsixCapabilityHeader;
 use crate::spec::caps::msix::MsixTableEntryIdx;
@@ -19,6 +18,7 @@ use vmcore::interrupt::Interrupt;
 #[derive(Debug, Inspect)]
 struct MsiTableLocation {
     #[inspect(hex)]
+    // MSI-X table offsets are, per spec, no larger than 32 bits.
     offset: u32,
     bar: u8,
 }
@@ -115,6 +115,66 @@ impl PciCapability for MsixCapability {
     }
 }
 
+#[derive(Clone, Inspect, Debug)]
+pub(crate) struct MsiInterrupt(#[inspect(flatten)] Arc<Mutex<MsiInterruptInner>>);
+
+#[derive(Inspect, Debug)]
+struct MsiInterruptInner {
+    target: MsiTarget,
+    pending: bool,
+    enabled: bool,
+    address: u64,
+    data: u32,
+}
+
+impl MsiInterrupt {
+    pub fn new(target: MsiTarget) -> Self {
+        Self(Arc::new(Mutex::new(MsiInterruptInner {
+            target,
+            pending: false,
+            enabled: false,
+            address: 0,
+            data: 0,
+        })))
+    }
+
+    pub fn enable(&self, address: u64, data: u32, set_pending: bool) {
+        let mut state = self.0.lock();
+        state.pending |= set_pending;
+        state.address = address;
+        state.data = data;
+        state.enabled = true;
+        if state.pending {
+            state.target.signal_msi(0, address, data);
+            state.pending = false;
+        }
+    }
+
+    pub fn disable(&self) {
+        let mut state = self.0.lock();
+        state.enabled = false;
+    }
+
+    pub fn drain_pending(&self) -> bool {
+        let mut state = self.0.lock();
+        let was_pending = state.pending;
+        state.pending = false;
+        was_pending
+    }
+
+    pub fn interrupt(&self) -> Interrupt {
+        let state = self.0.clone();
+        Interrupt::from_fn(move || {
+            let mut state = state.lock();
+            if state.enabled {
+                state.target.signal_msi(0, state.address, state.data);
+            } else {
+                state.pending = true;
+            }
+        })
+    }
+}
+
 struct MsixMessageTableEntry {
     msi: MsiInterrupt,
     state: EntryState,
@@ -158,7 +218,7 @@ impl MsixMessageTableEntry {
         }
     }
 
-    fn read_u32(&self, offset: u16) -> u32 {
+    fn read_u32(&self, offset: u64) -> u32 {
         match MsixTableEntryIdx(offset) {
             MsixTableEntryIdx::MSG_ADDR_LO => self.state.address as u32,
             MsixTableEntryIdx::MSG_ADDR_HI => (self.state.address >> 32) as u32,
@@ -168,7 +228,7 @@ impl MsixMessageTableEntry {
         }
     }
 
-    fn write_u32(&mut self, offset: u16, val: u32) {
+    fn write_u32(&mut self, offset: u64, val: u32) {
         match MsixTableEntryIdx(offset) {
             MsixTableEntryIdx::MSG_ADDR_LO => {
                 self.state.address = (self.state.address & 0xffffffff00000000) | val as u64
@@ -215,7 +275,8 @@ fn inspect_entries(entries: &mut [MsixMessageTableEntry]) -> impl '_ + InspectMu
 #[derive(Clone)]
 pub struct MsixEmulator {
     state: Arc<Mutex<MsixState>>,
-    pending_bits_offset: u16,
+    // PBA offsets, per spec, are no larger than 32 bits.
+    pending_bits_offset: u32,
     pending_bits_dword_count: u16,
 }
 
@@ -233,19 +294,15 @@ impl MsixEmulator {
     /// be implemented. e.g: it uses a shared BAR for the table and BPA, with
     /// fixed offsets into the BAR for both of those tables. It would be nice to
     /// re-visit this code and make it more flexible.
-    pub fn new(
-        bar: u8,
-        count: u16,
-        register_msi: &mut dyn RegisterMsi,
-    ) -> (Self, impl PciCapability + use<>) {
+    pub fn new(bar: u8, count: u16, msi_target: &MsiTarget) -> (Self, impl PciCapability + use<>) {
         let state = MsixState {
             enabled: false,
             vectors: (0..count)
-                .map(|_| MsixMessageTableEntry::new(register_msi.new_msi()))
+                .map(|_| MsixMessageTableEntry::new(MsiInterrupt::new(msi_target.clone())))
                 .collect(),
         };
         let state = Arc::new(Mutex::new(state));
-        let pending_bits_offset = count * 16;
+        let pending_bits_offset = count as u32 * 16;
         (
             Self {
                 state: state.clone(),
@@ -256,27 +313,29 @@ impl MsixEmulator {
                 count,
                 state,
                 config_table_location: MsiTableLocation::new(bar, 0),
-                pending_bits_location: MsiTableLocation::new(bar, pending_bits_offset.into()),
+                pending_bits_location: MsiTableLocation::new(bar, pending_bits_offset),
             },
         )
     }
 
     /// Return the total length of the MSI-X BAR
+    /// (Actually, the notion that there is an "MSI-X BAR" is an issue to fix sometime.
+    /// MSI-X tables are often in the same bar as other things.)
     pub fn bar_len(&self) -> u64 {
-        (self.pending_bits_offset + self.pending_bits_dword_count * 4).into()
+        self.pending_bits_offset as u64 + self.pending_bits_dword_count as u64 * 4
     }
 
     /// Read a `u32` from the MSI-X BAR at the given offset.
-    pub fn read_u32(&self, offset: u16) -> u32 {
+    pub fn read_u32(&self, offset: u64) -> u32 {
         let mut state = self.state.lock();
         let state: &mut MsixState = &mut state;
-        if offset < self.pending_bits_offset {
+        if offset < self.pending_bits_offset as u64 {
             let index = offset / 16;
             if let Some(entry) = state.vectors.get(index as usize) {
                 return entry.read_u32(offset & 0xf);
             }
         } else {
-            let dword = (offset - self.pending_bits_offset) / 4;
+            let dword = (offset - self.pending_bits_offset as u64) / 4;
             let start = dword as usize * 32;
             if start < state.vectors.len() {
                 let end = (start + 32).min(state.vectors.len());
@@ -294,9 +353,9 @@ impl MsixEmulator {
     }
 
     /// Write a `u32` to the MSI-X BAR at the given offset.
-    pub fn write_u32(&mut self, offset: u16, val: u32) {
+    pub fn write_u32(&mut self, offset: u64, val: u32) {
         let mut state = self.state.lock();
-        if offset < self.pending_bits_offset {
+        if offset < self.pending_bits_offset as u64 {
             let index = offset / 16;
             let global = state.enabled;
             if let Some(entry) = state.vectors.get_mut(index as usize) {
@@ -315,7 +374,9 @@ impl MsixEmulator {
                 }
                 return;
             }
-        } else if offset - self.pending_bits_offset < self.pending_bits_dword_count * 4 {
+        } else if offset - (self.pending_bits_offset as u64)
+            < self.pending_bits_dword_count as u64 * 4
+        {
             return;
         }
         tracelimit::warn_ratelimited!(offset, "Unexpected write offset");
@@ -449,15 +510,14 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::msi::MsiInterruptSet;
-    use crate::test_helpers::TestPciInterruptController;
+    use crate::{msi::MsiConnection, test_helpers::TestPciInterruptController};
 
     #[test]
     fn msix_check() {
-        let mut set = MsiInterruptSet::new();
-        let (mut msix, mut cap) = MsixEmulator::new(2, 64, &mut set);
+        let msi_conn = MsiConnection::new();
+        let (mut msix, mut cap) = MsixEmulator::new(2, 64, msi_conn.target());
         let msi_controller = TestPciInterruptController::new();
-        set.connect(&msi_controller);
+        msi_conn.connect(msi_controller.signal_msi());
         // check capabilities
         assert_eq!(cap.read_u32(0), 0x3f0011);
         assert_eq!(cap.read_u32(4), 2);

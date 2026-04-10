@@ -176,6 +176,34 @@ impl Dsdt {
         self.add_object(&uart);
     }
 
+    /// Add an ARM SBSA Generic UART to the DSDT for ACPI-based boot.
+    ///
+    /// ```text
+    /// Device(<name>)
+    /// {
+    ///     Name(_HID, "ARMH0011")
+    ///     Name(_UID, <uid>)
+    ///     Name(_CRS, ResourceTemplate()
+    ///     {
+    ///         QWORDMemory(..., <base_addr>, <size>)
+    ///         Interrupt(ResourceConsumer, Level, ActiveHigh, Exclusive)
+    ///             {<gsiv>}
+    ///     })
+    /// }
+    /// ```
+    pub fn add_sbsa_uart(&mut self, name: &[u8], uid: u64, base_addr: u64, size: u64, gsiv: u32) {
+        let mut uart = Device::new(name);
+        uart.add_object(&NamedString::new(b"_HID", b"ARMH0011"));
+        uart.add_object(&NamedInteger::new(b"_UID", uid));
+        let mut crs = CurrentResourceSettings::new();
+        crs.add_resource(&QwordMemory::new(base_addr, size));
+        let mut intr = Interrupt::new(gsiv);
+        intr.is_edge_triggered = false; // level-triggered
+        crs.add_resource(&intr);
+        uart.add_object(&crs);
+        self.add_object(&uart);
+    }
+
     /// Add an ACPI module device to describe the low and high MMIO regions.
     /// This is used when PCI is not present so that VMBus can find MMIO space.
     ///
@@ -275,6 +303,9 @@ impl Dsdt {
     /// If `in_pci`, then enumerate the device under PCI0. Otherwise, enumerate
     /// it under the VMOD module created by `add_mmio_module`.
     ///
+    /// If `interrupt` is provided, it is added as an Extended Interrupt resource
+    /// in `_CRS`. On ARM64 ACPI, the kernel reads the VMBus interrupt from this.
+    ///
     /// ```text
     /// Device(\_SB.VMOD.VMBS)
     /// {
@@ -291,9 +322,10 @@ impl Dsdt {
     ///     }
     ///
     ///     Name(_PS3, 0)
+    ///     Name(_CRS, ResourceTemplate() { ... })
     /// }
     /// ```
-    pub fn add_vmbus(&mut self, in_pci: bool) {
+    pub fn add_vmbus(&mut self, in_pci: bool, interrupt_intid: Option<u32>) {
         let name = if in_pci {
             b"\\_SB.PCI0.VMBS"
         } else {
@@ -328,8 +360,13 @@ impl Dsdt {
         method.add_operation(&op);
         vmbs.add_object(&method);
         vmbs.add_object(&NamedInteger::new(b"_PS3", 0));
-        // On linux, the vmbus driver will fail if the _CRS section is not present.
-        vmbs.add_object(&CurrentResourceSettings::new());
+        let mut crs = CurrentResourceSettings::new();
+        if let Some(intid) = interrupt_intid {
+            let mut intr = Interrupt::new(intid);
+            intr.is_edge_triggered = true;
+            crs.add_resource(&intr);
+        }
+        vmbs.add_object(&crs);
         self.add_object(&vmbs);
     }
 

@@ -24,6 +24,8 @@ use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[expect(missing_docs)] // Self-describing names
 pub enum KnownTestArtifacts {
+    Alpine323X64Vhd,
+    Alpine323Aarch64Vhd,
     Gen1WindowsDataCenterCore2022X64Vhd,
     Gen2WindowsDataCenterCore2022X64Vhd,
     Gen2WindowsDataCenterCore2025X64Vhd,
@@ -34,6 +36,7 @@ pub enum KnownTestArtifacts {
     Ubuntu2404ServerAarch64Vhd,
     Windows11EnterpriseAarch64Vhdx,
     VmgsWithBootEntry,
+    VmgsWith16kTpm,
 }
 
 struct KnownTestArtifactMeta {
@@ -54,6 +57,16 @@ impl KnownTestArtifactMeta {
 
 // linear scan to find entries is OK, given how few entries there are
 const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Alpine323X64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Alpine323Aarch64Vhd,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::SIZE,
+    ),
     KnownTestArtifactMeta::new(
         KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
@@ -103,6 +116,11 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
         KnownTestArtifacts::VmgsWithBootEntry,
         petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::VmgsWith16kTpm,
+        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::SIZE,
     ),
 ];
 
