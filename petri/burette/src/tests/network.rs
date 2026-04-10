@@ -130,7 +130,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             .status();
         anyhow::ensure!(
             status.is_ok_and(|s| s.success()),
-            "iperf3 not found on host — install it (e.g. apt install iperf3)"
+            "iperf3 not found on host; install it or set IPERF3 to the full path of the iperf3 executable"
         );
 
         // Spawn the iperf3 helper child process. For TAP, use the
