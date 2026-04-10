@@ -1,11 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Core mesh channel functionality, supporting sending and receiving messages
-//! within and between nodes.
+//! Core mesh channel primitives: [`Sender`] / [`Receiver`] (mpsc) and
+//! [`OneshotSender`] / [`OneshotReceiver`] (single-use).
 //!
-//! This contains only the basic channel implementations, not the extra utility
-//! types on top that `mesh_channel` provides.
+//! These are the fundamental typed wrappers around the binary [`Port`](mesh_node::local_node::Port)
+//! layer. `Sender<T>` serializes a `T` into a port message on send;
+//! `Receiver<T>` deserializes it on receive.
+//!
+//! The `mesh_channel` crate adds higher-level abstractions (RPC, Cell, Cancel,
+//! Pipe) on top of these. Most code should use the `mesh` facade crate rather
+//! than depending on this crate directly.
 
 mod deque;
 mod error;
