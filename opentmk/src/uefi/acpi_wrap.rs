@@ -82,9 +82,14 @@ impl RsdpParser {
         let config_count = system_table_address.number_of_configuration_table_entries;
         let config_table_ptr = system_table_address.configuration_table;
 
+        if config_count == 0 || config_table_ptr.is_null() {
+            return Err(AcpiWrapError::RsdpNotFound.into());
+        }
+
         // SAFETY: The UEFI specification guarantees that configuration_table points to
         // a contiguous array of exactly number_of_configuration_table_entries valid
-        // ConfigurationTable entries within boot-services memory.
+        // ConfigurationTable entries within boot-services memory. We checked above
+        // that config_count > 0 and config_table_ptr is non-null.
         let config_slice = unsafe { core::slice::from_raw_parts(config_table_ptr, config_count) };
 
         let rsdp = config_slice
