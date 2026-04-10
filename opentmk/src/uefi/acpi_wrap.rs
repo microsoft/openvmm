@@ -8,8 +8,8 @@ use core::sync::atomic::AtomicPtr;
 
 use acpi_spec::Header;
 use acpi_spec::Rsdp;
-use acpi_spec::madt::MadtEntry;
 use acpi_spec::madt::MADT_APIC_ENABLED;
+use acpi_spec::madt::MadtEntry;
 use acpi_spec::madt::MadtParser;
 use alloc::vec::Vec;
 use spin::Once;
@@ -36,11 +36,10 @@ impl RsdpParser {
         let source = unsafe {
             core::slice::from_raw_parts(rsdp_ptr.as_ptr() as *const u8, size_of::<Rsdp>())
         };
-        let rsdp =
-            Rsdp::read_from_bytes(source).map_err(|e| {
-                log::error!("Failed to parse RSDP: {:?}", e);
-                AcpiWrapError::InvalidRsdpStructure
-            })?;
+        let rsdp = Rsdp::read_from_bytes(source).map_err(|e| {
+            log::error!("Failed to parse RSDP: {:?}", e);
+            AcpiWrapError::InvalidRsdpStructure
+        })?;
 
         if &rsdp.signature != b"RSD PTR " {
             log::error!("Invalid RSDP signature: {:?}", rsdp.signature);
@@ -48,7 +47,10 @@ impl RsdpParser {
         }
 
         if rsdp.revision < 2 {
-            log::error!("Unsupported RSDP revision: {}, expected >= 2", rsdp.revision);
+            log::error!(
+                "Unsupported RSDP revision: {}, expected >= 2",
+                rsdp.revision
+            );
             return Err(AcpiWrapError::InvalidRsdpStructure.into());
         }
 
@@ -139,9 +141,8 @@ impl XSdtParser {
         // entries_region_size is an exact multiple of 8 bytes, so the slice
         // stays within the XSDT table boundary. The XSDT pointer was obtained
         // from the RSDP, which the firmware guarantees is a valid, mapped table.
-        let entries_ptr_bytes = unsafe {
-            core::slice::from_raw_parts(entries_ptr as *const u8, entries_region_size)
-        };
+        let entries_ptr_bytes =
+            unsafe { core::slice::from_raw_parts(entries_ptr as *const u8, entries_region_size) };
 
         // create slice of u64 pointers
         let entries_slice = entries_ptr_bytes
@@ -156,9 +157,9 @@ impl XSdtParser {
 
     // Iterate over all ACPI tables referenced by the XSDT.
     fn iter_tables(&self) -> impl Iterator<Item = NonNull<Header>> + '_ {
-        self.entries.iter().filter_map(|addr| {
-            NonNull::new(*addr as *mut Header)
-        })
+        self.entries
+            .iter()
+            .filter_map(|addr| NonNull::new(*addr as *mut Header))
     }
 
     // Find an ACPI table by its signature.
