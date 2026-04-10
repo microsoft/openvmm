@@ -134,21 +134,23 @@ serialized messages and resources between processes:
 
 ### Joining a mesh
 
-There are two ways a process can join a mesh, with different security
-properties:
+There are two ways a process can join a mesh:
 
-**Child process launch** (`mesh_process`). The parent spawns the child
-and passes an invitation via an environment variable. On Unix, the
-invitation includes a pre-connected socket file descriptor duplicated
-into the child — the FD itself is the credential, non-guessable by
-other processes. On Windows, the invitation includes an inherited
-object directory handle and a 256-bit random `MeshSecret`, validated
-with constant-time comparison.
+**Child process launch** (`mesh_process`). The parent spawns a child
+process and hands it an invitation via an environment variable. This is
+the model used by OpenVMM and OpenHCL for their worker processes — the
+parent controls what the child can access by choosing which channel
+endpoints and resources to include in the launch parameters. On Unix,
+the invitation includes a pre-connected socket FD duplicated into the
+child — the FD itself is the credential, non-guessable by other
+processes. On Windows, the invitation includes an inherited object
+directory handle and a 256-bit random `MeshSecret`, validated with
+constant-time comparison.
 
-**External process join** (`mesh_remote` listeners). A process binds a
-`UnixMeshListener` or `AlpcMeshListener` to a filesystem path and
-waits for connections. An external process connects to that path and
-receives an invitation over the socket. On Unix, security depends on
+**External process join** (`mesh_remote` listeners). A process binds
+a `UnixMeshListener` or `AlpcMeshListener` to a well-known path and
+waits for connections. This is used when the joining process is not a
+child of the listening process. On Unix, security depends on
 filesystem permissions — the socket path must be in a directory
 accessible only to the intended user (e.g., `$XDG_RUNTIME_DIR` with
 mode `0700`). On Windows, the `MeshSecret` provides cryptographic
