@@ -1097,6 +1097,12 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-amd-snp vmm_tests artifact: {missing}")
             })?;
+        let vmm_tests_artifacts_linux_mshv_x86 = vmm_tests_artifacts_linux_x86
+            .clone()
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!("missing required linux-mshv vmm_tests artifact: {missing}")
+            })?;
         let vmm_tests_artifacts_linux_x86 =
             vmm_tests_artifacts_linux_x86.finish().map_err(|missing| {
                 anyhow::anyhow!("missing required linux vmm_tests artifact: {missing}")
@@ -1272,6 +1278,18 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
             },
             VmmTestJobParams {
+                platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                arch: FlowArch::X86_64,
+                gh_pool: crate::pipelines_shared::gh_pools::linux_mshv_1es(),
+                label: "x64-linux-mshv",
+                target: CommonTriple::X86_64_LINUX_GNU,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
+                // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
+                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
+                test_artifacts: standard_x64_test_artifacts.clone(),
+                needs_prep_run: false,
+            },
+            VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::Aarch64,
                 gh_pool: crate::pipelines_shared::gh_pools::windows_arm_self_hosted_baremetal(),
@@ -1289,11 +1307,12 @@ impl IntoPipeline for CheckinGatesCli {
                 needs_prep_run: false,
             },
         ] {
-            // Skip ARM64/CVM jobs entirely for ADO backend (no native ARM64/CVM pools in ADO)
+            // Skip ARM64/CVM/MSHV jobs entirely for ADO backend (no native ARM64/CVM/MSHV pools in ADO)
             if matches!(backend_hint, PipelineBackendHint::Ado) {
                 if matches!(arch, FlowArch::Aarch64)
                     || label.contains("tdx")
                     || label.contains("snp")
+                    || label.contains("mshv")
                 {
                     continue;
                 }
@@ -1603,7 +1622,7 @@ mod vmm_tests_artifact_builders {
     pub type ResolveVmmTestsDepArtifacts =
         Box<dyn Fn(&mut PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     pub struct VmmTestsArtifactsBuilderLinuxX86 {
         // windows build machine
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
