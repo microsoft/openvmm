@@ -365,8 +365,15 @@ struct Options {
     /// Use --tests-from-stdin to query artifacts for specific tests.
     #[clap(long)]
     list_required_artifacts: bool,
-    /// When used with --list-required-artifacts, read exact test names from stdin
-    /// (one per line) to query artifacts for specific tests only.
+    /// When used with --list-required-artifacts, read exact test names from
+    /// stdin (one per line) to query artifacts for specific tests only.
+    ///
+    /// Even though users can use nextest's filter logic to run a subset of
+    /// tests, due to nextest's architecture of running one test per binary we
+    /// cannot accept a nextest filter here directly. Instead, vmm-tests-run
+    /// must first call nextest with the desired filter to determine the exact
+    /// test names to pass via stdin, then ask petri what artifacts are required
+    /// for those tests.
     #[clap(long, requires = "list_required_artifacts")]
     tests_from_stdin: bool,
     #[clap(flatten)]
@@ -389,17 +396,16 @@ pub fn test_main(
     let mut args = <Options as clap::Parser>::parse();
     if args.list_required_artifacts {
         use std::collections::BTreeSet;
-        use std::collections::HashSet;
 
         // Collect all artifacts from tests (all tests, or those specified via stdin)
-        let mut required_set: BTreeSet<String> = BTreeSet::new();
-        let mut optional_set: BTreeSet<String> = BTreeSet::new();
+        let mut required_set = BTreeSet::new();
+        let mut optional_set = BTreeSet::new();
 
         // If reading test names from stdin, collect them into a set for exact matching
-        let stdin_tests: Option<HashSet<String>> = if args.tests_from_stdin {
+        let stdin_tests: Option<BTreeSet<String>> = if args.tests_from_stdin {
             use std::io::BufRead;
             let stdin = std::io::stdin();
-            let tests: HashSet<String> = stdin
+            let tests: BTreeSet<String> = stdin
                 .lock()
                 .lines()
                 .map_while(Result::ok)
