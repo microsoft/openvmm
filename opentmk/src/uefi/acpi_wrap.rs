@@ -2,9 +2,7 @@
 // Licensed under the MIT License.
 
 //! ACPI table handling for UEFI environment.
-use core::ffi::c_void;
 use core::mem::size_of;
-use core::mem::transmute;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicPtr;
 
@@ -29,43 +27,52 @@ struct RsdpParser {
 
 impl RsdpParser {
     // Creates a new RsdpParser from a given RSDP pointer.
-    pub fn new(rsdp_ptr: NonNull<Rsdp>) -> TmkResult<Self> {
-        // SAFETY: rsdp_ptr is valid as ensured by the constructor
+    fn new(rsdp_ptr: NonNull<Rsdp>) -> TmkResult<Self> {
+        // SAFETY: The caller (from_uefi_system_table) obtains rsdp_ptr from the UEFI
+        // configuration table, which guarantees it points to a valid, aligned Rsdp
+        // structure that remains mapped for the lifetime of the system. The slice
+        // covers exactly size_of::<Rsdp>() bytes starting at that address.
         let source = unsafe {
             core::slice::from_raw_parts(rsdp_ptr.as_ptr() as *const u8, size_of::<Rsdp>())
         };
         let rsdp =
-            Rsdp::read_from_bytes(source).map_err(|_| AcpiWrapError::InvalidRsdpStructure)?;
+            Rsdp::read_from_bytes(source).map_err(|e| {
+                log::error!("Failed to parse RSDP: {:?}", e);
+                AcpiWrapError::InvalidRsdpStructure
+            })?;
         Ok(RsdpParser { rsdp })
     }
 
     // Creates an RsdpParser by locating the RSDP pointer from the UEFI system table.
-    pub fn from_uefi_system_table() -> TmkResult<Self> {
+    fn from_uefi_system_table() -> TmkResult<Self> {
         let rsdp_ptr = Self::find_rsdp_from_uefi_system_table()?;
-        Ok(Self::new(rsdp_ptr)?)
+        Self::new(rsdp_ptr)
     }
 
     // Retrieves the XSDT pointer from the RSDP structure.
-    pub fn get_xsdt_ptr(&self) -> TmkResult<NonNull<Header>> {
-        let xsdt_address: usize = self.rsdp.xsdt as usize;
-        Ok(NonNull::new(xsdt_address as *mut Header).ok_or(AcpiWrapError::InvalidXsdt)?)
+    fn get_xsdt_ptr(&self) -> TmkResult<NonNull<Header>> {
+        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or(AcpiWrapError::InvalidXsdt.into())
     }
 
     // Finds the RSDP pointer from the UEFI system table.
-    fn find_rsdp_from_uefi_system_table() -> AcpiWrapResult<NonNull<Rsdp>> {
+    fn find_rsdp_from_uefi_system_table() -> TmkResult<NonNull<Rsdp>> {
         let system_table = uefi::table::system_table_raw();
 
         let Some(system_table) = system_table else {
-            return Err(AcpiWrapError::UefiSystemTableNotFound);
+            return Err(AcpiWrapError::UefiSystemTableNotFound.into());
         };
 
-        // SAFETY: system_table is valid as ensured by uefi::table::system_table_raw
+        // SAFETY: system_table_raw() returns a pointer that was set during UEFI entry
+        // point initialization by the uefi crate. It points to a valid SystemTable
+        // that remains valid until boot services are exited.
         let system_table_address = unsafe { system_table.as_ref() };
 
         let config_count = system_table_address.number_of_configuration_table_entries;
         let config_table_ptr = system_table_address.configuration_table;
 
-        // SAFETY: UEFI guarantees that the configuration table pointer is valid for the number of entries
+        // SAFETY: The UEFI specification guarantees that configuration_table points to
+        // a contiguous array of exactly number_of_configuration_table_entries valid
+        // ConfigurationTable entries within boot-services memory.
         let config_slice = unsafe { core::slice::from_raw_parts(config_table_ptr, config_count) };
 
         let rsdp = config_slice
@@ -77,7 +84,7 @@ impl RsdpParser {
             Ok(NonNull::new(rsdp as *mut Rsdp).ok_or(AcpiWrapError::InvalidRsdp)?)
         } else {
             log::error!("ACPI2 RSDP not found");
-            Err(AcpiWrapError::RsdpNotFound)
+            Err(AcpiWrapError::RsdpNotFound.into())
         }
     }
 }
@@ -87,20 +94,32 @@ struct XSdtParser {
 }
 
 impl XSdtParser {
-    // Creates a new XSdtParser from a given XSDT pointer.
-    pub fn new(xsdt: &Header) -> Self {
-        let sdt_address = xsdt as *const Header as usize;
+    // Creates a new XSdtParser from a given XSDT header, validating the
+    // signature and length before parsing entries.
+    fn new(xsdt: &Header) -> TmkResult<Self> {
+        if &xsdt.signature != b"XSDT" {
+            return Err(AcpiWrapError::InvalidXsdtStructure.into());
+        }
 
         let sdt_length = xsdt.length.get() as usize;
         let sdt_header_size = size_of::<Header>();
 
+        if sdt_length < sdt_header_size {
+            return Err(AcpiWrapError::InvalidXsdtStructure.into());
+        }
+
+        let sdt_address = xsdt as *const Header as usize;
+
         // get number of entries pointing to other SDTs
-        let entries_count = (sdt_length as usize - sdt_header_size) / size_of::<u64>();
+        let entries_count = (sdt_length - sdt_header_size) / size_of::<u64>();
 
         // pointer to pointer table of other SDTs
         let entries_ptr = sdt_address + sdt_header_size;
 
-        // SAFETY: madt size is valid as ensured by UEFI specification
+        // SAFETY: The XSDT header length field describes the total table size per the
+        // ACPI specification. The entry region starts immediately after the header and
+        // contains entries_count 64-bit physical addresses. The caller obtains the XSDT
+        // pointer from the RSDP, which the firmware guarantees is a valid, mapped table.
         let entries_ptr_bytes = unsafe {
             core::slice::from_raw_parts(entries_ptr as *const u8, entries_count * size_of::<u64>())
         };
@@ -108,54 +127,57 @@ impl XSdtParser {
         // create slice of u64 pointers
         let entries_slice = entries_ptr_bytes
             .chunks_exact(8)
-            .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+            .filter_map(|chunk| chunk.try_into().ok().map(u64::from_le_bytes))
             .collect::<Vec<u64>>();
 
-        let parser = XSdtParser {
+        Ok(XSdtParser {
             entries: entries_slice,
-        };
-        parser
+        })
     }
 
     // Iterate over all ACPI tables referenced by the XSDT.
-    pub fn iter_tables(&self) -> impl Iterator<Item = NonNull<Header>> + '_ {
+    fn iter_tables(&self) -> impl Iterator<Item = NonNull<Header>> + '_ {
         self.entries.iter().filter_map(|addr| {
-            let sdt_header = unsafe { transmute::<*const c_void, &Header>(*addr as *const c_void) };
-            let sdt_table_ptr = sdt_header as *const Header;
-            NonNull::new(sdt_table_ptr as *mut Header)
+            NonNull::new(*addr as *mut Header)
         })
     }
 
     // Find an ACPI table by its signature.
-    pub fn find_table_by_signature(&self, signature: &[u8; 4]) -> Option<NonNull<Header>> {
+    fn find_table_by_signature(&self, signature: &[u8; 4]) -> Option<NonNull<Header>> {
         self.iter_tables().find(|sdt_ptr| {
-            // SAFETY: sdt_ptr is valid as ensured by iter_tables
+            // SAFETY: Each XSDT entry is a physical address pointing to a valid ACPI
+            // table header, set by the firmware. ACPI tables are required by
+            // specification to be naturally aligned in memory. iter_tables already
+            // filters out null pointers. The referenced memory is in the ACPI
+            // reclaim region and remains mapped after exit_boot_services.
             let sdt_header = unsafe { sdt_ptr.as_ref() };
             &sdt_header.signature == signature
         })
     }
 }
 
-pub struct AcpiTableContext {
+pub(crate) struct AcpiTableContext {
     _xsdt: AtomicPtr<Header>,
-    _madt: AtomicPtr<Header>,
+    madt: AtomicPtr<Header>,
 }
 
 impl AcpiTableContext {
-    pub fn init() -> TmkResult<()> {
+    pub(crate) fn init() -> TmkResult<()> {
         ACPI_TABLE_CONTEXT.try_call_once(|| -> TmkResult<AcpiTableContext> {
             let rsdp_parser = RsdpParser::from_uefi_system_table()?;
             let xsdt = rsdp_parser.get_xsdt_ptr()?;
-            // SAFETY: xsdt is valid as ensured by UEFI specification
+            // SAFETY: The XSDT pointer was obtained from the RSDP, which the firmware
+            // guarantees points to a valid, properly aligned XSDT in the ACPI reclaim
+            // region. This memory remains mapped after exit_boot_services.
             let xsdt_ref = unsafe { xsdt.as_ref() };
-            let xsdt_parser = XSdtParser::new(xsdt_ref);
+            let xsdt_parser = XSdtParser::new(xsdt_ref)?;
             let madt = xsdt_parser
                 .find_table_by_signature(b"APIC")
                 .ok_or(TmkError::NotFound)?;
 
             let context = AcpiTableContext {
                 _xsdt: AtomicPtr::new(xsdt.as_ptr()),
-                _madt: AtomicPtr::new(madt.as_ptr()),
+                madt: AtomicPtr::new(madt.as_ptr()),
             };
             Ok(context)
         })?;
@@ -163,15 +185,19 @@ impl AcpiTableContext {
     }
 
     /// Returns the number of APIC entries found in the MADT table.
-    pub fn get_apic_count_from_madt() -> TmkResult<usize> {
+    pub(crate) fn get_apic_count_from_madt() -> TmkResult<usize> {
         let acpi_ctx = ACPI_TABLE_CONTEXT
             .get()
             .ok_or(AcpiWrapError::InitializationError)?;
-        let madt_ptr = NonNull::new(acpi_ctx._madt.load(core::sync::atomic::Ordering::Acquire));
+        let madt_ptr = NonNull::new(acpi_ctx.madt.load(core::sync::atomic::Ordering::Acquire));
         let madt_ptr = madt_ptr.ok_or(AcpiWrapError::InvalidMadt)?;
-        // SAFETY: madt_ptr is valid as ensured witin the constructor and ACPI specification
+        // SAFETY: madt_ptr was stored during init() from the XSDT table walk. The ACPI
+        // table memory is in the ACPI reclaim region and remains mapped. The Header
+        // at this address is valid and properly aligned per the ACPI specification.
         let madt_table_size: usize = unsafe { madt_ptr.as_ref().length.get() } as usize;
-        // SAFETY: madt_ptr is valid as ensured witin the constructor and ACPI specification
+        // SAFETY: madt_ptr points to a valid MADT in the ACPI reclaim region (stored
+        // during init). madt_table_size comes from the ACPI Header length field which
+        // describes the total table size. The entire table is contiguous and mapped.
         let madt_table_bytes =
             unsafe { core::slice::from_raw_parts(madt_ptr.as_ptr() as *const u8, madt_table_size) };
         let madt_parser = MadtParser::new(madt_table_bytes).map_err(|e| {
@@ -179,26 +205,32 @@ impl AcpiTableContext {
             AcpiWrapError::InvalidMadtStructure
         })?;
         let mut processor_count = 0;
-        madt_parser.entries().for_each(|e| {
-            if let Ok(entry) = e {
-                log::trace!("MADT Entry: {:?}", entry);
-                match entry {
-                    MadtEntry::Apic(_) | MadtEntry::X2Apic(_) => {
-                        processor_count += 1;
+        for entry_result in madt_parser.entries() {
+            match entry_result {
+                Ok(entry) => {
+                    log::trace!("MADT Entry: {:?}", entry);
+                    match entry {
+                        MadtEntry::Apic(_) | MadtEntry::X2Apic(_) => {
+                            processor_count += 1;
+                        }
                     }
                 }
-            } else {
-                log::error!("Failed to parse MADT entry: {:?}", e);
+                Err(e) => {
+                    log::error!("Failed to parse MADT entry: {:?}", e);
+                }
             }
-        });
+        }
+
+        if processor_count == 0 {
+            log::warn!("MADT contains no APIC/X2APIC entries; processor count is 0");
+        }
 
         Ok(processor_count)
     }
 }
 
-type AcpiWrapResult<T> = Result<T, AcpiWrapError>;
 #[derive(Error, Debug)]
-pub enum AcpiWrapError {
+enum AcpiWrapError {
     #[error("ACPI table initialization error")]
     InitializationError,
     #[error("UEFI system table not found")]
@@ -232,7 +264,7 @@ impl From<AcpiWrapError> for TmkError {
             | AcpiWrapError::InvalidMadtStructure
             | AcpiWrapError::InvalidXsdtStructure => TmkError::AcpiError,
         };
-        log::info!("Converting {:?} to {:?}", err, final_err);
+        log::error!("ACPI error: {:?}", err);
         final_err
     }
 }

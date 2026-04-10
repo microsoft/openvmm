@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-pub mod acpi_wrap;
+pub(crate) mod acpi_wrap;
 mod alloc;
 pub mod init;
 mod rt;

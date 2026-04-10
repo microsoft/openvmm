@@ -146,7 +146,11 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
-    /// Return the number of logical processors present in the machine
+    /// Return the number of logical processors present in the machine.
+    ///
+    /// On UEFI targets this reads the count from the ACPI MADT table.
+    /// The non-UEFI branch exists only for host-side `cargo test`
+    /// compilation where the `uefi` module is not available.
     fn get_vp_count(&self) -> TmkResult<u32> {
         #[cfg(target_os = "uefi")]
         {

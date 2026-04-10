@@ -61,7 +61,10 @@ pub fn init() -> Result<(), Status> {
         return Err(Status::ABORTED);
     }
     crate::tmk_logger::init().map_err(|_| Status::NOT_READY)?;
-    enable_uefi_vtl_protection();
+    // Initialize ACPI table context before exit_boot_services (called
+    // within enable_uefi_vtl_protection) so that the UEFI system table
+    // configuration entries are still accessible.
     acpi_wrap::AcpiTableContext::init().map_err(|_| Status::ABORTED)?;
+    enable_uefi_vtl_protection();
     Ok(())
 }
