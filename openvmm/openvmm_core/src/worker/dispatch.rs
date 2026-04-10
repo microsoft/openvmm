@@ -2464,6 +2464,8 @@ impl LoadedVmInner {
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
+
+            #[expect(clippy::allow_attributes)]
             #[allow(unreachable_patterns)]
             _ => anyhow::bail!("load mode not supported on this platform"),
         };
@@ -3006,7 +3008,7 @@ impl LoadedVm {
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
         };
-        #[allow(unreachable_code, reason = "TODO")]
+        #[expect(unreachable_code, reason = "TODO")]
         RestartState {
             manifest,
             running: self.running,

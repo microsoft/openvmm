@@ -151,6 +151,7 @@ fn choose_hypervisor() -> anyhow::Result<HypervisorOpt> {
         return Ok(HypervisorOpt::Hvf);
     }
 
+    #[expect(clippy::allow_attributes)]
     #[allow(unreachable_code, reason = "unreachable on some targets")]
     {
         anyhow::bail!("no hypervisor available");

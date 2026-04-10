@@ -238,10 +238,13 @@ fn build_remaining_iov<'a>(original: &'a [IoSlice<'a>], skip: usize) -> Vec<IoSl
 }
 
 /// Send data with optional file descriptors via sendmsg. May return WouldBlock.
-#[allow(
-    clippy::needless_update,
-    clippy::useless_conversion,
-    reason = "libc cmsghdr field types and as-conversions differ between musl and glibc"
+#[cfg_attr(
+    target_env = "gnu",
+    expect(
+        clippy::needless_update,
+        clippy::useless_conversion,
+        reason = "libc::cmsghdr has different type defs on gnu vs musl"
+    )
 )]
 fn try_send(socket: &UnixStream, msg: &[IoSlice<'_>], fds: &[RawFd]) -> io::Result<usize> {
     assert!(
@@ -334,10 +337,6 @@ fn try_recv(
             && cmsg.hdr.cmsg_level == libc::SOL_SOCKET
             && cmsg.hdr.cmsg_type == libc::SCM_RIGHTS
         {
-            #[allow(
-                clippy::unnecessary_cast,
-                reason = "cmsg_len type differs between musl and glibc"
-            )]
             let fd_count = ((cmsg.hdr.cmsg_len as usize).saturating_sub(size_of_val(&cmsg.hdr))
                 / size_of::<RawFd>())
             .min(VHOST_USER_MAX_FDS);
@@ -355,10 +354,6 @@ fn try_recv(
             // Unexpected ancillary data type — no SCM_RIGHTS fds to close.
             return Err(io::ErrorKind::InvalidData.into());
         }
-        #[allow(
-            clippy::unnecessary_cast,
-            reason = "cmsg_len type differs between musl and glibc"
-        )]
         let fd_count = ((cmsg.hdr.cmsg_len as usize).saturating_sub(size_of_val(&cmsg.hdr))
             / size_of::<RawFd>())
         .min(VHOST_USER_MAX_FDS);

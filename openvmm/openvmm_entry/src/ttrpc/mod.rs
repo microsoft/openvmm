@@ -113,6 +113,7 @@ impl Worker for TtrpcWorker {
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
                 #[cfg(feature = "grpc")]
                 RpcTransport::Grpc => ResolvedTransport::Grpc,
+                #[expect(clippy::allow_attributes)]
                 #[allow(unreachable_patterns)]
                 transport => bail!("unsupported transport {transport}"),
             },

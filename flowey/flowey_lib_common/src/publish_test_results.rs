@@ -180,7 +180,7 @@ impl FlowNode for Node {
                                             - publish: $({path_var})
                                               artifact: {artifact_name}-$({})
                                             "#,
-                                            AdoRuntimeVar::SYSTEM__JOB_ATTEMPT.as_raw_var_name()
+                                            AdoRuntimeVar::SYSTEM_JOB_ATTEMPT.as_raw_var_name()
                                         )
                                     }
                                 },

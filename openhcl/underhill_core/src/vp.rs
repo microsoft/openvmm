@@ -135,7 +135,6 @@ impl VpSpawner {
         saved_state: Option<vmcore::save_restore::SavedStateBlob>,
         control: Option<&mut IdleControl>,
     ) -> Option<vmcore::save_restore::SavedStateBlob> {
-        #[allow(unreachable_patterns)]
         let r = match self.isolation {
             virt::IsolationType::None | virt::IsolationType::Vbs => {
                 self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(saved_state, control)
@@ -151,6 +150,8 @@ impl VpSpawner {
                 self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control)
                     .await
             }
+            #[expect(clippy::allow_attributes)]
+            #[allow(unreachable_patterns)]
             _ => unimplemented!(),
         };
         match r {
