@@ -451,7 +451,7 @@ impl LoadedVm {
                     let timeout_hint = if timeout_hint >= Duration::from_secs(59) {
                         tracing::info!(
                             CVM_ALLOWED,
-                            host_timeout_hint_ms = timeout_hint.as_millis() as u64
+                            host_timeout_hint_ms = timeout_hint.as_millis() as u64,
                             "host provided timeout hint > 59s, defaulting to 59s"
                         );
                         Duration::from_secs(59)
