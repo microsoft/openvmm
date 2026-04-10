@@ -124,7 +124,18 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
-            submitted_at: (self.qid == 0).then(Instant::now),
+            submitted_at: (self.qid == 0).then(|| {
+                tracing::info!(
+                    cid,
+                    opcode = command.cdw0.opcode(),
+                    opname = ?spec::AdminOpcode(command.cdw0.opcode()),
+                    nsid = command.nsid,
+                    cdw10 = command.cdw10,
+                    cdw11 = command.cdw11,
+                    "inserted admin command",
+                );
+                Instant::now()
+            }),
         });
     }
 
@@ -140,6 +151,18 @@ impl PendingCommands {
             self.qid,
             command.command.cdw0.opcode(),
         );
+        if let Some(submitted_at) = command.submitted_at {
+            tracing::info!(
+                cid,
+                opcode = command.command.cdw0.opcode(),
+                opname = ?spec::AdminOpcode(command.command.cdw0.opcode()),
+                nsid = command.command.nsid,
+                cdw10 = command.command.cdw10,
+                cdw11 = command.command.cdw11,
+                elapsed_ms = submitted_at.elapsed().as_millis() as u64,
+                "completed admin command",
+            );
+        }
         command.respond
     }
 
