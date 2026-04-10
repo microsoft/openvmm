@@ -300,7 +300,7 @@ fn try_send(socket: &UnixStream, msg: &[IoSlice<'_>], fds: &[RawFd]) -> io::Resu
 /// This prevents fd leaks from misbehaving or malicious peers.
 #[expect(clippy::allow_attributes)]
 #[allow(
-    clippy::unnecessary_cast
+    clippy::unnecessary_cast,
     reason = "libc::cmsghdr has different type defs on gnu vs musl"
 )]
 fn try_recv(
