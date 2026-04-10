@@ -29,13 +29,11 @@ const MAX_FDS_PER_MSG: usize = 64;
 
 /// Sends a packet, including the specified file descriptors. May fail with
 /// ErrorKind::WouldBlock.
-#[cfg_attr(
-    target_env = "gnu",
-    expect(
-        clippy::needless_update,
-        clippy::useless_conversion,
-        reason = "libc::cmsghdr has different type defs on gnu vs musl"
-    )
+#[expect(clippy::allow_attributes)]
+#[allow(
+    clippy::needless_update,
+    clippy::useless_conversion,
+    reason = "libc::cmsghdr has different type defs on gnu vs musl"
 )]
 pub(crate) fn try_send(
     fd: BorrowedFd<'_>,

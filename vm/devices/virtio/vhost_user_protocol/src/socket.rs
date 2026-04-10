@@ -298,12 +298,10 @@ fn try_send(socket: &UnixStream, msg: &[IoSlice<'_>], fds: &[RawFd]) -> io::Resu
 /// Always provides a cmsg buffer so that any file descriptors sent by the peer
 /// are properly received and closed, even when the caller doesn't expect them.
 /// This prevents fd leaks from misbehaving or malicious peers.
-#[cfg_attr(
-    target_env = "gnu",
-    expect(
-        clippy::unnecessary_cast,
-        reason = "libc::cmsghdr has different type defs on gnu vs musl"
-    )
+#[expect(clippy::allow_attributes)]
+#[allow(
+    clippy::useless_conversion,
+    reason = "libc::cmsghdr has different type defs on gnu vs musl"
 )]
 fn try_recv(
     socket: &UnixStream,
