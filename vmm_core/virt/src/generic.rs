@@ -459,7 +459,7 @@ pub trait Processor: InspectMut {
     ///
     /// The default implementation panics. Backends that support
     /// [`ResetPartition`] must override this.
-    #[allow(unreachable_code)]
+    #[expect(unreachable_code)]
     fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         Ok::<(), Infallible>(unimplemented!(
             "Processor::reset not implemented for this backend"
@@ -473,7 +473,7 @@ pub trait Processor: InspectMut {
     ///
     /// The default implementation panics. Backends that support
     /// [`ScrubVtl`] must override this.
-    #[allow(unreachable_code)]
+    #[expect(unreachable_code)]
     fn scrub(&mut self, _vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
         Ok::<(), Infallible>(unimplemented!(
             "Processor::scrub not implemented for this backend"
