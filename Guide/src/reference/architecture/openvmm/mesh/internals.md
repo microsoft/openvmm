@@ -178,3 +178,17 @@ Port IDs and node IDs are cryptographically random 128-bit values
 if it has been given a reference to that port—it cannot guess port
 addresses. This limits the blast radius of a compromised child process:
 it can only interact with ports it was explicitly given.
+
+## Point-to-point mesh
+
+`PointToPointMesh` is a lightweight, two-node mesh over any
+bidirectional byte stream — a TCP connection, a Unix socket, a Windows
+named pipe, or a vsock/hvsock connection. It does not support OS
+resource transfer (no file descriptors or handles), since the
+underlying stream may not support it (e.g., TCP across machines).
+
+This is a separate mechanism from the multi-process mesh described
+above. It's used when two processes need mesh channels but aren't in a
+parent/child relationship and may not even be on the same machine. The
+petri test framework uses it to communicate between the host and a
+test agent running inside a guest VM over hvsock.
