@@ -184,9 +184,8 @@ pub async fn request_vmgs_encryption_keys(
             rsa_aes_wrapped_key,
             wrapped_des_key,
         }) => {
-            let ingress_rsa_kek =
-                    pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
-                        .map_err(|e| {(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false)})?;
+            let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
+                .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: Some(ingress_rsa_kek),

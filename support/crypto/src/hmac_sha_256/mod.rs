@@ -16,6 +16,7 @@ use thiserror::Error;
 pub struct HmacSha256Error(#[source] super::BackendError);
 
 /// Compute the HMAC-SHA-256 of `data` using `key`.
+// TODO: Consider splitting up into more steps to allow caching of intermediate state.
 pub fn hmac_sha_256(key: &[u8], data: &[u8]) -> Result<[u8; 32], HmacSha256Error> {
     sys::hmac_sha_256(key, data)
 }

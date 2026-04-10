@@ -19,12 +19,7 @@ pub fn hmac_sha_256(key: &[u8], data: &[u8]) -> Result<[u8; 32], HmacSha256Error
     let size = ctx
         .digest_sign_final(None)
         .map_err(|e| err(e, "HMAC get required size"))?;
-    if size != 32 {
-        return Err(err(
-            openssl::error::ErrorStack::get(),
-            "HMAC invalid output size",
-        ));
-    }
+    assert_eq!(size, 32);
 
     let mut output = [0u8; 32];
     ctx.digest_sign_final(Some(&mut output))

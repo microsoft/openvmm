@@ -23,6 +23,7 @@ impl X509CertificateInner {
             .cert
             .public_key()
             .map_err(|e| err(e, "extracting public key"))?;
+        assert_eq!(pkey.id(), openssl::pkey::Id::RSA);
         Ok(crate::rsa::RsaPublicKey(
             crate::rsa::ossl::RsaPublicKeyInner::from_pkey(pkey),
         ))
