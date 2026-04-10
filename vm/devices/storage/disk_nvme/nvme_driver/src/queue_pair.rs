@@ -159,7 +159,7 @@ impl PendingCommands {
                 nsid = ?command.command.nsid,
                 cdw10 = command.command.cdw10,
                 cdw11 = command.command.cdw11,
-                elapsed_ms = ?submitted_at.elapsed(),
+                elapsed = ?submitted_at.elapsed(),
                 "completed admin command",
             );
         }
