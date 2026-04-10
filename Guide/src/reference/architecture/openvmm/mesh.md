@@ -7,9 +7,9 @@ communicate through mesh channels can be moved between processes without
 changing their source code.
 
 OpenVMM and OpenHCL use mesh as their primary communication mechanism. In
-OpenHCL, the [paravisor, VM worker, diagnostics server, and device workers](
-../../architecture/openhcl/processes.md) are all separate processes connected
-by mesh channels.
+OpenHCL, the [paravisor, VM worker, diagnostics server, and device
+workers](../../architecture/openhcl/processes.md) are all separate
+processes connected by mesh channels.
 
 **Source code:**
 [support/mesh](https://github.com/microsoft/openvmm/tree/main/support/mesh) |

@@ -30,6 +30,8 @@
 //! process boundaries, derive [`MeshPayload`]:
 //!
 //! ```rust,ignore
+//! use mesh::rpc::Rpc;
+//!
 //! #[derive(MeshPayload)]
 //! enum MyRequest {
 //!     DoThing(Rpc<Input, Output>),

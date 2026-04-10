@@ -1,5 +1,8 @@
 # Using mesh
 
+This page shows how to use mesh channels to exchange messages between
+OpenVMM components.
+
 ## The pattern
 
 In OpenVMM, components don't call each other directly. Instead, they
@@ -53,12 +56,14 @@ struct DiskRead {
 }
 ```
 
-This is so common that mesh provides `Rpc<I, R>`, which bundles the
-request and reply channel together. And the conventional pattern is to
-define a _request enum_ so a single channel can carry multiple command
-types:
+This is so common that mesh provides [`Rpc<I, R>`](https://openvmm.dev/rustdoc/linux/mesh/rpc/struct.Rpc.html),
+which bundles the request and reply channel together (it lives in
+`mesh::rpc::Rpc`). And the conventional pattern is to define a _request
+enum_ so a single channel can carry multiple command types:
 
 ```rust,ignore
+use mesh::rpc::Rpc;
+
 #[derive(MeshPayload)]
 enum DiskRequest {
     Read(Rpc<DiskReadParams, Vec<u8>>),

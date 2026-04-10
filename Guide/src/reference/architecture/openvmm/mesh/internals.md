@@ -77,7 +77,8 @@ connection to each child. Children do not start with connections to each
 other. But when a port is sent from one child to another (e.g., the
 parent sends child A's port to child B), the nodes establish a new direct
 connection so that messages flow between A and B without routing through
-the parent. This means the set of inter-process connections grows as ports migrate.
+the parent. This means the set of inter-process connections grows
+as ports migrate.
 
 ### Bridging
 
@@ -116,9 +117,10 @@ by-value model is what allows ownership of OS handles, file descriptors,
 and channel endpoints to be transferred rather than copied.
 
 `#[derive(MeshPayload)]` generates encoders that use positional field
-encoding and support resources. `#[derive(Protobuf)]` generates encoders
-that use tagged field encoding (standard protobuf) but do not support
-resources.
+encoding. `#[derive(Protobuf)]` generates encoders that use tagged field
+encoding (standard protobuf). Both support resources via
+`#[mesh(resource = "Resource")]`, but messages containing resources
+cannot be fully decoded by external protobuf tools.
 
 ## Cross-process transport
 
@@ -130,8 +132,27 @@ serialized messages and resources between processes:
 - **Windows:** ALPC (Advanced Local Procedure Call). Resources (handles
   and ports) are transferred via ALPC handle duplication.
 
-Both transports authenticate connections using a cryptographically random
-invitation token, validated with constant-time comparison.
+### Joining a mesh
+
+There are two ways a process can join a mesh, with different security
+properties:
+
+**Child process launch** (`mesh_process`). The parent spawns the child
+and passes an invitation via an environment variable. On Unix, the
+invitation includes a pre-connected socket file descriptor duplicated
+into the child — the FD itself is the credential, non-guessable by
+other processes. On Windows, the invitation includes an inherited
+object directory handle and a 256-bit random `MeshSecret`, validated
+with constant-time comparison.
+
+**External process join** (`mesh_remote` listeners). A process binds a
+`UnixMeshListener` or `AlpcMeshListener` to a filesystem path and
+waits for connections. An external process connects to that path and
+receives an invitation over the socket. On Unix, security depends on
+filesystem permissions — the socket path must be in a directory
+accessible only to the intended user (e.g., `$XDG_RUNTIME_DIR` with
+mode `0700`). On Windows, the `MeshSecret` provides cryptographic
+authentication regardless of filesystem permissions.
 
 ### Process lifecycle
 
