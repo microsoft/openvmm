@@ -9,6 +9,7 @@ use core::sync::atomic::AtomicPtr;
 use acpi_spec::Header;
 use acpi_spec::Rsdp;
 use acpi_spec::madt::MadtEntry;
+use acpi_spec::madt::MADT_APIC_ENABLED;
 use acpi_spec::madt::MadtParser;
 use alloc::vec::Vec;
 use spin::Once;
@@ -40,6 +41,17 @@ impl RsdpParser {
                 log::error!("Failed to parse RSDP: {:?}", e);
                 AcpiWrapError::InvalidRsdpStructure
             })?;
+
+        if &rsdp.signature != b"RSD PTR " {
+            log::error!("Invalid RSDP signature: {:?}", rsdp.signature);
+            return Err(AcpiWrapError::InvalidRsdpStructure.into());
+        }
+
+        if rsdp.revision < 2 {
+            log::error!("Unsupported RSDP revision: {}, expected >= 2", rsdp.revision);
+            return Err(AcpiWrapError::InvalidRsdpStructure.into());
+        }
+
         Ok(RsdpParser { rsdp })
     }
 
@@ -111,22 +123,19 @@ impl XSdtParser {
         let sdt_address = xsdt as *const Header as usize;
 
         let entries_region_size = sdt_length - sdt_header_size;
-        let entries_count = entries_region_size / size_of::<u64>();
-        let entries_byte_len = entries_count * size_of::<u64>();
 
-        // Ensure the computed entries region does not extend beyond the table.
-        if entries_byte_len > entries_region_size {
+        if entries_region_size % size_of::<u64>() != 0 {
             return Err(AcpiWrapError::InvalidXsdtStructure.into());
         }
 
         let entries_ptr = sdt_address + sdt_header_size;
 
         // SAFETY: We validated that sdt_length >= sdt_header_size and that
-        // entries_byte_len <= sdt_length - sdt_header_size, so the slice stays
-        // within the XSDT table boundary. The XSDT pointer was obtained from the
-        // RSDP, which the firmware guarantees is a valid, mapped table.
+        // entries_region_size is an exact multiple of 8 bytes, so the slice
+        // stays within the XSDT table boundary. The XSDT pointer was obtained
+        // from the RSDP, which the firmware guarantees is a valid, mapped table.
         let entries_ptr_bytes = unsafe {
-            core::slice::from_raw_parts(entries_ptr as *const u8, entries_byte_len)
+            core::slice::from_raw_parts(entries_ptr as *const u8, entries_region_size)
         };
 
         // create slice of u64 pointers
@@ -220,8 +229,15 @@ impl AcpiTableContext {
                 Ok(entry) => {
                     log::trace!("MADT Entry: {:?}", entry);
                     match entry {
-                        MadtEntry::Apic(_) | MadtEntry::X2Apic(_) => {
-                            processor_count += 1;
+                        MadtEntry::Apic(apic) => {
+                            if apic.flags & MADT_APIC_ENABLED != 0 {
+                                processor_count += 1;
+                            }
+                        }
+                        MadtEntry::X2Apic(x2apic) => {
+                            if x2apic.flags & MADT_APIC_ENABLED != 0 {
+                                processor_count += 1;
+                            }
                         }
                     }
                 }
