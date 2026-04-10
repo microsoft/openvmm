@@ -2069,6 +2069,7 @@ dependencies = [
  "flowey_lib_hvlite",
  "log",
  "serde",
+ "serde_json",
  "target-lexicon",
  "vmm_test_images",
 ]
@@ -2095,10 +2096,12 @@ dependencies = [
 name = "flowey_lib_hvlite"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "crossterm",
  "flowey",
  "flowey_lib_common",
  "igvmfilegen_config",
+ "log",
  "powershell_builder",
  "serde",
  "serde_json",
