@@ -126,10 +126,10 @@ impl PendingCommands {
             respond,
             submitted_at: (self.qid == 0).then(|| {
                 tracing::info!(
-                    cid,
-                    opcode = command.cdw0.opcode(),
+                    %cid,
+                    opcode = %command.cdw0.opcode(),
                     opname = ?spec::AdminOpcode(command.cdw0.opcode()),
-                    nsid = command.nsid,
+                    nsid = %command.nsid,
                     cdw10 = command.cdw10,
                     cdw11 = command.cdw11,
                     "inserted admin command",
@@ -153,13 +153,13 @@ impl PendingCommands {
         );
         if let Some(submitted_at) = command.submitted_at {
             tracing::info!(
-                cid,
-                opcode = command.command.cdw0.opcode(),
+                %cid,
+                opcode = %command.command.cdw0.opcode(),
                 opname = ?spec::AdminOpcode(command.command.cdw0.opcode()),
-                nsid = command.command.nsid,
+                nsid = %command.command.nsid,
                 cdw10 = command.command.cdw10,
                 cdw11 = command.command.cdw11,
-                elapsed_ms = submitted_at.elapsed().as_millis() as u64,
+                elapsed_ms = %submitted_at.elapsed().as_millis(),
                 "completed admin command",
             );
         }
