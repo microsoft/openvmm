@@ -2203,8 +2203,9 @@ async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> any
     };
 
     // Spawn the VmController as a task.
-    let controller_task = driver.spawn("vm-controller", 
-        controller.run(vm_controller_recv, vm_controller_event_send, notify_recv)
+    let controller_task = driver.spawn(
+        "vm-controller",
+        controller.run(vm_controller_recv, vm_controller_event_send, notify_recv),
     );
 
     // Run the REPL with shareable resources.
