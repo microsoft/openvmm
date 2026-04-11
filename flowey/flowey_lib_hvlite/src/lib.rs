@@ -22,6 +22,7 @@ pub mod build_ohcldiag_dev;
 pub mod build_openhcl_boot;
 pub mod build_openhcl_igvm_from_recipe;
 pub mod build_openhcl_initrd;
+pub mod build_opentmk;
 pub mod build_openvmm;
 pub mod build_openvmm_hcl;
 pub mod build_openvmm_vhost;
