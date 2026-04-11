@@ -220,8 +220,9 @@ fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
 
     let cache_dir = super::petri_disk_cache_dir();
 
-    // Use the URL's filename as the cache key for a readable cache directory name.
-    let cache_key = url.rsplit('/').next().unwrap_or(url).to_owned();
+    // Use the URL path's filename as the cache key (query params stripped
+    // to avoid platform-invalid chars and leaking secrets like SAS tokens).
+    let cache_key = url_path.rsplit('/').next().unwrap_or(url_path).to_owned();
 
     Ok(LayeredDiskHandle {
         layers: vec![
