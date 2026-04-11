@@ -232,7 +232,10 @@ impl<'a> ArtifactResolver<'a> {
         ResolvedArtifact(
             source.0.map(|s| match s {
                 ArtifactSource::Local(p) => p,
-                ArtifactSource::Remote { .. } => unreachable!("LocalOnly was specified"),
+                ArtifactSource::Remote { url } => panic!(
+                    "artifact required via require() resolved to remote source `{url}`; \
+                     use require_source(..., RemoteAccess::Allow) or download the artifact locally"
+                ),
             }),
             PhantomData,
         )

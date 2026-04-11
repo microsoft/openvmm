@@ -25,9 +25,11 @@ This is controlled by two environment variables:
   `~/.cache/petri` on Linux, `~/Library/Caches/petri` on macOS,
   `%LOCALAPPDATA%\petri\cache` on Windows).
 
-> **Note:** VHDX artifacts (e.g. `WINDOWS_11_ENTERPRISE_AARCH64`) do **not**
-> support lazy fetching and must be downloaded locally. The Hyper-V backend also
-> requires all artifacts to be local.
+```admonish note
+VHDX artifacts (e.g. `WINDOWS_11_ENTERPRISE_AARCH64`) do **not** support lazy
+fetching and must be downloaded locally. The Hyper-V backend also requires all
+artifacts to be local.
+```
 
 ## Downloading VHDs
 

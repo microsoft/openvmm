@@ -210,7 +210,9 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
 }
 
 fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let format = if url.ends_with(".vhd") || url.ends_with(".vmgs") {
+    // Strip query parameters and fragments before checking the file extension.
+    let url_path = url.split(['?', '#']).next().unwrap_or(url);
+    let format = if url_path.ends_with(".vhd") || url_path.ends_with(".vmgs") {
         disk_backend_resources::BlobDiskFormat::FixedVhd1
     } else {
         disk_backend_resources::BlobDiskFormat::Flat

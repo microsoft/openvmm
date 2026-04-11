@@ -107,11 +107,12 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             }
 
             // Blob-hosted artifacts: resolved via blob_artifact_info.
-            _ if blob_artifact_info(id).is_some() => {
-                let artifact = blob_artifact_info(id).unwrap();
-                get_test_artifact_path(artifact.filename(), artifact.name())
-            }
+            _ => {
+                if let Some(artifact) = blob_artifact_info(id) {
+                    return get_test_artifact_path(artifact.filename(), artifact.name());
+                }
 
+                match id {
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
             _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
             _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
@@ -132,6 +133,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             }
 
             _ => anyhow::bail!("no support for given artifact type"),
+        }
+            }
         }
     }
 
