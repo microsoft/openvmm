@@ -108,8 +108,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             // Blob-hosted artifacts: resolved via blob_artifact_info.
             _ if blob_artifact_info(id).is_some() => {
-                let info = blob_artifact_info(id).unwrap();
-                get_test_artifact_path(info.filename, info.download_name)
+                let artifact = blob_artifact_info(id).unwrap();
+                get_test_artifact_path(artifact.filename(), artifact.name())
             }
 
             _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
@@ -137,59 +137,36 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
     fn resolve_source(&self, id: ErasedArtifactHandle) -> anyhow::Result<ArtifactSource> {
         // Try local resolution first.
-        if let Ok(path) = self.resolve(id) {
-            return Ok(ArtifactSource::Local(path));
-        }
+        let local_err = match self.resolve(id) {
+            Ok(path) => return Ok(ArtifactSource::Local(path)),
+            Err(e) => e,
+        };
 
-        // Fall back to remote URL for artifacts hosted on Azure Blob Storage.
-        if let Some(info) = blob_artifact_info(id) {
-            let url = format!(
-                "https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{}",
-                info.filename
-            );
-            return Ok(ArtifactSource::Remote { url });
+        // Fall back to remote URL for artifacts hosted on Azure Blob Storage,
+        // but only for formats the blob disk backend supports (fixed VHD1 and flat).
+        if let Some(artifact) = blob_artifact_info(id) {
+            let filename = artifact.filename();
+            if filename.ends_with(".vhd") || filename.ends_with(".iso") {
+                let url = format!(
+                    "https://{STORAGE_ACCOUNT}.blob.core.windows.net/{CONTAINER}/{}",
+                    filename
+                );
+                return Ok(ArtifactSource::Remote { url });
+            }
         }
 
         // No local path and no remote URL available — return the original error.
-        self.resolve(id).map(ArtifactSource::Local)
+        Err(local_err)
     }
 }
 
 const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
 const CONTAINER: &str = "vhds";
 
-/// Info about a blob-hosted artifact.
-struct BlobArtifactInfo {
-    /// Filename in Azure Blob Storage (from `IsHostedOnHvliteAzureBlobStore::FILENAME`).
-    filename: &'static str,
-    /// CLI name for `cargo xtask guest-test download-image --artifacts <name>`.
-    download_name: &'static str,
-}
-
-/// Returns info about a blob-hosted artifact, if it is hosted on Azure Blob Storage.
-fn blob_artifact_info(id: ErasedArtifactHandle) -> Option<BlobArtifactInfo> {
-    use petri_artifacts_core::AsArtifactHandle;
-    use petri_artifacts_vmm_test::artifacts::*;
-    use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
-
-    #[rustfmt::skip]
-    let info = match id {
-        _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64.erase() => BlobArtifactInfo { filename: test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME, download_name: "Gen1WindowsDataCenterCore2022X64Vhd" },
-        _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64.erase() => BlobArtifactInfo { filename: test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME, download_name: "Gen2WindowsDataCenterCore2022X64Vhd" },
-        _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.erase() => BlobArtifactInfo { filename: test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME, download_name: "Gen2WindowsDataCenterCore2025X64Vhd" },
-        _ if id == test_vhd::FREE_BSD_13_2_X64.erase() => BlobArtifactInfo { filename: test_vhd::FREE_BSD_13_2_X64::FILENAME, download_name: "FreeBsd13_2X64Vhd" },
-        _ if id == test_vhd::ALPINE_3_23_X64.erase() => BlobArtifactInfo { filename: test_vhd::ALPINE_3_23_X64::FILENAME, download_name: "Alpine323X64Vhd" },
-        _ if id == test_vhd::ALPINE_3_23_AARCH64.erase() => BlobArtifactInfo { filename: test_vhd::ALPINE_3_23_AARCH64::FILENAME, download_name: "Alpine323Aarch64Vhd" },
-        _ if id == test_vhd::UBUNTU_2404_SERVER_X64.erase() => BlobArtifactInfo { filename: test_vhd::UBUNTU_2404_SERVER_X64::FILENAME, download_name: "Ubuntu2404ServerX64Vhd" },
-        _ if id == test_vhd::UBUNTU_2504_SERVER_X64.erase() => BlobArtifactInfo { filename: test_vhd::UBUNTU_2504_SERVER_X64::FILENAME, download_name: "Ubuntu2504ServerX64Vhd" },
-        _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64.erase() => BlobArtifactInfo { filename: test_vhd::UBUNTU_2404_SERVER_AARCH64::FILENAME, download_name: "Ubuntu2404ServerAarch64Vhd" },
-        _ if id == test_vhd::WINDOWS_11_ENTERPRISE_AARCH64.erase() => BlobArtifactInfo { filename: test_vhd::WINDOWS_11_ENTERPRISE_AARCH64::FILENAME, download_name: "Windows11EnterpriseAarch64Vhdx" },
-        _ if id == test_iso::FREE_BSD_13_2_X64.erase() => BlobArtifactInfo { filename: test_iso::FREE_BSD_13_2_X64::FILENAME, download_name: "FreeBsd13_2X64Iso" },
-        _ if id == test_vmgs::VMGS_WITH_BOOT_ENTRY.erase() => BlobArtifactInfo { filename: test_vmgs::VMGS_WITH_BOOT_ENTRY::FILENAME, download_name: "VmgsWithBootEntry" },
-        _ if id == test_vmgs::VMGS_WITH_16K_TPM.erase() => BlobArtifactInfo { filename: test_vmgs::VMGS_WITH_16K_TPM::FILENAME, download_name: "VmgsWith16kTpm" },
-        _ => return None,
-    };
-    Some(info)
+/// Returns blob-hosted artifact info (filename, download name) for the given
+/// artifact handle, if it is a known blob-hosted artifact.
+fn blob_artifact_info(id: ErasedArtifactHandle) -> Option<vmm_test_images::KnownTestArtifacts> {
+    vmm_test_images::KnownTestArtifacts::from_handle(id)
 }
 
 /// Returns the bundle-relative file name for the given artifact.

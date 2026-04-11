@@ -319,6 +319,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "WindowsServer-2022-datacenter-core-smalldisk-20348.1906.230803.vhd";
             const SIZE: u64 = 32214352384;
+            const DOWNLOAD_NAME: &'static str = "Gen1WindowsDataCenterCore2022X64Vhd";
         }
 
         declare_artifacts! {
@@ -335,6 +336,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "WindowsServer-2022-datacenter-core-smalldisk-g2-20348.1906.230803.vhd";
             const SIZE: u64 = 32214352384;
+            const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2022X64Vhd";
         }
 
         declare_artifacts! {
@@ -358,6 +360,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.3476.250306.vhd";
             const SIZE: u64 = 32214352384;
+            const DOWNLOAD_NAME: &'static str = "Gen2WindowsDataCenterCore2025X64Vhd";
         }
 
         declare_artifacts! {
@@ -380,6 +383,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for FREE_BSD_13_2_X64 {
             const FILENAME: &'static str = "FreeBSD-13.2-RELEASE-amd64.vhd";
             const SIZE: u64 = 6477005312;
+            const DOWNLOAD_NAME: &'static str = "FreeBsd13_2X64Vhd";
         }
 
         declare_artifacts! {
@@ -401,6 +405,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
+            const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerX64Vhd";
         }
 
         declare_artifacts! {
@@ -422,6 +427,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2504_SERVER_X64 {
             const FILENAME: &'static str = "ubuntu-25.04-server-cloudimg-amd64.vhd";
             const SIZE: u64 = 3758211584;
+            const DOWNLOAD_NAME: &'static str = "Ubuntu2504ServerX64Vhd";
         }
 
         declare_artifacts! {
@@ -444,6 +450,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_X64 {
             const FILENAME: &'static str = "nocloud_alpine-3.23.2-x86_64-uefi-cloudinit-r0.vhd";
             const SIZE: u64 = 224494080;
+            const DOWNLOAD_NAME: &'static str = "Alpine323X64Vhd";
         }
 
         declare_artifacts! {
@@ -466,6 +473,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for ALPINE_3_23_AARCH64 {
             const FILENAME: &'static str = "nocloud_alpine-3.23.2-aarch64-uefi-cloudinit-r0.vhd";
             const SIZE: u64 = 258015744;
+            const DOWNLOAD_NAME: &'static str = "Alpine323Aarch64Vhd";
         }
 
         declare_artifacts! {
@@ -487,6 +495,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for UBUNTU_2404_SERVER_AARCH64 {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-arm64.vhd";
             const SIZE: u64 = 3758211584;
+            const DOWNLOAD_NAME: &'static str = "Ubuntu2404ServerAarch64Vhd";
         }
 
         declare_artifacts! {
@@ -510,6 +519,7 @@ pub mod artifacts {
             const FILENAME: &'static str =
                 "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx";
             const SIZE: u64 = 24398266368;
+            const DOWNLOAD_NAME: &'static str = "Windows11EnterpriseAarch64Vhdx";
         }
 
         // VHDs that are created by pre-preparation automation
@@ -559,6 +569,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for FREE_BSD_13_2_X64 {
             const FILENAME: &'static str = "FreeBSD-13.2-RELEASE-amd64-dvd1.iso";
             const SIZE: u64 = 4245487616;
+            const DOWNLOAD_NAME: &'static str = "FreeBsd13_2X64Iso";
         }
     }
 
@@ -586,6 +597,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_BOOT_ENTRY {
             const FILENAME: &'static str = "sample-vmgs.vhd";
             const SIZE: u64 = 4194816;
+            const DOWNLOAD_NAME: &'static str = "VmgsWithBootEntry";
         }
 
         impl IsTestVmgs for VMGS_WITH_BOOT_ENTRY {}
@@ -593,6 +605,7 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_16K_TPM {
             const FILENAME: &'static str = "tpm-16k-vmgs.vhd";
             const SIZE: u64 = 4194816;
+            const DOWNLOAD_NAME: &'static str = "VmgsWith16kTpm";
         }
 
         impl IsTestVmgs for VMGS_WITH_16K_TPM {}
@@ -690,5 +703,7 @@ pub mod tags {
         const FILENAME: &'static str;
         /// Size of the file in bytes
         const SIZE: u64;
+        /// CLI name for `cargo xtask guest-test download-image --artifacts <name>`
+        const DOWNLOAD_NAME: &'static str;
     }
 }

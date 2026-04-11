@@ -15,6 +15,8 @@
 
 #![forbid(unsafe_code)]
 
+use petri_artifacts_core::AsArtifactHandle;
+use petri_artifacts_core::ErasedArtifactHandle;
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 
 /// The VHDs currently stored in Azure Blob Storage.
@@ -43,91 +45,59 @@ struct KnownTestArtifactMeta {
     variant: KnownTestArtifacts,
     filename: &'static str,
     size: u64,
+    download_name: &'static str,
 }
 
-impl KnownTestArtifactMeta {
-    const fn new(variant: KnownTestArtifacts, filename: &'static str, size: u64) -> Self {
-        Self {
-            variant,
-            filename,
-            size,
-        }
+const fn meta<T: IsHostedOnHvliteAzureBlobStore>(
+    variant: KnownTestArtifacts,
+) -> KnownTestArtifactMeta {
+    KnownTestArtifactMeta {
+        variant,
+        filename: T::FILENAME,
+        size: T::SIZE,
+        download_name: T::DOWNLOAD_NAME,
     }
 }
 
 // linear scan to find entries is OK, given how few entries there are
-const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Alpine323X64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Alpine323Aarch64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_AARCH64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::FreeBsd13_2X64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::FreeBsd13_2X64Iso,
-        petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Ubuntu2404ServerX64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64::SIZE,
-    ),
-        KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Ubuntu2504ServerX64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2504_SERVER_X64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
-        petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64::SIZE
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::VmgsWithBootEntry,
-        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::SIZE,
-    ),
-    KnownTestArtifactMeta::new(
-        KnownTestArtifacts::VmgsWith16kTpm,
-        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::FILENAME,
-        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_16K_TPM::SIZE,
-    ),
-];
+const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
+    use petri_artifacts_vmm_test::artifacts::*;
+
+    &[
+        meta::<test_vhd::ALPINE_3_23_X64>(KnownTestArtifacts::Alpine323X64Vhd),
+        meta::<test_vhd::ALPINE_3_23_AARCH64>(KnownTestArtifacts::Alpine323Aarch64Vhd),
+        meta::<test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64>(
+            KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
+        ),
+        meta::<test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64>(
+            KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
+        ),
+        meta::<test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64>(
+            KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
+        ),
+        meta::<test_vhd::FREE_BSD_13_2_X64>(KnownTestArtifacts::FreeBsd13_2X64Vhd),
+        meta::<test_iso::FREE_BSD_13_2_X64>(KnownTestArtifacts::FreeBsd13_2X64Iso),
+        meta::<test_vhd::UBUNTU_2404_SERVER_X64>(KnownTestArtifacts::Ubuntu2404ServerX64Vhd),
+        meta::<test_vhd::UBUNTU_2504_SERVER_X64>(KnownTestArtifacts::Ubuntu2504ServerX64Vhd),
+        meta::<test_vhd::UBUNTU_2404_SERVER_AARCH64>(
+            KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
+        ),
+        meta::<test_vhd::WINDOWS_11_ENTERPRISE_AARCH64>(
+            KnownTestArtifacts::Windows11EnterpriseAarch64Vhdx,
+        ),
+        meta::<test_vmgs::VMGS_WITH_BOOT_ENTRY>(KnownTestArtifacts::VmgsWithBootEntry),
+        meta::<test_vmgs::VMGS_WITH_16K_TPM>(KnownTestArtifacts::VmgsWith16kTpm),
+    ]
+};
 
 impl KnownTestArtifacts {
     /// Get the name of the image.
-    pub fn name(self) -> String {
-        format!("{:?}", self)
+    pub fn name(self) -> &'static str {
+        KNOWN_TEST_ARTIFACT_METADATA
+            .iter()
+            .find(|KnownTestArtifactMeta { variant, .. }| *variant == self)
+            .unwrap()
+            .download_name
     }
 
     /// Get the filename of the image.
@@ -157,4 +127,56 @@ impl KnownTestArtifacts {
             .unwrap()
             .size
     }
+
+    /// Get the erased artifact handle for this image.
+    pub fn artifact_handle(self) -> ErasedArtifactHandle {
+        use petri_artifacts_vmm_test::artifacts::*;
+
+        match self {
+            Self::Alpine323X64Vhd => test_vhd::ALPINE_3_23_X64.erase(),
+            Self::Alpine323Aarch64Vhd => test_vhd::ALPINE_3_23_AARCH64.erase(),
+            Self::Gen1WindowsDataCenterCore2022X64Vhd => {
+                test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64.erase()
+            }
+            Self::Gen2WindowsDataCenterCore2022X64Vhd => {
+                test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64.erase()
+            }
+            Self::Gen2WindowsDataCenterCore2025X64Vhd => {
+                test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.erase()
+            }
+            Self::FreeBsd13_2X64Vhd => test_vhd::FREE_BSD_13_2_X64.erase(),
+            Self::FreeBsd13_2X64Iso => test_iso::FREE_BSD_13_2_X64.erase(),
+            Self::Ubuntu2404ServerX64Vhd => test_vhd::UBUNTU_2404_SERVER_X64.erase(),
+            Self::Ubuntu2504ServerX64Vhd => test_vhd::UBUNTU_2504_SERVER_X64.erase(),
+            Self::Ubuntu2404ServerAarch64Vhd => test_vhd::UBUNTU_2404_SERVER_AARCH64.erase(),
+            Self::Windows11EnterpriseAarch64Vhdx => test_vhd::WINDOWS_11_ENTERPRISE_AARCH64.erase(),
+            Self::VmgsWithBootEntry => test_vmgs::VMGS_WITH_BOOT_ENTRY.erase(),
+            Self::VmgsWith16kTpm => test_vmgs::VMGS_WITH_16K_TPM.erase(),
+        }
+    }
+
+    /// Look up a known test artifact by its erased artifact handle.
+    pub fn from_handle(id: ErasedArtifactHandle) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|v| v.artifact_handle() == id)
+    }
+
+    /// All known test artifact variants.
+    const ALL: &[Self] = &[
+        Self::Alpine323X64Vhd,
+        Self::Alpine323Aarch64Vhd,
+        Self::Gen1WindowsDataCenterCore2022X64Vhd,
+        Self::Gen2WindowsDataCenterCore2022X64Vhd,
+        Self::Gen2WindowsDataCenterCore2025X64Vhd,
+        Self::FreeBsd13_2X64Vhd,
+        Self::FreeBsd13_2X64Iso,
+        Self::Ubuntu2404ServerX64Vhd,
+        Self::Ubuntu2504ServerX64Vhd,
+        Self::Ubuntu2404ServerAarch64Vhd,
+        Self::Windows11EnterpriseAarch64Vhdx,
+        Self::VmgsWithBootEntry,
+        Self::VmgsWith16kTpm,
+    ];
 }

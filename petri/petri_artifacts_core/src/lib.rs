@@ -262,9 +262,9 @@ impl<'a> ArtifactResolver<'a> {
     /// Resolve an artifact, returning either a local path or a remote URL.
     ///
     /// The `remote` parameter controls whether a remote URL is acceptable for
-    /// this particular artifact. The resolver-wide policy set via
-    /// [`with_remote_access`](Self::with_remote_access) can further restrict
-    /// this to `LocalOnly`.
+    /// this particular artifact. The resolver's configured remote policy may
+    /// further restrict this request and force the effective access mode to
+    /// `LocalOnly`.
     pub fn require_source<A: ArtifactId>(
         &self,
         handle: ArtifactHandle<A>,
@@ -490,10 +490,10 @@ impl TestArtifactRequirements {
 
     /// Resolve the set of dependencies.
     ///
-    /// Remote access for each artifact is determined by the per-call
-    /// [`RemoteAccess`] flags recorded during collection, as potentially
-    /// overridden by the resolver-wide policy set via
-    /// [`ArtifactResolver::with_remote_access`].
+    /// Remote access for each artifact is determined by the
+    /// [`RemoteAccess`] flags recorded during collection, subject to any
+    /// process-wide override configured via the `PETRI_REMOTE_ARTIFACTS`
+    /// environment variable.
     pub fn resolve(&self, resolver: impl ResolveTestArtifact) -> anyhow::Result<TestArtifacts> {
         let mut failed = String::new();
         let mut resolved = HashMap::new();
