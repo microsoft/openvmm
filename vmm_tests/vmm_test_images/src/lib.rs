@@ -43,23 +43,12 @@ pub enum KnownTestArtifacts {
 
 struct KnownTestArtifactMeta {
     variant: KnownTestArtifacts,
+    handle_fn: fn() -> ErasedArtifactHandle,
     filename: &'static str,
     size: u64,
     download_name: &'static str,
 }
 
-const fn meta<T: IsHostedOnHvliteAzureBlobStore>(
-    variant: KnownTestArtifacts,
-) -> KnownTestArtifactMeta {
-    KnownTestArtifactMeta {
-        variant,
-        filename: T::FILENAME,
-        size: T::SIZE,
-        download_name: T::DOWNLOAD_NAME,
-    }
-}
-
-// linear scan to find entries is OK, given how few entries there are
 const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
     use petri_artifacts_vmm_test::artifacts::*;
 
@@ -90,23 +79,44 @@ const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = {
     ]
 };
 
+const fn meta<T: IsHostedOnHvliteAzureBlobStore>(
+    variant: KnownTestArtifacts,
+) -> KnownTestArtifactMeta {
+    KnownTestArtifactMeta {
+        variant,
+        handle_fn: || petri_artifacts_core::ArtifactHandle::<T>::new().erase(),
+        filename: T::FILENAME,
+        size: T::SIZE,
+        download_name: T::DOWNLOAD_NAME,
+    }
+}
+
 impl KnownTestArtifacts {
-    /// Get the name of the image.
-    pub fn name(self) -> &'static str {
+    fn meta(self) -> &'static KnownTestArtifactMeta {
         KNOWN_TEST_ARTIFACT_METADATA
             .iter()
             .find(|KnownTestArtifactMeta { variant, .. }| *variant == self)
             .unwrap()
-            .download_name
+    }
+
+    /// Get the name of the image.
+    pub fn name(self) -> &'static str {
+        self.meta().download_name
     }
 
     /// Get the filename of the image.
     pub fn filename(self) -> &'static str {
-        KNOWN_TEST_ARTIFACT_METADATA
-            .iter()
-            .find(|KnownTestArtifactMeta { variant, .. }| *variant == self)
-            .unwrap()
-            .filename
+        self.meta().filename
+    }
+
+    /// Get the expected file size of the image.
+    pub fn file_size(self) -> u64 {
+        self.meta().size
+    }
+
+    /// Get the erased artifact handle for this image.
+    pub fn artifact_handle(self) -> ErasedArtifactHandle {
+        (self.meta().handle_fn)()
     }
 
     /// Get the image from its filename.
@@ -119,64 +129,11 @@ impl KnownTestArtifacts {
         )
     }
 
-    /// Get the expected file size of the image.
-    pub fn file_size(self) -> u64 {
-        KNOWN_TEST_ARTIFACT_METADATA
-            .iter()
-            .find(|KnownTestArtifactMeta { variant, .. }| *variant == self)
-            .unwrap()
-            .size
-    }
-
-    /// Get the erased artifact handle for this image.
-    pub fn artifact_handle(self) -> ErasedArtifactHandle {
-        use petri_artifacts_vmm_test::artifacts::*;
-
-        match self {
-            Self::Alpine323X64Vhd => test_vhd::ALPINE_3_23_X64.erase(),
-            Self::Alpine323Aarch64Vhd => test_vhd::ALPINE_3_23_AARCH64.erase(),
-            Self::Gen1WindowsDataCenterCore2022X64Vhd => {
-                test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64.erase()
-            }
-            Self::Gen2WindowsDataCenterCore2022X64Vhd => {
-                test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64.erase()
-            }
-            Self::Gen2WindowsDataCenterCore2025X64Vhd => {
-                test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64.erase()
-            }
-            Self::FreeBsd13_2X64Vhd => test_vhd::FREE_BSD_13_2_X64.erase(),
-            Self::FreeBsd13_2X64Iso => test_iso::FREE_BSD_13_2_X64.erase(),
-            Self::Ubuntu2404ServerX64Vhd => test_vhd::UBUNTU_2404_SERVER_X64.erase(),
-            Self::Ubuntu2504ServerX64Vhd => test_vhd::UBUNTU_2504_SERVER_X64.erase(),
-            Self::Ubuntu2404ServerAarch64Vhd => test_vhd::UBUNTU_2404_SERVER_AARCH64.erase(),
-            Self::Windows11EnterpriseAarch64Vhdx => test_vhd::WINDOWS_11_ENTERPRISE_AARCH64.erase(),
-            Self::VmgsWithBootEntry => test_vmgs::VMGS_WITH_BOOT_ENTRY.erase(),
-            Self::VmgsWith16kTpm => test_vmgs::VMGS_WITH_16K_TPM.erase(),
-        }
-    }
-
     /// Look up a known test artifact by its erased artifact handle.
     pub fn from_handle(id: ErasedArtifactHandle) -> Option<Self> {
-        Self::ALL
+        KNOWN_TEST_ARTIFACT_METADATA
             .iter()
-            .copied()
-            .find(|v| v.artifact_handle() == id)
+            .find(|m| (m.handle_fn)() == id)
+            .map(|m| m.variant)
     }
-
-    /// All known test artifact variants.
-    const ALL: &[Self] = &[
-        Self::Alpine323X64Vhd,
-        Self::Alpine323Aarch64Vhd,
-        Self::Gen1WindowsDataCenterCore2022X64Vhd,
-        Self::Gen2WindowsDataCenterCore2022X64Vhd,
-        Self::Gen2WindowsDataCenterCore2025X64Vhd,
-        Self::FreeBsd13_2X64Vhd,
-        Self::FreeBsd13_2X64Iso,
-        Self::Ubuntu2404ServerX64Vhd,
-        Self::Ubuntu2504ServerX64Vhd,
-        Self::Ubuntu2404ServerAarch64Vhd,
-        Self::Windows11EnterpriseAarch64Vhdx,
-        Self::VmgsWithBootEntry,
-        Self::VmgsWith16kTpm,
-    ];
 }
