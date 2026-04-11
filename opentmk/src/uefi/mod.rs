@@ -18,8 +18,10 @@ fn uefi_main() -> Status {
     log::warn!("TEST_START");
     crate::tests::run_test();
     log::warn!("TEST_END");
-    // Attempt a clean ACPI S5 shutdown; fall back to spinning if it fails.
-    let _ = crate::devices::acpi_shutdown::acpi_shutdown();
+    // Attempt a clean ACPI S5 shutdown. On UEFI this never returns --
+    // it either powers off the VM or spins forever internally.
+    // The loop below is unreachable but satisfies the Status return type.
+    let _ = crate::devices::shutdown::shutdown();
     loop {
         core::hint::spin_loop();
     }

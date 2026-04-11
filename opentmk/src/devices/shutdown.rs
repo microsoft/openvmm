@@ -16,6 +16,7 @@
 //!   to the `sleep_control_reg` from the FADT, which may be an I/O port or
 //!   an MMIO address.
 
+use crate::tmkdefs::AcpiError;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
 
@@ -72,16 +73,16 @@ const SHUTDOWN_SPIN_WAIT_ITERS: u32 = 5_000_000;
 ///
 /// # Errors
 ///
-/// Returns `TmkError::AcpiShutdownFailed` if the shutdown parameters
+/// Returns `TmkError::AcpiError(AcpiError::ShutdownFailed)` if the shutdown parameters
 /// cannot be retrieved from the FADT (non-UEFI targets always error).
 #[cfg(target_os = "uefi")]
-pub fn acpi_shutdown() -> TmkResult<()> {
+pub fn shutdown() -> TmkResult<()> {
     use crate::uefi::acpi_wrap::AcpiSleepMechanism;
     use crate::uefi::acpi_wrap::AcpiTableContext;
 
     let mechanism = AcpiTableContext::get_sleep_mechanism().map_err(|e| {
         log::error!("Failed to get ACPI sleep mechanism: {:?}", e);
-        TmkError::AcpiShutdownFailed
+        TmkError::AcpiError(AcpiError::ShutdownFailed)
     })?;
 
     // WARNING: Trying multiple SLP_TYP values is inherently racy -- a
@@ -171,9 +172,8 @@ fn shutdown_hw_reduced(slp_typ: u16, sleep_reg: &acpi_spec::fadt::GenericAddress
     // SAFETY: sleep_reg points to a valid GenericAddress in FADT memory.
     // We read a single u8 (the addr_space_id field at offset 0), which
     // has no alignment requirements.
-    let addr_space_raw: u8 = unsafe {
-        core::ptr::read_unaligned(sleep_reg as *const GenericAddress as *const u8)
-    };
+    let addr_space_raw: u8 =
+        unsafe { core::ptr::read_unaligned(sleep_reg as *const GenericAddress as *const u8) };
 
     const ADDR_SPACE_SYSTEM_MEMORY: u8 = AddressSpaceId::SystemMemory as u8;
     const ADDR_SPACE_SYSTEM_IO: u8 = AddressSpaceId::SystemIo as u8;
@@ -253,7 +253,10 @@ fn shutdown_hw_reduced(slp_typ: u16, sleep_reg: &acpi_spec::fadt::GenericAddress
             }
         }
         other => {
-            log::error!("Unsupported sleep_control_reg address space: 0x{:02x}", other);
+            log::error!(
+                "Unsupported sleep_control_reg address space: 0x{:02x}",
+                other
+            );
         }
     }
 
@@ -265,7 +268,7 @@ fn shutdown_hw_reduced(slp_typ: u16, sleep_reg: &acpi_spec::fadt::GenericAddress
 
 /// Stub for non-UEFI targets.
 #[cfg(not(target_os = "uefi"))]
-pub fn acpi_shutdown() -> TmkResult<()> {
+pub fn shutdown() -> TmkResult<()> {
     log::error!("ACPI shutdown is only supported in UEFI environments");
-    Err(TmkError::AcpiShutdownFailed)
+    Err(TmkError::AcpiError(AcpiError::ShutdownFailed))
 }

@@ -4,6 +4,7 @@
 //! ACPI table handling for UEFI environment.
 use core::mem::size_of;
 use core::ptr::NonNull;
+use core::sync::atomic::AtomicPtr;
 
 use acpi_spec::Header;
 use acpi_spec::Rsdp;
@@ -17,8 +18,7 @@ use spin::Once;
 use uefi::table::cfg::ACPI2_GUID;
 use zerocopy::FromBytes;
 
-use thiserror::Error;
-
+use crate::tmkdefs::AcpiError;
 use crate::tmkdefs::TmkError;
 use crate::tmkdefs::TmkResult;
 
@@ -40,12 +40,12 @@ impl RsdpParser {
         };
         let rsdp = Rsdp::read_from_bytes(source).map_err(|e| {
             log::error!("Failed to parse RSDP: {:?}", e);
-            TmkError::AcpiError
+            AcpiError::InvalidRsdpStructure
         })?;
 
         if &rsdp.signature != b"RSD PTR " {
             log::error!("Invalid RSDP signature: {:?}", rsdp.signature);
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidRsdpStructure.into());
         }
 
         if rsdp.revision < 2 {
@@ -53,7 +53,7 @@ impl RsdpParser {
                 "Unsupported RSDP revision: {}, expected >= 2",
                 rsdp.revision
             );
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidRsdpStructure.into());
         }
 
         Ok(RsdpParser { rsdp })
@@ -67,10 +67,7 @@ impl RsdpParser {
 
     // Retrieves the XSDT pointer from the RSDP structure.
     fn get_xsdt_ptr(&self) -> TmkResult<NonNull<Header>> {
-        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or_else(|| {
-            log::error!("XSDT pointer in RSDP is null");
-            TmkError::AcpiError
-        })
+        NonNull::new(self.rsdp.xsdt as *mut Header).ok_or_else(|| AcpiError::InvalidXsdt.into())
     }
 
     // Finds the RSDP pointer from the UEFI system table.
@@ -78,8 +75,7 @@ impl RsdpParser {
         let system_table = uefi::table::system_table_raw();
 
         let Some(system_table) = system_table else {
-            log::error!("UEFI system table not available");
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::UefiSystemTableNotFound.into());
         };
 
         // SAFETY: system_table_raw() returns a pointer that was set during UEFI entry
@@ -91,8 +87,7 @@ impl RsdpParser {
         let config_table_ptr = system_table_address.configuration_table;
 
         if config_count == 0 || config_table_ptr.is_null() {
-            log::error!("No UEFI configuration table entries");
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::RsdpNotFound.into());
         }
 
         // SAFETY: The UEFI specification guarantees that configuration_table points to
@@ -107,13 +102,9 @@ impl RsdpParser {
             .map(|entry| entry.vendor_table);
 
         if let Some(rsdp) = rsdp {
-            NonNull::new(rsdp as *mut Rsdp).ok_or_else(|| {
-                log::error!("ACPI2 RSDP pointer is null");
-                TmkError::AcpiError
-            })
+            NonNull::new(rsdp as *mut Rsdp).ok_or_else(|| AcpiError::RsdpNotFound.into())
         } else {
-            log::error!("ACPI2 RSDP not found in UEFI configuration table");
-            Err(TmkError::AcpiError)
+            Err(AcpiError::RsdpNotFound.into())
         }
     }
 }
@@ -127,16 +118,14 @@ impl XSdtParser {
     // signature and length before parsing entries.
     fn new(xsdt: &Header) -> TmkResult<Self> {
         if &xsdt.signature != b"XSDT" {
-            log::error!("Invalid XSDT signature: {:?}", xsdt.signature);
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidXsdtStructure.into());
         }
 
         let sdt_length = xsdt.length.get() as usize;
         let sdt_header_size = size_of::<Header>();
 
         if sdt_length < sdt_header_size {
-            log::error!("XSDT length {} too small", sdt_length);
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidXsdtStructure.into());
         }
 
         let sdt_address = xsdt as *const Header as usize;
@@ -144,11 +133,7 @@ impl XSdtParser {
         let entries_region_size = sdt_length - sdt_header_size;
 
         if entries_region_size % size_of::<u64>() != 0 {
-            log::error!(
-                "XSDT entries region size {} not aligned to 8 bytes",
-                entries_region_size
-            );
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidXsdtStructure.into());
         }
 
         let entries_ptr = sdt_address + sdt_header_size;
@@ -193,20 +178,11 @@ impl XSdtParser {
 }
 
 pub(crate) struct AcpiTableContext {
-    madt: *const Header,
-    _fadt: *const Header,
+    _xsdt: AtomicPtr<Header>,
+    madt: AtomicPtr<Header>,
+    _fadt: AtomicPtr<Header>,
     sleep_mechanism: AcpiSleepMechanism,
 }
-
-// SAFETY: The raw pointers in AcpiTableContext point to ACPI tables in the
-// firmware's reclaim memory region, which is shared (read-only after init).
-// In OpenTMK's baremetal/UEFI context, this memory is never reclaimed or
-// remapped -- it persists for the entire program lifetime (unlike an OS
-// environment where EfiACPIReclaimMemory may be freed after boot). The
-// Once<> wrapper ensures the struct is fully initialized before any
-// concurrent access.
-unsafe impl Send for AcpiTableContext {}
-unsafe impl Sync for AcpiTableContext {}
 
 impl AcpiTableContext {
     pub(crate) fn init() -> TmkResult<()> {
@@ -224,13 +200,14 @@ impl AcpiTableContext {
 
             let fadt = xsdt_parser
                 .find_table_by_signature(&Fadt::SIGNATURE)
-                .ok_or(TmkError::FadtNotFound)?;
+                .ok_or(AcpiError::FadtNotFound)?;
 
             let sleep_mechanism = Self::parse_sleep_mechanism(fadt)?;
 
             let context = AcpiTableContext {
-                madt: madt.as_ptr(),
-                _fadt: fadt.as_ptr(),
+                _xsdt: AtomicPtr::new(xsdt.as_ptr()),
+                madt: AtomicPtr::new(madt.as_ptr()),
+                _fadt: AtomicPtr::new(fadt.as_ptr()),
                 sleep_mechanism,
             };
             Ok(context)
@@ -240,17 +217,18 @@ impl AcpiTableContext {
 
     /// Returns the number of APIC entries found in the MADT table.
     pub(crate) fn get_apic_count_from_madt() -> TmkResult<usize> {
-        let acpi_ctx = ACPI_TABLE_CONTEXT.get().ok_or(TmkError::AcpiError)?;
-        let madt_ptr = NonNull::new(acpi_ctx.madt as *mut Header);
-        let madt_ptr = madt_ptr.ok_or(TmkError::AcpiError)?;
+        let acpi_ctx = ACPI_TABLE_CONTEXT
+            .get()
+            .ok_or(AcpiError::InitializationError)?;
+        let madt_ptr = NonNull::new(acpi_ctx.madt.load(core::sync::atomic::Ordering::Acquire));
+        let madt_ptr = madt_ptr.ok_or(AcpiError::InvalidMadt)?;
         // SAFETY: madt_ptr was stored during init() from the XSDT table walk. The ACPI
         // table memory is in the ACPI reclaim region and remains mapped. The Header
         // at this address is valid and properly aligned per the ACPI specification.
         let madt_table_size: usize = unsafe { madt_ptr.as_ref().length.get() } as usize;
 
         if madt_table_size < size_of::<Header>() {
-            log::error!("MADT table too small: {} bytes", madt_table_size);
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidMadtStructure.into());
         }
 
         // SAFETY: madt_ptr points to a valid MADT in the ACPI reclaim region (stored
@@ -260,11 +238,11 @@ impl AcpiTableContext {
             unsafe { core::slice::from_raw_parts(madt_ptr.as_ptr() as *const u8, madt_table_size) };
         let madt_parser = MadtParser::new(madt_table_bytes).map_err(|e| {
             log::error!("Failed to parse MADT table: {:?}", e);
-            TmkError::AcpiError
+            AcpiError::InvalidMadtStructure
         })?;
         let apic_ids = madt_parser.parse_apic_ids().map_err(|e| {
             log::error!("Failed to parse MADT APIC IDs: {:?}", e);
-            TmkError::AcpiError
+            AcpiError::InvalidMadtStructure
         })?;
 
         let processor_count = apic_ids.iter().filter(|id| id.is_some()).count();
@@ -278,7 +256,9 @@ impl AcpiTableContext {
 
     /// Returns the cached ACPI shutdown mechanism from the FADT.
     pub(crate) fn get_sleep_mechanism() -> TmkResult<AcpiSleepMechanism> {
-        let acpi_ctx = ACPI_TABLE_CONTEXT.get().ok_or(TmkError::AcpiError)?;
+        let acpi_ctx = ACPI_TABLE_CONTEXT
+            .get()
+            .ok_or(AcpiError::InitializationError)?;
         Ok(acpi_ctx.sleep_mechanism.clone())
     }
 
@@ -295,7 +275,7 @@ impl AcpiTableContext {
 
         if fadt_table_size <= size_of::<Header>() {
             log::error!("FADT table has no body (size={})", fadt_table_size);
-            return Err(TmkError::AcpiError);
+            return Err(AcpiError::InvalidFadtStructure.into());
         }
 
         let body_size = fadt_table_size - size_of::<Header>();
@@ -387,7 +367,7 @@ impl AcpiTableContext {
                 pm1a,
                 sleep_addr
             );
-            Err(TmkError::AcpiError)
+            Err(AcpiError::InvalidFadtStructure.into())
         }
     }
 }
@@ -407,35 +387,4 @@ pub(crate) enum AcpiSleepMechanism {
         /// Sleep control register Generic Address.
         sleep_reg: GenericAddress,
     },
-}
-
-#[derive(Error, Debug)]
-#[allow(dead_code)]
-pub(crate) enum AcpiWrapError {
-    #[error("UEFI system table not found")]
-    UefiSystemTableNotFound,
-    #[error("RSDP not found")]
-    RsdpNotFound,
-    #[error("Invalid RSDP structure")]
-    InvalidRsdpStructure,
-    #[error("Invalid XSDT")]
-    InvalidXsdt,
-    #[error("Invalid XSDT structure")]
-    InvalidXsdtStructure,
-    #[error("Invalid MADT structure")]
-    InvalidMadtStructure,
-    #[error("FADT not found")]
-    FadtNotFound,
-    #[error("Invalid FADT structure")]
-    InvalidFadtStructure,
-}
-
-impl From<AcpiWrapError> for TmkError {
-    fn from(err: AcpiWrapError) -> TmkError {
-        log::error!("ACPI error: {:?}", err);
-        match err {
-            AcpiWrapError::FadtNotFound => TmkError::FadtNotFound,
-            _ => TmkError::AcpiError,
-        }
-    }
 }
