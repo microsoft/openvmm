@@ -2,25 +2,5 @@
 # Licensed under the MIT License.
 
 [[pipeline.flowey_hvlite.github]]
-file = ".github/workflows/openvmm-pr.yaml"
-cmd = ["ci", "checkin-gates", "--config=pr"]
-
-[[pipeline.flowey_hvlite.github]]
-file = ".github/workflows/openvmm-pr-release.yaml"
-cmd = ["ci", "checkin-gates", "--config=pr-release"]
-
-[[pipeline.flowey_hvlite.github]]
-file = ".github/workflows/openvmm-ci.yaml"
-cmd = ["ci", "checkin-gates", "--config=ci"]
-
-[[pipeline.flowey_hvlite.github]]
-file = ".github/workflows/openvmm-docs-ci.yaml"
-cmd = ["ci", "build-docs", "--config=ci"]
-
-[[pipeline.flowey_hvlite.github]]
-file = ".github/workflows/openvmm-docs-pr.yaml"
-cmd = ["ci", "build-docs", "--config=pr"]
-
-[[pipeline.flowey_hvlite.ado]]
-file = "ci-flowey/openvmm-pr.yaml"
-cmd = ["ci", "checkin-gates", "--config=pr"]
+file = ".github/workflows/openvmm-hello-world.yaml"
+cmd = ["ci", "hello-world"]

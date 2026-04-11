@@ -70,6 +70,13 @@ pub fn windows_arm_self_hosted_baremetal() -> GhRunner {
     ])
 }
 
+pub fn linux_intel_dom0_1es() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "1ES.Pool=openvmm-gh-intel-westus3-dom0".to_string(),
+    ])
+}
+
 pub fn windows_tdx_self_hosted_baremetal() -> GhRunner {
     GhRunner::SelfHosted(vec![
         "self-hosted".to_string(),

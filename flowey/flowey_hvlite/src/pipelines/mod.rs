@@ -10,6 +10,7 @@ pub mod build_igvm;
 pub mod build_reproducible;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
+pub mod hello_world;
 pub mod restore_packages;
 pub mod vmm_tests_run;
 
@@ -42,6 +43,7 @@ pub enum OpenvmmPipelines {
 pub enum OpenvmmPipelinesCi {
     CheckinGates(checkin_gates::CheckinGatesCli),
     BuildDocs(build_docs::BuildDocsCli),
+    HelloWorld(hello_world::HelloWorldCli),
 }
 
 impl IntoPipeline for OpenvmmPipelines {
@@ -61,6 +63,7 @@ impl IntoPipeline for OpenvmmPipelines {
             OpenvmmPipelines::Ci(cmd) => match cmd {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
                 OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
+                OpenvmmPipelinesCi::HelloWorld(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
             OpenvmmPipelines::VmmTestsRun(cmd) => cmd.into_pipeline(pipeline_hint),
