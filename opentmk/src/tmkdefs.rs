@@ -228,6 +228,12 @@ pub enum TmkError {
     /// Returned when the operation is not implemented.
     #[error("not implemented")]
     NotImplemented,
+    /// Returned when the FADT table is not found in the XSDT.
+    #[error("FADT not found")]
+    FadtNotFound,
+    /// Returned when the ACPI shutdown operation fails.
+    #[error("ACPI shutdown failed")]
+    AcpiShutdownFailed,
 }
 
 /// Result type alias for TMK operations using `TmkError`.

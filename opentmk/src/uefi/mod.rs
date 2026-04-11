@@ -18,6 +18,8 @@ fn uefi_main() -> Status {
     log::warn!("TEST_START");
     crate::tests::run_test();
     log::warn!("TEST_END");
+    // Attempt a clean ACPI S5 shutdown; fall back to spinning if it fails.
+    let _ = crate::devices::acpi_shutdown::acpi_shutdown();
     loop {
         core::hint::spin_loop();
     }

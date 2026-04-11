@@ -3,4 +3,5 @@
 
 //! Device modules for OpenTMK.
 //! This module includes implementations for various virtual devices used in OpenTMK.
+pub mod acpi_shutdown;
 pub mod tpm;
