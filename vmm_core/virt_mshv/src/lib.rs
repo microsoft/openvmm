@@ -106,6 +106,10 @@ impl virt::Hypervisor for LinuxMshv {
     type Partition = MshvPartition;
     type Error = Error;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {}
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,

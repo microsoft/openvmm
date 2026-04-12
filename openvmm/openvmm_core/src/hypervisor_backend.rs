@@ -72,11 +72,11 @@ impl ResolvedHypervisorBackend {
         Self(Box::new(move |driver_source, cfg, shared_memory| {
             Box::pin(async move {
                 let mut hv = hypervisor;
-                let platform_gsiv = virt::Hypervisor::platform_gsiv(&hv);
+                let platform_info = virt::Hypervisor::platform_info(&hv);
                 InitializedVm::new_with_hypervisor(
                     driver_source,
                     &mut hv,
-                    platform_gsiv,
+                    platform_info,
                     cfg,
                     shared_memory,
                 )

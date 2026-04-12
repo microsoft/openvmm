@@ -109,7 +109,7 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
         state
             .for_each_test(async |state, test| match hv {
                 #[cfg(target_os = "linux")]
-                HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm, test).await,
+                HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm::new()?, test).await,
                 #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
                 HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv, test).await,
                 #[cfg(target_os = "linux")]

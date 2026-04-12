@@ -94,6 +94,9 @@ pub enum InvalidTopology {
     /// A PPI INTID is not in the valid range (16..32).
     #[error("PPI INTID {0} is not in the valid range 16..32")]
     InvalidPpiIntid(u32),
+    /// The GIC interrupt count is invalid.
+    #[error("gic_nr_irqs {0} must be 64..=992 and a multiple of 32")]
+    InvalidGicNrIrqs(u32),
     /// Failed to query the topology information from Device Tree.
     #[error("failed to query memory topology from device tree")]
     StdIoError(#[source] std::io::Error),

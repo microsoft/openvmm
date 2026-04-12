@@ -5470,7 +5470,9 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "fs-err",
  "hypervisor_resources",
+ "kvm",
  "openvmm_core",
  "virt_hvf",
  "virt_kvm",

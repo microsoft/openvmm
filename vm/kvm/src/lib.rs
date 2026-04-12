@@ -309,6 +309,18 @@ impl AsFd for Kvm {
     }
 }
 
+impl From<File> for Kvm {
+    fn from(fd: File) -> Self {
+        Self(fd)
+    }
+}
+
+impl From<Kvm> for File {
+    fn from(kvm: Kvm) -> Self {
+        kvm.0
+    }
+}
+
 #[repr(C)]
 #[cfg(target_arch = "x86_64")]
 struct Cpuid {

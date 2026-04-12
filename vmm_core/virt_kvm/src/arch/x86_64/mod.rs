@@ -93,7 +93,28 @@ use zerocopy::IntoBytes;
 const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
 #[derive(Debug)]
-pub struct Kvm;
+pub struct Kvm {
+    kvm: kvm::Kvm,
+}
+
+impl Kvm {
+    /// Creates a new KVM hypervisor instance.
+    pub fn new() -> Result<Self, KvmError> {
+        Ok(Self {
+            kvm: kvm::Kvm::new()?,
+        })
+    }
+
+    /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
+    ///
+    /// On x86_64, the fd is not retained; it will be re-opened in
+    /// `new_partition`. This exists for API symmetry with the aarch64
+    /// implementation.
+    pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
+        let kvm = kvm::Kvm::from(file);
+        Ok(Self { kvm })
+    }
+}
 
 /// CPUID leaf and flag for GB page support.
 const GB_PAGE_LEAF: u32 = 0x80000001;
@@ -109,6 +130,10 @@ impl virt::Hypervisor for Kvm {
     type ProtoPartition<'a> = KvmProtoPartition<'a>;
     type Partition = KvmPartition;
     type Error = KvmError;
+
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {}
+    }
 
     fn new_partition<'a>(
         &mut self,

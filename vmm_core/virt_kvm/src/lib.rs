@@ -56,6 +56,8 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("misaligned gic base address")]
     Misaligned,
+    #[error("host does not support GICv2 or GICv3")]
+    NoGic,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[cfg(guest_arch = "x86_64")]
