@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+mod duplicate_deps;
 mod lints;
 mod rustfmt;
 mod unused_deps;
@@ -56,6 +57,7 @@ enum PassName {
     Rustfmt,
     Lints,
     UnusedDeps,
+    DuplicateDeps,
     VerifyFuzzers,
     VerifyFlowey,
 }
@@ -95,6 +97,7 @@ impl Xtask for Fmt {
                     PassName::Rustfmt,
                     PassName::Lints,
                     PassName::UnusedDeps,
+                    PassName::DuplicateDeps,
                     PassName::VerifyFuzzers,
                     PassName::VerifyFlowey,
                 ]
@@ -123,6 +126,9 @@ impl Xtask for Fmt {
                         }),
                         PassName::UnusedDeps => wrapper(&ctx, name, {
                             move |ctx| unused_deps::UnusedDeps { fix: ctx.fix }.run(ctx.ctx)
+                        }),
+                        PassName::DuplicateDeps => wrapper(&ctx, name, {
+                            move |ctx| duplicate_deps::DuplicateDeps.run(ctx)
                         }),
                     }
                 })

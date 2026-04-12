@@ -516,7 +516,7 @@ mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
 mshv-bindings = "0.6.0"
 mshv-ioctls = "0.6.0"
-nix = { version = "0.30.1", default-features = false }
+nix = { version = "0.31.2", default-features = false }
 ntapi = "0.4"
 object = { version = "0.37.3", default-features = false }
 once_cell = "1.7"
@@ -542,7 +542,7 @@ roxmltree = "0.20.0"
 rsa = "0.9.10"
 rusqlite = "0.37"
 rustc-hash = "2.1.1"
-rustyline = "17"
+rustyline = "18"
 seccompiler = "0.5"
 serde = { version = "1.0.185", default-features = false }
 serde_json = { version = "1.0", default-features = false }
@@ -654,7 +654,12 @@ overflow-checks = false
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
 bitvec = { git = "https://github.com/smalis-msft/bitvec", branch = "set-aliased-previous-val" }
 # Pending <https://github.com/influxdata/pbjson/pull/94>
-pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
+# Also includes base64 0.13 -> 0.22 upgrade to eliminate duplicate crate version.
+pbjson = { git = "https://github.com/justus-camp-microsoft/pbjson", branch = "main" }
+pbjson-build = { git = "https://github.com/justus-camp-microsoft/pbjson", branch = "main" }
+pbjson-types = { git = "https://github.com/justus-camp-microsoft/pbjson", branch = "main" }
+# Bump nix 0.30 -> 0.31 to unify with elfcore's nix dep and eliminate duplicate.
+gptman = { git = "https://github.com/justus-camp-microsoft/gptman", branch = "nix-0.31" }
 
 [workspace.lints.rust]
 # Lint groups need a priority lower than individual lints so they get applied first.
