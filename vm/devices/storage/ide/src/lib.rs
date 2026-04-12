@@ -422,7 +422,10 @@ impl Channel {
         // Now that we know what the IDE command is, disambiguate between
         // 28-bit LBA and 48-bit LBA
         let cmd = eint13_cmd.command;
-        if cmd == IdeCommand::READ_DMA_EXT || cmd == IdeCommand::WRITE_DMA_EXT {
+        if cmd == IdeCommand::READ_DMA_EXT
+            || cmd == IdeCommand::WRITE_DMA_EXT
+            || cmd == IdeCommand::WRITE_DMA_FUA_EXT
+        {
             // 48-bit LBA, high 24 bits of logical block address
             self.write_drive_register(
                 DriveRegister::LbaLow,
