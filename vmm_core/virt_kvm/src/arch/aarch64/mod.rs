@@ -435,9 +435,6 @@ impl virt::Processor for KvmProcessor<'_> {
                     kvm::Exit::Shutdown => {
                         return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                     }
-                    kvm::Exit::Eoi { irq } => {
-                        dev.handle_eoi(irq.into());
-                    }
                     kvm::Exit::InternalError { error, .. } => {
                         return Err(dev.fatal_error(KvmRunVpError::InternalError(error).into()));
                     }
