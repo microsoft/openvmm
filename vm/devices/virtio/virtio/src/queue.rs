@@ -96,10 +96,11 @@ enum QueueGetWorkInner {
     Packed(#[inspect(flatten)] PackedQueueGetWork),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(tag = "type")]
 enum QueueCompleteWorkInner {
-    Split(SplitQueueCompleteWork),
-    Packed(PackedQueueCompleteWork),
+    Split(#[inspect(flatten)] SplitQueueCompleteWork),
+    Packed(#[inspect(flatten)] PackedQueueCompleteWork),
 }
 
 #[derive(Debug, Copy, Clone, Default, inspect::Inspect)]
@@ -381,8 +382,9 @@ impl QueueCoreGetWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct QueueCoreCompleteWork {
+    #[inspect(flatten)]
     inner: QueueCompleteWorkInner,
 }
 

@@ -235,6 +235,7 @@ pub mod queue {
     use super::u32_le;
     use super::u64_le;
     use bitfield_struct::bitfield;
+    use inspect::Inspect;
 
     use zerocopy::FromBytes;
     use zerocopy::Immutable;
@@ -283,6 +284,7 @@ pub mod queue {
     pub const AVAIL_OFFSET_RING: u64 = 4;
     pub const AVAIL_ELEMENT_SIZE: u64 = size_of::<u16>() as u64;
 
+    #[derive(Inspect)]
     #[bitfield(u16)]
     pub struct AvailableFlags {
         pub no_interrupt: bool,
@@ -360,7 +362,7 @@ pub mod queue {
     /// virtqueues.
     ///
     /// Reference: virtio spec §2.8.10, "Event Suppression Structure Layout".
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, PartialEq, Eq, Inspect)]
     #[repr(u8)]
     pub enum EventSuppressionFlags {
         /// `RING_EVENT_FLAGS_ENABLE` (0x0) — events are enabled; the device/driver
