@@ -263,3 +263,148 @@ async fn test_gdma_reconfig_vf(driver: DefaultDriver) {
         "vf_reconfiguration_pending should remain true after deregister_device"
     );
 }
+
+#[async_test]
+async fn test_take_device(driver: DefaultDriver) {
+    let mem = DeviceTestMemory::new(128, false, "test_take_device");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let mem_dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_conn, mem_dma_client);
+    let device_dma_client = device.dma_client();
+    let buffer = device_dma_client
+        .allocate_dma_buffer(6 * PAGE_SIZE)
+        .unwrap();
+
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
+        .await
+        .unwrap();
+
+    assert!(
+        gdma.try_device().is_some(),
+        "try_device should return Some before take"
+    );
+
+    assert!(
+        gdma.take_device().is_some(),
+        "take_device should return Some the first time"
+    );
+
+    assert!(
+        gdma.try_device().is_none(),
+        "try_device should return None after take"
+    );
+
+    assert!(
+        gdma.take_device().is_none(),
+        "take_device should return None the second time"
+    );
+}
+
+#[async_test]
+#[should_panic(expected = "device has been taken")]
+async fn test_device_panics_after_take(driver: DefaultDriver) {
+    let mem = DeviceTestMemory::new(128, false, "test_device_panics");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
+    let dma_client = device.dma_client();
+    let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
+
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
+        .await
+        .unwrap();
+
+    let _ = gdma.take_device();
+    // gdma.device() should panic because the device has been taken.
+    let _ = gdma.device();
+}
+
+#[async_test]
+async fn test_mana_shutdown_with_stale_vport(driver: DefaultDriver) {
+    use crate::mana::ManaDevice;
+
+    let mem = DeviceTestMemory::new(128, false, "test_mana_shutdown_stale");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
+
+    let mana = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+
+    // Create a vport which holds an Arc<Inner> reference.
+    let vport = mana.new_vport(0, None, mana.dev_config()).await.unwrap();
+
+    // shutdown() should succeed, and not panic, even though a Vport still holds a reference.
+    let (result, _device) = mana.shutdown().await;
+    assert!(result.is_ok(), "shutdown should succeed");
+
+    let dma_result = vport.dma_client().await;
+    assert!(
+        dma_result.is_err(),
+        "dma_client on stale vport should return Err, not panic"
+    );
+}
+
+#[async_test]
+async fn test_mana_save_with_stale_vport(driver: DefaultDriver) {
+    use crate::mana::ManaDevice;
+
+    let mem = DeviceTestMemory::new(128, false, "test_mana_save_stale");
+    let msi_conn = MsiConnection::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        mem.guest_memory(),
+        msi_conn.target(),
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_conn, dma_client);
+
+    let mana = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+
+    // Create a vport which holds an Arc<Inner> reference.
+    let vport = mana.new_vport(0, None, mana.dev_config()).await.unwrap();
+
+    // save() should succeed even though a Vport still holds a reference.
+    let (result, _device) = mana.save().await;
+    assert!(result.is_ok(), "save should succeed");
+
+    let dma_result = vport.dma_client().await;
+    assert!(
+        dma_result.is_err(),
+        "dma_client on stale vport should return Err, not panic"
+    );
+}
