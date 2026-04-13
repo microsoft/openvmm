@@ -21,7 +21,7 @@ jobs:
   displayName: clippy [x64-linux-musl, misc nostd], unit tests [x64-linux-musl]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -269,7 +269,7 @@ jobs:
   displayName: clippy [macos], unit tests [x64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -510,7 +510,7 @@ jobs:
   displayName: clippy [x64-windows], unit tests [x64-windows]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -738,7 +738,7 @@ jobs:
   displayName: build openhcl [x64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -1141,7 +1141,7 @@ jobs:
   displayName: build openhcl [aarch64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -1443,7 +1443,7 @@ jobs:
   displayName: build artifacts [x64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -1782,7 +1782,7 @@ jobs:
   displayName: build artifacts [aarch64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -2069,7 +2069,7 @@ jobs:
   displayName: build artifacts (for VMM tests) [x64-windows]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -2345,7 +2345,7 @@ jobs:
   displayName: run vmm-tests [x64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn:
   - job10
@@ -2564,7 +2564,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-amd]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn:
   - job10
@@ -2819,7 +2819,7 @@ jobs:
   displayName: run vmm-tests [x64-windows-intel]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn:
   - job10
@@ -3074,7 +3074,7 @@ jobs:
   displayName: build artifacts (not for VMM tests) [x64-windows]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -3274,7 +3274,7 @@ jobs:
   displayName: build artifacts (for VMM tests) [aarch64-windows]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -3545,7 +3545,7 @@ jobs:
   displayName: build artifacts (not for VMM tests) [aarch64-windows]
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -3741,7 +3741,7 @@ jobs:
   displayName: xtask fmt (linux)
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))
@@ -3902,7 +3902,7 @@ jobs:
   displayName: xtask fmt (windows)
   pool:
     demands:
-    - 1ES.ImageOverride -equals win-amd64
+    - ImageOverride -equals win-amd64
     name: openvmm-ado-intel-centralus
   dependsOn:
   - job2
@@ -4055,7 +4055,7 @@ jobs:
   displayName: quick check [fmt, clippy x64-linux]
   pool:
     demands:
-    - 1ES.ImageOverride -equals ubuntu2404-amd64-256gb
+    - ImageOverride -equals ubuntu2404-amd64-256gb
     name: openvmm-ado-intel-centralus
   dependsOn: []
   condition: and(succeeded(), not(canceled()))

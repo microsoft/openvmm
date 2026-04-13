@@ -11,7 +11,7 @@ pub const INTEL_POOL: &str = "openvmm-ado-intel-centralus";
 fn intel_pool_with_image(image: &str) -> AdoPool {
     AdoPool {
         name: INTEL_POOL.into(),
-        demands: vec![format!("1ES.ImageOverride -equals {image}")],
+        demands: vec![format!("ImageOverride -equals {image}")],
     }
 }
 
