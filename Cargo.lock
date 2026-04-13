@@ -1013,6 +1013,7 @@ version = "0.0.0"
 dependencies = [
  "hex",
  "openssl",
+ "openssl_kdf",
  "thiserror 2.0.16",
  "tracing",
  "wchar",
@@ -8247,6 +8248,8 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "base64-serde",
+ "constant_time_eq",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -8257,8 +8260,6 @@ dependencies = [
  "guid",
  "mesh",
  "openhcl_attestation_protocol",
- "openssl",
- "openssl_kdf",
  "pal_async",
  "serde",
  "serde_json",
