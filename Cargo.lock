@@ -5389,7 +5389,6 @@ dependencies = [
  "unix_socket",
  "video_core",
  "virt_whp",
- "virtio",
  "virtio_resources",
  "vm_manifest_builder",
  "vm_resource",

@@ -1465,25 +1465,35 @@ async fn vm_config_from_command_line(
 
         use crate::cli_args::VhostUserDeviceTypeCli;
         let resource: Resource<VirtioDeviceHandle> = match vhost_cli.device_type {
-            VhostUserDeviceTypeCli::Fs { ref tag } => {
-                virtio_resources::vhost_user::VhostUserFsHandle {
-                    socket: stream.into(),
-                    tag: tag.clone(),
-                }
-                .into_resource()
-            }
-            VhostUserDeviceTypeCli::Blk => virtio_resources::vhost_user::VhostUserDeviceHandle {
+            VhostUserDeviceTypeCli::Fs {
+                ref tag,
+                num_queues,
+                queue_size,
+            } => virtio_resources::vhost_user::VhostUserFsHandle {
                 socket: stream.into(),
-                device_id: virtio::spec::VirtioDeviceType::BLK.0,
+                tag: tag.clone(),
+                num_queues,
+                queue_size,
             }
             .into_resource(),
-            VhostUserDeviceTypeCli::Other { device_id } => {
-                virtio_resources::vhost_user::VhostUserDeviceHandle {
-                    socket: stream.into(),
-                    device_id,
-                }
-                .into_resource()
+            VhostUserDeviceTypeCli::Blk {
+                num_queues,
+                queue_size,
+            } => virtio_resources::vhost_user::VhostUserBlkHandle {
+                socket: stream.into(),
+                num_queues,
+                queue_size,
             }
+            .into_resource(),
+            VhostUserDeviceTypeCli::Other {
+                device_id,
+                ref queue_sizes,
+            } => virtio_resources::vhost_user::VhostUserGenericHandle {
+                socket: stream.into(),
+                device_id,
+                queue_sizes: queue_sizes.clone(),
+            }
+            .into_resource(),
         };
         if let Some(pcie_port) = &vhost_cli.pcie_port {
             pcie_devices.push(PcieDeviceConfig {
