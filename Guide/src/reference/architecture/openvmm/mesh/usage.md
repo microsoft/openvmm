@@ -15,7 +15,10 @@ process—mesh handles it.
 This pattern shows up everywhere. The VM worker sends commands to device
 emulators. The diagnostics server sends RPCs to the VM worker. Device
 workers in child processes receive I/O requests from the main process.
-All of these use the same mesh channel types.
+All of these use the same mesh channel types. (When we say "child
+process" here, we mean a separate OS process forked from the same
+binary — not a separate executable. The parent chooses which channel
+endpoints and resources to pass to each child.)
 
 To see how this works, let's build a simple disk controller that accepts
 read and write commands. We'll start with the basics and build up to the
@@ -180,6 +183,11 @@ a future for the response. `.call_failable()` does the same for
 `FailableRpc`, combining the channel error and application error into a
 single `RpcError`.
 
+`Sender<T>` can be cloned, making channels multi-producer: multiple
+components can hold clones of the same sender and send messages to a
+single receiver. The channel stays open until _all_ sender clones are
+dropped.
+
 ### Fire-and-forget
 
 `send()` is also available when you don't need a response:
@@ -196,10 +204,12 @@ and events but not for commands where you need confirmation.
 ### Backpressure
 
 mesh channels are **unbounded**: `send()` never blocks, and messages
-queue in memory until the receiver consumes them. This is fine when
-the receiver processes messages at least as fast as the sender produces
-them (which is the common case for RPC-style usage, where the caller
-awaits a response before sending the next request).
+queue in memory until the receiver consumes them. There is no built-in
+bounded channel currently; this may be added in the future. Unbounded
+channels are fine when the receiver processes messages at least as fast
+as the sender produces them (which is the common case for RPC-style
+usage, where the caller awaits a response before sending the next
+request).
 
 If you have a producer that can outrun its consumer—e.g., streaming
 data—use `mesh::pipe()` instead, which provides backpressure via
@@ -246,8 +256,11 @@ channel types for specific situations.
 
 ### Oneshot
 
-For transferring a single value, `mesh::oneshot()` is lighter than a full
-channel:
+For transferring a single value, `mesh::oneshot()` is lighter than a
+full channel — it has no queue, no cloning (single producer, single
+consumer), and less internal bookkeeping. It also makes the intent
+explicit: the type system ensures exactly one value is sent, so the
+compiler catches accidental reuse:
 
 ```rust,ignore
 let (tx, rx) = mesh::oneshot::<DiskInfo>();

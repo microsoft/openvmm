@@ -46,7 +46,9 @@ This local/remote distinction is invisible to the channel layer above.
 Channels hold a `Port`, and the port decides at send time whether to copy
 the message in memory or serialize it to the wire. This is why code that
 uses `Sender<T>` / `Receiver<T>` doesn't change when a component moves
-to another process.
+to another process. Note that the transition to port-backed mode is
+one-way: a channel that has been promoted to use a port stays in that
+mode even if both ends later reside in the same process.
 
 ### Port mobility
 
@@ -137,7 +139,8 @@ serialized messages and resources between processes:
 There are two ways a process can join a mesh:
 
 **Child process launch** (`mesh_process`). The parent spawns a child
-process and hands it an invitation via an environment variable. This is
+process from the same binary and hands it an invitation via an
+environment variable (the child is not a separate executable). This is
 the model used by OpenVMM and OpenHCL for their worker processes — the
 parent controls what the child can access by choosing which channel
 endpoints and resources to include in the launch parameters. On Unix,
@@ -185,7 +188,10 @@ it can only interact with ports it was explicitly given.
 bidirectional byte stream — a TCP connection, a Unix socket, a Windows
 named pipe, or a vsock/hvsock connection. It does not support OS
 resource transfer (no file descriptors or handles), since the
-underlying stream may not support it (e.g., TCP across machines).
+underlying stream may not support it (e.g., TCP across machines). If a
+message containing OS resources is accidentally sent, the resources are
+silently dropped and the affected port becomes stuck — avoid sending
+OS resources over a point-to-point mesh.
 
 This is a separate mechanism from the multi-process mesh described
 above. It's used when two processes need mesh channels but aren't in a
