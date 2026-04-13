@@ -203,7 +203,7 @@ pub fn github_yaml(
                         "{{LINUX_INSTALL_DEPS}}",
                         match platform {
                             FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux) => {
-                                "sudo tdnf install -y gcc"
+                                "sudo tdnf install -y gcc glibc-devel"
                             }
                             FlowPlatform::Linux(FlowPlatformLinuxDistro::Fedora) => {
                                 "sudo dnf install -y gcc"
