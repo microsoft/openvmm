@@ -306,7 +306,7 @@ impl VirtioTransportCore {
         if !self.device_status.driver_ok() && new_status.driver_ok() {
             self.install_doorbells(ops);
 
-            let features = self.driver_feature.clone();
+            let features = self.driver_feature;
             let queues: Vec<_> = self
                 .queues
                 .iter()
@@ -354,7 +354,7 @@ impl VirtioTransportCore {
     /// `ChangeDeviceState::start()` implementation.
     pub fn start(&mut self, ops: &mut dyn TransportOps) {
         if self.device_status.driver_ok() {
-            let features = self.driver_feature.clone();
+            let features = self.driver_feature;
             let mut queues = Vec::new();
             for (i, qd) in self.queues.iter_mut().enumerate() {
                 if !qd.params.enable {

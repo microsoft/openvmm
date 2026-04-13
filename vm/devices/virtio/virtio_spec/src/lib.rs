@@ -37,8 +37,8 @@ pub struct VirtioDeviceFeatures {
     _reserved1: u8,
     pub ring_indirect_desc: bool, // VIRTIO_F_INDIRECT_DESC (bit 28)
     pub ring_event_idx: bool,     // VIRTIO_F_EVENT_IDX (bit 29)
-    #[bits(2)]
-    _reserved2: u8,
+    pub vhost_user_protocol_features: bool, // VHOST_USER_F_PROTOCOL_FEATURES (bit 30)
+    _reserved2: bool,
     // Bank 1 (bits 32-63)
     pub version_1: bool,         // VIRTIO_F_VERSION_1 (bit 32)
     pub access_platform: bool,   // VIRTIO_F_ACCESS_PLATFORM (bit 33)
