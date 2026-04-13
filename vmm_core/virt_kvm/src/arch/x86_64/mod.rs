@@ -106,10 +106,6 @@ impl Kvm {
     }
 
     /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
-    ///
-    /// On x86_64, the fd is not retained; it will be re-opened in
-    /// `new_partition`. This exists for API symmetry with the aarch64
-    /// implementation.
     pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
         let kvm = kvm::Kvm::from(file);
         Ok(Self { kvm })
