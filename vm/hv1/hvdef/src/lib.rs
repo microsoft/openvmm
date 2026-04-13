@@ -26,6 +26,7 @@ pub const HV_PAGE_SHIFT: u64 = 12;
 
 pub const HV_PARTITION_ID_SELF: u64 = u64::MAX;
 pub const HV_VP_INDEX_SELF: u32 = 0xfffffffe;
+pub const HV_ANY_VP: u32 = 0xffffffff;
 
 pub const HV_CPUID_FUNCTION_VERSION_AND_FEATURES: u32 = 0x00000001;
 pub const HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION: u32 = 0x40000000;
@@ -306,6 +307,7 @@ open_enum! {
         HvCallGetSystemProperty = 0x007b,
         HvCallRetargetDeviceInterrupt = 0x007e,
         HvCallNotifyPartitionEvent = 0x0087,
+        HvCallRegisterInterceptResult = 0x0091,
         HvCallAssertVirtualInterrupt = 0x0094,
         HvCallStartVirtualProcessor = 0x0099,
         HvCallGetVpIndexFromApicId = 0x009A,
@@ -1264,6 +1266,51 @@ pub mod hypercall {
         pub access_type_mask: u32,
         pub intercept_type: HvInterceptType,
         pub intercept_parameters: HvInterceptParameters,
+    }
+
+    /// Input for [`HvCallRegisterInterceptResult`] with CPUID intercept type.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct RegisterInterceptResultCpuid {
+        pub partition_id: u64,
+        pub vp_index: u32,
+        pub intercept_type: HvInterceptType,
+        pub parameters: HvRegisterX64CpuidResultParameters,
+        /// Explicit tail padding (struct alignment is 8 due to partition_id).
+        pub _reserved: u32,
+    }
+
+    /// CPUID intercept result parameters.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct HvRegisterX64CpuidResultParameters {
+        pub input: HvRegisterX64CpuidResultParametersInput,
+        pub result: HvRegisterX64CpuidResultParametersOutput,
+    }
+
+    /// Input portion of CPUID intercept result parameters.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct HvRegisterX64CpuidResultParametersInput {
+        pub eax: u32,
+        pub ecx: u32,
+        pub subleaf_specific: u8,
+        pub always_override: u8,
+        pub padding: u16,
+    }
+
+    /// Output portion of CPUID intercept result parameters.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct HvRegisterX64CpuidResultParametersOutput {
+        pub eax: u32,
+        pub eax_mask: u32,
+        pub ebx: u32,
+        pub ebx_mask: u32,
+        pub ecx: u32,
+        pub ecx_mask: u32,
+        pub edx: u32,
+        pub edx_mask: u32,
     }
 
     #[repr(C)]

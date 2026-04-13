@@ -111,19 +111,19 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_xsave(&mut self, _value: &vp::Xsave) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_apic(&mut self, _value: &vp::Apic) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn xcr(&mut self) -> Result<vp::Xcr0, Self::Error> {
@@ -215,40 +215,40 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn synic_timers(&mut self) -> Result<vp::SynicTimers, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_message_queues(&mut self) -> Result<vp::SynicMessageQueues, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_message_queues(
         &mut self,
         _value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_message_page(&mut self) -> Result<vp::SynicMessagePage, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_event_flags_page(&mut self) -> Result<vp::SynicEventFlagsPage, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_event_flags_page(
         &mut self,
         _value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 }

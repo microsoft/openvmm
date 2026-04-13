@@ -232,7 +232,6 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
         // Build topology CPUID leaves.
-        // TODO: actually apply these to the partition's CPUID results.
         let mut cpuid_leaves: Vec<virt::CpuidLeaf> = config.cpuid.to_vec();
         virt::x86::topology::topology_cpuid(
             self.config.processor_topology,
@@ -246,14 +245,58 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         )
         .map_err(Error::TopologyCpuid)?;
 
+        let cpuid = virt::CpuidLeafSet::new(cpuid_leaves);
+
+        // Apply CPUID overrides partition-wide.
+        // The hypervisor handles per-VP APIC ID fixups in topology leaves
+        // automatically.
+        for leaf in cpuid.leaves().iter() {
+            let input = hvdef::hypercall::RegisterInterceptResultCpuid {
+                partition_id: 0, // overwritten by kernel
+                vp_index: hvdef::HV_ANY_VP,
+                intercept_type: hvdef::hypercall::HvInterceptType::HvInterceptTypeX64Cpuid,
+                parameters: hvdef::hypercall::HvRegisterX64CpuidResultParameters {
+                    input: hvdef::hypercall::HvRegisterX64CpuidResultParametersInput {
+                        eax: leaf.function,
+                        ecx: leaf.index.unwrap_or(0),
+                        subleaf_specific: u8::from(leaf.index.is_some()),
+                        always_override: 1,
+                        padding: 0,
+                    },
+                    result: hvdef::hypercall::HvRegisterX64CpuidResultParametersOutput {
+                        eax: leaf.result[0],
+                        eax_mask: leaf.mask[0],
+                        ebx: leaf.result[1],
+                        ebx_mask: leaf.mask[1],
+                        ecx: leaf.result[2],
+                        ecx_mask: leaf.mask[2],
+                        edx: leaf.result[3],
+                        edx_mask: leaf.mask[3],
+                    },
+                },
+                _reserved: 0,
+            };
+            let mut args = mshv_bindings::mshv_root_hvcall {
+                code: hvdef::HypercallCode::HvCallRegisterInterceptResult.0,
+                in_sz: size_of_val(&input) as u16,
+                in_ptr: std::ptr::addr_of!(input) as u64,
+                ..Default::default()
+            };
+            self.vmfd.hvcall(&mut args).map_err(Error::RegisterCpuid)?;
+        }
+
         // Get caps via cpuid
         let caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
             &mut |function, index| {
-                self.vps[0]
-                    .vcpufd
-                    .get_cpuid_values(function, index, 0, 0)
-                    .expect("cpuid should not fail")
+                cpuid.result(
+                    function,
+                    index,
+                    &self.vps[0]
+                        .vcpufd
+                        .get_cpuid_values(function, index, 0, 0)
+                        .expect("cpuid should not fail"),
+                )
             },
         )
         .map_err(Error::Capabilities)?;
@@ -268,6 +311,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             gsi_states: Mutex::new(Box::new([irqfd::GsiState::Unallocated; irqfd::NUM_GSIS])),
             caps,
             synic_ports: Default::default(),
+            cpuid,
         });
 
         let partition = MshvPartition {
@@ -289,23 +333,29 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     }
 }
 
-// TODO: remove these workarounds when mshv-ioctl implements the Debug trait
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct MshvPartition {
+    #[inspect(flatten)]
     inner: Arc<MshvPartitionInner>,
+    #[inspect(skip)]
     synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 struct MshvPartitionInner {
+    #[inspect(skip)]
     vmfd: VmFd,
+    #[inspect(skip)]
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
+    #[inspect(skip)]
     vps: Vec<MshvVpInner>,
     irq_routes: virt::irqcon::IrqRoutes,
+    #[inspect(skip)]
     gsi_states: Mutex<Box<[irqfd::GsiState; irqfd::NUM_GSIS]>>,
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
+    cpuid: virt::CpuidLeafSet,
 }
 
 #[derive(Debug)]
@@ -1127,6 +1177,8 @@ pub enum Error {
     Register(#[source] MshvError),
     #[error("install instercept failed")]
     InstallIntercept(#[source] MshvError),
+    #[error("failed to register cpuid override")]
+    RegisterCpuid(#[source] MshvError),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[error("failed to compute topology cpuid")]
@@ -1397,13 +1449,6 @@ impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
         self.partition
             .synic_ports
             .handle_signal_event(Vtl::Vtl0, connection_id, flag)
-    }
-}
-
-impl Inspect for MshvPartition {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        // TODO: implementation
-        req.respond();
     }
 }
 
