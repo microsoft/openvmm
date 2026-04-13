@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use task_control::AsyncRun;
-use task_control::InspectTask;
+use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use unicycle::FuturesUnordered;
@@ -54,7 +54,7 @@ const MAX_IO_DEPTH: usize = 64;
 /// The virtio-blk device.
 #[derive(InspectMut)]
 pub struct VirtioBlkDevice {
-    #[inspect(flatten)]
+    #[inspect(flatten, mut)]
     worker: TaskControl<BlkWorker, BlkQueueState>,
     #[inspect(skip)]
     driver: VmTaskDriver,
@@ -70,17 +70,17 @@ pub struct VirtioBlkDevice {
 /// live here (not in `BlkQueueState`) so they survive when the
 /// task is stopped — they're drained in `poll_disable()` before
 /// the queue state is removed.
-#[derive(Inspect)]
+#[derive(InspectMut)]
 struct BlkWorker {
     disk: Disk,
     read_only: bool,
-    #[inspect(flatten)]
     stats: WorkerStats,
-    #[inspect(skip)]
+    #[inspect(with = "FuturesUnordered::len")]
     ios: FuturesUnordered<Pin<Box<dyn Future<Output = IoCompletion> + Send>>>,
 }
 
 /// Transient queue state, created in `enable()` and removed in `poll_disable()`.
+#[derive(InspectMut)]
 struct BlkQueueState {
     queue: VirtioQueue,
     memory: GuestMemory,
@@ -96,9 +96,9 @@ struct WorkerStats {
     errors: Counter,
 }
 
-impl InspectTask<BlkQueueState> for BlkWorker {
-    fn inspect(&self, req: inspect::Request<'_>, _state: Option<&BlkQueueState>) {
-        Inspect::inspect(self, req);
+impl InspectTaskMut<BlkQueueState> for BlkWorker {
+    fn inspect_mut(&mut self, req: inspect::Request<'_>, state: Option<&mut BlkQueueState>) {
+        req.respond().merge(self).merge(state);
     }
 }
 

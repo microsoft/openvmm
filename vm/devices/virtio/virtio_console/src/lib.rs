@@ -67,7 +67,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 pub struct VirtioConsoleDevice {
     driver: VmTaskDriver,
     config: VirtioConsoleConfig,
-    #[inspect(skip)]
+    #[inspect(mut)]
     worker: TaskControl<ConsoleWorker, ConsoleWorkerState>,
 }
 
