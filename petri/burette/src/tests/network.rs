@@ -3,9 +3,10 @@
 
 //! Network throughput performance test.
 //!
-//! Boots an Alpine Linux VM with a NIC backed by Consomme,
-//! installs iperf3, and measures TCP throughput (Gbps) and UDP packet
-//! rate (pps) between the guest and host across multiple iterations.
+//! Boots a minimal Linux VM (linux_direct, pipette as PID 1) with a NIC
+//! backed by Consomme and a read-only virtio-blk device carrying an erofs
+//! image with iperf3 pre-installed. Measures TCP throughput (Gbps) and UDP
+//! packet rate (pps) between the guest and host across multiple iterations.
 //! Uses warm mode: the VM is booted once and reused for all iterations.
 //!
 //! Supports both VMBus (NETVSP) and virtio-net (PCIe) NIC backends.
@@ -14,8 +15,7 @@ use crate::report::MetricResult;
 use anyhow::Context as _;
 use petri::pipette::cmd;
 
-const ARCH: petri_artifacts_common::tags::MachineArch =
-    petri_artifacts_common::tags::MachineArch::X86_64;
+use petri_artifacts_common::tags::MachineArch;
 
 /// Which NIC backend to use for the network test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -23,16 +23,14 @@ pub enum NicBackend {
     /// VMBus synthetic NIC (NETVSP).
     Vmbus,
     /// Virtio-net on PCIe.
+    #[value(name = "virtio-net")]
     VirtioNet,
 }
 
-impl NicBackend {
-    /// Short label used in metric names.
-    fn label(self) -> &'static str {
-        match self {
-            NicBackend::Vmbus => "vmbus",
-            NicBackend::VirtioNet => "virtio",
-        }
+impl std::fmt::Display for NicBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use clap::ValueEnum;
+        f.write_str(self.to_possible_value().unwrap().get_name())
     }
 }
 
@@ -57,19 +55,29 @@ pub struct NetworkTestState {
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
-    use petri_artifacts_vmm_test::artifacts::test_vhd::ALPINE_3_23_X64;
+    petri::Firmware::linux_direct(resolver, MachineArch::host())
+}
 
-    let vhd = resolver.require(ALPINE_3_23_X64);
-    let guest = petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(vhd));
-    petri::Firmware::uefi(resolver, ARCH, guest)
+fn require_petritools_erofs(
+    resolver: &petri::ArtifactResolver<'_>,
+) -> petri_artifacts_core::ResolvedArtifact {
+    use petri_artifacts_vmm_test::artifacts::petritools::*;
+    match MachineArch::host() {
+        MachineArch::X86_64 => resolver.require(PETRITOOLS_EROFS_X64).erase(),
+        MachineArch::Aarch64 => resolver.require(PETRITOOLS_EROFS_AARCH64).erase(),
+    }
 }
 
 /// Register artifacts needed by the network test.
 pub fn register_artifacts(resolver: &petri::ArtifactResolver<'_>) {
     let firmware = build_firmware(resolver);
     petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-        resolver, firmware, ARCH, true,
+        resolver,
+        firmware,
+        MachineArch::host(),
+        true,
     );
+    require_petritools_erofs(resolver);
 }
 
 impl crate::harness::WarmPerfTest for NetworkTest {
@@ -105,7 +113,10 @@ impl crate::harness::WarmPerfTest for NetworkTest {
         let firmware = build_firmware(resolver);
 
         let artifacts = petri::PetriVmArtifacts::<petri::openvmm::OpenVmmPetriBackend>::new(
-            resolver, firmware, ARCH, true,
+            resolver,
+            firmware,
+            MachineArch::host(),
+            true,
         )
         .context("firmware/arch not compatible with OpenVMM backend")?;
 
@@ -117,39 +128,76 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             post_test_hooks: &mut post_test_hooks,
         };
 
-        let mut builder = petri::PetriVmBuilder::new(params, artifacts, driver)?
+        // Open the perf rootfs erofs image for the virtio-blk device.
+        let erofs_path = require_petritools_erofs(resolver);
+        let erofs_file = fs_err::File::open(&erofs_path)?;
+
+        let mut builder = petri::PetriVmBuilder::minimal(params, artifacts, driver)?
             .with_processor_topology(petri::ProcessorTopology {
                 vp_count: 2,
                 ..Default::default()
             })
             .with_memory(petri::MemoryConfig {
-                startup_bytes: 2 * 1024 * 1024 * 1024,
+                startup_bytes: 1024 * 1024 * 1024, // 1 GB
                 ..Default::default()
             })
             .modify_backend({
                 let nic = self.nic;
-                move |c| match nic {
-                    NicBackend::Vmbus => c.with_nic(),
-                    NicBackend::VirtioNet => c.with_virtio_nic(),
+                move |c| {
+                    let (c, blk_port) = match nic {
+                        NicBackend::Vmbus => {
+                            (c.with_pcie_root_topology(1, 1, 1).with_nic(), "s0rc0rp0")
+                        }
+                        NicBackend::VirtioNet => (
+                            c.with_pcie_root_topology(1, 1, 2)
+                                .with_virtio_nic("s0rc0rp0"),
+                            "s0rc0rp1",
+                        ),
+                    };
+                    // Attach the erofs image as a read-only virtio-blk device
+                    // on a PCIe root port.
+                    c.with_custom_config(|config| {
+                        use disk_backend_resources::FileDiskHandle;
+                        use openvmm_defs::config::PcieDeviceConfig;
+                        use vm_resource::IntoResource;
+
+                        config.pcie_devices.push(PcieDeviceConfig {
+                            port_name: blk_port.into(),
+                            resource: virtio_resources::VirtioPciDeviceHandle(
+                                virtio_resources::blk::VirtioBlkHandle {
+                                    disk: FileDiskHandle(erofs_file.into()).into_resource(),
+                                    read_only: true,
+                                }
+                                .into_resource(),
+                            )
+                            .into_resource(),
+                        });
+                    })
                 }
             });
 
         if !self.diag {
             builder = builder.without_screenshots();
+        } else {
+            builder = builder.with_serial_output();
         }
 
-        let (vm, agent) = builder.run().await.context("failed to boot Alpine VM")?;
+        let (vm, agent) = builder.run().await.context("failed to boot minimal VM")?;
 
-        // Bring up networking inside the guest.
+        // Bring up networking on the real root (busybox in initrd).
         let sh = agent.unix_shell();
         cmd!(sh, "ifconfig eth0 up").run().await?;
         cmd!(sh, "udhcpc eth0").run().await?;
 
-        // Install iperf3.
-        cmd!(sh, "apk add iperf3")
-            .run()
+        // Mount the erofs image and prepare chroot.
+        agent
+            .mount("/dev/vda", "/perf", "erofs", 1 /* MS_RDONLY */, true)
             .await
-            .context("failed to install iperf3 — host may need internet access")?;
+            .context("failed to mount erofs on /dev/vda")?;
+        agent
+            .prepare_chroot("/perf")
+            .await
+            .context("failed to prepare chroot at /perf")?;
 
         // Detect the host's real IP. Consomme NATs outbound traffic, so the
         // guest can reach the host at its real address (not the virtual
@@ -167,7 +215,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
 
     async fn run_once(&self, state: &mut NetworkTestState) -> anyhow::Result<Vec<MetricResult>> {
         let mut metrics = Vec::new();
-        let label = self.nic.label();
+        let label = self.nic;
         let pid = state.vm.backend().pid();
         let mut recorder = crate::harness::PerfRecorder::new(self.perf_dir.as_deref(), pid)?;
         let mut timer = pal_async::timer::PolledTimer::new(&state.driver);
@@ -270,7 +318,8 @@ async fn run_iperf3_test(
     // Run guest iperf3 client. Use ignore_status() because iperf3 may
     // exit non-zero even when data was exchanged (e.g., control socket
     // issues in reverse mode). We parse results from the host server JSON.
-    let sh = agent.unix_shell();
+    let mut sh = agent.unix_shell();
+    sh.chroot("/perf");
     match mode {
         IperfMode::TcpTx => {
             cmd!(sh, "iperf3 -c {host_ip} -p {port_str} -t 10 -J")

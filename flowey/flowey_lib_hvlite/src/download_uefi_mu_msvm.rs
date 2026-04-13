@@ -12,12 +12,18 @@ pub enum MuMsvmArch {
     Aarch64,
 }
 
+flowey_config! {
+    /// Config for the download_uefi_mu_msvm node.
+    pub struct Config {
+        /// Specify version of mu_msvm to use
+        pub version: Option<String>,
+        /// Use a local MSVM.fd path, keyed by architecture
+        pub local_paths: BTreeMap<MuMsvmArch, ConfigVar<PathBuf>>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Specify version of mu_msvm to use
-        Version(String),
-        /// Use a local MSVM.fd path for a specific architecture
-        LocalPath(MuMsvmArch, ReadVar<PathBuf>),
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
             arch: MuMsvmArch,
@@ -26,30 +32,28 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
-        let mut local_paths: BTreeMap<MuMsvmArch, ReadVar<PathBuf>> = BTreeMap::new();
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
+        let version = config.version;
+        let local_paths = config.local_paths;
         let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
-                Request::LocalPath(arch, path) => {
-                    if local_paths.contains_key(&arch) {
-                        anyhow::bail!("Duplicate LocalPath requests for {:?}", arch,);
-                    }
-                    local_paths.insert(arch, path);
-                }
                 Request::GetMsvmFd { arch, msvm_fd } => reqs.entry(arch).or_default().push(msvm_fd),
             }
         }

@@ -383,14 +383,16 @@ async fn idle_test<T: PetriVmmBackend>(
     let arch_str = get_arch_str(isolation_type, machine_arch);
     let vp_count = match vps {
         TestVPCount::SmallVPCount => 2,
-        TestVPCount::LargeVPCount => {
-            if arch_str.contains("x64") {
-                32
-            } else {
-                64
-            }
-        }
+        TestVPCount::LargeVPCount => match (isolation_type, machine_arch) {
+            // These tests run on VMs that only have 32 VPs
+            (None | Some(IsolationType::Vbs), MachineArch::X86_64) => 32,
+            // SNP, TDX, and ARM runners have at least 64 VPs
+            (Some(IsolationType::Snp | IsolationType::Tdx), MachineArch::X86_64)
+            | (None, MachineArch::Aarch64) => 64,
+            _ => unreachable!("invalid isolation configuration"),
+        },
     };
+
     let vm_boot_result = config
         .with_processor_topology({
             ProcessorTopology {

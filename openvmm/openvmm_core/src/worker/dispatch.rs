@@ -24,6 +24,7 @@ use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
+use hypervisor_resources::HypervisorKind;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
@@ -49,7 +50,6 @@ use openvmm_defs::config::Config;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::EfiDiagnosticsLogLevelType;
 use openvmm_defs::config::GicConfig;
-use openvmm_defs::config::Hypervisor;
 use openvmm_defs::config::HypervisorConfig;
 use openvmm_defs::config::LoadMode;
 use openvmm_defs::config::MemoryConfig;
@@ -132,7 +132,6 @@ use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::partition_unit::block_on_vp;
-use vmm_core::synic::SynicPorts;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
 use vmm_core::vmbus_unit::offer_channel_unit;
@@ -276,7 +275,7 @@ async fn open_simple_disk(
 
 #[derive(MeshPayload)]
 pub struct RestartState {
-    hypervisor: Hypervisor,
+    hypervisor: Resource<HypervisorKind>,
     manifest: Manifest,
     running: bool,
     saved_state: SavedState,
@@ -306,12 +305,8 @@ impl Worker for VmWorker {
 
         let manifest = Manifest::from_config(parameters.cfg);
 
-        // Choose the hypervisor to use.
-        let hypervisor = if let Some(hv) = parameters.hypervisor {
-            hv
-        } else {
-            choose_hypervisor()?
-        };
+        let hypervisor = block_on(ResourceResolver::new().resolve(parameters.hypervisor, ()))
+            .context("failed to resolve hypervisor backend")?;
 
         let shared_memory = parameters
             .shared_memory
@@ -319,7 +314,7 @@ impl Worker for VmWorker {
 
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
-            hypervisor,
+            hypervisor.0,
             manifest,
             shared_memory,
         ))?;
@@ -352,9 +347,12 @@ impl Worker for VmWorker {
         } = state;
         let (device_thread, device_driver) = new_device_thread();
 
+        let hypervisor = block_on(ResourceResolver::new().resolve(hypervisor, ()))
+            .context("failed to resolve hypervisor backend")?;
+
         let vm = block_on(InitializedVm::new(
             VmTaskDriverSource::new(ThreadDriverBackend::new(device_driver)),
-            hypervisor,
+            hypervisor.0,
             manifest,
             shared_memory,
         ))?;
@@ -386,8 +384,7 @@ impl Worker for VmWorker {
 
 /// A VM that has been initialized but not yet loaded (i.e. the saved state is
 /// not yet available).
-struct InitializedVm {
-    hypervisor: Hypervisor,
+pub(crate) struct InitializedVm {
     partition: Arc<dyn HvlitePartition>,
     vps: Vec<Box<dyn BindHvliteVp>>,
     vmtime_keeper: VmTimeKeeper,
@@ -402,7 +399,7 @@ struct InitializedVm {
 }
 
 trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(&self, hypervisor: Hypervisor) -> anyhow::Result<ProcessorTopology<T>>;
+    fn to_topology(&self, platform_gsiv: Option<u32>) -> anyhow::Result<ProcessorTopology<T>>;
 }
 
 trait ExtractTopologyConfig {
@@ -433,7 +430,7 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
 impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
     fn to_topology(
         &self,
-        _hypervisor: Hypervisor,
+        _platform_gsiv: Option<u32>,
     ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
         use vm_topology::processor::x86::X2ApicState;
 
@@ -487,7 +484,7 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
 impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
     fn to_topology(
         &self,
-        hypervisor: Hypervisor,
+        platform_gsiv: Option<u32>,
     ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
         let arch = match &self.arch {
             None => Default::default(),
@@ -502,7 +499,7 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
         let pmu_gsiv = match arch.pmu_gsiv {
             PmuGsivConfig::Disabled => None,
             PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
-            PmuGsivConfig::Platform => platform_gsiv(hypervisor),
+            PmuGsivConfig::Platform => platform_gsiv,
         };
 
         // TODO: When this value is supported on all platforms, we should change
@@ -557,7 +554,6 @@ pub(crate) struct LoadedVm {
 struct LoadedVmInner {
     driver_source: VmTaskDriverSource,
     resolver: ResourceResolver,
-    hypervisor: Hypervisor,
     partition_unit: PartitionUnit,
     partition: Arc<dyn HvlitePartition>,
     chipset_devices: ChipsetDevices,
@@ -611,55 +607,6 @@ struct LoadedVmInner {
         vmotherboard::DynamicDeviceUnit,
         Arc<closeable_mutex::CloseableMutex<chipset_device_resources::ErasedChipsetDevice>>,
     )>,
-}
-
-fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
-    cfg_if! {
-        if #[cfg(target_os = "linux")] {
-            #[cfg(all(feature = "virt_mshv", guest_is_native, guest_arch = "x86_64"))]
-            if virt::Hypervisor::is_available(&virt_mshv::LinuxMshv)? {
-                return Ok(Hypervisor::MsHv);
-            }
-            #[cfg(all(feature = "virt_kvm", guest_is_native))]
-            if virt::Hypervisor::is_available(&virt_kvm::Kvm)? {
-                return Ok(Hypervisor::Kvm);
-            }
-        } else if #[cfg(all(target_os = "windows", guest_is_native))] {
-            #[cfg(feature = "virt_whp")]
-            if virt::Hypervisor::is_available(&virt_whp::Whp)? {
-                return Ok(Hypervisor::Whp);
-            }
-        } else if #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))] {
-            #[cfg(feature = "virt_hvf")]
-            if virt::Hypervisor::is_available(&virt_hvf::HvfHypervisor)? {
-                return Ok(Hypervisor::Hvf);
-            }
-        }
-    }
-    anyhow::bail!("no hypervisor available");
-}
-
-fn platform_gsiv(hypervisor: Hypervisor) -> Option<u32> {
-    let gsiv = match hypervisor {
-        #[cfg(all(
-            feature = "virt_whp",
-            target_os = "windows",
-            guest_is_native,
-            guest_arch = "aarch64"
-        ))]
-        Hypervisor::Whp => Some(virt_whp::WHP_PMU_GSIV),
-        // TODO: hvf supports the PMU interrupt, but enabling it didn't seem to
-        // make it work it a Linux guest. More investigation required.
-        #[cfg(all(target_os = "macos", guest_is_native, guest_arch = "aarch64"))]
-        Hypervisor::Hvf => None,
-        _ => None,
-    };
-
-    if gsiv.is_none() {
-        tracing::warn!(?hypervisor, "no platform GSIV available for hypervisor");
-    }
-
-    gsiv
 }
 
 fn convert_vtl2_config(
@@ -733,80 +680,25 @@ fn convert_vtl2_config(
 }
 
 impl InitializedVm {
-    /// Creates and initializes a VM.
+    /// Creates and initializes a VM using the given backend.
     async fn new(
         driver_source: VmTaskDriverSource,
-        hypervisor: Hypervisor,
+        create_vm: crate::hypervisor_backend::CreateVmFn,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
     ) -> anyhow::Result<Self> {
-        match hypervisor {
-            #[cfg(all(target_os = "linux", feature = "virt_kvm", guest_is_native))]
-            Hypervisor::Kvm => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_kvm::Kvm,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            #[cfg(all(
-                target_os = "linux",
-                feature = "virt_mshv",
-                guest_is_native,
-                guest_arch = "x86_64"
-            ))]
-            Hypervisor::MsHv => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_mshv::LinuxMshv,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            #[cfg(all(target_os = "windows", feature = "virt_whp", guest_is_native))]
-            Hypervisor::Whp => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_whp::Whp,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            #[cfg(all(
-                target_os = "macos",
-                guest_arch = "aarch64",
-                guest_is_native,
-                feature = "virt_hvf"
-            ))]
-            Hypervisor::Hvf => {
-                Self::new_with_hypervisor(
-                    driver_source,
-                    &mut virt_hvf::HvfHypervisor,
-                    hypervisor,
-                    cfg,
-                    shared_memory,
-                )
-                .await
-            }
-            _ => {
-                let _ = (cfg, driver_source, shared_memory);
-                anyhow::bail!("hypervisor {} not supported", hypervisor);
-            }
-        }
+        create_vm(driver_source, cfg, shared_memory).await
     }
 
-    #[allow(dead_code)]
-    async fn new_with_hypervisor<P, H>(
+    /// Creates and initializes a VM with the given hypervisor backend.
+    ///
+    /// This is the main monomorphization point — callers provide a concrete
+    /// `virt::Hypervisor` implementation. Called from the blanket impl of
+    /// [`HypervisorBackend`](crate::hypervisor_backend::HypervisorBackend).
+    pub(crate) async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
-        hypervisor_type: Hypervisor,
+        platform_gsiv: Option<u32>,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
     ) -> anyhow::Result<Self>
@@ -854,7 +746,7 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology(hypervisor_type)?;
+        let processor_topology = cfg.processor_topology.to_topology(platform_gsiv)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -984,15 +876,6 @@ impl InitializedVm {
             ));
         }
 
-        // Add in topology CPUID leaves.
-        #[cfg(guest_arch = "x86_64")]
-        vmm_core::cpuid::topology::topology_cpuid(
-            &processor_topology,
-            &|eax, ecx| proto.cpuid(eax, ecx),
-            &mut cpuid,
-        )
-        .context("failed to compute topology cpuid")?;
-
         let (partition, vps) = proto
             .build(virt::PartitionConfig {
                 mem_layout: &mem_layout,
@@ -1023,7 +906,6 @@ impl InitializedVm {
         }
 
         Ok(Self {
-            hypervisor: hypervisor_type,
             partition,
             vps,
             vmtime_keeper,
@@ -1050,7 +932,6 @@ impl InitializedVm {
         use vmotherboard::options::dev;
 
         let Self {
-            hypervisor,
             partition,
             vps,
             vmtime_keeper,
@@ -1312,8 +1193,6 @@ impl InitializedVm {
             }
             _ => {}
         };
-
-        let synic = Arc::new(SynicPorts::new(partition.clone()));
 
         let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
             // calculate a safe place to put the framebuffer mapping in GPA space
@@ -1812,7 +1691,7 @@ impl InitializedVm {
                             )
                         })?;
 
-                if let Some(signal_msi) = partition.clone().into_signal_msi(Vtl::Vtl0) {
+                if let Some(signal_msi) = partition.as_signal_msi(Vtl::Vtl0) {
                     msi_conn.connect(signal_msi);
                 }
 
@@ -1863,7 +1742,7 @@ impl InitializedVm {
                 dev_cfg.resource,
                 partition.clone().into_doorbell_registration(Vtl::Vtl0),
                 Some(&mapper),
-                partition.clone().into_signal_msi(Vtl::Vtl0),
+                partition.as_signal_msi(Vtl::Vtl0),
             )
             .await?;
         }
@@ -1872,6 +1751,8 @@ impl InitializedVm {
             if !cfg.hypervisor.with_hv {
                 anyhow::bail!("vmbus required hypervisor enlightements");
             }
+
+            let synic = partition.synic();
 
             vmbus_redirect = vmbus_cfg.vtl2_redirect;
             let hvsock_channel = HvsockRelayChannel::new();
@@ -2191,7 +2072,7 @@ impl InitializedVm {
                     virtio_mmio_start -= 0x1000;
                     let id = format!("{id}-{mmio_start}");
                     let gm = gm.clone();
-                    chipset_builder.arc_mutex_device(id).add(|services| {
+                    chipset_builder.arc_mutex_device(id).try_add(|services| {
                         VirtioMmioDevice::new(
                             device.0,
                             &driver_source.simple(),
@@ -2243,8 +2124,7 @@ impl InitializedVm {
 
         let (chipset, devices) = chipset_builder.build()?;
         let (fatal_error_send, _fatal_error_recv) = mesh::channel();
-        let chipset = vmm_core::vmotherboard_adapter::ChipsetPlusSynic::new(
-            synic.clone(),
+        let chipset = vmm_core::vmotherboard_adapter::AdaptedChipset::new(
             chipset,
             // TODO: Support this being a cmd line option
             vmm_core::vmotherboard_adapter::FatalErrorPolicy::DebugBreak(fatal_error_send),
@@ -2313,7 +2193,6 @@ impl InitializedVm {
             inner: LoadedVmInner {
                 driver_source,
                 resolver,
-                hypervisor,
                 partition_unit,
                 partition,
                 chipset_devices: devices,
@@ -2584,6 +2463,8 @@ impl LoadedVmInner {
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
+
+            #[expect(clippy::allow_attributes)]
             #[allow(unreachable_patterns)]
             _ => anyhow::bail!("load mode not supported on this platform"),
         };
@@ -2870,7 +2751,7 @@ impl LoadedVm {
                                 .ok_or_else(|| anyhow::anyhow!("port '{}' not found in any root complex", port_name))?;
 
                             let msi_conn = pci_core::msi::MsiConnection::new();
-                            let signal_msi = self.inner.partition.clone().into_signal_msi(Vtl::Vtl0);
+                            let signal_msi = self.inner.partition.as_signal_msi(Vtl::Vtl0);
 
                             let (unit, device) = self.inner.chipset_devices.add_dyn_device(
                                 &self.inner.driver_source,
@@ -3127,14 +3008,15 @@ impl LoadedVm {
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
         };
+        #[expect(unreachable_code, reason = "TODO")]
         RestartState {
-            hypervisor: self.inner.hypervisor,
             manifest,
             running: self.running,
             saved_state,
             shared_memory,
             rpc,
             notify,
+            hypervisor: todo!("TODO: RestartState serialization is broken"),
         }
     }
 

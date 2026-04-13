@@ -7,6 +7,8 @@ default-members = ["openvmm/openvmm"]
 members = [
   # openvmm
   "openvmm/openvmm",
+  # openvmm_vhost
+  "openvmm_vhost/openvmm_vhost",
   # repo tooling
   "flowey/flowey_hvlite",
   "xtask",
@@ -82,8 +84,13 @@ openvmm_entry = { path = "openvmm/openvmm_entry" }
 openvmm_helpers = { path = "openvmm/openvmm_helpers" }
 openvmm_pcat_locator = { path = "openvmm/openvmm_pcat_locator" }
 openvmm_resources = { path = "openvmm/openvmm_resources" }
+openvmm_hypervisors = { path = "openvmm/openvmm_hypervisors" }
 openvmm_ttrpc_vmservice = { path = "openvmm/openvmm_ttrpc_vmservice" }
+hypervisor_resources = { path = "openvmm/hypervisor_resources" }
 membacking = { path = "openvmm/membacking" }
+vhost_user_backend = { path = "openvmm_vhost/vhost_user_backend" }
+vhost_user_frontend = { path = "vm/devices/virtio/vhost_user_frontend" }
+vhost_user_protocol = { path = "vm/devices/virtio/vhost_user_protocol" }
 
 petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact_resolver_openvmm_known_paths" }
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
@@ -115,6 +122,7 @@ fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
 headervec = { path = "support/headervec" }
+hybrid_vsock = { path = "support/hybrid_vsock" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -333,7 +341,6 @@ tpm_device = { path = "vm/devices/tpm/tpm_device" }
 tpm_lib = { path = "vm/devices/tpm/tpm_lib" }
 tpm_protocol = { path = "vm/devices/tpm/tpm_protocol" }
 tpm_resources = { path = "vm/devices/tpm_resources" }
-mcr_resources = { path = "vm/devices/mcr_resources" }
 pcie_remote_resources = { path = "vm/devices/pcie_remote_resources" }
 uidevices = { path = "vm/devices/uidevices" }
 uidevices_resources = { path = "vm/devices/uidevices_resources" }
@@ -350,6 +357,7 @@ virtio_net = { path = "vm/devices/virtio/virtio_net" }
 virtio_pmem = { path = "vm/devices/virtio/virtio_pmem" }
 virtio_resources = { path = "vm/devices/virtio/virtio_resources" }
 virtio_rng = { path = "vm/devices/virtio/virtio_rng" }
+virtio_vsock = { path = "vm/devices/virtio/virtio_vsock" }
 virtiofs = { path = "vm/devices/virtio/virtiofs" }
 vmbfs = { path = "vm/devices/vmbus/vmbfs" }
 vmbfs_resources = { path = "vm/devices/vmbus/vmbfs_resources" }
@@ -444,6 +452,7 @@ cargo_toml = "0.22"
 cc = "1.2.34"
 cfg-if = "1"
 clap = "4.2"
+constant_time_eq = "0.3"
 crc32fast = { version = "1.3.2", default-features = false }
 criterion = { version = "0.7", default-features = false }
 crossterm = { version = "0.29.0", default-features = false }
@@ -491,7 +500,7 @@ ignore = "0.4"
 igvm = "0.4.0"
 igvm_defs = { version = "0.4.0", default-features = false }
 image = { version = "0.25.1", default-features = false }
-io-uring = "0.7.4"
+io-uring = "0.7.11"
 jiff = "0.2.14"
 kvm-bindings = "0.14.0"
 # Use of these specific REPO will go away when changes are taken upstream.
@@ -663,6 +672,7 @@ unsafe_op_in_unsafe_fn = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
 
 [workspace.lints.clippy]
+allow_attributes = "warn"
 dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"

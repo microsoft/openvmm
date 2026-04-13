@@ -7,7 +7,6 @@ use crate::queue::QueueDescriptor;
 use crate::queue::QueueError;
 use crate::queue::QueueParams;
 use crate::queue::descriptor_offset;
-use crate::queue::read_descriptor;
 use crate::spec::VirtioDeviceFeatures;
 use crate::spec::queue as spec;
 use crate::spec::queue::DescriptorFlags;
@@ -47,6 +46,7 @@ pub(crate) struct PackedQueueGetWork {
     queue_size: u16,
     next_avail_index: u16,
     wrapped_bit: bool,
+    next_is_available: bool,
 }
 
 impl PackedQueueGetWork {
@@ -73,6 +73,7 @@ impl PackedQueueGetWork {
             queue_size: params.size,
             next_avail_index: initial_index,
             wrapped_bit: initial_wrap,
+            next_is_available: false,
         })
     }
 
@@ -81,33 +82,60 @@ impl PackedQueueGetWork {
         self.next_avail_index | (u16::from(self.wrapped_bit) << 15)
     }
 
-    pub fn is_available(&self) -> Result<Option<u16>, QueueError> {
-        loop {
-            let disable_event =
-                PackedEventSuppression::new().with_flags(EventSuppressionFlags::Disabled);
-            self.device_event
-                .write_plain(0, &disable_event)
+    /// Checks whether a descriptor is available, returning its index.
+    ///
+    /// This is a lightweight check that does not arm kick notification. When
+    /// `None` is returned, the caller must call [`arm_kick`](Self::arm_kick)
+    /// before sleeping to ensure the guest will send a kick when new work
+    /// arrives.
+    pub fn is_available(&mut self) -> Result<Option<u16>, QueueError> {
+        if !self.next_is_available {
+            let flags: DescriptorFlags = self
+                .queue_desc
+                .read_plain(
+                    descriptor_offset(self.next_avail_index)
+                        + std::mem::offset_of!(PackedDescriptor, flags_raw) as u64,
+                )
                 .map_err(QueueError::Memory)?;
-            atomic::fence(atomic::Ordering::Acquire);
-            let descriptor: PackedDescriptor =
-                read_descriptor(&self.queue_desc, self.next_avail_index)?;
-            let flags = descriptor.flags();
-            if flags.available() == self.wrapped_bit && flags.used() != self.wrapped_bit {
-                return Ok(Some(self.next_avail_index));
-            }
-            let enable_event =
-                PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled);
-            self.device_event
-                .write_plain(0, &enable_event)
-                .map_err(QueueError::Memory)?;
-            atomic::fence(atomic::Ordering::SeqCst);
-            let descriptor: PackedDescriptor =
-                read_descriptor(&self.queue_desc, self.next_avail_index)?;
-            let flags = descriptor.flags();
             if flags.available() != self.wrapped_bit || flags.used() == self.wrapped_bit {
                 return Ok(None);
             }
+            // Ensure subsequent descriptor-field reads cannot be reordered
+            // before the flags read on weakly ordered architectures.
+            atomic::fence(atomic::Ordering::Acquire);
+            self.next_is_available = true;
         }
+        Ok(Some(self.next_avail_index))
+    }
+
+    /// Arms kick notification so the guest will send a doorbell when new work
+    /// is available. Returns `true` if armed successfully (caller should
+    /// sleep), or `false` if new data arrived during arming (caller should
+    /// retry).
+    pub fn arm_kick(&mut self) -> Result<bool, QueueError> {
+        let enable_event = PackedEventSuppression::new().with_flags(EventSuppressionFlags::Enabled);
+        self.device_event
+            .write_plain(0, &enable_event)
+            .map_err(QueueError::Memory)?;
+        // Ensure the event enable is visible before checking the descriptor.
+        atomic::fence(atomic::Ordering::SeqCst);
+        if self.is_available()?.is_some() {
+            // New data arrived during arming — suppress kicks and report.
+            self.suppress_kicks()?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Suppress kick notifications from the guest. Call this after finding
+    /// work to avoid unnecessary kicks while processing.
+    pub fn suppress_kicks(&self) -> Result<(), QueueError> {
+        let disable_event =
+            PackedEventSuppression::new().with_flags(EventSuppressionFlags::Disabled);
+        self.device_event
+            .write_plain(0, &disable_event)
+            .map_err(QueueError::Memory)?;
+        Ok(())
     }
 
     /// Advances `next_avail_index` by `count` descriptors.
@@ -117,6 +145,7 @@ impl PackedQueueGetWork {
             self.wrapped_bit = !self.wrapped_bit;
         }
         self.next_avail_index = next_avail_index;
+        self.next_is_available = false;
     }
 }
 
@@ -176,6 +205,9 @@ impl PackedQueueCompleteWork {
                     .with_available(self.wrapped_bit)
                     .with_used(self.wrapped_bit),
             );
+        // Ensure any prior writes to guest buffers (e.g. device data) are
+        // visible before the used descriptor becomes visible to the guest.
+        atomic::fence(atomic::Ordering::Release);
         self.queue_desc
             .write_plain(descriptor_offset(self.next_index), &descriptor)
             .map_err(QueueError::Memory)?;

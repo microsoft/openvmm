@@ -21,6 +21,12 @@ as well as the generated CLI help (via `cargo run -- --help`).
   instead of shared file-backed sections.
 * `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only).
   Requires `--private-memory`.
+* `--pidfile <PATH>`: Write the process ID to the specified file on startup,
+  and remove it on clean exit. If the process is killed with `SIGKILL` or
+  crashes, the pidfile is not removed — consumers should verify the PID is
+  still alive. No file locking is performed; concurrent launches with the same
+  pidfile path will overwrite each other. Not written for short-lived utility
+  modes such as `--write-saved-state-proto`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
@@ -33,6 +39,19 @@ as well as the generated CLI help (via `cargo run -- --help`).
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
+* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,pcie_port=<PORT>]`: Attach a
+  vhost-user device backed by an external process over a Unix socket (Linux
+  only). The backend process must already be listening on `SOCKET_PATH`.
+  Supported `type` values: `blk`, `fs`. For `type=fs`, `tag=<NAME>` is required
+  and specifies the mount tag exposed to the guest (max 36 bytes).
+  Alternatively, use `device_id=<N>` instead of `type=` to specify the numeric
+  virtio device ID directly. Examples:
+  ```sh
+  --vhost-user /tmp/vhost-blk.sock,type=blk
+  --vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
+  --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
+  --vhost-user /tmp/vhost.sock,device_id=26
+  ```
 
 Serial devices can be configured to appear as different devices inside the guest:
 
@@ -81,9 +100,9 @@ PCIe root port. The syntax varies slightly between device types:
 **NICs** (colon-prefixed): `--net`, `--virtio-net`, `--mana`
 
 ```sh
---virtio-net pcie_port=rp0:tap:tap0
+--virtio-net pcie_port=rp0:tap:tap0  # TAP is Linux-only
 --net pcie_port=rp0:consomme
---mana pcie_port=rp0:tap:tap0
+--mana pcie_port=rp0:tap:tap0        # TAP is Linux-only
 ```
 
 **Filesystems and other virtio devices** (colon-prefixed):
@@ -101,4 +120,11 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 ```sh
 --virtio-rng --virtio-rng-pcie-port rp0
 --virtio-console console --virtio-console-pcie-port rp0
+```
+
+**vhost-user devices** (comma-separated option, Linux only): `--vhost-user`
+
+```sh
+--vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
+--vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,pcie_port=rp0
 ```

@@ -40,14 +40,22 @@ impl IntoPipeline for BuildDocsCli {
 
         let mut pipeline = Pipeline::new();
 
-        // The docs pipeline should only run on the main branch.
+        // The docs pipeline should only run on the main branch, and only when
+        // the Guide directory or the docs workflow/pipeline definitions are modified.
         {
             let branches = vec!["main".into()];
+            let paths = vec![
+                "Guide/**".into(),
+                "petri/logview/**".into(),
+                ".github/workflows/openvmm-docs-*.yaml".into(),
+                "flowey/**".into(),
+            ];
             match config {
                 PipelineConfig::Ci => {
                     pipeline
                         .gh_set_ci_triggers(GhCiTriggers {
                             branches,
+                            paths,
                             ..Default::default()
                         })
                         .gh_set_name("OpenVMM Docs CI");
@@ -56,6 +64,7 @@ impl IntoPipeline for BuildDocsCli {
                     pipeline
                         .gh_set_pr_triggers(GhPrTriggers {
                             branches,
+                            paths,
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("OpenVMM Docs PR");

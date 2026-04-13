@@ -1186,6 +1186,7 @@ impl<'a> VpRunner<'a> {
         unsafe { &mut *vp.run_data.ptr }
     }
 
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     fn run_data_slice(&mut self) -> &mut [u8] {
         let vp = self.get();
         // SAFETY: there are no other references to this data right
@@ -1255,26 +1256,19 @@ impl<'a> VpRunner<'a> {
         }
 
         let exit = match self.run_data().exit_reason {
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_DEBUG => {
                 // SAFETY: no other references to this data.
                 let debug = unsafe { &self.run_data().__bindgen_anon_1.debug };
 
-                #[cfg(not(target_arch = "x86_64"))]
-                {
-                    _ = debug;
-                    todo!("debug exit on non-x86_64")
-                }
-
-                #[cfg(target_arch = "x86_64")]
-                {
-                    Exit::Debug {
-                        exception: debug.arch.exception,
-                        pc: debug.arch.pc,
-                        dr6: debug.arch.dr6,
-                        dr7: debug.arch.dr7,
-                    }
+                Exit::Debug {
+                    exception: debug.arch.exception,
+                    pc: debug.arch.pc,
+                    dr6: debug.arch.dr6,
+                    dr7: debug.arch.dr7,
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_IO => {
                 // SAFETY: this is the active union field.
                 let io = unsafe { self.run_data().__bindgen_anon_1.io };
@@ -1296,6 +1290,7 @@ impl<'a> VpRunner<'a> {
                     }
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_IRQ_WINDOW_OPEN => {
                 let rdata = self.run_data();
                 assert!(rdata.ready_for_interrupt_injection != 0);
@@ -1319,6 +1314,7 @@ impl<'a> VpRunner<'a> {
                 }
             }
             KVM_EXIT_SHUTDOWN => Exit::Shutdown,
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_HYPERV => {
                 // SAFETY: this is the active union field.
                 let hyperv = unsafe { &mut self.run_data().__bindgen_anon_1.hyperv };
@@ -1345,6 +1341,7 @@ impl<'a> VpRunner<'a> {
                     _ => return Err(Error::UnknownHvExit(hyperv.type_)),
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_IOAPIC_EOI => {
                 // SAFETY: this is the active union field.
                 let eoi = unsafe { &mut self.run_data().__bindgen_anon_1.eoi };
@@ -1373,6 +1370,7 @@ impl<'a> VpRunner<'a> {
                     }
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_X86_WRMSR => {
                 // SAFETY: this is the active union field.
                 let msr = unsafe { &mut self.run_data().__bindgen_anon_1.msr };
@@ -1383,6 +1381,7 @@ impl<'a> VpRunner<'a> {
                     error: &mut msr.error,
                 }
             }
+            #[cfg(target_arch = "x86_64")]
             KVM_EXIT_X86_RDMSR => {
                 // SAFETY: this is the active union field.
                 let msr = unsafe { &mut self.run_data().__bindgen_anon_1.msr };
@@ -1392,6 +1391,16 @@ impl<'a> VpRunner<'a> {
                     index: msr.index,
                     data: &mut msr.data,
                     error: &mut msr.error,
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            KVM_EXIT_SYSTEM_EVENT => {
+                // SAFETY: this is the active union field.
+                let system_event = unsafe { &self.run_data().__bindgen_anon_1.system_event };
+                Exit::SystemEvent {
+                    event_type: system_event.type_,
+                    // SAFETY: accessing the flags field of the union.
+                    event_flags: unsafe { system_event.__bindgen_anon_1.flags },
                 }
             }
             exit_reason => return Err(Error::UnknownExit(exit_reason)),
@@ -1431,12 +1440,15 @@ impl<'a> VpRunner<'a> {
 #[derive(Debug)]
 pub enum Exit<'a> {
     Interrupted,
+    #[cfg(target_arch = "x86_64")]
     InterruptWindow,
+    #[cfg(target_arch = "x86_64")]
     IoIn {
         port: u16,
         size: u8,
         data: &'a mut [u8],
     },
+    #[cfg(target_arch = "x86_64")]
     IoOut {
         port: u16,
         size: u8,
@@ -1450,11 +1462,13 @@ pub enum Exit<'a> {
         address: u64,
         data: &'a [u8],
     },
+    #[cfg(target_arch = "x86_64")]
     MsrRead {
         index: u32,
         data: &'a mut u64,
         error: &'a mut u8,
     },
+    #[cfg(target_arch = "x86_64")]
     MsrWrite {
         index: u32,
         data: u64,
@@ -1471,25 +1485,34 @@ pub enum Exit<'a> {
     EmulationFailure {
         instruction_bytes: &'a [u8],
     },
+    #[cfg(target_arch = "x86_64")]
     SynicUpdate {
         msr: u32,
         control: u64,
         siefp: u64,
         simp: u64,
     },
+    #[cfg(target_arch = "x86_64")]
     HvHypercall {
         input: u64,
         result: &'a mut u64,
         params: [u64; 2],
     },
+    #[cfg(target_arch = "x86_64")]
     Debug {
         exception: u32,
         pc: u64,
         dr6: u64,
         dr7: u64,
     },
+    #[cfg(target_arch = "x86_64")]
     Eoi {
         irq: u8,
+    },
+    #[cfg(target_arch = "aarch64")]
+    SystemEvent {
+        event_type: u32,
+        event_flags: u64,
     },
 }
 

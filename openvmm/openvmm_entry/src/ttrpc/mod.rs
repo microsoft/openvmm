@@ -5,7 +5,6 @@
 
 #![cfg(any(feature = "ttrpc", feature = "grpc"))]
 
-use self::vmservice::nic_config::Backend;
 use crate::serial_io::bind_serial;
 use anyhow::Context;
 use anyhow::anyhow;
@@ -114,6 +113,7 @@ impl Worker for TtrpcWorker {
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
                 #[cfg(feature = "grpc")]
                 RpcTransport::Grpc => ResolvedTransport::Grpc,
+                #[expect(clippy::allow_attributes)]
                 #[allow(unreachable_patterns)]
                 transport => bail!("unsupported transport {transport}"),
             },
@@ -590,7 +590,7 @@ impl VmService {
             .launch_worker(
                 VM_WORKER,
                 VmWorkerParameters {
-                    hypervisor: None,
+                    hypervisor: openvmm_helpers::hypervisor::choose_hypervisor()?,
                     cfg: config,
                     saved_state: None,
                     shared_memory: None,
@@ -705,9 +705,21 @@ impl VmService {
     }
 }
 
+// On platforms without NIC backends (e.g., macOS), every match arm diverges.
+#[cfg_attr(
+    not(any(windows, target_os = "linux")),
+    expect(
+        unreachable_code,
+        unused_variables,
+        reason = "no NIC backends available on this platform"
+    )
+)]
 fn parse_nic_config(
     nic: vmservice::NicConfig,
 ) -> anyhow::Result<(DeviceVtl, Resource<VmbusDeviceHandleKind>)> {
+    #[cfg(any(windows, target_os = "linux"))]
+    use self::vmservice::nic_config::Backend;
+
     let endpoint = match nic.backend.context("missing backend")? {
         #[cfg(windows)]
         Backend::LegacyPortId(port_id) => net_backend_resources::dio::WindowsDirectIoHandle {
@@ -725,9 +737,11 @@ fn parse_nic_config(
             },
         }
         .into_resource(),
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
         Backend::Tap(tap) => {
-            net_backend_resources::tap::TapHandle { name: tap.name }.into_resource()
+            let fd = net_tap::tap::open_tap(&tap.name)
+                .with_context(|| format!("failed to open TAP device '{}'", tap.name))?;
+            net_backend_resources::tap::TapHandle { fd }.into_resource()
         }
         _ => anyhow::bail!("unsupported backend"),
     };

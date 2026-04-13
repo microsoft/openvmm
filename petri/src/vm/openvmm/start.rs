@@ -45,18 +45,20 @@ impl PetriVmConfigOpenVmm {
             framebuffer_view,
         } = self;
 
-        let has_pcie = !config.pcie_root_complexes.is_empty();
-
         // TODO: OpenHCL needs virt_whp support
         // TODO: PCAT needs vga device support
         // TODO: arm64 is broken?
-        // TODO: VPCI and NVMe don't support save/restore
-        // TODO: PCIe emulators don't support save/restore yet
+        // TODO: VPCI and some PCIe endpoints (NVMe/GDMA) don't support
+        // save/restore yet.
+        let has_unsupported_pcie_save_restore_device = config
+            .pcie_devices
+            .iter()
+            .any(|device| matches!(device.resource.id(), "nvme" | "gdma"));
         let supports_save_restore = !resources.properties.is_openhcl
             && !resources.properties.is_pcat
             && !matches!(arch, MachineArch::Aarch64)
             && !resources.properties.using_vpci
-            && !has_pcie;
+            && !has_unsupported_pcie_save_restore_device;
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {

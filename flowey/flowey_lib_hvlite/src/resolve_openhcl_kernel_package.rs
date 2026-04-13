@@ -21,16 +21,19 @@ pub enum OpenhclKernelPackageArch {
     Aarch64,
 }
 
+flowey_config! {
+    /// Config for the resolve_openhcl_kernel_package node.
+    pub struct Config {
+        /// Version strings keyed by package kind.
+        pub versions: BTreeMap<OpenhclKernelPackageKind, String>,
+        /// Local paths keyed by architecture (kernel binary, modules directory).
+        pub local_paths: BTreeMap<OpenhclKernelPackageArch, (ConfigVar<PathBuf>, ConfigVar<PathBuf>)>,
+    }
+}
+
 flowey_request! {
+    #[expect(clippy::enum_variant_names)]
     pub enum Request {
-        /// Set local paths for a specific architecture
-        SetLocal {
-            arch: OpenhclKernelPackageArch,
-            kernel: ReadVar<PathBuf>,
-            modules: ReadVar<PathBuf>,
-        },
-        /// Specify version string to use for each package kind
-        SetVersion(OpenhclKernelPackageKind, String),
         /// Get path to the kernel binary
         GetKernel {
             kind: OpenhclKernelPackageKind,
@@ -58,22 +61,24 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
         ctx.import::<flowey_lib_common::download_gh_release::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut versions: BTreeMap<OpenhclKernelPackageKind, String> = BTreeMap::new();
-        let mut local_paths: BTreeMap<
-            OpenhclKernelPackageArch,
-            (ReadVar<PathBuf>, ReadVar<PathBuf>),
-        > = BTreeMap::new();
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
+        let versions = config.versions;
+        let local_paths = config.local_paths;
         let mut kernel_reqs: BTreeMap<
             (OpenhclKernelPackageKind, OpenhclKernelPackageArch),
             Vec<WriteVar<PathBuf>>,
@@ -93,20 +98,6 @@ impl FlowNode for Node {
 
         for req in requests {
             match req {
-                Request::SetVersion(kind, v) => {
-                    let mut old = versions.insert(kind, v.clone());
-                    same_across_all_reqs("SetVersion", &mut old, v)?
-                }
-                Request::SetLocal {
-                    arch,
-                    kernel,
-                    modules,
-                } => {
-                    if local_paths.contains_key(&arch) {
-                        anyhow::bail!("Duplicate local paths for {:?}", arch);
-                    }
-                    local_paths.insert(arch, (kernel, modules));
-                }
                 Request::GetKernel { kind, arch, kernel } => {
                     kernel_reqs.entry((kind, arch)).or_default().push(kernel);
                 }

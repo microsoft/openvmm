@@ -11,15 +11,20 @@ ossl_vendored = ["openssl/vendored"]
 
 [dependencies]
 thiserror.workspace = true
-zerocopy.workspace = true
+tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-openssl.workspace = true 
+openssl.workspace = true
+openssl_kdf.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wchar.workspace = true
 windows = { workspace = true, features = ["Win32_Foundation","Win32_Security_Cryptography"] }
 windows-result.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
 
 [lints]
 workspace = true

@@ -85,6 +85,14 @@ Run tests with cargo-nextest in the specific packages you are modifying:
 cargo nextest run -p <package-name>
 ```
 
+For VMM test validation during development, use `cargo xflowey vmm-tests-run`:
+```bash
+# Run a specific test
+cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir <output-dir>
+```
+This automatically discovers artifacts, builds dependencies, and runs tests.
+See `Guide/src/dev_guide/tests/vmm.md` for details.
+
 - **Unit tests** — spread throughout crates in `#[cfg(test)]` blocks.
   Should be fast, isolated, and not require root/administrator access.
   Add `use test_with_tracing::test;` in test modules so that `tracing`

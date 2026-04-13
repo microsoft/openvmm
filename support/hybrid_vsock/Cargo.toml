@@ -1,0 +1,16 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "hybrid_vsock"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+guid.workspace = true
+
+fs-err.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

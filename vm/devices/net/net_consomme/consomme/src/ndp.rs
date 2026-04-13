@@ -290,8 +290,6 @@ impl<T: Client> Access<'_, T> {
                 HardwareAddress::Ethernet(eth_addr) => {
                     eth_addr == self.inner.state.params.client_mac
                 }
-                #[allow(unreachable_patterns)]
-                _ => false,
             })
             .unwrap_or(false);
 
