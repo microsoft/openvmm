@@ -3,8 +3,6 @@
 
 //! Cryptographic operations to validate authenticated variables
 
-#![cfg(feature = "auth-var-verify-crypto")]
-
 use super::ParsedAuthVar;
 use thiserror::Error;
 use uefi_nvram_specvars::signature_list;

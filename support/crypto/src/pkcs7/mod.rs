@@ -8,6 +8,11 @@ mod ossl;
 #[cfg(target_os = "linux")]
 use ossl as sys;
 
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+use win as sys;
+
 use thiserror::Error;
 
 /// A parsed PKCS#7 signedData object.

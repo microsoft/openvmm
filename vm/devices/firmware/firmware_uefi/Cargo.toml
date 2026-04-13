@@ -7,16 +7,6 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-default = []
-
-# use crypto to verify authenticated variable updates. If this feature is not
-# enabled, updating an authenticated variable will unconditionally fail.
-#
-# TODO: this feature ought to be unconditionally enabled, but doing so would
-# require figuring out the openSSL story on Windows, which is a undertaking in
-# and of itself...
-auth-var-verify-crypto = ["crypto", "der"]
-
 # exposes private modules so that they can be fuzzed
 fuzzing = []
 
@@ -34,8 +24,8 @@ vmcore.workspace = true
 
 async-trait.workspace = true
 bitfield-struct.workspace = true
-crypto = { workspace = true, optional = true }
-der = { workspace = true, features = ["derive", "alloc", "oid"], optional = true }
+crypto.workspace = true
+der = { workspace = true, features = ["derive", "alloc", "oid"] }
 getrandom.workspace = true
 guid.workspace = true
 inspect.workspace = true

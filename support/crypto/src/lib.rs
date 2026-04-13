@@ -24,7 +24,7 @@ pub mod aes_key_wrap;
 pub mod hmac_sha_256;
 #[cfg(target_os = "linux")]
 pub mod kdf;
-#[cfg(target_os = "linux")]
+#[cfg(any(windows, target_os = "linux"))]
 pub mod pkcs7;
 #[cfg(target_os = "linux")]
 pub mod rsa;
