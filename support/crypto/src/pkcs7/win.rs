@@ -12,9 +12,6 @@ fn err(e: windows_result::Error, op: &'static str) -> Pkcs7Error {
 /// RAII wrapper for HCERTSTORE.
 struct CertStoreHandle(HCERTSTORE);
 
-// SAFETY: Windows certificate store handles are thread-safe.
-unsafe impl Send for CertStoreHandle {}
-
 impl Drop for CertStoreHandle {
     fn drop(&mut self) {
         // SAFETY: handle is valid and not aliased.
@@ -60,9 +57,6 @@ impl Drop for ChainEngineHandle {
 
 /// RAII wrapper for HCRYPTMSG (*mut c_void).
 struct MsgHandle(*mut std::ffi::c_void);
-
-// SAFETY: Windows CryptMsg handles are thread-safe.
-unsafe impl Send for MsgHandle {}
 
 impl Drop for MsgHandle {
     fn drop(&mut self) {
@@ -144,7 +138,7 @@ impl Pkcs7SignedDataInner {
         let msg = MsgHandle(msg);
 
         // SAFETY: msg handle is valid, data is a valid slice.
-        unsafe { CryptMsgUpdate(msg.0, Some(data), true) }
+        unsafe { CryptMsgUpdate(msg.0, Some(data), false) }
             .map_err(|e| err(e, "decode pkcs7 message"))?;
 
         Ok(Self { msg })
