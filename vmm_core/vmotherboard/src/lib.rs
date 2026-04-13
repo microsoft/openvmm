@@ -119,3 +119,16 @@ pub struct ChipsetDeviceHandle {
     /// The device resource handle.
     pub resource: Resource<ChipsetDeviceHandleKind>,
 }
+
+/// A handle to instantiate a legacy PCI chipset device with explicit placement.
+#[derive(MeshPayload, Debug)]
+pub struct LegacyPciChipsetDeviceHandle {
+    /// The name of the device.
+    pub name: String,
+    /// The device resource handle.
+    pub resource: Resource<ChipsetDeviceHandleKind>,
+    /// The PCI bus name to attach the device to.
+    pub pci_bus_name: String,
+    /// The explicit static PCI bus/device/function tuple.
+    pub bdf: (u8, u8, u8),
+}

@@ -9,8 +9,6 @@ use crate::io::IoResult;
 /// A static PCI placement hint provided by a device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PciPlacementHint {
-    /// Name of the PCI bus this device should attach to.
-    pub bus_name: Box<str>,
     /// Optional static BDF for this device.
     ///
     /// If absent, the VMM may use `PciConfigSpace::suggested_bdf`.

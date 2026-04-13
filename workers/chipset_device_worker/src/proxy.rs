@@ -85,7 +85,6 @@ struct PciProxy {
 
 #[derive(Inspect)]
 struct StaticPciPlacement {
-    bus_name: Box<str>,
     #[inspect(with = "Option::is_some")]
     bdf: Option<(u8, u8, u8)>,
 }
@@ -133,10 +132,7 @@ impl ChipsetDeviceProxy {
                  placement,
              }| PciProxy {
                 suggested_bdf,
-                placement: placement.map(|placement| StaticPciPlacement {
-                    bus_name: placement.bus_name.into_boxed_str(),
-                    bdf: placement.bdf,
-                }),
+                placement: placement.map(|placement| StaticPciPlacement { bdf: placement.bdf }),
             },
         );
 
@@ -267,10 +263,7 @@ impl PciPlacement for ChipsetDeviceProxy {
             .and_then(|pci| pci.placement.as_ref())
             .unwrap();
 
-        PciPlacementHint {
-            bus_name: placement.bus_name.clone(),
-            bdf: placement.bdf,
-        }
+        PciPlacementHint { bdf: placement.bdf }
     }
 }
 

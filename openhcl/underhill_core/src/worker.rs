@@ -2724,6 +2724,7 @@ async fn new_underhill_vm(
     let vm_manifest_builder::VmChipsetResult {
         chipset,
         mut chipset_devices,
+        pci_chipset_devices,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -3059,6 +3060,7 @@ async fn new_underhill_vm(
     )
     .with_expected_manifest(chipset)
     .with_device_handles(chipset_devices)
+    .with_pci_device_handles(pci_chipset_devices)
     .with_trace_unknown_mmio(!use_mmio_hypercalls)
     .with_fallback_mmio_device(fallback_mmio_device)
     .build(&driver_source, &state_units, &resolver)

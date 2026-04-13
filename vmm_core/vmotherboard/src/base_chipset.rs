@@ -5,6 +5,7 @@
 //! with a customizable configuration of semi-standardized device.
 
 use crate::ChipsetDeviceHandle;
+use crate::LegacyPciChipsetDeviceHandle;
 use crate::PowerEvent;
 use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
@@ -76,6 +77,7 @@ pub struct BaseChipsetBuilder<'a> {
     foundation: options::BaseChipsetFoundation<'a>,
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
+    pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
     expected_manifest: Option<options::BaseChipsetManifest>,
     fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
@@ -96,6 +98,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             foundation,
             devices,
             device_handles: Vec::new(),
+            pci_device_handles: Vec::new(),
             expected_manifest: None,
             fallback_mmio_device: None,
             flags: BaseChipsetBuilderFlags {
@@ -132,6 +135,15 @@ impl<'a> BaseChipsetBuilder<'a> {
     /// Adds device handles to be resolved and instantiated.
     pub fn with_device_handles(mut self, mut device_handles: Vec<ChipsetDeviceHandle>) -> Self {
         self.device_handles.append(&mut device_handles);
+        self
+    }
+
+    /// Adds legacy PCI device handles to be resolved and instantiated.
+    pub fn with_pci_device_handles(
+        mut self,
+        mut pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
+    ) -> Self {
+        self.pci_device_handles.append(&mut pci_device_handles);
         self
     }
 
@@ -175,6 +187,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             foundation,
             devices,
             device_handles,
+            pci_device_handles,
             expected_manifest,
             fallback_mmio_device,
             flags,
@@ -733,6 +746,42 @@ impl<'a> BaseChipsetBuilder<'a> {
 
             builder
                 .arc_mutex_device(name.as_ref())
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            resource,
+                            ResolveChipsetDeviceHandleParams {
+                                device_name: name.as_ref(),
+                                guest_memory: &foundation.untrusted_dma_memory,
+                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
+                                vmtime: foundation.vmtime,
+                                is_restoring: foundation.is_restoring,
+                                task_driver_source: driver_source,
+                                register_mmio: &mut services.register_mmio(),
+                                register_pio: &mut services.register_pio(),
+                                configure: services,
+                            },
+                        )
+                        .await
+                        .map(|dev| dev.0)
+                })
+                .await?;
+        }
+
+        for device in pci_device_handles {
+            let LegacyPciChipsetDeviceHandle {
+                name,
+                resource,
+                pci_bus_name,
+                bdf,
+            } = device;
+
+            let (bus, slot, function) = bdf;
+
+            builder
+                .arc_mutex_device(name.as_ref())
+                .on_pci_bus(crate::BusId::new(pci_bus_name.as_str()))
+                .with_pci_addr(bus, slot, function)
                 .try_add_async(async |services| {
                     resolver
                         .resolve(

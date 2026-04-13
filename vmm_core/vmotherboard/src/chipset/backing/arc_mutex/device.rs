@@ -229,8 +229,6 @@ where
 
                     let bus_id = if let Some(bus_id) = self.pci_bus_id.take() {
                         bus_id
-                    } else if let Some(placement) = static_placement {
-                        BusIdPci::new(&placement.bus_name)
                     } else {
                         return Err(
                             AddDeviceErrorKind::NoPciBusSpecified.with_dev_name(self.dev_name)

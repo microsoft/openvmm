@@ -18,6 +18,7 @@ use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 
 #[derive(MeshPayload, Debug)]
@@ -52,6 +53,7 @@ pub struct Config {
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
+    pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,

@@ -48,8 +48,6 @@ pub(crate) struct PciInit {
 /// Static PCI placement hint from the remote device.
 #[derive(MeshPayload)]
 pub(crate) struct PciPlacementInit {
-    /// Name of the PCI bus this device should attach to.
-    pub bus_name: String,
     /// Optional static BDF for this device.
     pub bdf: Option<(u8, u8, u8)>,
 }

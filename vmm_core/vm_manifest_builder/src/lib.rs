@@ -33,6 +33,7 @@ use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 
 /// Builder for a VM manifest.
@@ -85,6 +86,8 @@ pub struct VmChipsetResult {
     pub chipset: BaseChipsetManifest,
     /// The list of chipset devices present in the VM.
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
+    /// The list of legacy PCI chipset devices with explicit placement metadata.
+    pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
 }
 
 /// Error type for building a VM manifest.
@@ -210,6 +213,7 @@ impl VmManifestBuilder {
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
             chipset_devices: Vec::new(),
+            pci_chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
         };
 
@@ -396,9 +400,11 @@ impl VmChipsetResult {
     }
 
     fn attach_piix4_pci_usb_uhci_stub(&mut self) -> &mut Self {
-        self.chipset_devices.push(ChipsetDeviceHandle {
+        self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
             name: "piix4-usb-uhci-stub".to_string(),
             resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
+            pci_bus_name: "i440bx".to_string(),
+            bdf: (0, 7, 2),
         });
         self
     }

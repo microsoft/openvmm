@@ -142,6 +142,7 @@ use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::ChipsetDevices;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
@@ -193,6 +194,7 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            pci_chipset_devices: config.pci_chipset_devices,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -240,6 +242,7 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -1698,6 +1701,7 @@ impl InitializedVm {
         )
         .with_expected_manifest(cfg.chipset.clone())
         .with_device_handles(cfg.chipset_devices)
+        .with_pci_device_handles(cfg.pci_chipset_devices)
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)
         .await?;
@@ -3114,11 +3118,12 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
-            generation_id_recv: None,  // TODO
-            rtc_delta_milliseconds: 0, // TODO
+            debugger_rpc: None,          // TODO
+            vmbus_devices: vec![],       // TODO
+            chipset_devices: vec![],     // TODO
+            pci_chipset_devices: vec![], // TODO
+            generation_id_recv: None,    // TODO
+            rtc_delta_milliseconds: 0,   // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
         };
