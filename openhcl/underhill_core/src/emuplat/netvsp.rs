@@ -5,7 +5,7 @@ use crate::dispatch::vtl2_settings_worker::wait_for_pci_path;
 use crate::options::KeepAliveConfig;
 use crate::vpci::HclVpciBusControl;
 use anyhow::Context;
-use anyhow::bail;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -529,7 +529,7 @@ impl HclNetworkVFManagerWorker {
                 tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
             ))
             .await
-            .unwrap_or_else(|cr| bail!("vtl0 revoke timed out: {cr}"))
+            .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -604,7 +604,7 @@ impl HclNetworkVFManagerWorker {
                         tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
                     ))
                     .await
-                    .unwrap_or_else(|cr| bail!("vtl0 revoke timed out: {cr}"))
+                    .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
                 {
                     Ok(_) => (),
                     Err(err) => {
