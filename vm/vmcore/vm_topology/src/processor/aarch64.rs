@@ -142,6 +142,11 @@ impl TopologyBuilder<Aarch64Topology> {
                 max: u8::MAX.into(),
             });
         }
+        if let GicVersion::V2 { .. } = self.arch.platform.gic_version {
+            if proc_count > 8 {
+                return Err(InvalidTopology::TooManyCpusForGicV2(proc_count));
+            }
+        }
         if !(16..32).contains(&self.arch.platform.virt_timer_ppi) {
             return Err(InvalidTopology::InvalidPpiIntid(
                 self.arch.platform.virt_timer_ppi,
