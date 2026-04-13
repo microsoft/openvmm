@@ -8,8 +8,8 @@
 //! descriptor ring just as a guest driver would.
 
 use crate::VirtioBlkDevice;
-use crate::spec::VirtioBlkDiscardWriteZeroes;
-use crate::spec::*;
+use virtio::spec::blk::VirtioBlkDiscardWriteZeroes;
+use virtio::spec::blk::*;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;

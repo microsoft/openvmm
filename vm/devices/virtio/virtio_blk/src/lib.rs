@@ -6,12 +6,11 @@
 #![forbid(unsafe_code)]
 
 pub mod resolver;
-mod spec;
 
 #[cfg(test)]
 mod integration_tests;
 
-use crate::spec::*;
+use virtio::spec::blk::*;
 use anyhow::Context as _;
 use disk_backend::Disk;
 use futures::StreamExt;
@@ -47,6 +46,16 @@ use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+
+/// Maximum number of segments per request advertised via `seg_max` (spec §5.2.4).
+///
+/// This is the maximum number of data descriptors (excluding header and
+/// status) in a single request. The virtio spec requires that a
+/// descriptor chain is no longer than the queue size, and each block
+/// request uses one descriptor for the header and one for the status
+/// byte, so the data segment limit is `DEFAULT_QUEUE_SIZE - 2`.
+const DEFAULT_SEG_MAX: u32 = virtio::DEFAULT_QUEUE_SIZE as u32 - 2;
 
 const MAX_IO_DEPTH: usize = 64;
 

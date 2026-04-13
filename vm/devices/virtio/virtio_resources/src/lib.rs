@@ -203,10 +203,6 @@ pub mod vhost_user {
     }
 
     /// Handle for a vhost-user virtio-blk device.
-    ///
-    /// Config reads are proxied from the backend via `GET_CONFIG`,
-    /// with `num_queues` patched at offset 36 to reflect the
-    /// configured queue count.
     #[derive(MeshPayload)]
     pub struct VhostUserBlkHandle {
         /// Connected Unix socket fd to the vhost-user backend.

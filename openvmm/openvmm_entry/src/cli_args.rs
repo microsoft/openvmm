@@ -251,7 +251,7 @@ options:
     ///   tag=NAME                           — mount tag (required for type=fs)
     ///   num_queues=N                       — queue count (type=blk/fs only)
     ///   queue_size=N                       — per-queue size (type=blk/fs only)
-    ///   queue_sizes=[N:N:N]                — per-queue sizes (device_id= only)
+    ///   queue_sizes=[N,N,N]                — per-queue sizes (device_id= only)
     ///   pcie_port=NAME                     — present on PCIe under the specified port
     /// ```
     ///
@@ -260,7 +260,7 @@ options:
     /// ```text
     ///   --vhost-user /tmp/vhost.sock,type=blk
     ///   --vhost-user /tmp/vhost.sock,type=blk,num_queues=4,queue_size=512
-    ///   --vhost-user /tmp/vhost.sock,device_id=2,queue_sizes=[128:128]
+    ///   --vhost-user /tmp/vhost.sock,device_id=2,queue_sizes=[128,128]
     ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
     ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
     ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,num_queues=2,queue_size=1024
@@ -2009,13 +2009,36 @@ pub struct VhostUserCli {
     pub pcie_port: Option<String>,
 }
 
+/// Split a string on commas, but not inside `[…]` brackets.
+#[cfg(target_os = "linux")]
+fn split_respecting_brackets(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth = 0u32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push(&s[start..]);
+    result
+}
+
 #[cfg(target_os = "linux")]
 impl FromStr for VhostUserCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        let mut opts = s.split(',');
-        let socket_path = opts.next().context("missing socket path")?.to_string();
+        // Split on commas, but not inside brackets (for queue_sizes=[N,N]).
+        let parts = split_respecting_brackets(s);
+        let mut parts_iter = parts.into_iter();
+        let socket_path = parts_iter.next().context("missing socket path")?.to_string();
 
         let mut device_id: Option<u16> = None;
         let mut tag: Option<String> = None;
@@ -2024,7 +2047,7 @@ impl FromStr for VhostUserCli {
         let mut num_queues: Option<u16> = None;
         let mut queue_size: Option<u16> = None;
         let mut queue_sizes: Option<Vec<u16>> = None;
-        for opt in opts {
+        for opt in parts_iter {
             let (key, val) = opt.split_once('=').context("expected key=value option")?;
             match key {
                 "type" => {
@@ -2052,7 +2075,7 @@ impl FromStr for VhostUserCli {
                         .and_then(|v| v.strip_suffix(']'))
                         .context("queue_sizes must be bracketed: [N,N,N]")?;
                     let sizes: Vec<u16> = trimmed
-                        .split(':')
+                        .split(',')
                         .map(|s| s.parse().context("invalid queue size in queue_sizes"))
                         .collect::<anyhow::Result<_>>()?;
                     anyhow::ensure!(!sizes.is_empty(), "queue_sizes must be non-empty");
@@ -2084,7 +2107,7 @@ impl FromStr for VhostUserCli {
             None => {
                 let queue_sizes = queue_sizes
                     .take()
-                    .context("device_id= requires queue_sizes=[N:N:...]")?;
+                    .context("device_id= requires queue_sizes=[N,N,...]")?;
                 VhostUserDeviceTypeCli::Other {
                     device_id: device_id.unwrap(),
                     queue_sizes,

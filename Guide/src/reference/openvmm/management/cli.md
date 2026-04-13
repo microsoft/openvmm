@@ -39,18 +39,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
-* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,pcie_port=<PORT>]`: Attach a
+* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,num_queues=<N>][,queue_size=<N>][,pcie_port=<PORT>]`: Attach a
   vhost-user device backed by an external process over a Unix socket (Linux
   only). The backend process must already be listening on `SOCKET_PATH`.
   Supported `type` values: `blk`, `fs`. For `type=fs`, `tag=<NAME>` is required
   and specifies the mount tag exposed to the guest (max 36 bytes).
+  `num_queues` and `queue_size` control the queue layout (defaults: blk
+  num_queues=1/queue_size=128, fs num_queues=1/queue_size=1024).
   Alternatively, use `device_id=<N>` instead of `type=` to specify the numeric
-  virtio device ID directly. Examples:
+  virtio device ID directly, with `queue_sizes=[N,N,N]` for per-queue sizes.
+  Examples:
   ```sh
   --vhost-user /tmp/vhost-blk.sock,type=blk
+  --vhost-user /tmp/vhost-blk.sock,type=blk,num_queues=4,queue_size=512
   --vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
-  --vhost-user /tmp/vhost.sock,device_id=26
+  --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,num_queues=2,queue_size=1024
+  --vhost-user /tmp/vhost.sock,device_id=26,queue_sizes=[256,256]
   ```
 
 Serial devices can be configured to appear as different devices inside the guest:

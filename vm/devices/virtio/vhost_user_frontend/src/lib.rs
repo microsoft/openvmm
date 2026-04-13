@@ -172,7 +172,13 @@ impl VhostUserFrontend {
             !config.queue_sizes.is_empty(),
             "queue_sizes must be non-empty"
         );
-        let max_queues = config.queue_sizes.len() as u16;
+        let max_queues = u16::try_from(config.queue_sizes.len()).map_err(|_| {
+            anyhow::anyhow!(
+                "queue_sizes has {} entries, exceeding maximum supported queue count {}",
+                config.queue_sizes.len(),
+                u16::MAX
+            )
+        })?;
         if let Some(backend_max) = backend_max_queues {
             anyhow::ensure!(
                 max_queues <= backend_max,
@@ -1688,21 +1694,29 @@ mod tests {
     }
 
     /// BLK with num_queues=2, queue_size=512: 2 queues, queue_size returns
-    /// 512 for all, config patch at offset 36 overrides num_queues.
+    /// 512 for all, config patch overrides num_queues.
     #[async_test]
     async fn blk_multi_queue_config(driver: DefaultDriver) {
+        use virtio::spec::blk;
+
         let num_queues: u16 = 2; // MockBackendDevice supports max 2
         let queue_size: u16 = 512;
+        let num_queues_offset = core::mem::offset_of!(blk::VirtioBlkConfig, num_queues) as u16;
 
         let config = VhostUserConfig {
             device_id: VirtioDeviceType::BLK,
             config_space: None,
             queue_sizes: vec![queue_size; num_queues as usize],
-            config_patches: vec![(36u16, num_queues.to_le_bytes().to_vec())],
+            config_patches: vec![(num_queues_offset, num_queues.to_le_bytes().to_vec())],
         };
 
-        let (frontend, _guest_memory, backend_task) =
-            setup_frontend_backend_with_config(&driver, MockBackendDevice::new(), config).await;
+        // Backend needs config space so CONFIG protocol feature is
+        // negotiated and GET_CONFIG works.
+        let mut mock = MockBackendDevice::new();
+        mock.traits.device_register_length = 64;
+
+        let (mut frontend, _guest_memory, backend_task) =
+            setup_frontend_backend_with_config(&driver, mock, config).await;
 
         // Verify queue count.
         assert_eq!(frontend.traits().max_queues, num_queues);
@@ -1711,6 +1725,11 @@ mod tests {
         for i in 0..num_queues {
             assert_eq!(frontend.queue_size(i), queue_size);
         }
+
+        // Verify the config patch is applied: reading num_queues from
+        // config space should return the patched value.
+        let val = frontend.read_registers_u32(num_queues_offset).await;
+        assert_eq!(val, num_queues as u32);
 
         drop(frontend);
         backend_task.await;

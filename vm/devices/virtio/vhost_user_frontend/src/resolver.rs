@@ -141,10 +141,11 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserBlkHandle> for VhostUserF
         let queue_size = resource.queue_size.unwrap_or(128);
         let queue_sizes = vec![queue_size; num_queues as usize];
 
-        // Patch the num_queues field in the virtio_blk config at offset
-        // 36 (per virtio spec §5.2.4). Config reads are proxied from the
-        // backend with this patch applied; writes pass through unchanged.
-        let config_patches = vec![(36u16, num_queues.to_le_bytes().to_vec())];
+        // Patch the num_queues field in the backend's config space.
+        // Config reads are proxied from the backend with this patch
+        // applied; writes pass through unchanged.
+        let num_queues_offset = core::mem::offset_of!(virtio::spec::blk::VirtioBlkConfig, num_queues) as u16;
+        let config_patches = vec![(num_queues_offset, num_queues.to_le_bytes().to_vec())];
 
         let config = crate::VhostUserConfig {
             device_id: VirtioDeviceType::BLK,
