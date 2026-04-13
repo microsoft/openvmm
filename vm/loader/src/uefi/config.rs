@@ -425,7 +425,8 @@ pub struct PcieBarApertureEntry {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub reserved: u32,
+    /// Unique identifier for this root bridge, matching the ACPI _UID.
+    pub uid: u32,
     pub low_mmio_base: u64,
     pub low_mmio_length: u64,
     pub high_mmio_base: u64,

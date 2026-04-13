@@ -202,7 +202,7 @@ pub fn load_uefi(
                     segment: b.segment,
                     start_bus: b.start_bus,
                     end_bus: b.end_bus,
-                    reserved: 0,
+                    uid: b.index,
                     low_mmio_base: b.low_mmio.start(),
                     low_mmio_length: b.low_mmio.len(),
                     high_mmio_base: b.high_mmio.start(),
