@@ -279,7 +279,11 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
                     with_winbond_super_io_and_floppy_full: !self.stub_floppy,
                 };
-                result.attach_pit();
+                result.capabilities.with_ioapic = true;
+                result.capabilities.with_pic = true;
+                if matches!(self.arch, MachineArch::X86_64) {
+                    result.attach_pit();
+                }
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
@@ -312,6 +316,9 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
+                result.capabilities.with_ioapic = is_x86;
+                result.capabilities.with_pic = is_x86;
+                result.capabilities.with_psp = self.psp;
                 if is_x86 {
                     result.attach_pit();
                 }
@@ -354,6 +361,8 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
+                result.capabilities.with_ioapic = is_x86;
+                result.capabilities.with_psp = self.psp;
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
@@ -382,29 +391,12 @@ impl VmManifestBuilder {
                 }
             }
         }
-        result.capabilities = result.compute_capabilities();
 
         Ok(result)
     }
 }
 
 impl VmChipsetResult {
-    fn compute_capabilities(&self) -> VmChipsetCapabilities {
-        VmChipsetCapabilities {
-            with_ioapic: self.chipset.with_generic_ioapic,
-            with_pic: self.chipset.with_generic_pic,
-            with_pit: self.has_pit(),
-            with_psp: self.chipset.with_generic_psp,
-        }
-    }
-
-    /// Returns true when the chipset device list contains a PIT handle.
-    fn has_pit(&self) -> bool {
-        self.chipset_devices
-            .iter()
-            .any(|d| d.resource.id() == PitDeviceHandle::ID)
-    }
-
     fn attach_i8042(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: "i8042".to_owned(),
@@ -417,16 +409,15 @@ impl VmChipsetResult {
     }
 
     fn attach_pit(&mut self) -> &mut Self {
-        const PIT_ID: &str = PitDeviceHandle::ID;
-
-        if self.has_pit() {
+        if self.capabilities.with_pit {
             return self;
         }
 
         self.chipset_devices.push(ChipsetDeviceHandle {
-            name: PIT_ID.to_owned(),
+            name: PitDeviceHandle::ID.to_owned(),
             resource: PitDeviceHandle.into_resource(),
         });
+        self.capabilities.with_pit = true;
         self
     }
 
@@ -651,6 +642,6 @@ mod tests {
             .count();
 
         assert_eq!(pit_count, 1, "PIT handle should only be attached once");
-        assert!(result.has_pit());
+        assert!(result.capabilities.with_pit);
     }
 }
