@@ -139,8 +139,8 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let kvm = kvm::Kvm::new()?;
-        let mut cpuid_entries = kvm
+        let mut cpuid_entries = self
+            .kvm
             .supported_cpuid()?
             .into_iter()
             .filter_map(|entry| {
@@ -259,7 +259,7 @@ impl virt::Hypervisor for Kvm {
 
         let cpuid_entries = CpuidLeafSet::new(cpuid_entries);
 
-        let vm = kvm.new_vm()?;
+        let vm = self.kvm.new_vm()?;
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;

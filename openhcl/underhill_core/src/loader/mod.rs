@@ -80,6 +80,7 @@ pub enum Error {
     #[cfg(guest_arch = "x86_64")]
     #[error("acpi tables require at least two mmio ranges")]
     UnsupportedMmio,
+    #[cfg(guest_arch = "aarch64")]
     #[error("expected GICv3 topology")]
     ExpectedGicV3,
 }
