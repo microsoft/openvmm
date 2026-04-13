@@ -23,7 +23,6 @@ bitfield-struct.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 inspect_counters.workspace = true
