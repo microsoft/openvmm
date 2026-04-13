@@ -11,7 +11,7 @@ rust-version.workspace = true
 virt_mshv = ["dep:virt_mshv"]
 
 # Enable building with KVM support.
-virt_kvm = ["dep:virt_kvm", "dep:kvm"]
+virt_kvm = ["dep:virt_kvm"]
 
 # Enable building with WHP support.
 virt_whp = ["dep:virt_whp"]
@@ -27,7 +27,6 @@ openvmm_core.workspace = true
 vm_resource.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-kvm = { workspace = true, optional = true }
 virt_kvm = { workspace = true, optional = true }
 virt_mshv = { workspace = true, optional = true }
 
