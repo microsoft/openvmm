@@ -8,7 +8,7 @@ fn err(err: openssl::error::ErrorStack, op: &'static str) -> X509Error {
 }
 
 pub struct X509CertificateInner {
-    cert: openssl::x509::X509,
+    pub(crate) cert: openssl::x509::X509,
 }
 
 impl X509CertificateInner {

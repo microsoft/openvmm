@@ -13,7 +13,7 @@ use thiserror::Error;
 /// An error for RSA operations.
 #[derive(Debug, Error)]
 #[error("RSA error")]
-pub struct RsaError(#[source] pub(crate) super::BackendError);
+pub struct RsaError(#[source] super::BackendError);
 
 /// Hash algorithm for RSA-OAEP encryption/decryption.
 #[derive(Debug, Clone, Copy)]

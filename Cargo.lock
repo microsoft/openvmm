@@ -2347,11 +2347,11 @@ name = "fuzz_firmware_uefi"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "crypto",
  "firmware_uefi",
  "guestmem",
  "guid",
  "libfuzzer-sys",
- "openssl",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "xtask_fuzz",

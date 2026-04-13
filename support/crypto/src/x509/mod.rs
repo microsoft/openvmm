@@ -16,7 +16,7 @@ use thiserror::Error;
 pub struct X509Error(#[source] super::BackendError);
 
 /// An X.509 certificate.
-pub struct X509Certificate(sys::X509CertificateInner);
+pub struct X509Certificate(pub(crate) sys::X509CertificateInner);
 
 impl X509Certificate {
     /// Parse an X.509 certificate from DER-encoded bytes.
