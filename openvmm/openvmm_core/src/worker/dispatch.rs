@@ -110,9 +110,7 @@ use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
-use vm_topology::processor::aarch64::Aarch64PlatformConfig;
 use vm_topology::processor::aarch64::Aarch64Topology;
-use vm_topology::processor::aarch64::GicV2mInfo;
 use vm_topology::processor::aarch64::GicVersion;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
@@ -498,6 +496,9 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
         &self,
         platform_info: &virt::PlatformInfo,
     ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
+        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+        use vm_topology::processor::aarch64::GicV2mInfo;
+
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
