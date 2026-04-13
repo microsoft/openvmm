@@ -338,10 +338,10 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
             new_request_receiver,
             add_resize_listener_receiver,
         )?;
-        // Restore the negotiation state so the driver doesn't re-negotiate
-        // over an already-established channel after servicing.
-        let mut storvsc = storvsc;
-        storvsc.has_negotiated = state.has_negotiated;
+        // Always re-negotiate on restore. The VMBus UIO channel is
+        // re-created from scratch during servicing (unbind hv_storvsc,
+        // bind uio_hv_generic, open new fd), so the host storvsp
+        // expects a fresh BEGIN_INITIALIZATION handshake.
 
         let storvsc_driver = Self {
             storvsc: Mutex::new(TaskControl::new(StorvscState)),

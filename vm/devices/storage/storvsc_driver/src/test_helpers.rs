@@ -264,7 +264,7 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
         self.task.start();
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn get_mut(&mut self) -> &Storvsc<T> {
         self.task.get_mut().1.unwrap()
     }
