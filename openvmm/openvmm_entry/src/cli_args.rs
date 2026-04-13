@@ -2010,15 +2010,20 @@ pub struct VhostUserCli {
 }
 
 /// Split a string on commas, but not inside `[…]` brackets.
+///
+/// Returns an error on mismatched brackets (unmatched `]` or unclosed `[`).
 #[cfg(target_os = "linux")]
-fn split_respecting_brackets(s: &str) -> Vec<&str> {
+fn split_respecting_brackets(s: &str) -> anyhow::Result<Vec<&str>> {
     let mut result = Vec::new();
     let mut start = 0;
-    let mut depth = 0u32;
+    let mut depth: i32 = 0;
     for (i, c) in s.char_indices() {
         match c {
             '[' => depth += 1,
-            ']' => depth = depth.saturating_sub(1),
+            ']' => {
+                depth -= 1;
+                anyhow::ensure!(depth >= 0, "unmatched ']' in option string");
+            }
             ',' if depth == 0 => {
                 result.push(&s[start..i]);
                 start = i + 1;
@@ -2026,8 +2031,9 @@ fn split_respecting_brackets(s: &str) -> Vec<&str> {
             _ => {}
         }
     }
+    anyhow::ensure!(depth == 0, "unclosed '[' in option string");
     result.push(&s[start..]);
-    result
+    Ok(result)
 }
 
 #[cfg(target_os = "linux")]
@@ -2036,7 +2042,7 @@ impl FromStr for VhostUserCli {
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
         // Split on commas, but not inside brackets (for queue_sizes=[N,N]).
-        let parts = split_respecting_brackets(s);
+        let parts = split_respecting_brackets(s)?;
         let mut parts_iter = parts.into_iter();
         let socket_path = parts_iter
             .next()
