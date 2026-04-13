@@ -23,6 +23,7 @@ use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::FlowPlatformKind;
+use flowey_core::node::FlowPlatformLinuxDistro;
 use flowey_core::node::NodeHandle;
 use flowey_core::node::user_facing::GhPermission;
 use flowey_core::node::user_facing::GhPermissionValue;
@@ -197,7 +198,21 @@ pub fn github_yaml(
                             }
                         },
                     )
-                    .replace("{{FLOWEY_OUTDIR}}", &format!("{RUNNER_TEMP}/{flowey_path}"));
+                    .replace("{{FLOWEY_OUTDIR}}", &format!("{RUNNER_TEMP}/{flowey_path}"))
+                    .replace(
+                        "{{LINUX_INSTALL_DEPS}}",
+                        match platform {
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux) => {
+                                "sudo tdnf install -y gcc"
+                            }
+                            FlowPlatform::Linux(FlowPlatformLinuxDistro::Fedora) => {
+                                "sudo dnf install -y gcc"
+                            }
+                            _ => {
+                                "i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let \"i=i+1\"; sleep 1; done;\n    sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y"
+                            }
+                        },
+                    );
 
                 let bootstrap_steps: serde_yaml::Sequence =
                     serde_yaml::from_str(&gh_bootstrap_template)
