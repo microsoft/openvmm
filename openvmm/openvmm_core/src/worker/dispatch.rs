@@ -492,6 +492,7 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
     }
 }
 
+#[cfg(guest_arch = "aarch64")]
 impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
     fn to_topology(
         &self,
