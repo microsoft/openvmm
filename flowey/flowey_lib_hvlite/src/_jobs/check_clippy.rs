@@ -165,7 +165,10 @@ impl SimpleFlowNode for Node {
                     target.operating_system,
                     target_lexicon::OperatingSystem::Darwin(_)
                 ) {
-                    exclude.extend(["openssl_kdf", "vmgs_lib", "disk_crypt"].map(|x| x.into()));
+                    exclude.extend(
+                        ["openssl_kdf", "vmgs_lib", "disk_crypt", "firmware_uefi"]
+                            .map(|x| x.into()),
+                    );
                 }
 
                 Ok(Some(exclude))
