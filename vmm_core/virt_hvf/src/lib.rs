@@ -127,7 +127,9 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                 redistributors_base,
             } => redistributors_base,
             GicVersion::V2 { .. } => {
-                anyhow::bail!("HVF does not support GICv2; only GICv3 is supported");
+                return Err(
+                    anyhow::anyhow!("HVF does not support GICv2; only GICv3 is supported").into(),
+                );
             }
         };
 
