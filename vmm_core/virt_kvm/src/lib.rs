@@ -109,6 +109,10 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 
+    /// The GIC device fd, kept alive for the VM lifetime.
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    _gic_device: kvm::Device,
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,

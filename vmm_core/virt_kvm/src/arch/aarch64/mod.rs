@@ -546,7 +546,7 @@ pub struct KvmProtoPartition<'a> {
 }
 
 impl KvmProtoPartition<'_> {
-    fn add_gicv3(&mut self, redistributors_base: u64) -> Result<(), KvmError> {
+    fn add_gicv3(&mut self, redistributors_base: u64) -> Result<kvm::Device, KvmError> {
         // KVM requires the distributor and redistributor bases be _64KiB aligned_,
         // these ranges come from the OpenVMM MMIO gaps.
         const GIC_ALIGNMENT: u64 = 0x10000;
@@ -613,12 +613,10 @@ impl KvmProtoPartition<'_> {
                 .map_err(kvm::Error::SetDeviceAttr)?;
         }
 
-        // TODO: save gicv3 to a File to ensure it is cleaned up.
-        std::mem::forget(gicv3);
-        Ok(())
+        Ok(gicv3)
     }
 
-    fn add_gicv2(&mut self, cpu_interface_base: u64) -> Result<(), KvmError> {
+    fn add_gicv2(&mut self, cpu_interface_base: u64) -> Result<kvm::Device, KvmError> {
         let gic_dist_base: u64 = self.config.processor_topology.gic_distributor_base();
 
         let gic_nr_irqs: u32 = self.config.processor_topology.gic_nr_irqs();
@@ -673,9 +671,7 @@ impl KvmProtoPartition<'_> {
                 .map_err(kvm::Error::SetDeviceAttr)?;
         }
 
-        // TODO: save gicv2 to a File to ensure it is cleaned up.
-        std::mem::forget(gicv2);
-        Ok(())
+        Ok(gicv2)
     }
 
     fn set_timer_ppis(&mut self, virt: u32, phys: u32) -> Result<(), KvmError> {
@@ -726,12 +722,12 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
         }
 
         // Set up the GIC device matching the topology's GIC version.
-        match self.config.processor_topology.gic_version() {
+        let gic_device = match self.config.processor_topology.gic_version() {
             GicVersion::V3 {
                 redistributors_base,
             } => self.add_gicv3(redistributors_base)?,
             GicVersion::V2 { cpu_interface_base } => self.add_gicv2(cpu_interface_base)?,
-        }
+        };
 
         // Configure the virtual timer PPI from topology. KVM also requires
         // a physical timer PPI, but we don't expose it to the guest.
@@ -772,6 +768,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 })
                 .collect(),
             caps,
+            _gic_device: gic_device,
             gic_v2m: self.config.processor_topology.gic_v2m(),
             synic_ports: Default::default(),
         });
