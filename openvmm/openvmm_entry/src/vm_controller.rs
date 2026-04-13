@@ -108,11 +108,11 @@ pub struct VmController {
     pub(crate) vm_worker: WorkerHandle,
     pub(crate) vnc_worker: Option<WorkerHandle>,
     pub(crate) gdb_worker: Option<WorkerHandle>,
-    pub(crate) diag_inspector: DiagInspector,
+    pub(crate) diag_inspector: Option<DiagInspector>,
     pub(crate) vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
     pub(crate) ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     pub(crate) vm_rpc: mesh::Sender<VmRpc>,
-    pub(crate) paravisor_diag: Arc<diag_client::DiagClient>,
+    pub(crate) paravisor_diag: Option<Arc<diag_client::DiagClient>>,
     pub(crate) igvm_path: Option<PathBuf>,
     pub(crate) memory_backing_file: Option<PathBuf>,
     pub(crate) memory: u64,
@@ -346,7 +346,9 @@ impl VmController {
                     .field("gdb", self.gdb_worker.as_ref());
             }
             InspectTarget::Paravisor => {
-                self.diag_inspector.inspect_mut(req);
+                if let Some(inspector) = &mut self.diag_inspector {
+                    inspector.inspect_mut(req);
+                }
             }
         });
         deferred.inspect(obj);
@@ -407,7 +409,11 @@ impl VmController {
         let start;
         if params.user_mode_only {
             start = Instant::now();
-            self.paravisor_diag.restart().await?;
+            self.paravisor_diag
+                .as_ref()
+                .context("no paravisor diagnostics client")?
+                .restart()
+                .await?;
         } else {
             let igvm = params
                 .igvm

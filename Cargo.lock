@@ -5374,7 +5374,6 @@ dependencies = [
  "openvmm_ttrpc_vmservice",
  "pal",
  "pal_async",
- "parking_lot",
  "pcie_remote_resources",
  "prost",
  "rustyline",
