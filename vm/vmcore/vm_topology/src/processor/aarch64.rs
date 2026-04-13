@@ -158,7 +158,7 @@ impl TopologyBuilder<Aarch64Topology> {
             }
         }
         let nr = self.arch.platform.gic_nr_irqs;
-        if nr < 64 || nr > 992 || nr % 32 != 0 {
+        if !(64..=992).contains(&nr) || !nr.is_multiple_of(32) {
             return Err(InvalidTopology::InvalidGicNrIrqs(nr));
         }
         let mpidrs = (0..proc_count).map(|vp_index| {
