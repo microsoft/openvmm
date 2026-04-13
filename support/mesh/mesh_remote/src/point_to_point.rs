@@ -44,8 +44,10 @@ use zerocopy::KnownLayout;
 /// port, for example.
 ///
 /// There is no support for OS resources (handles or file descriptors) in this
-/// mesh implementation. Any attempt to send OS resources will fail the
-/// underlying channel.
+/// mesh implementation. If a message containing OS resources is sent, the
+/// resources are dropped and the message is lost. Because this breaks the
+/// port's event sequence, all subsequent messages on the same port are also
+/// lost. Avoid sending OS resources over a point-to-point mesh.
 #[must_use]
 pub struct PointToPointMesh {
     task: Task<()>,
@@ -303,5 +305,40 @@ mod tests {
         assert_eq!(b.recv().await.unwrap(), 5);
         left.shutdown().await;
         right.shutdown().await;
+    }
+
+    /// Sending OS resources over a point-to-point mesh silently breaks the
+    /// affected port: the message containing the resource is lost, and all
+    /// subsequent messages on the same port are also lost because the
+    /// port's sequence counter gets out of sync.
+    #[async_test]
+    async fn test_point_to_point_os_resource_dropped(driver: DefaultDriver) {
+        let (left_sock, right_sock) = UnixStream::pair().unwrap();
+        let left_sock = PolledSocket::new(&driver, left_sock).unwrap();
+        let right_sock = PolledSocket::new(&driver, right_sock).unwrap();
+
+        // UnixStream is an OS resource (OwnedFd on Unix, OwnedSocket on
+        // Windows), so sending one exercises the OS resource path.
+        let (sender, sender_port) = channel::<UnixStream>();
+        let (receiver_port, mut receiver) = channel::<UnixStream>();
+        let left = PointToPointMesh::new(&driver, left_sock, sender_port.into());
+        let right = PointToPointMesh::new(&driver, right_sock, receiver_port.into());
+
+        // Send a message with an OS resource — it will be silently dropped.
+        let (fd, _other) = UnixStream::pair().unwrap();
+        sender.send(fd);
+
+        // Drop the sender to close the channel. The close event won't be
+        // delivered because the port is stuck on the missing sequence number,
+        // so recv() will only see the error when the mesh shuts down.
+        drop(sender);
+
+        left.shutdown().await;
+        right.shutdown().await;
+
+        // After shutdown, the receiver should see an error (not a successful
+        // message).
+        let result = receiver.recv().await;
+        assert!(result.is_err(), "expected error, got {:?}", result);
     }
 }

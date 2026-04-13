@@ -3,6 +3,18 @@
 
 //! Infrastructure to create a multi-process mesh and spawn child processes
 //! within it.
+//!
+//! Call [`Mesh::new()`] to create a process group. Workers launched on the mesh
+//! can run in child processes connected by the platform IPC transport
+//! (`mesh_remote`): Unix domain sockets on Linux, ALPC on Windows.
+//!
+//! The child process receives an invitation via an environment variable and
+//! calls [`try_run_mesh_host()`] early in `main()` to join the mesh. Once
+//! joined, ports (and the resources they carry) flow transparently between
+//! parent and child.
+//!
+//! This crate is used by OpenVMM to launch worker processes and by OpenHCL to
+//! run device emulators in isolated child processes.
 
 // UNSAFETY: Needed to accept a raw Fd/Handle from our spawning process.
 #![expect(unsafe_code)]
