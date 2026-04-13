@@ -4436,9 +4436,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-bindings"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805cf329582f770f62cc612716a04c14815276ae266b6298375a672d3c5a5184"
+checksum = "a94fc3871dd23738188e5bc76a1d1a5930ebcaf9308c560a7274aa62b1770594"
 dependencies = [
  "libc",
  "num_enum",
@@ -4450,9 +4450,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-ioctls"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefaab4c067cf5226a917227640d835327b25b71a8d465f815f74f490344e10a"
+checksum = "1339723fe3a26baf4041459de20ad923e89d312c3bb25dbf9f60738c22a47f5e"
 dependencies = [
  "libc",
  "mshv-bindings",
@@ -8943,6 +8943,7 @@ dependencies = [
  "tracing",
  "virt",
  "virt_support_x86emu",
+ "vm_topology",
  "vmcore",
  "x86defs",
  "x86emu",

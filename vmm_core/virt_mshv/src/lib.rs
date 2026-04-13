@@ -117,20 +117,48 @@ impl virt::Hypervisor for LinuxMshv {
         // Open /dev/mshv.
         let mshv = Mshv::new().map_err(Error::OpenMshv)?;
 
-        // Create VM.
-        //
-        // TODO: really need to pass some partition properties here (e.g., for
-        // APIC configuration), but the underlying crate just hardcodes
-        // everything.
+        // Build partition creation flags based on the requested
+        // configuration. LAPIC is always enabled (the hypervisor emulates
+        // the local APIC). X2APIC is only enabled when the topology
+        // requests it.
+        let mut pt_flags: u64 = set_bits!(
+            u64,
+            mshv_bindings::MSHV_PT_BIT_LAPIC,
+            mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
+            mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES
+        );
+
+        match config.processor_topology.apic_mode() {
+            vm_topology::processor::x86::ApicMode::X2ApicSupported
+            | vm_topology::processor::x86::ApicMode::X2ApicEnabled => {
+                pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_X2APIC;
+            }
+            vm_topology::processor::x86::ApicMode::XApic => {}
+        }
+
+        // pt_cpu_fbanks expects *disabled* processor features (bit = 1
+        // means disabled). Invert our supported masks so unsupported
+        // features are disabled. The hypervisor will further intersect
+        // with host capabilities.
+        let create_args = mshv_bindings::mshv_create_partition_v2 {
+            pt_flags,
+            pt_isolation: mshv_bindings::MSHV_PT_ISOLATION_NONE as u64,
+            pt_num_cpu_fbanks: mshv_bindings::MSHV_NUM_CPU_FEATURES_BANKS as u16,
+            pt_cpu_fbanks: [
+                !u64::from(supported_processor_features()),
+                !u64::from(supported_processor_features1()),
+            ],
+            pt_disabled_xsave: !u64::from(supported_xsave_features()),
+            ..Default::default()
+        };
+
+        // Create the VM with our explicit partition configuration.
         let vmfd: VmFd;
         loop {
-            match mshv.create_vm() {
+            match mshv.create_vm_with_args(&create_args) {
                 Ok(fd) => vmfd = fd,
                 Err(e) => {
                     if e.errno() == libc::EINTR {
-                        // If the error returned is EINTR, which means the
-                        // ioctl has been interrupted, we have to retry as
-                        // this can't be considered as a regular error.
                         continue;
                     } else {
                         return Err(Error::CreateVMFailed);
@@ -138,6 +166,34 @@ impl virt::Hypervisor for LinuxMshv {
                 }
             }
             break;
+        }
+
+        // Set synthetic processor features before initialization when the
+        // guest interface is configured. These control which Hyper-V
+        // enlightenments are exposed to the guest.
+        if config.hv_config.is_some() {
+            let synthetic_features = hvdef::HvPartitionSyntheticProcessorFeatures::new()
+                .with_hypervisor_present(true)
+                .with_hv1(true)
+                .with_access_partition_reference_counter(true)
+                .with_access_synic_regs(true)
+                .with_access_synthetic_timer_regs(true)
+                .with_access_partition_reference_tsc(true)
+                .with_access_frequency_regs(true)
+                .with_access_intr_ctrl_regs(true)
+                .with_access_vp_index(true)
+                .with_access_hypercall_regs(true)
+                .with_access_guest_idle_reg(true)
+                .with_tb_flush_hypercalls(true)
+                .with_synthetic_cluster_ipi(true)
+                .with_direct_synthetic_timers(true)
+                .with_access_vp_regs(true);
+
+            vmfd.set_partition_property(
+                mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
+                u64::from(synthetic_features),
+            )
+            .map_err(|e| Error::SetPartitionProperty(e.into()))?;
         }
 
         vmfd.initialize()
@@ -1123,6 +1179,8 @@ pub enum Error {
     AvailableCheck(#[source] io::Error),
     #[error("failed to open /dev/mshv")]
     OpenMshv(#[source] MshvError),
+    #[error("failed to set partition property")]
+    SetPartitionProperty(#[source] anyhow::Error),
     #[error("register access error")]
     Register(#[source] MshvError),
     #[error("install instercept failed")]
@@ -1579,4 +1637,159 @@ impl GuestEventPort for MshvGuestEventPort {
         self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
+}
+
+/// Processor features (bank 0) that we support exposing to guests.
+/// This matches the set that WHP enables by default.
+fn supported_processor_features() -> hvdef::HvX64PartitionProcessorFeatures {
+    hvdef::HvX64PartitionProcessorFeatures::new()
+        .with_sse3_support(true)
+        .with_lahf_sahf_support(true)
+        .with_ssse3_support(true)
+        .with_sse4_1_support(true)
+        .with_sse4_2_support(true)
+        .with_sse4a_support(true)
+        .with_xop_support(true)
+        .with_pop_cnt_support(true)
+        .with_cmpxchg16b_support(true)
+        .with_altmovcr8_support(true)
+        .with_lzcnt_support(true)
+        .with_mis_align_sse_support(true)
+        .with_mmx_ext_support(true)
+        .with_amd3d_now_support(true)
+        .with_extended_amd3d_now_support(true)
+        .with_page_1gb_support(true)
+        .with_aes_support(true)
+        .with_pclmulqdq_support(true)
+        .with_pcid_support(true)
+        .with_fma4_support(true)
+        .with_f16c_support(true)
+        .with_rd_rand_support(true)
+        .with_rd_wr_fs_gs_support(true)
+        .with_smep_support(true)
+        .with_enhanced_fast_string_support(true)
+        .with_bmi1_support(true)
+        .with_bmi2_support(true)
+        .with_movbe_support(true)
+        .with_npiep1_support(true)
+        .with_dep_x87_fpu_save_support(true)
+        .with_rd_seed_support(true)
+        .with_adx_support(true)
+        .with_intel_prefetch_support(true)
+        .with_smap_support(true)
+        .with_hle_support(true)
+        .with_rtm_support(true)
+        .with_rdtscp_support(true)
+        .with_clflushopt_support(true)
+        .with_clwb_support(true)
+        .with_sha_support(true)
+        .with_x87_pointers_saved_support(true)
+        .with_invpcid_support(true)
+        .with_ibrs_support(true)
+        .with_stibp_support(true)
+        .with_ibpb_support(true)
+        .with_unrestricted_guest_support(true)
+        .with_mdd_support(true)
+        .with_fast_short_rep_mov_support(true)
+        .with_rdcl_no_support(true)
+        .with_ibrs_all_support(true)
+        .with_ssb_no_support(true)
+        .with_rsb_a_no_support(true)
+        .with_rd_pid_support(true)
+        .with_umip_support(true)
+        .with_mbs_no_support(true)
+        .with_mb_clear_support(true)
+        .with_taa_no_support(true)
+        .with_tsx_ctrl_support(true)
+}
+
+/// Processor features (bank 1) that we support exposing to guests.
+/// This matches the set that WHP enables by default.
+fn supported_processor_features1() -> hvdef::HvX64PartitionProcessorFeatures1 {
+    hvdef::HvX64PartitionProcessorFeatures1::new()
+        .with_a_count_m_count_support(true)
+        .with_tsc_invariant_support(true)
+        .with_cl_zero_support(true)
+        .with_rdpru_support(true)
+        .with_la57_support(true)
+        .with_mbec_support(true)
+        .with_nested_virt_support(true)
+        .with_psfd_support(true)
+        .with_cet_ss_support(true)
+        .with_cet_ibt_support(true)
+        .with_vmx_exception_inject_support(true)
+        .with_umwait_tpause_support(true)
+        .with_movdiri_support(true)
+        .with_movdir64b_support(true)
+        .with_cldemote_support(true)
+        .with_serialize_support(true)
+        .with_tsc_deadline_tmr_support(true)
+        .with_tsc_adjust_support(true)
+        .with_fz_l_rep_movsb(true)
+        .with_fs_rep_stosb(true)
+        .with_fs_rep_cmpsb(true)
+        .with_tsx_ld_trk_support(true)
+        .with_vmx_ins_outs_exit_info_support(true)
+        .with_sbdr_ssdp_no_support(true)
+        .with_fbsdp_no_support(true)
+        .with_psdp_no_support(true)
+        .with_fb_clear_support(true)
+        .with_btc_no_support(true)
+        .with_ibpb_rsb_flush_support(true)
+        .with_stibp_always_on_support(true)
+        .with_perf_global_ctrl_support(true)
+        .with_npt_execute_only_support(true)
+        .with_npt_ad_flags_support(true)
+        .with_npt_1gb_page_support(true)
+        .with_cmpccxadd_support(true)
+        .with_prefetch_i_support(true)
+        .with_sha512_support(true)
+        .with_rfds_no_support(true)
+        .with_rfds_clear_support(true)
+        .with_sm3_support(true)
+        .with_sm4_support(true)
+}
+
+/// XSAVE features that we support exposing to guests.
+/// This matches the set that WHP enables by default.
+fn supported_xsave_features() -> hvdef::HvX64PartitionProcessorXsaveFeatures {
+    hvdef::HvX64PartitionProcessorXsaveFeatures::new()
+        .with_xsave_support(true)
+        .with_xsaveopt_support(true)
+        .with_avx_support(true)
+        .with_avx2_support(true)
+        .with_fma_support(true)
+        .with_mpx_support(true)
+        .with_avx512_support(true)
+        .with_avx512_dq_support(true)
+        .with_avx512_cd_support(true)
+        .with_avx512_bw_support(true)
+        .with_avx512_vl_support(true)
+        .with_xsave_comp_support(true)
+        .with_xsave_supervisor_support(true)
+        .with_xcr1_support(true)
+        .with_avx512_bitalg_support(true)
+        .with_avx512_ifma_support(true)
+        .with_avx512_vbmi_support(true)
+        .with_avx512_vbmi2_support(true)
+        .with_avx512_vnni_support(true)
+        .with_gfni_support(true)
+        .with_vaes_support(true)
+        .with_avx512_vpopcntdq_support(true)
+        .with_vpclmulqdq_support(true)
+        .with_avx512_bf16_support(true)
+        .with_avx512_vp2_intersect_support(true)
+        .with_avx512_fp16_support(true)
+        .with_xfd_support(true)
+        .with_amx_tile_support(true)
+        .with_amx_bf16_support(true)
+        .with_amx_int8_support(true)
+        .with_avx_vnni_support(true)
+        .with_avx_ifma_support(true)
+        .with_avx_ne_convert_support(true)
+        .with_avx_vnni_int8_support(true)
+        .with_avx_vnni_int16_support(true)
+        .with_avx10_1_256_support(true)
+        .with_avx10_1_512_support(true)
+        .with_amx_fp16_support(true)
 }
