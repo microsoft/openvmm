@@ -659,9 +659,6 @@ impl HclNetworkVFManagerWorker {
         ))
         .await;
 
-        // Force the release of packet capture controls here to ensure
-        // we're not still holding a reference to a Vport, especially
-        // after we've disconnected above.
         self.pkt_capture_controls = None;
     }
 
