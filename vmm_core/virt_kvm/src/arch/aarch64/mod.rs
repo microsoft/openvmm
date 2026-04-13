@@ -21,7 +21,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use kvm::KVM_CAP_ARM_VM_IPA_SIZE;
-use kvm::KVM_CREATE_DEVICE_TEST;
 use kvm::KVM_DEV_ARM_VGIC_CTRL_INIT;
 use kvm::KVM_DEV_ARM_VGIC_GRP_ADDR;
 use kvm::KVM_DEV_ARM_VGIC_GRP_CTRL;
@@ -231,18 +230,12 @@ impl Kvm {
         let kvm = kvm::Kvm::from(file);
         let probe_vm = kvm.new_vm()?;
         let supports_gic_v3 = if probe_vm
-            .create_device(
-                kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3,
-                KVM_CREATE_DEVICE_TEST,
-            )
+            .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3)
             .is_ok()
         {
             true
         } else if probe_vm
-            .create_device(
-                kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2,
-                KVM_CREATE_DEVICE_TEST,
-            )
+            .test_create_device(kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V2)
             .is_ok()
         {
             false
@@ -770,6 +763,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
             caps,
             _gic_device: gic_device,
             gic_v2m: self.config.processor_topology.gic_v2m(),
+            gic_nr_irqs: self.config.processor_topology.gic_nr_irqs(),
             synic_ports: Default::default(),
         });
 
@@ -855,14 +849,18 @@ const KVM_ARM_IRQ_TYPE_SHIFT: u32 = 24;
 const KVM_ARM_IRQ_NUM_MASK: u32 = 0xffff;
 
 const GIC_IRQ_BASE: u32 = 0x20;
-const GIC_IRQ_MAX: u32 = 0x3fb;
 
 impl virt::irqcon::ControlGic for KvmPartitionInner {
     fn set_spi_irq(&self, irq_id: u32, high: bool) {
-        assert!(
-            (GIC_IRQ_BASE..=GIC_IRQ_MAX).contains(&irq_id),
-            "invalid irq_id"
-        );
+        if !(GIC_IRQ_BASE..self.gic_nr_irqs).contains(&irq_id) {
+            tracelimit::warn_ratelimited!(
+                irq_id,
+                high,
+                gic_nr_irqs = self.gic_nr_irqs,
+                "SPI IRQ out of configured range",
+            );
+            return;
+        }
 
         let irqchip_irq =
             (KVM_ARM_IRQ_TYPE_SPI << KVM_ARM_IRQ_TYPE_SHIFT) | ((irq_id) & KVM_ARM_IRQ_NUM_MASK);
@@ -945,10 +943,14 @@ impl virt::Hypervisor for Kvm {
             }
         }
 
-        let ipa_size = self
+        let ipa_size = match self
             .kvm
             .check_extension(KVM_CAP_ARM_VM_IPA_SIZE)
-            .unwrap_or(40) as u8;
+            .map_err(kvm::Error::CheckExtension)?
+        {
+            v if v > 0 => v as u8,
+            _ => 40,
+        };
 
         let vm = self.kvm.new_vm()?;
 

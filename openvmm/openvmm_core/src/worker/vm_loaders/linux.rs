@@ -164,7 +164,10 @@ fn build_dt(
     use vm_topology::processor::aarch64::GicVersion;
 
     let gic_dist_base: u64 = processor_topology.gic_distributor_base();
-    let gic_dist_size: u64 = aarch64defs::GIC_DISTRIBUTOR_SIZE;
+    let gic_dist_size: u64 = match processor_topology.gic_version() {
+        GicVersion::V3 { .. } => aarch64defs::GIC_DISTRIBUTOR_SIZE,
+        GicVersion::V2 { .. } => aarch64defs::GIC_V2_DISTRIBUTOR_SIZE,
+    };
     let (gic_second_base, gic_second_size) = match processor_topology.gic_version() {
         GicVersion::V3 {
             redistributors_base,

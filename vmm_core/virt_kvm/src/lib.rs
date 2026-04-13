@@ -116,6 +116,9 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
+    #[cfg(guest_arch = "aarch64")]
+    gic_nr_irqs: u32,
     synic_ports: virt::synic::SynicPortMap,
 }
 
