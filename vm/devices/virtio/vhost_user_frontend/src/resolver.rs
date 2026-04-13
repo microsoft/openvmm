@@ -144,7 +144,8 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserBlkHandle> for VhostUserF
         // Patch the num_queues field in the backend's config space.
         // Config reads are proxied from the backend with this patch
         // applied; writes pass through unchanged.
-        let num_queues_offset = core::mem::offset_of!(virtio::spec::blk::VirtioBlkConfig, num_queues) as u16;
+        let num_queues_offset =
+            core::mem::offset_of!(virtio::spec::blk::VirtioBlkConfig, num_queues) as u16;
         let config_patches = vec![(num_queues_offset, num_queues.to_le_bytes().to_vec())];
 
         let config = crate::VhostUserConfig {

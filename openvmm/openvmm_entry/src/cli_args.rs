@@ -2038,7 +2038,10 @@ impl FromStr for VhostUserCli {
         // Split on commas, but not inside brackets (for queue_sizes=[N,N]).
         let parts = split_respecting_brackets(s);
         let mut parts_iter = parts.into_iter();
-        let socket_path = parts_iter.next().context("missing socket path")?.to_string();
+        let socket_path = parts_iter
+            .next()
+            .context("missing socket path")?
+            .to_string();
 
         let mut device_id: Option<u16> = None;
         let mut tag: Option<String> = None;

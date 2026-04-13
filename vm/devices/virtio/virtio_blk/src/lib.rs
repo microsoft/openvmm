@@ -10,7 +10,6 @@ pub mod resolver;
 #[cfg(test)]
 mod integration_tests;
 
-use virtio::spec::blk::*;
 use anyhow::Context as _;
 use disk_backend::Disk;
 use futures::StreamExt;
@@ -42,11 +41,11 @@ use virtio::regions::DataRegion;
 use virtio::regions::data_regions;
 use virtio::regions::try_build_gpn_list;
 use virtio::spec::VirtioDeviceFeatures;
+use virtio::spec::blk::*;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-
 
 /// Maximum number of segments per request advertised via `seg_max` (spec §5.2.4).
 ///

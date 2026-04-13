@@ -161,7 +161,8 @@ impl VhostUserFrontend {
             Some(
                 send_get_u64(&socket, VhostUserRequestCode::GET_QUEUE_NUM)
                     .await
-                    .context("GET_QUEUE_NUM failed despite MQ being negotiated")? as u16,
+                    .context("GET_QUEUE_NUM failed despite MQ being negotiated")?
+                    as u16,
             )
         } else {
             None
