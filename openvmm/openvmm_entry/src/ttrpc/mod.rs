@@ -189,56 +189,79 @@ impl VmService {
                 }
             };
 
-            futures::select! { // merge semantics
-                message = vm_service_recv.next() => {
-                    self.vm_controller_events = ctrl_events;
-                    match message {
-                        Some((ctx, message)) => {
-                            match self.handle(ctx, message).await {
-                                HandleAction::None => (),
-                                HandleAction::Quit => break true,
-                            }
-                        }
-                        None => {
-                            tracing::debug!("no more ttrpc requests");
-                            break false;
-                        }
+            // Clone the WaitVm cancel context so we can poll it without
+            // borrowing self.
+            let mut wait_cancel_ctx = self.wait_vm_response.as_mut().map(|(ctx, _)| ctx.clone());
+            let wait_cancel_fut = async {
+                match &mut wait_cancel_ctx {
+                    Some(ctx) => Some(ctx.cancelled().await),
+                    None => std::future::pending().await,
+                }
+            };
+
+            enum Action {
+                VmService(Box<Option<(mesh::CancelContext, vmservice::Vm)>>),
+                InspectService(Option<(mesh::CancelContext, InspectService)>),
+                WorkerRpc(Result<WorkerRpc<()>, mesh::RecvError>),
+                ControllerEvent(Option<VmControllerEvent>),
+                WaitVmCancelled,
+            }
+
+            let action = futures::select! { // merge semantics
+                m = vm_service_recv.next() => Action::VmService(Box::new(m)),
+                m = inspect_service_recv.next() => Action::InspectService(m),
+                r = recv.recv().fuse() => Action::WorkerRpc(r),
+                e = ctrl_fut.fuse() => Action::ControllerEvent(e),
+                _reason = wait_cancel_fut.fuse() => Action::WaitVmCancelled,
+            };
+
+            // Restore controller events (unless the channel closed).
+            if let Action::ControllerEvent(None) = &action {
+                tracing::debug!("controller event channel closed");
+            } else {
+                self.vm_controller_events = ctrl_events;
+            }
+
+            match action {
+                Action::VmService(message) => match *message {
+                    Some((ctx, message)) => match self.handle(ctx, message).await {
+                        HandleAction::None => (),
+                        HandleAction::Quit => break true,
+                    },
+                    None => {
+                        tracing::debug!("no more ttrpc requests");
+                        break false;
                     }
                 },
-                message = inspect_service_recv.next() => {
-                    self.vm_controller_events = ctrl_events;
-                    match message {
-                        Some((ctx, message)) => {
-                            self.handle_inspect(ctx, message).await;
-                        }
-                        None => {
-                            tracing::debug!("no more ttrpc requests");
-                            break false;
-                        }
-                    }
-                },
-                request = recv.recv().fuse() => {
-                    self.vm_controller_events = ctrl_events;
-                    match request {
-                        Ok(WorkerRpc::Restart(rpc)) => rpc.complete(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
-                        Ok(WorkerRpc::Inspect(_)) => (),
-                        Ok(WorkerRpc::Stop) => {
-                            tracing::info!("ttrpc worker stopping");
-                            break false;
-                        }
-                        Err(err) => {
-                            tracing::info!(error = &err as &dyn std::error::Error, "ttrpc worker tearing down");
-                            break false;
-                        }
-                    }
-                },
-                event = ctrl_fut.fuse() => {
-                    self.vm_controller_events = ctrl_events;
-                    if let Some(event) = event {
-                        self.handle_controller_event(event);
-                    } else {
-                        tracing::debug!("controller event channel closed");
-                    }
+                Action::InspectService(Some((ctx, message))) => {
+                    self.handle_inspect(ctx, message).await;
+                }
+                Action::InspectService(None) => {
+                    tracing::debug!("no more ttrpc requests");
+                    break false;
+                }
+                Action::WorkerRpc(Ok(WorkerRpc::Restart(rpc))) => {
+                    rpc.complete(Err(RemoteError::new(anyhow::anyhow!("not supported"))));
+                }
+                Action::WorkerRpc(Ok(WorkerRpc::Inspect(_))) => (),
+                Action::WorkerRpc(Ok(WorkerRpc::Stop)) => {
+                    tracing::info!("ttrpc worker stopping");
+                    break false;
+                }
+                Action::WorkerRpc(Err(err)) => {
+                    tracing::info!(
+                        error = &err as &dyn std::error::Error,
+                        "ttrpc worker tearing down"
+                    );
+                    break false;
+                }
+                Action::ControllerEvent(Some(event)) => {
+                    self.handle_controller_event(event);
+                }
+                Action::ControllerEvent(None) => {} // handled above
+                Action::WaitVmCancelled => {
+                    tracing::debug!("WaitVm client cancelled");
+                    self.wait_vm_response.take();
                 }
             }
         };
@@ -254,7 +277,7 @@ impl VmService {
         }
 
         // Complete any pending WaitVm with an error.
-        if let Some(response) = self.wait_vm_response.take() {
+        if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("server shutting down"))));
         }
 
@@ -298,7 +321,7 @@ struct VmService {
     vm_controller: Option<mesh::Sender<VmControllerRpc>>,
     vm_controller_events: Option<mesh::Receiver<VmControllerEvent>>,
     controller_task: Option<Task<()>>,
-    wait_vm_response: Option<mesh::OneshotSender<Result<(), Status>>>,
+    wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
 }
@@ -332,7 +355,7 @@ enum HandleAction {
 }
 
 impl VmService {
-    async fn handle(&mut self, _ctx: mesh::CancelContext, request: vmservice::Vm) -> HandleAction {
+    async fn handle(&mut self, ctx: mesh::CancelContext, request: vmservice::Vm) -> HandleAction {
         tracing::debug!(?request, "request");
         match request {
             vmservice::Vm::CreateVm(request, response) => {
@@ -351,7 +374,7 @@ impl VmService {
                 }
                 self.vm.take();
                 self.vm_controller_events.take();
-                if let Some(wait_response) = self.wait_vm_response.take() {
+                if let Some((_, wait_response)) = self.wait_vm_response.take() {
                     wait_response.send(Err(grpc_error(anyhow!("VM quit"))));
                 }
                 response.send(Ok(()));
@@ -378,7 +401,7 @@ impl VmService {
                         if self.wait_vm_response.is_some() {
                             response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
                         } else {
-                            self.wait_vm_response = Some(response);
+                            self.wait_vm_response = Some((ctx.clone(), response));
                         }
                     }
                     vmservice::Vm::ModifyResource(request, response) => {
@@ -709,7 +732,7 @@ impl VmService {
         }
         self.vm.take();
         self.vm_controller_events.take();
-        if let Some(response) = self.wait_vm_response.take() {
+        if let Some((_, response)) = self.wait_vm_response.take() {
             response.send(Err(grpc_error(anyhow!("VM torn down"))));
         }
         Ok(())
@@ -729,7 +752,7 @@ impl VmService {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
-                if let Some(response) = self.wait_vm_response.take() {
+                if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
             }
@@ -739,8 +762,13 @@ impl VmService {
                 } else {
                     tracing::info!("VM worker stopped");
                 }
-                if let Some(response) = self.wait_vm_response.take() {
-                    response.send(Err(grpc_error(anyhow!("VM worker stopped"))));
+                if let Some((_, response)) = self.wait_vm_response.take() {
+                    let status = if let Some(err) = &error {
+                        grpc_error(anyhow!("VM worker stopped: {}", err))
+                    } else {
+                        grpc_error(anyhow!("VM worker stopped"))
+                    };
+                    response.send(Err(status));
                 }
                 // Clear VM state since the worker is gone. The controller
                 // task will be awaited during final cleanup.
