@@ -15,6 +15,7 @@
 
 pub mod resolver;
 
+use anyhow::Context as _;
 use guestmem::GuestMemory;
 use guestmem::ShareableRegion;
 use inspect::InspectMut;
@@ -50,21 +51,25 @@ const GPA_TO_VA_OFFSET: u64 = 1 << 52;
 /// Configuration for creating a `VhostUserFrontend`.
 ///
 /// Each device-type resolver builds an appropriate `VhostUserConfig`:
-/// - FS: frontend-owned config space, +1 hiprio queue, sized per handle
-/// - BLK: backend config with num_queues patch, sized per handle
-/// - Generic: no config space, explicit per-queue sizes
+/// - FS: `use_backend_config: false`, full config as a patch at offset 0
+/// - BLK: `use_backend_config: true`, num_queues patched
+/// - Generic: `use_backend_config: true`, no patches
 pub struct VhostUserConfig {
     /// Virtio device ID (e.g., BLK, FS).
     pub device_id: VirtioDeviceType,
-    /// Frontend-owned config space. When `Some`, config reads are served
-    /// locally and `VHOST_USER_PROTOCOL_F_CONFIG` is not negotiated.
-    pub config_space: Option<Vec<u8>>,
+    /// When true, negotiate `VHOST_USER_PROTOCOL_F_CONFIG` with the
+    /// backend and use GET_CONFIG/SET_CONFIG for config reads/writes.
+    /// When false, config reads start from zeros (patches still apply)
+    /// and writes are dropped.
+    pub use_backend_config: bool,
     /// Per-queue sizes. Length determines the queue count; must be
     /// non-empty.
     pub queue_sizes: Vec<u16>,
-    /// Sparse patches applied to GET_CONFIG responses before returning
-    /// to the guest. Each entry is `(byte_offset, replacement_bytes)`.
-    /// Writes pass through to SET_CONFIG unchanged.
+    /// Sparse patches applied to config reads before returning to the
+    /// guest. Each entry is `(byte_offset, replacement_bytes)`. The
+    /// base is either GET_CONFIG (when `use_backend_config` is true)
+    /// or zeros. Writes pass through to SET_CONFIG unchanged when
+    /// `use_backend_config` is true.
     pub config_patches: Vec<(u16, Vec<u8>)>,
 }
 
@@ -85,13 +90,9 @@ pub struct VhostUserFrontend {
     device_traits: DeviceTraits,
     protocol_features: VhostUserProtocolFeatures,
     socket: VhostUserSocket,
-    /// Frontend-owned config space, if provided. When `Some`, config
-    /// reads are served locally and `VHOST_USER_PROTOCOL_F_CONFIG` is
-    /// not negotiated with the backend.
-    config_space: Option<Vec<u8>>,
     /// Per-queue sizes. `queue_size()` indexes into this.
     queue_sizes: Vec<u16>,
-    /// Sparse patches applied to GET_CONFIG responses. Each entry is
+    /// Sparse patches applied to config reads. Each entry is
     /// `(byte_offset, replacement_bytes)`.
     config_patches: Vec<(u16, Vec<u8>)>,
     /// Device feature bits from GET_FEATURES (used to mask guest features).
@@ -136,7 +137,7 @@ impl VhostUserFrontend {
             let wanted = VhostUserProtocolFeatures::new()
                 .with_mq(true)
                 .with_reply_ack(true)
-                .with_config(config.config_space.is_none())
+                .with_config(config.use_backend_config)
                 .with_reset_device(true);
             let negotiated =
                 VhostUserProtocolFeatures::from_bits(proto_features_raw & wanted.into_bits());
@@ -160,7 +161,7 @@ impl VhostUserFrontend {
             Some(
                 send_get_u64(&socket, VhostUserRequestCode::GET_QUEUE_NUM)
                     .await
-                    .unwrap_or(1) as u16,
+                    .context("GET_QUEUE_NUM failed despite MQ being negotiated")? as u16,
             )
         } else {
             None
@@ -192,16 +193,19 @@ impl VhostUserFrontend {
 
         // Determine the config register length.
         //
-        // When the frontend owns config, use the provided length.
-        // Otherwise, if the backend supports GET_CONFIG/SET_CONFIG, use
-        // the vhost-user max config size (256); reads beyond the
-        // backend's actual config space will return zeros.
-        let device_register_length = if let Some(ref cs) = config.config_space {
-            cs.len() as u32
-        } else if negotiated_proto.config() {
+        // When the backend supports GET_CONFIG, use the vhost-user max
+        // config size (256); reads beyond the backend's actual config
+        // space will return zeros. Otherwise, derive the length from
+        // the patches (the guest only sees patched fields).
+        let device_register_length = if negotiated_proto.config() {
             256
         } else {
-            0
+            config
+                .config_patches
+                .iter()
+                .map(|(off, data)| *off as u32 + data.len() as u32)
+                .max()
+                .unwrap_or(0)
         };
 
         let device_traits = DeviceTraits {
@@ -225,7 +229,6 @@ impl VhostUserFrontend {
             device_traits,
             protocol_features: negotiated_proto,
             socket,
-            config_space: config.config_space,
             queue_sizes,
             config_patches: config.config_patches,
             device_features_raw,
@@ -248,28 +251,25 @@ impl VirtioDevice for VhostUserFrontend {
     }
 
     async fn read_registers_u32(&mut self, offset: u16) -> u32 {
-        if let Some(ref config) = self.config_space {
-            return read_config_u32(config, offset as usize);
-        }
-
-        if !self.protocol_features.config() {
-            return 0;
-        }
-        let mut buf = match send_get_config(&self.socket, offset as u32, 4).await {
-            Ok(data) if data.len() >= 4 => {
-                let mut b = [0u8; 4];
-                b.copy_from_slice(&data[..4]);
-                b
+        let mut buf = if self.protocol_features.config() {
+            match send_get_config(&self.socket, offset as u32, 4).await {
+                Ok(data) if data.len() >= 4 => {
+                    let mut b = [0u8; 4];
+                    b.copy_from_slice(&data[..4]);
+                    b
+                }
+                Ok(_) => [0u8; 4],
+                Err(e) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &*e as &dyn std::error::Error,
+                        offset,
+                        "GET_CONFIG failed"
+                    );
+                    [0u8; 4]
+                }
             }
-            Ok(_) => [0u8; 4],
-            Err(e) => {
-                tracelimit::warn_ratelimited!(
-                    error = &*e as &dyn std::error::Error,
-                    offset,
-                    "GET_CONFIG failed"
-                );
-                return 0;
-            }
+        } else {
+            [0u8; 4]
         };
 
         // Apply config patches to the read buffer.
@@ -294,10 +294,6 @@ impl VirtioDevice for VhostUserFrontend {
     }
 
     async fn write_registers_u32(&mut self, offset: u16, val: u32) {
-        if self.config_space.is_some() {
-            return;
-        }
-
         if !self.protocol_features.config() {
             return;
         }
@@ -978,17 +974,6 @@ async fn send_set_config(
     Ok(())
 }
 
-/// Read a little-endian `u32` from config bytes, zero-padding any trailing
-/// bytes when the read overlaps the end of the slice.
-fn read_config_u32(config: &[u8], offset: usize) -> u32 {
-    let mut buf = [0u8; 4];
-    if offset < config.len() {
-        let end = std::cmp::min(offset + buf.len(), config.len());
-        buf[..end - offset].copy_from_slice(&config[offset..end]);
-    }
-    u32::from_le_bytes(buf)
-}
-
 /// Read the used_index from the used ring in guest memory.
 ///
 /// The used ring starts at `params.used_addr`. The `idx` field is at
@@ -1194,7 +1179,7 @@ mod tests {
             frontend_socket,
             VhostUserConfig {
                 device_id: VirtioDeviceType::BLK,
-                config_space: None,
+                use_backend_config: true,
                 queue_sizes: vec![DEFAULT_QUEUE_SIZE; 2],
                 config_patches: vec![],
             },
@@ -1390,7 +1375,7 @@ mod tests {
             device,
             VhostUserConfig {
                 device_id: VirtioDeviceType::BLK,
-                config_space: None,
+                use_backend_config: true,
                 queue_sizes: vec![DEFAULT_QUEUE_SIZE; 2],
                 config_patches: vec![],
             },
@@ -1574,8 +1559,9 @@ mod tests {
         backend_task.await;
     }
 
-    /// When `config_space` is provided, the frontend owns config reads
-    /// locally and does not negotiate VHOST_USER_PROTOCOL_F_CONFIG.
+    /// When `use_backend_config` is false with a full config patch, the
+    /// frontend serves config reads from the patch and does not negotiate
+    /// VHOST_USER_PROTOCOL_F_CONFIG.
     #[async_test]
     async fn frontend_owned_config_space(driver: DefaultDriver) {
         use virtio::spec::fs as virtio_fs;
@@ -1609,9 +1595,9 @@ mod tests {
             frontend_socket,
             VhostUserConfig {
                 device_id: VirtioDeviceType::FS,
-                config_space: Some(config_bytes.clone()),
+                use_backend_config: false,
                 queue_sizes: vec![1024; 2], // hiprio + 1 request queue
-                config_patches: vec![],
+                config_patches: vec![(0, config_bytes.clone())],
             },
         )
         .await
@@ -1665,9 +1651,9 @@ mod tests {
 
         let config = VhostUserConfig {
             device_id: VirtioDeviceType::FS,
-            config_space: Some(fs_config.as_bytes().to_vec()),
+            use_backend_config: false,
             queue_sizes: vec![queue_size; total_queues],
-            config_patches: vec![],
+            config_patches: vec![(0, fs_config.as_bytes().to_vec())],
         };
 
         // Need a mock device with enough queues (3).
@@ -1705,7 +1691,7 @@ mod tests {
 
         let config = VhostUserConfig {
             device_id: VirtioDeviceType::BLK,
-            config_space: None,
+            use_backend_config: true,
             queue_sizes: vec![queue_size; num_queues as usize],
             config_patches: vec![(num_queues_offset, num_queues.to_le_bytes().to_vec())],
         };
@@ -1742,7 +1728,7 @@ mod tests {
 
         let config = VhostUserConfig {
             device_id: VirtioDeviceType::BLK, // device type doesn't matter for this test
-            config_space: None,
+            use_backend_config: true,
             queue_sizes: queue_sizes.clone(),
             config_patches: vec![],
         };
@@ -1767,7 +1753,7 @@ mod tests {
         // MockBackendDevice supports max_queues=2.
         let config = VhostUserConfig {
             device_id: VirtioDeviceType::BLK,
-            config_space: None,
+            use_backend_config: true,
             queue_sizes: vec![256; 4], // 4 > 2
             config_patches: vec![],
         };

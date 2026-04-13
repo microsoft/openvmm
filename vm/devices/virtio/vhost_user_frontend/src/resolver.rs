@@ -69,7 +69,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserGenericHandle>
         );
         let config = crate::VhostUserConfig {
             device_id: VirtioDeviceType(resource.device_id),
-            config_space: None,
+            use_backend_config: true,
             queue_sizes: resource.queue_sizes,
             config_patches: vec![],
         };
@@ -113,9 +113,9 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserFsHandle> for VhostUserFr
 
         let vhost_config = crate::VhostUserConfig {
             device_id: VirtioDeviceType::FS,
-            config_space: Some(config.as_bytes().to_vec()),
+            use_backend_config: false,
             queue_sizes,
-            config_patches: vec![],
+            config_patches: vec![(0, config.as_bytes().to_vec())],
         };
 
         let frontend = connect_frontend(input, resource.socket, vhost_config)
@@ -149,7 +149,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VhostUserBlkHandle> for VhostUserF
 
         let config = crate::VhostUserConfig {
             device_id: VirtioDeviceType::BLK,
-            config_space: None,
+            use_backend_config: true,
             queue_sizes,
             config_patches,
         };
