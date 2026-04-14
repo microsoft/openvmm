@@ -37,8 +37,8 @@ use std::future::Future;
 use std::io;
 use std::os::unix::prelude::*;
 use std::pin::pin;
+use once_cell::sync::OnceCell;
 use std::sync::Arc;
-use std::sync::OnceLock;
 use std::task::Context;
 use std::task::Poll;
 
@@ -53,7 +53,7 @@ pub struct EpollBackend {
     epfd: EpollFd,
     wake_event: Event,
     state: Mutex<EpollState>,
-    io_uring: OnceLock<EpollIoUring>,
+    io_uring: OnceCell<EpollIoUring>,
 }
 
 impl Default for EpollBackend {
@@ -77,7 +77,7 @@ impl Default for EpollBackend {
                 timers: TimerQueue::default(),
                 fd_ready_to_delete: Vec::new(),
             }),
-            io_uring: OnceLock::new(),
+            io_uring: OnceCell::new(),
         }
     }
 }
@@ -205,8 +205,10 @@ impl IoBackend for EpollBackend {
                     // Also update the thread-local ring pointer so
                     // queue_sqe takes the fast path for on-thread callers.
                     if let Some(uring) = self.io_uring.get() {
-                        uring_thread_state.set_ring(uring);
-                        uring.process_completions(&mut wakers);
+                        // SAFETY: We are on the epoll thread and sole accessor
+                        // of the ring's SQ/CQ.
+                        unsafe { uring_thread_state.set_ring(uring) }
+                            .process_completions(&mut wakers);
                     }
 
                     wakers.wake();
@@ -231,7 +233,9 @@ impl IoBackend for EpollBackend {
                         // naturally batching all SQEs queued during
                         // RunAgain into one syscall.
                         if let Some(uring) = self.io_uring.get() {
-                            uring.flush();
+                            // SAFETY: We are on the epoll thread and sole
+                            // accessor of the ring's SQ/CQ.
+                            unsafe { uring_thread_state.set_ring(uring) }.flush();
                         }
 
                         let timeout = deadline
@@ -457,16 +461,17 @@ impl TimerDriver for EpollDriver {
 
 impl crate::driver::IoUringDriver for EpollDriver {
     fn io_uring_submit(&self) -> Option<&dyn crate::io_uring::IoUringSubmit> {
-        if let Some(uring) = self.inner.io_uring.get() {
-            return Some(uring);
-        }
-        match EpollIoUring::new(
-            self.inner.epfd.0.as_raw_fd(),
-            self.inner.wake_event.as_fd().as_raw_fd(),
-        ) {
-            Ok(uring) => Some(self.inner.io_uring.get_or_init(|| uring)),
-            Err(_) => None,
-        }
+        let uring = self
+            .inner
+            .io_uring
+            .get_or_try_init(|| {
+                EpollIoUring::new(
+                    self.inner.epfd.0.as_raw_fd(),
+                    self.inner.wake_event.as_fd().as_raw_fd(),
+                )
+            })
+            .ok()?;
+        Some(uring)
     }
 }
 

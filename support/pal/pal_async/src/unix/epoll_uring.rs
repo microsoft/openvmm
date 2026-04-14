@@ -30,7 +30,8 @@ use io_uring::IoUring;
 use io_uring::squeue;
 use loan_cell::LoanCell;
 use parking_lot::Mutex;
-use std::cell::Cell;
+use std::cell::RefCell;
+use std::cell::RefMut;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
@@ -57,18 +58,37 @@ const DEFAULT_RING_SIZE: u32 = 64;
 pub(crate) struct EpollUringThreadState {
     /// Pointer to the `EpollIoUring`. Valid for the duration of the loan.
     /// Starts null and is set once the ring is lazily initialized.
-    ring: Cell<*const EpollIoUring>,
+    ring: RefCell<*const EpollIoUring>,
 }
 
 impl EpollUringThreadState {
     pub(crate) fn new(ring: *const EpollIoUring) -> Self {
         Self {
-            ring: Cell::new(ring),
+            ring: RefCell::new(ring),
         }
     }
 
-    pub(crate) fn set_ring(&self, ring: &EpollIoUring) {
-        self.ring.set(ring);
+    /// Sets the ring, returning an accessor that allows exclusive access to the
+    /// submission and completion queues.
+    ///
+    /// # Safety
+    /// The caller must be the sole thread accessing the ring's submission and
+    /// completion queues for the lifetime of the returned `LocalUring`. In
+    /// practice this means it must only be called from the epoll event loop.
+    pub(crate) unsafe fn set_ring<'a>(&'a self, ring: &'a EpollIoUring) -> LocalUring<'a> {
+        let mut r = self.ring.borrow_mut();
+        *r = ring;
+        LocalUring(r)
+    }
+
+    /// Returns ring set with `set_ring`, returning an accessor that allows
+    /// exclusive access to the submission and completion queues.
+    pub(crate) fn matching_ring(&self, ring: &EpollIoUring) -> Option<LocalUring<'_>> {
+        let r = self.ring.borrow_mut();
+        if !std::ptr::eq(*r, ring) {
+            return None;
+        }
+        Some(LocalUring(r))
     }
 }
 
@@ -146,127 +166,35 @@ impl EpollIoUring {
         })
     }
 
-    /// Processes all available completions, waking the associated futures.
+    /// Queue an SQE for deferred submission. The SQE's `user_data` must already
+    /// be set to a valid `*const Mutex<CompletionState>`.
     ///
-    /// Called from the epoll event loop when the ring fd is readable.
+    /// On-thread: tries to push directly into the SQ (fast path), falling back
+    /// to the thread-local overflow queue. No syscall.
     ///
-    /// Loops to handle CQ overflow: when more CQEs are produced than
-    /// the CQ can hold, the kernel keeps overflow entries internally.
-    /// After draining the visible CQ, an `io_uring_enter()` (via
-    /// `submit()`) flushes overflows into the CQ so they can be
-    /// drained on the next iteration.
-    pub(crate) fn process_completions(&self, wakers: &mut WakerList) {
-        loop {
-            let mut found = false;
-            // SAFETY: we are the sole consumer of the completion queue. The
-            // epoll event loop is single-threaded and only calls this method
-            // in response to the ring fd being readable.
-            while let Some(cqe) = unsafe { self.ring.completion_shared().next() } {
-                found = true;
-                let ptr = cqe.user_data() as *const Mutex<CompletionState>;
-                let result = cqe.result();
-                // SAFETY: The pointer is valid because IoFuture aborts on
-                // drop if the IO is in flight, guaranteeing the
-                // CompletionState outlives the IO.
-                let completion = unsafe { &*ptr };
-                let CompletionState::Waiting(waker) =
-                    std::mem::replace(&mut *completion.lock(), CompletionState::Complete(result))
-                else {
-                    panic!("already completed");
-                };
-                wakers.push(waker);
-            }
-            if !found {
-                break;
-            }
-            // Only issue a syscall when the kernel is holding overflow
-            // entries. The IORING_SQ_CQ_OVERFLOW flag is set in the
-            // SQ flags when CQEs couldn't fit in the CQ and are queued
-            // internally. io_uring_enter() flushes them into the CQ.
-            //
-            // SAFETY: on the epoll thread — sole SQ accessor.
-            if !unsafe { self.ring.submission_shared().cq_overflow() } {
-                break;
-            }
-            let _ = self.ring.submit();
-        }
-    }
-
-    /// Flushes all queued SQEs into the submission queue and submits them.
+    /// Off-thread: pushes into the remote queue and signals the wake event to
+    /// break the epoll thread out of `epoll_wait`.
     ///
-    /// Called from the epoll event loop right before `epoll_wait`. This
-    /// drains the remote queue, pushes entries into the SQ, and calls
-    /// `io_uring_enter()` once.
-    pub(crate) fn flush(&self) {
-        // Drain the remote queue, but only take the lock if an
-        // off-thread caller has signaled that entries are available.
-        if self.has_remote.load(Ordering::Relaxed) {
-            let mut remote = self.remote_queue.lock();
-            // Clear under the lock — the Mutex provides the necessary
-            // ordering, so a relaxed store suffices.
-            self.has_remote.store(false, Ordering::Relaxed);
-            while let Some(sqe) = remote.pop_front() {
-                // SAFETY: only called on the epoll thread, sole SQ accessor.
-                unsafe {
-                    if self.ring.submission_shared().push(&sqe).is_err() {
-                        self.ring.submit().expect("io_uring submit failed");
-                        self.ring
-                            .submission_shared()
-                            .push(&sqe)
-                            .expect("SQ still full after submit");
+    /// # Safety
+    /// The caller must ensure that `sqe` is valid, including that any buffers
+    /// it references must outlive the request and `user_data` must refer to a
+    /// valid completion state buffer.
+    unsafe fn queue_sqe(&self, sqe: &squeue::Entry) {
+        let queued = EPOLL_URING_STATE.with(|cell| {
+            cell.borrow(|state| {
+                if let Some(state) = state {
+                    if let Some(mut ring) = state.matching_ring(self) {
+                        // SAFETY: caller guarantees that `sqe` is valid.
+                        unsafe { ring.queue_sqe(sqe) };
+                        return true;
                     }
                 }
-            }
-        }
-
-        // Submit all SQ entries — from the fast path or remote queue.
-        //
-        // SAFETY: only called on the epoll thread, sole SQ accessor.
-        if unsafe { !self.ring.submission_shared().is_empty() } {
-            self.ring.submit().expect("io_uring submit failed");
-        }
-    }
-
-    /// Queue an SQE for deferred submission. The SQE's `user_data` must
-    /// already be set to a valid `*const Mutex<CompletionState>`.
-    ///
-    /// On-thread: tries to push directly into the SQ (fast path), falling
-    /// back to the thread-local overflow queue. No syscall.
-    ///
-    /// Off-thread: pushes into the remote queue and signals the wake event
-    /// to break the epoll thread out of `epoll_wait`.
-    fn queue_sqe(&self, sqe: &squeue::Entry) {
-        EPOLL_URING_STATE.with(|cell| {
-            cell.borrow(|state| {
-                self.queue_sqe_with_thread_state(state, sqe);
+                false
             })
-        })
-    }
-
-    fn queue_sqe_with_thread_state(
-        &self,
-        state: Option<&EpollUringThreadState>,
-        sqe: &squeue::Entry,
-    ) {
-        // On-thread: check if this is our ring.
-        if let Some(state) = state
-            && std::ptr::eq(state.ring.get(), self)
-        {
-            // Push directly into the SQ.
-            // SAFETY: On the epoll thread — sole SQ accessor.
-            unsafe {
-                if self.ring.submission_shared().push(sqe).is_err() {
-                    // SQ full — flush it and retry.
-                    self.ring.submit().expect("io_uring submit failed");
-                    self.ring
-                        .submission_shared()
-                        .push(sqe)
-                        .expect("SQ still full after submit");
-                }
-            }
+        });
+        if queued {
             return;
         }
-
         // Off-thread (or different ring): use remote queue + wake.
         // The Mutex provides ordering for the queue data; the
         // atomic is just a hint to avoid locking on the consumer
@@ -275,6 +203,9 @@ impl EpollIoUring {
             let mut remote = self.remote_queue.lock();
             remote.push_back(sqe.clone());
             self.has_remote.store(true, Ordering::Relaxed);
+            // Only signal on transition from empty. The eventfd stays
+            // readable until the epoll thread drains it, so subsequent
+            // pushes don't need additional wakes.
             remote.len() == 1
         };
         if needs_wake {
@@ -284,7 +215,7 @@ impl EpollIoUring {
             unsafe {
                 let val: u64 = 1;
                 let r = libc::write(self.wake_fd, std::ptr::from_ref(&val).cast(), 8);
-                if r != 8 {
+                if r != size_of_val(&val) as isize {
                     panic!("eventfd write failed: {}", io::Error::last_os_error());
                 }
             }
@@ -295,6 +226,139 @@ impl EpollIoUring {
         let mut probe = io_uring::Probe::new();
         self.ring.submitter().register_probe(&mut probe).unwrap();
         probe.is_supported(opcode)
+    }
+}
+
+/// Proof-of-ownership token for the io-uring's submission and completion queues.
+///
+/// `IoUring`'s SQ and CQ are not thread-safe, so access requires proof that
+/// we are on the epoll thread. `LocalUring` provides that proof: it can only
+/// be obtained via `EpollUringThreadState::set_ring` (called from the epoll
+/// loop) or `matching_ring` (which checks that the thread-local points to
+/// the same ring). Holding a `LocalUring` grants exclusive access to
+/// `submission_shared()` and `completion_shared()`.
+///
+/// Internally it holds a `RefMut` of the thread-local ring pointer. Since
+/// `RefMut` is `!Send` and `!Sync`, the token cannot escape the epoll thread.
+/// The mutable borrow also prevents a second `LocalUring` from being created
+/// concurrently (the `RefCell` would panic).
+pub(crate) struct LocalUring<'a>(RefMut<'a, *const EpollIoUring>);
+
+impl<'a> LocalUring<'a> {
+    fn ring(&self) -> &'a EpollIoUring {
+        // SAFETY: The pointer is valid for 'a because set_ring/matching_ring
+        // tie the pointer's validity to the EpollIoUring borrow lifetime.
+        unsafe { &**self.0 }
+    }
+
+    fn submission(&mut self) -> squeue::SubmissionQueue<'_> {
+        // SAFETY: LocalUring is proof of exclusive SQ/CQ access on the
+        // epoll thread. See the type-level doc comment.
+        unsafe { self.ring().ring.submission_shared() }
+    }
+
+    fn completion(&mut self) -> io_uring::cqueue::CompletionQueue<'_> {
+        // SAFETY: LocalUring is proof of exclusive SQ/CQ access on the
+        // epoll thread. See the type-level doc comment.
+        unsafe { self.ring().ring.completion_shared() }
+    }
+
+    /// Processes all available completions, waking the associated futures.
+    ///
+    /// Called from the epoll event loop when the ring fd is readable.
+    ///
+    /// Loops to handle CQ overflow: when more CQEs are produced than
+    /// the CQ can hold, the kernel keeps overflow entries internally.
+    /// After draining the visible CQ, an `io_uring_enter()` (via
+    /// `submit()`) flushes overflows into the CQ so they can be
+    /// drained on the next iteration.
+    pub(crate) fn process_completions(&mut self, wakers: &mut WakerList) {
+        loop {
+            let mut found = false;
+            for cqe in self.completion() {
+                found = true;
+                let ptr = cqe.user_data() as *const Mutex<CompletionState>;
+                let result = cqe.result();
+                // SAFETY: The pointer is valid because IoFuture aborts on
+                // drop if the IO is in flight, guaranteeing the
+                // CompletionState outlives the IO.
+                let completion = unsafe { &*ptr };
+                let CompletionState::Waiting(waker) =
+                    std::mem::replace(&mut *completion.lock(), CompletionState::Complete(result))
+                else {
+                    // Double-completion is a kernel or internal bug.
+                    // Abort rather than panic to avoid unwinding.
+                    eprintln!("io_uring: double completion for user_data {:#x}", cqe.user_data());
+                    abort();
+                };
+                wakers.push(waker);
+            }
+            if !found {
+                break;
+            }
+            // Only issue a syscall when the kernel is holding overflow
+            // entries. The IORING_SQ_CQ_OVERFLOW flag is set in the
+            // SQ flags when CQEs couldn't fit in the CQ and are queued
+            // internally. io_uring_enter() flushes them into the CQ.
+            if !self.submission().cq_overflow() {
+                break;
+            }
+            let _ = self.ring().ring.submit();
+        }
+    }
+
+    /// Flushes all queued SQEs into the submission queue and submits them.
+    ///
+    /// Called from the epoll event loop right before `epoll_wait`. This
+    /// drains the remote queue, pushes entries into the SQ, and calls
+    /// `io_uring_enter()` once.
+    pub(crate) fn flush(&mut self) {
+        // Drain the remote queue, but only take the lock if an
+        // off-thread caller has signaled that entries are available.
+        let ring = self.ring();
+        if ring.has_remote.load(Ordering::Relaxed) {
+            let mut remote = ring.remote_queue.lock();
+            // Clear under the lock — the Mutex provides the necessary
+            // ordering, so a relaxed store suffices.
+            ring.has_remote.store(false, Ordering::Relaxed);
+            while let Some(sqe) = remote.pop_front() {
+                // SAFETY: only called on the epoll thread, sole SQ accessor.
+                unsafe {
+                    if self.submission().push(&sqe).is_err() {
+                        self.ring().ring.submit().expect("io_uring submit failed");
+                        self.submission()
+                            .push(&sqe)
+                            .expect("SQ still full after submit");
+                    }
+                }
+            }
+        }
+
+        // Submit all SQ entries — from the fast path or remote queue.
+        if !self.submission().is_empty() {
+            self.ring().ring.submit().expect("io_uring submit failed");
+        }
+    }
+
+    /// Pushes `sqe` onto the ring's submission queue.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `sqe` is valid, including that any buffers it references
+    /// must outlive the request and `user_data` must refer to a valid completion state
+    /// buffer.
+    unsafe fn queue_sqe(&mut self, sqe: &squeue::Entry) {
+        // Push directly into the SQ.
+        // SAFETY: The caller guarantees that `sqe` is valid.
+        unsafe {
+            if self.submission().push(sqe).is_err() {
+                // SQ full — flush it and retry.
+                self.ring().ring.submit().expect("io_uring submit failed");
+                self.submission()
+                    .push(sqe)
+                    .expect("SQ still full after submit");
+            }
+        }
     }
 }
 
@@ -362,6 +426,9 @@ impl Future for IoFuture<'_> {
 
         match this.state {
             IoFutureState::Init { .. } => {
+                // First poll: transition to Submitted (which contains the
+                // completion state the kernel will write to) and extract
+                // `ring` and `sqe` from the old Init state.
                 let IoFutureState::Init { ring, mut sqe } = std::mem::replace(
                     &mut this.state,
                     IoFutureState::Submitted {
@@ -375,12 +442,11 @@ impl Future for IoFuture<'_> {
                 let IoFutureState::Submitted { completion, .. } = &this.state else {
                     unreachable!()
                 };
-                // First poll: set user_data to point at our completion state
-                // and queue the SQE.
                 let completion: &Mutex<CompletionState> = completion;
                 let completion_ptr = std::ptr::from_ref(completion);
                 sqe.set_user_data(completion_ptr as u64);
-                ring.queue_sqe(&sqe);
+                // SAFETY: The caller guarantees that `sqe` is valid.
+                unsafe { ring.queue_sqe(&sqe) };
                 Poll::Pending
             }
             IoFutureState::Submitted {
@@ -409,7 +475,9 @@ impl Future for IoFuture<'_> {
 
 impl Drop for IoFuture<'_> {
     fn drop(&mut self) {
-        // If sqe is None, the IO was submitted. Check if it completed.
+        // If the IO was submitted but not yet completed, we must abort because
+        // the kernel holds a pointer to our memory and potentially other IO
+        // buffers.
         match self.state {
             IoFutureState::Init { .. } | IoFutureState::Submitted { done: true, .. } => {}
             IoFutureState::Submitted {

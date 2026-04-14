@@ -18,26 +18,44 @@ pub trait IoUringSubmit: Send + Sync {
 
     /// Submits an io-uring SQE for asynchronous execution.
     ///
-    /// Returns a future that completes with the IO result. The future
-    /// **aborts the process** if dropped while the IO is in flight,
-    /// since there is no way to synchronously cancel an in-flight
-    /// io-uring operation.
+    /// Returns a future that completes with the IO result. The future **aborts
+    /// the process** if dropped while the IO is in flight, since there is no
+    /// way to synchronously cancel an in-flight io-uring operation.
     ///
     /// # Safety
     ///
-    /// All memory referenced by the SQE must remain valid for the
-    /// lifetime of the returned future.
+    /// All memory referenced by the SQE must remain valid for the lifetime of
+    /// the returned future.
+    /// 
+    /// This can be hard to do safely; in particular, if this future can be
+    /// leaked (via [`std::mem::forget`] or otherwise) then the caller must
+    /// ensure that any referenced memory also leaks. The easiest way to do that
+    /// is to ensure that the future is `await`ed in an async function or block
+    /// that owns the underlying memory. So, this is safe:
     ///
-    /// The abort-on-drop guard makes it sound to reference
-    /// non-`'static` memory (such as locals in an enclosing `async
-    /// fn`): either the IO completes normally, or the future is
-    /// dropped and the process aborts before the referenced memory
-    /// is freed.
+    /// ```rust,ignore
+    /// async fn write(uring: &impl IoUringSubmit, fd: i32, buf: Vec<u8>) -> io::Result<usize> {
+    ///     let sqe = opcode::Write::new(types::Fd(fd), buf.as_ptr(), buf.len() as u32).build();
+    ///     // SAFETY: `buf` is owned by this async function's state machine.
+    ///     // If the outer future is leaked, `buf` leaks with it, so the
+    ///     // memory remains valid for the io-uring operation.
+    ///     unsafe { uring.submit(sqe).await? };
+    ///     Ok(buf.len())
+    /// }
+    /// ```
     ///
-    /// Leaking the returned future via [`std::mem::forget`] or a
-    /// reference-count cycle bypasses the abort guard. This is
-    /// undefined behavior if the SQE references non-`'static`
-    /// memory that is not otherwise kept alive.
+    /// But this is not:
+    ///
+    /// ```rust,ignore
+    /// async fn write(uring: &impl IoUringSubmit, fd: i32, buf: &[u8]) -> io::Result<usize> {
+    ///     let sqe = opcode::Write::new(types::Fd(fd), buf.as_ptr(), buf.len() as u32).build();
+    ///     // NOT SAFE: `buf` is a borrow. If the outer future is leaked,
+    ///     // the referent can be freed while the io-uring operation is
+    ///     // still in flight.
+    ///     unsafe { uring.submit(sqe).await? };
+    ///     Ok(buf.len())
+    /// }
+    /// ```
     unsafe fn submit(
         &self,
         sqe: squeue::Entry,
