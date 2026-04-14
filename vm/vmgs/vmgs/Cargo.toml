@@ -12,7 +12,7 @@ default = []
 inspect = ["vmgs_format/inspect", "dep:inspect", "dep:inspect_counters"]
 save_restore = ["dep:mesh_protobuf"]
 mesh = ["dep:mesh_protobuf"]
-encryption = ["dep:crypto", "crypto/ossl_vendored"]
+encryption = ["dep:crypto"]
 test_helpers = []
 
 # run encryption unit tests in CI
