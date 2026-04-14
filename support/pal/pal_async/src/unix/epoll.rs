@@ -222,7 +222,7 @@ impl IoBackend for EpollBackend {
                             // Update the thread-local pointer if this is the first
                             // time we see the ring initialized.
                             uring_thread_state.set_ring(uring);
-                            uring.flush(&uring_thread_state);
+                            uring.flush();
                         }
 
                         let timeout = deadline

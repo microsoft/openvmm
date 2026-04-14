@@ -10,11 +10,10 @@
 //! flushed in a single `io_uring_enter()` right before `epoll_wait`,
 //! giving natural batching of IOs issued in the same poll cycle.
 //!
-//! Three-tier submit path:
-//! 1. On-thread, SQ has space: push directly into the SQ (no lock, no
-//!    syscall).
-//! 2. On-thread, SQ full: push into a thread-local overflow VecDeque.
-//! 3. Off-thread: push into a Mutex-protected remote queue, then signal
+//! Two-tier submit path:
+//! 1. On-thread: push directly into the SQ (no lock). If the SQ is
+//!    full, flush it with `io_uring_enter()` first.
+//! 2. Off-thread: push into a Mutex-protected remote queue, then signal
 //!    the wake event to break the epoll thread out of epoll_wait.
 //!
 //! Completion state is embedded in each [`IoFuture`] (intrusive). The
@@ -31,7 +30,6 @@ use io_uring::squeue;
 use loan_cell::LoanCell;
 use parking_lot::Mutex;
 use std::cell::Cell;
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
@@ -59,15 +57,12 @@ pub(crate) struct EpollUringThreadState {
     /// Pointer to the `EpollIoUring`. Valid for the duration of the loan.
     /// Starts null and is set once the ring is lazily initialized.
     ring: Cell<*const EpollIoUring>,
-    /// Overflow queue for SQEs that didn't fit in the submission queue.
-    overflow: RefCell<VecDeque<squeue::Entry>>,
 }
 
 impl EpollUringThreadState {
     pub(crate) fn new(ring: *const EpollIoUring) -> Self {
         Self {
             ring: Cell::new(ring),
-            overflow: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -79,7 +74,7 @@ impl EpollUringThreadState {
 // SAFETY: The raw pointer is only dereferenced on the thread that owns the
 // loan, which is the same thread that created the `EpollIoUring`.
 unsafe impl Send for EpollUringThreadState {}
-// SAFETY: Interior mutability is provided by Cell/RefCell, which are only
+// SAFETY: Interior mutability is provided by Cell, which is only
 // accessed on the owning thread via the LoanCell loan.
 unsafe impl Sync for EpollUringThreadState {}
 
@@ -192,34 +187,16 @@ impl EpollIoUring {
     /// Flushes all queued SQEs into the submission queue and submits them.
     ///
     /// Called from the epoll event loop right before `epoll_wait`. This
-    /// drains the thread-local overflow queue and the remote queue, pushes
-    /// everything into the SQ, and calls `io_uring_enter()` once.
-    pub(crate) fn flush(&self, thread_state: &EpollUringThreadState) {
-        let mut submitted = false;
-
-        // Drain thread-local overflow first.
-        {
-            let mut overflow = thread_state.overflow.borrow_mut();
-            while let Some(sqe) = overflow.pop_front() {
-                // SAFETY: only called on the epoll thread, sole SQ accessor.
-                unsafe {
-                    if self.ring.submission_shared().push(&sqe).is_err() {
-                        // SQ full — submit what we have and retry.
-                        self.ring.submit().expect("io_uring submit failed");
-                        self.ring
-                            .submission_shared()
-                            .push(&sqe)
-                            .expect("SQ still full after submit");
-                    }
-                }
-                submitted = true;
-            }
-        }
-
+    /// drains the remote queue, pushes entries into the SQ, and calls
+    /// `io_uring_enter()` once.
+    pub(crate) fn flush(&self) {
         // Drain the remote queue, but only take the lock if an
         // off-thread caller has signaled that entries are available.
-        if self.has_remote.swap(false, Ordering::Acquire) {
+        if self.has_remote.load(Ordering::Relaxed) {
             let mut remote = self.remote_queue.lock();
+            // Clear under the lock — the Mutex provides the necessary
+            // ordering, so a relaxed store suffices.
+            self.has_remote.store(false, Ordering::Relaxed);
             while let Some(sqe) = remote.pop_front() {
                 // SAFETY: only called on the epoll thread, sole SQ accessor.
                 unsafe {
@@ -231,11 +208,13 @@ impl EpollIoUring {
                             .expect("SQ still full after submit");
                     }
                 }
-                submitted = true;
             }
         }
 
-        if submitted {
+        // Submit all SQ entries — from the fast path or remote queue.
+        //
+        // SAFETY: only called on the epoll thread, sole SQ accessor.
+        if unsafe { !self.ring.submission_shared().is_empty() } {
             self.ring.submit().expect("io_uring submit failed");
         }
     }
@@ -254,13 +233,16 @@ impl EpollIoUring {
                 if let Some(state) = state {
                     // On-thread: check if this is our ring.
                     if std::ptr::eq(state.ring.get(), self) {
-                        // Try the fast path: push directly into the SQ.
+                        // Push directly into the SQ.
                         // SAFETY: On the epoll thread — sole SQ accessor.
                         unsafe {
                             if self.ring.submission_shared().push(&sqe).is_err() {
-                                // SQ full — overflow to thread-local queue.
-                                // The flush point will drain this.
-                                state.overflow.borrow_mut().push_back(sqe);
+                                // SQ full — flush it and retry.
+                                self.ring.submit().expect("io_uring submit failed");
+                                self.ring
+                                    .submission_shared()
+                                    .push(&sqe)
+                                    .expect("SQ still full after submit");
                             }
                         }
                         return;
@@ -268,8 +250,14 @@ impl EpollIoUring {
                 }
 
                 // Off-thread (or different ring): use remote queue + wake.
-                self.remote_queue.lock().push_back(sqe);
-                self.has_remote.store(true, Ordering::Release);
+                // The Mutex provides ordering for the queue data; the
+                // atomic is just a hint to avoid locking on the consumer
+                // side when the queue is empty.
+                {
+                    let mut remote = self.remote_queue.lock();
+                    remote.push_back(sqe);
+                    self.has_remote.store(true, Ordering::Relaxed);
+                }
                 // Signal the epoll thread to flush.
                 //
                 // SAFETY: writing 1u64 to an eventfd is safe and signals it.
