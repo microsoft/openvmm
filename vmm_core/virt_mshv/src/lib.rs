@@ -89,21 +89,29 @@ trait VcpuFdExt {
 
 impl VcpuFdExt for VcpuFd {
     fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), MshvError> {
-        // SAFETY: HvRegisterAssoc and hv_register_assoc have the same layout
-        // (verified by static assertions in vp_state.rs).
+        const {
+            assert!(size_of::<HvRegisterAssoc>() == size_of::<hv_register_assoc>());
+            assert!(align_of::<HvRegisterAssoc>() >= align_of::<hv_register_assoc>());
+        }
+        // SAFETY: HvRegisterAssoc and hv_register_assoc have the same layout.
         self.get_reg(unsafe {
             std::mem::transmute::<&mut [HvRegisterAssoc], &mut [hv_register_assoc]>(regs)
         })
     }
 
     fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), MshvError> {
-        // SAFETY: HvRegisterAssoc and hv_register_assoc have the same layout
-        // (verified by static assertions in vp_state.rs).
+        const {
+            assert!(size_of::<HvRegisterAssoc>() == size_of::<hv_register_assoc>());
+            assert!(align_of::<HvRegisterAssoc>() >= align_of::<hv_register_assoc>());
+        }
+        // SAFETY: HvRegisterAssoc and hv_register_assoc have the same layout.
         self.set_reg(unsafe {
             std::mem::transmute::<&[HvRegisterAssoc], &[hv_register_assoc]>(regs)
         })
     }
 
+    // TODO: this is only used for registers that are on the register page.
+    // Remove once the register page is implemented.
     fn set_hvdef_regs_64(&self, regs: &[(HvX64RegisterName, u64)]) -> Result<(), MshvError> {
         let assocs: ArrayVec<HvRegisterAssoc, 18> = regs
             .iter()
