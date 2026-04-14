@@ -416,16 +416,21 @@ pub struct Gic {
     pub gic_redistributors_base: u64,
 }
 
-/// Per-root-bridge MMIO aperture descriptor for the config blob.
-/// One entry per PCIe root bridge / host bridge segment.
-/// Matches by Segment number with the MCFG table entries.
+// Describes the BAR Aperture for each PCIe Root Complex / Host bridge. There
+// should be one entry per host bridge that UEFI should enumerate. The MCFG
+// table may contain additional segments that are not described to UEFI via
+// these structures, which UEFI will ignore.
+//
+// This structure is used to pass this information to UEFI instead of having
+// UEFI parse the SSDT.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PcieBarApertureEntry {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    /// Unique identifier for this root bridge, matching the ACPI _UID.
+    /// The UID here must match the UID described in the SSDT for the
+    /// corresponding host bridge.
     pub uid: u32,
     pub low_mmio_base: u64,
     pub low_mmio_length: u64,
