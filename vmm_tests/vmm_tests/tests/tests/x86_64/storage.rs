@@ -810,3 +810,83 @@ async fn storvsp_dynamic_add_disk(
 
     Ok(())
 }
+
+/// Test storvsp I/O with the storvsc usermode driver.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn storvsc_usermode_storvsp(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+) -> Result<(), anyhow::Error> {
+    let scsi_instance = Guid::new_random();
+    const SCSI_DISK_SECTORS: u64 = 0x4_0000;
+    const SECTOR_SIZE: u64 = 512;
+    let vtl2_lun = 5;
+    let vtl0_scsi_lun = 0;
+
+    let (vm, agent) = config
+        .with_openhcl_command_line("OPENHCL_STORVSC_USERMODE=1")
+        .with_vmbus_redirect(true)
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.vmbus_devices.push((
+                    DeviceVtl::Vtl2,
+                    ScsiControllerHandle {
+                        instance_id: scsi_instance,
+                        max_sub_channel_count: 1,
+                        devices: vec![ScsiDeviceAndPath {
+                            path: ScsiPath {
+                                path: 0,
+                                target: 0,
+                                lun: vtl2_lun as u8,
+                            },
+                            device: SimpleScsiDiskHandle {
+                                disk: LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                                    len: Some(SCSI_DISK_SECTORS * SECTOR_SIZE),
+                                    sector_size: None,
+                                })
+                                .into_resource(),
+                                read_only: false,
+                                parameters: Default::default(),
+                            }
+                            .into_resource(),
+                        }],
+                        io_queue_depth: None,
+                        requests: None,
+                        poll_mode_queue_depth: None,
+                    }
+                    .into_resource(),
+                ));
+            })
+        })
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .add_lun(
+                    Vtl2LunBuilder::disk()
+                        .with_location(vtl0_scsi_lun)
+                        .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                            ControllerType::Scsi,
+                            scsi_instance,
+                            vtl2_lun,
+                        )),
+                )
+                .build(),
+        )
+        .run()
+        .await?;
+
+    test_storage_linux(
+        &agent,
+        scsi_instance,
+        vec![ExpectedGuestDevice {
+            lun: vtl0_scsi_lun,
+            disk_size_sectors: SCSI_DISK_SECTORS as usize,
+            friendly_name: "storvsc_usermode_scsi".to_string(),
+        }],
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
