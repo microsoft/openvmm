@@ -26,7 +26,7 @@ pub trait IoUringSubmit: Send + Sync {
     ///
     /// All memory referenced by the SQE must remain valid for the lifetime of
     /// the returned future.
-    /// 
+    ///
     /// This can be hard to do safely; in particular, if this future can be
     /// leaked (via [`std::mem::forget`] or otherwise) then the caller must
     /// ensure that any referenced memory also leaks. The easiest way to do that

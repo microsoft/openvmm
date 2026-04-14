@@ -288,7 +288,10 @@ impl<'a> LocalUring<'a> {
                 else {
                     // Double-completion is a kernel or internal bug.
                     // Abort rather than panic to avoid unwinding.
-                    eprintln!("io_uring: double completion for user_data {:#x}", cqe.user_data());
+                    eprintln!(
+                        "io_uring: double completion for user_data {:#x}",
+                        cqe.user_data()
+                    );
                     abort();
                 };
                 wakers.push(waker);
