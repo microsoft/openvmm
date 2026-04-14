@@ -1269,7 +1269,7 @@ impl IntoPipeline for CheckinGatesCli {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_1es(),
-                label: "x64-linux",
+                label: "x64-linux-amd-kvm",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
@@ -1281,7 +1281,7 @@ impl IntoPipeline for CheckinGatesCli {
                 platform: FlowPlatform::Linux(FlowPlatformLinuxDistro::AzureLinux),
                 arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::linux_mshv_1es(),
-                label: "x64-linux-mshv",
+                label: "x64-linux-intel-mshv",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_mshv_x86,
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines

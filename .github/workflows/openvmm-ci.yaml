@@ -3180,7 +3180,7 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgs_lib/
         include-hidden-files: true
   job20:
-    name: run vmm-tests [x64-linux]
+    name: run vmm-tests [x64-linux-amd]
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-amd-westus3
@@ -3399,9 +3399,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__6
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-vmm-tests-logs
+        name: x64-linux-amd-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: x64-linux-vmm-tests (logs)'
+      name: 'publish test results: x64-linux-amd-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
@@ -3415,9 +3415,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-vmm-tests-junit-xml
+        name: x64-linux-amd-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: x64-linux-vmm-tests (JUnit XML)'
+      name: 'publish test results: x64-linux-amd-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3
@@ -3432,7 +3432,7 @@ jobs:
       run: flowey e 20 flowey_lib_common::cache 11
       shell: bash
   job21:
-    name: run vmm-tests [x64-linux-mshv]
+    name: run vmm-tests [x64-linux-intel-mshv]
     runs-on:
     - self-hosted
     - 1ES.Pool=openvmm-gh-intel-westus3
@@ -3699,9 +3699,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__6
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-mshv-vmm-tests-logs
+        name: x64-linux-intel-mshv-vmm-tests-logs
         path: ${{ env.floweyvar2 }}
-      name: 'publish test results: x64-linux-mshv-vmm-tests (logs)'
+      name: 'publish test results: x64-linux-intel-mshv-vmm-tests (logs)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🦀 flowey rust steps
       run: |-
@@ -3715,9 +3715,9 @@ jobs:
     - id: flowey_lib_common__publish_test_results__3
       uses: actions/upload-artifact@v7
       with:
-        name: x64-linux-mshv-vmm-tests-junit-xml
+        name: x64-linux-intel-mshv-vmm-tests-junit-xml
         path: ${{ env.floweyvar1 }}
-      name: 'publish test results: x64-linux-mshv-vmm-tests (JUnit XML)'
+      name: 'publish test results: x64-linux-intel-mshv-vmm-tests (JUnit XML)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report test results to overall pipeline status
       run: flowey e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 3

@@ -2569,7 +2569,7 @@ jobs:
     displayName: 🌼🥾 Publish bootstrapped flowey
     artifact: _internal-flowey-bootstrap-x86_64-windows-uid-3
 - job: job15
-  displayName: run vmm-tests [x64-linux]
+  displayName: run vmm-tests [x64-linux-amd]
   pool:
     demands:
     - ImageOverride -equals ubuntu2404-amd64-256gb
@@ -2781,8 +2781,8 @@ jobs:
     inputs:
       testResultsFormat: JUnit
       testResultsFiles: $(floweyvar1)
-      testRunTitle: x64-linux-vmm-tests
-    displayName: 'publish test results: x64-linux-vmm-tests (JUnit XML)'
+      testRunTitle: x64-linux-amd-vmm-tests
+    displayName: 'publish test results: x64-linux-amd-vmm-tests (JUnit XML)'
     condition: and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))
   - bash: |-
       set -e
