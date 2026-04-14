@@ -82,8 +82,11 @@ impl VirtioFsFile {
                 match fs.lookup_helper(&self.inode, &entry.name) {
                     Ok(e) => Ok(Some(e)),
                     Err(err) => {
-                        // Ignore entries that are inaccessible to the user.
-                        if err.value() == lx::EACCES {
+                        // Ignore entries that are inaccessible to the user or deleted.
+                        // ENOENT can occur if a file was deleted between enumeration
+                        // and lookup (e.g., when deleting files in a loop while
+                        // enumerating the directory).
+                        if err.value() == lx::EACCES || err.value() == lx::ENOENT {
                             Ok(None)
                         } else {
                             Err(err)

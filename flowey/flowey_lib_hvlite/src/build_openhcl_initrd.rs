@@ -65,6 +65,7 @@ impl FlowNode for Node {
             FlowPlatform::Linux(linux_distribution) => match linux_distribution {
                 FlowPlatformLinuxDistro::Fedora
                 | FlowPlatformLinuxDistro::Ubuntu
+                | FlowPlatformLinuxDistro::AzureLinux
                 | FlowPlatformLinuxDistro::Nix => "python3",
                 FlowPlatformLinuxDistro::Arch => "python",
                 FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
@@ -111,11 +112,19 @@ impl FlowNode for Node {
 
             let interactive_dep = if interactive {
                 ctx.reqv(|v| {
-                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioDbgrd(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclCpioDbgrd,
+                        openvmm_deps_arch,
+                        v,
+                    )
                 })
             } else {
                 ctx.reqv(|v| {
-                    crate::resolve_openvmm_deps::Request::GetOpenhclCpioShell(openvmm_deps_arch, v)
+                    crate::resolve_openvmm_deps::Request::Get(
+                        crate::resolve_openvmm_deps::OpenvmmDepFile::OpenhclCpioShell,
+                        openvmm_deps_arch,
+                        v,
+                    )
                 })
             };
 
@@ -143,9 +152,7 @@ impl FlowNode for Node {
                     let kernel_package_root = rt.read(kernel_package_root);
                     let kernel_metadata = rt.read(kernel_metadata);
 
-                    let sh = xshell::Shell::new()?;
-
-                    let initrd_path = sh.current_dir().join("openhcl.cpio.gz");
+                    let initrd_path = rt.sh.current_dir().join("openhcl.cpio.gz");
 
                     let initrd_contents = {
                         let mut v = Vec::new();
@@ -184,27 +191,29 @@ impl FlowNode for Node {
                     // as the closed-source openhcl-deps.
                     match arch {
                         CommonArch::X86_64 => {
-                            sh.set_var("OPENVMM_DEPS_X64", interactive_dep.parent().unwrap());
+                            rt.sh
+                                .set_var("OPENVMM_DEPS_X64", interactive_dep.parent().unwrap());
                         }
                         CommonArch::Aarch64 => {
-                            sh.set_var("OPENVMM_DEPS_AARCH64", interactive_dep.parent().unwrap());
+                            rt.sh
+                                .set_var("OPENVMM_DEPS_AARCH64", interactive_dep.parent().unwrap());
                         }
                     }
 
                     for (k, v) in extra_env.into_iter().flatten() {
-                        sh.set_var(k, v);
+                        rt.sh.set_var(k, v);
                     }
 
                     // FIXME: update-rootfs.py invokes git to obtain a version
                     // hash to stuff into the initrd.
-                    sh.change_dir(openvmm_repo_path);
+                    rt.sh.change_dir(openvmm_repo_path);
 
                     let rootfs_config = rootfs_config
                         .iter()
                         .flat_map(|x| ["--rootfs-config".as_ref(), x.as_os_str()]);
 
-                    xshell::cmd!(
-                        sh,
+                    flowey::shell_cmd!(
+                        rt,
                         "python3 openhcl/update-rootfs.py
                             {bin_openhcl}
                             {initrd_path}

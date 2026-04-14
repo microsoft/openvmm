@@ -30,6 +30,8 @@ mod x86_64;
 mod x86_64_exclusive;
 // Tests that will only ever run targeting Aarch64/ARM64.
 mod aarch64_exclusive;
+// Utility functions shared across multiple test files.
+pub(crate) mod utils;
 
 pub fn main() {
     petri::test_main(|name, requirements| {

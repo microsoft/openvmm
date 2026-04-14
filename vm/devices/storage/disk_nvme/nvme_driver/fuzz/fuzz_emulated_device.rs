@@ -7,13 +7,11 @@
 //! responses in this routine.
 use std::sync::Arc;
 
-use crate::arbitrary_data;
-
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
-use pci_core::msi::MsiInterruptSet;
+use pci_core::msi::MsiConnection;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
@@ -28,8 +26,8 @@ pub struct FuzzEmulatedDevice<T: InspectMut, U> {
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> FuzzEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
-        let device = EmulatedDevice::new(device, msi_set, dma_client);
+    pub fn new(device: T, msi_conn: MsiConnection, dma_client: Arc<U>) -> Self {
+        let device = EmulatedDevice::new(device, msi_conn, dma_client);
 
         Self { device }
     }
@@ -53,17 +51,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> Dev
         self.device.dma_client()
     }
 
-    /// Arbitrarily decide to passthrough or return arbitrary value.
+    /// Pass through to the real device. Returning fuzzed values here can
+    /// cause NvmeDriver::new() to hang waiting for the controller to reach
+    /// ready state (see https://github.com/microsoft/openvmm/issues/3022).
     fn max_interrupt_count(&self) -> u32 {
-        // Case: Fuzz response
-        if let Ok(true) = arbitrary_data::<bool>() {
-            // Return an abritrary u32
-            if let Ok(num) = arbitrary_data::<u32>() {
-                return num;
-            }
-        }
-
-        // Case: Passthrough
         self.device.max_interrupt_count()
     }
 

@@ -704,6 +704,7 @@ pub struct LxVolumeOptions {
     sandbox_disallowed_extensions: Vec<OsString>,
     symlink_root: String,
     override_xattrs: HashMap<String, Vec<u8>>,
+    readonly: bool,
 }
 
 impl LxVolumeOptions {
@@ -724,6 +725,7 @@ impl LxVolumeOptions {
             sandbox_disallowed_extensions: Vec::new(),
             symlink_root: "".to_string(),
             override_xattrs: HashMap::new(),
+            readonly: false,
         }
     }
 
@@ -897,6 +899,13 @@ impl LxVolumeOptions {
                         tracing::warn!("'sandbox_disallowed_extensions' option requires value");
                     }
                 }
+                "ro" => {
+                    if value.is_none() {
+                        options.readonly(true);
+                    } else {
+                        tracing::warn!(value, "'ro' option does not support value");
+                    }
+                }
                 _ => tracing::warn!(option = %next, keyword, "Unrecognized mount option"),
             }
         }
@@ -1020,6 +1029,21 @@ impl LxVolumeOptions {
         val_data.extend_from_slice(val);
         self.override_xattrs.insert(name.to_string(), val_data);
         self
+    }
+
+    /// Enable or disable readonly mode for the volume.
+    ///
+    /// This flag is not enforced by `LxVolume` itself. It is intended to be
+    /// read by higher-level layers (e.g., virtio-fs) via [`is_readonly`](Self::is_readonly)
+    /// to reject write operations with `EROFS`.
+    pub fn readonly(&mut self, readonly: bool) -> &mut Self {
+        self.readonly = readonly;
+        self
+    }
+
+    /// Returns whether the volume is configured as readonly.
+    pub fn is_readonly(&self) -> bool {
+        self.readonly
     }
 }
 

@@ -704,8 +704,13 @@ impl<const N: usize> ConfigSpaceCommonHeaderEmulator<N> {
     // ===== Utility and Query Functions =====
 
     /// Finds a BAR + offset by address.
-    pub fn find_bar(&self, address: u64) -> Option<(u8, u16)> {
+    pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
         self.active_bars.find(address)
+    }
+
+    /// Gets the active base address for a specific BAR index, if mapped.
+    pub fn bar_address(&self, bar: u8) -> Option<u64> {
+        self.active_bars.get(bar)
     }
 
     /// Check if this device is a PCIe device by looking for the PCI Express capability.
@@ -980,8 +985,13 @@ impl ConfigSpaceType0Emulator {
     }
 
     /// Finds a BAR + offset by address.
-    pub fn find_bar(&self, address: u64) -> Option<(u8, u16)> {
+    pub fn find_bar(&self, address: u64) -> Option<(u8, u64)> {
         self.common.find_bar(address)
+    }
+
+    /// Gets the active base address for a specific BAR index, if mapped.
+    pub fn bar_address(&self, bar: u8) -> Option<u64> {
+        self.common.bar_address(bar)
     }
 
     /// Checks if this device is a PCIe device by looking for the PCI Express capability.
@@ -1290,6 +1300,16 @@ impl ConfigSpaceType1Emulator {
             }
         }
         // If no PCIe Express capability is found, silently ignore the call
+    }
+
+    /// Get the list of PCI capabilities.
+    pub fn capabilities(&self) -> &[Box<dyn PciCapability>] {
+        self.common.capabilities()
+    }
+
+    /// Get the list of PCI capabilities (mutable).
+    pub fn capabilities_mut(&mut self) -> &mut [Box<dyn PciCapability>] {
+        self.common.capabilities_mut()
     }
 }
 
@@ -2328,5 +2348,43 @@ mod tests {
         assert_eq!(emu_type1.common.header_type(), HeaderType::Type1);
         assert!(emu_type1.common.validate_header_type(HeaderType::Type1));
         assert!(!emu_type1.common.validate_header_type(HeaderType::Type0));
+    }
+
+    /// Ensure that `find_bar` correctly returns a full `u64` offset for BARs
+    /// larger than 64KiB, guarding against truncation back to `u16`.
+    #[test]
+    fn find_bar_returns_full_u64_offset_for_large_bar() {
+        use crate::bar_mapping::BarMappings;
+
+        // Set up a 64-bit BAR0 at base address 0x1_0000_0000 with size
+        // 0x2_0000 (128KiB). The mask encodes the size via the complement:
+        //   mask = !(size - 1) = !(0x1_FFFF) = 0xFFFF_FFFE_0000
+        // Split across two 32-bit BAR registers (BAR0 low + BAR1 high).
+        let bar_base: u64 = 0x1_0000_0000;
+        let bar_size: u64 = 0x2_0000; // 128KiB — larger than u16::MAX
+        let mask64 = !(bar_size - 1); // 0xFFFF_FFFE_0000
+
+        let mut base_addresses = [0u32; 6];
+        let mut bar_masks = [0u32; 6];
+
+        // BAR0 low: set the 64-bit type bit in the mask and the base address.
+        bar_masks[0] = cfg_space::BarEncodingBits::from_bits(mask64 as u32)
+            .with_type_64_bit(true)
+            .into_bits();
+        bar_masks[1] = (mask64 >> 32) as u32;
+        base_addresses[0] = bar_base as u32;
+        base_addresses[1] = (bar_base >> 32) as u32;
+
+        let bar_mappings = BarMappings::parse(&base_addresses, &bar_masks);
+
+        // Query an address whose offset within BAR0 exceeds 0xFFFF.
+        let expected_offset: u64 = 0x1_2345;
+        let address: u64 = bar_base + expected_offset;
+
+        let (found_bar, offset) = bar_mappings
+            .find(address)
+            .expect("address should resolve to BAR 0");
+        assert_eq!(found_bar, 0);
+        assert_eq!(offset, expected_offset);
     }
 }

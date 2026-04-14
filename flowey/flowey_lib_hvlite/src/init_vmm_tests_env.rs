@@ -28,6 +28,8 @@ flowey_request! {
 
         /// Register an openvmm binary
         pub register_openvmm: Option<ReadVar<crate::build_openvmm::OpenvmmOutput>>,
+        /// Register an openvmm_vhost binary (Linux only)
+        pub register_openvmm_vhost: Option<ReadVar<crate::build_openvmm_vhost::OpenvmmVhostOutput>>,
         /// Register a windows pipette binary
         pub register_pipette_windows: Option<ReadVar<crate::build_pipette::PipetteOutput>>,
         /// Register a linux-musl pipette binary
@@ -85,6 +87,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target,
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
@@ -110,10 +113,18 @@ impl SimpleFlowNode for Node {
         };
 
         let test_linux_initrd = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestInitrd(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestInitrd,
+                openvmm_deps_arch,
+                v,
+            )
         });
         let test_linux_kernel = ctx.reqv(|v| {
-            crate::resolve_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
+            crate::resolve_openvmm_deps::Request::Get(
+                crate::resolve_openvmm_deps::OpenvmmDepFile::LinuxTestKernel,
+                openvmm_deps_arch,
+                v,
+            )
         });
 
         let mu_msvm_arch = match vmm_tests_target.architecture {
@@ -131,6 +142,7 @@ impl SimpleFlowNode for Node {
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
+            let openvmm_vhost = register_openvmm_vhost.claim(ctx);
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
             let guest_test_uefi = register_guest_test_uefi.claim(ctx);
@@ -163,18 +175,36 @@ impl SimpleFlowNode for Node {
                     );
 
                 let working_dir_ref = test_content_dir.as_path();
+                let disk_image_dir = disk_image_dir.map(|v| rt.read(v));
+
                 let working_dir_win = windows_via_wsl2.then(|| {
-                    flowey_lib_common::_util::wslpath::linux_to_win(working_dir_ref)
+                    flowey_lib_common::_util::wslpath::linux_to_win(rt, working_dir_ref)
                         .display()
                         .to_string()
                 });
-                let maybe_convert_path = |path: &Path| -> anyhow::Result<String> {
-                    let path = if windows_via_wsl2 {
-                        flowey_lib_common::_util::wslpath::linux_to_win(path)
+
+                // Convert a path via wslpath if running under WSL2,
+                // otherwise just make it absolute.
+                let wsl_convert_path = |path: &Path| -> anyhow::Result<PathBuf> {
+                    if windows_via_wsl2 {
+                        Ok(flowey_lib_common::_util::wslpath::linux_to_win(rt, path))
                     } else {
                         path.absolute()
-                            .with_context(|| format!("invalid path {}", path.display()))?
-                    };
+                            .with_context(|| format!("invalid path {}", path.display()))
+                    }
+                };
+
+                // Eagerly convert all known paths.
+                let converted_content_dir = wsl_convert_path(&test_content_dir)?;
+                let test_log_dir = test_content_dir.join("test_results");
+                let converted_log_dir = wsl_convert_path(&test_log_dir)?;
+                let converted_disk_image_dir = disk_image_dir
+                    .as_ref()
+                    .map(|p| wsl_convert_path(p))
+                    .transpose()?;
+
+                // Make a converted path relative if requested.
+                let make_portable_path = |path: PathBuf| -> anyhow::Result<String> {
                     let path = if use_relative_paths {
                         if windows_via_wsl2 {
                             let working_dir_trimmed =
@@ -209,23 +239,22 @@ impl SimpleFlowNode for Node {
 
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
-                    maybe_convert_path(&test_content_dir)?,
+                    make_portable_path(converted_content_dir)?,
                 );
 
                 // use a subdir for test logs
-                let test_log_dir = test_content_dir.join("test_results");
                 if !test_log_dir.exists() {
                     fs_err::create_dir(&test_log_dir)?
                 };
                 env.insert(
                     "TEST_OUTPUT_PATH".into(),
-                    maybe_convert_path(&test_log_dir)?,
+                    make_portable_path(converted_log_dir)?,
                 );
 
-                if let Some(disk_image_dir) = disk_image_dir {
+                if let Some(disk_image_dir) = converted_disk_image_dir {
                     env.insert(
                         "VMM_TEST_IMAGES".into(),
-                        maybe_convert_path(&rt.read(disk_image_dir))?,
+                        make_portable_path(disk_image_dir)?,
                     );
                 }
 
@@ -241,6 +270,14 @@ impl SimpleFlowNode for Node {
                             dst.make_executable()?;
                         }
                     }
+                }
+
+                if let Some(openvmm_vhost) = openvmm_vhost {
+                    let crate::build_openvmm_vhost::OpenvmmVhostOutput { bin, dbg: _ } =
+                        rt.read(openvmm_vhost);
+                    let dst = test_content_dir.join("openvmm_vhost");
+                    fs_err::copy(bin, &dst)?;
+                    dst.make_executable()?;
                 }
 
                 if let Some(pipette_win) = pipette_win {

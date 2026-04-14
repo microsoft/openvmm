@@ -93,24 +93,17 @@ impl FlowNode for Node {
                                 extra_env,
                             );
 
-                        let sh = xshell::Shell::new()?;
+                        let out_archive_file =
+                            rt.sh.current_dir().absolute()?.join("archive.tar.zst");
 
-                        let out_archive_file = sh.current_dir().absolute()?.join("archive.tar.zst");
-
-                        sh.change_dir(working_dir);
-                        let mut cmd = xshell::cmd!(
-                            sh,
+                        rt.sh.change_dir(working_dir);
+                        let mut cmd = flowey::shell_cmd!(
+                            rt,
                             "cargo {rust_toolchain...} nextest archive
                                 {build_args...}
                                 --archive-file {out_archive_file}
                             "
                         );
-
-                        // if running in CI, no need to waste time with incremental
-                        // build artifacts
-                        if !matches!(rt.backend(), FlowBackend::Local) {
-                            cmd = cmd.env("CARGO_INCREMENTAL", "0");
-                        }
 
                         for (k, v) in build_env {
                             cmd = cmd.env(k, v);

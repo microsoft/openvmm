@@ -40,7 +40,6 @@ devices, and scenarios OpenVMM currently supports.
     - [Virtio](https://wiki.osdev.org/Virtio)
       - virtio-fs
       - virtio-9p
-      - virtio-serial
       - virtio-net
       - virtio-pmem
     - [VMBus](https://docs.kernel.org/virt/hyperv/vmbus.html)

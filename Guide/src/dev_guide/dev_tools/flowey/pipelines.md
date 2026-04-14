@@ -6,7 +6,7 @@ Pipelines define complete automation workflows consisting of jobs that run nodes
 
 [`PipelineJob`](https://openvmm.dev/rustdoc/linux/flowey_core/pipeline/struct.PipelineJob.html) instances are configured using a builder pattern:
 
-```rust
+```rust,ignore
 let job = pipeline
     .new_job(platform, arch, "my-job")
     .with_timeout_in_minutes(60)
@@ -26,7 +26,7 @@ Parameters allow runtime configuration of pipelines. In Azure DevOps, parameters
 
 ![Azure DevOps parameter UI](images/Parameters.png)
 
-```rust
+```rust,ignore
 // Define a boolean parameter
 let verbose = pipeline.new_parameter_bool(
     "verbose",

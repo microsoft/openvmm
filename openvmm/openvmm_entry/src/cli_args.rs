@@ -23,7 +23,6 @@ use clap::Parser;
 use clap::ValueEnum;
 use openvmm_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use openvmm_defs::config::DeviceVtl;
-use openvmm_defs::config::Hypervisor;
 use openvmm_defs::config::PcatBootDevice;
 use openvmm_defs::config::Vtl2BaseAddressType;
 use openvmm_defs::config::X2ApicConfig;
@@ -61,6 +60,25 @@ pub struct Options {
     #[clap(long)]
     pub prefetch: bool,
 
+    /// back guest RAM with a file instead of anonymous memory.
+    /// The file is created/opened and sized to the guest RAM size.
+    /// Enables snapshot save (fsync) and restore (open + mmap).
+    #[clap(long, value_name = "FILE", conflicts_with = "private_memory")]
+    pub memory_backing_file: Option<PathBuf>,
+
+    /// Restore VM from a snapshot directory (implies file-backed memory from
+    /// the snapshot's memory.bin). Cannot be used with --memory-backing-file.
+    #[clap(long, value_name = "DIR", conflicts_with = "memory_backing_file")]
+    pub restore_snapshot: Option<PathBuf>,
+
+    /// use private anonymous memory for guest RAM
+    #[clap(long, conflicts_with_all = ["memory_backing_file", "restore_snapshot"])]
+    pub private_memory: bool,
+
+    /// enable transparent huge pages for guest RAM (Linux only, requires --private-memory)
+    #[clap(long, requires("private_memory"))]
+    pub thp: bool,
+
     /// start in paused state
     #[clap(short = 'P', long)]
     pub paused: bool,
@@ -80,6 +98,12 @@ pub struct Options {
     /// enable HV#1 capabilities
     #[clap(long)]
     pub hv: bool,
+
+    /// Use a full device tree instead of ACPI tables for ARM64 Linux direct
+    /// boot. By default, ARM64 uses ACPI mode (stub DT + EFI + ACPI tables).
+    /// This flag selects the legacy DT-only path. Rejected on x86.
+    #[clap(long, conflicts_with_all = ["uefi", "pcat", "igvm"])]
+    pub device_tree: bool,
 
     /// enable vtl2 - only supported in WHP and simulated without hypervisor support currently
     ///
@@ -106,12 +130,12 @@ pub struct Options {
     pub isolation: Option<IsolationCli>,
 
     /// the hybrid vsock listener path
-    #[clap(long, value_name = "PATH")]
-    pub vsock_path: Option<String>,
+    #[clap(long, value_name = "PATH", alias = "vsock-path")]
+    pub vmbus_vsock_path: Option<String>,
 
     /// the VTL2 hybrid vsock listener path
-    #[clap(long, value_name = "PATH", requires("vtl2"))]
-    pub vtl2_vsock_path: Option<String>,
+    #[clap(long, value_name = "PATH", requires("vtl2"), alias = "vtl2-vsock-path")]
+    pub vmbus_vtl2_vsock_path: Option<String>,
 
     /// the late map vtl0 ram access policy when vtl2 is enabled
     #[clap(long, requires("vtl2"), default_value = "halt")]
@@ -136,8 +160,16 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+    `prwrap:<disk>`                persistent reservations wrapper
 
 flags:
     `ro`                           open disk as read-only
@@ -145,6 +177,9 @@ flags:
     `vtl2`                         assign this disk to VTL2
     `uh`                           relay this disk to VTL0 through SCSI-to-OpenHCL (show to VTL0 as SCSI)
     `uh-nvme`                      relay this disk to VTL0 through NVMe-to-OpenHCL (show to VTL0 as SCSI)
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port, incompatible with `dvd`, `vtl2`, `uh`, and `uh-nvme`
 "#)]
     #[clap(long, value_name = "FILE")]
     pub disk: Vec<DiskCli>,
@@ -160,8 +195,16 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+    `prwrap:<disk>`                persistent reservations wrapper
 
 flags:
     `ro`                           open disk as read-only
@@ -175,6 +218,52 @@ options:
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
 
+    /// attach a disk via a virtio-blk controller
+    #[clap(long_help = r#"
+e.g: --virtio-blk memdiff:file:/path/to/disk.vhd
+
+syntax: <path> | kind:<arg>[,flag,opt=arg,...]
+
+valid disk kinds:
+    `mem:<len>`                    memory backed disk
+        <len>: length of ramdisk, e.g.: `1G`
+    `memdiff:<disk>`               memory backed diff disk
+        <disk>: lower disk, e.g.: `file:base.img`
+    `file:<path>`                  file-backed disk
+        <path>: path to file
+
+flags:
+    `ro`                           open disk as read-only
+
+options:
+    `pcie_port=<name>`             present the disk using pcie under the specified port
+"#)]
+    #[clap(long = "virtio-blk")]
+    pub virtio_blk: Vec<DiskCli>,
+
+    /// Attach a vhost-user device via a Unix socket.
+    ///
+    /// The first positional argument is the socket path. Options:
+    ///
+    /// ```text
+    ///   type=blk|fs                        — device type (shorthand)
+    ///   device_id=N                        — numeric virtio device ID
+    ///   tag=NAME                           — mount tag (required for type=fs)
+    ///   pcie_port=NAME                     — present on PCIe under the specified port
+    /// ```
+    ///
+    /// Examples:
+    ///
+    /// ```text
+    ///   --vhost-user /tmp/vhost.sock,type=blk
+    ///   --vhost-user /tmp/vhost.sock,device_id=2
+    ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
+    ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
+    /// ```
+    #[cfg(target_os = "linux")]
+    #[clap(long = "vhost-user")]
+    pub vhost_user: Vec<VhostUserCli>,
+
     /// number of sub-channels for the SCSI controller
     #[clap(long, value_name = "COUNT", default_value = "0")]
     pub scsi_sub_channels: u16,
@@ -186,7 +275,8 @@ options:
     /// expose a virtual NIC with the given backend (consomme | dio | tap | none)
     ///
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
-    /// or `vtl2:` to assign this NIC to VTL2.
+    /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
+    /// expose the NIC over emulated PCIe at the specified port.
     #[clap(long)]
     pub net: Vec<NicConfigCli>,
 
@@ -230,14 +320,6 @@ options:
     #[clap(long, default_value = "auto", value_parser = parse_x2apic)]
     pub x2apic: X2ApicConfig,
 
-    /// use virtio console
-    #[clap(long)]
-    pub virtio_console: bool,
-
-    /// use virtio console enumerated via VPCI
-    #[clap(long, conflicts_with("virtio_console"))]
-    pub virtio_console_pci: bool,
-
     /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
@@ -253,10 +335,6 @@ options:
     /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
-
-    /// virtio serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
-    #[clap(long, value_name = "SERIAL")]
-    pub virtio_serial: Option<SerialConfigCli>,
 
     /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>]\[,name=\<windowtitle\>\] | none)
     #[structopt(long, value_name = "SERIAL")]
@@ -321,7 +399,10 @@ options:
     pub igvm_vtl2_relocation_type: Vtl2BaseAddressType,
 
     /// add a virtio_9p device (e.g. myfs,C:\)
-    #[clap(long, value_name = "tag,root_path")]
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path")]
     pub virtio_9p: Vec<FsArgs>,
 
     /// output debug info from the 9p server
@@ -329,11 +410,17 @@ options:
     pub virtio_9p_debug: bool,
 
     /// add a virtio_fs device (e.g. myfs,C:\,uid=1000,gid=2000)
-    #[clap(long, value_name = "tag,root_path,[options]")]
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path,[options]")]
     pub virtio_fs: Vec<FsArgsWithOptions>,
 
     /// add a virtio_fs device for sharing memory (e.g. myfs,\SectionDirectoryPath)
-    #[clap(long, value_name = "tag,root_path")]
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]tag,root_path")]
     pub virtio_fs_shmem: Vec<FsArgs>,
 
     /// add a virtio_fs device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | auto)
@@ -341,20 +428,58 @@ options:
     pub virtio_fs_bus: VirtioBusCli,
 
     /// virtio PMEM device
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the device over
+    /// emulated PCIe at the specified port.
+    #[clap(long, value_name = "[pcie_port=PORT:]PATH")]
+    pub virtio_pmem: Option<VirtioPmemArgs>,
+
+    /// add a virtio entropy (RNG) device
+    #[clap(long)]
+    pub virtio_rng: bool,
+
+    /// add a virtio-rng device under either the PCI or MMIO bus, or whatever the hypervisor supports (pci | mmio | vpci | auto)
+    #[clap(long, value_name = "BUS", default_value = "auto")]
+    pub virtio_rng_bus: VirtioBusCli,
+
+    /// attach the virtio-rng device to the specified PCIe port (overrides --virtio-rng-bus)
+    #[clap(long, value_name = "PORT", requires("virtio_rng"))]
+    pub virtio_rng_pcie_port: Option<String>,
+
+    /// virtio console device backed by a serial backend (/dev/hvc0 in guest)
+    ///
+    /// Accepts serial config (console | stderr | listen=\<path\> |
+    /// file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> |
+    /// term[=\<program\>]\[,name=\<windowtitle\>\] | none)
+    #[clap(long)]
+    pub virtio_console: Option<SerialConfigCli>,
+
+    /// attach the virtio-console device to the specified PCIe port
+    #[clap(long, value_name = "PORT", requires("virtio_console"))]
+    pub virtio_console_pcie_port: Option<String>,
+
+    /// add a virtio vsock device with the given Unix socket base path
     #[clap(long, value_name = "PATH")]
-    pub virtio_pmem: Option<String>,
+    pub virtio_vsock_path: Option<String>,
 
     /// expose a virtio network with the given backend (dio | vmnic | tap |
     /// none)
     ///
     /// Prefix with `uh:` to add this NIC via Mana emulation through OpenHCL,
-    /// or `vtl2:` to assign this NIC to VTL2.
+    /// `vtl2:` to assign this NIC to VTL2, or `pcie_port=<port_name>:` to
+    /// expose the NIC over emulated PCIe at the specified port.
     #[clap(long)]
     pub virtio_net: Vec<NicConfigCli>,
 
     /// send log output from the worker process to a file instead of stderr. the file will be overwritten.
     #[clap(long, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
+
+    /// write the process ID to the specified file on startup, and remove it on
+    /// exit. the file is not removed if the process is killed with SIGKILL or
+    /// crashes. no file locking is performed.
+    #[clap(long, value_name = "PATH")]
+    pub pidfile: Option<PathBuf>,
 
     /// run as a ttrpc server on the specified Unix socket
     #[clap(long, value_name = "SOCKETPATH")]
@@ -457,12 +582,15 @@ flags:
     pub gdb: Option<u16>,
 
     /// enable emulated MANA devices with the given network backend (see --net)
+    ///
+    /// Prefix with `pcie_port=<port_name>:` to expose the nic over emulated PCIe
+    /// at the specified port.
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
     /// use a specific hypervisor interface
-    #[clap(long, value_parser = parse_hypervisor)]
-    pub hypervisor: Option<Hypervisor>,
+    #[clap(long)]
+    pub hypervisor: Option<String>,
 
     /// (dev utility) boot linux using a custom (raw) DSDT table.
     ///
@@ -493,8 +621,17 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
+
+additional wrapper kinds (e.g., `autocache`, `prwrap`) are also supported;
+this list is not exhaustive.
 
 flags:
     `ro`                           open disk as read-only
@@ -507,7 +644,7 @@ flags:
     /// attach a floppy drive (should be able to be passed multiple times). VM must be generation 1 (no UEFI)
     ///
     #[clap(long_help = r#"
-e.g: --floppy memdiff:/path/to/disk.vfd,ro
+e.g: --floppy memdiff:file:/path/to/disk.vfd,ro
 
 syntax: <path> | kind:<arg>[,flag,opt=arg,...]
 
@@ -516,8 +653,14 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;create=<len>]`   file-backed disk
         <path>: path to file
+    `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
+    `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
+    `blob:<type>:<url>`            HTTP blob (read-only)
+        <type>: `flat` or `vhd1`
+    `crypt:<cipher>:<key_file>:<disk>` encrypted disk wrapper
+        <cipher>: `xts-aes-256`
 
 flags:
     `ro`                           open disk as read-only
@@ -544,10 +687,6 @@ flags:
     /// specify the IMC hive file for booting Windows
     #[clap(long)]
     pub imc: Option<PathBuf>,
-
-    /// Expose MCR device
-    #[clap(long)]
-    pub mcr: bool, // TODO MCR: support closed source CLI flags
 
     /// expose a battery device
     #[clap(long)]
@@ -587,7 +726,7 @@ Options:
     `segment=<value>`              configures the PCI Express segment, default 0
     `start_bus=<value>`            lowest valid bus number, default 0
     `end_bus=<value>`              highest valid bus number, default 255
-    `low_mmio=<size>`              low MMIO window size, default 4M
+    `low_mmio=<size>`              low MMIO window size, default 64M
     `high_mmio=<size>`             high MMIO window size, default 1G
 "#)]
     #[clap(long, conflicts_with("pcat"))]
@@ -643,25 +782,57 @@ Options:
 "#)]
     #[clap(long, conflicts_with("pcat"))]
     pub pcie_switch: Vec<GenericPcieSwitchCli>,
+
+    /// Attach a PCIe remote device to a downstream port
+    #[clap(long_help = r#"
+Attach PCIe devices to root ports or downstream switch ports
+which are implemented in a simulator running in a remote process.
+
+Examples:
+    # Attach to root port rc0rp0 with default socket
+    --pcie-remote rc0rp0
+
+    # Attach with custom socket address
+    --pcie-remote rc0rp0,socket=0.0.0.0:48914
+
+    # Specify HU and controller identifiers
+    --pcie-remote rc0rp0,hu=1,controller=0
+
+    # Multiple devices on different ports
+    --pcie-remote rc0rp0,socket=0.0.0.0:48914
+    --pcie-remote rc0rp1,socket=0.0.0.0:48915
+
+Syntax: <port_name>[,opt=arg,...]
+
+Options:
+    `socket=<address>`              TCP socket (default: localhost:48914)
+    `hu=<value>`                    Hardware unit identifier (default: 0)
+    `controller=<value>`            Controller identifier (default: 0)
+"#)]
+    #[clap(long, conflicts_with("pcat"))]
+    pub pcie_remote: Vec<PcieRemoteCli>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FsArgs {
     pub tag: String,
     pub path: String,
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for FsArgs {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (pcie_port, s) = parse_pcie_port_prefix(s);
         let mut s = s.split(',');
         let (Some(tag), Some(path), None) = (s.next(), s.next(), s.next()) else {
-            anyhow::bail!("expected <tag>,<path>");
+            anyhow::bail!("expected [pcie_port=<port>:]<tag>,<path>");
         };
         Ok(Self {
             tag: tag.to_owned(),
             path: path.to_owned(),
+            pcie_port,
         })
     }
 }
@@ -674,21 +845,25 @@ pub struct FsArgsWithOptions {
     pub path: String,
     /// The extra options, joined with ';'.
     pub options: String,
+    /// Optional PCIe port name.
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for FsArgsWithOptions {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (pcie_port, s) = parse_pcie_port_prefix(s);
         let mut s = s.split(',');
         let (Some(tag), Some(path)) = (s.next(), s.next()) else {
-            anyhow::bail!("expected <tag>,<path>[,<options>]");
+            anyhow::bail!("expected [pcie_port=<port>:]<tag>,<path>[,<options>]");
         };
         let options = s.collect::<Vec<_>>().join(";");
         Ok(Self {
             tag: tag.to_owned(),
             path: path.to_owned(),
             options,
+            pcie_port,
         })
     }
 }
@@ -699,6 +874,42 @@ pub enum VirtioBusCli {
     Mmio,
     Pci,
     Vpci,
+}
+
+/// Parse an optional `pcie_port=<name>:` prefix from a CLI argument string.
+///
+/// Returns `(Some(port_name), rest)` if the prefix is present, or
+/// `(None, original)` if not.
+fn parse_pcie_port_prefix(s: &str) -> (Option<String>, &str) {
+    if let Some(rest) = s.strip_prefix("pcie_port=") {
+        if let Some((port, rest)) = rest.split_once(':') {
+            if !port.is_empty() {
+                return (Some(port.to_string()), rest);
+            }
+        }
+    }
+    (None, s)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VirtioPmemArgs {
+    pub path: String,
+    pub pcie_port: Option<String>,
+}
+
+impl FromStr for VirtioPmemArgs {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (pcie_port, s) = parse_pcie_port_prefix(s);
+        if s.is_empty() {
+            anyhow::bail!("expected [pcie_port=<port>:]<path>");
+        }
+        Ok(Self {
+            path: s.to_owned(),
+            pcie_port,
+        })
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy)]
@@ -819,6 +1030,23 @@ fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
     })
 }
 
+impl DiskCliKind {
+    /// Parse an `autocache:[key]:<kind>` disk spec, given the cache path
+    /// (normally read from `OPENVMM_AUTO_CACHE_PATH`).
+    fn parse_autocache(
+        arg: &str,
+        cache_path: Result<String, std::env::VarError>,
+    ) -> anyhow::Result<Self> {
+        let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+        let cache_path = cache_path.context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
+        Ok(DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key: (!key.is_empty()).then(|| key.to_string()),
+            disk: Box::new(kind.parse()?),
+        })
+    }
+}
+
 impl FromStr for DiskCliKind {
     type Err = anyhow::Error;
 
@@ -865,14 +1093,7 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "autocache" => {
-                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
-                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
-                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
-                    DiskCliKind::AutoCacheSqlite {
-                        cache_path,
-                        key: (!key.is_empty()).then(|| key.to_string()),
-                        disk: Box::new(kind.parse()?),
-                    }
+                    Self::parse_autocache(arg, std::env::var("OPENVMM_AUTO_CACHE_PATH"))?
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => {
@@ -1267,6 +1488,7 @@ pub struct NicConfigCli {
     pub endpoint: EndpointConfigCli,
     pub max_queues: Option<u16>,
     pub underhill: bool,
+    pub pcie_port: Option<String>,
 }
 
 impl FromStr for NicConfigCli {
@@ -1276,11 +1498,18 @@ impl FromStr for NicConfigCli {
         let mut vtl = DeviceVtl::Vtl0;
         let mut max_queues = None;
         let mut underhill = false;
+        let mut pcie_port = None;
         while let Some((opt, rest)) = s.split_once(':') {
             if let Some((opt, val)) = opt.split_once('=') {
                 match opt {
                     "queues" => {
                         max_queues = Some(val.parse().map_err(|_| "failed to parse queue count")?);
+                    }
+                    "pcie_port" => {
+                        if val.is_empty() {
+                            return Err("`pcie_port=` requires port name argument".into());
+                        }
+                        pcie_port = Some(val.to_string());
                     }
                     _ => break,
                 }
@@ -1300,26 +1529,18 @@ impl FromStr for NicConfigCli {
             return Err("`uh` is incompatible with `vtl2`".into());
         }
 
+        if pcie_port.is_some() && (underhill || vtl != DeviceVtl::Vtl0) {
+            return Err("`pcie_port` is incompatible with `uh` and `vtl2`".into());
+        }
+
         let endpoint = s.parse()?;
         Ok(NicConfigCli {
             vtl,
             endpoint,
             max_queues,
             underhill,
+            pcie_port,
         })
-    }
-}
-
-#[derive(Debug, Error)]
-#[error("unknown hypervisor: {0}")]
-pub struct UnknownHypervisor(String);
-
-fn parse_hypervisor(s: &str) -> Result<Hypervisor, UnknownHypervisor> {
-    match s {
-        "kvm" => Ok(Hypervisor::Kvm),
-        "mshv" => Ok(Hypervisor::MsHv),
-        "whp" => Ok(Hypervisor::Whp),
-        _ => Err(UnknownHypervisor(s.to_owned())),
     }
 }
 
@@ -1488,7 +1709,7 @@ impl FromStr for PcieRootComplexCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 4 * 1024 * 1024; // 4M
+        const DEFAULT_PCIE_CRS_LOW_SIZE: u32 = 64 * 1024 * 1024; // 64M
         const DEFAULT_PCIE_CRS_HIGH_SIZE: u64 = 1024 * 1024 * 1024; // 1G
 
         let mut opts = s.split(',');
@@ -1652,6 +1873,76 @@ impl FromStr for GenericPcieSwitchCli {
     }
 }
 
+/// CLI configuration for a PCIe remote device.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PcieRemoteCli {
+    /// Name of the PCIe downstream port to attach to.
+    pub port_name: String,
+    /// TCP socket address for the remote simulator.
+    pub socket_addr: Option<String>,
+    /// Hardware unit identifier for plug request.
+    pub hu: u16,
+    /// Controller identifier for plug request.
+    pub controller: u16,
+}
+
+impl FromStr for PcieRemoteCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let port_name = opts.next().context("expected port name")?;
+        if port_name.is_empty() {
+            anyhow::bail!("must provide a port name");
+        }
+
+        let mut socket_addr = None;
+        let mut hu = 0u16;
+        let mut controller = 0u16;
+
+        for opt in opts {
+            let mut kv = opt.split('=');
+            let key = kv.next().context("expected option name")?;
+            let value = kv.next();
+
+            match key {
+                "socket" => {
+                    let addr = value.context("socket requires an address")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
+                    if addr.is_empty() {
+                        anyhow::bail!("socket address cannot be empty");
+                    }
+                    socket_addr = Some(addr.to_string());
+                }
+                "hu" => {
+                    let val = value.context("hu requires a value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
+                    hu = val.parse().context("failed to parse hu")?;
+                }
+                "controller" => {
+                    let val = value.context("controller requires a value")?;
+                    if let Some(extra) = kv.next() {
+                        anyhow::bail!("unexpected token: '{extra}'")
+                    }
+                    controller = val.parse().context("failed to parse controller")?;
+                }
+                _ => anyhow::bail!("unknown option: '{key}'"),
+            }
+        }
+
+        Ok(PcieRemoteCli {
+            port_name: port_name.to_string(),
+            socket_addr,
+            hu,
+            controller,
+        })
+    }
+}
+
 /// Read a environment variable that may / may-not have a target-specific
 /// prefix. e.g: `default_value_from_arch_env("FOO")` would first try and read
 /// from `FOO`, and if that's not found, it will try `X86_64_FOO`.
@@ -1683,29 +1974,88 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub enum VhostUserDeviceTypeCli {
+    /// Block device — config from backend via GET_CONFIG.
+    Blk,
+    /// Filesystem device — frontend-owned config with mount tag.
+    Fs { tag: String },
+    /// Generic device identified by numeric virtio device ID.
+    Other { device_id: u16 },
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
+pub struct VhostUserCli {
+    pub socket_path: String,
+    pub device_type: VhostUserDeviceTypeCli,
+    pub pcie_port: Option<String>,
+}
+
+#[cfg(target_os = "linux")]
+impl FromStr for VhostUserCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let mut opts = s.split(',');
+        let socket_path = opts.next().context("missing socket path")?.to_string();
+
+        let mut device_id: Option<u16> = None;
+        let mut tag: Option<String> = None;
+        let mut pcie_port: Option<String> = None;
+        let mut type_name = None;
+        for opt in opts {
+            let (key, val) = opt.split_once('=').context("expected key=value option")?;
+            match key {
+                "type" => {
+                    type_name = Some(val);
+                }
+                "device_id" => {
+                    device_id = Some(val.parse().context("invalid device_id")?);
+                }
+                "tag" => {
+                    tag = Some(val.to_string());
+                }
+                "pcie_port" => {
+                    pcie_port = Some(val.to_string());
+                }
+                other => anyhow::bail!("unknown vhost-user option: '{other}'"),
+            }
+        }
+
+        if type_name.is_some() == device_id.is_some() {
+            anyhow::bail!("must specify type=<name> or device_id=<N>");
+        }
+
+        // Build the typed device variant.
+        let device_type = match type_name {
+            Some("fs") => {
+                let tag = tag.take().context("type=fs requires tag=<name>")?;
+                VhostUserDeviceTypeCli::Fs { tag }
+            }
+            Some("blk") => VhostUserDeviceTypeCli::Blk,
+            Some(ty) => anyhow::bail!("unknown vhost-user device type: '{ty}'"),
+            None => VhostUserDeviceTypeCli::Other {
+                device_id: device_id.unwrap(),
+            },
+        };
+
+        if tag.is_some() {
+            anyhow::bail!("tag= is only valid for type=fs");
+        }
+
+        Ok(VhostUserCli {
+            socket_path,
+            device_type,
+            pcie_port,
+        })
+    }
+}
+
 #[cfg(test)]
-// UNSAFETY: Needed to set and remove environment variables in tests
-#[expect(unsafe_code)]
 mod tests {
     use super::*;
-
-    fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
-    where
-        F: FnOnce() -> R,
-    {
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::set_var(name, value);
-        }
-        let result = f();
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var(name);
-        }
-        result
-    }
 
     #[test]
     fn test_parse_file_disk_with_create() {
@@ -1877,10 +2227,9 @@ mod tests {
 
     #[test]
     fn test_parse_autocache_sqlite_disk() {
-        // Test with environment variable set
-        let disk = with_env_var("OPENVMM_AUTO_CACHE_PATH", "/tmp/cache", || {
-            DiskCliKind::from_str("autocache::file:disk.vhd").unwrap()
-        });
+        // Test with cache path provided
+        let disk =
+            DiskCliKind::parse_autocache(":file:disk.vhd", Ok("/tmp/cache".to_string())).unwrap();
         assert!(matches!(
             disk,
             DiskCliKind::AutoCacheSqlite {
@@ -1890,8 +2239,24 @@ mod tests {
             } if cache_path == "/tmp/cache" && key.is_none()
         ));
 
-        // Test without environment variable
-        assert!(DiskCliKind::from_str("autocache::file:disk.vhd").is_err());
+        // Test with key
+        let disk =
+            DiskCliKind::parse_autocache("mykey:file:disk.vhd", Ok("/tmp/cache".to_string()))
+                .unwrap();
+        assert!(matches!(
+            disk,
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key: Some(key),
+                disk: _disk,
+            } if cache_path == "/tmp/cache" && key == "mykey"
+        ));
+
+        // Test without cache path
+        assert!(
+            DiskCliKind::parse_autocache(":file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1912,12 +2277,10 @@ mod tests {
         assert!(DiskCliKind::from_str("sqldiff:path").is_err());
 
         // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
-        // SAFETY:
-        // Safe in a testing context because it won't be changed concurrently
-        unsafe {
-            std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
-        }
-        assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
+        assert!(
+            DiskCliKind::parse_autocache("key:file:disk.vhd", Err(std::env::VarError::NotPresent),)
+                .is_err()
+        );
 
         // Invalid blob kind
         assert!(DiskCliKind::from_str("blob:invalid:url").is_err());
@@ -2097,26 +2460,118 @@ mod tests {
         assert_eq!(config.vtl, DeviceVtl::Vtl0);
         assert!(config.max_queues.is_none());
         assert!(!config.underhill);
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with vtl2
         let config = NicConfigCli::from_str("vtl2:none").unwrap();
         assert_eq!(config.vtl, DeviceVtl::Vtl2);
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with queues
         let config = NicConfigCli::from_str("queues=4:none").unwrap();
         assert_eq!(config.max_queues, Some(4));
+        assert!(config.pcie_port.is_none());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test with underhill
         let config = NicConfigCli::from_str("uh:none").unwrap();
         assert!(config.underhill);
+        assert!(config.pcie_port.is_none());
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with pcie_port
+        let config = NicConfigCli::from_str("pcie_port=rp0:none").unwrap();
+        assert_eq!(config.pcie_port.unwrap(), "rp0".to_string());
         assert!(matches!(config.endpoint, EndpointConfigCli::None));
 
         // Test error cases
         assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
         assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
+        assert!(NicConfigCli::from_str("pcie_port=rp0:vtl2:none").is_err());
+        assert!(NicConfigCli::from_str("uh:pcie_port=rp0:none").is_err());
+        assert!(NicConfigCli::from_str("pcie_port=:none").is_err());
+        assert!(NicConfigCli::from_str("pcie_port:none").is_err());
+    }
+
+    #[test]
+    fn test_parse_pcie_port_prefix() {
+        // Successful prefix parsing
+        let (port, rest) = parse_pcie_port_prefix("pcie_port=rp0:tag,path");
+        assert_eq!(port.unwrap(), "rp0");
+        assert_eq!(rest, "tag,path");
+
+        // No prefix
+        let (port, rest) = parse_pcie_port_prefix("tag,path");
+        assert!(port.is_none());
+        assert_eq!(rest, "tag,path");
+
+        // Empty port name — not parsed as a prefix
+        let (port, rest) = parse_pcie_port_prefix("pcie_port=:tag,path");
+        assert!(port.is_none());
+        assert_eq!(rest, "pcie_port=:tag,path");
+
+        // Missing colon — not parsed as a prefix
+        let (port, rest) = parse_pcie_port_prefix("pcie_port=rp0");
+        assert!(port.is_none());
+        assert_eq!(rest, "pcie_port=rp0");
+    }
+
+    #[test]
+    fn test_fs_args_pcie_port() {
+        // Without pcie_port
+        let args = FsArgs::from_str("myfs,/path").unwrap();
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+        assert!(args.pcie_port.is_none());
+
+        // With pcie_port
+        let args = FsArgs::from_str("pcie_port=rp0:myfs,/path").unwrap();
+        assert_eq!(args.pcie_port.unwrap(), "rp0");
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+
+        // Error: wrong number of fields
+        assert!(FsArgs::from_str("myfs").is_err());
+        assert!(FsArgs::from_str("pcie_port=rp0:myfs").is_err());
+    }
+
+    #[test]
+    fn test_fs_args_with_options_pcie_port() {
+        // Without pcie_port
+        let args = FsArgsWithOptions::from_str("myfs,/path,uid=1000").unwrap();
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+        assert_eq!(args.options, "uid=1000");
+        assert!(args.pcie_port.is_none());
+
+        // With pcie_port
+        let args = FsArgsWithOptions::from_str("pcie_port=rp0:myfs,/path,uid=1000").unwrap();
+        assert_eq!(args.pcie_port.unwrap(), "rp0");
+        assert_eq!(args.tag, "myfs");
+        assert_eq!(args.path, "/path");
+        assert_eq!(args.options, "uid=1000");
+
+        // Error: missing path
+        assert!(FsArgsWithOptions::from_str("myfs").is_err());
+    }
+
+    #[test]
+    fn test_virtio_pmem_args_pcie_port() {
+        // Without pcie_port
+        let args = VirtioPmemArgs::from_str("/path/to/file").unwrap();
+        assert_eq!(args.path, "/path/to/file");
+        assert!(args.pcie_port.is_none());
+
+        // With pcie_port
+        let args = VirtioPmemArgs::from_str("pcie_port=rp0:/path/to/file").unwrap();
+        assert_eq!(args.pcie_port.unwrap(), "rp0");
+        assert_eq!(args.path, "/path/to/file");
+
+        // Error: empty path
+        assert!(VirtioPmemArgs::from_str("").is_err());
+        assert!(VirtioPmemArgs::from_str("pcie_port=rp0:").is_err());
     }
 
     #[test]
@@ -2179,7 +2634,7 @@ mod tests {
         const ONE_MB: u64 = 1024 * 1024;
         const ONE_GB: u64 = 1024 * ONE_MB;
 
-        const DEFAULT_LOW_MMIO: u32 = (4 * ONE_MB) as u32;
+        const DEFAULT_LOW_MMIO: u32 = (64 * ONE_MB) as u32;
         const DEFAULT_HIGH_MMIO: u64 = ONE_GB;
 
         assert_eq!(
@@ -2391,5 +2846,67 @@ mod tests {
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=bad").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,num_downstream_ports=").is_err());
         assert!(GenericPcieSwitchCli::from_str("rp0:switch0,invalid_flag").is_err());
+    }
+
+    #[test]
+    fn test_pcie_remote_from_str() {
+        // Basic port name only
+        assert_eq!(
+            PcieRemoteCli::from_str("rc0rp0").unwrap(),
+            PcieRemoteCli {
+                port_name: "rc0rp0".to_string(),
+                socket_addr: None,
+                hu: 0,
+                controller: 0,
+            }
+        );
+
+        // With socket address
+        assert_eq!(
+            PcieRemoteCli::from_str("rc0rp0,socket=localhost:22567").unwrap(),
+            PcieRemoteCli {
+                port_name: "rc0rp0".to_string(),
+                socket_addr: Some("localhost:22567".to_string()),
+                hu: 0,
+                controller: 0,
+            }
+        );
+
+        // With all options
+        assert_eq!(
+            PcieRemoteCli::from_str("myport,socket=localhost:22568,hu=1,controller=2").unwrap(),
+            PcieRemoteCli {
+                port_name: "myport".to_string(),
+                socket_addr: Some("localhost:22568".to_string()),
+                hu: 1,
+                controller: 2,
+            }
+        );
+
+        // Only hu and controller
+        assert_eq!(
+            PcieRemoteCli::from_str("port0,hu=5,controller=3").unwrap(),
+            PcieRemoteCli {
+                port_name: "port0".to_string(),
+                socket_addr: None,
+                hu: 5,
+                controller: 3,
+            }
+        );
+
+        // Error cases
+        assert!(PcieRemoteCli::from_str("").is_err());
+        assert!(PcieRemoteCli::from_str("port,socket=").is_err());
+        assert!(PcieRemoteCli::from_str("port,hu=").is_err());
+        assert!(PcieRemoteCli::from_str("port,hu=bad").is_err());
+        assert!(PcieRemoteCli::from_str("port,controller=").is_err());
+        assert!(PcieRemoteCli::from_str("port,controller=bad").is_err());
+        assert!(PcieRemoteCli::from_str("port,unknown=value").is_err());
+    }
+
+    #[test]
+    fn test_pidfile_option_parsed() {
+        let opt = Options::try_parse_from(["openvmm", "--pidfile", "/tmp/test.pid"]).unwrap();
+        assert_eq!(opt.pidfile, Some(PathBuf::from("/tmp/test.pid")));
     }
 }

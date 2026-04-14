@@ -93,12 +93,18 @@ impl SimpleFlowNode for Node {
             );
         }
 
-        pre_build_deps.push(
-            ctx.reqv(|v| flowey_lib_common::install_dist_pkg::Request::Install {
-                package_names: vec!["libssl-dev".into(), "build-essential".into()],
-                done: v,
-            }),
-        );
+        // TODO: install build tools for other platforms
+        if matches!(
+            ctx.platform(),
+            FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
+        ) {
+            pre_build_deps.push(ctx.reqv(|v| {
+                flowey_lib_common::install_dist_pkg::Request::Install {
+                    package_names: vec!["libssl-dev".into(), "build-essential".into()],
+                    done: v,
+                }
+            }));
+        }
 
         pre_build_deps.push(ctx.reqv(crate::install_openvmm_rust_build_essential::Request));
 
@@ -161,9 +167,9 @@ impl SimpleFlowNode for Node {
                         crate::build_xtask::XtaskOutput::WindowsBin { exe, pdb: _ } => exe,
                     };
 
-                    let sh = xshell::Shell::new()?;
-                    sh.change_dir(repo_path);
-                    let output = xshell::cmd!(sh, "{xtask_bin} fuzz list --crates").output()?;
+                    rt.sh.change_dir(repo_path);
+                    let output =
+                        flowey::shell_cmd!(rt, "{xtask_bin} fuzz list --crates").output()?;
                     let output = String::from_utf8(output.stdout)?;
 
                     let fuzz_crates = output.trim().split('\n').map(|s| s.to_owned());
@@ -179,7 +185,7 @@ impl SimpleFlowNode for Node {
                     target_lexicon::OperatingSystem::Darwin(_)
                 ) {
                     exclude.extend(
-                        ["openssl_kdf", "vmgs_lib", "block_crypto", "disk_crypt"].map(|x| x.into()),
+                        ["openssl_kdf", "vmgs_lib", "disk_crypt", "crypto"].map(|x| x.into()),
                     );
                 }
 

@@ -5,32 +5,11 @@ use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
 use super::status_to_error;
-use namedpipeapi::GetNamedPipeHandleStateW;
-use namedpipeapi::SetNamedPipeHandleState;
-use ntapi::ntioapi;
-use ntapi::ntioapi::FILE_OPEN;
-use ntapi::ntioapi::FILE_PIPE_CLOSING_STATE;
-use ntapi::ntioapi::FILE_PIPE_CONNECTED_STATE;
-use ntapi::ntioapi::FILE_PIPE_DISCONNECTED_STATE;
-use ntapi::ntioapi::FILE_PIPE_LISTENING_STATE;
-use ntapi::ntioapi::FILE_PIPE_LOCAL_INFORMATION;
-use ntapi::ntioapi::FilePipeLocalInformation;
-use ntapi::ntioapi::NtQueryInformationFile;
-use ntdef::LARGE_INTEGER;
-use ntdef::OBJ_CASE_INSENSITIVE;
-use ntdef::OBJECT_ATTRIBUTES;
-use ntioapi::FILE_CREATE;
-use ntioapi::FILE_NON_DIRECTORY_FILE;
-use ntioapi::FILE_PIPE_BYTE_STREAM_MODE;
-use ntioapi::FILE_PIPE_BYTE_STREAM_TYPE;
-use ntioapi::FILE_PIPE_MESSAGE_MODE;
-use ntioapi::FILE_PIPE_MESSAGE_TYPE;
-use ntioapi::FILE_PIPE_QUEUE_OPERATION;
-use ntioapi::FILE_SYNCHRONOUS_IO_NONALERT;
-use ntioapi::NtCreateNamedPipeFile;
-use ntioapi::NtFsControlFile;
-use ntioapi::NtOpenFile;
+// TODO: Revert this ntapi fallback once windows/windows-sys expose
+// NtCreateNamedPipeFile directly.
+use ntapi::ntioapi::NtCreateNamedPipeFile;
 use pal_event::Event;
+use std::ffi::c_void;
 use std::fs::File;
 use std::io;
 use std::mem::zeroed;
@@ -39,20 +18,45 @@ use std::path::Path;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
-use winapi::shared::ntdef;
-use winapi::shared::ntstatus::STATUS_NAME_TOO_LONG;
-use winapi::um::namedpipeapi;
-use winapi::um::namedpipeapi::DisconnectNamedPipe;
-use winapi::um::namedpipeapi::GetNamedPipeInfo;
-use winapi::um::winbase::PIPE_SERVER_END;
-use winapi::um::winioctl;
-use winapi::um::winnt;
-use winnt::FILE_READ_ATTRIBUTES;
-use winnt::FILE_SHARE_READ;
-use winnt::FILE_SHARE_WRITE;
-use winnt::GENERIC_READ;
-use winnt::GENERIC_WRITE;
-use winnt::SYNCHRONIZE;
+use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+use windows_sys::Wdk::Storage::FileSystem::FILE_CREATE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_NON_DIRECTORY_FILE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_BYTE_STREAM_MODE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_BYTE_STREAM_TYPE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_CLOSING_STATE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_CONNECTED_STATE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_DISCONNECTED_STATE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_LISTENING_STATE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_LOCAL_INFORMATION;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_MESSAGE_MODE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_MESSAGE_TYPE;
+use windows_sys::Wdk::Storage::FileSystem::FILE_PIPE_QUEUE_OPERATION;
+use windows_sys::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT;
+use windows_sys::Wdk::Storage::FileSystem::FilePipeLocalInformation;
+use windows_sys::Wdk::Storage::FileSystem::NtFsControlFile;
+use windows_sys::Wdk::Storage::FileSystem::NtOpenFile;
+use windows_sys::Wdk::Storage::FileSystem::NtQueryInformationFile;
+use windows_sys::Win32::Foundation::GENERIC_READ;
+use windows_sys::Win32::Foundation::GENERIC_WRITE;
+use windows_sys::Win32::Foundation::OBJ_CASE_INSENSITIVE;
+use windows_sys::Win32::Foundation::STATUS_NAME_TOO_LONG;
+use windows_sys::Win32::Foundation::STATUS_NOT_SUPPORTED;
+use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
+use windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE;
+use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA;
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+use windows_sys::Win32::System::Ioctl::FILE_ANY_ACCESS;
+use windows_sys::Win32::System::Ioctl::FILE_DEVICE_NAMED_PIPE;
+use windows_sys::Win32::System::Ioctl::METHOD_BUFFERED;
+use windows_sys::Win32::System::Pipes::CreatePipe;
+use windows_sys::Win32::System::Pipes::DisconnectNamedPipe;
+use windows_sys::Win32::System::Pipes::GetNamedPipeHandleStateW;
+use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+use windows_sys::Win32::System::Pipes::PIPE_SERVER_END;
+use windows_sys::Win32::System::Pipes::SetNamedPipeHandleState;
 
 /// Creates a pair of pipe files, returning (read, write).
 ///
@@ -63,7 +67,7 @@ pub fn pair() -> io::Result<(File, File)> {
     unsafe {
         let mut read = null_mut();
         let mut write = null_mut();
-        if namedpipeapi::CreatePipe(&mut read, &mut write, null_mut(), 0) == 0 {
+        if CreatePipe(&mut read, &mut write, null_mut(), 0) == 0 {
             return Err(io::Error::last_os_error());
         }
         Ok((File::from_raw_handle(read), File::from_raw_handle(write)))
@@ -72,7 +76,7 @@ pub fn pair() -> io::Result<(File, File)> {
 
 fn open_pipe_driver() -> io::Result<OwnedHandle> {
     let mut pathu: UnicodeString = "\\Device\\NamedPipe\\".try_into().expect("string fits");
-    let mut oa = OBJECT_ATTRIBUTES {
+    let oa = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: null_mut(),
         ObjectName: pathu.as_mut_ptr(),
@@ -86,17 +90,17 @@ fn open_pipe_driver() -> io::Result<OwnedHandle> {
         chk_status(NtOpenFile(
             &mut handle,
             GENERIC_READ | SYNCHRONIZE,
-            &mut oa,
+            &oa,
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_SYNCHRONOUS_IO_NONALERT,
         ))?;
-        Ok(OwnedHandle::from_raw_handle(handle))
+        Ok(OwnedHandle::from_raw_handle(handle.cast::<c_void>()))
     }
 }
 
 fn pipe_driver_handle() -> io::Result<RawHandle> {
-    static PIPE_DRIVER: AtomicPtr<std::ffi::c_void> = AtomicPtr::new(null_mut());
+    static PIPE_DRIVER: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
     let mut handle = PIPE_DRIVER.load(Ordering::Relaxed);
     if handle.is_null() {
         let new_handle = open_pipe_driver()?;
@@ -167,7 +171,7 @@ fn create_named_pipe(
         };
         let mut oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: root,
+            RootDirectory: root.cast::<c_void>(),
             ObjectName: pathu.as_mut_ptr(),
             Attributes: OBJ_CASE_INSENSITIVE,
             SecurityDescriptor: null_mut(),
@@ -180,7 +184,7 @@ fn create_named_pipe(
         chk_status(NtCreateNamedPipeFile(
             &mut handle,
             access | SYNCHRONIZE,
-            &mut oa,
+            std::ptr::from_mut(&mut oa).cast(),
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             disposition,
@@ -203,9 +207,9 @@ fn create_named_pipe(
             !0,
             4096,
             4096,
-            std::ptr::from_mut::<i64>(&mut timeout).cast::<LARGE_INTEGER>(),
+            std::ptr::from_mut(&mut timeout).cast(),
         ))?;
-        Ok(File::from_raw_handle(handle))
+        Ok(File::from_raw_handle(handle.cast::<c_void>()))
     }
 }
 
@@ -221,9 +225,9 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
         )?;
 
         let mut empty_name = zeroed();
-        let mut oa = OBJECT_ATTRIBUTES {
+        let oa = OBJECT_ATTRIBUTES {
             Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-            RootDirectory: read_pipe.as_raw_handle(),
+            RootDirectory: read_pipe.as_raw_handle().cast::<c_void>(),
             ObjectName: &mut empty_name,
             Attributes: 0,
             SecurityDescriptor: null_mut(),
@@ -234,12 +238,12 @@ pub fn bidirectional_pair(message_mode: bool) -> io::Result<(File, File)> {
         chk_status(NtOpenFile(
             &mut write_pipe_handle,
             GENERIC_READ | GENERIC_WRITE | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
-            &mut oa,
+            &oa,
             &mut iosb,
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
         ))?;
-        let write_pipe = File::from_raw_handle(write_pipe_handle);
+        let write_pipe = File::from_raw_handle(write_pipe_handle.cast::<c_void>());
         Ok((read_pipe, write_pipe))
     }
 }
@@ -297,10 +301,9 @@ impl PipeExt for File {
         }
     }
 
-    fn set_pipe_mode(&self, mut mode: u32) -> io::Result<()> {
+    fn set_pipe_mode(&self, mode: u32) -> io::Result<()> {
         unsafe {
-            if SetNamedPipeHandleState(self.as_raw_handle(), &mut mode, null_mut(), null_mut()) == 0
-            {
+            if SetNamedPipeHandleState(self.as_raw_handle(), &mode, null_mut(), null_mut()) == 0 {
                 return Err(io::Error::last_os_error());
             }
         }
@@ -321,19 +324,18 @@ impl PipeExt for File {
             // pipes.
             for fsctl in [FSCTL_PIPE_EVENT_SELECT, FSCTL_PIPE_EVENT_SELECT_OLD] {
                 status = NtFsControlFile(
-                    self.as_raw_handle(),
+                    self.as_raw_handle().cast::<c_void>(),
                     null_mut(),
                     None,
                     null_mut(),
                     &mut iosb,
                     fsctl,
-                    std::ptr::from_mut::<FILE_PIPE_EVENT_SELECT_BUFFER>(&mut input)
-                        .cast::<std::ffi::c_void>(),
+                    std::ptr::from_mut(&mut input).cast(),
                     size_of_val(&input) as u32,
                     null_mut(),
                     0,
                 );
-                if status != winapi::shared::ntstatus::STATUS_NOT_SUPPORTED {
+                if status != STATUS_NOT_SUPPORTED {
                     break;
                 }
             }
@@ -348,15 +350,15 @@ impl PipeExt for File {
             let mut events: u32 = 0;
             let mut iosb = zeroed();
             chk_status(NtFsControlFile(
-                self.as_raw_handle(),
+                self.as_raw_handle().cast::<c_void>(),
                 null_mut(),
                 None,
                 null_mut(),
                 &mut iosb,
                 FSCTL_PIPE_EVENT_ENUM,
-                std::ptr::from_mut::<u64>(&mut handle_to_reset).cast::<std::ffi::c_void>(),
+                std::ptr::from_mut(&mut handle_to_reset).cast(),
                 size_of_val(&handle_to_reset) as u32,
-                std::ptr::from_mut::<u32>(&mut events).cast::<std::ffi::c_void>(),
+                std::ptr::from_mut(&mut events).cast(),
                 size_of_val(&events) as u32,
             ))?;
             Ok(events)
@@ -369,9 +371,9 @@ impl PipeExt for File {
             let mut iosb = zeroed();
             let mut info: FILE_PIPE_LOCAL_INFORMATION = zeroed();
             chk_status(NtQueryInformationFile(
-                self.as_raw_handle(),
+                self.as_raw_handle().cast::<c_void>(),
                 &mut iosb,
-                std::ptr::from_mut::<FILE_PIPE_LOCAL_INFORMATION>(&mut info).cast(),
+                std::ptr::from_mut(&mut info).cast(),
                 size_of_val(&info) as u32,
                 FilePipeLocalInformation,
             ))?;
@@ -405,22 +407,22 @@ const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> 
 }
 
 const FSCTL_PIPE_EVENT_SELECT: u32 = ctl_code(
-    winioctl::FILE_DEVICE_NAMED_PIPE,
+    FILE_DEVICE_NAMED_PIPE,
     3071,
-    winioctl::METHOD_BUFFERED,
-    winioctl::FILE_ANY_ACCESS,
+    METHOD_BUFFERED,
+    FILE_ANY_ACCESS,
 );
 const FSCTL_PIPE_EVENT_SELECT_OLD: u32 = ctl_code(
-    winioctl::FILE_DEVICE_NAMED_PIPE,
+    FILE_DEVICE_NAMED_PIPE,
     3071,
-    winioctl::METHOD_BUFFERED,
-    winnt::FILE_WRITE_DATA,
+    METHOD_BUFFERED,
+    FILE_WRITE_DATA,
 );
 const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
-    winioctl::FILE_DEVICE_NAMED_PIPE,
+    FILE_DEVICE_NAMED_PIPE,
     3072,
-    winioctl::METHOD_BUFFERED,
-    winnt::FILE_READ_DATA,
+    METHOD_BUFFERED,
+    FILE_READ_DATA,
 );
 
 #[repr(C)]

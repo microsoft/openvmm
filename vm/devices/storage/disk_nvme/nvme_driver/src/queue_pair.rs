@@ -30,12 +30,16 @@ use slab::Slab;
 use std::future::poll_fn;
 use std::num::Wrapping;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
+use std::time::Instant;
 use task_control::AsyncRun;
 use task_control::TaskControl;
 use thiserror::Error;
 use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
@@ -72,6 +76,8 @@ pub(crate) struct QueuePair<A: AerHandler, D: DeviceBacking> {
     #[inspect(skip)]
     mem: MemoryBlock,
     #[inspect(skip)]
+    device_id: String,
+    #[inspect(skip)]
     qid: u16,
     #[inspect(skip)]
     sq_entries: u16,
@@ -103,6 +109,10 @@ impl PendingCommands {
         self.commands.is_empty()
     }
 
+    fn len(&self) -> usize {
+        self.commands.len()
+    }
+
     /// Inserts a command into the pending list, updating it with a new CID.
     fn insert(&mut self, command: &mut spec::Command, respond: Rpc<(), spec::Completion>) {
         let entry = self.commands.vacant_entry();
@@ -114,6 +124,7 @@ impl PendingCommands {
         entry.insert(PendingCommand {
             command: *command,
             respond,
+            submitted_at: (self.qid == 0).then(Instant::now),
         });
     }
 
@@ -170,6 +181,7 @@ impl PendingCommands {
                         PendingCommand {
                             command: state.command,
                             respond: Rpc::detached(()),
+                            submitted_at: None,
                         },
                     )
                 })
@@ -177,6 +189,158 @@ impl PendingCommands {
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
             qid,
         })
+    }
+}
+
+// State for drain-after-restore functionality. This is used to track whether we
+// are currently draining commands that were in-flight at the time of save
+// across multiple IO queues, and to signal when the drain is complete so that
+// new commands from the guest can be accepted. This is needed to avoid a race
+// condition with the guest issuing new commands (potentially on other queues)
+// before the old ones have completed.
+//
+// We're using DeviceInterruptSource/DeviceInterrupt as a general-purpose
+// signaling mechanism, since they have the necessary semantics (wake all
+// existing (but not future) waiters) and are already integrated into the code
+// base.
+#[derive(Inspect)]
+#[inspect(external_tag)]
+pub enum DrainAfterRestore {
+    // Initial state for non-empty queues (that are to be drained). The counter
+    // is the number of queues in this state. Whenever a queue is emptied, the
+    // counter is decremented and the queue moves to the SelfDrained state. The
+    // queue that decrements the counter down to 0 signals itself and all other
+    // queues waiting in SelfDrained that draining is complete and all queues
+    // move to AllDrained.
+    Draining {
+        counter: Arc<AtomicUsize>,
+        #[inspect(skip)]
+        signal: Arc<DeviceInterruptSource>,
+        pci_id: String,
+    },
+
+    // Empty queues (whether because they got drained already, or were initially
+    // empty (e.g. proto queues) wait in this state for a signal coming from the
+    // last queue that gets drained. Once this happens, all queues transition to
+    // the AllDrained state.
+    SelfDrained {
+        #[inspect(skip)]
+        waiter: DeviceInterrupt,
+    },
+
+    // All queues are drained and the signal has been sent, so we can accept new
+    // commands without worrying about races. The state for steady-state
+    // operation.
+    AllDrained,
+}
+
+#[derive(Clone, Inspect)]
+pub struct DrainAfterRestoreBuilder(Option<DrainAfterRestoreBuilderInner>);
+
+#[derive(Clone, Inspect)]
+struct DrainAfterRestoreBuilderInner {
+    counter: Arc<AtomicUsize>,
+    #[inspect(skip)]
+    signal: Arc<DeviceInterruptSource>,
+    pci_id: String,
+}
+
+impl DrainAfterRestoreBuilder {
+    pub fn new(num_queues: usize, pci_id: String) -> Self {
+        if num_queues == 0 {
+            DrainAfterRestoreBuilder(None)
+        } else {
+            DrainAfterRestoreBuilder(Some(DrainAfterRestoreBuilderInner {
+                counter: Arc::new(AtomicUsize::new(num_queues)),
+                signal: Arc::new(DeviceInterruptSource::new()),
+                pci_id,
+            }))
+        }
+    }
+
+    pub fn new_draining(&self) -> DrainAfterRestore {
+        match &self.0 {
+            Some(inner) => DrainAfterRestore::Draining {
+                counter: inner.counter.clone(),
+                signal: inner.signal.clone(),
+                pci_id: inner.pci_id.clone(),
+            },
+            None => DrainAfterRestore::AllDrained,
+        }
+    }
+
+    pub fn new_self_drained(&self) -> DrainAfterRestore {
+        match &self.0 {
+            Some(inner) => DrainAfterRestore::SelfDrained {
+                waiter: inner.signal.new_target(),
+            },
+            None => DrainAfterRestore::AllDrained,
+        }
+    }
+
+    pub fn new_no_drain() -> DrainAfterRestore {
+        DrainAfterRestore::AllDrained
+    }
+
+    /// Returns true if all queues have finished draining (or if there was
+    /// nothing to drain). This checks the atomic counter and is safe to call
+    /// from any thread.
+    pub fn is_drain_complete(&self) -> bool {
+        match &self.0 {
+            Some(inner) => inner.counter.load(Ordering::Acquire) == 0,
+            None => true,
+        }
+    }
+
+    /// Returns the drain state appropriate for a newly created IO queue,
+    /// considering whether a global drain is still in progress.
+    ///
+    /// If draining is complete, returns `AllDrained`. Otherwise, returns a
+    /// `SelfDrained` waiter that will be signaled when all pre-save IOs
+    /// finish draining. Uses a double-check pattern to handle the race
+    /// where the drain completes between the initial check and waiter
+    /// creation.
+    pub fn new_for_new_queue(&self) -> DrainAfterRestore {
+        if self.is_drain_complete() {
+            return DrainAfterRestore::AllDrained;
+        }
+        // Drain is still in progress. Create a waiter so this queue blocks
+        // new IO until all pre-save commands complete.
+        let drain = self.new_self_drained();
+        // Double-check: the drain may have completed between our first check
+        // and the waiter registration. If so, the waiter might not have
+        // received the signal, so fall back to AllDrained.
+        if self.is_drain_complete() {
+            DrainAfterRestore::AllDrained
+        } else {
+            drain
+        }
+    }
+}
+
+impl DrainAfterRestore {
+    fn mark_drained(&mut self) {
+        let Self::Draining {
+            counter,
+            signal,
+            pci_id,
+        } = self
+        else {
+            panic!("unexpected call to DrainAfterRestore::mark_drained when not draining");
+        };
+
+        let waiter = signal.new_target();
+        let old_counter = counter.fetch_sub(1, Ordering::AcqRel);
+        if old_counter == 1 {
+            signal.signal_uncached();
+            tracing::info!(
+                ?pci_id,
+                "drain-after-restore: all queues drained, sent signal to continue restore"
+            );
+        } else if old_counter == 0 {
+            panic!("counter underflow in DrainAfterRestore");
+        }
+        *self = Self::SelfDrained { waiter };
     }
 }
 
@@ -228,6 +392,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         registers: Arc<DeviceRegisters<D>>,
         bounce_buffer: bool,
         aer_handler: A,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         // FUTURE: Consider splitting this into several allocations, rather than
         // allocating the sum total together. This can increase the likelihood
@@ -252,6 +417,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
         QueuePair::new_or_restore(
             spawner,
+            device.id(),
             qid,
             sq_entries,
             cq_entries,
@@ -261,11 +427,13 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
             None,
             bounce_buffer,
             aer_handler,
+            drain_after_restore,
         )
     }
 
     fn new_or_restore(
         spawner: impl SpawnDriver,
+        device_id: &str,
         qid: u16,
         sq_entries: u16,
         cq_entries: u16,
@@ -275,6 +443,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         saved_state: Option<&QueueHandlerSavedState>,
         bounce_buffer: bool,
         aer_handler: A,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, SQ_SIZE);
@@ -325,7 +494,15 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         let cq_addr = cq_mem_block.pfns()[0] * PAGE_SIZE64;
 
         let queue_handler = match saved_state {
-            Some(s) => QueueHandler::restore(sq_mem_block, cq_mem_block, s, aer_handler)?,
+            Some(s) => QueueHandler::restore(
+                sq_mem_block,
+                cq_mem_block,
+                s,
+                aer_handler,
+                device_id,
+                qid,
+                drain_after_restore,
+            )?,
             None => {
                 // Create a new one.
                 QueueHandler {
@@ -333,8 +510,10 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                     cq: CompletionQueue::new(qid, cq_entries, cq_mem_block),
                     commands: PendingCommands::new(qid),
                     stats: Default::default(),
-                    drain_after_restore: false,
+                    drain_after_restore,
                     aer_handler,
+                    device_id: device_id.into(),
+                    qid,
                 }
             }
         };
@@ -384,6 +563,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
                 alloc,
             }),
             mem,
+            device_id: device_id.into(),
             qid,
             sq_entries,
             cq_entries,
@@ -421,6 +601,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
     /// Save queue pair state for servicing.
     pub async fn save(&self) -> anyhow::Result<QueuePairSavedState> {
+        tracing::info!(qid = self.qid, pci_id = ?self.device_id, "saving queue pair state");
         // Return error if the queue does not have any memory allocated.
         if self.mem.pfns().is_empty() {
             return Err(Error::InvalidState.into());
@@ -445,9 +626,11 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<D>>,
         mem: MemoryBlock,
+        device_id: &str,
         saved_state: &QueuePairSavedState,
         bounce_buffer: bool,
         aer_handler: A,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -460,6 +643,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
 
         QueuePair::new_or_restore(
             spawner,
+            device_id,
             *qid,
             *sq_entries,
             *cq_entries,
@@ -469,6 +653,7 @@ impl<A: AerHandler, D: DeviceBacking> QueuePair<A, D> {
             Some(handler_data),
             bounce_buffer,
             aer_handler,
+            drain_after_restore,
         )
     }
 }
@@ -576,6 +761,12 @@ impl Issuer {
             Err(RpcError::Call(e)) => Err(e),
             Err(RpcError::Channel(e)) => Err(RequestError::Gone(RpcError::Channel(e))),
         }
+    }
+
+    /// Request a diagnostic dump of the completion queue state.
+    /// Used by the driver to diagnose stuck admin commands.
+    pub async fn request_diagnostic_dump(&self) -> Option<CqDiagnosticInfo> {
+        self.send_req.call(Req::DiagnosticDump, ()).await.ok()
     }
 
     pub async fn issue_external(
@@ -758,6 +949,31 @@ struct PendingCommand {
     command: spec::Command,
     #[inspect(skip)]
     respond: Rpc<(), spec::Completion>,
+    /// When the command was submitted to the queue. Used only for the admin queue
+    #[inspect(with = "|x| x.map(|submitted_at| submitted_at.elapsed().as_millis() as u64)")]
+    submitted_at: Option<Instant>,
+}
+
+/// Diagnostic information about the completion queue state.
+/// Used to diagnose stuck admin commands by peeking at the CQ
+/// without advancing the head.
+pub(crate) struct CqDiagnosticInfo {
+    /// CQ head position.
+    pub head: u32,
+    /// Expected phase bit at the current head.
+    pub expected_phase: bool,
+    /// Whether a valid completion (matching phase) is sitting at the head.
+    pub peek_phase_match: bool,
+    /// CID from the peeked completion entry (may be garbage if phase doesn't match).
+    pub peek_cid: u16,
+    /// SQID from the peeked completion entry.
+    pub peek_sqid: u16,
+    /// Raw status word from the peeked completion entry.
+    pub peek_status_raw: u16,
+    /// Number of commands currently pending in this queue.
+    pub pending_count: usize,
+    /// Interrupt count (completions processed) since queue started.
+    pub interrupt_count: u64,
 }
 
 // "ControlPlane" requests sent to the QueueHandler. These can be processed at
@@ -767,6 +983,7 @@ enum Req {
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
     Inspect(inspect::Deferred),
     NextAen(Rpc<(), Result<AsynchronousEventRequestDw0, RequestError>>),
+    DiagnosticDump(Rpc<(), CqDiagnosticInfo>),
 }
 
 // "DataPlane" commands sent to the QueueHandler. Actual NVMe commands that
@@ -921,9 +1138,11 @@ struct QueueHandler<A: AerHandler> {
     cq: CompletionQueue,
     commands: PendingCommands,
     stats: QueueStats,
-    drain_after_restore: bool,
+    drain_after_restore: DrainAfterRestore,
     #[inspect(skip)]
     aer_handler: A,
+    device_id: String,
+    qid: u16,
 }
 
 #[derive(Inspect, Default)]
@@ -941,14 +1160,22 @@ impl<A: AerHandler> QueueHandler<A> {
         mut recv_cmd: mesh::Receiver<Cmd>,
         interrupt: &mut DeviceInterrupt,
     ) {
+        if matches!(
+            &self.drain_after_restore,
+            DrainAfterRestore::Draining { .. }
+        ) {
+            tracing::info!(pci_id = ?self.device_id, qid = self.qid, "Have {} outstanding IOs from before save, draining them before allowing new IO...", self.commands.len());
+        }
+
         loop {
             enum Event {
                 Request(Req),
                 Command(Cmd),
                 Completion(spec::Completion),
+                DrainComplete,
             }
 
-            let event = if !self.drain_after_restore {
+            let event = if matches!(self.drain_after_restore, DrainAfterRestore::AllDrained) {
                 // Normal processing of the requests and completions.
                 poll_fn(|cx| {
                     // Look for NVME commands
@@ -983,6 +1210,18 @@ impl<A: AerHandler> QueueHandler<A> {
             } else {
                 // Only process in-flight completions.
                 poll_fn(|cx| {
+                    // Look for control plane requests like Save/Inspect
+                    if let Poll::Ready(Some(req)) = recv_req.poll_next_unpin(cx) {
+                        return Event::Request(req).into();
+                    }
+
+                    if let DrainAfterRestore::SelfDrained { waiter } = &mut self.drain_after_restore
+                    {
+                        if waiter.poll(cx).is_ready() {
+                            return Event::DrainComplete.into();
+                        }
+                    }
+
                     while !self.commands.is_empty() {
                         if let Some(completion) = self.cq.read() {
                             return Event::Completion(completion).into();
@@ -1001,6 +1240,7 @@ impl<A: AerHandler> QueueHandler<A> {
             match event {
                 Event::Request(req) => match req {
                     Req::Save(queue_state) => {
+                        tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "received save request, shutting down ...");
                         queue_state.complete(self.save().await);
                         // Do not allow any more processing after save completed.
                         break;
@@ -1008,6 +1248,19 @@ impl<A: AerHandler> QueueHandler<A> {
                     Req::Inspect(deferred) => deferred.inspect(&self),
                     Req::NextAen(rpc) => {
                         self.aer_handler.handle_aen_request(rpc);
+                    }
+                    Req::DiagnosticDump(rpc) => {
+                        let peek = self.cq.peek();
+                        rpc.complete(CqDiagnosticInfo {
+                            head: peek.head,
+                            expected_phase: peek.expected_phase,
+                            peek_phase_match: peek.phase_match,
+                            peek_cid: peek.completion.cid,
+                            peek_sqid: peek.completion.sqid,
+                            peek_status_raw: u16::from(peek.completion.status),
+                            pending_count: self.commands.len(),
+                            interrupt_count: self.stats.interrupts.get(),
+                        });
                     }
                 },
                 Event::Command(cmd) => match cmd {
@@ -1028,14 +1281,23 @@ impl<A: AerHandler> QueueHandler<A> {
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
                     let respond = self.commands.remove(completion.cid);
-                    if self.drain_after_restore && self.commands.is_empty() {
+                    if matches!(
+                        &self.drain_after_restore,
+                        DrainAfterRestore::Draining { .. }
+                    ) && self.commands.is_empty()
+                    {
                         // Switch to normal processing mode once all in-flight commands completed.
-                        self.drain_after_restore = false;
+                        tracing::info!(pci_id = ?self.device_id, qid = ?self.qid, "done with drain-after-restore");
+                        self.drain_after_restore.mark_drained();
                     }
                     self.sq.update_head(completion.sqhd);
                     self.aer_handler.handle_completion(&completion);
                     respond.complete(completion);
                     self.stats.completed.increment();
+                }
+                Event::DrainComplete => {
+                    // No-op event to trigger marking all queues as drained.
+                    self.drain_after_restore = DrainAfterRestore::AllDrained;
                 }
             }
         }
@@ -1043,6 +1305,24 @@ impl<A: AerHandler> QueueHandler<A> {
 
     /// Save queue data for servicing.
     pub async fn save(&self) -> anyhow::Result<QueueHandlerSavedState> {
+        // Log pending admin command wait durations at save time.
+        if self.qid == 0 {
+            for (_index, cmd) in self.commands.commands.iter() {
+                if let Some(elapsed) = cmd.submitted_at {
+                    tracing::info!(
+                        pci_id = ?self.device_id,
+                        cid = cmd.command.cdw0.cid(),
+                        opcode = cmd.command.cdw0.opcode(),
+                        nsid = cmd.command.nsid,
+                        cdw10 = cmd.command.cdw10,
+                        cdw11 = cmd.command.cdw11,
+                        elapsed = elapsed.elapsed().as_millis() as u64,
+                        "pending admin command at save time",
+                    );
+                }
+            }
+        }
+
         // The data is collected from both QueuePair and QueueHandler.
         Ok(QueueHandlerSavedState {
             sq_state: self.sq.save(),
@@ -1058,6 +1338,9 @@ impl<A: AerHandler> QueueHandler<A> {
         cq_mem_block: MemoryBlock,
         saved_state: &QueueHandlerSavedState,
         mut aer_handler: A,
+        device_id: &str,
+        qid: u16,
+        drain_after_restore: DrainAfterRestore,
     ) -> anyhow::Result<Self> {
         let QueueHandlerSavedState {
             sq_state,
@@ -1075,8 +1358,10 @@ impl<A: AerHandler> QueueHandler<A> {
             stats: Default::default(),
             // Only drain pending commands for I/O queues.
             // Admin queue is expected to have pending Async Event requests.
-            drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
+            drain_after_restore,
             aer_handler,
+            device_id: device_id.into(),
+            qid,
         })
     }
 }

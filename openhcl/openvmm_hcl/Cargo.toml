@@ -12,6 +12,10 @@ default = ["tpm"]
 # see the `underhill_entry` crate for more info on these features
 gdb = ["underhill_entry/gdb", "openvmm_hcl_resources/debug_worker"]
 tpm = ["openvmm_hcl_resources/tpm"]
+mem-profile-tracing = ["underhill_entry/mem-profile-tracing"]
+
+# Enable mimalloc secure mode.
+mi-secure = ["underhill_entry/mi-secure"]
 
 # Enable vmbus UI devices.
 uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worker"]
@@ -19,6 +23,9 @@ uidevices = ["openvmm_hcl_resources/uidevices", "openvmm_hcl_resources/vnc_worke
 # Enable NVMe emulation.
 nvme = ["openvmm_hcl_resources/nvme", "vpci"]
 vpci = ["underhill_entry/vpci"]
+
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["underhill_entry/dev_snp_ohcl_tio_support"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 underhill_entry.workspace = true

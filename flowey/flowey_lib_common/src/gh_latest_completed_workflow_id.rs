@@ -40,12 +40,11 @@ impl SimpleFlowNode for Node {
             let branch = branch.claim(ctx);
 
             move |rt| {
-                let sh = xshell::Shell::new()?;
                 let gh_cli = rt.read(gh_cli);
                 let branch = rt.read(branch);
 
-                let id = xshell::cmd!(
-                    sh,
+                let id = flowey::shell_cmd!(
+                    rt,
                     "{gh_cli} run list -R {repo} -b {branch} -w {pipeline_name} -s success --limit 1 --json databaseId -q .[0].databaseId"
                 )
                 .read()?;

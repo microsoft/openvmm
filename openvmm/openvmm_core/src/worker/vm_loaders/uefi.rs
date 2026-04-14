@@ -25,6 +25,9 @@ pub enum Error {
     Loader(#[source] loader::uefi::Error),
     #[error("UEFI requires at least two MMIO ranges")]
     UnsupportedMmio,
+    #[cfg(guest_arch = "aarch64")]
+    #[error("UEFI boot with GICv2 is not supported")]
+    GicV2NotSupported,
 }
 
 pub struct UefiLoadSettings {
@@ -152,10 +155,20 @@ pub fn load_uefi(
     .add(&flags);
 
     #[cfg(guest_arch = "aarch64")]
-    cfg.add(&config::Gic {
-        gic_distributor_base: processor_topology.gic_distributor_base(),
-        gic_redistributors_base: processor_topology.gic_redistributors_base(),
-    });
+    {
+        let redistributors_base = match processor_topology.gic_version() {
+            vm_topology::processor::aarch64::GicVersion::V3 {
+                redistributors_base,
+            } => redistributors_base,
+            vm_topology::processor::aarch64::GicVersion::V2 { .. } => {
+                return Err(Error::GicV2NotSupported);
+            }
+        };
+        cfg.add(&config::Gic {
+            gic_distributor_base: processor_topology.gic_distributor_base(),
+            gic_redistributors_base: redistributors_base,
+        });
+    }
 
     if let Some(mcfg) = mcfg {
         cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);

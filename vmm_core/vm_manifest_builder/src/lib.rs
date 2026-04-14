@@ -65,7 +65,7 @@ pub enum BaseChipsetType {
     /// The HCL will determine the actual devices presented to the guest OS;
     /// this VMM just needs to present the devices needed by the HCL.
     HclHost,
-    /// Unenlightened Linux VM, with a PCI bus and basic architectural devices.
+    /// Unenlightened Linux VM, with basic architectural devices.
     UnenlightenedLinuxDirect,
 }
 
@@ -269,7 +269,7 @@ impl VmManifestBuilder {
                     with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
-                    with_generic_pci_bus: is_x86,
+                    with_generic_pci_bus: false,
                     with_generic_pic: is_x86,
                     with_generic_pit: is_x86,
                     with_generic_psp: self.psp,

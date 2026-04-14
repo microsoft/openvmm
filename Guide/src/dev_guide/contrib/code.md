@@ -8,7 +8,7 @@ set of coding conventions in the project.
 
 ## `rustfmt`
 
-_Checked Automatically:_ **Yes** (via [`cargo xtask fmt rustfmt`](../dev_tools/xtask.md))
+_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass rustfmt`](../dev_tools/xtask.md))
 
 OpenVMM source must be formatted using
 [rustfmt](https://github.com/rust-lang/rustfmt), which automatically and
@@ -37,11 +37,11 @@ Assuming you've followed the [suggested dev env setup](../getting_started/sugges
 and set up `rust-analyzer` to format-on-save, you should rarely have to think
 about formatting in `.rs` files.
 
-## House Rules
+## Custom Lints
 
-_Checked Automatically:_ **Yes** (via [`cargo xtask fmt house-rules`](../dev_tools/xtask.md))
+_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass lints`](../dev_tools/xtask.md))
 
-"House-rules" are a set of misc code lints that are specific to OpenVMM, which
+Custom lints are a set of miscellaneous code lints that are specific to OpenVMM, which
 are enforced using a custom in-house tool:
 
 - enforce the presence of the standard Microsoft copyright header
@@ -52,13 +52,14 @@ are enforced using a custom in-house tool:
 - deny usage of `#[repr(packed)]` (you want `#[repr(C, packed)]`)
 - justify usage of `cfg(target_arch = ...)` (use `guest_arch` instead!)
 - justify usage of `expect(unsafe_code)` with an UNSAFETY comment
+- and more!
 
 Some of these lints are self explanatory, whereas others are described in more
 detail elsewhere on this page.
 
 ## Unused `Cargo.toml` Dependencies
 
-_Checked Automatically:_ **Yes** (via [`cargo xtask fmt unused-deps`](../dev_tools/xtask.md))
+_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass unused-deps`](../dev_tools/xtask.md))
 
 We have an in-repo fork of
 [`cargo-machete`](https://github.com/bnjbvr/cargo-machete) that ensures
@@ -211,7 +212,7 @@ is audited for correctness by area experts.
 
 ## Uses of `cfg(target_arch = ...)` must be justified
 
-_Checked Automatically:_ **Yes** (via [`cargo xtask fmt house-rules`](../dev_tools/xtask.md))
+_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass lints`](../dev_tools/xtask.md))
 
 Unless you're working on something that's genuinely tied to the host's CPU
 architecture, you should use `cfg(guest_arch = ...)` instead of `cfg(target_arch = ...)`.
@@ -247,7 +248,7 @@ By default, `cfg(guest_arch = ...)` will act the same way as `cfg(target_arch =
 `OPENVMM_GUEST_TARGET` env var at compile-time.
 
 There are very few reasons to use `cfg(target_arch = ...)` within the OpenVMM
-repo, and to enforce this rule, we have an in-house `xtask fmt house-rules`
+repo, and to enforce this rule, we have an in-house `xtask fmt --pass lints`
 check that lints each use of `cfg(target_arch = ...)` to include a
 "justification" for why it's being used.
 
@@ -413,7 +414,7 @@ you're interested in, and/or connecting objects to the `Inspect` graph.
 
 ## Crate Naming
 
-_Checked Automatically:_ **Yes** (via [`cargo xtask fmt house-rules`](../dev_tools/xtask.md))
+_Checked Automatically:_ **Yes** (via [`cargo xtask fmt --pass lints`](../dev_tools/xtask.md))
 
 **Crates must be named with underscores, not dashes and underscores used in
 folder names.**

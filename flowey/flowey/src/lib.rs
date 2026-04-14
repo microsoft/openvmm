@@ -10,6 +10,13 @@
 //! that level are only supposed to be used by flowey _infrastructure_ (e.g: in
 //! `flowey_cli`).
 
+pub use flowey_core::shell_cmd;
+
+/// Shell abstractions for flowey command execution.
+pub mod shell {
+    pub use flowey_core::shell::*;
+}
+
 /// Types and traits for implementing flowey nodes.
 pub mod node {
     pub mod prelude {

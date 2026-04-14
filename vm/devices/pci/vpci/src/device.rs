@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
+use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
@@ -44,6 +45,7 @@ use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use vpci_protocol as protocol;
+use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
 use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -229,6 +231,8 @@ enum PacketError {
     RegisterInterrupt(#[source] RegisterInterruptError),
     #[error("unknown interrupt address {:#x}/data {:#x}", .0.address, .0.data)]
     UnknownInterrupt(MsiAddressData),
+    #[error("invalid packet serialization")]
+    InvalidSerialization(#[source] anyhow::Error),
 }
 
 #[derive(Debug)]
@@ -266,6 +270,9 @@ enum DeviceRequest {
     },
     ReleaseResources,
     Reset,
+    TdispCommand {
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -480,6 +487,25 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::Reset,
+            }
+        }
+        protocol::MessageType::VPCI_TDISP_COMMAND => {
+            let (header, rest) = Ref::<_, protocol::VpciTdispCommandHeader>::from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("tdisp_command_header"))?;
+
+            let data_len = header.data_length as usize;
+            if data_len > MAX_VPCI_TDISP_COMMAND_SIZE {
+                return Err(PacketError::PacketTooLarge);
+            }
+
+            let data = rest
+                .get(..data_len)
+                .ok_or(PacketError::PacketTooSmall("tdisp_command_data"))?
+                .to_vec();
+
+            PacketData::DeviceRequest {
+                slot: header.slot,
+                request: DeviceRequest::TdispCommand { data },
             }
         }
         typ => return Err(PacketError::UnknownType(typ)),
@@ -797,6 +823,7 @@ impl ReadyState {
                         reply_type,
                     } => {
                         dev.set_bars(&resources.mmio_ranges)
+                            .await
                             .map_err(PacketError::InvalidBars)?;
 
                         let mut tr = Vec::<u8>::new();
@@ -870,8 +897,8 @@ impl ReadyState {
                     DeviceRequest::DevicePowerChange { target_state } => {
                         let mut status = protocol::Status::SUCCESS;
                         match target_state {
-                            protocol::DevicePowerState::D0 => dev.set_power(true),
-                            protocol::DevicePowerState::D3 => dev.set_power(false),
+                            protocol::DevicePowerState::D0 => dev.set_power(true).await,
+                            protocol::DevicePowerState::D3 => dev.set_power(false).await,
                             _ => status = protocol::Status::BAD_DATA,
                         }
                         conn.send_completion(transaction_id, &status, &[])?;
@@ -882,6 +909,70 @@ impl ReadyState {
                             &protocol::Status::NOT_SUPPORTED,
                             &[],
                         )?;
+                    }
+                    DeviceRequest::TdispCommand { data } => {
+                        let command = match tdisp::serialize_proto::deserialize_command(&data) {
+                            Ok(cmd) => cmd,
+                            Err(err) => {
+                                tracelimit::warn_ratelimited!(
+                                    error = err.as_ref() as &dyn std::error::Error,
+                                    "failed to deserialize TDISP command"
+                                );
+                                conn.send_completion(
+                                    transaction_id,
+                                    &protocol::Status::BAD_DATA,
+                                    &[],
+                                )?;
+                                return Ok(());
+                            }
+                        };
+
+                        tracing::debug!(?command, "received TDISP command over vpci channel");
+
+                        let mut locked_dev = dev.device.lock();
+                        if let Some(tdisp) = locked_dev.supports_tdisp() {
+                            tracelimit::info_ratelimited!(
+                                "chipset device supports TDISP, handing off command for processing"
+                            );
+                            let response = tdisp
+                                .tdisp_handle_guest_command(command)
+                                .map_err(PacketError::InvalidSerialization)?;
+
+                            tracing::debug!("host interface responded successfully with payload");
+                            let response_serialized =
+                                tdisp::serialize_proto::serialize_response(&response);
+
+                            let response_header = protocol::VpciTdispCommandHeaderReply {
+                                status: protocol::Status::SUCCESS,
+                                slot,
+                                data_length: response_serialized.len() as u64,
+                            };
+
+                            tracing::debug!(?response_header, "guest response");
+                            tracing::debug!(
+                                response_header_len = response_header.as_bytes().len(),
+                                "guest response header size"
+                            );
+                            tracing::debug!(
+                                payload_size = response_serialized.len(),
+                                "guest response payload size"
+                            );
+
+                            conn.send_completion(
+                                transaction_id,
+                                &response_header,
+                                response_serialized.as_bytes(),
+                            )?;
+                        } else {
+                            tracelimit::info_ratelimited!(
+                                "chipset device reported that TDISP is not supported, returning NOT_SUPPORTED"
+                            );
+                            conn.send_completion(
+                                transaction_id,
+                                &protocol::Status::NOT_SUPPORTED,
+                                &[],
+                            )?;
+                        }
                     }
                 }
             }
@@ -935,7 +1026,7 @@ impl VpciChannel {
         resources
     }
 
-    fn set_bars(&mut self, resources: &[MmioResource; 6]) -> Result<(), InvalidBars> {
+    async fn set_bars(&mut self, resources: &[MmioResource; 6]) -> Result<(), InvalidBars> {
         let mut bars = [0; 6];
         let mut high64 = false;
         for (i, resource) in resources.iter().enumerate() {
@@ -972,49 +1063,72 @@ impl VpciChannel {
             }
         }
         tracing::debug!(?bars, "setting bars");
+
         {
-            let mut device = self.device.lock();
             for (i, bar) in bars.into_iter().enumerate() {
-                {
-                    device
-                        .supports_pci()
-                        .unwrap()
-                        .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar)
-                        .unwrap();
-                };
+                let result = self
+                    .device
+                    .lock()
+                    .supports_pci()
+                    .unwrap()
+                    .pci_cfg_write(cfg_space::HeaderType00::BAR0.0 + 4 * i as u16, bar);
+                match result {
+                    IoResult::Ok => (),
+                    IoResult::Defer(token) => token
+                        .write_future()
+                        .await
+                        .expect("deferred BAR write failed"),
+                    IoResult::Err(err) => {
+                        tracing::error!(
+                        ?err,
+                        instance_id = %self.instance_id,
+                        index = i,
+                        "failed to write bar");
+                        panic!("failed to write bar");
+                    }
+                }
             }
         }
         self.bars_set = true;
         Ok(())
     }
 
-    fn set_power(&mut self, on: bool) {
-        let mut device = self.device.lock();
-        let mut command = {
-            let mut value = 0;
-            device
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, &mut value)
-                .now_or_never()
-                .map(|_| value)
-                .unwrap_or(0)
+    async fn set_power(&mut self, on: bool) {
+        let result = {
+            let mut device = self.device.lock();
+            let pci = device.supports_pci().unwrap();
+            let mut command = {
+                let mut value = 0;
+                pci.pci_cfg_read(cfg_space::HeaderType00::STATUS_COMMAND.0, &mut value)
+                    .now_or_never()
+                    .map(|_| value)
+                    .unwrap_or(0)
+            };
+            let mmio = cfg_space::Command::new()
+                .with_mmio_enabled(true)
+                .into_bits() as u32;
+            if on {
+                command |= mmio;
+            } else {
+                command &= !mmio;
+            }
+            pci.pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
         };
-        let mmio = cfg_space::Command::new()
-            .with_mmio_enabled(true)
-            .into_bits() as u32;
-        if on {
-            command |= mmio;
-        } else {
-            command &= !mmio;
+        match result {
+            IoResult::Ok => (),
+            IoResult::Defer(token) => token
+                .write_future()
+                .await
+                .expect("deferred power state change failed"),
+            IoResult::Err(err) => {
+                tracing::error!(
+                    ?err,
+                    instance_id = %self.instance_id,
+                    "failed to change power state"
+                );
+                panic!("failed to change power state");
+            }
         }
-        {
-            device
-                .supports_pci()
-                .unwrap()
-                .pci_cfg_write(cfg_space::HeaderType00::STATUS_COMMAND.0, command)
-                .unwrap();
-        };
 
         // TODO: set power cap, too, on devices that support it.
     }
@@ -1078,7 +1192,7 @@ impl VpciChannel {
     /// Release all resources associated with the device (not the bus).
     async fn release_all(&mut self) {
         // Power off the device.
-        self.set_power(false);
+        self.set_power(false).await;
 
         // Unmap all interrupts.
         for MsiAddressData { address, data } in self.interrupts.drain(..) {
@@ -1086,7 +1200,7 @@ impl VpciChannel {
         }
 
         // Clear the BARs.
-        self.set_bars(&[MmioResource::default(); 6]).unwrap();
+        self.set_bars(&[MmioResource::default(); 6]).await.unwrap();
         self.bars_set = false;
     }
 }
@@ -1204,6 +1318,13 @@ impl VpciConfigSpaceOffset {
     pub fn get(&self) -> Option<u64> {
         let v = self.0.load(Ordering::Relaxed);
         (v != Self::INVALID).then_some(v)
+    }
+
+    /// Sets the config space base address. Used in tests to simulate the
+    /// address negotiated during channel protocol.
+    #[cfg(test)]
+    pub(crate) fn set(&self, addr: u64) {
+        self.0.store(addr, Ordering::Relaxed);
     }
 }
 
@@ -1328,6 +1449,7 @@ mod tests {
     use hvdef::HV_PAGE_SIZE;
     use inspect::Inspect;
     use inspect::InspectMut;
+    use openhcl_tdisp::new_get_device_interface_info_command;
     use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
@@ -1335,7 +1457,7 @@ mod tests {
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
     use pci_core::chipset_device_ext::PciChipsetDeviceExt;
-    use pci_core::msi::MsiInterruptSet;
+    use pci_core::msi::MsiConnection;
     use pci_core::spec::hwid::ClassCode;
     use pci_core::spec::hwid::HardwareIds;
     use pci_core::spec::hwid::ProgrammingInterface;
@@ -1345,6 +1467,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
+    use tdisp::GuestToHostResponseExt;
+    use tdisp::TdispCommandResponseGetDeviceInterfaceInfo;
+    use tdisp::TdispHostDeviceTargetEmulator;
+    use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
+    use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
+    use tdisp::test_helpers::TDISP_MOCK_SUPPORTED_FEATURES;
     use test_with_tracing::test;
     use thiserror::Error;
     use vmbus_async::queue::IncomingPacket;
@@ -1359,6 +1487,20 @@ mod tests {
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
+
+    // Helper to complete deferred write tokens if needed.
+    async fn complete_write(result: IoResult) {
+        match result {
+            IoResult::Ok => (),
+            IoResult::Err(_err) => {
+                panic!("complete_write received IoResult::Err during test");
+            }
+            IoResult::Defer(token) => token
+                .write_future()
+                .await
+                .expect("deferred write should complete successfully"),
+        }
+    }
 
     enum ReadPacketInfo {
         None,
@@ -1475,6 +1617,28 @@ mod tests {
                         OutgoingPacketType::InBandNoCompletion
                     },
                     payload: &[payload.as_bytes()],
+                })
+                .await
+                .map_err(GuestError::Queue)
+        }
+
+        async fn write_packet_with_header<T: IntoBytes + Immutable + KnownLayout>(
+            &mut self,
+            transaction_id: Option<u64>,
+            header: &T,
+            extra: &[u8],
+        ) -> Result<(), GuestError> {
+            self.host_queue
+                .split()
+                .1
+                .write(OutgoingPacket {
+                    transaction_id: transaction_id.unwrap_or(0),
+                    packet_type: if transaction_id.is_some() {
+                        OutgoingPacketType::InBandWithCompletion
+                    } else {
+                        OutgoingPacketType::InBandNoCompletion
+                    },
+                    payload: &[header.as_bytes(), extra],
                 })
                 .await
                 .map_err(GuestError::Queue)
@@ -1607,6 +1771,63 @@ mod tests {
             assert_eq!(reply.interrupt.message_count, 1);
             (reply.interrupt.address, reply.interrupt.data_payload)
         }
+
+        /// Serializes `command` to a `VPCI_TDISP_COMMAND` vmbus packet, sends it
+        /// to the server requesting a completion, then reads the completion and
+        /// deserializes the payload back to a [`tdisp::GuestToHostResponse`].
+        async fn send_tdisp_command(
+            &mut self,
+            command: tdisp::GuestToHostCommand,
+        ) -> tdisp::GuestToHostResponse {
+            let serialized = tdisp::serialize_proto::serialize_command(&command);
+
+            let header = protocol::VpciTdispCommandHeader {
+                message_type: protocol::MessageType::VPCI_TDISP_COMMAND,
+                slot: SlotNumber::new(),
+                data_length: serialized.len() as u64,
+            };
+            let transaction_id = self.transaction_id.fetch_add(1, Ordering::Relaxed);
+            self.write_packet_with_header(Some(transaction_id), &header, serialized.as_bytes())
+                .await
+                .unwrap();
+
+            let mut queue = self.host_queue.split().0;
+            let packet = queue.read().await.map_err(GuestError::Queue).unwrap();
+            match &*packet {
+                IncomingPacket::Completion(completion) => {
+                    assert_eq!(completion.transaction_id(), transaction_id);
+
+                    // Read the entire completion payload at once before splitting it.
+                    let all_bytes = completion
+                        .reader()
+                        .read_all()
+                        .expect("reader should read entire payload");
+
+                    let (reply_header, proto_bytes) =
+                        protocol::VpciTdispCommandHeaderReply::read_from_prefix(&all_bytes)
+                            .expect("completion payload too small to contain status");
+
+                    assert_eq!(
+                        reply_header.status,
+                        protocol::Status::SUCCESS,
+                        "tdisp command completion returned non-success status"
+                    );
+
+                    tracing::debug!(
+                        reply_header_size = reply_header.as_bytes().len(),
+                        "completion header size"
+                    );
+                    tracing::debug!(payload_size = proto_bytes.len(), "completion payload size");
+
+                    // Read only data_length bytes from the payload.
+                    let proto_bytes_shaved = &proto_bytes[..reply_header.data_length as usize];
+
+                    tdisp::serialize_proto::deserialize_response(proto_bytes_shaved)
+                        .expect("failed to deserialize GuestToHostResponse")
+                }
+                _ => panic!("unexpected incoming packet type"),
+            }
+        }
     }
 
     struct NullDevice {
@@ -1700,7 +1921,7 @@ mod tests {
 
     #[async_test]
     async fn verify_simple_capability(driver: DefaultDriver) {
-        let mut msi_set = MsiInterruptSet::new();
+        let msi_conn = MsiConnection::new();
         let pci_config = HardwareIds {
             vendor_id: 0x123,
             device_id: 0x789,
@@ -1712,10 +1933,10 @@ mod tests {
             type0_sub_system_id: 0x1,
         };
         let (_msix, msix_capability) =
-            pci_core::capabilities::msix::MsixEmulator::new(0, 64, &mut msi_set);
+            pci_core::capabilities::msix::MsixEmulator::new(0, 64, msi_conn.target());
 
         let msi_controller = TestVpciInterruptController::new();
-        msi_set.connect(msi_controller.as_ref());
+        msi_conn.connect(msi_controller.signal_msi());
 
         let pci = Arc::new(CloseableMutex::new(NullDevice {
             config_space: ConfigSpaceType0Emulator::new(
@@ -1754,57 +1975,59 @@ mod tests {
 
         let base_address = 0x80000000;
         guest_driver.start_device(base_address).await;
-        let mut pci = pci.lock();
         for i in 0..6 {
-            pci.pci_cfg_write(0x10 + 4 * i, 0xffffffff).unwrap();
+            let result = pci.lock().pci_cfg_write(0x10 + 4 * i, 0xffffffff);
+            complete_write(result).await;
         }
 
         let mut value = 0;
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
         assert_eq!(value, 0xfffff004);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0xffffffff);
-        pci.pci_cfg_read(0x18, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x18, &mut value).unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x1c, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x1c, &mut value).unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x20, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x20, &mut value).unwrap();
         assert_eq!(value, 0);
-        pci.pci_cfg_read(0x24, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x24, &mut value).unwrap();
         assert_eq!(value, 0);
 
-        pci.pci_cfg_write(0x14, 0x20).unwrap();
-        pci.pci_cfg_write(0x10, 0x0).unwrap();
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
+        complete_write(pci.lock().pci_cfg_write(0x14, 0x20)).await;
+        complete_write(pci.lock().pci_cfg_write(0x10, 0x0)).await;
+        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
         assert_eq!(value, 0x4);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
 
-        pci.pci_cfg_write(
-            0x4,
-            pci_core::spec::cfg_space::Command::new()
-                .with_mmio_enabled(true)
-                .into_bits() as u32,
+        complete_write(
+            pci.lock().pci_cfg_write(
+                0x4,
+                pci_core::spec::cfg_space::Command::new()
+                    .with_mmio_enabled(true)
+                    .into_bits() as u32,
+            ),
         )
-        .unwrap();
+        .await;
 
         // Writes to BAR address are not allowed once MMIO is enabled.
-        pci.pci_cfg_write(0x14, 0xffffffff).unwrap();
-        pci.pci_cfg_write(0x10, 0xffffffff).unwrap();
-        pci.pci_cfg_read(0x10, &mut value).unwrap();
+        complete_write(pci.lock().pci_cfg_write(0x14, 0xffffffff)).await;
+        complete_write(pci.lock().pci_cfg_write(0x10, 0xffffffff)).await;
+        pci.lock().pci_cfg_read(0x10, &mut value).unwrap();
         assert_eq!(value, 0x4);
-        pci.pci_cfg_read(0x14, &mut value).unwrap();
+        pci.lock().pci_cfg_read(0x14, &mut value).unwrap();
         assert_eq!(value, 0x20);
     }
 
-    #[async_test]
-    async fn verify_simple_device_registers(driver: DefaultDriver) {
-        let msi_controller = TestVpciInterruptController::new();
-
-        struct TestDevice(ConfigSpaceType0Emulator);
-        impl TestDevice {
-            fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
-                Self(ConfigSpaceType0Emulator::new(
+    struct TestDevice {
+        config_space: ConfigSpaceType0Emulator,
+        tdisp_interface: TdispHostDeviceTargetEmulator,
+    }
+    impl TestDevice {
+        fn new(register_mmio: &mut dyn RegisterMmioIntercept) -> Self {
+            Self {
+                config_space: ConfigSpaceType0Emulator::new(
                     HardwareIds {
                         vendor_id: 0x123,
                         device_id: 0x789,
@@ -1825,90 +2048,100 @@ mod tests {
                             0x2000,
                             BarMemoryKind::Intercept(register_mmio.new_io_region("bar2", 0x2000)),
                         ),
-                ))
-            }
-
-            fn read_bar_u32(&self, bar: u8, offset: u16) -> u32 {
-                if bar == 0 && offset == 0 {
-                    1
-                } else if bar == 0 && offset == 4 {
-                    2
-                } else if bar == 2 && offset == 0 {
-                    3
-                } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
-                    4
-                } else {
-                    panic!("Unexpected address {}/{:#x}", bar, offset);
-                }
-            }
-
-            fn write_bar_u32(&mut self, bar: u8, offset: u16, val: u32) {
-                if bar == 0 && offset == 0 {
-                    assert_eq!(val, 1);
-                } else if bar == 0 && offset == 4 {
-                    assert_eq!(val, 2);
-                } else if bar == 2 && offset == 0 {
-                    assert_eq!(val, 3);
-                } else if bar == 2 && offset == HV_PAGE_SIZE as u16 {
-                    assert_eq!(val, 4);
-                } else {
-                    panic!("Unexpected address {}/{:#x}", bar, offset);
-                }
+                ),
+                tdisp_interface: tdisp::test_helpers::new_null_tdisp_interface("vpci-unit-test"),
             }
         }
 
-        impl InspectMut for TestDevice {
-            fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-                req.ignore();
+        fn read_bar_u32(&self, bar: u8, offset: u64) -> u32 {
+            if bar == 0 && offset == 0 {
+                1
+            } else if bar == 0 && offset == 4 {
+                2
+            } else if bar == 2 && offset == 0 {
+                3
+            } else if bar == 2 && offset == HV_PAGE_SIZE {
+                4
+            } else {
+                panic!("Unexpected address {}/{:#x}", bar, offset);
             }
         }
 
-        impl Inspect for TestDevice {
-            fn inspect(&self, req: inspect::Request<'_>) {
-                req.ignore();
+        fn write_bar_u32(&mut self, bar: u8, offset: u64, val: u32) {
+            if bar == 0 && offset == 0 {
+                assert_eq!(val, 1);
+            } else if bar == 0 && offset == 4 {
+                assert_eq!(val, 2);
+            } else if bar == 2 && offset == 0 {
+                assert_eq!(val, 3);
+            } else if bar == 2 && offset == HV_PAGE_SIZE {
+                assert_eq!(val, 4);
+            } else {
+                panic!("Unexpected address {}/{:#x}", bar, offset);
             }
         }
+    }
 
-        impl ChipsetDevice for TestDevice {
-            fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
-                Some(self)
-            }
+    impl InspectMut for TestDevice {
+        fn inspect_mut(&mut self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
 
-            fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
-                Some(self)
-            }
+    impl Inspect for TestDevice {
+        fn inspect(&self, req: inspect::Request<'_>) {
+            req.ignore();
+        }
+    }
+
+    impl ChipsetDevice for TestDevice {
+        fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+            Some(self)
         }
 
-        impl MmioIntercept for TestDevice {
-            fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
-                if let Some((bar, offset)) = self.0.find_bar(address) {
-                    read_as_u32_chunks(offset, data, |offset| self.read_bar_u32(bar, offset))
-                }
-                IoResult::Ok
-            }
-
-            fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
-                if let Some((bar, offset)) = self.0.find_bar(address) {
-                    write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
-                        ReadWriteRequestType::Write(value) => {
-                            self.write_bar_u32(bar, offset, value);
-                            None
-                        }
-                        ReadWriteRequestType::Read => Some(self.read_bar_u32(bar, offset)),
-                    })
-                }
-                IoResult::Ok
-            }
+        fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
+            Some(self)
         }
 
-        impl PciConfigSpace for TestDevice {
-            fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
-                self.0.read_u32(offset, value)
-            }
-            fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
-                self.0.write_u32(offset, value)
-            }
+        fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
+            Some(&mut self.tdisp_interface)
         }
+    }
+
+    impl MmioIntercept for TestDevice {
+        fn mmio_read(&mut self, address: u64, data: &mut [u8]) -> IoResult {
+            if let Some((bar, offset)) = self.config_space.find_bar(address) {
+                read_as_u32_chunks(offset, data, |offset| self.read_bar_u32(bar, offset))
+            }
+            IoResult::Ok
+        }
+
+        fn mmio_write(&mut self, address: u64, data: &[u8]) -> IoResult {
+            if let Some((bar, offset)) = self.config_space.find_bar(address) {
+                write_as_u32_chunks(offset, data, |offset, request_type| match request_type {
+                    ReadWriteRequestType::Write(value) => {
+                        self.write_bar_u32(bar, offset, value);
+                        None
+                    }
+                    ReadWriteRequestType::Read => Some(self.read_bar_u32(bar, offset)),
+                })
+            }
+            IoResult::Ok
+        }
+    }
+
+    impl PciConfigSpace for TestDevice {
+        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> IoResult {
+            self.config_space.read_u32(offset, value)
+        }
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> IoResult {
+            self.config_space.write_u32(offset, value)
+        }
+    }
+
+    #[async_test]
+    async fn verify_simple_device_registers(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
 
         let vm_chipset = TestChipset::default();
         let pci = vm_chipset
@@ -1934,29 +2167,38 @@ mod tests {
         };
 
         let bar_address1 = 0x2000000000;
-        pci.lock()
-            .pci_cfg_write(0x14, u32::try_from(bar_address1 >> 32).unwrap())
-            .unwrap();
-        pci.lock()
-            .pci_cfg_write(0x10, u32::try_from(bar_address1 & 0xffffffff).unwrap())
-            .unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x14, u32::try_from(bar_address1 >> 32).unwrap()),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x10, u32::try_from(bar_address1 & 0xffffffff).unwrap()),
+        )
+        .await;
 
         let bar_address2: u64 = 0x4000;
-        pci.lock()
-            .pci_cfg_write(0x1c, u32::try_from(bar_address2 >> 32).unwrap())
-            .unwrap();
-        pci.lock()
-            .pci_cfg_write(0x18, u32::try_from(bar_address2 & 0xffffffff).unwrap())
-            .unwrap();
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x1c, u32::try_from(bar_address2 >> 32).unwrap()),
+        )
+        .await;
+        complete_write(
+            pci.lock()
+                .pci_cfg_write(0x18, u32::try_from(bar_address2 & 0xffffffff).unwrap()),
+        )
+        .await;
 
-        pci.lock()
-            .pci_cfg_write(
+        complete_write(
+            pci.lock().pci_cfg_write(
                 0x4,
                 pci_core::spec::cfg_space::Command::new()
                     .with_mmio_enabled(true)
                     .into_bits() as u32,
-            )
-            .unwrap();
+            ),
+        )
+        .await;
 
         assert_eq!(read_u32(bar_address1), 1);
         assert_eq!(read_u32(bar_address1 + 4), 2);
@@ -1966,6 +2208,53 @@ mod tests {
         write_u32(bar_address1 + 4, 2);
         write_u32(bar_address2, 3);
         write_u32(bar_address2 + HV_PAGE_SIZE, 4);
+    }
+
+    /// Verifies that the TDISP guest protocol can be negotiated correctly over a hosted VMBUS channel.
+    /// This test covers:
+    /// - Some basic VMBUS VPCI packet serialization for VpciTdispCommand
+    /// - VPCI VMBUS server interface receiving and responding to TDISP commands
+    #[async_test]
+    async fn verify_tdisp_get_device_interface_info(driver: DefaultDriver) {
+        let msi_controller = TestVpciInterruptController::new();
+        let vm_chipset = TestChipset::default();
+        let pci = vm_chipset
+            .device_builder("test")
+            .with_external_pci()
+            .add(|services| TestDevice::new(&mut services.register_mmio()))
+            .unwrap();
+        let mut guest_driver = connected_device(&driver, pci.clone(), msi_controller);
+        guest_driver.start_device(0x1000000).await;
+
+        let guest_protocol_type: tdisp::TdispGuestProtocolType = TDISP_MOCK_GUEST_PROTOCOL;
+        let command = new_get_device_interface_info_command(
+            SlotNumber::new().into_bits() as u64,
+            TDISP_MOCK_GUEST_PROTOCOL,
+        );
+        let response = guest_driver.send_tdisp_command(command).await;
+
+        let response = response.response::<TdispCommandResponseGetDeviceInterfaceInfo>();
+        match response {
+            Ok(info_resp) => {
+                let interface_info = info_resp
+                    .interface_info
+                    .expect("interface_info must be set");
+
+                assert_eq!(
+                    interface_info.guest_protocol_type,
+                    guest_protocol_type as i32
+                );
+                assert_eq!(
+                    interface_info.supported_features,
+                    TDISP_MOCK_SUPPORTED_FEATURES
+                );
+                assert_eq!(interface_info.tdisp_device_id, TDISP_MOCK_DEVICE_ID);
+            }
+            _ => panic!(
+                "expected GetDeviceInterfaceInfo response, got {:?}",
+                response
+            ),
+        }
     }
 
     #[async_test]

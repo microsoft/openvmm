@@ -1039,6 +1039,7 @@ impl OffloadParametersChecksum {
     pub fn tx_rx(&self) -> Option<(bool, bool)> {
         match *self {
             Self::NO_CHANGE => None,
+            Self::TX_RX_DISABLED => Some((false, false)),
             Self::TX_RX_ENABLED => Some((true, true)),
             Self::TX_ENABLED_RX_DISABLED => Some((true, false)),
             Self::RX_ENABLED_TX_DISABLED => Some((false, true)),

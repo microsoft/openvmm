@@ -69,7 +69,10 @@ pub enum DtError {
     Vtl0Vmbus,
     /// Host provided high MMIO range is insufficient to cover VTL0 and VTL2.
     #[error("host provided high MMIO range is insufficient to cover VTL0 and VTL2")]
-    NotEnoughMmio,
+    NotEnoughVtl0Mmio,
+    /// Host provided MMIO range is insufficient to cover VTL2.
+    #[error("host provided MMIO range is insufficient to cover VTL2")]
+    NotEnoughVtl2Mmio,
 }
 
 /// Allocate VTL2 ram from the partition's memory map.
@@ -430,46 +433,75 @@ fn topology_from_host_dt(
     // guests when it also provides the ram VTL2 should use.
     //
     // For isolated guests, or when VTL2 has been asked to carve out its own
-    // memory, carve out a range from the VTL0 allotment.
+    // memory, first check if the host provided a VTL2 mmio range. If so, the
+    // mmio range must be large enough. Otherwise, choose to carve out a range
+    // from the VTL0 allotment.
     let (vtl0_mmio, vtl2_mmio) = if params.isolation_type != IsolationType::None
         || matches!(
             parsed.memory_allocation_mode,
             MemoryAllocationMode::Vtl2 { .. }
         ) {
-        // Decide the amount of mmio VTL2 should allocate.
-        let mmio_size = max(
-            match parsed.memory_allocation_mode {
-                MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
-                _ => 0,
-            },
-            calculate_default_mmio_size(parsed)?,
-        );
+        // Decide the amount of mmio VTL2 should allocate, which is different
+        // depending on the heuristic used.
+        //
+        // On a newer host where a vtl2 mmio range is provided inside the
+        // vmbus_vtl2 device tree node, use the size provided by the host inside
+        // the openhcl node for memory allocation mode.
+        //
+        // If the host did not provide a vtl2 mmio range, then use the maximum
+        // of the host provided value inside the openhcl node and the calculated
+        // default.
+        let host_provided_size = match parsed.memory_allocation_mode {
+            MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
+            _ => 0,
+        };
+        let vmbus_vtl2 = parsed.vmbus_vtl2.as_ref().ok_or(DtError::Vtl2Vmbus)?;
+        let vmbus_vtl2_mmio_size = vmbus_vtl2.mmio.iter().map(|r| r.len()).sum::<u64>();
+        let mmio_size = if vmbus_vtl2_mmio_size != 0 {
+            host_provided_size
+        } else {
+            max(host_provided_size, calculate_default_mmio_size(parsed)?)
+        };
 
         log::info!("allocating vtl2 mmio size {mmio_size:#x} bytes");
+        log::info!("host provided vtl2 mmio ranges are {vmbus_vtl2_mmio_size:#x} bytes");
 
-        // Decide what mmio vtl2 should use.
-        let mmio = &parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?.mmio;
-        let selected_vtl2_mmio = select_vtl2_mmio_range(mmio, mmio_size)?;
+        let vmbus_vtl0 = parsed.vmbus_vtl0.as_ref().ok_or(DtError::Vtl0Vmbus)?;
+        if vmbus_vtl2_mmio_size != 0 {
+            // Verify the host provided mmio is large enough.
+            if vmbus_vtl2_mmio_size < mmio_size {
+                return Err(DtError::NotEnoughVtl2Mmio);
+            }
 
-        // Update vtl0 mmio to exclude vtl2 mmio.
-        let vtl0_mmio = subtract_ranges(mmio.iter().cloned(), [selected_vtl2_mmio])
-            .collect::<ArrayVec<MemoryRange, 2>>();
-        let vtl2_mmio = [selected_vtl2_mmio]
-            .into_iter()
-            .collect::<ArrayVec<MemoryRange, 2>>();
+            log::info!("using host provided vtl2 mmio: {:x?}", vmbus_vtl2.mmio);
+            (vmbus_vtl0.mmio.clone(), vmbus_vtl2.mmio.clone())
+        } else {
+            // Allocate vtl2 mmio from vtl0 mmio.
+            log::info!("no vtl2 mmio provided by host, allocating from vtl0 mmio");
+            let selected_vtl2_mmio = select_vtl2_mmio_range(&vmbus_vtl0.mmio, mmio_size)?;
 
-        // TODO: For now, if we have only a single vtl0_mmio range left,
-        // panic. In the future decide if we want to report this as a start
-        // failure in usermode, change allocation strategy, or something
-        // else.
-        assert_eq!(
-            vtl0_mmio.len(),
-            2,
-            "vtl0 mmio ranges are not 2 {:#x?}",
-            vtl0_mmio
-        );
+            // Update vtl0 mmio to exclude vtl2 mmio.
+            let vtl0_mmio = subtract_ranges(vmbus_vtl0.mmio.iter().cloned(), [selected_vtl2_mmio])
+                .collect::<ArrayVec<MemoryRange, 2>>();
+            let vtl2_mmio = [selected_vtl2_mmio]
+                .into_iter()
+                .collect::<ArrayVec<MemoryRange, 2>>();
 
-        (vtl0_mmio, vtl2_mmio)
+            // TODO: For now, if we have only a single vtl0_mmio range left,
+            // panic. In the future decide if we want to report this as a start
+            // failure in usermode, change allocation strategy, or something
+            // else.
+            assert_eq!(
+                vtl0_mmio.len(),
+                2,
+                "vtl0 mmio ranges are not 2 {:#x?}",
+                vtl0_mmio
+            );
+
+            log::info!("vtl0 mmio: {vtl0_mmio:x?}, vtl2 mmio: {vtl2_mmio:x?}");
+
+            (vtl0_mmio, vtl2_mmio)
+        }
     } else {
         (
             parsed
@@ -642,6 +674,12 @@ fn topology_from_persisted_state(
         cpus_with_mapped_interrupts_no_io,
         cpus_with_outstanding_io,
     } = parsed_protobuf;
+
+    log::info!(
+        "persisted state: cpus_with_mapped_interrupts_no_io={:?}, cpus_with_outstanding_io={:?}",
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
+    );
 
     // FUTURE: should memory allocation mode should persist in saved state and
     // verify the host did not change it?
@@ -882,25 +920,25 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let (topology, has_devices_that_should_disable_sidecar) =
-            if let Some(header) = persisted_state_header {
-                log::info!("found persisted state header");
-                let persisted_topology =
-                    topology_from_persisted_state(header, params, parsed, address_space)?;
-
-                (
-                    persisted_topology.topology,
-                    !(persisted_topology
-                        .cpus_with_mapped_interrupts_no_io
-                        .is_empty()
-                        && persisted_topology.cpus_with_outstanding_io.is_empty()),
-                )
-            } else {
-                (
-                    topology_from_host_dt(params, parsed, &options, address_space)?,
-                    false,
-                )
-            };
+        log::info!(
+            "read_from_dt: persisted_state_header present={}, sidecar={:?}",
+            persisted_state_header.is_some(),
+            options.sidecar,
+        );
+        let (topology, cpus_with_outstanding_io) = if let Some(header) = persisted_state_header {
+            log::info!("found persisted state header");
+            let persisted_topology =
+                topology_from_persisted_state(header, params, parsed, address_space)?;
+            (
+                persisted_topology.topology,
+                persisted_topology.cpus_with_outstanding_io,
+            )
+        } else {
+            (
+                topology_from_host_dt(params, parsed, &options, address_space)?,
+                Vec::new(),
+            )
+        };
 
         let Self {
             vtl2_ram,
@@ -908,6 +946,7 @@ impl PartitionInfo {
             isolation,
             bsp_reg,
             cpus,
+            sidecar_cpu_overrides,
             vmbus_vtl0,
             vmbus_vtl2,
             cmdline: _,
@@ -921,19 +960,44 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
-            &boot_options.sidecar,
-            has_devices_that_should_disable_sidecar,
-        ) {
-            if cpu_threshold.is_none()
-                || cpu_threshold
-                    .and_then(|threshold| threshold.try_into().ok())
-                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
+        // During servicing restore, selectively exclude CPUs with outstanding IO
+        // from sidecar startup. These CPUs need immediate kernel access to handle
+        // device interrupts. All other CPUs still benefit from sidecar's parallel
+        // startup. Falls back to disabling sidecar entirely if CPU IDs exceed the
+        // per-CPU state array capacity (>400 CPUs).
+        //
+        // Sidecar is automatically disabled when: all NUMA nodes have exactly
+        // one CPU (nothing to parallelize), x2apic is unavailable, the VM is
+        // isolated (CVM), or the sidecar image is not present (sidecar_size == 0).
+        // It is also disabled via command line with OPENHCL_SIDECAR=off. In all
+        // other cases sidecar is active and uses a fan-out pattern to bring up
+        // APs in parallel across NUMA nodes.
+        //
+        // TODO: the `cpu_threshold` field in `SidecarOptions::Enabled` is
+        // not used at present. Based on production performance data, either
+        // remove `cpu_threshold` from `SidecarOptions` in cmdline.rs, or
+        // add a VP-count cutoff here to disable sidecar for small VMs.
+        if let (SidecarOptions::Enabled { .. }, true) =
+            (&boot_options.sidecar, !cpus_with_outstanding_io.is_empty())
+        {
+            let max_cpu_id = *cpus_with_outstanding_io.iter().max().unwrap() as usize;
+            if parsed.cpu_count() <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
+                && max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len()
             {
-                // If we are in the restore path, disable sidecar for small VMs, as the amortization
-                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
-                // to check for interrupts.
-                log::info!("disabling sidecar, as we are restoring from persisted state");
+                // Mark specific CPUs as kernel-started instead of sidecar-started.
+                sidecar_cpu_overrides.per_cpu_state_specified = true;
+                for &cpu_id in &cpus_with_outstanding_io {
+                    sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
+                }
+                log::info!(
+                    "sidecar: excluding CPUs {:?} due to outstanding IO",
+                    cpus_with_outstanding_io,
+                );
+            } else {
+                // CPU IDs exceed per-cpu array capacity; disable sidecar entirely.
+                log::info!(
+                    "sidecar: disabling, too many CPUs for per-CPU state (max id {max_cpu_id})"
+                );
                 boot_options.sidecar = SidecarOptions::DisabledServicing;
                 options.sidecar = SidecarOptions::DisabledServicing;
             }

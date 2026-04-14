@@ -90,7 +90,6 @@ impl FlowNode for Node {
 
                 move |rt| {
                     let mut github_commit_hash = rt.read(github_commit_hash);
-                    let sh = xshell::Shell::new()?;
                     let repo_path = rt.read(repo_path);
                     let gh_cli = rt.read(gh_cli);
                     let gh_run_status = match gh_run_status {
@@ -98,7 +97,7 @@ impl FlowNode for Node {
                         GhRunStatus::Success => "success",
                     };
 
-                    sh.change_dir(repo_path);
+                    rt.sh.change_dir(repo_path);
 
                     let handle_output = |output: Result<String, xshell::Error>, error_msg: &str| -> Option<String> {
                         match output {
@@ -113,8 +112,8 @@ impl FlowNode for Node {
 
                     // Get action id for a specific commit
                     let get_action_id_for_commit = |commit: &str| -> Option<String> {
-                        let output = xshell::cmd!(
-                            sh,
+                        let output = flowey::shell_cmd!(
+                            rt,
                             "{gh_cli} run list
                             --commit {commit}
                             -w {pipeline_name}
@@ -133,8 +132,8 @@ impl FlowNode for Node {
                         // cmd! will escape quotes in any strings passed as an arg. Since we need multiple layers of
                         // escapes, first create the jq filter and then let cmd! handle the escaping.
                         let select = format!(".jobs[] | select(.name == \"{job_name}\" and .conclusion == \"success\") | .url");
-                        let output = xshell::cmd!(
-                            sh,
+                        let output = flowey::shell_cmd!(
+                            rt,
                             "{gh_cli} run view {action_id}
                             --json jobs
                             --jq={select}"
@@ -172,7 +171,7 @@ impl FlowNode for Node {
                         }
 
                         github_commit_hash =
-                            xshell::cmd!(sh, "git rev-parse {github_commit_hash}^").read()?;
+                            flowey::shell_cmd!(rt, "git rev-parse {github_commit_hash}^").read()?;
                         action_id = get_action_id(github_commit_hash.clone());
 
                         loop_count += 1;

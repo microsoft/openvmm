@@ -4,7 +4,6 @@
 use super::BorrowedHandleExt;
 use super::Process;
 use super::job::Job;
-use ntapi::ntpsapi::NtCurrentProcess;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -14,25 +13,26 @@ use std::os::windows::prelude::*;
 use std::ptr::null;
 use std::ptr::null_mut;
 use widestring::U16CString;
-use winapi::shared::winerror::ERROR_INVALID_PARAMETER;
-use winapi::um::handleapi::SetHandleInformation;
-use winapi::um::processenv::GetStdHandle;
-use winapi::um::processthreadsapi::CreateProcessAsUserW;
-use winapi::um::processthreadsapi::DeleteProcThreadAttributeList;
-use winapi::um::processthreadsapi::InitializeProcThreadAttributeList;
-use winapi::um::processthreadsapi::LPPROC_THREAD_ATTRIBUTE_LIST;
-use winapi::um::processthreadsapi::STARTUPINFOW;
-use winapi::um::processthreadsapi::TerminateProcess;
-use winapi::um::processthreadsapi::UpdateProcThreadAttribute;
-use winapi::um::winbase::CREATE_SUSPENDED;
-use winapi::um::winbase::CREATE_UNICODE_ENVIRONMENT;
-use winapi::um::winbase::EXTENDED_STARTUPINFO_PRESENT;
-use winapi::um::winbase::HANDLE_FLAG_INHERIT;
-use winapi::um::winbase::STARTF_USESTDHANDLES;
-use winapi::um::winbase::STARTUPINFOEXW;
-use winapi::um::winbase::STD_ERROR_HANDLE;
-use winapi::um::winbase::STD_INPUT_HANDLE;
-use winapi::um::winbase::STD_OUTPUT_HANDLE;
+use windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+use windows_sys::Win32::Foundation::HANDLE_FLAG_INHERIT;
+use windows_sys::Win32::Foundation::SetHandleInformation;
+use windows_sys::Win32::System::Console::GetStdHandle;
+use windows_sys::Win32::System::Console::STD_ERROR_HANDLE;
+use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+use windows_sys::Win32::System::Console::STD_OUTPUT_HANDLE;
+use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+use windows_sys::Win32::System::Threading::CREATE_UNICODE_ENVIRONMENT;
+use windows_sys::Win32::System::Threading::CreateProcessAsUserW;
+use windows_sys::Win32::System::Threading::DeleteProcThreadAttributeList;
+use windows_sys::Win32::System::Threading::EXTENDED_STARTUPINFO_PRESENT;
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+use windows_sys::Win32::System::Threading::InitializeProcThreadAttributeList;
+use windows_sys::Win32::System::Threading::LPPROC_THREAD_ATTRIBUTE_LIST;
+use windows_sys::Win32::System::Threading::STARTF_USESTDHANDLES;
+use windows_sys::Win32::System::Threading::STARTUPINFOEXW;
+use windows_sys::Win32::System::Threading::STARTUPINFOW;
+use windows_sys::Win32::System::Threading::TerminateProcess;
+use windows_sys::Win32::System::Threading::UpdateProcThreadAttribute;
 
 const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: u32 = 0x00020002;
 const PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY: u32 = 0x000020007;
@@ -841,7 +841,7 @@ impl<'a> Builder<'a> {
             let stdout = self.stdout.eval(STD_OUTPUT_HANDLE)?;
             let stderr = self.stderr.eval(STD_ERROR_HANDLE)?;
 
-            let mut startup_info = STARTUPINFOEXW {
+            let startup_info = STARTUPINFOEXW {
                 StartupInfo: STARTUPINFOW {
                     cb: size_of::<STARTUPINFOEXW>() as u32,
                     dwFlags: STARTF_USESTDHANDLES,
@@ -954,7 +954,7 @@ impl<'a> Builder<'a> {
                 self.creation_flags | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                 ptr_or_null(&env_block) as *mut _,
                 ptr_or_null(&current_directory),
-                &mut startup_info.StartupInfo,
+                &startup_info.StartupInfo,
                 &mut process_info,
             ) == 0
             {
@@ -1010,7 +1010,7 @@ pub fn empty_process() -> io::Result<EmptyProcess> {
 pub(crate) fn terminate(exit_code: i32) -> ! {
     // SAFETY: there are no safety requirements for calling this function.
     unsafe {
-        TerminateProcess(NtCurrentProcess, exit_code as u32);
+        TerminateProcess(GetCurrentProcess(), exit_code as u32);
     }
     std::process::abort()
 }

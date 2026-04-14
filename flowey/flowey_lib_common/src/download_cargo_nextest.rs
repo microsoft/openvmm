@@ -6,10 +6,16 @@
 use crate::cache::CacheHit;
 use flowey::node::prelude::*;
 
+flowey_config! {
+    /// Config for the download_cargo_nextest node.
+    pub struct Config {
+        /// Version of `cargo nextest` to install (e.g: "0.9.57")
+        pub version: Option<String>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
-        /// Version of `cargo nextest` to install (e.g: "0.9.57")
-        Version(String),
         /// Download `cargo-nextest` as a standalone binary, without requiring Rust
         /// to be installed.
         ///
@@ -18,27 +24,32 @@ flowey_request! {
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::cache::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut version = None;
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let mut reqs = Vec::new();
 
         for req in requests {
             match req {
-                Request::Version(v) => same_across_all_reqs("Version", &mut version, v)?,
                 Request::Get(target, path) => reqs.push((target, path)),
             }
         }
 
-        let version = version.ok_or(anyhow::anyhow!("Missing essential request: Version"))?;
+        let version = config
+            .version
+            .ok_or(anyhow::anyhow!("missing config: version"))?;
         let reqs = reqs;
 
         // -- end of req processing -- //
@@ -92,11 +103,9 @@ impl FlowNode for Node {
                     let target = target.to_string();
 
                     if !matches!(rt.read(hitvar), CacheHit::Hit) {
-                        let sh = xshell::Shell::new()?;
-
                         let nextest_archive = "nextest.tar.gz";
-                        xshell::cmd!(sh, "curl --fail -L https://get.nexte.st/{version}/{target}.tar.gz -o {nextest_archive}").run()?;
-                        xshell::cmd!(sh, "tar -xf {nextest_archive}").run()?;
+                        flowey::shell_cmd!(rt, "curl --fail -L https://get.nexte.st/{version}/{target}.tar.gz -o {nextest_archive}").run()?;
+                        flowey::shell_cmd!(rt, "tar -xf {nextest_archive}").run()?;
 
                         // move the downloaded bin into the cache dir
                         fs_err::create_dir_all(&cache_dir)?;

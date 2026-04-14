@@ -34,13 +34,18 @@ pub mod user_facing {
     pub use super::ClaimVar;
     pub use super::ClaimedReadVar;
     pub use super::ClaimedWriteVar;
+    pub use super::ConfigField;
+    pub use super::ConfigMerge;
+    pub use super::ConfigVar;
     pub use super::FlowArch;
     pub use super::FlowBackend;
     pub use super::FlowNode;
+    pub use super::FlowNodeWithConfig;
     pub use super::FlowPlatform;
     pub use super::FlowPlatformKind;
     pub use super::GhUserSecretVar;
     pub use super::ImportCtx;
+    pub use super::IntoConfig;
     pub use super::IntoRequest;
     pub use super::NodeCtx;
     pub use super::ReadVar;
@@ -59,8 +64,10 @@ pub mod user_facing {
     pub use super::steps::github::GhPermission;
     pub use super::steps::github::GhPermissionValue;
     pub use super::steps::rust::RustRuntimeServices;
+    pub use crate::flowey_config;
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
+    pub use crate::new_flow_node_with_config;
     pub use crate::new_simple_flow_node;
     pub use crate::node::FlowPlatformLinuxDistro;
     pub use crate::pipeline::Artifact;
@@ -202,6 +209,59 @@ where
 {
     fn eq(&self, other: &Self) -> bool {
         (self.0.eq(&other.0)) && (self.1.eq(&other.1))
+    }
+}
+
+/// A wrapper around [`ReadVar<T>`] that implements [`PartialEq`] via
+/// backing-variable identity ([`VarEqBacking`]).
+///
+/// Use this in config structs where a `ReadVar` field needs equality
+/// comparison for config merging. Since `ReadVar` deliberately does not
+/// implement `PartialEq` (its values aren't known at flow-resolution time),
+/// `ConfigVar` provides identity-based comparison instead.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// flowey_config! {
+///     pub struct Config {
+///         pub verbose: Option<ConfigVar<bool>>,
+///     }
+/// }
+/// ```
+#[derive(Serialize, Deserialize)]
+#[serde(bound(serialize = "T: Serialize", deserialize = "T: DeserializeOwned"))]
+pub struct ConfigVar<T>(pub ReadVar<T>);
+
+impl<T: Serialize + DeserializeOwned> Clone for ConfigVar<T> {
+    fn clone(&self) -> Self {
+        ConfigVar(self.0.clone())
+    }
+}
+
+impl<T> std::fmt::Debug for ConfigVar<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ConfigVar").finish()
+    }
+}
+
+impl<T: Serialize + DeserializeOwned + PartialEq + Eq + Clone> PartialEq for ConfigVar<T> {
+    fn eq(&self, other: &Self) -> bool {
+        VarEqBacking::eq(&self.0, &other.0)
+    }
+}
+
+impl<T: Serialize + DeserializeOwned + PartialEq + Eq + Clone> ClaimVar for ConfigVar<T> {
+    type Claimed = ClaimedReadVar<T>;
+
+    fn claim(self, ctx: &mut StepCtx<'_>) -> ClaimedReadVar<T> {
+        self.0.claim(ctx)
+    }
+}
+
+impl<T: Serialize + DeserializeOwned + PartialEq + Eq + Clone> From<ReadVar<T>> for ConfigVar<T> {
+    fn from(v: ReadVar<T>) -> Self {
+        ConfigVar(v)
     }
 }
 
@@ -879,6 +939,11 @@ pub trait NodeCtxBackend {
     // FIXME: this should be using type-erased serde
     fn on_request(&mut self, node_handle: NodeHandle, req: anyhow::Result<Box<[u8]>>);
 
+    /// Invoked when a node sets config on another node.
+    ///
+    /// Config is merged by the resolver and delivered before action requests.
+    fn on_config(&mut self, node_handle: NodeHandle, config: anyhow::Result<Box<[u8]>>);
+
     fn on_emit_rust_step(
         &mut self,
         label: &str,
@@ -945,12 +1010,14 @@ pub enum FlowPlatformKind {
 }
 
 /// The kind platform the flow is being running on, Windows or Unix.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum FlowPlatformLinuxDistro {
     /// Fedora (including WSL2)
     Fedora,
     /// Ubuntu (including WSL2)
     Ubuntu,
+    /// Azure Linux (tdnf-based)
+    AzureLinux,
     /// Arch Linux (including WSL2)
     Arch,
     /// Nix environment (detected via IN_NIX_SHELL env var or having a `/nix/store` in PATH)
@@ -960,7 +1027,7 @@ pub enum FlowPlatformLinuxDistro {
 }
 
 /// What platform the flow is being running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FlowPlatform {
     /// Windows
@@ -1005,7 +1072,7 @@ impl std::fmt::Display for FlowPlatform {
 }
 
 /// What architecture the flow is being running on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum FlowArch {
     X86_64,
@@ -1531,6 +1598,23 @@ impl<'ctx> NodeCtx<'ctx> {
         );
     }
 
+    /// Set config on a particular node.
+    ///
+    /// Config is merged by the resolver (all callers must agree on values)
+    /// and delivered to the target node before any action requests.
+    pub fn config<C>(&mut self, config: C)
+    where
+        C: IntoConfig + 'static,
+    {
+        let mut backend = self.backend.borrow_mut();
+        backend.on_config(
+            NodeHandle::from_type::<C::Node>(),
+            serde_json::to_vec(&config)
+                .map(Into::into)
+                .map_err(Into::into),
+        );
+    }
+
     /// Set a request on a particular node, simultaneously creating a new flowey
     /// Var in the process.
     #[track_caller]
@@ -1772,25 +1856,23 @@ pub mod steps {
             ado_var: Cow<'static, str>,
         }
 
-        #[allow(non_upper_case_globals)]
         impl AdoRuntimeVar {
             /// `build.SourceBranch`
             ///
             /// NOTE: Includes the full branch ref (ex: `refs/heads/main`) so
             /// unlike `build.SourceBranchName`, a branch like `user/foo/bar`
             /// won't be stripped to just `bar`
-            pub const BUILD__SOURCE_BRANCH: AdoRuntimeVar =
-                AdoRuntimeVar::new("build.SourceBranch");
+            pub const BUILD_SOURCE_BRANCH: AdoRuntimeVar = AdoRuntimeVar::new("build.SourceBranch");
 
             /// `build.BuildNumber`
-            pub const BUILD__BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
+            pub const BUILD_BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
 
             /// `System.AccessToken`
-            pub const SYSTEM__ACCESS_TOKEN: AdoRuntimeVar =
+            pub const SYSTEM_ACCESS_TOKEN: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.AccessToken");
 
             /// `System.System.JobAttempt`
-            pub const SYSTEM__JOB_ATTEMPT: AdoRuntimeVar =
+            pub const SYSTEM_JOB_ATTEMPT: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.JobAttempt");
         }
 
@@ -1939,12 +2021,12 @@ pub mod steps {
             /// action to use. For example, the following code generates the following yaml:
             ///
             /// ```ignore
-            /// GhStepBuilder::new("Check out repository code", "actions/checkout@v4").finish()
+            /// GhStepBuilder::new("Check out repository code", "actions/checkout@v6").finish()
             /// ```
             ///
             /// ```ignore
             /// - name: Check out repository code
-            ///   uses: actions/checkout@v4
+            ///   uses: actions/checkout@v6
             /// ```
             ///
             /// For more information on the yaml syntax for the `name` and `uses` parameters,
@@ -2109,11 +2191,11 @@ pub mod steps {
         ///
         /// For more details on how these values affect a particular scope, refer to:
         /// <https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs>
-        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd)]
         pub enum GhPermissionValue {
-            Read,
-            Write,
-            None,
+            None = 0,
+            Read = 1,
+            Write = 2,
         }
 
         /// Refers to the scope of a permission granted to the GITHUB_TOKEN
@@ -2147,6 +2229,7 @@ pub mod steps {
         use crate::node::FlowPlatform;
         use crate::node::ReadVarValue;
         use crate::node::RuntimeVarDb;
+        use crate::shell::FloweyShell;
         use serde::Serialize;
         use serde::de::DeserializeOwned;
 
@@ -2155,14 +2238,15 @@ pub mod steps {
             backend: FlowBackend,
             platform: FlowPlatform,
             arch: FlowArch,
-        ) -> RustRuntimeServices<'_> {
-            RustRuntimeServices {
+        ) -> anyhow::Result<RustRuntimeServices<'_>> {
+            Ok(RustRuntimeServices {
                 runtime_var_db,
                 backend,
                 platform,
                 arch,
                 has_read_secret: false,
-            }
+                sh: FloweyShell::new()?,
+            })
         }
 
         pub struct RustRuntimeServices<'a> {
@@ -2171,6 +2255,12 @@ pub mod steps {
             platform: FlowPlatform,
             arch: FlowArch,
             has_read_secret: bool,
+            /// A pre-initialized [`FloweyShell`] for running commands.
+            ///
+            /// This wraps [`xshell::Shell`] and supports transparent command
+            /// wrapping. Implements [`Deref<Target = xshell::Shell>`](std::ops::Deref)
+            /// so methods like `change_dir()`, `set_var()`, etc. work directly.
+            pub sh: FloweyShell,
         }
 
         impl RustRuntimeServices<'_> {
@@ -2309,7 +2399,12 @@ pub trait FlowNodeBase {
     type Request: Serialize + DeserializeOwned;
 
     fn imports(&mut self, ctx: &mut ImportCtx<'_>);
-    fn emit(&mut self, requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()>;
+    fn emit(
+        &mut self,
+        config_bytes: Vec<Box<[u8]>>,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()>;
 
     /// A noop method that all human-written impls of `FlowNodeBase` are
     /// required to implement.
@@ -2343,13 +2438,18 @@ pub mod erased {
             self.0.imports(ctx)
         }
 
-        fn emit(&mut self, requests: Vec<Box<[u8]>>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+        fn emit(
+            &mut self,
+            config_bytes: Vec<Box<[u8]>>,
+            requests: Vec<Box<[u8]>>,
+            ctx: &mut NodeCtx<'_>,
+        ) -> anyhow::Result<()> {
             let mut converted_requests = Vec::new();
             for req in requests {
                 converted_requests.push(serde_json::from_slice(&req)?)
             }
 
-            self.0.emit(converted_requests, ctx)
+            self.0.emit(config_bytes, converted_requests, ctx)
         }
 
         fn i_know_what_im_doing_with_this_manual_impl(&mut self) {}
@@ -2696,6 +2796,7 @@ macro_rules! new_flow_node {
 
             fn emit(
                 &mut self,
+                _config_bytes: Vec<Box<[u8]>>,
                 requests: Vec<Self::Request>,
                 ctx: &mut $crate::node::NodeCtx<'_>,
             ) -> anyhow::Result<()> {
@@ -2762,12 +2863,125 @@ macro_rules! new_simple_flow_node {
                 <Node as $crate::node::SimpleFlowNode>::imports(dep)
             }
 
-            fn emit(&mut self, requests: Vec<Self::Request>, ctx: &mut $crate::node::NodeCtx<'_>) -> anyhow::Result<()> {
+            fn emit(
+                &mut self,
+                _config_bytes: Vec<Box<[u8]>>,
+                requests: Vec<Self::Request>,
+                ctx: &mut $crate::node::NodeCtx<'_>,
+            ) -> anyhow::Result<()> {
                 for req in requests {
                     <Node as $crate::node::SimpleFlowNode>::process_request(req, ctx)?
                 }
 
                 Ok(())
+            }
+
+            fn i_know_what_im_doing_with_this_manual_impl(&mut self) {}
+        }
+    };
+}
+
+/// A [`FlowNode`] variant that receives a typed, pre-merged config alongside
+/// its requests.
+///
+/// Use this when a node has "config" values (e.g., version strings, feature
+/// flags) that must agree across all callers AND are needed to emit outgoing
+/// requests or steps.
+///
+/// The framework merges config from all callers (validating equality) and
+/// delivers the finalized `Config` to `emit()`. The node never sees raw
+/// config requests — they are handled by the infrastructure.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// flowey_config! {
+///     pub struct Config {
+///         pub version: Option<String>,
+///     }
+/// }
+///
+/// flowey_request! {
+///     pub enum Request {
+///         GetAzCopy(WriteVar<PathBuf>),
+///     }
+/// }
+///
+/// new_flow_node_with_config!(struct Node);
+///
+/// impl FlowNodeWithConfig for Node {
+///     type Request = Request;
+///     type Config = Config;
+///
+///     fn imports(ctx: &mut ImportCtx<'_>) { /* ... */ }
+///
+///     fn emit(
+///         config: Config,
+///         requests: Vec<Self::Request>,
+///         ctx: &mut NodeCtx<'_>,
+///     ) -> anyhow::Result<()> {
+///         let version = config.version
+///             .ok_or(anyhow::anyhow!("missing config: version"))?;
+///         // ...
+///         Ok(())
+///     }
+/// }
+/// ```
+pub trait FlowNodeWithConfig {
+    /// The request type (action requests only — no config variants).
+    type Request: Serialize + DeserializeOwned;
+
+    /// The config type generated by [`flowey_config!`](crate::flowey_config).
+    ///
+    /// Scalar fields are typically wrapped in `Option<T>`, and the node decides which
+    /// options are treated as required vs optional. Configs may also include
+    /// non-`Option` mergeable fields (for example, maps) that are combined according
+    /// to the [`ConfigMerge`] implementation.
+    type Config: ConfigMerge;
+
+    /// Declare node dependencies.
+    fn imports(ctx: &mut ImportCtx<'_>);
+
+    /// Process requests with the merged config.
+    fn emit(
+        config: Self::Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()>;
+}
+
+#[macro_export]
+macro_rules! new_flow_node_with_config {
+    (struct Node) => {
+        $crate::new_flow_node_base!(struct Node);
+
+        impl $crate::node::FlowNodeBase for Node
+        where
+            Node: $crate::node::FlowNodeWithConfig,
+        {
+            type Request = <Node as $crate::node::FlowNodeWithConfig>::Request;
+
+            fn imports(&mut self, dep: &mut $crate::node::ImportCtx<'_>) {
+                <Node as $crate::node::FlowNodeWithConfig>::imports(dep)
+            }
+
+            fn emit(
+                &mut self,
+                config_bytes: Vec<Box<[u8]>>,
+                requests: Vec<Self::Request>,
+                ctx: &mut $crate::node::NodeCtx<'_>,
+            ) -> anyhow::Result<()> {
+                use $crate::node::ConfigMerge;
+
+                type C = <Node as $crate::node::FlowNodeWithConfig>::Config;
+
+                let mut merged = <C as Default>::default();
+                for bytes in config_bytes {
+                    let partial: C = serde_json::from_slice(&bytes)?;
+                    merged.merge(partial)?;
+                }
+
+                <Node as $crate::node::FlowNodeWithConfig>::emit(merged, requests, ctx)
             }
 
             fn i_know_what_im_doing_with_this_manual_impl(&mut self) {}
@@ -2791,6 +3005,72 @@ pub trait IntoRequest {
     #[doc(hidden)]
     #[expect(nonstandard_style)]
     fn do_not_manually_impl_this_trait__use_the_flowey_request_macro_instead(&mut self);
+}
+
+/// A "glue" trait for routing config to the correct node, analogous to
+/// [`IntoRequest`].
+///
+/// This trait should be autogenerated via the `flowey_config!` macro - do not
+/// try to implement it manually!
+pub trait IntoConfig: Serialize {
+    type Node: FlowNodeBase;
+
+    /// By implementing this method manually, you're indicating that you know what you're
+    /// doing,
+    #[doc(hidden)]
+    #[expect(nonstandard_style)]
+    fn do_not_manually_impl_this_trait__use_the_flowey_config_macro_instead(&mut self);
+}
+
+/// Trait for merging config values. Implemented by the `flowey_config!`
+/// macro on the generated `Config` type.
+pub trait ConfigMerge: Serialize + DeserializeOwned + Default {
+    /// Merge another config into this one. Fields that are already set
+    /// must agree with the incoming values.
+    fn merge(&mut self, other: Self) -> anyhow::Result<()>;
+}
+
+/// Trait for merging a single config field. The `flowey_config!` macro calls
+/// `ConfigField::merge_field` on each field during config merging.
+///
+/// Implemented for:
+/// - `Option<T>`: first setter wins, subsequent must agree (`PartialEq`)
+/// - `BTreeMap<K, V>`: per-key merge, each key's value must agree
+pub trait ConfigField {
+    fn merge_field(&mut self, field_name: &str, other: Self) -> anyhow::Result<()>;
+}
+
+impl<T: PartialEq> ConfigField for Option<T> {
+    fn merge_field(&mut self, field_name: &str, other: Self) -> anyhow::Result<()> {
+        if let Some(new) = other {
+            match self {
+                None => *self = Some(new),
+                Some(old) if *old == new => {}
+                Some(_) => {
+                    anyhow::bail!("config field `{field_name}` mismatch");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<K: Ord + std::fmt::Debug, V: PartialEq> ConfigField for BTreeMap<K, V> {
+    fn merge_field(&mut self, field_name: &str, other: Self) -> anyhow::Result<()> {
+        for (k, v) in other {
+            use std::collections::btree_map::Entry;
+            match self.entry(k) {
+                Entry::Vacant(e) => {
+                    e.insert(v);
+                }
+                Entry::Occupied(e) if *e.get() == v => {}
+                Entry::Occupied(e) => {
+                    anyhow::bail!("config field `{field_name}` mismatch for key {:?}", e.key(),);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[doc(hidden)]
@@ -3023,4 +3303,111 @@ macro_rules! flowey_request {
             fn do_not_manually_impl_this_trait__use_the_flowey_request_macro_instead(&mut self) {}
         }
     };
+}
+
+/// Declare a config struct for a flowey node.
+///
+/// Fields should be `Option<T>` or `BTreeMap<K, V>`:
+///
+/// - `Option<T>` — callers set only the fields they care about. The first
+///   caller to set a field wins; subsequent callers must agree on the same
+///   value or merging will fail. The node decides which fields are required
+///   vs optional in its `emit()`.
+///
+/// - `BTreeMap<K, V>` — callers contribute entries independently. Each key
+///   may only be set once; if two callers set the same key, the values must
+///   agree. Useful for per-variant or per-target configuration maps.
+///
+/// Generates:
+/// - The `Config` struct with `Serialize`, `Deserialize`, `Default` derives
+/// - `ConfigMerge` impl with field-level equality merging
+/// - `IntoConfig` impl tying it to `Node`
+///
+/// # Example
+///
+/// ```rust,ignore
+/// flowey_config! {
+///     pub struct Config {
+///         pub version: Option<String>,
+///         pub auto_install: Option<bool>,
+///         pub target_flags: BTreeMap<String, String>,
+///     }
+/// }
+/// ```
+///
+/// Callers send config via:
+/// ```rust,ignore
+/// ctx.config(node::Config {
+///     version: Some("10.31.0".into()),
+///     ..Default::default()
+/// });
+/// ```
+#[macro_export]
+macro_rules! flowey_config {
+    (
+        $(#[$meta:meta])*
+        pub struct $Config:ident {
+            $(
+                $(#[$field_meta:meta])*
+                pub $field:ident : $ty:ty
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(
+            $crate::reexports::Serialize,
+            $crate::reexports::Deserialize,
+            Default,
+        )]
+        pub struct $Config {
+            $(
+                $(#[$field_meta])*
+                pub $field: $ty,
+            )*
+        }
+
+        impl $crate::node::ConfigMerge for $Config {
+            fn merge(&mut self, other: Self) -> anyhow::Result<()> {
+                $(
+                    $crate::node::ConfigField::merge_field(
+                        &mut self.$field,
+                        stringify!($field),
+                        other.$field,
+                    )?;
+                )*
+                Ok(())
+            }
+        }
+
+        impl $crate::node::IntoConfig for $Config {
+            type Node = Node;
+
+            fn do_not_manually_impl_this_trait__use_the_flowey_config_macro_instead(&mut self) {}
+        }
+    };
+}
+
+/// Construct a command to run via the flowey shell.
+///
+/// This is a wrapper around [`xshell::cmd!`] that returns a [`FloweyCmd`]
+/// instead of a raw [`xshell::Cmd`]. The [`FloweyCmd`] applies any
+/// [`CommandWrapperKind`] configured on the shell at execution time, making it
+/// possible to transparently wrap commands (e.g. in `nix-shell --pure`)
+/// without touching every callsite.
+///
+/// [`FloweyCmd`]: crate::shell::FloweyCmd
+/// [`CommandWrapperKind`]: crate::shell::CommandWrapperKind
+///
+/// # Example
+///
+/// ```ignore
+/// flowey::shell_cmd!(rt, "cargo build --release").run()?;
+/// ```
+#[macro_export]
+macro_rules! shell_cmd {
+    ($rt:expr, $cmd:literal) => {{
+        let flowey_sh = &$rt.sh;
+        #[expect(clippy::disallowed_macros)]
+        flowey_sh.wrap($crate::reexports::xshell::cmd!(flowey_sh.xshell(), $cmd))
+    }};
 }

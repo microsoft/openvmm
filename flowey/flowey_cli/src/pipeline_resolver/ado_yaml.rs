@@ -22,7 +22,7 @@ use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::FlowPlatformKind;
 use flowey_core::node::NodeHandle;
-use flowey_core::pipeline::internal::AdoPool;
+use flowey_core::pipeline::AdoPool;
 use flowey_core::pipeline::internal::InternalAdoResourcesRepository;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -77,6 +77,10 @@ pub fn ado_yaml(
         flow_backend: crate::cli::FlowBackendCli::Ado,
         var_db_backend_kind: crate::cli::exec_snippet::VarDbBackendKind::Json,
         job_reqs: BTreeMap::new(),
+        job_configs: BTreeMap::new(),
+        job_command_wrappers: BTreeMap::new(),
+        job_platforms: BTreeMap::new(),
+        job_archs: BTreeMap::new(),
     };
 
     let mut ado_jobs = Vec::new();
@@ -84,6 +88,7 @@ pub fn ado_yaml(
     for job_idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
@@ -91,6 +96,7 @@ pub fn ado_yaml(
             cond_param_idx,
             ref ado_pool,
             timeout_minutes,
+            command_wrapper: ref command_wrapper_kind,
             gh_override_if: _,
             gh_global_env: _,
             gh_pool: _,
@@ -104,12 +110,17 @@ pub fn ado_yaml(
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
-        let (steps, req_db) = resolve_flow_as_ado_yaml_steps(
+        let super::common_yaml::ResolvedFlowSteps {
+            steps,
+            request_db: req_db,
+            config_db: cfg_db,
+        } = resolve_flow_as_ado_yaml_steps(
             root_nodes
                 .clone()
                 .into_iter()
                 .map(|(node, requests)| (node, (true, requests)))
                 .collect(),
+            root_configs.clone(),
             patches.clone(),
             external_read_vars.clone(),
             platform,
@@ -122,6 +133,23 @@ pub fn ado_yaml(
             let existing = pipeline_static_db.job_reqs.insert(job_idx.index(), req_db);
             assert!(existing.is_none())
         }
+
+        if !cfg_db.is_empty() {
+            pipeline_static_db
+                .job_configs
+                .insert(job_idx.index(), cfg_db);
+        }
+
+        if let Some(wrapper_kind) = command_wrapper_kind {
+            pipeline_static_db
+                .job_command_wrappers
+                .insert(job_idx.index(), wrapper_kind.clone());
+        }
+
+        pipeline_static_db
+            .job_platforms
+            .insert(job_idx.index(), platform);
+        pipeline_static_db.job_archs.insert(job_idx.index(), arch);
 
         let mut ado_steps = Vec::new();
 
@@ -144,10 +172,14 @@ pub fn ado_yaml(
                 )
                 .replace(
                     "{{FLOWEY_TARGET}}",
-                    match platform {
-                        FlowPlatform::Windows => "x86_64-pc-windows-msvc",
-                        FlowPlatform::Linux(_) => "x86_64-unknown-linux-gnu",
-                        platform => anyhow::bail!("unsupported ADO platform {platform:?}"),
+                    match (platform, arch) {
+                        (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
+                        (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
+                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
+                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
+                        (platform, arch) => anyhow::bail!(
+                            "unsupported ADO platform/arch combo {platform:?}/{arch:?}"
+                        ),
                     },
                 )
                 .replace(
@@ -555,6 +587,19 @@ EOF
         })
     }
 
+    fn resolve_trigger_paths(
+        paths: Vec<String>,
+        exclude_paths: Vec<String>,
+    ) -> anyhow::Result<Option<schema_ado_yaml::TriggerPaths>> {
+        match (paths.is_empty(), exclude_paths.is_empty()) {
+            (true, true) => Ok(None),
+            (true, false) | (false, _) => Ok(Some(schema_ado_yaml::TriggerPaths {
+                include: paths,
+                exclude: (!exclude_paths.is_empty()).then_some(exclude_paths),
+            })),
+        }
+    }
+
     let ado_pipeline = schema_ado_yaml::Pipeline {
         name: ado_name,
         trigger: Some(match ado_ci_triggers {
@@ -566,6 +611,8 @@ EOF
                     tags,
                     exclude_tags,
                     batch,
+                    paths,
+                    exclude_paths,
                 } = t;
 
                 if branches.is_empty() && tags.is_empty() {
@@ -606,6 +653,7 @@ EOF
                             },
                         })
                     },
+                    paths: resolve_trigger_paths(paths, exclude_paths)?,
                 }
             }
         }),
@@ -617,6 +665,8 @@ EOF
                     exclude_branches,
                     run_on_draft,
                     auto_cancel,
+                    paths,
+                    exclude_paths,
                 } = t;
 
                 schema_ado_yaml::PrTrigger::Some {
@@ -630,6 +680,7 @@ EOF
                             Some(exclude_branches)
                         },
                     },
+                    paths: resolve_trigger_paths(paths, exclude_paths)?,
                 }
             }
         }),
@@ -799,30 +850,33 @@ EOF
 // pub(crate) so that internal debug CLI tooling can use it
 pub(crate) fn resolve_flow_as_ado_yaml_steps(
     seed_nodes: BTreeMap<NodeHandle, (bool, Vec<Box<[u8]>>)>,
+    seed_configs: BTreeMap<NodeHandle, Vec<Box<[u8]>>>,
     resolved_patches: flowey_core::patch::ResolvedPatches,
     external_read_vars: BTreeSet<String>,
     platform: FlowPlatform,
     arch: FlowArch,
     job_idx: usize,
-) -> anyhow::Result<(
-    Vec<serde_yaml::Value>,
-    BTreeMap<String, Vec<crate::cli::exec_snippet::SerializedRequest>>,
-)> {
+) -> anyhow::Result<super::common_yaml::ResolvedFlowSteps> {
     let mut output_steps = Vec::new();
 
-    let (mut output_graph, request_db, err_unreachable_nodes) =
-        crate::flow_resolver::stage1_dag::stage1_dag(
-            FlowBackend::Ado,
-            platform,
-            arch,
-            resolved_patches,
-            seed_nodes,
-            external_read_vars,
-            // TODO: support ADO agents with persistent storage
-            None,
-        )?;
+    let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+        mut output_graph,
+        request_db,
+        config_db,
+        found_unreachable_nodes,
+    } = crate::flow_resolver::stage1_dag::stage1_dag(
+        FlowBackend::Ado,
+        platform,
+        arch,
+        resolved_patches,
+        seed_nodes,
+        seed_configs,
+        external_read_vars,
+        // TODO: support ADO agents with persistent storage
+        None,
+    )?;
 
-    if err_unreachable_nodes.is_some() {
+    if found_unreachable_nodes {
         anyhow::bail!("detected unreachable nodes")
     }
 
@@ -981,5 +1035,22 @@ EOF
         })
         .collect();
 
-    Ok((output_steps, request_db))
+    let config_db = config_db
+        .into_iter()
+        .map(|(node_handle, configs)| {
+            (
+                node_handle.modpath().to_owned(),
+                configs
+                    .into_iter()
+                    .map(crate::cli::exec_snippet::SerializedRequest)
+                    .collect(),
+            )
+        })
+        .collect();
+
+    Ok(super::common_yaml::ResolvedFlowSteps {
+        steps: output_steps,
+        request_db,
+        config_db,
+    })
 }

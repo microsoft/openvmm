@@ -37,12 +37,13 @@ use pci_core::capabilities::msix::MsixEmulator;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
-use pci_core::msi::RegisterMsi;
+use pci_core::msi::MsiTarget;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
 use pci_core::spec::hwid::Subclass;
 use std::sync::Arc;
+use tdisp::TdispHostDeviceTarget;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -64,6 +65,9 @@ pub struct NvmeFaultController {
     pci_fault_config: PciFaultConfig,
     #[inspect(skip)]
     fault_active: mesh::Cell<bool>,
+    /// The NVMe fault controller is repurposed for use in TDISP tests.
+    #[inspect(skip)]
+    tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
 }
 
 #[derive(Inspect)]
@@ -116,12 +120,13 @@ impl NvmeFaultController {
     pub fn new(
         driver_source: &VmTaskDriverSource,
         guest_memory: GuestMemory,
-        register_msi: &mut dyn RegisterMsi,
+        msi_target: &MsiTarget,
         register_mmio: &mut dyn RegisterMmioIntercept,
         caps: NvmeFaultControllerCaps,
         mut fault_configuration: FaultConfiguration,
+        tdisp_interface: Option<Box<dyn TdispHostDeviceTarget>>,
     ) -> Self {
-        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, register_msi);
+        let (msix, msix_cap) = MsixEmulator::new(4, caps.msix_count, msi_target);
         let bars = DeviceBars::new()
             .bar0(
                 BAR0_LEN,
@@ -178,6 +183,7 @@ impl NvmeFaultController {
             qe_sizes,
             pci_fault_config,
             fault_active,
+            tdisp_interface,
         }
     }
 
@@ -187,17 +193,23 @@ impl NvmeFaultController {
     }
 
     /// Reads from the virtual BAR 0.
-    pub fn read_bar0(&mut self, addr: u16, data: &mut [u8]) -> IoResult {
+    pub fn read_bar0(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
-        if addr & (data.len() - 1) as u16 != 0 {
+        if addr & (data.len() as u64 - 1) != 0 {
             return IoResult::Err(IoError::UnalignedAccess);
         }
 
         // Check for 64-bit registers.
         let d: Option<u64> = match spec::Register(addr & !7) {
-            spec::Register::CAP => Some(CAP.into()),
+            spec::Register::CAP => {
+                if let Some(mqes) = self.pci_fault_config.max_queue_size {
+                    Some(CAP.with_mqes_z(mqes - 1).into())
+                } else {
+                    Some(CAP.into())
+                }
+            }
             spec::Register::ASQ => Some(self.registers.asq),
             spec::Register::ACQ => Some(self.registers.acq),
             spec::Register::BPMBL => Some(0),
@@ -239,7 +251,7 @@ impl NvmeFaultController {
     }
 
     /// Writes to the virtual BAR 0.
-    pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
+    pub fn write_bar0(&mut self, addr: u64, data: &[u8]) -> IoResult {
         if addr >= 0x1000 {
             // Doorbell write.
             let base = addr - 0x1000;
@@ -247,6 +259,9 @@ impl NvmeFaultController {
             if (db_id << DOORBELL_STRIDE_BITS) != base {
                 return IoResult::Err(InvalidRegister);
             }
+            let Ok(db_id) = u16::try_from(db_id) else {
+                return IoResult::Err(InvalidRegister);
+            };
             let Ok(data) = data.try_into() else {
                 return IoResult::Err(IoError::InvalidAccessSize);
             };
@@ -258,7 +273,7 @@ impl NvmeFaultController {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
-        if addr & (data.len() - 1) as u16 != 0 {
+        if addr & (data.len() as u64 - 1) != 0 {
             return IoResult::Err(IoError::UnalignedAccess);
         }
 
@@ -461,6 +476,7 @@ impl ChangeDeviceState for NvmeFaultController {
             workers,
             pci_fault_config: _,
             fault_active: _,
+            tdisp_interface: _,
         } = self;
         workers.reset().await;
         cfg_space.reset();
@@ -476,6 +492,19 @@ impl ChipsetDevice for NvmeFaultController {
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
+    }
+
+    /// The NVMe fault controller is repurposed for use in TDISP tests.
+    fn supports_tdisp(&mut self) -> Option<&mut dyn TdispHostDeviceTarget> {
+        tracing::debug!(
+            supported = self.tdisp_interface.is_some(),
+            "fault controller TDISP support in ChipsetDevice"
+        );
+
+        match &mut self.tdisp_interface {
+            Some(tdisp) => Some(tdisp.as_mut()),
+            None => None,
+        }
     }
 }
 

@@ -47,12 +47,7 @@ impl AsyncResolveResource<VirtioDeviceHandle, VirtioNetHandle> for VirtioNetReso
             )
             .await?;
 
-        let device = builder.build(
-            input.driver_source,
-            input.guest_memory.clone(),
-            endpoint.0,
-            resource.mac_address,
-        );
+        let device = builder.build(input.driver_source, endpoint.0, resource.mac_address);
 
         Ok(device.into())
     }

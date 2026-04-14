@@ -80,6 +80,9 @@ pub enum Error {
     #[cfg(guest_arch = "x86_64")]
     #[error("acpi tables require at least two mmio ranges")]
     UnsupportedMmio,
+    #[cfg(guest_arch = "aarch64")]
+    #[error("expected GICv3 topology")]
+    ExpectedGicV3,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -268,12 +271,14 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         mem_layout,
         cache_topology: None,
         pcie_host_bridges: &vec![],
-        with_ioapic: true, // underhill always runs with ioapic
-        with_pic: false,
-        with_pit: false,
-        with_psp: platform_config.general.psp_enabled,
-        pm_base: crate::worker::PM_BASE,
-        acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+            with_ioapic: true, // openhcl always runs with ioapic
+            with_pic: false,
+            with_pit: false,
+            with_psp: platform_config.general.psp_enabled,
+            pm_base: crate::worker::PM_BASE,
+            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+        },
     };
 
     if mem_layout.mmio().len() < 2 {
@@ -306,7 +311,7 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
 
         dsdt.add_mmio_module(mem_layout.mmio()[0], mem_layout.mmio()[1]);
         // TODO: change this once PCI is running in underhill
-        dsdt.add_vmbus(false);
+        dsdt.add_vmbus(false, None);
         dsdt.add_rtc();
     });
     let acpi_len = acpi_tables.tables.len() + 0x1000;
@@ -462,12 +467,21 @@ pub fn write_uefi_config(
             mem_layout,
             cache_topology: None,
             pcie_host_bridges: &vec![],
-            with_ioapic: cfg!(guest_arch = "x86_64"), // OpenHCL always runs with ioapic on x64
-            with_pic: false,                          // uefi never runs with pic or pit
-            with_pit: false,
-            with_psp: platform_config.general.psp_enabled,
-            pm_base: crate::worker::PM_BASE,
-            acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            #[cfg(guest_arch = "x86_64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
+                with_ioapic: true,
+                with_pic: false,
+                with_pit: false,
+                with_psp: platform_config.general.psp_enabled,
+                pm_base: crate::worker::PM_BASE,
+                acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
+            },
+            #[cfg(guest_arch = "aarch64")]
+            arch: vmm_core::acpi_builder::AcpiArchConfig::Aarch64 {
+                // Not used for MADT/SRAT generation; only matters for FADT.
+                hypervisor_vendor_identity: 0,
+                virt_timer_ppi: processor_topology.virt_timer_ppi(),
+            },
         };
 
         // Build the ACPI tables as specified.
@@ -674,9 +688,18 @@ pub fn write_uefi_config(
 
     #[cfg(guest_arch = "aarch64")]
     {
+        use vm_topology::processor::arch::GicVersion;
+
+        let GicVersion::V3 {
+            redistributors_base,
+        } = processor_topology.gic_version()
+        else {
+            return Err(Error::ExpectedGicV3);
+        };
+
         cfg.add(&config::Gic {
             gic_distributor_base: processor_topology.gic_distributor_base(),
-            gic_redistributors_base: processor_topology.gic_redistributors_base(),
+            gic_redistributors_base: redistributors_base,
         });
     }
 

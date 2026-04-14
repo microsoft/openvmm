@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::TapEndpoint;
+use crate::tap;
 use net_backend::resolve::ResolveEndpointParams;
 use net_backend::resolve::ResolvedEndpoint;
 use net_backend_resources::tap::TapHandle;
@@ -18,14 +19,15 @@ declare_static_resolver! {
 
 impl ResolveResource<NetEndpointHandleKind, TapHandle> for TapResolver {
     type Output = ResolvedEndpoint;
-    type Error = super::Error;
+    type Error = tap::Error;
 
     fn resolve(
         &self,
         resource: TapHandle,
         _input: ResolveEndpointParams,
     ) -> Result<Self::Output, Self::Error> {
-        let endpoint = TapEndpoint::new(&resource.name)?;
-        Ok(endpoint.into())
+        let tap = tap::Tap::new(resource.fd)?;
+
+        Ok(TapEndpoint::new(tap)?.into())
     }
 }

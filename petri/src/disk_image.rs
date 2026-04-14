@@ -79,6 +79,11 @@ impl AgentImage {
         self.pipette.is_some()
     }
 
+    /// Check if the image has extra files beyond pipette and cloud-init.
+    pub fn has_extras(&self) -> bool {
+        !self.extras.is_empty()
+    }
+
     /// Adds an extra file to the disk image.
     pub fn add_file(&mut self, name: &str, artifact: ResolvedArtifact) {
         self.extras.push((name.to_string(), artifact));

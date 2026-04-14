@@ -34,15 +34,15 @@ impl SimpleFlowNode for Node {
             let repo_path = repo_path.claim(ctx);
 
             move |rt| {
-                let sh = xshell::Shell::new()?;
                 let repo_path = rt.read(repo_path);
 
-                sh.change_dir(repo_path);
+                rt.sh.change_dir(repo_path);
 
-                xshell::cmd!(sh, "git fetch --unshallow").run()?;
+                flowey::shell_cmd!(rt, "git fetch --unshallow").run()?;
 
-                xshell::cmd!(sh, "git fetch origin {base_branch}").run()?;
-                let commit = xshell::cmd!(sh, "git merge-base HEAD origin/{base_branch}").read()?;
+                flowey::shell_cmd!(rt, "git fetch origin {base_branch}").run()?;
+                let commit =
+                    flowey::shell_cmd!(rt, "git merge-base HEAD origin/{base_branch}").read()?;
                 rt.write(merge_commit, &commit);
 
                 Ok(())

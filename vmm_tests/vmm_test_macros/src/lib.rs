@@ -27,6 +27,15 @@ struct Config {
     arch: MachineArch,
     span: Span,
     extra_deps: Vec<Path>,
+    unstable: bool,
+}
+
+struct ResolvedConfig {
+    vmm: Vmm,
+    firmware: Firmware,
+    arch: MachineArch,
+    extra_deps: Vec<Path>,
+    unstable: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,6 +85,18 @@ struct Args {
     configs: Vec<Config>,
 }
 
+struct ArgsWithOverrides {
+    args: Args,
+    vmm: Option<Vmm>,
+    unstable: bool,
+    with_vtl0_pipette: bool,
+}
+
+struct ResolvedArgs {
+    configs: Vec<ResolvedConfig>,
+    with_vtl0_pipette: bool,
+}
+
 fn arch_to_str(arch: MachineArch) -> &'static str {
     match arch {
         MachineArch::X86_64 => "x64",
@@ -90,11 +111,11 @@ fn arch_to_tokens(arch: MachineArch) -> TokenStream {
     }
 }
 
-impl Config {
-    fn name_prefix(&self, resolved_vmm: Vmm) -> String {
+impl ResolvedConfig {
+    fn name_prefix(&self) -> String {
         let arch_prefix = arch_to_str(self.arch);
 
-        let vmm_prefix = match resolved_vmm {
+        let vmm_prefix = match self.vmm {
             Vmm::OpenVmm => "openvmm",
             Vmm::HyperV => "hyperv",
         };
@@ -222,6 +243,97 @@ impl ToTokens for FirmwareAndArch {
     }
 }
 
+impl Parse for ArgsWithOverrides {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut unstable = None;
+        let mut with_vtl0_pipette = None;
+        let mut vmm = None;
+
+        let word = input.parse::<Ident>()?;
+        let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
+        for subword in word.to_string().split('_') {
+            match subword {
+                "unstable" => {
+                    if unstable.is_some() {
+                        return conflict_err();
+                    }
+                    unstable = Some(true);
+                }
+                "noagent" => {
+                    if with_vtl0_pipette.is_some() {
+                        return conflict_err();
+                    }
+                    with_vtl0_pipette = Some(false);
+                }
+                "hyperv" => {
+                    if vmm.is_some() {
+                        return conflict_err();
+                    }
+                    vmm = Some(Vmm::HyperV);
+                }
+                "openvmm" => {
+                    if vmm.is_some() {
+                        return conflict_err();
+                    }
+                    vmm = Some(Vmm::OpenVmm);
+                }
+                _ => return Err(Error::new(word.span(), "unrecognized vmm test override")),
+            }
+        }
+
+        let unstable = unstable.unwrap_or(false);
+        let with_vtl0_pipette = with_vtl0_pipette.unwrap_or(true);
+
+        let parens;
+        syn::parenthesized!(parens in input);
+        let args = parens.parse::<Args>()?;
+
+        Ok(ArgsWithOverrides {
+            args,
+            vmm,
+            with_vtl0_pipette,
+            unstable,
+        })
+    }
+}
+
+impl ArgsWithOverrides {
+    fn resolve(self) -> syn::Result<ResolvedArgs> {
+        let ArgsWithOverrides {
+            args: Args { configs },
+            vmm,
+            unstable,
+            with_vtl0_pipette,
+        } = self;
+
+        let mut resolved_configs = Vec::new();
+
+        for config in configs.into_iter() {
+            resolved_configs.push(ResolvedConfig {
+                vmm: match (vmm, config.vmm) {
+                    (Some(Vmm::HyperV), Some(Vmm::HyperV))
+                    | (Some(Vmm::HyperV), None)
+                    | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
+                    (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
+                    | (Some(Vmm::OpenVmm), None)
+                    | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
+                    (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
+                    _ => return Err(Error::new(config.span, "vmm mismatch")),
+                },
+                firmware: config.firmware,
+                arch: config.arch,
+                extra_deps: config.extra_deps,
+                unstable: config.unstable || unstable,
+            });
+        }
+
+        Ok(ResolvedArgs {
+            configs: resolved_configs,
+            with_vtl0_pipette,
+        })
+    }
+}
+
 impl Parse for Args {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         if input.is_empty() {
@@ -257,12 +369,18 @@ impl Parse for Config {
         let word = input.parse::<Ident>()?;
         let word_string = word.to_string();
 
-        let (vmm, remainder) = if let Some(remainder) = word_string.strip_prefix("hyperv_") {
+        let (unstable, remainder) = if let Some(remainder) = word_string.strip_prefix("unstable_") {
+            (true, remainder)
+        } else {
+            (false, word_string.as_str())
+        };
+
+        let (vmm, remainder) = if let Some(remainder) = remainder.strip_prefix("hyperv_") {
             (Some(Vmm::HyperV), remainder)
-        } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
+        } else if let Some(remainder) = remainder.strip_prefix("openvmm_") {
             (Some(Vmm::OpenVmm), remainder)
         } else {
-            (None, word_string.as_str())
+            (None, remainder)
         };
 
         let (arch, firmware) = match remainder {
@@ -310,6 +428,7 @@ impl Parse for Config {
             arch,
             span: input.span(),
             extra_deps,
+            unstable,
         })
     }
 }
@@ -545,6 +664,9 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
+/// All options can be prefixed with "unstable_" to denote that this should
+/// not block PRs if it fails.
+///
 /// Valid configuration options are:
 /// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
 /// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
@@ -601,71 +723,79 @@ pub fn vmm_test(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let args = parse_macro_input!(attr as Args);
+    let args = ArgsWithOverrides {
+        args: parse_macro_input!(attr as Args),
+        vmm: None,
+        unstable: false,
+        with_vtl0_pipette: true,
+    };
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, None, true)
+    make_vmm_test(args, item)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
-/// Same options as `vmm_test`, but without using pipette in VTL0.
+/// Same options as `vmm_test`, but specify the following attributes to apply
+/// to all tests, separated by underscores:
+/// - unstable: all variants of this test are unstable
+/// - noagent: don't use pipette in vtl0 for this test
+/// - hyperv: use hyperv as the vmm
+/// - openvmm: use openvmm as the vmm
+///
+/// example: #[vmm_test_with(unstable_noagent_openvmm(linux_direct_x64, ...))]
 #[proc_macro_attribute]
-pub fn vmm_test_no_agent(
+pub fn vmm_test_with(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let args = parse_macro_input!(attr as Args);
+    let args = parse_macro_input!(attr as ArgsWithOverrides);
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, None, false)
+    make_vmm_test(args, item)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
 /// Same options as `vmm_test`, but only for OpenVMM tests
+// TODO: remove this and replace occurrences with `vmm_test_with`
 #[proc_macro_attribute]
 pub fn openvmm_test(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let args = parse_macro_input!(attr as Args);
+    let args = ArgsWithOverrides {
+        args: parse_macro_input!(attr as Args),
+        vmm: Some(Vmm::OpenVmm),
+        unstable: false,
+        with_vtl0_pipette: true,
+    };
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, Some(Vmm::OpenVmm), true)
+    make_vmm_test(args, item)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
 /// Same options as `vmm_test`, but only for OpenVMM tests and without using pipette in VTL0.
+// TODO: remove this and replace occurrences with `vmm_test_with`
 #[proc_macro_attribute]
 pub fn openvmm_test_no_agent(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
-    let args = parse_macro_input!(attr as Args);
+    let args = ArgsWithOverrides {
+        args: parse_macro_input!(attr as Args),
+        vmm: Some(Vmm::OpenVmm),
+        unstable: false,
+        with_vtl0_pipette: false,
+    };
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, Some(Vmm::OpenVmm), false)
+    make_vmm_test(args, item)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
-/// Same options as `vmm_test`, but only for Hyper-V tests
-#[proc_macro_attribute]
-pub fn hyperv_test(
-    attr: proc_macro::TokenStream,
-    item: proc_macro::TokenStream,
-) -> proc_macro::TokenStream {
-    let args = parse_macro_input!(attr as Args);
-    let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item, Some(Vmm::HyperV), true)
-        .unwrap_or_else(|err| err.to_compile_error())
-        .into()
-}
+fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStream> {
+    let args = args.resolve()?;
 
-fn make_vmm_test(
-    args: Args,
-    item: ItemFn,
-    specific_vmm: Option<Vmm>,
-    with_vtl0_pipette: bool,
-) -> syn::Result<TokenStream> {
     let original_args = match item.sig.inputs.len() {
         1 => quote! {config},
         2 => quote! {config, extra_deps},
@@ -678,26 +808,16 @@ fn make_vmm_test(
         }
     };
 
+    let with_vtl0_pipette = args.with_vtl0_pipette.to_token_stream();
+
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
     // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
-        // Resolve the VMM backend early by combining specific_vmm and config.vmm
-        let resolved_vmm = match (specific_vmm, config.vmm) {
-            (Some(Vmm::HyperV), Some(Vmm::HyperV))
-            | (Some(Vmm::HyperV), None)
-            | (None, Some(Vmm::HyperV)) => Vmm::HyperV,
-            (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
-            | (Some(Vmm::OpenVmm), None)
-            | (None, Some(Vmm::OpenVmm)) => Vmm::OpenVmm,
-            (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
-            _ => return Err(Error::new(config.span, "vmm mismatch")),
-        };
-
-        let name = format!("{}_{original_name}", config.name_prefix(resolved_vmm));
+        let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, &name, resolved_vmm);
+        let requirements = build_requirements(&config.firmware, &name, config.vmm);
         let requirements = if let Some(req) = requirements {
             quote! { Some(#req) }
         } else {
@@ -713,7 +833,7 @@ fn make_vmm_test(
         };
         let arch = arch_to_tokens(config.arch);
 
-        let (cfg_conditions, artifacts, petri_vm_config) = match resolved_vmm {
+        let (cfg_conditions, artifacts, petri_vm_config) = match config.vmm {
             Vmm::HyperV => (
                 quote!(#[cfg(windows)]),
                 quote!(::petri::PetriVmArtifacts::<::petri::hyperv::HyperVPetriBackend>),
@@ -727,6 +847,7 @@ fn make_vmm_test(
         };
 
         let petri_vm_config = quote!(#petri_vm_config::new(params, artifacts, &driver)?);
+        let unstable = config.unstable.to_token_stream();
 
         let test = quote! {
             #cfg_conditions
@@ -745,7 +866,8 @@ fn make_vmm_test(
                         #original_name(#original_args).await
                     })
                 },
-                #requirements
+                #requirements,
+                #unstable,
             ).into(),
         };
 

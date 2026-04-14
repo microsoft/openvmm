@@ -18,7 +18,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use pci_core::msi::MsiInterruptTarget;
+use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::sync::Arc;
 #[cfg(guest_arch = "aarch64")]
@@ -31,7 +31,6 @@ use virt::PartitionMemoryMap;
 use virt::PartitionMemoryMapper;
 use virt::Processor;
 use virt::StopVp;
-use virt::Synic;
 use virt::VpHaltReason;
 #[cfg(guest_arch = "x86_64")]
 use virt::X86Partition as ArchPartition;
@@ -56,7 +55,7 @@ use vmm_core::partition_unit::VmPartition;
 use vmm_core::partition_unit::VpRunner;
 
 /// A base partition, with methods needed at rutnime along with methods to initialize the vm.
-pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
+pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets a line set target to trigger local APIC LINTs.
     ///
     /// The line number is the VP index times 2, plus the LINT number (0 or 1).
@@ -90,8 +89,8 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
         minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>>;
 
-    /// Gets the [`MsiInterruptTarget`] interface for a particular VTL.
-    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>>;
+    /// Gets the [`SignalMsi`] interface for a particular VTL.
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
 
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
@@ -104,6 +103,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
 
     /// Returns the reference time source.
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
+
+    /// Returns the partition's synic port access implementation.
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -166,7 +168,7 @@ impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {
 
 impl<T> HvlitePartition for T
 where
-    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + Synic,
+    T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper,
 {
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
@@ -207,8 +209,8 @@ where
         self.doorbell_registration(minimum_vtl)
     }
 
-    fn into_msi_target(self: Arc<Self>, minimum_vtl: Vtl) -> Option<Arc<dyn MsiInterruptTarget>> {
-        self.msi_interrupt_target(minimum_vtl)
+    fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
+        self.as_signal_msi(minimum_vtl)
     }
 
     fn supports_virtual_devices(&self) -> bool {
@@ -229,6 +231,10 @@ where
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
         self.reference_time_source()
+    }
+
+    fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
+        self.synic()
     }
 
     #[cfg(all(windows, feature = "virt_whp"))]
@@ -278,16 +284,16 @@ pub trait VpciDevice {
     /// table entries.
     fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper;
 
-    /// Gets the [`MsiInterruptTarget`] interface to signal interrupts.
-    fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget>;
+    /// Gets the [`SignalMsi`] interface to signal interrupts.
+    fn target(self: Arc<Self>) -> Arc<dyn SignalMsi>;
 }
 
-impl<T: 'static + MapVpciInterrupt + MsiInterruptTarget> VpciDevice for T {
+impl<T: 'static + MapVpciInterrupt + SignalMsi> VpciDevice for T {
     fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper {
         VpciInterruptMapper::new(self)
     }
 
-    fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget> {
+    fn target(self: Arc<Self>) -> Arc<dyn SignalMsi> {
         self
     }
 }
@@ -324,6 +330,14 @@ impl<T: Processor> Processor for WrappedVp<'_, T> {
 
     fn flush_async_requests(&mut self) {
         self.0.flush_async_requests()
+    }
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.reset()
+    }
+
+    fn scrub(&mut self, vtl: Vtl) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        self.0.scrub(vtl)
     }
 
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
@@ -371,7 +385,7 @@ pub trait HvliteVp {
     async fn run(
         &mut self,
         runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     );
 }
 
@@ -380,7 +394,7 @@ impl<T: Processor> HvliteVp for T {
     async fn run(
         &mut self,
         mut runner: VpRunner,
-        chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
+        chipset: &vmm_core::vmotherboard_adapter::AdaptedChipset,
     ) {
         while let Err(RunCancelled { .. }) = runner.run(&mut WrappedVp(self), chipset).await {}
     }

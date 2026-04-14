@@ -50,16 +50,15 @@ impl SimpleFlowNode for Node {
             let run_id = run_id.claim(ctx);
             let path = path.claim(ctx);
             move |rt| {
-                let sh = xshell::Shell::new()?;
                 let gh_cli = rt.read(gh_cli);
                 let run_id = rt.read(run_id);
 
                 let path_end = format!("{repo_owner}/{repo_name}/{run_id}");
                 let out_dir = std::env::current_dir()?.absolute()?.join(path_end);
                 fs_err::create_dir_all(&out_dir)?;
-                sh.change_dir(&out_dir);
+                rt.sh.change_dir(&out_dir);
 
-                xshell::cmd!(sh, "{gh_cli} run download {run_id} -R {repo_owner}/{repo_name} --pattern {file_name}").run()?;
+                flowey::shell_cmd!(rt, "{gh_cli} run download {run_id} -R {repo_owner}/{repo_name} --pattern {file_name}").run()?;
 
                 if !out_dir.join(file_name).exists() {
                     anyhow::bail!("Failed to download artifact");

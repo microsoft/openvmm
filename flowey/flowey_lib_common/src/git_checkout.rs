@@ -75,6 +75,15 @@ impl ClaimVar for RepoSource {
     }
 }
 
+flowey_config! {
+    /// Config for the git_checkout node.
+    pub struct Config {
+        /// When running locally: whether or not all repos should be cloned
+        /// locally ahead of time, vs. re-cloning them.
+        pub require_local_clones: Option<bool>,
+    }
+}
+
 flowey_request! {
     pub enum Request {
         /// Checkout a repo, returning a path to the repo.
@@ -126,13 +135,10 @@ flowey_request! {
             depth: Option<usize>,
             pre_run_deps: Vec<ReadVar<SideEffect>>,
         },
-        /// When running locally: whether or not all repos should be cloned
-        /// locally ahead of time, vs. re-cloning them.
-        LocalOnlyRequireExistingClones(bool),
     }
 }
 
-new_flow_node!(struct Node);
+new_flow_node_with_config!(struct Node);
 
 // TODO: this entire module should be proc macro generated...
 pub mod process_reqs {
@@ -159,7 +165,7 @@ pub mod process_reqs {
 
     impl ResolvedRequestsAdo {
         pub fn from_reqs(requests: Vec<Request>) -> anyhow::Result<Self> {
-            let ResolvedRequests::Ado(v) = process_reqs(requests, false)? else {
+            let ResolvedRequests::Ado(v) = process_reqs(requests, None)? else {
                 panic!()
             };
             Ok(v)
@@ -173,8 +179,11 @@ pub mod process_reqs {
     }
 
     impl ResolvedRequestsLocal {
-        pub fn from_reqs(requests: Vec<Request>) -> anyhow::Result<Self> {
-            let ResolvedRequests::Local(v) = process_reqs(requests, true)? else {
+        pub fn from_reqs(
+            requests: Vec<Request>,
+            require_local_clones: Option<bool>,
+        ) -> anyhow::Result<Self> {
+            let ResolvedRequests::Local(v) = process_reqs(requests, require_local_clones)? else {
                 panic!()
             };
             Ok(v)
@@ -186,10 +195,12 @@ pub mod process_reqs {
         Local(ResolvedRequestsLocal),
     }
 
-    fn process_reqs(requests: Vec<Request>, is_local: bool) -> anyhow::Result<ResolvedRequests> {
+    fn process_reqs(
+        requests: Vec<Request>,
+        require_local_clones: Option<bool>,
+    ) -> anyhow::Result<ResolvedRequests> {
         let mut checkout_repo = Vec::new();
         let mut register_repo = Vec::new();
-        let mut require_local_clones = None;
 
         for req in requests {
             match req {
@@ -215,29 +226,14 @@ pub mod process_reqs {
                     depth,
                     pre_run_deps,
                 }),
-                Request::LocalOnlyRequireExistingClones(v) => same_across_all_reqs(
-                    "LocalOnlyRequireExistingClones",
-                    &mut require_local_clones,
-                    v,
-                )?,
             }
         }
 
-        if !is_local {
-            if require_local_clones.is_some() {
-                anyhow::bail!(
-                    "can only set `LocalOnlyRequireExistingClones` when using the Local backend"
-                )
-            }
-        }
-
-        Ok(if is_local {
+        Ok(if let Some(require_local_clones) = require_local_clones {
             ResolvedRequests::Local(ResolvedRequestsLocal {
                 checkout_repo,
                 register_repo,
-                require_local_clones: require_local_clones.ok_or(anyhow::anyhow!(
-                    "Missing required request: LocalOnlyRequireExistingClones",
-                ))?,
+                require_local_clones,
             })
         } else {
             ResolvedRequests::Ado(ResolvedRequestsAdo {
@@ -248,18 +244,42 @@ pub mod process_reqs {
     }
 }
 
-impl FlowNode for Node {
+impl FlowNodeWithConfig for Node {
     type Request = Request;
+    type Config = Config;
 
     fn imports(dep: &mut ImportCtx<'_>) {
         dep.import::<crate::install_git::Node>();
     }
 
-    fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit(
+        config: Config,
+        requests: Vec<Self::Request>,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         match ctx.backend() {
-            FlowBackend::Local => Self::emit_local(requests, ctx),
-            FlowBackend::Ado => Self::emit_ado(requests, ctx),
-            FlowBackend::Github => Self::emit_gh(requests, ctx),
+            FlowBackend::Local => {
+                let require_local_clones = config
+                    .require_local_clones
+                    .ok_or(anyhow::anyhow!("missing config: require_local_clones"))?;
+                Self::emit_local(requests, require_local_clones, ctx)
+            }
+            FlowBackend::Ado => {
+                if config.require_local_clones.is_some() {
+                    anyhow::bail!(
+                        "can only set `require_local_clones` when using the Local backend"
+                    );
+                }
+                Self::emit_ado(requests, ctx)
+            }
+            FlowBackend::Github => {
+                if config.require_local_clones.is_some() {
+                    anyhow::bail!(
+                        "can only set `require_local_clones` when using the Local backend"
+                    );
+                }
+                Self::emit_gh(requests, ctx)
+            }
         }
     }
 }
@@ -504,7 +524,7 @@ impl Node {
                 RepoSource::GithubSelf | RepoSource::GithubRepo { .. }
             ) {
                 let mut step = ctx
-                    .emit_gh_step(format!("checkout repo {repo_id}"), "actions/checkout@v4")
+                    .emit_gh_step(format!("checkout repo {repo_id}"), "actions/checkout@v6")
                     .condition(active.clone())
                     .with("path", format!("repo{idx}"))
                     .with("fetch-depth", depth.unwrap_or(0).to_string())
@@ -577,12 +597,16 @@ impl Node {
         Ok(())
     }
 
-    fn emit_local(requests: Vec<Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+    fn emit_local(
+        requests: Vec<Request>,
+        require_local_clones: bool,
+        ctx: &mut NodeCtx<'_>,
+    ) -> anyhow::Result<()> {
         let process_reqs::ResolvedRequestsLocal {
             checkout_repo,
             register_repo,
             require_local_clones,
-        } = process_reqs::ResolvedRequestsLocal::from_reqs(requests)?;
+        } = process_reqs::ResolvedRequestsLocal::from_reqs(requests, Some(require_local_clones))?;
 
         if checkout_repo.is_empty() {
             return Ok(());
@@ -627,10 +651,9 @@ impl Node {
                                 anyhow::bail!("`LocalOnlyRequireExistingClones` is active, all repos must be registered using `RepoKind::ExistingClone`");
                             }
                             RepoSource::LocalOnlyNewClone { url, path, ignore_existing_clone } => {
-                                let sh = xshell::Shell::new()?;
-                                if sh.path_exists(path) {
-                                    sh.change_dir(path);
-                                    if xshell::cmd!(sh, "git status").run().is_ok()
+                                if rt.sh.path_exists(path) {
+                                    rt.sh.change_dir(path);
+                                    if flowey::shell_cmd!(rt, "git status").run().is_ok()
                                         && *ignore_existing_clone
                                     {
                                         rt.write(repo_path, path);
@@ -639,9 +662,9 @@ impl Node {
                                 }
                                 if let Some(depth_arg) = depth {
                                     let depth_arg_string = depth_arg.to_string();
-                                    xshell::cmd!(sh, "git clone --depth {depth_arg_string} {url} {path}").run()?;
+                                    flowey::shell_cmd!(rt, "git clone --depth {depth_arg_string} {url} {path}").run()?;
                                 } else {
-                                    xshell::cmd!(sh, "git clone {url} {path}").run()?;
+                                    flowey::shell_cmd!(rt, "git clone {url} {path}").run()?;
                                 }
                                 found_path = Some(path.clone());
                                 break;

@@ -12,6 +12,14 @@ flowey_request! {
         pub in_bin: ReadVar<PathBuf>,
         pub out_bin: WriteVar<PathBuf>,
         pub out_dbg_info: WriteVar<PathBuf>,
+        // TODO: This is only necessary because our .dbg file is not reproducible and the build-id
+        // is a hash over the binary + the .dbg file, rendering the whole build non-reproducible.
+        // We don't want to do this for all builds because we would lose the ability for the debugger
+        // to auto-discover the .dbg file when debugging. For now, this is only used for Nix builds
+        // where reproducibility is the main concern and will be removed when the debug file is reproducible.
+        /// When true, remove `.note.gnu.build-id` and omit `--add-gnu-debuglink`
+        /// to produce byte-for-byte reproducible stripped binaries.
+        pub reproducible_without_debuglink: bool,
     }
 }
 
@@ -30,6 +38,7 @@ impl SimpleFlowNode for Node {
             in_bin,
             out_bin,
             out_dbg_info,
+            reproducible_without_debuglink,
         } = request;
 
         let host_arch = ctx.arch();
@@ -46,6 +55,9 @@ impl SimpleFlowNode for Node {
                         Some("binutils-x86-64-linux-gnu"),
                         "x86_64-linux-gnu-objcopy",
                     ),
+                    FlowPlatformLinuxDistro::AzureLinux => {
+                        match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
+                    }
                     FlowPlatformLinuxDistro::Arch => {
                         match_arch!(host_arch, FlowArch::X86_64, (Some("binutils"), "objcopy"))
                     }
@@ -54,28 +66,37 @@ impl SimpleFlowNode for Node {
                 },
                 _ => anyhow::bail!("Unsupported platform"),
             },
-            CommonArch::Aarch64 => {
-                let pkg = match platform {
-                    FlowPlatform::Linux(linux_distribution) => match linux_distribution {
-                        FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => {
-                            Some("binutils-aarch64-linux-gnu")
-                        }
-                        FlowPlatformLinuxDistro::Arch => {
-                            match_arch!(
-                                host_arch,
-                                FlowArch::X86_64,
-                                Some("aarch64-linux-gnu-binutils")
-                            )
-                        }
-                        FlowPlatformLinuxDistro::Nix => None,
-                        FlowPlatformLinuxDistro::Unknown => {
-                            anyhow::bail!("Unknown Linux distribution")
-                        }
+            CommonArch::Aarch64 => match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora | FlowPlatformLinuxDistro::Ubuntu => (
+                        Some("binutils-aarch64-linux-gnu"),
+                        "aarch64-linux-gnu-objcopy",
+                    ),
+                    FlowPlatformLinuxDistro::AzureLinux => match host_arch {
+                        FlowArch::Aarch64 => (Some("binutils"), "objcopy"),
+                        FlowArch::X86_64 => (
+                            Some("binutils-aarch64-linux-gnu"),
+                            "aarch64-linux-gnu-objcopy",
+                        ),
+                        _ => anyhow::bail!("unsupported host arch {host_arch:?}"),
                     },
-                    _ => anyhow::bail!("Unsupported platform"),
-                };
-                (pkg, "aarch64-linux-gnu-objcopy")
-            }
+                    FlowPlatformLinuxDistro::Arch => {
+                        match_arch!(
+                            host_arch,
+                            FlowArch::X86_64,
+                            (
+                                Some("aarch64-linux-gnu-binutils"),
+                                "aarch64-linux-gnu-objcopy"
+                            )
+                        )
+                    }
+                    FlowPlatformLinuxDistro::Nix => (None, "aarch64-linux-gnu-objcopy"),
+                    FlowPlatformLinuxDistro::Unknown => {
+                        anyhow::bail!("Unknown Linux distribution")
+                    }
+                },
+                _ => anyhow::bail!("Unsupported platform"),
+            },
         };
 
         let installed_objcopy = objcopy_pkg.map(|objcopy_pkg| {
@@ -95,14 +116,22 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let in_bin = rt.read(in_bin);
 
-                let sh = xshell::Shell::new()?;
-                let output = sh.current_dir().join(in_bin.file_name().unwrap());
-                xshell::cmd!(sh, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg").run()?;
-                xshell::cmd!(
-                    sh,
-                    "{objcopy_bin} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
-                )
-                .run()?;
+                let output = rt.sh.current_dir().join(in_bin.file_name().unwrap());
+                flowey::shell_cmd!(rt, "{objcopy_bin} --only-keep-debug {in_bin} {output}.dbg")
+                    .run()?;
+                if reproducible_without_debuglink {
+                    flowey::shell_cmd!(
+                        rt,
+                        "{objcopy_bin} --strip-all --keep-section=.build_info --remove-section=.note.gnu.build-id {in_bin} {output}"
+                    )
+                    .run()?;
+                } else {
+                    flowey::shell_cmd!(
+                        rt,
+                        "{objcopy_bin} --strip-all --keep-section=.build_info --add-gnu-debuglink={output}.dbg {in_bin} {output}"
+                    )
+                    .run()?;
+                }
 
                 let output = output.absolute()?;
 

@@ -165,7 +165,7 @@ enum CoordinatorMessage {
 
 struct Worker<T: RingMem> {
     channel_idx: u16,
-    target_vp: u32,
+    target_vp: Option<u32>,
     mem: GuestMemory,
     channel: NetChannel<T>,
     state: WorkerState,
@@ -284,6 +284,46 @@ struct ReadyState {
     data: ProcessingData,
 }
 
+impl ReadyState {
+    /// Any in-flight TX packets submitted to the old endpoint queues will
+    /// never be completed, so this method:
+    /// 1. Queues completions for all outstanding sends so the guest gets
+    ///    responses and the associated transmit slots are reclaimed, ensuring
+    ///    the worker is ready to poll post restart of the queues.
+    /// 2. Clears leftover transmit segments that referenced the old endpoint
+    ///    queue so they are not submitted to the new one.
+    ///
+    fn reset_tx_after_endpoint_stop(&mut self) {
+        let state = &mut self.state;
+
+        // Queue completions for in-flight TX packets that were lost when the
+        // endpoint stopped. They will get picked up when the worker restarts.
+        let pending_tx = state
+            .pending_tx_packets
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(id, inflight)| {
+                if inflight.pending_packet_count > 0 {
+                    inflight.pending_packet_count = 0;
+                    Some(PendingTxCompletion {
+                        transaction_id: inflight.transaction_id,
+                        tx_id: Some(TxId(id as u32)),
+                        status: protocol::Status::SUCCESS,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        state.pending_tx_completions.extend(pending_tx);
+
+        // Clear leftover TX segments from the previous endpoint queue;
+        // they cannot be submitted to the new queue.
+        self.data.tx_segments.clear();
+        self.data.tx_segments_sent = 0;
+    }
+}
+
 /// Represents a virtual function (VF) device used to expose accelerated
 /// networking to the guest.
 #[async_trait]
@@ -316,6 +356,7 @@ struct Adapter {
 
 struct QueueState {
     queue: Box<dyn net_backend::Queue>,
+    pool: BufferPool,
     rx_buffer_range: RxBufferRange,
     target_vp_set: bool,
 }
@@ -1099,7 +1140,10 @@ impl NicBuilder {
                 udp4: tx_offloads.udp,
                 udp6: tx_offloads.udp,
             },
-            lso4: tx_offloads.tso,
+            // LSOv4 requires both TSO and IPv4 header checksum support,
+            // because the TAP/virtio GSO engine needs a valid IPv4 header
+            // checksum that NDIS LSO packets don't provide.
+            lso4: tx_offloads.tso && tx_offloads.ipv4_header,
             lso6: tx_offloads.tso,
         };
 
@@ -1179,9 +1223,9 @@ impl Nic {
         }
     }
 
-    pub fn shutdown(self) -> Box<dyn Endpoint> {
+    pub fn shutdown(self) -> (Box<dyn Endpoint>, MacAddress) {
         let (state, _) = self.coordinator.into_inner();
-        state.endpoint
+        (state.endpoint, self.adapter.mac_address)
     }
 }
 
@@ -1291,7 +1335,15 @@ impl VmbusDevice for Nic {
             }
 
             // Note that this await is not restartable.
-            self.coordinator.task_mut().endpoint.stop().await;
+            self.coordinator
+                .task_mut()
+                .endpoint
+                .stop()
+                .instrument(tracing::info_span!(
+                    "stopping coordinator endpoint",
+                    instance_id = %self.instance_id,
+                ))
+                .await;
 
             // Keep any VF's added to the guest. This is required to keep guest compat as
             // some apps (such as DPDK) relies on the VF sticking around even after vmbus
@@ -1322,7 +1374,7 @@ impl VmbusDevice for Nic {
 
         if let Some(worker_state) = worker_state {
             // Update the target VP in the worker state.
-            worker_state.target_vp = target_vp;
+            worker_state.target_vp = Some(target_vp);
             if let Some(queue_state) = &mut net_queue.queue_state {
                 // Tell the worker to re-set the target VP on next run.
                 queue_state.target_vp_set = false;
@@ -1393,11 +1445,13 @@ impl Nic {
         let coordinator = self.coordinator.state_mut().unwrap();
 
         // Retarget the driver now that the channel is open.
+        // N.B. VMBus doesn't provide a target VP if the channel is not using interrupts. Run on VP
+        //      0 in that case.
         let driver = coordinator.workers[channel_idx as usize]
             .task()
             .driver
             .clone();
-        driver.retarget_vp(open_request.open_data.target_vp);
+        driver.retarget_vp(open_request.open_data.target_vp.unwrap_or_default());
 
         let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
             .map_err(OpenError::Ring)?;
@@ -2182,8 +2236,8 @@ impl NvspMessage {
         // Note that vmbus packets are always 8-byte multiples, so round the
         // protocol package size up.
         let len = match self.size {
-            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.next_multiple_of(8) / 8 },
-            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.next_multiple_of(8) / 8 },
+            PacketSize::V1 => const { protocol::PACKET_SIZE_V1.div_ceil(8) },
+            PacketSize::V61 => const { protocol::PACKET_SIZE_V61.div_ceil(8) },
         };
         &self.buf[..len]
     }
@@ -3494,12 +3548,17 @@ impl Adapter {
                 // TODO
             }
             rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS => {
-                self.oid_set_rss_parameters(reader, primary)?;
+                let rss_was_enabled = self.oid_set_rss_parameters(reader, primary)?;
 
                 // Endpoints cannot currently change RSS parameters without
                 // being restarted. This was a limitation driven by some DPDK
                 // PMDs, and should be fixed.
-                restart_endpoint = true;
+                //
+                // Skip the restart if RSS was already disabled and the guest
+                // is disabling it again — nothing has changed.
+                if rss_was_enabled || primary.rss_state.is_some() {
+                    restart_endpoint = true;
+                }
             }
             _ => {
                 tracelimit::warn_ratelimited!(?oid, "set of unknown OID");
@@ -3513,17 +3572,19 @@ impl Adapter {
         &self,
         mut reader: impl MemoryRead + Clone,
         primary: &mut PrimaryChannelState,
-    ) -> Result<(), OidError> {
+    ) -> Result<bool, OidError> {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
         let len = reader.len().min(size_of_val(&params));
         reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
+        let rss_was_enabled = primary.rss_state.is_some();
+
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
             || ((params.hash_information & NDIS_HASH_FUNCTION_MASK) == 0)
         {
             primary.rss_state = None;
-            return Ok(());
+            return Ok(rss_was_enabled);
         }
 
         if params.hash_secret_key_size != 40 {
@@ -3561,7 +3622,7 @@ impl Adapter {
             key,
             indirection_table: indirection_table.iter().map(|&x| x as u16).collect(),
         });
-        Ok(())
+        Ok(rss_was_enabled)
     }
 
     fn oid_set_packet_filter(
@@ -4420,9 +4481,11 @@ impl Coordinator {
 
         let mut queues = Vec::new();
         let mut rx_buffers = Vec::new();
+        let mut per_queue_rx: Vec<Vec<RxId>> = Vec::new();
+        let guest_buffers;
         {
             let buffers = &state.buffers;
-            let guest_buffers = Arc::new(
+            guest_buffers = Arc::new(
                 GuestBuffers::new(
                     buffers.mem.clone(),
                     buffers.recv_buffer.gpadl.clone(),
@@ -4458,10 +4521,9 @@ impl Coordinator {
                     // indirection table, it is assigned just the reserved
                     // buffers.
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: &[],
                         driver: Box::new(drivers[0].clone()),
                     });
+                    per_queue_rx.push(Vec::new());
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
                         0..RX_RESERVED_CONTROL_BUFFERS,
@@ -4494,10 +4556,9 @@ impl Coordinator {
 
                     let (this, rest) = initial_rx.split_at(end);
                     queue_config.push(QueueConfig {
-                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: this,
                         driver: Box::new(drivers[queue_index as usize].clone()),
                     });
+                    per_queue_rx.push(this.to_vec());
                     initial_rx = rest;
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
@@ -4540,18 +4601,31 @@ impl Coordinator {
 
         self.active_packet_filter = self.workers[0].state().unwrap().channel.packet_filter;
         // Provide the queue and receive buffer ranges for each worker.
-        for ((worker, queue), rx_buffer) in self.workers.iter_mut().zip(queues).zip(rx_buffers) {
+        for (((worker, mut queue), rx_buffer), initial) in self
+            .workers
+            .iter_mut()
+            .zip(queues)
+            .zip(rx_buffers)
+            .zip(per_queue_rx)
+        {
+            let mut pool = BufferPool::new(guest_buffers.clone());
+            if !initial.is_empty() {
+                queue.rx_avail(&mut pool, &initial);
+            }
             worker.task_mut().queue_state = Some(QueueState {
                 queue,
+                pool,
                 target_vp_set: false,
                 rx_buffer_range: rx_buffer,
             });
             // Update the receive packet filter for the subchannel worker.
             if let Some(worker) = worker.state_mut() {
                 worker.channel.packet_filter = self.active_packet_filter;
-                // Clear any pending RxIds as buffers were redistributed.
+                // Clear any pending RxIds as buffers were redistributed
+                // and reset TX tracking after the endpoint stop.
                 if let Some(ready_state) = worker.state.ready_mut() {
                     ready_state.state.pending_rx_packets.clear();
+                    ready_state.reset_tx_after_endpoint_stop();
                 }
             }
         }
@@ -4637,16 +4711,16 @@ impl<T: RingMem + 'static> Worker<T> {
                 }
                 WorkerState::Ready(state) => {
                     let queue_state = if let Some(queue_state) = &mut queue.queue_state {
-                        if !queue_state.target_vp_set
-                            && self.target_vp != vmbus_core::protocol::VP_INDEX_DISABLE_INTERRUPT
-                        {
-                            tracing::debug!(
-                                channel_idx = self.channel_idx,
-                                target_vp = self.target_vp,
-                                "updating target VP"
-                            );
-                            queue_state.queue.update_target_vp(self.target_vp).await;
-                            queue_state.target_vp_set = true;
+                        if !queue_state.target_vp_set {
+                            if let Some(target_vp) = self.target_vp {
+                                tracing::debug!(
+                                    channel_idx = self.channel_idx,
+                                    target_vp,
+                                    "updating target VP"
+                                );
+                                queue_state.queue.update_target_vp(target_vp).await;
+                                queue_state.target_vp_set = true;
+                            }
                         }
 
                         queue_state
@@ -4978,10 +5052,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
         if !state.pending_rx_packets.is_empty()
             && self.packet_filter != rndisprot::NDIS_PACKET_TYPE_NONE
         {
-            let epqueue = queue_state.queue.as_mut();
             let (front, back) = state.pending_rx_packets.as_slices();
-            epqueue.rx_avail(front);
-            epqueue.rx_avail(back);
+            queue_state.queue.rx_avail(&mut queue_state.pool, front);
+            queue_state.queue.rx_avail(&mut queue_state.pool, back);
             state.pending_rx_packets.clear();
         }
 
@@ -5072,10 +5145,21 @@ impl<T: 'static + RingMem> NetChannel<T> {
             };
 
             let did_some_work = (!ring_full
-                && self.process_endpoint_rx(buffers, state, data, queue_state.queue.as_mut())?)
+                && self.process_endpoint_rx(
+                    buffers,
+                    state,
+                    data,
+                    queue_state.queue.as_mut(),
+                    &mut queue_state.pool,
+                )?)
                 | self.process_ring_buffer(buffers, state, data, queue_state)?
                 | (!ring_full
-                    && self.process_endpoint_tx(state, data, queue_state.queue.as_mut())?)
+                    && self.process_endpoint_tx(
+                        state,
+                        data,
+                        queue_state.queue.as_mut(),
+                        &mut queue_state.pool,
+                    )?)
                 | self.transmit_pending_segments(state, data, queue_state)?
                 | self.send_pending_packets(state)?;
 
@@ -5098,7 +5182,11 @@ impl<T: 'static + RingMem> NetChannel<T> {
                         // guest cannot keep up with the load.
                         if !ring_full {
                             // Check the network endpoint for tx completion or rx.
-                            if queue_state.queue.poll_ready(cx).is_ready() {
+                            if queue_state
+                                .queue
+                                .poll_ready(cx, &mut queue_state.pool)
+                                .is_ready()
+                            {
                                 tracing::trace!("endpoint ready");
                                 return Poll::Ready(None);
                             }
@@ -5144,7 +5232,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                                 remote_buffer_id_recv.poll_next_unpin(cx)
                             {
                                 if id >= RX_RESERVED_CONTROL_BUFFERS {
-                                    queue_state.queue.rx_avail(&[RxId(id)]);
+                                    queue_state
+                                        .queue
+                                        .rx_avail(&mut queue_state.pool, &[RxId(id)]);
                                 } else {
                                     state
                                         .primary
@@ -5178,9 +5268,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
         let n = epqueue
-            .rx_poll(&mut data.rx_ready)
+            .rx_poll(pool, &mut data.rx_ready)
             .map_err(WorkerError::Endpoint)?;
         if n == 0 {
             return Ok(false);
@@ -5231,7 +5322,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 state.stats.rx_dropped_ring_full.add(n as u64);
 
                 state.rx_bufs.free(data.rx_ready[0].0);
-                epqueue.rx_avail(&data.rx_ready[..n]);
+                epqueue.rx_avail(pool, &data.rx_ready[..n]);
             }
         }
 
@@ -5243,9 +5334,10 @@ impl<T: 'static + RingMem> NetChannel<T> {
         state: &mut ActiveState,
         data: &mut ProcessingData,
         epqueue: &mut dyn net_backend::Queue,
+        pool: &mut BufferPool,
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
-        let result = epqueue.tx_poll(&mut data.tx_done);
+        let result = epqueue.tx_poll(pool, &mut data.tx_done);
 
         match result {
             Ok(n) => {
@@ -5265,25 +5357,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
                 Ok(true)
             }
             Err(TxError::TryRestart(err)) => {
-                // Complete any pending tx prior to restarting queues.
-                let pending_tx = state
-                    .pending_tx_packets
-                    .iter_mut()
-                    .enumerate()
-                    .filter_map(|(id, inflight)| {
-                        if inflight.pending_packet_count > 0 {
-                            inflight.pending_packet_count = 0;
-                            Some(PendingTxCompletion {
-                                transaction_id: inflight.transaction_id,
-                                tx_id: Some(TxId(id as u32)),
-                                status: protocol::Status::SUCCESS,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                state.pending_tx_completions.extend(pending_tx);
+                // In-flight TX packets will be cleaned up by
+                // `reset_tx_after_endpoint_stop` during the queue restart.
                 Err(WorkerError::EndpointRequiresQueueRestart(err))
             }
             Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
@@ -5406,7 +5481,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                             &mut data.rx_done,
                         )
                         .ok_or(WorkerError::InvalidRndisPacketCompletion)?;
-                    queue_state.queue.rx_avail(&data.rx_done);
+                    queue_state
+                        .queue
+                        .rx_avail(&mut queue_state.pool, &data.rx_done);
                 }
                 PacketData::SubChannelRequest(request) if state.primary.is_some() => {
                     let mut subchannel_count = 0;
@@ -5524,7 +5601,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         let segments = &data.tx_segments[data.tx_segments_sent..];
         let (sync, segments_sent) = queue_state
             .queue
-            .tx_avail(segments)
+            .tx_avail(&mut queue_state.pool, segments)
             .map_err(WorkerError::Endpoint)?;
 
         let mut segments = &segments[..segments_sent];

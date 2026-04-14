@@ -3,6 +3,9 @@
 
 //! Paravisor specific loader definitions and implementation.
 
+use crate::common::ChunkBuf;
+use crate::common::ImportFileRegion;
+use crate::common::ReadSeek;
 use crate::cpuid::HV_PSP_CPUID_PAGE;
 use crate::importer::Aarch64Register;
 use crate::importer::BootPageAcceptance;
@@ -44,6 +47,8 @@ use page_table::x64::X64_LARGE_PAGE_SIZE;
 use page_table::x64::align_up_to_large_page_size;
 use page_table::x64::align_up_to_page_size;
 use page_table::x64::calculate_pde_table_count;
+use std::io::Read;
+use std::io::Seek;
 use thiserror::Error;
 use x86defs::GdtEntry;
 use x86defs::SegmentSelector;
@@ -90,6 +95,10 @@ pub enum Error {
     NotEnoughMemory(u64),
     #[error("importer error")]
     Importer(#[from] anyhow::Error),
+    #[error("failed to import initrd")]
+    ImportInitrd(#[source] crate::common::ImportFileRegionError),
+    #[error("failed to read initrd for CRC")]
+    InitrdRead(#[source] std::io::Error),
     #[error("PageTableBuilder: {0}")]
     PageTableBuilder(#[from] page_table::Error),
 }
@@ -117,13 +126,13 @@ pub fn load_openhcl_x64<F>(
     shim: &mut F,
     sidecar: Option<&mut F>,
     command_line: CommandLineType<'_>,
-    initrd: Option<&[u8]>,
+    mut initrd: Option<(&mut dyn ReadSeek, u64)>,
     memory_page_base: Option<u64>,
     memory_page_count: u64,
     vtl0_config: Vtl0Config<'_>,
 ) -> Result<(), Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     let IsolationConfig {
         isolation_type,
@@ -285,21 +294,36 @@ where
         entrypoint: shim_entry_address,
     } = load_info;
 
-    // Optionally import initrd if specified.
-    let ramdisk = if let Some(initrd) = initrd {
-        let initrd_base = offset;
-        let initrd_size = align_up_to_page_size(initrd.len() as u64);
+    // Compute initrd CRC before the file reference is consumed by the importer.
+    let mut buf = ChunkBuf::new();
+    let initrd_crc = if let Some((ref mut initrd_file, initrd_len)) = initrd {
+        buf.crc32(*initrd_file, initrd_len)
+            .map_err(Error::InitrdRead)?
+    } else {
+        crc32fast::hash(&[])
+    };
 
-        importer.import_pages(
-            initrd_base / HV_PAGE_SIZE,
-            initrd_size / HV_PAGE_SIZE,
-            "underhill-initrd",
-            kernel_acceptance,
-            initrd,
-        )?;
+    // Optionally import initrd if specified.
+    let ramdisk = if let Some((initrd_file, initrd_len)) = initrd {
+        let initrd_base = offset;
+        let initrd_size = align_up_to_page_size(initrd_len);
+
+        buf.import_file_region(
+            importer,
+            ImportFileRegion {
+                file: initrd_file,
+                file_offset: 0,
+                file_length: initrd_len,
+                gpa: initrd_base,
+                memory_length: initrd_len,
+                acceptance: kernel_acceptance,
+                tag: "underhill-initrd",
+            },
+        )
+        .map_err(Error::ImportInitrd)?;
 
         offset += initrd_size;
-        Some((initrd_base, initrd.len() as u64))
+        Some((initrd_base, initrd_len))
     } else {
         None
     };
@@ -507,7 +531,6 @@ where
     let (initrd_base, initrd_size) = ramdisk.unwrap_or((0, 0));
     // Shim parameters for locations are relative to the base of where the shim is loaded.
     let calculate_shim_offset = |addr: u64| addr.wrapping_sub(shim_base_addr) as i64;
-    let initrd_crc = crc32fast::hash(initrd.unwrap_or(&[]));
     let shim_params = ShimParamsRaw {
         kernel_entry_offset: calculate_shim_offset(kernel_entrypoint),
         cmdline_offset: calculate_shim_offset(cmdline_base),
@@ -921,13 +944,13 @@ pub fn load_openhcl_arm64<F>(
     kernel_image: &mut F,
     shim: &mut F,
     command_line: CommandLineType<'_>,
-    initrd: Option<&[u8]>,
+    mut initrd: Option<(&mut dyn ReadSeek, u64)>,
     memory_page_base: Option<u64>,
     memory_page_count: u64,
     vtl0_config: Vtl0Config<'_>,
 ) -> Result<(), Error>
 where
-    F: std::io::Read + std::io::Seek,
+    F: Read + Seek,
 {
     let Vtl0Config {
         supports_pcat,
@@ -981,14 +1004,24 @@ where
 
     tracing::trace!(next_addr, "loading the kernel");
 
+    // Compute initrd CRC before the file reference is consumed by the loader.
+    let initrd_crc = if let Some((ref mut initrd_file, initrd_len)) = initrd {
+        ChunkBuf::new()
+            .crc32(*initrd_file, initrd_len)
+            .map_err(Error::InitrdRead)?
+    } else {
+        crc32fast::hash(&[])
+    };
+
     // The aarch64 Linux kernel image is most commonly found as a flat binary with a
     // header rather than an ELF.
     // DeviceTree is generated dynamically by the boot shim.
     let initrd_address_type = InitrdAddressType::AfterKernel;
-    let initrd_config = InitrdConfig {
+    let initrd_config = initrd.map(|(initrd_file, initrd_size)| InitrdConfig {
         initrd_address: initrd_address_type,
-        initrd: initrd.unwrap_or_default(),
-    };
+        initrd: initrd_file,
+        size: initrd_size,
+    });
     let device_tree_blob = None;
     let crate::linux::LoadInfo {
         kernel:
@@ -1003,7 +1036,7 @@ where
         importer,
         kernel_image,
         next_addr,
-        Some(initrd_config),
+        initrd_config,
         device_tree_blob,
     )
     .map_err(Error::Kernel)?;
@@ -1144,7 +1177,6 @@ where
 
     // Shim parameters for locations are relative to the base of where the shim is loaded.
     let calculate_shim_offset = |addr: u64| -> i64 { addr.wrapping_sub(shim_base_addr) as i64 };
-    let initrd_crc = crc32fast::hash(initrd.unwrap_or(&[]));
     let shim_params = ShimParamsRaw {
         kernel_entry_offset: calculate_shim_offset(kernel_entry_point),
         cmdline_offset: calculate_shim_offset(cmdline_base),
