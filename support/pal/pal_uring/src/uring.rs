@@ -340,7 +340,8 @@ impl pal_async::io_uring::IoUringSubmit for IoInitiator {
         sqe: squeue::Entry,
     ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
         let this = self.clone();
-        // SAFETY: The caller guarantees the SQE only references 'static memory.
+        // SAFETY: the caller guarantees the SQE only references memory that is
+        // valid for the lifetime of the returned future.
         Box::pin(async move { unsafe { this.issue_io((), |_| sqe).await.0 } })
     }
 }
