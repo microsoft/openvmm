@@ -6,21 +6,6 @@
 use crate::ChipsetDevice;
 use crate::io::IoResult;
 
-/// A static PCI placement hint provided by a device.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PciPlacementHint {
-    /// Optional static BDF for this device.
-    ///
-    /// If absent, the VMM may use `PciConfigSpace::suggested_bdf`.
-    pub bdf: Option<(u8, u8, u8)>,
-}
-
-/// Implemented by PCI devices that have a static chipset placement.
-pub trait PciPlacement: ChipsetDevice {
-    /// Returns the static placement hint for this device.
-    fn static_pci_placement(&mut self) -> PciPlacementHint;
-}
-
 /// Implemented by devices which have a PCI config space.
 pub trait PciConfigSpace: ChipsetDevice {
     /// Dispatch a PCI config space read to the device with the given address.

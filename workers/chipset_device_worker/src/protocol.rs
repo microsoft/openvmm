@@ -41,15 +41,6 @@ pub(crate) struct PioInit {
 pub(crate) struct PciInit {
     /// The suggested BDF (Bus, Device, Function) for the device.
     pub suggested_bdf: Option<(u8, u8, u8)>,
-    /// Optional static PCI placement hint for the device.
-    pub placement: Option<PciPlacementInit>,
-}
-
-/// Static PCI placement hint from the remote device.
-#[derive(MeshPayload)]
-pub(crate) struct PciPlacementInit {
-    /// Optional static BDF for this device.
-    pub bdf: Option<(u8, u8, u8)>,
 }
 
 /// Requests sent to the remote device.

@@ -17,8 +17,6 @@ use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use chipset_device::pci::PciPlacement;
-use chipset_device::pci::PciPlacementHint;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
@@ -79,14 +77,6 @@ struct PioProxy {
 struct PciProxy {
     #[inspect(with = "Option::is_some")]
     suggested_bdf: Option<(u8, u8, u8)>,
-    #[inspect(with = "Option::is_some")]
-    placement: Option<StaticPciPlacement>,
-}
-
-#[derive(Inspect)]
-struct StaticPciPlacement {
-    #[inspect(with = "Option::is_some")]
-    bdf: Option<(u8, u8, u8)>,
 }
 
 impl ChipsetDeviceProxy {
@@ -126,15 +116,7 @@ impl ChipsetDeviceProxy {
                 .collect(),
         });
 
-        let pci = pci.map(
-            |PciInit {
-                 suggested_bdf,
-                 placement,
-             }| PciProxy {
-                suggested_bdf,
-                placement: placement.map(|placement| StaticPciPlacement { bdf: placement.bdf }),
-            },
-        );
+        let pci = pci.map(|PciInit { suggested_bdf }| PciProxy { suggested_bdf });
 
         Ok(Self {
             req_send,
@@ -162,14 +144,6 @@ impl ChipsetDevice for ChipsetDeviceProxy {
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         self.pci.is_some().then_some(self)
-    }
-
-    fn supports_pci_placement(&mut self) -> Option<&mut dyn PciPlacement> {
-        self.pci
-            .as_ref()
-            .and_then(|pci| pci.placement.as_ref())
-            .is_some()
-            .then_some(self)
     }
 
     fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
@@ -252,17 +226,6 @@ impl PciConfigSpace for ChipsetDeviceProxy {
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
         self.pci.as_ref().unwrap().suggested_bdf
-    }
-}
-
-impl PciPlacement for ChipsetDeviceProxy {
-    fn static_pci_placement(&mut self) -> PciPlacementHint {
-        self.pci
-            .as_ref()
-            .and_then(|pci| pci.placement.as_ref())
-            .map_or(PciPlacementHint { bdf: None }, |placement| {
-                PciPlacementHint { bdf: placement.bdf }
-            })
     }
 }
 

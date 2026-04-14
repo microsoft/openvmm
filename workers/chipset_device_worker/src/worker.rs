@@ -164,19 +164,9 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                     .map(|(name, range)| ((*name).into(), *range.start(), *range.end()))
                     .collect(),
             }),
-            pci: if let Some(suggested_bdf) = device.supports_pci().map(|pci| pci.suggested_bdf()) {
-                let placement = device.supports_pci_placement().map(|placement| {
-                    let placement = placement.static_pci_placement();
-                    PciPlacementInit { bdf: placement.bdf }
-                });
-
-                Some(PciInit {
-                    suggested_bdf,
-                    placement,
-                })
-            } else {
-                None
-            },
+            pci: device.supports_pci().map(|pci| PciInit {
+                suggested_bdf: pci.suggested_bdf(),
+            }),
         });
 
         Ok(Self {
