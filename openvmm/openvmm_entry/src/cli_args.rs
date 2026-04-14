@@ -294,13 +294,8 @@ options:
     #[clap(long, requires("vtl2"), conflicts_with("gfx"))]
     pub vtl2_gfx: bool,
 
-    /// listen for vnc connections. implied by gfx.
-    #[clap(long)]
-    pub vnc: bool,
-
-    /// VNC port number
-    #[clap(long, value_name = "PORT", default_value = "5900")]
-    pub vnc_port: u16,
+    #[clap(flatten)]
+    pub vnc: VncCli,
 
     /// set the APIC ID offset, for testing APIC IDs that don't match VP index
     #[cfg(guest_arch = "x86_64")]
@@ -1180,6 +1175,33 @@ impl FromStr for VmgsCli {
 
         Ok(VmgsCli { kind, provision })
     }
+}
+
+/// VNC server configuration options.
+#[derive(clap::Args)]
+pub struct VncCli {
+    /// Listen for VNC connections. Implied by --gfx.
+    #[clap(long)]
+    pub vnc: bool,
+
+    /// VNC port number
+    #[clap(long, value_name = "PORT", default_value = "5900")]
+    pub vnc_port: u16,
+
+    /// VNC listen address (use 0.0.0.0 for all IPv4, :: for dual-stack IPv4+IPv6).
+    /// Accepts a bare IP address (combined with --vnc-port) or a full socket
+    /// address like [::1]:5900 (overrides --vnc-port).
+    #[clap(long, value_name = "ADDRESS", default_value = "127.0.0.1")]
+    pub vnc_listen: String,
+
+    /// Maximum concurrent VNC clients (~8MB memory per client for framebuffer buffers)
+    #[clap(long, value_name = "COUNT", default_value = "16")]
+    pub vnc_max_clients: usize,
+
+    /// When the client limit is reached, disconnect the oldest client
+    /// instead of rejecting the new connection
+    #[clap(long)]
+    pub vnc_evict_oldest: bool,
 }
 
 // <kind>[,ro]

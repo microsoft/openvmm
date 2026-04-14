@@ -17,6 +17,13 @@ pub struct VncParameters<T> {
     pub framebuffer: framebuffer::FramebufferAccess,
     /// A channel to send input to.
     pub input_send: mesh::Sender<input_core::InputData>,
+    /// Receives dirty rectangles from the synthetic video device.
+    /// None when the video device is not configured.
+    pub dirty_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
+    /// Maximum concurrent VNC clients.
+    pub max_clients: usize,
+    /// When true, evict the oldest client instead of rejecting new ones.
+    pub evict_oldest: bool,
 }
 
 pub const VNC_WORKER_TCP: WorkerId<VncParameters<TcpListener>> = WorkerId::new("VncWorkerTcp");

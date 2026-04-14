@@ -190,6 +190,8 @@ struct VmResources {
     nvme_vtl2_rpc: Option<mesh::Sender<NvmeControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     vtl2_settings: Option<vtl2_settings_proto::Vtl2Settings>,
+    /// Receives dirty rectangles from the synthetic video device for the VNC worker.
+    dirty_rect_recv: Option<mesh::Receiver<Vec<video_core::DirtyRect>>>,
     #[cfg(windows)]
     switch_ports: Vec<vmswitch::kernel::SwitchPort>,
 }
@@ -792,7 +794,7 @@ async fn vm_config_from_command_line(
         None
     };
 
-    let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc || opt.pcat {
+    let framebuffer = if opt.gfx || opt.vtl2_gfx || opt.vnc.vnc || opt.pcat {
         let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "vram")?;
         let (fb, fba) =
             framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).context("creating framebuffer")?;
@@ -1197,11 +1199,16 @@ async fn vm_config_from_command_line(
     };
 
     if opt.gfx {
+        // Channel for the video device to report dirty rectangles to the VNC worker.
+        let (dirt_send, dirt_recv) = mesh::channel();
+        resources.dirty_rect_recv = Some(dirt_recv);
+
         vmbus_devices.extend([
             (
                 DeviceVtl::Vtl0,
                 SynthVideoHandle {
                     framebuffer: SharedFramebufferHandle.into_resource(),
+                    dirt_send: Some(dirt_send),
                 }
                 .into_resource(),
             ),
@@ -2054,9 +2061,55 @@ async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> any
     let (mut vm_config, mut resources) = vm_config_from_command_line(driver, &mesh, &opt).await?;
 
     let mut vnc_worker = None;
-    if opt.gfx || opt.vnc {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", opt.vnc_port))
-            .with_context(|| format!("binding to VNC port {}", opt.vnc_port))?;
+    if opt.gfx || opt.vnc.vnc {
+        // Parse the listen address. Try as a bare IP first, then as addr:port.
+        let addr: std::net::SocketAddr = if let Ok(ip) =
+            opt.vnc.vnc_listen.parse::<std::net::IpAddr>()
+        {
+            std::net::SocketAddr::new(ip, opt.vnc.vnc_port)
+        } else {
+            opt.vnc.vnc_listen.parse().with_context(|| {
+                format!(
+                    "invalid VNC listen address: {} (expected IP address or socket address like [::1]:5900)",
+                    opt.vnc.vnc_listen
+                )
+            })?
+        };
+
+        let socket = socket2::Socket::new(
+            if addr.is_ipv6() {
+                socket2::Domain::IPV6
+            } else {
+                socket2::Domain::IPV4
+            },
+            socket2::Type::STREAM,
+            None,
+        )
+        .with_context(|| format!("creating VNC socket for {}", addr))?;
+
+        if addr.is_ipv6() {
+            if let Err(e) = socket.set_only_v6(false) {
+                tracing::warn!(
+                    error = %e,
+                    "failed to enable dual-stack on IPv6 VNC socket, IPv4 clients may not be able to connect"
+                );
+            }
+        }
+        socket.set_reuse_address(true)?;
+        socket
+            .bind(&addr.into())
+            .with_context(|| format!("binding VNC socket to {}", addr))?;
+        socket
+            .listen(128)
+            .with_context(|| format!("listening on VNC socket {}", addr))?;
+        let listener: TcpListener = socket.into();
+
+        if !addr.ip().is_loopback() {
+            tracing::warn!(
+                address = %addr,
+                "VNC server listening on non-localhost address without authentication"
+            );
+        }
 
         let input_send = vm_config.input.sender();
         let framebuffer = resources
@@ -2077,6 +2130,9 @@ async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> any
                         listener,
                         framebuffer,
                         input_send,
+                        dirty_recv: resources.dirty_rect_recv.take(),
+                        max_clients: opt.vnc.vnc_max_clients,
+                        evict_oldest: opt.vnc.vnc_evict_oldest,
                     },
                 )
                 .await?,

@@ -149,15 +149,22 @@ fn parse_packet(buf: &[u8]) -> Result<Request, Error> {
     Ok(request)
 }
 
+use video_core::DirtyRect;
+
 /// Vmbus synthetic video device.
 pub struct Video {
     control: Box<dyn FramebufferControl>,
+    /// Channel to forward dirty rectangles from the guest to the VNC worker.
+    dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
 }
 
 impl Video {
     /// Creates a new video device.
-    pub fn new(control: Box<dyn FramebufferControl>) -> anyhow::Result<Self> {
-        Ok(Self { control })
+    pub fn new(
+        control: Box<dyn FramebufferControl>,
+        dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self { control, dirt_send })
     }
 }
 
@@ -337,7 +344,7 @@ impl SimpleVmbusDevice for Video {
         channel: &mut VideoChannel,
     ) -> Result<(), task_control::Cancelled> {
         stop.until_stopped(async {
-            match channel.process(&mut self.control).await {
+            match channel.process(&mut self.control, &self.dirt_send).await {
                 Ok(()) => {}
                 Err(err) => tracing::error!(error = &err as &dyn std::error::Error, "video error"),
             }
@@ -401,203 +408,577 @@ impl VideoChannel {
     async fn process(
         &mut self,
         framebuffer: &mut Box<dyn FramebufferControl>,
+        dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
     ) -> Result<(), Error> {
-        let mut channel = &mut self.channel;
-        loop {
-            match &mut self.state {
-                ChannelState::ReadVersion => {
-                    let version = if let Request::Version(version) =
-                        self.packet_buf.recv_packet(&mut channel).await?
-                    {
+        process_channel(
+            &mut self.channel,
+            &mut self.state,
+            &mut self.packet_buf,
+            framebuffer,
+            dirt_send,
+        )
+        .await
+    }
+}
+
+async fn process_channel(
+    channel: &mut (impl AsyncRecv + AsyncSend + Unpin),
+    state: &mut ChannelState,
+    packet_buf: &mut PacketBuffer,
+    framebuffer: &mut Box<dyn FramebufferControl>,
+    dirt_send: &Option<mesh::Sender<Vec<DirtyRect>>>,
+) -> Result<(), Error> {
+    loop {
+        match state {
+            ChannelState::ReadVersion => {
+                let version =
+                    if let Request::Version(version) = packet_buf.recv_packet(channel).await? {
                         version.into()
                     } else {
                         return Err(Error::UnexpectedPacketOrder);
                     };
-                    self.state = ChannelState::WriteVersion { version };
+                *state = ChannelState::WriteVersion { version };
+            }
+            ChannelState::WriteVersion { version } => {
+                let server_version = Version {
+                    major: protocol::VERSION_MAJOR,
+                    minor: protocol::VERSION_MINOR_BLUE,
+                };
+                let is_accepted = if version.major == server_version.major {
+                    protocol::ACCEPTED_WITH_VERSION_EXCHANGE
+                } else {
+                    0
+                };
+                VideoChannel::send_packet(
+                    channel,
+                    protocol::MESSAGE_VERSION_RESPONSE,
+                    &protocol::VersionResponseMessage {
+                        version: (*version).into(),
+                        is_accepted,
+                        max_video_outputs: 1,
+                    },
+                )
+                .await?;
+                if is_accepted != 0 {
+                    tracelimit::info_ratelimited!(?version, "video negotiation succeeded");
+                    *state = ChannelState::Active {
+                        version: *version,
+                        substate: ActiveState::ReadRequest,
+                    };
+                } else {
+                    tracelimit::warn_ratelimited!(?version, "video negotiation failed");
+                    *state = ChannelState::ReadVersion;
                 }
-                ChannelState::WriteVersion { version } => {
-                    let server_version = Version {
-                        major: protocol::VERSION_MAJOR,
-                        minor: protocol::VERSION_MINOR_BLUE,
-                    };
-                    let is_accepted = if version.major == server_version.major {
-                        protocol::ACCEPTED_WITH_VERSION_EXCHANGE
-                    } else {
-                        0
-                    };
-                    Self::send_packet(
-                        &mut channel,
-                        protocol::MESSAGE_VERSION_RESPONSE,
-                        &protocol::VersionResponseMessage {
-                            version: (*version).into(),
-                            is_accepted,
-                            max_video_outputs: 1,
+            }
+            ChannelState::Active {
+                version: _,
+                substate,
+            } => match *substate {
+                ActiveState::ReadRequest => {
+                    let packet = packet_buf.recv_packet(channel).await?;
+                    match packet {
+                        Request::VramLocation {
+                            user_context,
+                            address,
+                        } => {
+                            framebuffer.unmap().await;
+                            if let Some(address) = address {
+                                framebuffer.map(address).await;
+                            }
+                            *substate = ActiveState::SendVramAck { user_context };
+                        }
+                        Request::SituationUpdate {
+                            user_context,
+                            situation,
+                        } => {
+                            framebuffer
+                                .set_format(FramebufferFormat {
+                                    width: u32::from(situation.width_pixels) as usize,
+                                    height: u32::from(situation.height_pixels) as usize,
+                                    bytes_per_line: u32::from(situation.pitch_bytes) as usize,
+                                    offset: u32::from(situation.primary_surface_vram_offset)
+                                        as usize,
+                                })
+                                .await;
+                            *substate = ActiveState::SendSituationUpdateAck { user_context };
+                        }
+                        Request::PointerPosition { is_visible, x, y } => {
+                            let _ = (is_visible, x, y);
+                        }
+                        Request::PointerShape => {}
+                        Request::Dirt(rects) => {
+                            if let Some(send) = dirt_send {
+                                let dirty: Vec<DirtyRect> = rects
+                                    .iter()
+                                    .map(|r| DirtyRect {
+                                        left: r.left.into(),
+                                        top: r.top.into(),
+                                        right: r.right.into(),
+                                        bottom: r.bottom.into(),
+                                    })
+                                    .collect();
+                                send.send(dirty);
+                            }
+                        }
+                        Request::BiosInfo => {
+                            *substate = ActiveState::SendBiosInfo;
+                        }
+                        Request::SupportedResolutions { maximum_count } => {
+                            *substate = ActiveState::SendSupportedResolutions { maximum_count };
+                        }
+                        Request::Capability => {
+                            *substate = ActiveState::SendCapability;
+                        }
+                        Request::Version(_) => return Err(Error::UnexpectedPacketOrder),
+                    }
+                }
+                ActiveState::SendVramAck { user_context } => {
+                    VideoChannel::send_packet(
+                        channel,
+                        protocol::MESSAGE_VRAM_LOCATION_ACK,
+                        &protocol::VramLocationAckMessage {
+                            user_context: user_context.into(),
                         },
                     )
                     .await?;
-                    if is_accepted != 0 {
-                        tracelimit::info_ratelimited!(?version, "video negotiation succeeded");
-                        self.state = ChannelState::Active {
-                            version: *version,
-                            substate: ActiveState::ReadRequest,
-                        };
+                    *substate = ActiveState::ReadRequest;
+                }
+                ActiveState::SendSituationUpdateAck { user_context } => {
+                    VideoChannel::send_packet(
+                        channel,
+                        protocol::MESSAGE_SITUATION_UPDATE_ACK,
+                        &protocol::SituationUpdateAckMessage {
+                            user_context: user_context.into(),
+                        },
+                    )
+                    .await?;
+                    *substate = ActiveState::ReadRequest;
+                }
+                ActiveState::SendBiosInfo => {
+                    VideoChannel::send_packet(
+                        channel,
+                        protocol::MESSAGE_BIOS_INFO_RESPONSE,
+                        &protocol::BiosInfoResponseMessage {
+                            stop_device_supported: 1.into(),
+                            reserved: [0; 12],
+                        },
+                    )
+                    .await?;
+                    *substate = ActiveState::ReadRequest;
+                }
+                ActiveState::SendSupportedResolutions { maximum_count } => {
+                    if maximum_count < protocol::MAXIMUM_RESOLUTIONS_COUNT {
+                        VideoChannel::send_packet(
+                            channel,
+                            protocol::MESSAGE_SUPPORTED_RESOLUTIONS_RESPONSE,
+                            &protocol::SupportedResolutionsResponseMessage {
+                                edid_block: protocol::EDID_BLOCK,
+                                resolution_count: 0,
+                                default_resolution_index: 0,
+                                is_standard: 0,
+                            },
+                        )
+                        .await?;
                     } else {
-                        tracelimit::warn_ratelimited!(?version, "video negotiation failed");
-                        self.state = ChannelState::ReadVersion;
-                    }
-                }
-                ChannelState::Active {
-                    version: _,
-                    substate,
-                } => {
-                    match *substate {
-                        ActiveState::ReadRequest => {
-                            let packet = self.packet_buf.recv_packet(&mut channel).await?;
-                            match packet {
-                                Request::VramLocation {
-                                    user_context,
-                                    address,
-                                } => {
-                                    framebuffer.unmap().await;
-                                    if let Some(address) = address {
-                                        // N.B. The mapping is preserved until explicitly torn
-                                        //      down--UEFI may open the channel, establish the
-                                        //      mapping, close the channel, and expect the guest
-                                        //      to continue to render to the framebuffer.
-                                        framebuffer.map(address).await;
-                                    }
-                                    *substate = ActiveState::SendVramAck { user_context };
-                                }
-                                Request::SituationUpdate {
-                                    user_context,
-                                    situation,
-                                } => {
-                                    framebuffer
-                                        .set_format(FramebufferFormat {
-                                            width: u32::from(situation.width_pixels) as usize,
-                                            height: u32::from(situation.height_pixels) as usize,
-                                            bytes_per_line: u32::from(situation.pitch_bytes)
-                                                as usize,
-                                            offset: u32::from(situation.primary_surface_vram_offset)
-                                                as usize,
-                                        })
-                                        .await;
-                                    *substate =
-                                        ActiveState::SendSituationUpdateAck { user_context };
-                                }
-                                Request::PointerPosition { is_visible, x, y } => {
-                                    let _ = (is_visible, x, y);
-                                }
-                                Request::PointerShape => {}
-                                Request::Dirt(_rects) => {
-                                    // TODO: Support dirt requests
-                                }
-                                Request::BiosInfo => {
-                                    *substate = ActiveState::SendBiosInfo;
-                                }
-                                Request::SupportedResolutions { maximum_count } => {
-                                    *substate =
-                                        ActiveState::SendSupportedResolutions { maximum_count };
-                                }
-                                Request::Capability => {
-                                    *substate = ActiveState::SendCapability;
-                                }
-                                Request::Version(_) => return Err(Error::UnexpectedPacketOrder),
-                            }
-                        }
-                        ActiveState::SendVramAck { user_context } => {
-                            Self::send_packet(
-                                &mut channel,
-                                protocol::MESSAGE_VRAM_LOCATION_ACK,
-                                &protocol::VramLocationAckMessage {
-                                    user_context: user_context.into(),
-                                },
-                            )
-                            .await?;
-                            *substate = ActiveState::ReadRequest;
-                        }
-                        ActiveState::SendSituationUpdateAck { user_context } => {
-                            Self::send_packet(
-                                &mut channel,
-                                protocol::MESSAGE_SITUATION_UPDATE_ACK,
-                                &protocol::SituationUpdateAckMessage {
-                                    user_context: user_context.into(),
-                                },
-                            )
-                            .await?;
-                            *substate = ActiveState::ReadRequest;
-                        }
-                        ActiveState::SendBiosInfo => {
-                            Self::send_packet(
-                                &mut channel,
-                                protocol::MESSAGE_BIOS_INFO_RESPONSE,
-                                &protocol::BiosInfoResponseMessage {
-                                    stop_device_supported: 1.into(),
-                                    reserved: [0; 12],
-                                },
-                            )
-                            .await?;
-                            *substate = ActiveState::ReadRequest;
-                        }
-                        ActiveState::SendSupportedResolutions { maximum_count } => {
-                            if maximum_count < protocol::MAXIMUM_RESOLUTIONS_COUNT {
-                                Self::send_packet(
-                                    &mut channel,
-                                    protocol::MESSAGE_SUPPORTED_RESOLUTIONS_RESPONSE,
-                                    &protocol::SupportedResolutionsResponseMessage {
-                                        edid_block: protocol::EDID_BLOCK,
-                                        resolution_count: 0,
-                                        default_resolution_index: 0,
-                                        is_standard: 0,
-                                    },
-                                )
-                                .await?;
-                            } else {
-                                const RESOLUTIONS: &[(u16, u16)] = &[(1024, 768), (1280, 1024)];
+                        const RESOLUTIONS: &[(u16, u16)] = &[(1024, 768), (1280, 1024)];
 
-                                let mut packet = Vec::new();
-                                packet.extend_from_slice(
-                                    protocol::SupportedResolutionsResponseMessage {
-                                        edid_block: protocol::EDID_BLOCK,
-                                        resolution_count: RESOLUTIONS.len().try_into().unwrap(),
-                                        default_resolution_index: 0,
-                                        is_standard: 0,
-                                    }
-                                    .as_bytes(),
-                                );
-                                for r in RESOLUTIONS {
-                                    packet.extend_from_slice(
-                                        protocol::ScreenInfo {
-                                            width: r.0.into(),
-                                            height: r.1.into(),
-                                        }
-                                        .as_bytes(),
-                                    );
-                                }
-                                Self::send_packet(
-                                    &mut channel,
-                                    protocol::MESSAGE_SUPPORTED_RESOLUTIONS_RESPONSE,
-                                    packet.as_slice(),
-                                )
-                                .await?;
+                        let mut packet = Vec::new();
+                        packet.extend_from_slice(
+                            protocol::SupportedResolutionsResponseMessage {
+                                edid_block: protocol::EDID_BLOCK,
+                                resolution_count: RESOLUTIONS.len().try_into().unwrap(),
+                                default_resolution_index: 0,
+                                is_standard: 0,
                             }
-                            *substate = ActiveState::ReadRequest;
+                            .as_bytes(),
+                        );
+                        for r in RESOLUTIONS {
+                            packet.extend_from_slice(
+                                protocol::ScreenInfo {
+                                    width: r.0.into(),
+                                    height: r.1.into(),
+                                }
+                                .as_bytes(),
+                            );
                         }
-                        ActiveState::SendCapability => {
-                            Self::send_packet(
-                                &mut channel,
-                                protocol::MESSAGE_CAPABILITY_RESPONSE,
-                                &protocol::CapabilityResponseMessage {
-                                    lock_on_disconnect: 0.into(),
-                                    reserved: [0.into(); 15],
-                                },
-                            )
-                            .await?;
-                            *substate = ActiveState::ReadRequest;
-                        }
+                        VideoChannel::send_packet(
+                            channel,
+                            protocol::MESSAGE_SUPPORTED_RESOLUTIONS_RESPONSE,
+                            packet.as_slice(),
+                        )
+                        .await?;
                     }
+                    *substate = ActiveState::ReadRequest;
                 }
-            }
+                ActiveState::SendCapability => {
+                    VideoChannel::send_packet(
+                        channel,
+                        protocol::MESSAGE_CAPABILITY_RESPONSE,
+                        &protocol::CapabilityResponseMessage {
+                            lock_on_disconnect: 0.into(),
+                            reserved: [0.into(); 15],
+                        },
+                    )
+                    .await?;
+                    *substate = ActiveState::ReadRequest;
+                }
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use framebuffer::FRAMEBUFFER_SIZE;
+    use guestmem::MappableGuestMemory;
+    use guestmem::MappedMemoryRegion;
+    use guestmem::MemoryMapper;
+    use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use pal_async::task::Spawn;
+    use pal_async::task::Task;
+    use sparse_mmap::AsMappableRef;
+    use sparse_mmap::SparseMapping;
+    use sparse_mmap::alloc_shared_memory;
+    use std::io::ErrorKind;
+    use std::sync::Arc;
+    use vmbus_async::pipe::connected_message_pipes;
+    use vmbus_ring::RingMem;
+
+    struct TestGuestMemory;
+
+    impl MappableGuestMemory for TestGuestMemory {
+        fn map_to_guest(&mut self, _gpa: u64, _writable: bool) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn unmap_from_guest(&mut self) {}
+    }
+
+    struct TestMappedRegion(SparseMapping);
+
+    impl MappedMemoryRegion for TestMappedRegion {
+        fn map(
+            &self,
+            offset: usize,
+            section: &dyn AsMappableRef,
+            file_offset: u64,
+            len: usize,
+            writable: bool,
+        ) -> std::io::Result<()> {
+            self.0.map_file(offset, len, section, file_offset, writable)
+        }
+
+        fn unmap(&self, offset: usize, len: usize) -> std::io::Result<()> {
+            self.0.unmap(offset, len)
+        }
+    }
+
+    struct TestMemoryMapper;
+
+    impl MemoryMapper for TestMemoryMapper {
+        fn new_region(
+            &self,
+            len: usize,
+            _debug_name: String,
+        ) -> std::io::Result<(Box<dyn MappableGuestMemory>, Arc<dyn MappedMemoryRegion>)> {
+            Ok((
+                Box::new(TestGuestMemory),
+                Arc::new(TestMappedRegion(SparseMapping::new(len)?)),
+            ))
+        }
+    }
+
+    fn framebuffer_fixture() -> (
+        framebuffer::FramebufferDevice,
+        Box<dyn FramebufferControl>,
+        framebuffer::View,
+    ) {
+        let vram = alloc_shared_memory(FRAMEBUFFER_SIZE, "video-test").unwrap();
+        let (fb, access) = framebuffer::framebuffer(vram, FRAMEBUFFER_SIZE, 0).unwrap();
+        let device =
+            framebuffer::FramebufferDevice::new(Box::new(TestMemoryMapper), fb, None).unwrap();
+        let control: Box<dyn FramebufferControl> = Box::new(device.control());
+        let view = access.view().unwrap();
+        (device, control, view)
+    }
+
+    async fn send_packet<T: IntoBytes + Immutable + KnownLayout>(
+        writer: &mut (impl AsyncSend + Unpin),
+        typ: u32,
+        packet: &T,
+    ) {
+        let header = protocol::MessageHeader {
+            typ: typ.into(),
+            size: (size_of_val(packet) as u32).into(),
+        };
+        writer
+            .send_vectored(&[
+                IoSlice::new(header.as_bytes()),
+                IoSlice::new(packet.as_bytes()),
+            ])
+            .await
+            .unwrap();
+    }
+
+    async fn send_dirt_packet(
+        writer: &mut (impl AsyncSend + Unpin),
+        rects: &[protocol::Rectangle],
+    ) {
+        let header = protocol::MessageHeader {
+            typ: protocol::MESSAGE_DIRT.into(),
+            size: ((size_of::<protocol::DirtMessage>() + size_of_val(rects)) as u32).into(),
+        };
+        let dirt = protocol::DirtMessage {
+            video_output: 0,
+            dirt_count: rects.len().try_into().unwrap(),
+        };
+        writer
+            .send_vectored(&[
+                IoSlice::new(header.as_bytes()),
+                IoSlice::new(dirt.as_bytes()),
+                IoSlice::new(rects.as_bytes()),
+            ])
+            .await
+            .unwrap();
+    }
+
+    async fn recv_bytes(reader: &mut (impl AsyncRecv + Unpin + Send)) -> Vec<u8> {
+        let mut packet = vec![0; protocol::MAX_VSP_TO_VSC_MESSAGE_SIZE.max(512)];
+        let n = reader.recv(&mut packet).await.unwrap();
+        packet.truncate(n);
+        packet
+    }
+
+    fn parse_header(packet: &[u8]) -> (protocol::MessageHeader, &[u8]) {
+        let (header, rest) = Ref::<_, protocol::MessageHeader>::from_prefix(packet).unwrap();
+        (*header, rest)
+    }
+
+    fn start_worker<T: RingMem + 'static + Unpin + Send + Sync>(
+        driver: &DefaultDriver,
+        mut control: Box<dyn FramebufferControl>,
+        dirt_send: Option<mesh::Sender<Vec<DirtyRect>>>,
+        mut channel: MessagePipe<T>,
+    ) -> Task<Result<(), Error>> {
+        driver.spawn("video worker", async move {
+            let mut state = ChannelState::ReadVersion;
+            let mut packet_buf = PacketBuffer::new();
+            process_channel(
+                &mut channel,
+                &mut state,
+                &mut packet_buf,
+                &mut control,
+                &dirt_send,
+            )
+            .await
+            .or_else(|e| match e {
+                Error::Io(err) if err.kind() == ErrorKind::ConnectionReset => Ok(()),
+                _ => Err(e),
+            })
+        })
+    }
+
+    #[async_test]
+    async fn test_channel_updates_framebuffer_and_forwards_dirt(driver: DefaultDriver) {
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (_device, control, mut view) = framebuffer_fixture();
+        let (dirt_send, mut dirt_recv) = mesh::channel();
+        let worker = start_worker(&driver, control, Some(dirt_send), host);
+
+        let version = protocol::Version::new(protocol::VERSION_MAJOR, protocol::VERSION_MINOR_BLUE);
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_VERSION_REQUEST,
+            &protocol::VersionRequestMessage { version },
+        )
+        .await;
+
+        let packet = recv_bytes(&mut guest).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_VERSION_RESPONSE);
+        let response = protocol::VersionResponseMessage::ref_from_prefix(rest)
+            .unwrap()
+            .0;
+        assert_eq!(response.version.major(), protocol::VERSION_MAJOR);
+        assert_eq!(response.version.minor(), protocol::VERSION_MINOR_BLUE);
+        assert_eq!(
+            response.is_accepted,
+            protocol::ACCEPTED_WITH_VERSION_EXCHANGE
+        );
+        assert_eq!(response.max_video_outputs, 1);
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_VRAM_LOCATION,
+            &protocol::VramLocationMessage {
+                user_context: 0x1234u64.into(),
+                is_vram_gpa_address_specified: 1,
+                vram_gpa_address: 0x4000u64.into(),
+            },
+        )
+        .await;
+
+        let packet = recv_bytes(&mut guest).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_VRAM_LOCATION_ACK);
+        let ack = protocol::VramLocationAckMessage::ref_from_prefix(rest)
+            .unwrap()
+            .0;
+        assert_eq!(ack.user_context.to_ne(), 0x1234);
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_SITUATION_UPDATE,
+            &protocol::SituationUpdateMessage {
+                user_context: 0x5678u64.into(),
+                video_output_count: 1,
+                video_output: protocol::VideoOutputSituation {
+                    active: 1,
+                    primary_surface_vram_offset: 0.into(),
+                    depth_bits: 32,
+                    width_pixels: 800u32.into(),
+                    height_pixels: 600u32.into(),
+                    pitch_bytes: (800u32 * 4).into(),
+                },
+            },
+        )
+        .await;
+
+        let packet = recv_bytes(&mut guest).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_SITUATION_UPDATE_ACK);
+        let ack = protocol::SituationUpdateAckMessage::ref_from_prefix(rest)
+            .unwrap()
+            .0;
+        assert_eq!(ack.user_context.to_ne(), 0x5678);
+        assert_eq!(view.resolution(), (800, 600));
+
+        let rects = [
+            protocol::Rectangle {
+                left: 1.into(),
+                top: 2.into(),
+                right: 30.into(),
+                bottom: 40.into(),
+            },
+            protocol::Rectangle {
+                left: 100.into(),
+                top: 120.into(),
+                right: 140.into(),
+                bottom: 180.into(),
+            },
+        ];
+        send_dirt_packet(&mut guest, &rects).await;
+
+        let dirt = dirt_recv.recv().await.unwrap();
+        assert_eq!(dirt.len(), 2);
+        assert_eq!(dirt[0].left, 1);
+        assert_eq!(dirt[0].top, 2);
+        assert_eq!(dirt[0].right, 30);
+        assert_eq!(dirt[0].bottom, 40);
+        assert_eq!(dirt[1].left, 100);
+        assert_eq!(dirt[1].top, 120);
+        assert_eq!(dirt[1].right, 140);
+        assert_eq!(dirt[1].bottom, 180);
+
+        drop(guest);
+        worker.await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_channel_reports_bios_resolutions_and_capability(driver: DefaultDriver) {
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (_device, control, _view) = framebuffer_fixture();
+        let worker = start_worker(&driver, control, None, host);
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_VERSION_REQUEST,
+            &protocol::VersionRequestMessage {
+                version: protocol::Version::new(
+                    protocol::VERSION_MAJOR,
+                    protocol::VERSION_MINOR_BLUE,
+                ),
+            },
+        )
+        .await;
+        let _ = recv_bytes(&mut guest).await;
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_BIOS_INFO_REQUEST,
+            &protocol::BiosInfoRequestMessage {},
+        )
+        .await;
+        let packet = recv_bytes(&mut guest).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_BIOS_INFO_RESPONSE);
+        let bios = protocol::BiosInfoResponseMessage::ref_from_prefix(rest)
+            .unwrap()
+            .0;
+        assert_eq!(bios.stop_device_supported.to_ne(), 1);
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_SUPPORTED_RESOLUTIONS_REQUEST,
+            &protocol::SupportedResolutionsRequestMessage {
+                maximum_resolution_count: protocol::MAXIMUM_RESOLUTIONS_COUNT,
+            },
+        )
+        .await;
+        let packet = recv_bytes(&mut guest).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(
+            header.typ.to_ne(),
+            protocol::MESSAGE_SUPPORTED_RESOLUTIONS_RESPONSE
+        );
+        let (response, rest) =
+            Ref::<_, protocol::SupportedResolutionsResponseMessage>::from_prefix(rest).unwrap();
+        assert_eq!(response.resolution_count as usize, 2);
+        let (screens, tail) = <[protocol::ScreenInfo]>::ref_from_prefix_with_elems(
+            rest,
+            response.resolution_count as usize,
+        )
+        .unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(screens[0].width.to_ne(), 1024);
+        assert_eq!(screens[0].height.to_ne(), 768);
+        assert_eq!(screens[1].width.to_ne(), 1280);
+        assert_eq!(screens[1].height.to_ne(), 1024);
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_CAPABILITY_REQUEST,
+            &protocol::CapabilityRequestMessage {},
+        )
+        .await;
+        let packet = recv_bytes(&mut guest).await;
+        let (header, rest) = parse_header(&packet);
+        assert_eq!(header.typ.to_ne(), protocol::MESSAGE_CAPABILITY_RESPONSE);
+        let capability = protocol::CapabilityResponseMessage::ref_from_prefix(rest)
+            .unwrap()
+            .0;
+        assert_eq!(capability.lock_on_disconnect.to_ne(), 0);
+
+        drop(guest);
+        worker.await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_channel_rejects_out_of_order_request(driver: DefaultDriver) {
+        let (host, mut guest) = connected_message_pipes(16384);
+        let (_device, control, _view) = framebuffer_fixture();
+        let worker = start_worker(&driver, control, None, host);
+
+        send_packet(
+            &mut guest,
+            protocol::MESSAGE_BIOS_INFO_REQUEST,
+            &protocol::BiosInfoRequestMessage {},
+        )
+        .await;
+
+        let err = worker.await.unwrap_err();
+        assert!(matches!(err, Error::UnexpectedPacketOrder));
     }
 }

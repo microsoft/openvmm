@@ -29,6 +29,13 @@ as well as the generated CLI help (via `cargo run -- --help`).
   modes such as `--write-saved-state-proto`.
 * `--nic`: Exposes a NIC using the Consomme user-mode NAT.
 * `--gfx`: Enable a graphical console over VNC (see below)
+* `--vnc-port <PORT>`: VNC server port (default: 5900)
+* `--vnc-listen <ADDRESS>`: VNC server bind address (default: `127.0.0.1`).
+  Use `0.0.0.0` for all IPv4 interfaces, or `::` for dual-stack IPv4+IPv6.
+* `--vnc-max-clients <COUNT>`: Maximum concurrent VNC clients (default: 16).
+  Each client uses ~8MB for framebuffer buffers.
+* `--vnc-evict-oldest`: When the client limit is reached, disconnect the oldest
+  client instead of rejecting the new connection. Useful for admin takeover.
 * `--virtio-9p`: Expose a virtio 9p file system. Uses the format `tag,root_path`, e.g. `myfs,C:\\`.
   The file system can be mounted in a Linux guest using `mount -t 9p  -o trans=virtio tag /mnt/point`.
   You can specify this argument multiple times to create multiple file systems.

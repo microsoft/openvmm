@@ -12,6 +12,7 @@ vnc_worker_defs.workspace = true
 
 framebuffer.workspace = true
 input_core.workspace = true
+video_core.workspace = true
 
 inspect.workspace = true
 mesh.workspace = true
@@ -22,8 +23,13 @@ vmsocket.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
+parking_lot.workspace = true
+unicycle.workspace = true
 socket2 = { workspace = true, features = ["all"] }
 tracing.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+sparse_mmap.workspace = true

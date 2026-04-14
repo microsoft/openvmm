@@ -35,6 +35,8 @@ pal_async.workspace = true
 tracing_helpers.workspace = true
 
 test_with_tracing.workspace = true
+framebuffer.workspace = true
+sparse_mmap.workspace = true
 
 [lints]
 workspace = true

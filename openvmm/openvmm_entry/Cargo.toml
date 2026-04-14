@@ -98,6 +98,7 @@ parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
+socket2 = { workspace = true, features = ["all"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
