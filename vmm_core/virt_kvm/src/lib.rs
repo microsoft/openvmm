@@ -56,6 +56,8 @@ pub enum KvmError {
     InvalidState(&'static str),
     #[error("misaligned gic base address")]
     Misaligned,
+    #[error("host does not support GICv2 or GICv3")]
+    NoGic,
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
     #[cfg(guest_arch = "x86_64")]
@@ -107,9 +109,16 @@ struct KvmPartitionInner {
     #[cfg(guest_arch = "x86_64")]
     cpuid: virt::CpuidLeafSet,
 
+    /// The GIC device fd, kept alive for the VM lifetime.
+    #[cfg(guest_arch = "aarch64")]
+    #[inspect(skip)]
+    _gic_device: kvm::Device,
     #[cfg(guest_arch = "aarch64")]
     #[inspect(skip)]
     gic_v2m: Option<vm_topology::processor::aarch64::GicV2mInfo>,
+    /// Total configured GIC interrupt count (SGIs + PPIs + SPIs).
+    #[cfg(guest_arch = "aarch64")]
+    gic_nr_irqs: u32,
     synic_ports: virt::synic::SynicPortMap,
 }
 
@@ -122,6 +131,9 @@ enum KvmRunVpError {
     InvalidVpState,
     #[error("failed to run VP")]
     Run(#[source] kvm::Error),
+    #[cfg_attr(guest_arch = "x86_64", expect(dead_code))]
+    #[error("unhandled system event type: {0:#x}")]
+    UnhandledSystemEvent(u32),
     #[cfg(guest_arch = "x86_64")]
     #[error("failed to inject an extint interrupt")]
     ExtintInterrupt(#[source] kvm::Error),

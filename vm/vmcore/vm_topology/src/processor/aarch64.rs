@@ -38,6 +38,26 @@ pub struct Aarch64TopologyBuilderState {
     platform: Aarch64PlatformConfig,
 }
 
+/// GIC version and version-specific addressing for the virtual machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
+#[cfg_attr(feature = "inspect", inspect(external_tag))]
+pub enum GicVersion {
+    /// GICv2 — uses a shared CPU interface region instead of per-VP redistributors.
+    /// Required for platforms like Raspberry Pi 5 (GIC-400).
+    V2 {
+        /// Physical base address of the GIC CPU interface.
+        #[cfg_attr(feature = "inspect", inspect(hex))]
+        cpu_interface_base: u64,
+    },
+    /// GICv3 — uses per-VP redistributors. Default for most server/desktop platforms.
+    V3 {
+        /// Physical base address of the GIC redistributor region.
+        #[cfg_attr(feature = "inspect", inspect(hex))]
+        redistributors_base: u64,
+    },
+}
+
 /// ARM64 platform interrupt and GIC configuration.
 ///
 /// Groups GIC base addresses, MSI frame info, and platform interrupt
@@ -49,15 +69,19 @@ pub struct Aarch64PlatformConfig {
     /// GIC distributor base address.
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub gic_distributor_base: u64,
-    /// GIC redistributors base address.
-    #[cfg_attr(feature = "inspect", inspect(hex))]
-    pub gic_redistributors_base: u64,
+    /// GIC version and version-specific addresses.
+    pub gic_version: GicVersion,
     /// GIC v2m MSI frame, if MSIs via v2m are supported.
     pub gic_v2m: Option<GicV2mInfo>,
     /// Performance Monitor Unit GSIV (GIC INTID). `None` if not available.
     pub pmu_gsiv: Option<u32>,
     /// Virtual timer PPI (GIC INTID, e.g. 20 for PPI 4).
     pub virt_timer_ppi: u32,
+    /// Total number of GIC interrupts (SGIs + PPIs + SPIs).
+    ///
+    /// KVM requires: `64 <= gic_nr_irqs <= 1023` and a multiple of 32.
+    /// The maximum valid value is 992 (31 × 32).
+    pub gic_nr_irqs: u32,
 }
 
 /// GIC v2m MSI frame parameters.
@@ -83,9 +107,9 @@ pub struct Aarch64VpInfo {
     /// The MPIDR_EL1 value of the processor.
     #[cfg_attr(feature = "inspect", inspect(hex, with = "|&x| u64::from(x)"))]
     pub mpidr: MpidrEl1,
-    /// GIC Redistributor Address
+    /// GIC Redistributor Address (GICv3 only; `None` for GICv2).
     #[cfg_attr(feature = "inspect", inspect(hex))]
-    pub gicr: u64,
+    pub gicr: Option<u64>,
     /// Performance Interrupt GSIV (PMU)
     #[cfg_attr(feature = "inspect", inspect(hex))]
     pub pmu_gsiv: Option<u32>,
@@ -118,6 +142,11 @@ impl TopologyBuilder<Aarch64Topology> {
                 max: u8::MAX.into(),
             });
         }
+        if let GicVersion::V2 { .. } = self.arch.platform.gic_version {
+            if proc_count > 8 {
+                return Err(InvalidTopology::TooManyCpusForGicV2(proc_count));
+            }
+        }
         if !(16..32).contains(&self.arch.platform.virt_timer_ppi) {
             return Err(InvalidTopology::InvalidPpiIntid(
                 self.arch.platform.virt_timer_ppi,
@@ -127,6 +156,10 @@ impl TopologyBuilder<Aarch64Topology> {
             if !(16..32).contains(&gsiv) {
                 return Err(InvalidTopology::InvalidPpiIntid(gsiv));
             }
+        }
+        let nr = self.arch.platform.gic_nr_irqs;
+        if !(64..=992).contains(&nr) || !nr.is_multiple_of(32) {
+            return Err(InvalidTopology::InvalidGicNrIrqs(nr));
         }
         let mpidrs = (0..proc_count).map(|vp_index| {
             // TODO: construct mpidr appropriately for the specified
@@ -141,15 +174,25 @@ impl TopologyBuilder<Aarch64Topology> {
                 .with_aff2(aff.next().unwrap())
                 .with_aff3(aff.next().unwrap())
         });
-        self.build_with_vp_info(mpidrs.enumerate().map(|(id, mpidr)| Aarch64VpInfo {
-            base: VpInfo {
-                vp_index: VpIndex::new(id as u32),
-                vnode: 0,
-            },
-            mpidr,
-            gicr: self.arch.platform.gic_redistributors_base
-                + id as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
-            pmu_gsiv: self.arch.platform.pmu_gsiv,
+        let gic_version = self.arch.platform.gic_version;
+        self.build_with_vp_info(mpidrs.enumerate().map(move |(id, mpidr)| {
+            // GICv3 assigns a per-VP redistributor region; GICv2 has no
+            // redistributors so the field is zero.
+            let gicr = match gic_version {
+                GicVersion::V3 {
+                    redistributors_base,
+                } => Some(redistributors_base + id as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE),
+                GicVersion::V2 { .. } => None,
+            };
+            Aarch64VpInfo {
+                base: VpInfo {
+                    vp_index: VpIndex::new(id as u32),
+                    vnode: 0,
+                },
+                mpidr,
+                gicr,
+                pmu_gsiv: self.arch.platform.pmu_gsiv,
+            }
         }))
     }
 
@@ -182,14 +225,14 @@ impl TopologyBuilder<Aarch64Topology> {
 }
 
 impl ProcessorTopology<Aarch64Topology> {
+    /// Returns the GIC version and version-specific addresses.
+    pub fn gic_version(&self) -> GicVersion {
+        self.arch.platform.gic_version
+    }
+
     /// Returns the GIC distributor base
     pub fn gic_distributor_base(&self) -> u64 {
         self.arch.platform.gic_distributor_base
-    }
-
-    /// Returns the GIC redistributors base
-    pub fn gic_redistributors_base(&self) -> u64 {
-        self.arch.platform.gic_redistributors_base
     }
 
     /// Returns the PMU GSIV
@@ -205,5 +248,10 @@ impl ProcessorTopology<Aarch64Topology> {
     /// Returns the virtual timer PPI (GIC INTID).
     pub fn virt_timer_ppi(&self) -> u32 {
         self.arch.platform.virt_timer_ppi
+    }
+
+    /// Returns the total number of GIC interrupts to configure.
+    pub fn gic_nr_irqs(&self) -> u32 {
+        self.arch.platform.gic_nr_irqs
     }
 }

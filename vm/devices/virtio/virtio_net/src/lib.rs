@@ -269,12 +269,10 @@ impl VirtioDevice for Device {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::NET,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank0(
-                    virtio::spec::VirtioDeviceFeaturesBank0::from_bits(features_bank0.into_bits())
-                        .with_ring_event_idx(true)
-                        .with_ring_indirect_desc(true),
-                )
-                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
+                .with_device_specific_low(features_bank0.into_bits())
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 2 * self.registers.max_virtqueue_pairs,
             device_register_length: size_of::<NetConfig>() as u32,
             shared_memory: DeviceTraitsSharedMemory { id: 0, size: 0 },
@@ -314,7 +312,7 @@ impl VirtioDevice for Device {
         let queue_event = PolledWait::new(&self.adapter.driver, resources.event)
             .context("failed creating queue event")?;
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory,
             resources.notify,

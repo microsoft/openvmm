@@ -12,17 +12,25 @@
 
 // TODO: Symcrypt somehow
 // TODO: Rustcrypto backend for ease of use
+// TODO: Windows backends
 
-// pub mod aes_256_cbc;
+#[cfg(unix)]
+pub mod aes_256_cbc;
 pub mod aes_256_gcm;
-// pub mod aes_key_wrap;
-// pub mod hmac_sha_256;
-// pub mod kdf;
+#[cfg(unix)]
+pub mod aes_key_wrap;
+#[cfg(unix)]
+pub mod hmac_sha_256;
+#[cfg(unix)]
+pub mod kdf;
 #[cfg(unix)]
 pub mod pkcs7;
-// pub mod rsa;
-// pub mod sha_256;
-// pub mod x509;
+#[cfg(unix)]
+pub mod rsa;
+#[cfg(unix)]
+pub mod sha_256;
+#[cfg(unix)]
+pub mod x509;
 pub mod xts_aes_256;
 
 pub(crate) mod win;

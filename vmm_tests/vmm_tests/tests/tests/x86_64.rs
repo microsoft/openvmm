@@ -152,7 +152,10 @@ async fn sidecar_aps_unused<T: PetriVmmBackend>(
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
 )]
 async fn sidecar_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> Result<(), anyhow::Error> {
-    let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
+    let (vm, agent) = configure_for_sidecar(config, 8, 2)
+        .with_openhcl_command_line("OPENHCL_SIDECAR=log")
+        .run()
+        .await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
     Ok(())

@@ -11,6 +11,7 @@ Some particularly notable pipelines:
 
 - `cargo xflowey build-igvm` - primarily dev-tool used to build OpenHCL IGVM files locally
 - `cargo xflowey restore-packages` - restores external packages needed to compile and run OpenVMM / OpenHCL
+- `cargo xflowey vmm-tests-run` - build and run VMM tests with automatic artifact discovery. Use `--filter "test(name)"` to run specific tests
 
 ## `xflowey` vs `xtask`
 

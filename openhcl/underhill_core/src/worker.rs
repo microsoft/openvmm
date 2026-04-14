@@ -1304,7 +1304,15 @@ fn new_aarch64_topology(
 ) -> anyhow::Result<ProcessorTopology<vm_topology::processor::aarch64::Aarch64Topology>> {
     // TODO SMP: Query the MT property from the host topology somehow. Device Tree
     // doesn't specify that.
-    let gic_redistributors_base = gic.gic_redistributors_base;
+
+    use vm_topology::processor::arch::GicVersion;
+    let GicVersion::V3 {
+        redistributors_base,
+    } = gic.gic_version
+    else {
+        anyhow::bail!("expected GICv3 topology");
+    };
+
     TopologyBuilder::new_aarch64(gic)
         .vps_per_socket(cpus.len() as u32)
         .build_with_vp_info(cpus.iter().enumerate().map(|(vp_index, cpu)| {
@@ -1319,8 +1327,9 @@ fn new_aarch64_topology(
                     vnode: cpu.vnode,
                 },
                 mpidr,
-                gicr: gic_redistributors_base
-                    + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                gicr: Some(
+                    redistributors_base + vp_index as u64 * aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                ),
                 pmu_gsiv: gic.pmu_gsiv,
             }
         }))

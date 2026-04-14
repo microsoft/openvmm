@@ -25,6 +25,8 @@ clap = { workspace = true, features = ["derive"] }
 fs-err.workspace = true
 futures.workspace = true
 jiff.workspace = true
+mesh.workspace = true
+mesh_process.workspace = true
 serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true, features = ["std"] }
 tempfile.workspace = true
@@ -32,6 +34,9 @@ tracing.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+net_backend_resources.workspace = true
+net_tap.workspace = true
+netvsp_resources.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

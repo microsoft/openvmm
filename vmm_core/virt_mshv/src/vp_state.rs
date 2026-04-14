@@ -2,12 +2,10 @@
 // Licensed under the MIT License.
 
 use super::Error;
+use super::VcpuFdExt;
 use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
-use mshv_bindings::hv_register_assoc;
-use static_assertions::assert_eq_size;
-use std::mem::offset_of;
 use virt::state::HvRegisterState;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
@@ -28,7 +26,7 @@ impl MshvProcessor<'_> {
 
         self.inner
             .vcpufd
-            .set_reg(hvdef_to_mshv(&assoc[..]))
+            .set_hvdef_regs(&assoc[..])
             .map_err(Error::Register)?;
 
         Ok(())
@@ -47,40 +45,12 @@ impl MshvProcessor<'_> {
 
         self.inner
             .vcpufd
-            .get_reg(hvdef_to_mshv_mut(&mut assoc[..]))
+            .get_hvdef_regs(&mut assoc[..])
             .map_err(Error::Register)?;
 
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)
     }
-}
-
-fn hvdef_to_mshv(regs: &[HvRegisterAssoc]) -> &[hv_register_assoc] {
-    assert_eq_size!(HvRegisterAssoc, hv_register_assoc);
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, name),
-        offset_of!(hv_register_assoc, name)
-    );
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, value),
-        offset_of!(hv_register_assoc, value)
-    );
-    // SAFETY: HvRegisterAssoc and hv_register_assoc have compatible definitions.
-    unsafe { std::mem::transmute(regs) }
-}
-
-fn hvdef_to_mshv_mut(regs: &mut [HvRegisterAssoc]) -> &mut [hv_register_assoc] {
-    assert_eq_size!(HvRegisterAssoc, hv_register_assoc);
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, name),
-        offset_of!(hv_register_assoc, name)
-    );
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, value),
-        offset_of!(hv_register_assoc, value)
-    );
-    // SAFETY: HvRegisterAssoc and hv_register_assoc have compatible definitions.
-    unsafe { std::mem::transmute(regs) }
 }
 
 impl AccessVpState for &'_ mut MshvProcessor<'_> {
@@ -111,19 +81,19 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_xsave(&mut self, _value: &vp::Xsave) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_apic(&mut self, _value: &vp::Apic) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn xcr(&mut self) -> Result<vp::Xcr0, Self::Error> {
@@ -215,40 +185,40 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn synic_timers(&mut self) -> Result<vp::SynicTimers, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_message_queues(&mut self) -> Result<vp::SynicMessageQueues, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_message_queues(
         &mut self,
         _value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_message_page(&mut self) -> Result<vp::SynicMessagePage, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_event_flags_page(&mut self) -> Result<vp::SynicEventFlagsPage, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_event_flags_page(
         &mut self,
         _value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 }

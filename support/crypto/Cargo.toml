@@ -14,7 +14,8 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-openssl.workspace = true 
+openssl.workspace = true
+openssl_kdf.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wchar.workspace = true

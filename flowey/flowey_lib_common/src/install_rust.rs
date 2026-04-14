@@ -113,11 +113,11 @@ impl FlowNodeWithConfig for Node {
             let additional_components = additional_components.clone();
 
             move |rt: &mut RustRuntimeServices<'_>| {
-                if which::which("cargo").is_err() {
+                if flowey::shell_cmd!(rt, "cargo --version").run().is_err() {
                     anyhow::bail!("did not find `cargo` on $PATH");
                 }
 
-                let has_rustup = which::which("rustup").is_ok();
+                let has_rustup = flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
 
                 // Check if the specified version is installed — use rustup when
                 // available, otherwise check via plain `rustc`.
@@ -248,8 +248,11 @@ impl FlowNodeWithConfig for Node {
 
                             // If cargo is already on PATH but rustup is not then assume
                             // rust is being managed manually (Nix for example) and bail
-                            if which::which("cargo").is_ok()
-                                && which::which("rustup").is_err()
+                            let cargo_available =
+                                flowey::shell_cmd!(rt, "cargo --version").run().is_ok();
+                            let rustup_available =
+                                flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
+                            if cargo_available && !rustup_available
                             {
                                 anyhow::bail!(
                                     "Rust installation check failed and rustup is \
@@ -362,7 +365,7 @@ impl FlowNodeWithConfig for Node {
                 let get_rust_toolchain = get_rust_toolchain.claim(ctx);
 
                 move |rt| {
-                    let has_rustup = which::which("rustup").is_ok();
+                    let has_rustup = flowey::shell_cmd!(rt, "rustup --version").run().is_ok();
                     let rust_toolchain = match rust_toolchain {
                         Some(toolchain) => {
                             if has_rustup {

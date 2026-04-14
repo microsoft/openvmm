@@ -113,6 +113,11 @@ pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
 /// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
 pub const DEFAULT_VIRT_TIMER_PPI: u32 = 20;
 
+/// Default total number of GIC interrupts (SGIs + PPIs + SPIs).
+/// Must satisfy KVM constraints: 64 <= n <= 1023, multiple of 32.
+/// 992 = 31 × 32 is the largest valid value.
+pub const DEFAULT_GIC_NR_IRQS: u32 = 992;
+
 /// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
 pub const DEFAULT_VMBUS_PPI: u32 = 18;
 
@@ -288,8 +293,28 @@ pub struct Aarch64TopologyConfig {
     pub pmu_gsiv: PmuGsivConfig,
 }
 
+/// GIC configuration for the virtual machine.
+///
+/// The variant selects the GIC version. `None` inner config means use
+/// defaults for that version's addresses.
 #[derive(Debug, Protobuf, Clone)]
-pub struct GicConfig {
+pub enum GicConfig {
+    /// GICv2 with optional address overrides.
+    V2(Option<GicV2Config>),
+    /// GICv3 with optional address overrides.
+    V3(Option<GicV3Config>),
+}
+
+/// GICv2-specific address configuration.
+#[derive(Debug, Protobuf, Clone)]
+pub struct GicV2Config {
+    pub gic_distributor_base: u64,
+    pub cpu_interface_base: u64,
+}
+
+/// GICv3-specific address configuration.
+#[derive(Debug, Protobuf, Clone)]
+pub struct GicV3Config {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
 }

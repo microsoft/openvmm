@@ -80,6 +80,9 @@ pub enum Error {
     #[cfg(guest_arch = "x86_64")]
     #[error("acpi tables require at least two mmio ranges")]
     UnsupportedMmio,
+    #[cfg(guest_arch = "aarch64")]
+    #[error("expected GICv3 topology")]
+    ExpectedGicV3,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -685,9 +688,18 @@ pub fn write_uefi_config(
 
     #[cfg(guest_arch = "aarch64")]
     {
+        use vm_topology::processor::arch::GicVersion;
+
+        let GicVersion::V3 {
+            redistributors_base,
+        } = processor_topology.gic_version()
+        else {
+            return Err(Error::ExpectedGicV3);
+        };
+
         cfg.add(&config::Gic {
             gic_distributor_base: processor_topology.gic_distributor_base(),
-            gic_redistributors_base: processor_topology.gic_redistributors_base(),
+            gic_redistributors_base: redistributors_base,
         });
     }
 

@@ -13,7 +13,9 @@ flowey_lib_common.workspace = true
 vmm_test_images = { workspace = true, features = ["serde"] }
 igvmfilegen_config.workspace = true
 
+anyhow.workspace = true
 crossterm = { workspace = true, features = ["events"] }
+log.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 target-lexicon = { workspace = true, features = ["serde_support"] }
