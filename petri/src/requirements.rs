@@ -63,6 +63,8 @@ pub struct HostContext {
     pub vendor: Vendor,
     /// Execution environment
     pub execution_environment: ExecutionEnvironment,
+    /// Whether the host hypervisor supports software VPCI device emulation
+    pub vpci_supported: bool,
 }
 
 impl HostContext {
@@ -140,6 +142,9 @@ impl HostContext {
             }
         };
 
+        // VPCI support: only Windows (virt_whp and Hyper-V) supports it for now.
+        let vpci_supported = cfg!(windows);
+
         Self {
             vm_host_info,
             vendor,
@@ -148,6 +153,7 @@ impl HostContext {
             } else {
                 ExecutionEnvironment::Baremetal
             },
+            vpci_supported,
         }
     }
 }
@@ -160,6 +166,9 @@ pub enum TestRequirement {
     Vendor(Vendor),
     /// Isolation requirement.
     Isolation(IsolationType),
+    /// Requires a hypervisor backend that supports VPCI (virtual PCI)
+    /// device emulation. On Linux this means /dev/mshv (not KVM).
+    VpciSupport,
     /// Logical AND of two requirements.
     And(Box<TestRequirement>, Box<TestRequirement>),
     /// Logical OR of two requirements.
@@ -185,6 +194,7 @@ impl TestRequirement {
                     false
                 }
             }
+            TestRequirement::VpciSupport => context.vpci_supported,
             TestRequirement::And(req1, req2) => {
                 req1.is_satisfied(context) && req2.is_satisfied(context)
             }

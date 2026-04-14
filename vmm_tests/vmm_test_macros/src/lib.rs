@@ -36,6 +36,7 @@ struct ResolvedConfig {
     arch: MachineArch,
     extra_deps: Vec<Path>,
     unstable: bool,
+    requires_vpci: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,7 @@ struct ArgsWithOverrides {
     vmm: Option<Vmm>,
     unstable: bool,
     with_vtl0_pipette: bool,
+    requires_vpci: bool,
 }
 
 struct ResolvedArgs {
@@ -248,6 +250,7 @@ impl Parse for ArgsWithOverrides {
         let mut unstable = None;
         let mut with_vtl0_pipette = None;
         let mut vmm = None;
+        let mut requires_vpci = None;
 
         let word = input.parse::<Ident>()?;
         let conflict_err = || Err::<Self, Error>(Error::new(word.span(), "conflicting override"));
@@ -264,6 +267,12 @@ impl Parse for ArgsWithOverrides {
                         return conflict_err();
                     }
                     with_vtl0_pipette = Some(false);
+                }
+                "vpci" => {
+                    if requires_vpci.is_some() {
+                        return conflict_err();
+                    }
+                    requires_vpci = Some(true);
                 }
                 "hyperv" => {
                     if vmm.is_some() {
@@ -283,6 +292,7 @@ impl Parse for ArgsWithOverrides {
 
         let unstable = unstable.unwrap_or(false);
         let with_vtl0_pipette = with_vtl0_pipette.unwrap_or(true);
+        let requires_vpci = requires_vpci.unwrap_or(false);
 
         let parens;
         syn::parenthesized!(parens in input);
@@ -293,6 +303,7 @@ impl Parse for ArgsWithOverrides {
             vmm,
             with_vtl0_pipette,
             unstable,
+            requires_vpci,
         })
     }
 }
@@ -304,6 +315,7 @@ impl ArgsWithOverrides {
             vmm,
             unstable,
             with_vtl0_pipette,
+            requires_vpci,
         } = self;
 
         let mut resolved_configs = Vec::new();
@@ -324,6 +336,7 @@ impl ArgsWithOverrides {
                 arch: config.arch,
                 extra_deps: config.extra_deps,
                 unstable: config.unstable || unstable,
+                requires_vpci,
             });
         }
 
@@ -728,6 +741,7 @@ pub fn vmm_test(
         vmm: None,
         unstable: false,
         with_vtl0_pipette: true,
+        requires_vpci: false,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -767,6 +781,7 @@ pub fn openvmm_test(
         vmm: Some(Vmm::OpenVmm),
         unstable: false,
         with_vtl0_pipette: true,
+        requires_vpci: false,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -786,6 +801,7 @@ pub fn openvmm_test_no_agent(
         vmm: Some(Vmm::OpenVmm),
         unstable: false,
         with_vtl0_pipette: false,
+        requires_vpci: false,
     };
     let item = parse_macro_input!(item as ItemFn);
     make_vmm_test(args, item)
@@ -817,7 +833,8 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, &name, config.vmm);
+        let requirements =
+            build_requirements(&config.firmware, &name, config.vmm, config.requires_vpci);
         let requirements = if let Some(req) = requirements {
             quote! { Some(#req) }
         } else {
@@ -881,7 +898,12 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Option<TokenStream> {
+fn build_requirements(
+    firmware: &Firmware,
+    name: &str,
+    resolved_vmm: Vmm,
+    requires_vpci: bool,
+) -> Option<TokenStream> {
     let mut requirement_expr: Option<TokenStream> = None;
     let mut is_vbs = false;
     // Add isolation requirement if specified
@@ -926,6 +948,19 @@ fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Opt
                 )
             )),
             None => Some(hyperv_vbs_requirement_expr),
+        };
+    }
+
+    if requires_vpci {
+        let vpci_expr = quote!(::petri::requirements::TestRequirement::VpciSupport);
+        requirement_expr = match requirement_expr {
+            Some(existing) => Some(quote!(
+                ::petri::requirements::TestRequirement::And(
+                    Box::new(#existing),
+                    Box::new(#vpci_expr)
+                )
+            )),
+            None => Some(vpci_expr),
         };
     }
 
