@@ -461,33 +461,31 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
-/// Boot an OS entirely from an NVMe device on an emulated PCIe root port.
-/// Validates the full PciHostBridgeDxe → PciBusDxe → NvmExpressDxe → OS boot chain.
-///
-/// Requires a mu_msvm firmware build with ePCI support (PciHostBridgeDxe,
-/// PciBusDxe, CpuIo2Dxe, PciHostBridgeLib, PciSegmentInfoLib).
-/// Pass `--custom-uefi-firmware <path>` to use a locally-built firmware.
-
-#[openvmm_test(uefi_x64(vhd(alpine_3_23_x64)), uefi_aarch64(vhd(alpine_3_23_aarch64)))]
+/// Boot a guest thru UEFI from an NVMe device on an emulated PCIe root port.
+/// Validates that UEFI's driver stack correctly enumerates and uses the NVMe
+/// device to load the guest OS.
+#[openvmm_test(
+    uefi_x64(vhd(alpine_3_23_x64)),
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_aarch64(vhd(alpine_3_23_aarch64)),
+    uefi_aarch64(vhd(windows_11_enterprise_aarch64))
+)]
 async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
         .modify_backend(|b| {
-            b.with_pcie_root_topology(1, 1, 1)
-                .with_custom_config(|c| {
-                    c.efi_diagnostics_log_level =
-                        openvmm_defs::config::EfiDiagnosticsLogLevelType::Full;
-                    if let openvmm_defs::config::LoadMode::Uefi {
-                        ref mut default_boot_always_attempt,
-                        ref mut enable_vpci_boot,
-                        ..
-                    } = c.load_mode
-                    {
-                        *default_boot_always_attempt = true;
-                        *enable_vpci_boot = false;
-                    }
-                })
+            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
+                if let openvmm_defs::config::LoadMode::Uefi {
+                    ref mut default_boot_always_attempt,
+                    ref mut enable_vpci_boot,
+                    ..
+                } = c.load_mode
+                {
+                    *default_boot_always_attempt = true;
+                    *enable_vpci_boot = false;
+                }
+            })
         })
         .run()
         .await?;
