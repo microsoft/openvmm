@@ -63,6 +63,7 @@ use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
+use virt::state::StateElement as _;
 use virt::x86::max_physical_address_size_from_cpuid;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
@@ -71,6 +72,7 @@ use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vm_topology::processor::TargetVpInfo;
 use vmcore::interrupt::Interrupt;
 use vmcore::reference_time::GetReferenceTime;
 use vmcore::reference_time::ReferenceTimeResult;
@@ -172,6 +174,10 @@ impl virt::Hypervisor for LinuxMshv {
             vm_topology::processor::x86::ApicMode::XApic => {}
         }
 
+        if config.processor_topology.smt_enabled() {
+            pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_SMT_ENABLED_GUEST;
+        }
+
         // pt_cpu_fbanks expects *disabled* processor features (bit = 1
         // means disabled). Invert our supported masks so unsupported
         // features are disabled. The hypervisor will further intersect
@@ -242,20 +248,31 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| Error::CreateVMInitFailed(e.into()))?;
 
+        // Tell the hypervisor how many VPs are in each socket so it can
+        // generate the correct topology CPUID leaves (01h, 04h, 0Bh, 1Fh,
+        // AMD 80000008h/1Dh/1Eh) automatically.
+        vmfd.set_partition_property(
+            mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_PROCESSORS_PER_SOCKET,
+            config.processor_topology.reserved_vps_per_socket() as u64,
+        )
+        .map_err(|e| Error::SetPartitionProperty(e.into()))?;
+
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
-        for vp in config.processor_topology.vps_arch() {
-            if vp.base.vp_index.index() != vp.apic_id {
-                // TODO
-                return Err(Error::NotSupported);
-            }
 
+        // /dev/mshv only supports 256 VPs right now for some reason.
+        if config.processor_topology.vp_count() > u8::MAX as u32 {
+            return Err(Error::TooManyVps(config.processor_topology.vp_count()));
+        }
+
+        for vp in config.processor_topology.vps_arch() {
             let vcpufd = vmfd
-                .create_vcpu(vp.base.vp_index.index() as u8)
+                .create_vcpu(u8::try_from(vp.base.vp_index.index()).expect("validated above"))
                 .map_err(Error::CreateVcpu)?;
 
             vps.push(MshvVpInner {
                 vcpufd,
+                vp_info: vp,
                 thread: RwLock::new(None),
                 needs_yield: NeedsYield::new(),
                 message_queues: MessageQueues::new(),
@@ -341,21 +358,11 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        // Build topology CPUID leaves.
-        let mut cpuid_leaves: Vec<virt::CpuidLeaf> = config.cpuid.to_vec();
-        virt::x86::topology::topology_cpuid(
-            self.config.processor_topology,
-            &|eax, ecx| {
-                self.vps[0]
-                    .vcpufd
-                    .get_cpuid_values(eax, ecx, 0, 0)
-                    .expect("cpuid should not fail")
-            },
-            &mut cpuid_leaves,
-        )
-        .map_err(Error::TopologyCpuid)?;
-
-        let cpuid = virt::CpuidLeafSet::new(cpuid_leaves);
+        // Use the non-topology CPUID overrides from the caller (feature
+        // flags, etc.). Topology CPUID leaves are handled natively by
+        // the hypervisor via the ProcessorsPerSocket partition property
+        // and SMT creation flag set during partition creation.
+        let cpuid = virt::CpuidLeafSet::new(config.cpuid.to_vec());
 
         // Apply CPUID overrides partition-wide.
         // The hypervisor handles per-VP APIC ID fixups in topology leaves
@@ -471,6 +478,7 @@ struct MshvPartitionInner {
 #[derive(Debug)]
 struct MshvVpInner {
     vcpufd: VcpuFd,
+    vp_info: TargetVpInfo,
     thread: RwLock<Option<Pthread>>,
     needs_yield: NeedsYield,
     message_queues: MessageQueues,
@@ -631,11 +639,39 @@ impl virt::BindProcessor for MshvProcessorBinder {
     type Error = Error;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
-        Ok(MshvProcessor {
+        let inner = &self.partition.vps[self.vpindex.index() as usize];
+        let this = MshvProcessor {
             partition: &self.partition,
-            inner: &self.partition.vps[self.vpindex.index() as usize],
+            inner,
             vpindex: self.vpindex,
-        })
+        };
+
+        // Set the APIC state: APIC IDs and APIC base register (the latter to
+        // make sure the X2APIC enabled state is consistent with the partition
+        // settings).
+        let apic_base =
+            virt::vp::Apic::at_reset(&this.partition.caps, &this.inner.vp_info).apic_base;
+
+        let regs = &[
+            HvRegisterAssoc::from((
+                HvX64RegisterName::InitialApicId,
+                u64::from(inner.vp_info.apic_id),
+            )),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicBase, u64::from(apic_base))),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicId, u64::from(inner.vp_info.apic_id))),
+        ];
+
+        // When X2APIC is supported, the APIC ID register is statically assigned
+        // to the initial APIC ID and cannot be changed. When it is not supported,
+        // it must be explicitly set.
+        let reg_count = if this.partition.caps.x2apic { 2 } else { 3 };
+
+        inner
+            .vcpufd
+            .set_hvdef_regs(&regs[..reg_count])
+            .map_err(Error::Register)?;
+
+        Ok(this)
     }
 }
 
@@ -1145,9 +1181,9 @@ pub enum Error {
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] MshvError),
     #[error("host does not support required cpu capabilities")]
-    Capabilities(virt::PartitionCapabilitiesError),
-    #[error("failed to compute topology cpuid")]
-    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
+    Capabilities(#[source] virt::PartitionCapabilitiesError),
+    #[error("too many virtual processors: {0}")]
+    TooManyVps(u32),
 }
 
 impl MshvPartitionInner {
