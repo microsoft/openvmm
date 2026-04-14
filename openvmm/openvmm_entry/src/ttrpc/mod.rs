@@ -204,7 +204,7 @@ impl VmService {
                 InspectService(Option<(mesh::CancelContext, InspectService)>),
                 WorkerRpc(Result<WorkerRpc<()>, mesh::RecvError>),
                 ControllerEvent(Option<VmControllerEvent>),
-                WaitVmCancelled,
+                WaitVmCancelled(CancelReason),
             }
 
             let action = futures::select! { // merge semantics
@@ -212,7 +212,7 @@ impl VmService {
                 m = inspect_service_recv.next() => Action::InspectService(m),
                 r = recv.recv().fuse() => Action::WorkerRpc(r),
                 e = ctrl_fut.fuse() => Action::ControllerEvent(e),
-                _reason = wait_cancel_fut.fuse() => Action::WaitVmCancelled,
+                reason = wait_cancel_fut.fuse() => Action::WaitVmCancelled(reason.unwrap()),
             };
 
             // Restore controller events (unless the channel closed).
@@ -259,9 +259,11 @@ impl VmService {
                     self.handle_controller_event(event);
                 }
                 Action::ControllerEvent(None) => {} // handled above
-                Action::WaitVmCancelled => {
+                Action::WaitVmCancelled(reason) => {
                     tracing::debug!("WaitVm client cancelled");
-                    self.wait_vm_response.take();
+                    if let Some((_, response)) = self.wait_vm_response.take() {
+                        response.send(Err(grpc_error(anyhow::Error::new(reason))));
+                    }
                 }
             }
         };
