@@ -8550,6 +8550,7 @@ dependencies = [
  "cvm_tracing",
  "fs-err",
  "inspect",
+ "io-uring",
  "loan_cell",
  "pal",
  "pal_async",

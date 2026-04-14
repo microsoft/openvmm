@@ -119,16 +119,6 @@ impl std::fmt::Debug for EpollIoUring {
     }
 }
 
-/// Per-IO completion state, embedded in each [`IoFuture`].
-///
-/// The io-uring `user_data` is set to the address of this struct (inside
-/// the pinned `IoFuture`). `process_completions` dereferences it to
-/// deliver the result.
-struct CompletionState {
-    waker: Option<Waker>,
-    result: Option<i32>,
-}
-
 impl EpollIoUring {
     /// Creates a new standalone ring and registers its fd with the given
     /// epoll fd. `wake_fd` is the raw fd of the wake event, used to signal
@@ -179,14 +169,12 @@ impl EpollIoUring {
                 // drop if the IO is in flight, guaranteeing the
                 // CompletionState outlives the IO.
                 let completion = unsafe { &*ptr };
-                let waker = {
-                    let mut state = completion.lock();
-                    state.result = Some(result);
-                    state.waker.take()
+                let CompletionState::Waiting(waker) =
+                    std::mem::replace(&mut *completion.lock(), CompletionState::Complete(result))
+                else {
+                    panic!("already completed");
                 };
-                if let Some(waker) = waker {
-                    wakers.push(waker);
-                }
+                wakers.push(waker);
             }
             if !found {
                 break;
@@ -247,49 +235,60 @@ impl EpollIoUring {
     ///
     /// Off-thread: pushes into the remote queue and signals the wake event
     /// to break the epoll thread out of `epoll_wait`.
-    fn queue_sqe(&self, sqe: squeue::Entry) {
+    fn queue_sqe(&self, sqe: &squeue::Entry) {
         EPOLL_URING_STATE.with(|cell| {
             cell.borrow(|state| {
-                if let Some(state) = state {
-                    // On-thread: check if this is our ring.
-                    if std::ptr::eq(state.ring.get(), self) {
-                        // Push directly into the SQ.
-                        // SAFETY: On the epoll thread — sole SQ accessor.
-                        unsafe {
-                            if self.ring.submission_shared().push(&sqe).is_err() {
-                                // SQ full — flush it and retry.
-                                self.ring.submit().expect("io_uring submit failed");
-                                self.ring
-                                    .submission_shared()
-                                    .push(&sqe)
-                                    .expect("SQ still full after submit");
-                            }
-                        }
-                        return;
-                    }
-                }
-
-                // Off-thread (or different ring): use remote queue + wake.
-                // The Mutex provides ordering for the queue data; the
-                // atomic is just a hint to avoid locking on the consumer
-                // side when the queue is empty.
-                {
-                    let mut remote = self.remote_queue.lock();
-                    remote.push_back(sqe);
-                    self.has_remote.store(true, Ordering::Relaxed);
-                }
-                // Signal the epoll thread to flush.
-                //
-                // SAFETY: writing 1u64 to an eventfd is safe and signals it.
-                unsafe {
-                    let val: u64 = 1;
-                    let r = libc::write(self.wake_fd, std::ptr::from_ref(&val).cast(), 8);
-                    if r != 8 {
-                        panic!("eventfd write failed: {}", io::Error::last_os_error());
-                    }
-                }
+                self.queue_sqe_with_thread_state(state, sqe);
             })
-        });
+        })
+    }
+
+    fn queue_sqe_with_thread_state(
+        &self,
+        state: Option<&EpollUringThreadState>,
+        sqe: &squeue::Entry,
+    ) {
+        // On-thread: check if this is our ring.
+        if let Some(state) = state
+            && std::ptr::eq(state.ring.get(), self)
+        {
+            // Push directly into the SQ.
+            // SAFETY: On the epoll thread — sole SQ accessor.
+            unsafe {
+                if self.ring.submission_shared().push(sqe).is_err() {
+                    // SQ full — flush it and retry.
+                    self.ring.submit().expect("io_uring submit failed");
+                    self.ring
+                        .submission_shared()
+                        .push(sqe)
+                        .expect("SQ still full after submit");
+                }
+            }
+            return;
+        }
+
+        // Off-thread (or different ring): use remote queue + wake.
+        // The Mutex provides ordering for the queue data; the
+        // atomic is just a hint to avoid locking on the consumer
+        // side when the queue is empty.
+        let needs_wake = {
+            let mut remote = self.remote_queue.lock();
+            remote.push_back(sqe.clone());
+            self.has_remote.store(true, Ordering::Relaxed);
+            remote.len() == 1
+        };
+        if needs_wake {
+            // Signal the epoll thread to flush.
+            //
+            // SAFETY: writing 1u64 to an eventfd is safe and signals it.
+            unsafe {
+                let val: u64 = 1;
+                let r = libc::write(self.wake_fd, std::ptr::from_ref(&val).cast(), 8);
+                if r != 8 {
+                    panic!("eventfd write failed: {}", io::Error::last_os_error());
+                }
+            }
+        }
     }
 
     fn probe(&self, opcode: u8) -> bool {
@@ -308,15 +307,8 @@ impl IoUringSubmit for EpollIoUring {
         &self,
         sqe: squeue::Entry,
     ) -> Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
-        // Box::pin ensures a stable address for the intrusive completion state.
         Box::pin(IoFuture {
-            ring: self,
-            sqe: Some(sqe),
-            completion: Mutex::new(CompletionState {
-                waker: None,
-                result: None,
-            }),
-            _pin: PhantomPinned,
+            state: IoFutureState::Init { ring: self, sqe },
         })
     }
 }
@@ -330,13 +322,30 @@ impl IoUringSubmit for EpollIoUring {
 /// **Aborts on drop** if the IO is in flight, because the kernel holds
 /// a pointer into this future's memory.
 struct IoFuture<'a> {
-    ring: &'a EpollIoUring,
-    /// The SQE to submit. `Some` before first poll, `None` after.
-    sqe: Option<squeue::Entry>,
-    /// Completion state. Address used as io-uring `user_data`.
-    completion: Mutex<CompletionState>,
-    /// Prevent unpinning.
-    _pin: PhantomPinned,
+    state: IoFutureState<'a>,
+}
+
+enum IoFutureState<'a> {
+    Init {
+        ring: &'a EpollIoUring,
+        sqe: squeue::Entry,
+    },
+    Submitted {
+        completion: Mutex<CompletionState>,
+        done: bool,
+        /// Prevent unpinning.
+        _pin: PhantomPinned,
+    },
+}
+
+/// Per-IO completion state, embedded in each [`IoFuture`].
+///
+/// The io-uring `user_data` is set to the address of this struct (inside
+/// the pinned `IoFuture`). `process_completions` dereferences it to
+/// deliver the result.
+enum CompletionState {
+    Waiting(Waker),
+    Complete(i32),
 }
 
 // SAFETY: All fields are Send. The Mutex<CompletionState> is shared with
@@ -351,30 +360,49 @@ impl Future for IoFuture<'_> {
         // fields through shared references or take from Option.
         let this = unsafe { self.get_unchecked_mut() };
 
-        if let Some(sqe) = this.sqe.take() {
-            // First poll: set user_data to point at our completion state
-            // and queue the SQE.
-            let completion_ptr = std::ptr::from_ref(&this.completion);
-            let sqe = sqe.user_data(completion_ptr as u64);
-
-            // Store the waker before queuing — the completion could race.
-            this.completion.lock().waker = Some(cx.waker().clone());
-
-            this.ring.queue_sqe(sqe);
-            return Poll::Pending;
-        }
-
-        // Subsequent polls: check for completion.
-        let mut state = this.completion.lock();
-        if let Some(result) = state.result {
-            Poll::Ready(if result >= 0 {
-                Ok(result)
-            } else {
-                Err(io::Error::from_raw_os_error(-result))
-            })
-        } else {
-            state.waker = Some(cx.waker().clone());
-            Poll::Pending
+        match this.state {
+            IoFutureState::Init { .. } => {
+                let IoFutureState::Init { ring, mut sqe } = std::mem::replace(
+                    &mut this.state,
+                    IoFutureState::Submitted {
+                        completion: Mutex::new(CompletionState::Waiting(cx.waker().clone())),
+                        done: false,
+                        _pin: PhantomPinned,
+                    },
+                ) else {
+                    unreachable!()
+                };
+                let IoFutureState::Submitted { completion, .. } = &this.state else {
+                    unreachable!()
+                };
+                // First poll: set user_data to point at our completion state
+                // and queue the SQE.
+                let completion: &Mutex<CompletionState> = completion;
+                let completion_ptr = std::ptr::from_ref(completion);
+                sqe.set_user_data(completion_ptr as u64);
+                ring.queue_sqe(&sqe);
+                Poll::Pending
+            }
+            IoFutureState::Submitted {
+                ref completion,
+                ref mut done,
+                ..
+            } => {
+                // Subsequent polls: check for completion.
+                let mut state = completion.lock();
+                match *state {
+                    CompletionState::Waiting(ref mut waker) => waker.clone_from(cx.waker()),
+                    CompletionState::Complete(result) => {
+                        *done = true;
+                        return Poll::Ready(if result >= 0 {
+                            Ok(result)
+                        } else {
+                            Err(io::Error::from_raw_os_error(-result))
+                        });
+                    }
+                }
+                Poll::Pending
+            }
         }
     }
 }
@@ -382,13 +410,22 @@ impl Future for IoFuture<'_> {
 impl Drop for IoFuture<'_> {
     fn drop(&mut self) {
         // If sqe is None, the IO was submitted. Check if it completed.
-        if self.sqe.is_none() {
-            let state = self.completion.lock();
-            if state.result.is_none() {
-                // IO is in flight. The kernel holds a pointer to our
-                // completion state. We cannot free this memory.
-                eprintln!("io_uring future dropped with IO in flight, aborting");
-                abort();
+        match self.state {
+            IoFutureState::Init { .. } | IoFutureState::Submitted { done: true, .. } => {}
+            IoFutureState::Submitted {
+                done: false,
+                ref completion,
+                ..
+            } => {
+                match *completion.lock() {
+                    CompletionState::Waiting(_) => {
+                        // IO is in flight. The kernel holds a pointer to our
+                        // completion state. We cannot free this memory.
+                        eprintln!("io_uring future dropped with IO in flight, aborting");
+                        abort();
+                    }
+                    CompletionState::Complete(_) => {}
+                }
             }
         }
     }
