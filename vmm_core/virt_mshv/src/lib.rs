@@ -239,6 +239,17 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.install_intercept(intercept_args)
             .map_err(Error::InstallIntercept)?;
 
+        // Intercept unknown SynIC connections so the VMM can handle
+        // HvPostMessage / HvSignalEvent for guest-initiated connections
+        // that the hypervisor doesn't recognise natively.
+        vmfd.install_intercept(mshv_install_intercept {
+            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+            intercept_type:
+                hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
+            intercept_parameter: Default::default(),
+        })
+        .map_err(Error::InstallIntercept)?;
+
         // Set up a signal for forcing vcpufd.run() ioctl to exit.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
         // SAFETY: The signal handler does not perform any actions that are forbidden
