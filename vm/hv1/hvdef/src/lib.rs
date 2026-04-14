@@ -1507,7 +1507,7 @@ pub mod hypercall {
         pub intercept_parameters: HvInterceptParameters,
     }
 
-    /// Input for [`HvCallRegisterInterceptResult`] with CPUID intercept type.
+    /// Input for [`HypercallCode::HvCallRegisterInterceptResult`] with CPUID intercept type.
     #[repr(C)]
     #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct RegisterInterceptResultCpuid {
