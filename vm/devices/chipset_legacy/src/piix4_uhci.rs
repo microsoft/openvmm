@@ -6,6 +6,7 @@
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pci::PciConfigSpace;
+use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
 use inspect::InspectMut;
 use vmcore::device_state::ChangeDeviceState;
 
@@ -51,7 +52,7 @@ impl ChipsetDevice for Piix4UsbUhciStub {
 impl chipset_device::pci::PciPlacement for Piix4UsbUhciStub {
     fn static_pci_placement(&mut self) -> chipset_device::pci::PciPlacementHint {
         chipset_device::pci::PciPlacementHint {
-            bdf: Some((0, 7, 2)),
+            bdf: Some(PIIX4_PCI_USB_UHCI_STUB_BDF),
         }
     }
 }
@@ -102,7 +103,7 @@ impl PciConfigSpace for Piix4UsbUhciStub {
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
-        Some((0, 7, 2)) // as per PIIX4 spec
+        Some(PIIX4_PCI_USB_UHCI_STUB_BDF) // as per PIIX4 spec
     }
 }
 

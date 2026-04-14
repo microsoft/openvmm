@@ -257,13 +257,12 @@ impl PciConfigSpace for ChipsetDeviceProxy {
 
 impl PciPlacement for ChipsetDeviceProxy {
     fn static_pci_placement(&mut self) -> PciPlacementHint {
-        let placement = self
-            .pci
+        self.pci
             .as_ref()
             .and_then(|pci| pci.placement.as_ref())
-            .unwrap();
-
-        PciPlacementHint { bdf: placement.bdf }
+            .map_or(PciPlacementHint { bdf: None }, |placement| {
+                PciPlacementHint { bdf: placement.bdf }
+            })
     }
 }
 

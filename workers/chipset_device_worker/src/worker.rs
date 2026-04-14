@@ -149,12 +149,6 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
             anyhow::bail!("remote device requires unimplemented functionality");
         }
 
-        let pci_suggested_bdf = device.supports_pci().map(|p| p.suggested_bdf());
-        let pci_placement = device.supports_pci_placement().map(|placement| {
-            let placement = placement.static_pci_placement();
-            PciPlacementInit { bdf: placement.bdf }
-        });
-
         cap_send.send(DeviceInit {
             mmio: device.supports_mmio().map(|m| MmioInit {
                 static_regions: m
@@ -170,10 +164,19 @@ impl<T: RemoteDynamicResolvers> Worker for RemoteChipsetDeviceWorker<T> {
                     .map(|(name, range)| ((*name).into(), *range.start(), *range.end()))
                     .collect(),
             }),
-            pci: pci_suggested_bdf.map(|suggested_bdf| PciInit {
-                suggested_bdf,
-                placement: pci_placement,
-            }),
+            pci: if let Some(suggested_bdf) = device.supports_pci().map(|pci| pci.suggested_bdf()) {
+                let placement = device.supports_pci_placement().map(|placement| {
+                    let placement = placement.static_pci_placement();
+                    PciPlacementInit { bdf: placement.bdf }
+                });
+
+                Some(PciInit {
+                    suggested_bdf,
+                    placement,
+                })
+            } else {
+                None
+            },
         });
 
         Ok(Self {

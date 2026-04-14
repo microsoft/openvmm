@@ -104,6 +104,12 @@ pub mod piix4_uhci {
     #[derive(MeshPayload)]
     pub struct Piix4PciUsbUhciStubDeviceHandle;
 
+    /// The PCI bus used by the PIIX4 USB UHCI stub in the Gen1 chipset.
+    pub const PIIX4_PCI_USB_UHCI_STUB_PCI_BUS_NAME: &str = "i440bx";
+
+    /// The fixed BDF used by the PIIX4 USB UHCI stub in the Gen1 chipset.
+    pub const PIIX4_PCI_USB_UHCI_STUB_BDF: (u8, u8, u8) = (0, 7, 2);
+
     impl ResourceId<ChipsetDeviceHandleKind> for Piix4PciUsbUhciStubDeviceHandle {
         const ID: &'static str = "piix4PciUsbUhciStub";
     }

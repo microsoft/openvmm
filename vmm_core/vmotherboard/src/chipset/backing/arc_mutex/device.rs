@@ -25,7 +25,7 @@ pub(crate) enum AddDeviceErrorKind {
 
     #[error("no pci bus address provided")]
     NoPciBusAddress,
-    #[error("no pci bus specified")]
+    #[error("no pci bus specified; call on_pci_bus(...) when adding this PCI device")]
     NoPciBusSpecified,
     #[error("error finalizing device")]
     Finalize(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
