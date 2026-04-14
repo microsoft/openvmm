@@ -200,6 +200,15 @@ impl IoBackend for EpollBackend {
                     state.timers.wake_expired(&mut wakers);
                     drop(state);
 
+                    // Drain completions before polling so futures see
+                    // results from the previous cycle immediately.
+                    // Also update the thread-local ring pointer so
+                    // queue_sqe takes the fast path for on-thread callers.
+                    if let Some(uring) = self.io_uring.get() {
+                        uring_thread_state.set_ring(uring);
+                        uring.process_completions(&mut wakers);
+                    }
+
                     wakers.wake();
                     to_delete.clear();
 
@@ -212,21 +221,15 @@ impl IoBackend for EpollBackend {
                     // This list is only populated while in the Sleeping state.
                     assert!(state.fd_ready_to_delete.is_empty());
 
-                    // Drain any io-uring completions so futures are woken
-                    // promptly even when the executor is busy-looping.
-                    // Also update the thread-local ring pointer so that
-                    // queue_sqe takes the fast path for on-thread callers.
-                    if let Some(uring) = self.io_uring.get() {
-                        uring_thread_state.set_ring(uring);
-                        uring.process_completions(&mut wakers);
-                    }
-
                     if state.state.can_sleep() {
                         let deadline = state.timers.next_deadline();
                         state.state.sleep(deadline);
                         drop(state);
 
-                        // Flush any queued io-uring SQEs before sleeping.
+                        // Flush queued SQEs before sleeping. This is
+                        // the single io_uring_enter() per sleep cycle,
+                        // naturally batching all SQEs queued during
+                        // RunAgain into one syscall.
                         if let Some(uring) = self.io_uring.get() {
                             uring.flush();
                         }
@@ -252,9 +255,8 @@ impl IoBackend for EpollBackend {
                             if event.u64 == 0 {
                                 self.wake_event.try_wait();
                             } else if event.u64 == EPOLL_URING_TOKEN {
-                                if let Some(uring) = self.io_uring.get() {
-                                    uring.process_completions(&mut wakers);
-                                }
+                                // Completions are drained at the top of
+                                // the loop, so nothing to do here.
                             } else {
                                 // SAFETY: the operation context is still alive and
                                 // can be dereferenced. It's possible the underlying
