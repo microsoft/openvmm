@@ -25,6 +25,7 @@
 #![expect(unsafe_code)]
 
 use crate::io_uring::IoUringSubmit;
+use crate::waker::WakerList;
 use io_uring::IoUring;
 use io_uring::squeue;
 use loan_cell::LoanCell;
@@ -158,29 +159,25 @@ impl EpollIoUring {
     /// Processes all available completions, waking the associated futures.
     ///
     /// Called from the epoll event loop when the ring fd is readable.
-    pub(crate) fn process_completions(&self) {
-        let mut wakers = Vec::new();
-        {
-            // SAFETY: we are the sole consumer of the completion queue. The
-            // epoll event loop is single-threaded and only calls this method
-            // in response to the ring fd being readable.
-            while let Some(cqe) = unsafe { self.ring.completion_shared().next() } {
-                let ptr = cqe.user_data() as *const Mutex<CompletionState>;
-                let result = cqe.result();
-                // SAFETY: The pointer is valid because IoFuture aborts on
-                // drop if the IO is in flight, guaranteeing the
-                // CompletionState outlives the IO.
-                let completion = unsafe { &*ptr };
+    pub(crate) fn process_completions(&self, wakers: &mut WakerList) {
+        // SAFETY: we are the sole consumer of the completion queue. The
+        // epoll event loop is single-threaded and only calls this method
+        // in response to the ring fd being readable.
+        while let Some(cqe) = unsafe { self.ring.completion_shared().next() } {
+            let ptr = cqe.user_data() as *const Mutex<CompletionState>;
+            let result = cqe.result();
+            // SAFETY: The pointer is valid because IoFuture aborts on
+            // drop if the IO is in flight, guaranteeing the
+            // CompletionState outlives the IO.
+            let completion = unsafe { &*ptr };
+            let waker = {
                 let mut state = completion.lock();
                 state.result = Some(result);
-                if let Some(waker) = state.waker.take() {
-                    wakers.push(waker);
-                }
+                state.waker.take()
+            };
+            if let Some(waker) = waker {
+                wakers.push(waker);
             }
-        }
-
-        for waker in wakers {
-            waker.wake();
         }
     }
 
@@ -263,7 +260,10 @@ impl EpollIoUring {
                 // SAFETY: writing 1u64 to an eventfd is safe and signals it.
                 unsafe {
                     let val: u64 = 1;
-                    libc::write(self.wake_fd, std::ptr::from_ref(&val).cast(), 8);
+                    let r = libc::write(self.wake_fd, std::ptr::from_ref(&val).cast(), 8);
+                    if r != 8 {
+                        panic!("eventfd write failed: {}", io::Error::last_os_error());
+                    }
                 }
             })
         });

@@ -212,6 +212,13 @@ impl IoBackend for EpollBackend {
                     // This list is only populated while in the Sleeping state.
                     assert!(state.fd_ready_to_delete.is_empty());
 
+                    // Drain any io-uring completions so futures are woken
+                    // promptly even when the executor is busy-looping.
+                    if let Some(uring) = self.io_uring.get() {
+                        uring_thread_state.set_ring(uring);
+                        uring.process_completions(&mut wakers);
+                    }
+
                     if state.state.can_sleep() {
                         let deadline = state.timers.next_deadline();
                         state.state.sleep(deadline);
@@ -219,9 +226,6 @@ impl IoBackend for EpollBackend {
 
                         // Flush any queued io-uring SQEs before sleeping.
                         if let Some(uring) = self.io_uring.get() {
-                            // Update the thread-local pointer if this is the first
-                            // time we see the ring initialized.
-                            uring_thread_state.set_ring(uring);
                             uring.flush();
                         }
 
@@ -247,7 +251,7 @@ impl IoBackend for EpollBackend {
                                 self.wake_event.try_wait();
                             } else if event.u64 == EPOLL_URING_TOKEN {
                                 if let Some(uring) = self.io_uring.get() {
-                                    uring.process_completions();
+                                    uring.process_completions(&mut wakers);
                                 }
                             } else {
                                 // SAFETY: the operation context is still alive and

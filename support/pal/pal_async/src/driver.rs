@@ -79,18 +79,19 @@ pub trait Driver: 'static + Send + Sync {
     ///
     /// Returns `None` if the driver does not support io-uring.
     #[cfg(target_os = "linux")]
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
-        None
-    }
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit>;
 }
 
 /// Component trait for drivers that optionally support io-uring submission.
+///
+/// All types that participate in the `Driver` blanket impl on Linux must
+/// implement this trait. There is no default—implementors must explicitly
+/// return `None` if they do not support io-uring, so that wrapper types
+/// do not silently drop the capability.
 #[cfg(target_os = "linux")]
 pub trait IoUringDriver {
     /// Returns an io-uring submitter, if supported.
-    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
-        None
-    }
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit>;
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
