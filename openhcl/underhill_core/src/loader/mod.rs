@@ -441,6 +441,9 @@ pub fn write_uefi_config(
     let mut build_madt = true;
     let mut build_srat = true;
 
+    #[cfg(not(guest_arch = "x86_64"))]
+    let _ = chipset_capabilities;
+
     // ACPI tables that come from the DevicePlatformSettings
     // We can only trust these tables from the host if this is not an isolated VM
     if !isolated {
