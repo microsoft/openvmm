@@ -23,7 +23,6 @@ vmcore.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
-async-trait.workspace = true
 vm_resource.workspace = true
 
 thiserror.workspace = true

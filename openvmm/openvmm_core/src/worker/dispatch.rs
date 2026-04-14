@@ -10,6 +10,7 @@ use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -1444,7 +1445,7 @@ impl InitializedVm {
         };
 
         let pci_bus_id_generic = vmotherboard::BusId::new("generic");
-        let pci_bus_id_piix4 = vmotherboard::BusId::new("i440bx");
+        let pci_bus_id_piix4 = vmotherboard::BusId::new(LEGACY_CHIPSET_PCI_BUS_NAME);
 
         let deps_generic_pci_bus =
             (cfg.chipset.with_generic_pci_bus).then_some(dev::GenericPciBusDeps {

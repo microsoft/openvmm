@@ -16,12 +16,12 @@
 
 #![forbid(unsafe_code)]
 
+use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
-use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_PCI_BUS_NAME;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
@@ -405,7 +405,7 @@ impl VmChipsetResult {
         self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
             name: "piix4-usb-uhci-stub".to_string(),
             resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
-            pci_bus_name: PIIX4_PCI_USB_UHCI_STUB_PCI_BUS_NAME.to_string(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
             bdf: PIIX4_PCI_USB_UHCI_STUB_BDF,
         });
         self
