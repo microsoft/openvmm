@@ -358,7 +358,7 @@ impl Hcl {
                 .with_intercept_page_available(caps.intercept_page_available())
                 .with_dr6_shared(true)
                 .with_proxy_interrupt_redirect_available(caps.proxy_interrupt_redirect_available()),
-                // TODO: CCA: figure out what capabilities to enable here?
+            // TODO: CCA: figure out what capabilities to enable here?
             // TMK seems to work without any.
             IsolationType::Cca => hvdef::HvRegisterVsmCapabilities::new(),
         };
@@ -402,6 +402,10 @@ impl Hcl {
 
         #[cfg(guest_arch = "aarch64")]
         {
+            if self.isolation.is_hardware_isolated() {
+                return Ok(hvdef::HvPartitionPrivilege::default());
+            }
+
             Ok(hvdef::HvPartitionPrivilege::from(
                 self.get_partition_vtl2_register(HvArchRegisterName::PrivilegesAndFeaturesInfo)?
                     .as_u64(),
@@ -594,7 +598,6 @@ impl MshvHvcall {
 
         // Status must be success with all elements completed
         status.result()?;
-        #[cfg(guest_arch = "x86_64")]
         assert_eq!(status.elements_processed(), names.len());
 
         Ok(())

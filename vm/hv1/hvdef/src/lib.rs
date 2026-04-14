@@ -3037,18 +3037,6 @@ pub struct HvX64SegmentRegister {
     pub attributes: u16,
 }
 
-/// Place holder to default for arm64
-impl HvX64SegmentRegister {
-    pub fn default_arm64() -> Self{
-        Self {
-            base: 0,
-            limit: 0,
-            selector: 0,
-            attributes: 0,
-        }
-    }
-}
-
 impl From<HvX64SegmentRegister> for HvRegisterValue {
     fn from(val: HvX64SegmentRegister) -> Self {
         Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)

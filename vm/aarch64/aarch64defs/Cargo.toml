@@ -11,9 +11,5 @@ open_enum.workspace = true
 
 bitfield-struct.workspace = true
 zerocopy.workspace = true
-
-[features]
-arbitrary = []
-
 [lints]
 workspace = true

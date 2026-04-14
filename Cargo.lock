@@ -559,12 +559,6 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "cfg_aliases"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
-
-[[package]]
-name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
@@ -3170,6 +3164,7 @@ dependencies = [
  "open_enum",
  "pal",
  "parking_lot",
+ "rsi",
  "safe_intrinsics",
  "sidecar_client",
  "signal-hook",
@@ -4899,25 +4894,13 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab2156c4fce2f8df6c499cc1c763e4394b7482525bf2a9701c9d79d215f519e4"
-dependencies = [
- "bitflags 2.9.3",
- "cfg-if",
- "cfg_aliases 0.1.1",
- "libc",
-]
-
-[[package]]
-name = "nix"
 version = "0.30.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "libc",
 ]
 
@@ -4929,7 +4912,7 @@ checksum = "5d6d0705320c1e6ba1d912b5e37cf18071b6c2e9b7fa8215a1e8a7651966f5d3"
 dependencies = [
  "bitflags 2.9.3",
  "cfg-if",
- "cfg_aliases 0.2.1",
+ "cfg_aliases",
  "libc",
 ]
 
@@ -6759,12 +6742,7 @@ dependencies = [
 name = "rsi"
 version = "0.0.0"
 dependencies = [
- "aarch64defs",
- "bitfield-struct 0.11.0",
- "hvdef",
- "memory_range",
- "open_enum",
- "tracing",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8001,14 +7979,11 @@ dependencies = [
  "fs-err",
  "futures",
  "guestmem",
- "hcl",
  "hvdef",
  "loader",
  "memory_range",
  "mesh",
- "nix 0.28.0",
  "object 0.37.3",
- "openhcl_dma_manager",
  "page_table",
  "pal_async",
  "pal_uring",
@@ -8017,6 +7992,7 @@ dependencies = [
  "tracing-subscriber",
  "tracing_helpers",
  "underhill_mem",
+ "user_driver",
  "virt",
  "virt_hvf",
  "virt_kvm",

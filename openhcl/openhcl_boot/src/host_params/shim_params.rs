@@ -19,6 +19,9 @@ pub enum IsolationType {
     Snp,
     #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     Tdx,
+    // There is no usage of this yet
+    #[expect(dead_code)]
+    Cca,
 }
 
 impl IsolationType {

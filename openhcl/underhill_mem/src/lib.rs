@@ -363,11 +363,13 @@ impl MemoryAcceptor {
                     })
             }
             GpaVtlPermissions::Cca(_index) => {
-                // TODO: CCA: call new ioctl to set perms index
-                // TODO: CCA: next
-                todo!(
-                    "Apply CCA permissions for vtl {vtl:?} on range {range:?} with index {_index:?}"
-                );
+                // CCA: call new ioctl to set perms index
+                self.mshv_vtl
+                    .rsi_set_mem_perm(GuestVtl::Vtl0, &range)
+                    .map_err(|_err| ApplyVtlProtectionsError::Cca {
+                        range,
+                        vtl: vtl.into(),
+                    })
             }
         }
     }

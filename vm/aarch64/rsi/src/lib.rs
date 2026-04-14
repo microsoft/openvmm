@@ -2,7 +2,8 @@
 // Licensed under the MIT License.
 
 //! Arm CCA specific definitions, including for the Realm Service Interface (RSI).
-#![expect(unsafe_code)]
+#![allow(non_camel_case_types)]
+#![expect(missing_docs)]
 
 // TODO: CCA: A lot of the code in this module depends on who gets to package the RSI calls.
 // If OpenVMM is the one that packages the RSI calls, then this module should be
@@ -10,9 +11,14 @@
 // that packages the RSI calls, then this module should only define the data structures used
 // to communicate with the kernel driver, and the RSI calls should be defined in the kernel driver.
 
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
+
 /// CCA memory permission index, used to set and get Stage 2 memory access permissions
 /// via the RSI interface.
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CcaMemPermIndex {
@@ -34,113 +40,82 @@ pub enum CcaMemPermIndex {
     Index14,
 }
 
-// TODO: CCA: Similarly to the RsiCall trait below, this bitfield representation could
-// be used to model the command identifiers used for SMC calls, but only if the OpenVMM
-// turns out to be the layer where we end up issuing the SMC calls from.
-// use bitfield_struct::bitfield;
-// #[bitfield(u64)]
-// #[derive(PartialEq, Eq, Ord, PartialOrd, Hash)]
-// pub struct SmcCall {
-//     pub number: u16,
-//     pub hint: bool,
-//     #[bits(7)]
-//     pub mbz: u8,
-//     #[bits(6)]
-//     pub service: u8,
-//     pub smc64: bool,
-//     pub fast: bool,
-//     _pad: u32,
-// }
+pub const RSI_PLANE_NR_GPRS: usize = 31;
+pub const RSI_PLANE_GIC_NUM_LRS: usize = 16;
+pub const RSI_PLANE_ENTER_FLAGS_TRAP_SIMD: u64 = 1 << 4;
 
-// // TODO: CCA: Add missing commands
-// use open_enum::open_enum;
-// open_enum! {
-//     pub enum RsiCommand: SmcCall {
-//         RSI_VERSION = SmcCall(0xC400_0190),
-//         FEATURES = SmcCall(0xC400_0191),
-//         REALM_CONFIG = SmcCall(0xC400_0196),
-//         IPA_STATE_SET = SmcCall(0xC400_0197),
-//         IPA_STATE_GET = SmcCall(0xC400_0198),
-//         HOST_CALL = SmcCall(0xC400_0199),
-//         MEM_GET_PERM_VALUE = SmcCall(0xC400_01A0),
-//         MEM_SET_PERM_INDEX = SmcCall(0xC400_01A1),
-//         MEM_SET_PERM_VALUE = SmcCall(0xC400_01A2),
-//         PLANE_ENTER = SmcCall(0xC400_01A3),
-//         PLANE_SYSREG_READ = SmcCall(0xC400_01AE),
-//         PLANE_SYSREG_WRITE = SmcCall(0xC400_01AF),
-//     }
-// }
+/// Layout for the realm configuration page shared with the kernel driver.
+#[repr(C, align(0x1000))]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct cca_realm_config {
+    pub ipa_width: u64,
+    pub algorithm: u64,
+    pub num_aux_planes: u64,
+    pub gicv3_vtr: u64,
+    /// 0x1000 − (4 × 8) = 0x1000 − 32 = 0xFE0
+    pub pad1: [u8; 0x1000 - 4 * 8],
+}
 
-// TODO: CCA: Same as above :)
-// open_enum! {
-//     pub enum RsiReturnCode: i32 {
-//         SUCCESS = 0,
-//         ERROR_INPUT = -1,
-//         ERROR_STATE = -2,
-//         INCOMPLETE = -3,
-//         ERROR_UNKNOWN = -4,
-//         ERROR_DEVICE = -5,
-//     }
-// }
+impl cca_realm_config {
+    pub fn empty() -> Self {
+        Self {
+            ipa_width: 0,
+            algorithm: 0,
+            num_aux_planes: 0,
+            gicv3_vtr: 0,
+            pad1: [0; 0xFE0],
+        }
+    }
+}
 
-// TODO: CCA: Not sure if this approach would be better. There are two possible ways to implement RSI calls:
-// 1. Use a trait that defines the RSI call interface, which can be implemented by different types (e.g., a mock for testing). This is what TDX does IIUC.
-// 2. Keep the ioctl interface as the basis for what OpenVMM sees, and implement the RSI calls directly in the kernel driver.
-// I started with (1), but moved to (2) because it seems more straightforward for the TMK use case. Also, it was annoying to return Rust-native types from the
-// functions below because it created a circular dependency with the `hcl` crate.
-// /// Trait to perform RSI calls used by this module.
-// pub trait RsiCall {
-//     /// Perform a RSI call instruction with the specified inputs.
-//     fn rsi_call(&self, input: RsiInput) -> RsiOutput;
-// }
+/// Flattened RSI plane entry buffer layout.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct cca_rsi_plane_entry {
+    pub flags: u64,
+    pub pc: u64,
+    pub pstate: u64,
+    pub pad0: [u8; 0x100 - 3 * 8],
+    pub gprs: [u64; RSI_PLANE_NR_GPRS],
+    pub pad2: [u8; 0x100 - RSI_PLANE_NR_GPRS * 8],
+    pub gicv3_hcr: u64,
+    pub gicv3_lrs: [u64; RSI_PLANE_GIC_NUM_LRS],
+    pub pad3: [u8; 0x100 - (1 + RSI_PLANE_GIC_NUM_LRS) * 8],
+}
 
-// #[derive(Debug)]
-// pub struct RsiInput {
-//     pub command: RsiCommand,
-//     pub regs: [u64; 17],
-// }
+/// Flattened RSI plane exit buffer layout.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+pub struct cca_rsi_plane_exit {
+    pub exit_reason: u64,
+    pub pad1: [u8; 0x100 - 8],
+    pub elr_el2: u64,
+    pub esr_el2: u64,
+    pub far_el2: u64,
+    pub hpfar_el2: u64,
+    pub pstate: u64,
+    pub pad2: [u8; 0x100 - 5 * 8],
+    pub gprs: [u64; RSI_PLANE_NR_GPRS],
+    pub pad3: [u8; 0x100 - RSI_PLANE_NR_GPRS * 8],
+    pub gicv3_hcr: u64,
+    pub gicv3_lrs: [u64; RSI_PLANE_GIC_NUM_LRS],
+    pub gicv3_misr: u64,
+    pub gicv3_vmcr: u64,
+    pub cntp_ctl_el0: u64,
+    pub cntp_cval_el0: u64,
+    pub cntv_ctl_el0: u64,
+    pub cntv_cval_el0: u64,
+    pub pad4: [u8; 0x100 - (7 + RSI_PLANE_GIC_NUM_LRS) * 8],
+}
 
-// #[derive(Debug)]
-// pub struct RsiOutput {
-//     pub return_code: RsiReturnCode,
-//     pub regs: [u64; 17],
-// }
+/// Combined RSI plane run page layout.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct cca_rsi_plane_run {
+    pub entry: cca_rsi_plane_entry,
+    pub pad4: [u8; 0x800 - size_of::<cca_rsi_plane_entry>()],
+    pub exit: cca_rsi_plane_exit,
+    pub pad9: [u8; 0x800 - size_of::<cca_rsi_plane_exit>()],
+}
 
-// fn rsi_version(call: &impl RsiCall) -> Result<(u64, u64), RsiReturnCode> {
-//     let input = RsiInput {
-//         command: RsiCommand::RSI_VERSION,
-//         regs: [0; 17],
-//     };
-
-//     let output = call.rsi_call(input);
-
-//     assert_eq!(
-//         output.return_code,
-//         RsiReturnCode::SUCCESS,
-//         "unexpected nonzero return code {:?} returned by RSI_VERSION call",
-//         output.return_code
-//     );
-
-//     Ok((output.regs[0], output.regs[1]))
-// }
-
-// pub fn rsi_realm_config(call: &impl RsiCall, realm_config_addr: u64) -> Result<(), RsiReturnCode> {
-//     let mut input = RsiInput {
-//         command: RsiCommand::REALM_CONFIG,
-//         regs: [0; 17],
-//     };
-//     input.regs[0] = realm_config_addr;
-
-//     let output = call.rsi_call(input);
-
-//     assert_eq!(
-//         output.return_code,
-//         RsiReturnCode::SUCCESS,
-//         "unexpected nonzero return code {:?} returned by RSI_VERSION call",
-//         output.return_code
-//     );
-
-//     // TODO: CCA: this is annoying. this level can't produce Rust-native results
-//     // because it doesn't have access to the low-level type.
-//     Ok(())
-// }
+const _: () = assert!(size_of::<cca_rsi_plane_run>() == 0x1000);

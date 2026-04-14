@@ -19,6 +19,7 @@ use crate::create_vm_with_retry;
 use aarch64defs::EsrEl2;
 use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
+use aarch64defs::Vendor;
 use guestmem::DoorbellRegistration;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvDeliverabilityNotificationsRegister;
@@ -138,6 +139,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
         let caps = Aarch64PartitionCapabilities {
             supports_aarch32_el0: false,
+            vendor: Vendor::ARM,
         };
 
         let inner = Arc::new(MshvPartitionInner {
@@ -362,7 +364,12 @@ impl MshvProcessor<'_> {
 
         match ec {
             ExceptionClass::DATA_ABORT_LOWER => {
-                let iss = IssDataAbort::from(syndrome.iss());
+                let iss = IssDataAbort::from(
+                    u32::from(syndrome.lower_iss())
+                        | (u32::from(syndrome.wnr()) << 6)
+                        | (u32::from(syndrome.mid_iss()) << 7)
+                        | (u32::from(syndrome.b_srt()) << 16),
+                );
                 if !iss.isv() {
                     return Err(dev.fatal_error(
                         "data abort with no valid ISS (instruction syndrome not valid)"

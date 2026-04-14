@@ -18,6 +18,7 @@ x86defs.workspace = true
 inspect.workspace = true
 user_driver.workspace = true
 aarch64defs.workspace = true
+rsi.workspace = true
 
 anyhow.workspace = true
 arrayvec.workspace = true
@@ -30,7 +31,7 @@ tracing.workspace = true
 zerocopy.workspace = true
 fs-err.workspace = true
 libc.workspace = true
-nix = { workspace = true, features = ["ioctl","feature"] }
+nix = { workspace = true, features = ["ioctl"] }
 bitfield-struct.workspace = true
 safe_intrinsics.workspace = true
 open_enum.workspace = true

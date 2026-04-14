@@ -97,7 +97,7 @@ pub enum IsolationType {
     Snp,
     /// Trust domain extensions (Intel TDX) - hardware based isolation.
     Tdx,
-    /// Trust domain extensions (ARM CCA) - hardware based isolation.
+    /// Confidential Compute Architecture (ARM CCA) - hardware based isolation.
     Cca,
 }
 

@@ -18,6 +18,7 @@ use crate::gsi::GsiRouting;
 use crate::gsi::KvmIrqFdState;
 use crate::gsi::MsiRouteBuilder;
 use aarch64defs::SystemReg;
+use aarch64defs::Vendor;
 use aarch64defs::gic::GicV2mRegister;
 use bitfield_struct::bitfield;
 use core::panic;
@@ -58,7 +59,6 @@ use vm_topology::processor::aarch64::Aarch64VpInfo;
 use vm_topology::processor::aarch64::GicMsiController;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
-use aarch64defs::Vendor;
 
 // linux/arch/arm64/include/asm/sysreg.h
 
@@ -825,7 +825,7 @@ impl virt::ProtoPartition for KvmProtoPartition<'_> {
                 pfr0 & 0xf == 2
             };
             PartitionCapabilities {
-                vendor: Vendor([0; 12]),
+                vendor: Vendor::ARM,
                 supports_aarch32_el0,
             }
         };

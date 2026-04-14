@@ -1,11 +1,10 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Backing for CCA partitions.
 
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::FileExt;
 
- use crate::Inspect;
-#[cfg(guest_arch = "aarch64")]
-use crate::ioctl::register::SetRegError;
 use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
@@ -14,111 +13,65 @@ use super::ProcessorRunner;
 use crate::GuestVtl;
 use crate::ioctl::Error;
 use crate::ioctl::HvError;
+use crate::ioctl::SetRegError;
 use crate::ioctl::ioctls::mshv_realm_config;
 use crate::ioctl::ioctls::mshv_rsi_set_mem_perm;
 use crate::ioctl::ioctls::mshv_rsi_sysreg_write;
 use crate::ioctl::ioctls::{hcl_realm_config, hcl_rsi_set_mem_perm, hcl_rsi_sysreg_write};
-use crate::protocol::RSI_PLANE_ENTER_FLAGS_TRAP_SIMD;
-use crate::protocol::RSI_PLANE_GIC_NUM_LRS;
-use crate::protocol::RSI_PLANE_NR_GPRS;
-use crate::protocol::cca_rsi_plane_entry;
-use crate::protocol::cca_rsi_plane_exit;
-use crate::protocol::cca_rsi_plane_run;
 use aarch64defs::SystemReg;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
-// use rsi::{RsiCall, RsiInput, RsiOutput, RsiReturnCode};
+use memory_range::MemoryRange;
+use rsi::RSI_PLANE_ENTER_FLAGS_TRAP_SIMD;
+use rsi::RSI_PLANE_GIC_NUM_LRS;
+use rsi::RSI_PLANE_NR_GPRS;
+use rsi::cca_rsi_plane_entry;
+use rsi::cca_rsi_plane_exit;
+use rsi::cca_rsi_plane_run;
 use sidecar_client::SidecarVp;
+use user_driver::memory::MemoryBlock;
 
-use crate::mapped_page::MappedPage;
-use crate::ioctl::register;
-use std::fs::OpenOptions;
-use std::io;
-
+const fn encode_rsi_sysreg(sysreg: SystemReg) -> u64 {
+    ((sysreg.0.op0() as u64) << 14)
+        | ((sysreg.0.op1() as u64) << 11)
+        | ((sysreg.0.crn() as u64) << 7)
+        | ((sysreg.0.crm() as u64) << 3)
+        | (sysreg.0.op2() as u64)
+}
 
 /// Runner backing for CCA partitions.
 pub struct Cca {
-    plane_run: MappedPage<cca_rsi_plane_run>,
+    plane_run: MemoryBlock,
 }
 
 impl Cca {
     /// Create new CCA runner backing.
-    pub fn new() -> Self {
-        // SAFETY: MappedPage is safe to create, it will allocate a page and
-        // ensure the pointer is valid for the lifetime of the struct.
-        let plane_run = Self::allocate_plane_run_page().expect("Failed to allocate page");
-        Self { plane_run }
+    pub fn new(plane_run: &MemoryBlock) -> Self {
+        debug_assert_eq!(plane_run.offset_in_page(), 0);
+        debug_assert!(plane_run.len() >= size_of::<cca_rsi_plane_run>());
+
+        Self {
+            plane_run: plane_run.clone(),
+        }
     }
 
-    /// Allocate a new page for the CCA plane_run struct.
-    pub(crate) fn allocate_plane_run_page() -> io::Result<MappedPage<cca_rsi_plane_run>> {
-        // Open a file that can be mmap'ed. /dev/zero is a common choice.
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/zero")?;
-        // Allocate a page. MappedPage ensures the page is fixed, and its lifetime
-        // controls when the mapping is unmapped.
-        MappedPage::new(&file, 0)
-    }
-}
-
-/// Locate the physical address corresponding to a given virtual address.
-///
-/// This is a temporary solution to the deeper issue of "how does `plane_run`
-/// get passed from EL0 to EL1 to EL2?". We currently allocate it at EL0 in
-/// a fixed location, then find its address to pass to EL1. This is done because
-/// the size of `plane_run` is more than we can fit in the page allocated for
-/// `mshv_vtl_run` by the kernel driver, as is done for `tdx_vp_context`.
-pub fn virt_to_phys(vaddr: u64) -> Result<u64, String> {
-    // Constants based on the kernel's pagemap documentation.
-    const PFN_BITS: u64 = 55;
-    const PFN_MASK: u64 = (1 << PFN_BITS) - 1;
-    const PAGE_PRESENT_BIT: u64 = 1 << 63;
-    const PAGEMAP_ENTRY_SIZE: u64 = size_of::<u64>() as u64;
-
-    // Get the system's page size. This is more reliable than using a hardcoded value.
-    let page_size = nix::unistd::sysconf(nix::unistd::SysconfVar::PAGE_SIZE)
-        .unwrap()
-        .unwrap() as u64;
-    if page_size == 0 {
-        return Err("Could not determine system page size".to_string());
-    }
-    // dbg!(page_size);
-
-    // Open the pagemap file for the current process.
-    let pagemap_file = std::fs::File::open("/proc/self/pagemap").map_err(|e| {
-        format!("Failed to open /proc/self/pagemap (requires root or CAP_SYS_ADMIN): {e}")
-    })?;
-
-    // Each entry in pagemap is 8 bytes. Calculate the offset for the desired page.
-    // Virtual Page Number = Virtual Address / Page Size
-    // Offset = Virtual Page Number * Entry Size
-    let offset = (vaddr / page_size) * PAGEMAP_ENTRY_SIZE;
-    // dbg!(offset);
-
-    let mut entry_bytes = [0u8; 8];
-    // Use `read_exact_at` to perform an atomic seek-and-read. This is safer than
-    // separate lseek() and read() calls, especially in multithreaded programs.
-    pagemap_file
-        .read_exact_at(&mut entry_bytes, offset)
-        .map_err(|e| format!("Failed to read from /proc/self/pagemap at offset {offset}: {e}"))?;
-    // dbg!(entry_bytes);
-
-    let pagemap_entry = u64::from_ne_bytes(entry_bytes);
-
-    // According to the kernel documentation, bit 63 indicates if the page is present in RAM.
-    // If it's not present, the PFN bits are invalid (they may contain swap info).
-    if (pagemap_entry & PAGE_PRESENT_BIT) == 0 {
-        return Err(format!(
-            "Page for virtual address {vaddr:#x} is not present in RAM (swapped out or not mapped)"
-        ));
+    fn plane_run_ref(&self) -> &cca_rsi_plane_run {
+        // SAFETY: the DMA allocation remains mapped for the lifetime of the backing
+        // and is page-aligned, so it can be viewed as a `cca_rsi_plane_run`.
+        unsafe { &*self.plane_run.base().cast::<cca_rsi_plane_run>() }
     }
 
-    // The lower 55 bits contain the PFN.
-    let pfn = pagemap_entry & PFN_MASK;
-    Ok(pfn * page_size)
+    fn plane_run_mut(&mut self) -> &mut cca_rsi_plane_run {
+        // SAFETY: the DMA allocation remains mapped for the lifetime of the backing
+        // and `&mut self` guarantees exclusive access to the mapped page contents.
+        unsafe { &mut *self.plane_run.base().cast_mut().cast::<cca_rsi_plane_run>() }
+    }
+
+    fn plane_run_phys(&self) -> u64 {
+        self.plane_run.pfns()[0] * HV_PAGE_SIZE
+    }
 }
 
 impl ProcessorRunner<'_, Cca> {
@@ -138,19 +91,17 @@ impl ProcessorRunner<'_, Cca> {
 
     /// Returns a mutable reference to the current VTL's CCA RSI plane run structure.
     pub fn cca_rsi_plane_run_mut(&mut self) -> &mut cca_rsi_plane_run {
-        // SAFETY: The plane_run page is valid and mapped for the lifetime of the struct.
-        self.state.plane_run.as_mut().get_mut()
+        self.state.plane_run_mut()
     }
 
     /// Returns a mutable reference to the current VTL's plane entry structure.
     pub fn cca_rsi_plane_entry(&mut self) -> &mut cca_rsi_plane_entry {
-        &mut self.state.plane_run.as_mut().get_mut().entry
+        &mut self.state.plane_run_mut().entry
     }
 
     /// Returns a mutable reference to the current VTL's plane exit structure.
     pub fn cca_rsi_plane_exit(&self) -> &cca_rsi_plane_exit {
-        // SAFETY: The plane_run page is valid and mapped for the lifetime of the struct.
-        &(unsafe { &*self.state.plane_run.as_ref().get() }).exit
+        &self.state.plane_run_ref().exit
     }
 
     /// Set the value of the plane entry flags.
@@ -196,31 +147,30 @@ impl ProcessorRunner<'_, Cca> {
         vtl: GuestVtl,
         name: SystemReg,
         value: u64,
-    ) -> Result<(), register::SetRegError> {
+    ) -> Result<(), SetRegError> {
         self.hcl
-            .rsi_sysreg_write(vtl, u32::from(name.0) as u64, value)
+            .rsi_sysreg_write(vtl, encode_rsi_sysreg(name), value)
     }
 
     /// Update the address of the `plane_run` structure in `mshv_vtl_run.context`.
     pub fn cca_set_plane_enter(&mut self) {
-        // SAFETY: The plane_run page is valid and mapped for the lifetime of the struct.
+        // SAFETY: the run page is exclusively accessed through `&mut self` while
+        // this VP is in VTL2, and the CCA runner uses `context` as a u64
+        // physical address slot for the plane run page.
         let plane_run: &mut u64 = unsafe { &mut *(&raw mut (*self.run.get()).context).cast() };
-        let plane_run_phys = virt_to_phys(self.state.plane_run.as_ptr() as u64)
-            .expect("Failed to get plane_run physical address");
-        *plane_run = plane_run_phys;
+        *plane_run = self.state.plane_run_phys();
     }
 
     /// Set flag to enable trapping of SIMD operations in the lower VTL.
     pub fn cca_plane_trap_simd(&mut self) {
-        let plane_run: &mut cca_rsi_plane_run = self.state.plane_run.as_mut().get_mut();
+        let plane_run: &mut cca_rsi_plane_run = self.state.plane_run_mut();
         plane_run.entry.flags |= RSI_PLANE_ENTER_FLAGS_TRAP_SIMD;
     }
 
     /// Unset flag that enables trapping of SIMD operations in lower VTL
     /// (i.e., SIMD operations are not trapped).
     pub fn cca_plane_no_trap_simd(&mut self) {
-        // SAFETY: The plane_run page is valid and mapped for the lifetime of the struct.
-        let plane_run: &mut cca_rsi_plane_run = self.state.plane_run.as_mut().get_mut();
+        let plane_run: &mut cca_rsi_plane_run = self.state.plane_run_mut();
         plane_run.entry.flags &= !RSI_PLANE_ENTER_FLAGS_TRAP_SIMD;
     }
 
@@ -229,19 +179,6 @@ impl ProcessorRunner<'_, Cca> {
         // SPSR_EL2_MODE_EL1h | SPSR_EL2_nRW_AARCH64 | SPSR_EL2_F_BIT | SPSR_EL2_I_BIT | SPSR_EL2_A_BIT | SPSR_EL2_D_BIT
         self.cca_rsi_plane_entry().pstate = 0x3c5;
     }
-
-    // pub fn read_translation_registers(&self) -> TranslationRegisters {
-    //     let cpsr = rsi_plane_sysreg_read()
-    //     TranslationRegisters {
-    //         cpsr: cpsr.into(),
-    //         sctlr: sctlr.into(),
-    //         tcr: tcr.into(),
-    //         ttbr0,
-    //         ttbr1,
-    //         syndrome,
-    //         encryption_mode: virt_support_aarch64emu::translate::EncryptionMode::None,
-    //     }
-    // }
 }
 
 // CCA: NOTE this implementation is lifted from the aarch64 VBS implementation
@@ -249,10 +186,10 @@ impl ProcessorRunner<'_, Cca> {
 impl<'a> super::BackingPrivate<'a> for Cca {
     fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Cca {} = &vp.backing else {
+        let super::BackingState::Cca { plane_run } = &vp.backing else {
             unreachable!()
         };
-        let cca = Cca::new();
+        let cca = Cca::new(plane_run);
 
         Ok(cca)
     }
@@ -269,7 +206,7 @@ impl<'a> super::BackingPrivate<'a> for Cca {
         // OpenHCL doesn't know what the last VTL is.
         // NOTE: for VBS x18 is omitted here as it is managed by the hypervisor,
         //       do we need to do the same here?
-        let set = match name.into() {
+        match name.into() {
             HvArm64RegisterName::X0
             | HvArm64RegisterName::X1
             | HvArm64RegisterName::X2
@@ -308,9 +245,7 @@ impl<'a> super::BackingPrivate<'a> for Cca {
                 true
             }
             _ => false,
-        };
-
-        set
+        }
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -325,7 +260,7 @@ impl<'a> super::BackingPrivate<'a> for Cca {
         // Try to get the register from the CPU context, the fastest path.
         // NOTE: for VBS x18 is omitted here as it is managed by the hypervisor,
         //       do we need to do the same here?
-        let value = match name.into() {
+        match name.into() {
             HvArm64RegisterName::X0
             | HvArm64RegisterName::X1
             | HvArm64RegisterName::X2
@@ -362,8 +297,7 @@ impl<'a> super::BackingPrivate<'a> for Cca {
                     .into(),
             ),
             _ => None,
-        };
-        value
+        }
     }
 
     fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
@@ -374,15 +308,16 @@ impl<'a> super::BackingPrivate<'a> for Cca {
 /// * ipa_width is the size of the realm protected memory space
 /// * hash_algo is the hash alg used for measurements
 /// * num_aux_planes indicates how many low-privilege planes exist
-/// * gicv3_vtr shows part of the GICv3 configuration for the
-///     realm (needed for GIC virtualisation)
-// TODO: CCA: make this Rust-native
-#[allow(dead_code)]
+/// * gicv3_vtr shows part of the GICv3 configuration for the realm,
+///   needed for GIC virtualisation
 #[derive(Debug, Clone, Copy)]
 pub struct RsiRealmConfig {
     ipa_width: u64,
+    #[expect(unused)]
     hash_algo: u64,
+    #[expect(unused)]
     num_aux_planes: u64,
+    #[expect(unused)]
     gicv3_vtr: u64,
 }
 
@@ -402,20 +337,6 @@ impl From<mshv_realm_config> for RsiRealmConfig {
             gicv3_vtr: value.gicv3_vtr,
         }
     }
-}
-
-/// Used to know which address to write in plane 1 and read from in plane 0
-/// And which address to write to the command address of clean exit of plane 1
-#[derive(Debug, Clone, Copy, Inspect, Default)]
-pub struct Addresses {
-    /// shared_address_start - GPA
-    pub shared_address_start: u64,
-    /// shared_virtual_address_start - GVA
-    pub shared_virtual_address_start: u64,
-    /// shared_address_start_command - GPA
-    pub shared_address_start_command: u64,
-    /// shared_virtual_address_start_command - GVA
-    pub shared_virtual_address_start_command: u64,
 }
 
 impl MshvVtl {
@@ -439,10 +360,12 @@ impl MshvVtl {
         sysreg: u64,
         value: u64,
     ) -> Result<(), SetRegError> {
-        let mut sysreg_write = mshv_rsi_sysreg_write::default();
-        sysreg_write.vtl = vtl.into();
-        sysreg_write.sysreg = sysreg;
-        sysreg_write.value = value;
+        let sysreg_write = mshv_rsi_sysreg_write {
+            vtl: vtl.into(),
+            sysreg,
+            value,
+            ..Default::default()
+        };
 
         // SAFETY: Calling hcl_rsi_sysreg_write ioctl with the correct arguments.
         unsafe {
@@ -453,20 +376,16 @@ impl MshvVtl {
     }
 
     /// Assign given memory range to the VTL.
-    pub fn rsi_set_mem_perm(
-        &self,
-        vtl: GuestVtl,
-        base_addr: u64,
-        top_addr: u64,
-    ) -> Result<(), HvError> {
+    pub fn rsi_set_mem_perm(&self, vtl: GuestVtl, range: &MemoryRange) -> Result<(), HvError> {
         let set_mem_perm = mshv_rsi_set_mem_perm {
             plane: if vtl == GuestVtl::Vtl0 {
                 1
             } else {
                 panic!("Invalid VTL")
             },
-            base_addr,
-            top_addr,
+            _pad: [0; 7],
+            base_addr: range.start(),
+            top_addr: range.end(),
         };
 
         // SAFETY: Calling hcl_rsi_set_mem_perm ioctl with the correct arguments.
@@ -480,26 +399,22 @@ impl MshvVtl {
 
 impl Hcl {
     /// Gets Realm config
-    #[cfg(guest_arch = "aarch64")]
     pub fn get_realm_config(&self) -> Result<RsiRealmConfig, Error> {
         self.mshv_vtl.get_realm_config()
     }
 
     /// sets system registers through rsi calls
-    #[cfg(guest_arch = "aarch64")]
-    pub fn rsi_sysreg_write(&self, vtl: GuestVtl, sysreg: u64, value: u64) -> Result<(), SetRegError> {
+    pub fn rsi_sysreg_write(
+        &self,
+        vtl: GuestVtl,
+        sysreg: u64,
+        value: u64,
+    ) -> Result<(), SetRegError> {
         self.mshv_vtl.rsi_sysreg_write(vtl, sysreg, value)
     }
 
     /// setting memory permissions
-    #[cfg(guest_arch = "aarch64")]
-    pub fn rsi_set_mem_perm(
-        &self,
-        vtl: GuestVtl,
-        base_addr: u64,
-        top_addr: u64,
-    ) -> Result<(), HvError> {
-        self.mshv_vtl.rsi_set_mem_perm(vtl, base_addr, top_addr)
+    pub fn rsi_set_mem_perm(&self, vtl: GuestVtl, range: MemoryRange) -> Result<(), HvError> {
+        self.mshv_vtl.rsi_set_mem_perm(vtl, &range)
     }
 }
-

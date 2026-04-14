@@ -7,10 +7,10 @@ mod deferred;
 pub mod register;
 
 pub mod aarch64;
+pub mod cca;
 pub mod snp;
 pub mod tdx;
 pub mod x64;
-pub mod cca;
 
 use self::deferred::DeferredActionSlots;
 use self::ioctls::*;
@@ -137,6 +137,8 @@ pub enum Error {
     SetRegisters(#[source] SetRegError),
     #[error("Invalid register value")]
     InvalidRegisterValue,
+    #[error("failed to setup memory perms {0:#x?}")]
+    VtlMem(#[source] HvError),
 }
 
 /// Error for IOCTL errors specifically.
@@ -211,6 +213,8 @@ pub enum ApplyVtlProtectionsError {
         permissions: x86defs::tdx::TdgMemPageGpaAttr,
         vtl: HvInputVtl,
     },
+    #[error("cca failed when protecting pages {range} with permissions for vtl {vtl:?}")]
+    Cca { range: MemoryRange, vtl: HvInputVtl },
     #[error("no valid protections for vtl {0:?}")]
     InvalidVtl(Vtl),
 }
@@ -573,6 +577,21 @@ pub(crate) mod ioctls {
         u64
     );
 
+    pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
+    pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
+    pub const HCL_CAP_DR6_SHARED: u32 = 3;
+    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
+
+    ioctl_write_ptr!(
+        /// Check for the presence of an extension capability.
+        hcl_check_extension,
+        MSHV_IOCTL,
+        MSHV_CHECK_EXTENSION,
+        u32
+    );
+
+    ioctl_read!(mshv_create_vtl, MSHV_IOCTL, MSHV_CREATE_VTL, u8);
+
     // CCA: Structure mirroring the data returned by RMM hhh
     // in the RSI_REALM_CONFIG call.
     #[repr(C, align(0x1000))]
@@ -587,10 +606,11 @@ pub(crate) mod ioctls {
     // CCA: Structure (mostly) mirroring the data taken by
     // RMM in the RSI_PLANE_SYSREG_WRITE.
     // `vtl` is converted into plane number in kernel driver.
-    #[repr(C, packed)]
+    #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct mshv_rsi_sysreg_write {
         pub vtl: u8,
+        pub _pad: [u8; 7],
         pub sysreg: u64,
         pub value: u64,
     }
@@ -599,10 +619,11 @@ pub(crate) mod ioctls {
     // RMM in the RSI_SET_MEM_PERM.
     // Note: we hand over the plane number here,
     // we should probably stay consistent with `sysreg_write`.
-    #[repr(C, packed)]
+    #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct mshv_rsi_set_mem_perm {
         pub plane: u8,
+        pub _pad: [u8; 7],
         pub base_addr: u64,
         pub top_addr: u64,
     }
@@ -636,22 +657,6 @@ pub(crate) mod ioctls {
         MSHV_VTL_RSI_SET_MEM_PERM,
         mshv_rsi_set_mem_perm
     );
-
-    pub const HCL_CAP_REGISTER_PAGE: u32 = 1;
-    pub const HCL_CAP_VTL_RETURN_ACTION: u32 = 2;
-    pub const HCL_CAP_DR6_SHARED: u32 = 3;
-    // #[cfg(guest_arch = "x86_64")]
-    pub const HCL_CAP_LOWER_VTL_TIMER_VIRT: u32 = 4;
-
-    ioctl_write_ptr!(
-        /// Check for the presence of an extension capability.
-        hcl_check_extension,
-        MSHV_IOCTL,
-        MSHV_CHECK_EXTENSION,
-        u32
-    );
-
-    ioctl_read!(mshv_create_vtl, MSHV_IOCTL, MSHV_CREATE_VTL, u8);
 
     #[repr(C)]
     pub struct mshv_invlpgb {
@@ -747,8 +752,6 @@ impl Mshv {
     }
 
     fn check_extension(&self, cap: u32) -> Result<bool, Error> {
-        #[cfg(guest_arch = "aarch64")]
-        return Ok(false);
         // SAFETY: calling IOCTL as documented, with no special requirements.
         let supported = unsafe {
             hcl_check_extension(self.file.as_raw_fd(), &cap)
@@ -1021,7 +1024,6 @@ impl MshvHvcall {
                     // Hardware isolated VMs cannot trust output from the hypervisor, but check for
                     // consistency between the number of elements processed and the expected count. A
                     // violation of this assertion indicates a buggy or malicious hypervisor.
-                    #[cfg(guest_arch = "x86_64")]
                     assert!(
                         (call_object.status.result().is_ok()
                             && call_object.control.rep_count()
@@ -1460,7 +1462,6 @@ impl Hcl {
     }
 
     /// Returns true if timer virtualization for lower VTL is supported.
-    #[cfg(guest_arch = "x86_64")]
     pub fn supports_lower_vtl_timer_virt(&self) -> bool {
         self.supports_lower_vtl_timer_virt
     }
@@ -1491,10 +1492,9 @@ enum BackingState {
         vtl0_apic_page: MappedPage<VmxApicPage>,
         vtl1_apic_page: MemoryBlock,
     },
-    ///???
     Cca {
-        // TODO: CCA: add vGIC backing here
-    }
+        plane_run: MemoryBlock,
+    },
 }
 
 #[derive(Debug)]
@@ -1538,7 +1538,7 @@ impl HclVp {
                         None
                     },
                 }
-            },
+            }
             IsolationType::None | IsolationType::Vbs => BackingState::MshvX64 {
                 reg_page: if map_reg_page {
                     Some(
@@ -1563,7 +1563,7 @@ impl HclVp {
                         .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                         .map_err(Error::AllocVp)?,
                 }
-            },
+            }
             IsolationType::Tdx => BackingState::Tdx {
                 vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
@@ -1572,7 +1572,12 @@ impl HclVp {
                     .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                     .map_err(Error::AllocVp)?,
             },
-            IsolationType::Cca => BackingState::Cca {},
+            IsolationType::Cca => BackingState::Cca {
+                plane_run: private_dma_client
+                    .ok_or(Error::MissingPrivateMemory)?
+                    .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                    .map_err(Error::AllocVp)?,
+            },
         };
 
         Ok(Self {
@@ -1854,8 +1859,8 @@ impl Hcl {
             {
                 unreachable!()
             }
-        } else if cfg!(guest_arch = "aarch64") {
-            // TODO: CCA: Should check the guest arch before.
+        } else if cfg!(all(guest_arch = "aarch64", target_os = "linux")) {
+            // TODO: we should check if the underlying arm64 arhcitecture extension support CCA
             IsolationType::Cca
         } else {
             IsolationType::None
@@ -1871,21 +1876,12 @@ impl Hcl {
         let supports_vtl_ret_action = mshv_fd.check_extension(HCL_CAP_VTL_RETURN_ACTION)?;
         let supports_register_page = mshv_fd.check_extension(HCL_CAP_REGISTER_PAGE)?;
         let dr6_shared = mshv_fd.check_extension(HCL_CAP_DR6_SHARED)?;
-
-        let supports_lower_vtl_timer_virt = mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
-
-        #[cfg(guest_arch = "x86_64")]
+        let supports_lower_vtl_timer_virt =
+            mshv_fd.check_extension(HCL_CAP_LOWER_VTL_TIMER_VIRT)?;
         tracing::debug!(
             supports_vtl_ret_action,
             supports_register_page,
             supports_lower_vtl_timer_virt,
-            "HCL capabilities",
-        );
-
-        #[cfg(guest_arch = "aarch64")]
-        tracing::debug!(
-            supports_vtl_ret_action,
-            supports_register_page,
             "HCL capabilities",
         );
 
@@ -2687,5 +2683,4 @@ impl Hcl {
 
         Ok(())
     }
-
 }

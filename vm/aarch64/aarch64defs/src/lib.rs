@@ -5,7 +5,7 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![no_std]
+#![no_std]
 
 pub mod gic;
 pub mod smccc;
@@ -17,8 +17,6 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-
-use std::println;
 
 /// Aarch64 SPSR_EL2 register when in 64-bit mode. Usually called CPSR by
 /// hypervisors.
@@ -85,12 +83,23 @@ pub struct EsrEl2 {
 impl EsrEl2 {
     pub fn is_write(&self) -> bool {
         // The WNR bit is set for writes, not reads.
-        self.wnr() != false
+        self.wnr()
     }
 
     pub fn is_read(&self) -> bool {
         // The WNR bit is set for writes, not reads.
-        self.wnr() == false
+        !self.wnr()
+    }
+
+    pub fn iss(&self) -> u32 {
+        u32::from(self.lower_iss())
+            | ((self.wnr() as u32) << 6)
+            | (u32::from(self.mid_iss()) << 7)
+            | (u32::from(self.b_srt()) << 16)
+            | ((self.a() as u32) << 21)
+            | ((self.b() as u32) << 22)
+            | ((self.c() as u32) << 23)
+            | ((self.d() as u32) << 24)
     }
 
     pub fn srt(&self) -> u8 {
@@ -262,10 +271,10 @@ impl From<IssDataAbort> for EsrEl2 {
             .with_wnr(((iss >> 6) & 1) != 0)
             .with_mid_iss(((iss >> 7) & 0x1ff) as u16)
             .with_b_srt(((iss >> 16) & 0x1F) as u8)
-            .with_a(((iss >> 21) & 1) != 0)
-            .with_b((iss >> 22) & 1 != 0)
-            .with_c((iss >> 23) & 1 != 0)
-            .with_d((iss >> 24) & 1 != 0)
+            .with_a(((iss >> 21) & 0x1) != 0)
+            .with_b(((iss >> 22) & 0x1) != 0)
+            .with_c(((iss >> 23) & 0x1) != 0)
+            .with_d(((iss >> 24) & 0x1) != 0)
             .with_iss2((val >> 27) as u8)
     }
 }
@@ -364,10 +373,10 @@ impl From<IssInstructionAbort> for EsrEl2 {
             .with_wnr(((iss >> 6) & 1) != 0)
             .with_mid_iss(((iss >> 7) & 0x1ff) as u16)
             .with_b_srt(((iss >> 16) & 0x1F) as u8)
-            .with_a(((iss >> 21) & 1) != 0)
-            .with_b((iss >> 22) & 1 != 0)
-            .with_c((iss >> 23) & 1 != 0)
-            .with_d((iss >> 24) & 1 != 0)
+            .with_a(((iss >> 21) & 0x1) != 0)
+            .with_b(((iss >> 22) & 0x1) != 0)
+            .with_c(((iss >> 23) & 0x1) != 0)
+            .with_d(((iss >> 24) & 0x1) != 0)
             .with_iss2((val >> 27) as u8)
     }
 }
@@ -423,30 +432,11 @@ impl IssSystem {
     }
 }
 
-// #[bitfield(u32)]
-// #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
-// pub struct SystemRegEncoding {
-//     #[bits(5)]
-//     _rsvd: u32,
-//     #[bits(3)]
-//     pub op2: u8,
-//     #[bits(4)]
-//     pub crm: u8,
-//     #[bits(4)]
-//     pub crn: u8,
-//     #[bits(3)]
-//     pub op1: u8,
-//     #[bits(2)]
-//     pub op0: u8,
-//     #[bits(11)]
-//     _rsvd2: u32,
-// }
-
 #[bitfield(u32)]
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SystemRegEncoding {
-    // #[bits(5)]
-    // _rsvd: u32,
+    #[bits(5)]
+    _rsvd: u32,
     #[bits(3)]
     pub op2: u8,
     #[bits(4)]
@@ -457,7 +447,7 @@ pub struct SystemRegEncoding {
     pub op1: u8,
     #[bits(2)]
     pub op0: u8,
-    #[bits(16)]
+    #[bits(11)]
     _rsvd2: u32,
 }
 
@@ -927,36 +917,22 @@ open_enum! {
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub struct Vendor(pub [u8; 12]);
-
-#[cfg(feature = "arbitrary")]
-impl<'a> arbitrary::Arbitrary<'a> for Vendor {
-    fn arbitrary(u: &mut arbitrary::Unstructured<'a>) -> arbitrary::Result<Self> {
-        // 25% of the time generate a random vendor
-        if u.ratio(1, 4)? {
-            Ok(Self(u.arbitrary()?))
-        } else {
-            Ok(*u.choose(&[Self::INTEL, Self::AMD, Self::HYGON])?)
-        }
-    }
-}
+pub struct Vendor(pub u32);
 
 impl Vendor {
-    pub fn is_intel_compatible(&self) -> bool {
-        false
-    }
+    pub const ARM: Self = Self(0x0010);
 
-    pub fn is_amd_compatible(&self) -> bool {
-        false
+    pub fn is_arm_compatible(&self) -> bool {
+        *self == Self::ARM
     }
 }
 
 impl Display for Vendor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        if let Ok(s) = core::str::from_utf8(&self.0) {
-            f.pad(s)
+        if self.is_arm_compatible() {
+            f.pad("Arm")
         } else {
-            core::fmt::Debug::fmt(&self.0, f)
+            write!(f, "{:#x}", self.0)
         }
     }
 }
