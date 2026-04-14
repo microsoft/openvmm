@@ -52,7 +52,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempPath;
 use vmgs_resources::GuestStateEncryptionPolicy;
-use vtl2_settings_proto::StorageController;
+use vtl2_settings_proto::StorageController as Vtl2StorageController;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// The set of artifacts and resources needed to instantiate a
@@ -223,7 +223,7 @@ pub struct PetriVmConfig {
     /// TPM configuration
     pub tpm: Option<TpmConfig>,
     /// Storage controllers and associated disks
-    pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    pub storage_controllers: HashMap<Guid, StorageController>,
 }
 
 /// Static properties about the VM for convenience during contruction and
@@ -262,7 +262,7 @@ pub struct PetriVmRuntimeConfig {
     /// IDE controllers and associated disks
     pub ide_controllers: Option<[[Option<Drive>; 2]; 2]>,
     /// Storage controllers and associated disks
-    pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+    pub storage_controllers: HashMap<Guid, StorageController>,
 }
 
 /// Resources used by a Petri VM during contruction and runtime
@@ -395,7 +395,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
-                vmbus_storage_controllers: HashMap::new(),
+                storage_controllers: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -467,7 +467,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
 
                 vmgs: PetriVmgsResource::Ephemeral,
                 tpm: None,
-                vmbus_storage_controllers: HashMap::new(),
+                storage_controllers: HashMap::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -585,17 +585,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     fn add_petri_scsi_controllers(self) -> Self {
-        let builder = self.add_vmbus_storage_controller(
+        let builder = self.add_storage_controller(
             &PETRI_SCSI_VTL0_CONTROLLER,
             Vtl::Vtl0,
-            VmbusStorageType::Scsi,
+            StorageType::Scsi,
         );
 
         if builder.is_openhcl() {
-            builder.add_vmbus_storage_controller(
+            builder.add_storage_controller(
                 &PETRI_SCSI_VTL2_CONTROLLER,
                 Vtl::Vtl2,
-                VmbusStorageType::Scsi,
+                StorageType::Scsi,
             )
         } else {
             builder
@@ -647,7 +647,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         }
 
         if let Some(disk) = disk {
-            self.add_vmbus_drive(
+            self.add_storage_drive(
                 Drive::new(Some(Disk::Temporary(disk)), false),
                 &PETRI_SCSI_VTL0_CONTROLLER,
                 Some(PETRI_SCSI_CRASH_LUN),
@@ -692,17 +692,17 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         // add controllers upfront).
         if !self
             .config
-            .vmbus_storage_controllers
+            .storage_controllers
             .contains_key(&controller_id)
         {
-            self = self.add_vmbus_storage_controller(
+            self = self.add_storage_controller(
                 &controller_id,
                 target_vtl,
-                VmbusStorageType::Scsi,
+                StorageType::Scsi,
             );
         }
 
-        self.add_vmbus_drive(
+        self.add_storage_drive(
             Drive::new(
                 Some(Disk::Temporary(Arc::new(agent_disk.into_temp_path()))),
                 false,
@@ -734,7 +734,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                     PETRI_IDE_BOOT_LUN,
                 ),
                 BootDeviceType::IdeViaScsi => self
-                    .add_vmbus_drive(
+                    .add_storage_drive(
                         boot_drive,
                         &PETRI_SCSI_VTL2_CONTROLLER,
                         Some(PETRI_SCSI_BOOT_LUN),
@@ -755,13 +755,13 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                             .build(),
                     ),
                 BootDeviceType::IdeViaNvme => todo!(),
-                BootDeviceType::Scsi => self.add_vmbus_drive(
+                BootDeviceType::Scsi => self.add_storage_drive(
                     boot_drive,
                     &PETRI_SCSI_VTL0_CONTROLLER,
                     Some(PETRI_SCSI_BOOT_LUN),
                 ),
                 BootDeviceType::ScsiViaScsi => self
-                    .add_vmbus_drive(
+                    .add_storage_drive(
                         boot_drive,
                         &PETRI_SCSI_VTL2_CONTROLLER,
                         Some(PETRI_SCSI_BOOT_LUN),
@@ -781,12 +781,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                             .build(),
                     ),
                 BootDeviceType::ScsiViaNvme => self
-                    .add_vmbus_storage_controller(
+                    .add_storage_controller(
                         &PETRI_NVME_BOOT_VTL2_CONTROLLER,
                         Vtl::Vtl2,
-                        VmbusStorageType::Nvme,
+                        StorageType::Nvme,
                     )
-                    .add_vmbus_drive(
+                    .add_storage_drive(
                         boot_drive,
                         &PETRI_NVME_BOOT_VTL2_CONTROLLER,
                         Some(PETRI_NVME_BOOT_NSID),
@@ -806,12 +806,12 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                             .build(),
                     ),
                 BootDeviceType::Nvme => self
-                    .add_vmbus_storage_controller(
+                    .add_storage_controller(
                         &PETRI_NVME_BOOT_VTL0_CONTROLLER,
                         Vtl::Vtl0,
-                        VmbusStorageType::Nvme,
+                        StorageType::Nvme,
                     )
-                    .add_vmbus_drive(
+                    .add_storage_drive(
                         boot_drive,
                         &PETRI_NVME_BOOT_VTL0_CONTROLLER,
                         Some(PETRI_NVME_BOOT_NSID),
@@ -1402,7 +1402,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Add a storage controller to VTL2
-    pub fn add_vtl2_storage_controller(self, controller: StorageController) -> Self {
+    pub fn add_vtl2_storage_controller(self, controller: Vtl2StorageController) -> Self {
         self.with_custom_vtl2_settings(move |v| {
             v.dynamic
                 .as_mut()
@@ -1413,18 +1413,18 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     }
 
     /// Add an additional SCSI controller to the VM.
-    pub fn add_vmbus_storage_controller(
+    pub fn add_storage_controller(
         mut self,
         id: &Guid,
         target_vtl: Vtl,
-        controller_type: VmbusStorageType,
+        controller_type: StorageType,
     ) -> Self {
         if self
             .config
-            .vmbus_storage_controllers
+            .storage_controllers
             .insert(
                 *id,
-                VmbusStorageController::new(target_vtl, controller_type),
+                StorageController::new(target_vtl, controller_type),
             )
             .is_some()
         {
@@ -1433,8 +1433,8 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
-    /// Add a VMBus disk drive to the VM
-    pub fn add_vmbus_drive(
+    /// Add a disk drive to the VM
+    pub fn add_storage_drive(
         mut self,
         drive: Drive,
         controller_id: &Guid,
@@ -1442,7 +1442,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
     ) -> Self {
         let controller = self
             .config
-            .vmbus_storage_controllers
+            .storage_controllers
             .get_mut(controller_id)
             .unwrap_or_else(|| panic!("storage controller {controller_id} does not exist"));
 
@@ -1866,12 +1866,12 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     }
 
     /// Get the list of storage controllers added to this VM
-    pub fn get_vmbus_storage_controllers(&self) -> &HashMap<Guid, VmbusStorageController> {
-        &self.config.vmbus_storage_controllers
+    pub fn get_storage_controllers(&self) -> &HashMap<Guid, StorageController> {
+        &self.config.storage_controllers
     }
 
-    /// Add or modify a VMBus disk drive
-    pub async fn set_vmbus_drive(
+    /// Add or modify a disk drive
+    pub async fn set_storage_drive(
         &mut self,
         drive: Drive,
         controller_id: &Guid,
@@ -1879,7 +1879,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
     ) -> anyhow::Result<()> {
         let controller = self
             .config
-            .vmbus_storage_controllers
+            .storage_controllers
             .get_mut(controller_id)
             .unwrap_or_else(|| panic!("storage controller {controller_id} does not exist"));
 
@@ -1887,7 +1887,7 @@ impl<T: PetriVmmBackend> PetriVm<T> {
         let disk = controller.drives.get(&controller_location).unwrap();
 
         self.runtime
-            .set_vmbus_drive(disk, controller_id, controller_location)
+            .set_storage_drive(disk, controller_id, controller_location)
             .await?;
 
         Ok(())
@@ -1957,8 +1957,8 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     }
     /// Set the OpenHCL VTL2 settings
     async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>;
-    /// Add or modify a VMBus disk drive
-    async fn set_vmbus_drive(
+    /// Add or modify a disk drive
+    async fn set_storage_drive(
         &mut self,
         disk: &Drive,
         controller_id: &Guid,
@@ -2631,7 +2631,7 @@ impl Firmware {
 
     fn into_runtime_config(
         self,
-        vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
+        storage_controllers: HashMap<Guid, StorageController>,
     ) -> PetriVmRuntimeConfig {
         match self {
             Firmware::OpenhclLinuxDirect { openhcl_config, .. }
@@ -2643,19 +2643,19 @@ impl Firmware {
                         .unwrap_or_else(default_vtl2_settings),
                 ),
                 ide_controllers: None,
-                vmbus_storage_controllers,
+                storage_controllers,
             },
             Firmware::Pcat {
                 ide_controllers, ..
             } => PetriVmRuntimeConfig {
                 vtl2_settings: None,
                 ide_controllers: Some(ide_controllers),
-                vmbus_storage_controllers,
+                storage_controllers,
             },
             Firmware::LinuxDirect { .. } | Firmware::Uefi { .. } => PetriVmRuntimeConfig {
                 vtl2_settings: None,
                 ide_controllers: None,
-                vmbus_storage_controllers,
+                storage_controllers,
             },
         }
     }
@@ -3086,9 +3086,9 @@ pub enum Vtl {
     Vtl2 = 2,
 }
 
-/// The VMBus storage device type.
+/// The storage device type.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum VmbusStorageType {
+pub enum StorageType {
     /// SCSI
     Scsi,
     /// NVMe
@@ -3113,20 +3113,20 @@ impl Drive {
     }
 }
 
-/// VMBus storage controller
+/// Storage controller
 #[derive(Debug, Clone)]
-pub struct VmbusStorageController {
+pub struct StorageController {
     /// The VTL to assign the storage controller to
     pub target_vtl: Vtl,
     /// The storage device type
-    pub controller_type: VmbusStorageType,
+    pub controller_type: StorageType,
     /// Drives (with any inserted disks) attached to this storage controller
     pub drives: HashMap<u32, Drive>,
 }
 
-impl VmbusStorageController {
+impl StorageController {
     /// Create a new storage controller
-    pub fn new(target_vtl: Vtl, controller_type: VmbusStorageType) -> Self {
+    pub fn new(target_vtl: Vtl, controller_type: StorageType) -> Self {
         Self {
             target_vtl,
             controller_type,
@@ -3165,8 +3165,8 @@ impl VmbusStorageController {
 mod tests {
     use super::make_vm_safe_name;
     use crate::Drive;
-    use crate::VmbusStorageController;
-    use crate::VmbusStorageType;
+    use crate::StorageController;
+    use crate::StorageType;
     use crate::Vtl;
 
     #[test]
@@ -3227,8 +3227,8 @@ mod tests {
     }
 
     #[test]
-    fn test_vmbus_storage_controller() {
-        let mut controller = VmbusStorageController::new(Vtl::Vtl0, VmbusStorageType::Scsi);
+    fn test_storage_controller() {
+        let mut controller = StorageController::new(Vtl::Vtl0, StorageType::Scsi);
         assert_eq!(
             controller.set_drive(Some(1), Drive::new(None, false), false),
             1

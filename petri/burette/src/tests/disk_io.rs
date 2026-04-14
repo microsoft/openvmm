@@ -237,12 +237,12 @@ impl crate::harness::WarmPerfTest for DiskIoTest {
                                 });
                             })
                     })
-                    .add_vmbus_storage_controller(
+                    .add_storage_controller(
                         &DATA_DISK_SCSI_CONTROLLER,
                         petri::Vtl::Vtl0,
-                        petri::VmbusStorageType::Scsi,
+                        petri::StorageType::Scsi,
                     )
-                    .add_vmbus_drive(
+                    .add_storage_drive(
                         petri::Drive::new(Some(disk), false),
                         &DATA_DISK_SCSI_CONTROLLER,
                         Some(0),

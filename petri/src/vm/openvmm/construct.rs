@@ -19,12 +19,12 @@ use crate::ProcessorTopology;
 use crate::SecureBootTemplate;
 use crate::TpmConfig;
 use crate::UefiConfig;
-use crate::VmbusStorageType;
+use crate::StorageType;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 
 use crate::MmioConfig;
 use crate::SIZE_1_MB;
-use crate::VmbusStorageController;
+use crate::StorageController;
 use crate::openvmm::memdiff_vmgs;
 use crate::openvmm::petri_disk_to_openvmm;
 use crate::vm::PetriVmProperties;
@@ -117,7 +117,7 @@ impl PetriVmConfigOpenVmm {
             proc_topology,
             vmgs,
             tpm: tpm_config,
-            vmbus_storage_controllers,
+            storage_controllers,
         } = petri_vm_config;
 
         tracing::debug!(?firmware, ?arch, "Petri VM firmware configuration");
@@ -204,7 +204,7 @@ impl PetriVmConfigOpenVmm {
 
         let ide_disks = ide_controllers_to_openvmm(firmware.ide_controllers())?;
         let (mut vmbus_devices, vpci_devices) =
-            vmbus_storage_controllers_to_openvmm(&vmbus_storage_controllers)?;
+            storage_controllers_to_openvmm(&storage_controllers)?;
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
 
@@ -526,7 +526,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         Ok(Self {
-            runtime_config: firmware.into_runtime_config(vmbus_storage_controllers),
+            runtime_config: firmware.into_runtime_config(storage_controllers),
             arch,
             host_log_levels,
             config,
@@ -1119,8 +1119,8 @@ fn ide_controllers_to_openvmm(
 }
 
 /// Convert the generic VMBUS storage configuration to OpenVMM VMBUS and VPCI devices.
-fn vmbus_storage_controllers_to_openvmm(
-    vmbus_storage_controllers: &HashMap<Guid, VmbusStorageController>,
+fn storage_controllers_to_openvmm(
+    storage_controllers: &HashMap<Guid, StorageController>,
 ) -> anyhow::Result<(
     Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     Vec<VpciDeviceConfig>,
@@ -1129,14 +1129,14 @@ fn vmbus_storage_controllers_to_openvmm(
     let mut vpci_devices = Vec::new();
 
     // Add VMBus storage
-    for (instance_id, controller) in vmbus_storage_controllers {
+    for (instance_id, controller) in storage_controllers {
         let vtl = match controller.target_vtl {
             crate::Vtl::Vtl0 => DeviceVtl::Vtl0,
             crate::Vtl::Vtl1 => DeviceVtl::Vtl1,
             crate::Vtl::Vtl2 => DeviceVtl::Vtl2,
         };
         match controller.controller_type {
-            VmbusStorageType::Scsi => {
+            StorageType::Scsi => {
                 let mut devices = Vec::new();
                 for (lun, Drive { disk, is_dvd }) in &controller.drives {
                     if !*is_dvd && let Some(disk) = disk {
@@ -1171,7 +1171,7 @@ fn vmbus_storage_controllers_to_openvmm(
                     .into_resource(),
                 ));
             }
-            VmbusStorageType::Nvme => {
+            StorageType::Nvme => {
                 let mut namespaces = Vec::new();
                 for (nsid, Drive { disk, is_dvd }) in &controller.drives {
                     if !*is_dvd && let Some(disk) = disk {
@@ -1198,7 +1198,7 @@ fn vmbus_storage_controllers_to_openvmm(
                     .into_resource(),
                 });
             }
-            VmbusStorageType::VirtioBlk => {
+            StorageType::VirtioBlk => {
                 // Each virtio-blk drive needs a unique VPCI instance ID.
                 // Use a fixed template GUID with data1 set to the LUN.
                 const VIRTIO_BLK_INSTANCE_ID_TEMPLATE: Guid = Guid {

@@ -169,7 +169,7 @@ impl PetriVmRuntime for PetriVmOpenVmm {
         Self::set_vtl2_settings(self, settings).await
     }
 
-    async fn set_vmbus_drive(
+    async fn set_storage_drive(
         &mut self,
         _disk: &crate::Drive,
         _controller_id: &guid::Guid,
