@@ -159,25 +159,48 @@ impl EpollIoUring {
     /// Processes all available completions, waking the associated futures.
     ///
     /// Called from the epoll event loop when the ring fd is readable.
+    ///
+    /// Loops to handle CQ overflow: when more CQEs are produced than
+    /// the CQ can hold, the kernel keeps overflow entries internally.
+    /// After draining the visible CQ, an `io_uring_enter()` (via
+    /// `submit()`) flushes overflows into the CQ so they can be
+    /// drained on the next iteration.
     pub(crate) fn process_completions(&self, wakers: &mut WakerList) {
-        // SAFETY: we are the sole consumer of the completion queue. The
-        // epoll event loop is single-threaded and only calls this method
-        // in response to the ring fd being readable.
-        while let Some(cqe) = unsafe { self.ring.completion_shared().next() } {
-            let ptr = cqe.user_data() as *const Mutex<CompletionState>;
-            let result = cqe.result();
-            // SAFETY: The pointer is valid because IoFuture aborts on
-            // drop if the IO is in flight, guaranteeing the
-            // CompletionState outlives the IO.
-            let completion = unsafe { &*ptr };
-            let waker = {
-                let mut state = completion.lock();
-                state.result = Some(result);
-                state.waker.take()
-            };
-            if let Some(waker) = waker {
-                wakers.push(waker);
+        loop {
+            let mut found = false;
+            // SAFETY: we are the sole consumer of the completion queue. The
+            // epoll event loop is single-threaded and only calls this method
+            // in response to the ring fd being readable.
+            while let Some(cqe) = unsafe { self.ring.completion_shared().next() } {
+                found = true;
+                let ptr = cqe.user_data() as *const Mutex<CompletionState>;
+                let result = cqe.result();
+                // SAFETY: The pointer is valid because IoFuture aborts on
+                // drop if the IO is in flight, guaranteeing the
+                // CompletionState outlives the IO.
+                let completion = unsafe { &*ptr };
+                let waker = {
+                    let mut state = completion.lock();
+                    state.result = Some(result);
+                    state.waker.take()
+                };
+                if let Some(waker) = waker {
+                    wakers.push(waker);
+                }
             }
+            if !found {
+                break;
+            }
+            // Only issue a syscall when the kernel is holding overflow
+            // entries. The IORING_SQ_CQ_OVERFLOW flag is set in the
+            // SQ flags when CQEs couldn't fit in the CQ and are queued
+            // internally. io_uring_enter() flushes them into the CQ.
+            //
+            // SAFETY: on the epoll thread — sole SQ accessor.
+            if !unsafe { self.ring.submission_shared().cq_overflow() } {
+                break;
+            }
+            let _ = self.ring.submit();
         }
     }
 
@@ -343,7 +366,7 @@ impl Future for IoFuture<'_> {
 
         // Subsequent polls: check for completion.
         let mut state = this.completion.lock();
-        if let Some(result) = state.result.take() {
+        if let Some(result) = state.result {
             Poll::Ready(if result >= 0 {
                 Ok(result)
             } else {

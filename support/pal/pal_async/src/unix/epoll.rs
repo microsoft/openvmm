@@ -214,6 +214,8 @@ impl IoBackend for EpollBackend {
 
                     // Drain any io-uring completions so futures are woken
                     // promptly even when the executor is busy-looping.
+                    // Also update the thread-local ring pointer so that
+                    // queue_sqe takes the fast path for on-thread callers.
                     if let Some(uring) = self.io_uring.get() {
                         uring_thread_state.set_ring(uring);
                         uring.process_completions(&mut wakers);
@@ -536,5 +538,55 @@ mod tests {
     #[test]
     fn socket_works() {
         EpollPool::run_with(executor_tests::socket_tests)
+    }
+
+    #[test]
+    fn uring_nop() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_nop)
+    }
+
+    #[test]
+    fn uring_probe() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_probe)
+    }
+
+    #[test]
+    fn uring_multiple_nops() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_multiple_nops)
+    }
+
+    #[test]
+    fn uring_sq_full() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_sq_full)
+    }
+
+    #[test]
+    fn uring_cq_saturation() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_cq_saturation)
+    }
+
+    #[test]
+    fn uring_remote_submit() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_remote_submit)
+    }
+
+    #[test]
+    fn uring_remote_batch() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_remote_batch)
+    }
+
+    #[test]
+    fn uring_busy_loop_completions() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_busy_loop_completions)
+    }
+
+    #[test]
+    fn uring_read_write() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_read_write)
+    }
+
+    #[test]
+    fn uring_pipe_round_trip() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_pipe_round_trip)
     }
 }
