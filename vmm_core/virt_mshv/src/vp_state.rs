@@ -6,6 +6,7 @@ use super::VcpuFdExt;
 use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
+use mshv_bindings::LapicState;
 use virt::state::HvRegisterState;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
@@ -89,11 +90,53 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        Err(Error::NotSupported)
+        // Get the APIC base register.
+        let mut assoc = [HvRegisterAssoc {
+            name: HvX64RegisterName::ApicBase.into(),
+            pad: [0; 3],
+            value: FromZeros::new_zeroed(),
+        }];
+        self.inner
+            .vcpufd
+            .get_hvdef_regs(&mut assoc)
+            .map_err(Error::Register)?;
+        let apic_base = assoc[0].value.as_u64();
+
+        // Get the LAPIC state page.
+        let lapic = self.inner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
+
+        // Clear the non-architectural NMI pending bit.
+        vp::set_hv_apic_nmi_pending(&mut page, false);
+
+        Ok(vp::Apic::from_page(apic_base, &page))
     }
 
-    fn set_apic(&mut self, _value: &vp::Apic) -> Result<(), Self::Error> {
-        Err(Error::NotSupported)
+    fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
+        // Set the APIC base register first to set the APIC mode before
+        // updating the APIC register state.
+        self.inner
+            .vcpufd
+            .set_hvdef_regs_64(&[(HvX64RegisterName::ApicBase, value.apic_base)])
+            .map_err(Error::Register)?;
+
+        // Preserve the current NMI pending state across the restore.
+        let current_lapic = self.inner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let current_page: [u8; 1024] = current_lapic.regs.map(|b| b as u8);
+        let nmi_pending = vp::hv_apic_nmi_pending(&current_page);
+
+        // Set the LAPIC state page, restoring the NMI pending bit.
+        let mut page = value.as_page();
+        vp::set_hv_apic_nmi_pending(&mut page, nmi_pending);
+        let lapic = LapicState {
+            regs: page.map(|b| b as std::os::raw::c_char),
+        };
+        self.inner
+            .vcpufd
+            .set_lapic(&lapic)
+            .map_err(Error::Register)?;
+
+        Ok(())
     }
 
     fn xcr(&mut self) -> Result<vp::Xcr0, Self::Error> {
