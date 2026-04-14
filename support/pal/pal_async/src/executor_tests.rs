@@ -216,16 +216,26 @@ pub mod io_uring_tests {
     use io_uring::types;
     use std::task::Poll;
 
-    /// Helper: get the io-uring submitter from the driver, panicking if unavailable.
-    fn submitter(driver: &impl Driver) -> &dyn IoUringSubmit {
-        driver
+    /// Runs all io-uring tests.
+    pub async fn uring_tests(driver: impl Driver) {
+        let uring = driver
             .io_uring_submit()
-            .expect("driver does not support io-uring")
+            .expect("driver does not support io-uring");
+
+        uring_nop(uring).await;
+        uring_probe(uring).await;
+        uring_multiple_nops(uring).await;
+        uring_sq_full(uring).await;
+        uring_cq_saturation(uring).await;
+        uring_remote_submit(uring).await;
+        uring_remote_batch(uring).await;
+        uring_busy_loop_completions(uring).await;
+        uring_read_write(uring).await;
+        uring_pipe_round_trip(uring).await;
     }
 
     /// Submit a single NOP and await its completion.
-    pub async fn uring_nop(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_nop(uring: &dyn IoUringSubmit) {
         let sqe = opcode::Nop::new().build();
         // SAFETY: NOP references no memory.
         let result = unsafe { uring.submit(sqe) }.await.unwrap();
@@ -233,16 +243,14 @@ pub mod io_uring_tests {
     }
 
     /// Verify probe returns true for NOP and false for an invalid opcode.
-    pub async fn uring_probe(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_probe(uring: &dyn IoUringSubmit) {
         assert!(uring.probe(opcode::Nop::CODE));
         // Opcode 255 is not a valid io-uring opcode.
         assert!(!uring.probe(255));
     }
 
     /// Submit multiple NOPs concurrently and verify all complete.
-    pub async fn uring_multiple_nops(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_multiple_nops(uring: &dyn IoUringSubmit) {
         let mut futures: Vec<_> = (0..10)
             .map(|_| {
                 let sqe = opcode::Nop::new().build();
@@ -259,8 +267,7 @@ pub mod io_uring_tests {
 
     /// Submit more NOPs than the SQ can hold (64), forcing the on-thread
     /// fast path to hit SQ-full and submit inline.
-    pub async fn uring_sq_full(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_sq_full(uring: &dyn IoUringSubmit) {
         let count = 80;
         let mut futures: Vec<_> = (0..count)
             .map(|_| {
@@ -280,8 +287,7 @@ pub mod io_uring_tests {
     /// Submit more NOPs than the CQ can hold (default 2×SQ = 128),
     /// verifying all completions are delivered even when the CQ must
     /// be drained and refilled multiple times.
-    pub async fn uring_cq_saturation(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_cq_saturation(uring: &dyn IoUringSubmit) {
         let count = 256;
         let mut futures: Vec<_> = (0..count)
             .map(|_| {
@@ -305,8 +311,7 @@ pub mod io_uring_tests {
     /// calls `queue_sqe` via the remote/off-thread path), then awaits
     /// the future on the executor thread where the event loop flushes
     /// the remote queue and delivers the completion.
-    pub async fn uring_remote_submit(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_remote_submit(uring: &dyn IoUringSubmit) {
         let sqe = opcode::Nop::new().build();
         // SAFETY: NOP references no memory.
         let fut = unsafe { uring.submit(sqe) };
@@ -329,8 +334,7 @@ pub mod io_uring_tests {
 
     /// Submit NOPs from multiple threads concurrently, stressing
     /// the remote queue under contention.
-    pub async fn uring_remote_batch(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_remote_batch(uring: &dyn IoUringSubmit) {
         let count_per_thread = 20;
         let num_threads = 4;
 
@@ -363,8 +367,7 @@ pub mod io_uring_tests {
 
     /// Submit a NOP, then busy-loop the executor to verify CQ drain
     /// happens during RunAgain (not just before sleep).
-    pub async fn uring_busy_loop_completions(driver: impl Driver) {
-        let uring = submitter(&driver);
+    async fn uring_busy_loop_completions(uring: &dyn IoUringSubmit) {
         let sqe = opcode::Nop::new().build();
         // SAFETY: NOP references no memory.
         let mut fut = unsafe { uring.submit(sqe) };
@@ -391,9 +394,7 @@ pub mod io_uring_tests {
 
     /// Submit a real read via io-uring on an eventfd, verifying
     /// non-NOP operations work end-to-end.
-    pub async fn uring_read_write(driver: impl Driver) {
-        let uring = submitter(&driver);
-
+    async fn uring_read_write(uring: &dyn IoUringSubmit) {
         // Create an eventfd for testing.
         // SAFETY: eventfd with valid flags.
         let efd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -429,9 +430,7 @@ pub mod io_uring_tests {
 
     /// Submit a write + read via io-uring to a pipe, verifying the
     /// data round-trips correctly.
-    pub async fn uring_pipe_round_trip(driver: impl Driver) {
-        let uring = submitter(&driver);
-
+    async fn uring_pipe_round_trip(uring: &dyn IoUringSubmit) {
         let mut fds = [0i32; 2];
         // SAFETY: pipe2 with valid args.
         let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };

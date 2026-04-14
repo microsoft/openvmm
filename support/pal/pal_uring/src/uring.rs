@@ -493,4 +493,13 @@ pub(crate) mod tests {
         let pool = get_pool_or_skip!();
         run_until(pool, executor_tests::socket_tests(pool.initiator().clone()))
     }
+
+    #[test]
+    fn uring_works() {
+        let pool = get_pool_or_skip!();
+        run_until(
+            pool,
+            executor_tests::io_uring_tests::uring_tests(pool.initiator().clone()),
+        )
+    }
 }

@@ -541,52 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn uring_nop() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_nop)
-    }
-
-    #[test]
-    fn uring_probe() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_probe)
-    }
-
-    #[test]
-    fn uring_multiple_nops() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_multiple_nops)
-    }
-
-    #[test]
-    fn uring_sq_full() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_sq_full)
-    }
-
-    #[test]
-    fn uring_cq_saturation() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_cq_saturation)
-    }
-
-    #[test]
-    fn uring_remote_submit() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_remote_submit)
-    }
-
-    #[test]
-    fn uring_remote_batch() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_remote_batch)
-    }
-
-    #[test]
-    fn uring_busy_loop_completions() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_busy_loop_completions)
-    }
-
-    #[test]
-    fn uring_read_write() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_read_write)
-    }
-
-    #[test]
-    fn uring_pipe_round_trip() {
-        EpollPool::run_with(executor_tests::io_uring_tests::uring_pipe_round_trip)
+    fn uring_works() {
+        EpollPool::run_with(executor_tests::io_uring_tests::uring_tests)
     }
 }
