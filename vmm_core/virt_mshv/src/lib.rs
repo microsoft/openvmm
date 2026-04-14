@@ -575,15 +575,14 @@ impl Hv1 for MshvPartition {
 
 impl GetReferenceTime for MshvPartitionInner {
     fn now(&self) -> ReferenceTimeResult {
-        let mut regs = [HvRegisterAssoc::from((
-            hvdef::HvAllArchRegisterName::TimeRefCount,
-            0u64,
-        ))];
-        self.vp(VpIndex::BSP)
-            .vcpufd
-            .get_hvdef_regs(&mut regs)
+        // Use the partition property instead of a VP register to avoid
+        // deadlocking when VPs are running.
+        let ref_time = self
+            .vmfd
+            .get_partition_property(
+                mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME,
+            )
             .unwrap();
-        let ref_time = regs[0].value.as_u64();
         ReferenceTimeResult {
             ref_time,
             system_time: None,
