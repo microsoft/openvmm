@@ -416,10 +416,9 @@ pub mod io_uring_tests {
         )
         .build();
 
-        // SAFETY: read_buf is on the stack but this future is awaited
-        // immediately (never dropped while in-flight), so the buffer
-        // outlives the IO. The abort-on-drop guard provides the safety
-        // net.
+        // SAFETY: read_buf is a local in this async fn; it lives as
+        // long as the returned future. The abort-on-drop guard ensures
+        // soundness on cancellation.
         let result = unsafe { uring.submit(sqe) }.await.unwrap();
         assert_eq!(result, 8);
         assert_eq!(read_buf, 42);
@@ -459,7 +458,7 @@ pub mod io_uring_tests {
         )
         .build();
 
-        // SAFETY: read_buf is on the stack, future awaited immediately.
+        // SAFETY: read_buf is a local in this async fn.
         let result = unsafe { uring.submit(read_sqe) }.await.unwrap();
         assert_eq!(result, 5);
         assert_eq!(&read_buf, b"hello");

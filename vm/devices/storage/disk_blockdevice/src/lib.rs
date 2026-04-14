@@ -570,9 +570,10 @@ impl DiskIo for BlockDevice {
                 .io_vecs()
         };
 
-        // SAFETY: the buffers for the IO are this stack, and they will be
-        // kept alive for the duration of the IO since we immediately call
-        // await on the IO. The abort-on-drop guard prevents use-after-free.
+        // SAFETY: `io_vecs` and the underlying locked pages are locals
+        // in this `async fn`--they are part of the same state machine as
+        // the returned future and will not be freed before it completes
+        // or is dropped (which aborts).
         let bytes_read = unsafe {
             self.uring().submit(
                 opcode::Readv::new(
@@ -631,9 +632,10 @@ impl DiskIo for BlockDevice {
             bounce_buffer.buffer.io_vecs()
         };
 
-        // SAFETY: the buffers for the IO are this stack, and they will be
-        // kept alive for the duration of the IO since we immediately call
-        // await on the IO. The abort-on-drop guard prevents use-after-free.
+        // SAFETY: `io_vecs` and the underlying locked pages are locals
+        // in this `async fn`--they are part of the same state machine as
+        // the returned future and will not be freed before it completes
+        // or is dropped (which aborts).
         let bytes_written = unsafe {
             self.uring().submit(
                 opcode::Writev::new(

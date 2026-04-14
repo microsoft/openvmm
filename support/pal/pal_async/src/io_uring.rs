@@ -25,19 +25,19 @@ pub trait IoUringSubmit: Send + Sync {
     ///
     /// # Safety
     ///
-    /// The SQE must only reference memory with `'static` lifetime.
+    /// All memory referenced by the SQE must remain valid for the
+    /// lifetime of the returned future.
     ///
-    /// In particular, the SQE must **not** reference borrowed or
-    /// stack-allocated memory, even though the abort-on-drop guard would
-    /// normally prevent use-after-free on future drop. The guard does not
-    /// protect against [`std::mem::forget`]: if the caller forgets the
-    /// returned future, the IO will complete after the borrowed memory is
-    /// freed, causing undefined behavior.
+    /// The abort-on-drop guard makes it sound to reference
+    /// non-`'static` memory (such as locals in an enclosing `async
+    /// fn`): either the IO completes normally, or the future is
+    /// dropped and the process aborts before the referenced memory
+    /// is freed.
     ///
-    /// Callers that need to use non-`'static` buffers must ensure the
-    /// buffer outlives the IO through some other mechanism (e.g., owning
-    /// the buffer in a pinned enclosing future that itself aborts on
-    /// drop).
+    /// Leaking the returned future via [`std::mem::forget`] or a
+    /// reference-count cycle bypasses the abort guard. This is
+    /// undefined behavior if the SQE references non-`'static`
+    /// memory that is not otherwise kept alive.
     unsafe fn submit(
         &self,
         sqe: squeue::Entry,
