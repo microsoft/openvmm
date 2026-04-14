@@ -32,7 +32,6 @@ arrayvec.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 signal-hook.workspace = true
-static_assertions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true

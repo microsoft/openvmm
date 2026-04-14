@@ -2,12 +2,10 @@
 // Licensed under the MIT License.
 
 use super::Error;
+use super::VcpuFdExt;
 use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
-use mshv_bindings::hv_register_assoc;
-use static_assertions::assert_eq_size;
-use std::mem::offset_of;
 use virt::state::HvRegisterState;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
@@ -28,7 +26,7 @@ impl MshvProcessor<'_> {
 
         self.inner
             .vcpufd
-            .set_reg(hvdef_to_mshv(&assoc[..]))
+            .set_hvdef_regs(&assoc[..])
             .map_err(Error::Register)?;
 
         Ok(())
@@ -47,40 +45,12 @@ impl MshvProcessor<'_> {
 
         self.inner
             .vcpufd
-            .get_reg(hvdef_to_mshv_mut(&mut assoc[..]))
+            .get_hvdef_regs(&mut assoc[..])
             .map_err(Error::Register)?;
 
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)
     }
-}
-
-fn hvdef_to_mshv(regs: &[HvRegisterAssoc]) -> &[hv_register_assoc] {
-    assert_eq_size!(HvRegisterAssoc, hv_register_assoc);
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, name),
-        offset_of!(hv_register_assoc, name)
-    );
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, value),
-        offset_of!(hv_register_assoc, value)
-    );
-    // SAFETY: HvRegisterAssoc and hv_register_assoc have compatible definitions.
-    unsafe { std::mem::transmute(regs) }
-}
-
-fn hvdef_to_mshv_mut(regs: &mut [HvRegisterAssoc]) -> &mut [hv_register_assoc] {
-    assert_eq_size!(HvRegisterAssoc, hv_register_assoc);
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, name),
-        offset_of!(hv_register_assoc, name)
-    );
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, value),
-        offset_of!(hv_register_assoc, value)
-    );
-    // SAFETY: HvRegisterAssoc and hv_register_assoc have compatible definitions.
-    unsafe { std::mem::transmute(regs) }
 }
 
 impl AccessVpState for &'_ mut MshvProcessor<'_> {
