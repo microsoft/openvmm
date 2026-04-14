@@ -10,7 +10,6 @@ use petri::PetriHaltReason;
 use petri::PetriVmBuilder;
 use petri::PetriVmmBackend;
 use petri::ProcessorTopology;
-use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::OpenVmmPetriBackend;
@@ -490,7 +489,7 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 )]
 async fn vhost_user_blk_device<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    extra_deps: (ResolvedArtifact<T>,),
+    extra_deps: (petri::ResolvedArtifact<T>,),
     driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
     use openvmm_defs::config::VirtioBus;
