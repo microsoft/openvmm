@@ -1144,6 +1144,19 @@ pub mod options {
         }
     }
 
+    /// Derived capabilities for the configured chipset devices.
+    #[derive(MeshPayload, Debug, Copy, Clone)]
+    pub struct VmChipsetCapabilities {
+        /// Whether the VM exposes an IOAPIC.
+        pub with_ioapic: bool,
+        /// Whether the VM exposes a legacy PIC.
+        pub with_pic: bool,
+        /// Whether the VM exposes a PIT.
+        pub with_pit: bool,
+        /// Whether the VM exposes a PSP.
+        pub with_psp: bool,
+    }
+
     /// Device specific dependencies
     pub mod dev {
         use super::*;

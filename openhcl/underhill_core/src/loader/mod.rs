@@ -21,11 +21,11 @@ use memory_range::MemoryRange;
 use serial_16550_resources::ComPort;
 use std::ffi::CString;
 use thiserror::Error;
-use vm_manifest_builder::VmChipsetCapabilities;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
 use vm_topology::processor::ProcessorTopology;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmotherboard::options::VmChipsetCapabilities;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 

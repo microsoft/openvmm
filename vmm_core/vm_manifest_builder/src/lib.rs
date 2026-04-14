@@ -22,7 +22,6 @@ use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::pit::PitDeviceHandle;
 use input_core::MultiplexedInputHandle;
-use mesh::MeshPayload;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::DisconnectedSerialBackendHandle;
@@ -36,6 +35,7 @@ use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 
 /// Builder for a VM manifest.
 pub struct VmManifestBuilder {
@@ -89,19 +89,6 @@ pub struct VmChipsetResult {
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
     /// Derived chipset capabilities needed by firmware and table generation.
     pub capabilities: VmChipsetCapabilities,
-}
-
-/// Derived capabilities for the configured chipset devices.
-#[derive(MeshPayload, Debug, Copy, Clone)]
-pub struct VmChipsetCapabilities {
-    /// Whether the VM exposes an IOAPIC.
-    pub with_ioapic: bool,
-    /// Whether the VM exposes a legacy PIC.
-    pub with_pic: bool,
-    /// Whether the VM exposes a PIT.
-    pub with_pit: bool,
-    /// Whether the VM exposes a PSP.
-    pub with_psp: bool,
 }
 
 /// Error type for building a VM manifest.
@@ -408,10 +395,6 @@ impl VmChipsetResult {
     }
 
     fn attach_pit(&mut self) -> &mut Self {
-        if self.capabilities.with_pit {
-            return self;
-        }
-
         self.chipset_devices.push(ChipsetDeviceHandle {
             name: PitDeviceHandle::ID.to_owned(),
             resource: PitDeviceHandle.into_resource(),
@@ -611,36 +594,5 @@ impl VmChipsetResult {
             ]);
         }
         self
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn attach_pit_is_idempotent() {
-        let mut result = VmChipsetResult {
-            chipset: BaseChipsetManifest::empty(),
-            chipset_devices: Vec::new(),
-            capabilities: VmChipsetCapabilities {
-                with_ioapic: false,
-                with_pic: false,
-                with_pit: false,
-                with_psp: false,
-            },
-        };
-
-        result.attach_pit();
-        result.attach_pit();
-
-        let pit_count = result
-            .chipset_devices
-            .iter()
-            .filter(|d| d.resource.id() == PitDeviceHandle::ID)
-            .count();
-
-        assert_eq!(pit_count, 1, "PIT handle should only be attached once");
-        assert!(result.capabilities.with_pit);
     }
 }

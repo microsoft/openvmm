@@ -59,7 +59,6 @@ use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::VirtioBus;
-use openvmm_defs::config::VmChipsetCapabilities;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
@@ -144,6 +143,7 @@ use vmotherboard::ChipsetDevices;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;

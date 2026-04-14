@@ -29,7 +29,7 @@ impl ResolveResource<ChipsetDeviceHandleKind, PitDeviceHandle> for PitResolver {
         _resource: PitDeviceHandle,
         input: ResolveChipsetDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let interrupt = input.configure.new_line(IRQ_LINE_SET, "timer0", 2);
+        let interrupt = input.configure.new_line(IRQ_LINE_SET, "timer0", 2); // hard-coded IRQ lines, as per x86 spec
         let vmtime = input.vmtime.access("pit");
         Ok(PitDevice::new(interrupt, vmtime).into())
     }

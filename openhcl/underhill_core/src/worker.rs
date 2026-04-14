@@ -3873,7 +3873,7 @@ async fn load_firmware(
     mem_layout: &MemoryLayout,
     processor_topology: &ProcessorTopology,
     vtl0_memory_map: &[(MemoryRangeWithNode, MemoryMapEntryType)],
-    chipset_capabilities: vm_manifest_builder::VmChipsetCapabilities,
+    chipset_capabilities: vmotherboard::options::VmChipsetCapabilities,
     partition_unit: &mut PartitionUnit,
     partition: &UhPartition,
     cmdline_append: Option<&str>,

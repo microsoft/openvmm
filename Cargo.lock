@@ -5309,7 +5309,6 @@ dependencies = [
  "unix_socket",
  "virt",
  "virt_whp",
- "vm_manifest_builder",
  "vm_resource",
  "vmbus_proxy",
  "vmgs_resources",

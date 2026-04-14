@@ -11,7 +11,6 @@ use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
-pub use vm_manifest_builder::VmChipsetCapabilities;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -19,6 +18,7 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 
 #[derive(MeshPayload, Debug)]
 pub struct Config {

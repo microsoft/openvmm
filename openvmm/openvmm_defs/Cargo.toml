@@ -14,7 +14,6 @@ openvmm_pcat_locator.workspace = true
 memory_range.workspace = true
 vm_resource.workspace = true
 vmgs_resources.workspace = true
-vm_manifest_builder.workspace = true
 
 vmotherboard.workspace = true
 firmware_uefi_custom_vars.workspace = true
