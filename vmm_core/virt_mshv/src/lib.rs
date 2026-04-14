@@ -657,7 +657,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
                 HvX64RegisterName::InitialApicId,
                 u64::from(inner.vp_info.apic_id),
             )),
-            HvRegisterAssoc::from((HvX64RegisterName::ApicBase, u64::from(apic_base))),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicBase, apic_base)),
             HvRegisterAssoc::from((HvX64RegisterName::ApicId, u64::from(inner.vp_info.apic_id))),
         ];
 
