@@ -456,13 +456,6 @@ impl VmService {
         .build()
         .context("failed to build vm configuration")?;
 
-        let chipset_capabilities = openvmm_defs::config::ChipsetCapabilities {
-            with_ioapic: chipset.capabilities.with_ioapic,
-            with_pic: chipset.capabilities.with_pic,
-            with_pit: chipset.capabilities.with_pit,
-            with_psp: chipset.capabilities.with_psp,
-        };
-
         let mut config = Config {
             // TODO: devices, other stuff
             load_mode,
@@ -520,7 +513,7 @@ impl VmService {
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
-            chipset_capabilities,
+            chipset_capabilities: chipset.capabilities,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,

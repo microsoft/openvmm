@@ -22,6 +22,7 @@ use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::pit::PitDeviceHandle;
 use input_core::MultiplexedInputHandle;
+use mesh::MeshPayload;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::DisconnectedSerialBackendHandle;
@@ -91,7 +92,7 @@ pub struct VmChipsetResult {
 }
 
 /// Derived capabilities for the configured chipset devices.
-#[derive(Debug, Copy, Clone)]
+#[derive(MeshPayload, Debug, Copy, Clone)]
 pub struct VmChipsetCapabilities {
     /// Whether the VM exposes an IOAPIC.
     pub with_ioapic: bool,
@@ -281,9 +282,7 @@ impl VmManifestBuilder {
                 };
                 result.capabilities.with_ioapic = true;
                 result.capabilities.with_pic = true;
-                if matches!(self.arch, MachineArch::X86_64) {
-                    result.attach_pit();
-                }
+                result.attach_pit();
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);

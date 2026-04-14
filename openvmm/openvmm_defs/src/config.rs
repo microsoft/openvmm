@@ -11,6 +11,7 @@ use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
 use std::fs::File;
+pub use vm_manifest_builder::VmChipsetCapabilities;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
@@ -18,14 +19,6 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
-
-#[derive(MeshPayload, Debug, Copy, Clone)]
-pub struct ChipsetCapabilities {
-    pub with_ioapic: bool,
-    pub with_pic: bool,
-    pub with_pit: bool,
-    pub with_psp: bool,
-}
 
 #[derive(MeshPayload, Debug)]
 pub struct Config {
@@ -59,7 +52,7 @@ pub struct Config {
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
-    pub chipset_capabilities: ChipsetCapabilities,
+    pub chipset_capabilities: VmChipsetCapabilities,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,

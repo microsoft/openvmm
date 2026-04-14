@@ -59,6 +59,7 @@ use openvmm_defs::config::PcieSwitchConfig;
 use openvmm_defs::config::PmuGsivConfig;
 use openvmm_defs::config::ProcessorTopologyConfig;
 use openvmm_defs::config::VirtioBus;
+use openvmm_defs::config::VmChipsetCapabilities;
 use openvmm_defs::config::VmbusConfig;
 use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::config::Vtl2BaseAddressType;
@@ -191,6 +192,7 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            chipset_capabilities: config.chipset_capabilities,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -238,6 +240,7 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    chipset_capabilities: VmChipsetCapabilities,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -640,6 +643,7 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    chipset_capabilities: VmChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1196,7 +1200,7 @@ impl InitializedVm {
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset.with_generic_ioapic,
                                 with_pic: cfg.chipset.with_generic_pic,
-                                with_pit: false,
+                                with_pit: cfg.chipset_capabilities.with_pit,
                                 with_psp: cfg.chipset.with_generic_psp,
                                 pm_base: PM_BASE,
                                 acpi_irq: SYSTEM_IRQ_ACPI,
@@ -2279,6 +2283,7 @@ impl InitializedVm {
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
                 chipset_cfg: cfg.chipset,
+                chipset_capabilities: cfg.chipset_capabilities,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_count,
@@ -2329,7 +2334,7 @@ impl LoadedVmInner {
                 with_ioapic: self.chipset_cfg.with_generic_ioapic,
                 with_psp: self.chipset_cfg.with_generic_psp,
                 with_pic: self.chipset_cfg.with_generic_pic,
-                with_pit: false,
+                with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
             },
@@ -3061,9 +3066,10 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
+            debugger_rpc: None,      // TODO
+            vmbus_devices: vec![],   // TODO
+            chipset_devices: vec![], // TODO
+            chipset_capabilities: self.inner.chipset_capabilities,
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
