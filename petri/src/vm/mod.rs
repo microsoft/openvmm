@@ -228,6 +228,11 @@ pub struct PetriVmConfig {
     pub vmbus_storage_controllers: HashMap<Guid, VmbusStorageController>,
     /// PCIe NVMe drives.
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
+    /// NVMe emulator LUN mappings — declare that an NVMe emulator disk
+    /// should be relayed as a SCSI LUN to VTL0 via OpenHCL's storvsp.
+    /// The backend injects these into VTL2 settings during VM creation,
+    /// using the actual VSID assigned by the hypervisor.
+    pub nvme_emulator_lun_mappings: Vec<NvmeEmulatorLunMapping>,
 }
 
 /// PCIe NVMe drive configuration.
@@ -412,6 +417,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                nvme_emulator_lun_mappings: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -485,6 +491,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 tpm: None,
                 vmbus_storage_controllers: HashMap::new(),
                 pcie_nvme_drives: Vec::new(),
+                nvme_emulator_lun_mappings: Vec::new(),
             },
             modify_vmm_config: None,
             resources: PetriVmResources {
@@ -940,7 +947,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         let uses_pipette_as_init = self.uses_pipette_as_init();
         let properties = self.properties();
 
-        let (mut runtime, config) = self
+        let (mut runtime, mut config) = self
             .backend
             .run(
                 self.config,
@@ -949,6 +956,7 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
                 properties,
             )
             .await?;
+        runtime.apply_post_creation_config(&mut config);
         let openhcl_diag_handler = runtime.openhcl_diag();
         let watchdog_tasks =
             Self::start_watchdog_tasks(&self.resources, &mut runtime, self.enable_screenshots)?;
@@ -1476,6 +1484,31 @@ impl<T: PetriVmmBackend> PetriVmBuilder<T> {
         self
     }
 
+    /// Declare that an NVMe emulator namespace should be relayed as a SCSI LUN
+    /// to the VTL0 guest.
+    ///
+    /// The `nvme_vsid` must match a VMBus NVMe controller previously added via
+    /// [`Self::add_vmbus_storage_controller`]. The backend will resolve the
+    /// placeholder VSID to the actual one assigned by the hypervisor and inject
+    /// the mapping into VTL2 settings during VM creation.
+    pub fn add_nvme_emulator_lun_mapping(
+        mut self,
+        nvme_vsid: Guid,
+        nvme_namespace_id: u32,
+        scsi_controller_instance_id: Guid,
+        scsi_lun: u32,
+    ) -> Self {
+        self.config
+            .nvme_emulator_lun_mappings
+            .push(NvmeEmulatorLunMapping {
+                nvme_vsid,
+                nvme_namespace_id,
+                scsi_controller_instance_id,
+                scsi_lun,
+            });
+        self
+    }
+
     /// Add a VMBus disk drive to the VM
     pub fn add_ide_drive(
         mut self,
@@ -1980,6 +2013,12 @@ pub trait PetriVmRuntime: Send + Sync + 'static {
     async fn get_guest_state_file(&self) -> anyhow::Result<Option<PathBuf>> {
         Ok(None)
     }
+    /// Apply backend-specific modifications to the runtime config after VM
+    /// creation. Some backends need to reconcile the generic config with
+    /// backend-assigned values (e.g., device identifiers that differ from
+    /// what the test config specified). Called once, after the backend's
+    /// `run()` returns and before the VM is used by tests.
+    fn apply_post_creation_config(&self, _config: &mut PetriVmRuntimeConfig) {}
     /// Set the OpenHCL VTL2 settings
     async fn set_vtl2_settings(&mut self, settings: &Vtl2Settings) -> anyhow::Result<()>;
     /// Add or modify a VMBus disk drive
@@ -3146,6 +3185,24 @@ pub enum VmbusStorageType {
     Nvme,
     /// Virtio block device
     VirtioBlk,
+}
+
+/// Maps an NVMe emulator-backed disk to a SCSI LUN presented to the VTL0
+/// guest. The backend attaches the NVMe emulator device during VM creation,
+/// learns the actual VMBus VSID from the hypervisor, and injects the mapping
+/// into VTL2 settings so OpenHCL's storvsp can relay the disk.
+#[derive(Debug, Clone)]
+pub struct NvmeEmulatorLunMapping {
+    /// VSID of the NVMe VMBus controller that owns the backing namespace.
+    /// This is a placeholder — the backend resolves it to the actual VSID
+    /// at attachment time.
+    pub nvme_vsid: Guid,
+    /// NVMe namespace ID within the emulator device.
+    pub nvme_namespace_id: u32,
+    /// Instance ID of the VTL2 SCSI controller that presents this disk to VTL0.
+    pub scsi_controller_instance_id: Guid,
+    /// LUN on the SCSI controller where this disk appears to the guest.
+    pub scsi_lun: u32,
 }
 
 /// VM disk drive

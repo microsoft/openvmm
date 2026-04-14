@@ -381,6 +381,87 @@ async fn storvsp_hyperv<T: PetriVmmBackend>(
     Ok(())
 }
 
+/// Test a Linux VM with an NVMe emulator-backed disk assigned to VTL2,
+#[cfg(windows)]
+#[vmm_test(unstable_hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)))]
+async fn storvsp_nvme_hyperv<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+    (release_igvm,): (
+        petri::ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    ),
+) -> Result<(), anyhow::Error> {
+    // Skip if NVMe emulator scripts are not available.
+    if std::env::var(petri::hyperv::powershell::PETRI_NVME_EMULATOR_SCRIPTS_DIR).is_err() {
+        tracing::warn!(
+            "Skipping storvsp_nvme_hyperv: {} not set",
+            petri::hyperv::powershell::PETRI_NVME_EMULATOR_SCRIPTS_DIR
+        );
+        return Ok(());
+    }
+
+    let vtl2_nsid = 1;
+    let vtl0_scsi_lun = 0;
+    let scsi_instance = Guid::new_random();
+    let nvme_vsid = Guid::new_random();
+    const NVME_DISK_SECTORS: u64 = 0x4_0000;
+    const SECTOR_SIZE: u64 = 512;
+    const EXPECTED_DISK_SIZE_BYTES: u64 = NVME_DISK_SECTORS * SECTOR_SIZE;
+
+    // Assumptions made by test infra & routines:
+    //
+    // 1. Some test-infra added disks are 64MiB in size. Since we find disks by size,
+    // ensure that our test disks are a different size.
+    // 2. Disks under test need to be at least 100MiB for the IO tests (see [`test_storage_linux`]),
+    // with some arbitrary buffer (5MiB in this case).
+    static_assertions::const_assert_ne!(EXPECTED_DISK_SIZE_BYTES, 64 * 1024 * 1024);
+    static_assertions::const_assert!(EXPECTED_DISK_SIZE_BYTES > 105 * 1024 * 1024);
+
+    let mut vhd =
+        tempfile::NamedTempFile::with_suffix("nvme_vtl2.vhd").context("create temp nvme vhd")?;
+    vhd.as_file()
+        .set_len(EXPECTED_DISK_SIZE_BYTES)
+        .context("set file length")?;
+
+    disk_vhd1::Vhd1Disk::make_fixed(vhd.as_file_mut()).context("make fixed")?;
+
+    // Close the handle so Hyper-V can open the VHD.
+    let vhd_path = vhd.into_temp_path();
+
+    let (vm, agent) = config
+        .with_custom_openhcl(release_igvm)
+        .with_vmbus_redirect(true)
+        .add_vtl2_storage_controller(
+            Vtl2StorageControllerBuilder::new(ControllerType::Scsi)
+                .with_instance_id(scsi_instance)
+                .build(),
+        )
+        .add_vmbus_storage_controller(&nvme_vsid, petri::Vtl::Vtl2, petri::VmbusStorageType::Nvme)
+        .add_vmbus_drive(
+            petri::Drive::new(Some(petri::Disk::Persistent(vhd_path.to_path_buf())), false),
+            &nvme_vsid,
+            Some(vtl2_nsid),
+        )
+        .add_nvme_emulator_lun_mapping(nvme_vsid, vtl2_nsid, scsi_instance, vtl0_scsi_lun)
+        .run()
+        .await?;
+
+    test_storage_linux(
+        &agent,
+        scsi_instance,
+        vec![ExpectedGuestDevice {
+            lun: vtl0_scsi_lun,
+            disk_size_sectors: NVME_DISK_SECTORS as usize,
+            friendly_name: "nvme_scsi".to_string(),
+        }],
+    )
+    .await?;
+
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    Ok(())
+}
+
 /// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
 #[openvmm_test(
     openhcl_linux_direct_x64,

@@ -186,7 +186,6 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         if let Some(UefiConfig {
             disable_frontpage,
-            enable_vpci_boot,
             secure_boot_enabled,
             default_boot_always_attempt,
             ..
@@ -215,44 +214,65 @@ impl PetriVmmBackend for HyperVPetriBackend {
                     "HCL_DEFAULT_BOOT_ALWAYS_ATTEMPT=0",
                 );
             }
-
-            if *enable_vpci_boot {
-                todo!("hyperv nvme boot");
-            }
         }
 
-        // Map SCSI
-        let mut scsi_controllers = HashMap::new();
-        for (
-            vsid,
-            VmbusStorageController {
-                target_vtl,
-                controller_type,
-                drives,
-            },
-        ) in config.vmbus_storage_controllers.iter()
-        {
-            if !matches!(controller_type, crate::VmbusStorageType::Scsi) {
-                todo!("other storage types for hyper-v")
-            }
+        // Collect NVMe emulator device attachments for post-VM-creation setup.
+        //
+        // HyperV Emulated NVMe controllers have read-only VSIDs, which will
+        // not be known until after the VM is created
+        let mut nvme_emulator_attachments: Vec<(Guid, VmbusStorageController, Vec<PathBuf>, u8)> =
+            Vec::new();
 
-            let mut hyperv_drives = HashMap::new();
-            for (lun, Drive { disk, is_dvd }) in drives {
-                hyperv_drives.insert(
-                    *lun,
-                    powershell::HyperVDrive {
-                        disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
-                        is_dvd: *is_dvd,
-                    },
-                );
+        // Map SCSI and NVMe controllers
+        let mut scsi_controllers = HashMap::new();
+        for (vsid, controller) in config.vmbus_storage_controllers.iter() {
+            match &controller.controller_type {
+                crate::VmbusStorageType::Scsi => {
+                    let mut hyperv_drives = HashMap::new();
+                    for (lun, Drive { disk, is_dvd }) in &controller.drives {
+                        hyperv_drives.insert(
+                            *lun,
+                            powershell::HyperVDrive {
+                                disk: petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?,
+                                is_dvd: *is_dvd,
+                            },
+                        );
+                    }
+                    scsi_controllers.insert(
+                        *vsid,
+                        powershell::HyperVScsiController {
+                            target_vtl: controller.target_vtl,
+                            drives: hyperv_drives,
+                        },
+                    );
+                }
+                crate::VmbusStorageType::Nvme => {
+                    let mut vhd_paths = Vec::new();
+                    for Drive { disk, is_dvd: _ } in controller.drives.values() {
+                        let vhd = petri_disk_to_hyperv(disk.as_ref(), &temp_dir).await?;
+                        if let Some(path) = vhd {
+                            vhd_paths.push(path);
+                        }
+                    }
+                    let vtl_num = match controller.target_vtl {
+                        crate::Vtl::Vtl0 => 0u8,
+                        crate::Vtl::Vtl2 => 2u8,
+                        _ => {
+                            anyhow::bail!(
+                                "unsupported VTL {:?} for NVMe emulator device",
+                                controller.target_vtl
+                            )
+                        }
+                    };
+                    nvme_emulator_attachments.push((*vsid, controller.clone(), vhd_paths, vtl_num));
+                }
+                _ => {
+                    todo!(
+                        "storage type {:?} not yet supported for hyper-v",
+                        controller.controller_type
+                    )
+                }
             }
-            scsi_controllers.insert(
-                *vsid,
-                powershell::HyperVScsiController {
-                    target_vtl: *target_vtl,
-                    drives: hyperv_drives,
-                },
-            );
         }
 
         // Map IDE
@@ -348,11 +368,82 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         let vm = HyperVVM::new(hyperv_args, log_source.clone(), driver.clone()).await?;
 
+        let PetriVmConfig {
+            firmware,
+            vmbus_storage_controllers,
+            nvme_emulator_lun_mappings,
+            ..
+        } = config;
+
+        // Start with non-NVMe entries; NVMe entries will be added with their
+        // Hyper-V-assigned VSIDs after attachment.
+        let mut runtime_controllers: HashMap<Guid, VmbusStorageController> =
+            vmbus_storage_controllers
+                .into_iter()
+                .filter(|(_, c)| !matches!(c.controller_type, crate::VmbusStorageType::Nvme))
+                .collect();
+
+        // Attach NVMe emulator devices
+        // Unlike other devices, these are added to the configuration after the VM is created
+        let mut nvme_vsid_assignments: Vec<(Guid, Guid)> = Vec::new();
+        for (placeholder_vsid, controller, vhd_paths, target_vtl) in nvme_emulator_attachments {
+            let vsid = powershell::run_add_nvme_emulator_device(vm.name(), &vhd_paths, target_vtl)
+                .await
+                .context("failed to attach NVMe emulator device")?;
+            tracing::info!(?vsid, %placeholder_vsid, "NVMe emulator device attached");
+            runtime_controllers.insert(vsid, controller);
+            nvme_vsid_assignments.push((placeholder_vsid, vsid));
+        }
+
+        // If any NVMe devices were attached, push corrected VTL2 settings
+        // to the VM before start. Fix placeholder VSIDs and inject any
+        // NVMe emulator LUN mappings declared via the builder.
+        if !nvme_vsid_assignments.is_empty() || !nvme_emulator_lun_mappings.is_empty() {
+            if let Some(openhcl_config) = firmware.openhcl_config() {
+                if let Some(settings) = openhcl_config.vtl2_settings.as_ref() {
+                    let mut fixed_settings = settings.clone();
+
+                    // Fix placeholder VSIDs in existing VTL2 settings.
+                    for (placeholder, vsid) in &nvme_vsid_assignments {
+                        assign_nvme_vsid(&mut fixed_settings, placeholder, vsid);
+                    }
+
+                    // Inject LUNs for NVMe emulator disk mappings.
+                    for mapping in &nvme_emulator_lun_mappings {
+                        // Resolve the placeholder VSID to the actual one.
+                        let actual_vsid = nvme_vsid_assignments
+                            .iter()
+                            .find(|(p, _)| *p == mapping.nvme_vsid)
+                            .map(|(_, v)| *v)
+                            .unwrap_or_else(|| {
+                                tracing::warn!(
+                                    nvme_vsid = %mapping.nvme_vsid,
+                                    "NVMe emulator LUN mapping references unknown VSID; \
+                                     using placeholder (this will likely fail)"
+                                );
+                                mapping.nvme_vsid
+                            });
+                        inject_nvme_emulator_lun(
+                            &mut fixed_settings,
+                            mapping.scsi_controller_instance_id,
+                            mapping.scsi_lun,
+                            actual_vsid,
+                            mapping.nvme_namespace_id,
+                        );
+                    }
+
+                    vm.set_base_vtl2_settings(&fixed_settings).await.context(
+                        "failed to push corrected VTL2 settings after NVMe VSID assignment",
+                    )?;
+                }
+            }
+        }
+
         if properties.is_openhcl {
             // Copy the IGVM file locally, since it may not be accessible by
             // Hyper-V (e.g., if it is in a WSL filesystem).
             let local_path = igvm_file.as_ref().unwrap();
-            fs_err::copy(config.firmware.openhcl_firmware().unwrap(), local_path)
+            fs_err::copy(firmware.openhcl_firmware().unwrap(), local_path)
                 .context("failed to copy igvm file")?;
             acl_read_for_vm(local_path, Some(*vm.vmid()))
                 .context("failed to set ACL for igvm file")?;
@@ -392,6 +483,29 @@ impl PetriVmmBackend for HyperVPetriBackend {
 
         vm.start().await?;
 
+        let mut runtime_config = firmware.into_runtime_config(runtime_controllers);
+        // Fix VTL2 settings in the runtime config — into_runtime_config moved
+        // the settings from firmware, which still had placeholder VSIDs.
+        if let Some(settings) = runtime_config.vtl2_settings.as_mut() {
+            for (placeholder, vsid) in &nvme_vsid_assignments {
+                assign_nvme_vsid(settings, placeholder, vsid);
+            }
+            for mapping in &nvme_emulator_lun_mappings {
+                let actual_vsid = nvme_vsid_assignments
+                    .iter()
+                    .find(|(p, _)| *p == mapping.nvme_vsid)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(mapping.nvme_vsid);
+                inject_nvme_emulator_lun(
+                    settings,
+                    mapping.scsi_controller_instance_id,
+                    mapping.scsi_lun,
+                    actual_vsid,
+                    mapping.nvme_namespace_id,
+                );
+            }
+        }
+
         Ok((
             HyperVPetriRuntime {
                 vm,
@@ -401,9 +515,7 @@ impl PetriVmmBackend for HyperVPetriBackend {
                 driver: driver.clone(),
                 properties,
             },
-            config
-                .firmware
-                .into_runtime_config(config.vmbus_storage_controllers),
+            runtime_config,
         ))
     }
 }
@@ -568,6 +680,102 @@ impl PetriVmRuntime for HyperVPetriRuntime {
             )
             .await
     }
+}
+
+/// Update NVMe physical device paths in VTL2 settings, replacing a placeholder
+/// VSID with the Hyper-V-assigned one. Called once per NVMe controller
+/// immediately after attachment — this is a first-time assignment, not a remap.
+fn assign_nvme_vsid(settings: &mut Vtl2Settings, placeholder: &Guid, vsid: &Guid) {
+    let Some(dynamic) = settings.dynamic.as_mut() else {
+        return;
+    };
+    for controller in &mut dynamic.storage_controllers {
+        for lun in &mut controller.luns {
+            if let Some(pd) = lun.physical_devices.as_mut() {
+                if let Some(dev) = pd.device.as_mut() {
+                    assign_device_path(dev, placeholder, vsid);
+                }
+                for dev in &mut pd.devices {
+                    assign_device_path(dev, placeholder, vsid);
+                }
+            }
+        }
+    }
+}
+
+fn assign_device_path(
+    dev: &mut vtl2_settings_proto::PhysicalDevice,
+    placeholder: &Guid,
+    vsid: &Guid,
+) {
+    if dev.device_type != i32::from(vtl2_settings_proto::physical_device::DeviceType::Nvme) {
+        return;
+    }
+    if let Ok(guid) = dev.device_path.parse::<Guid>() {
+        if guid == *placeholder {
+            tracing::debug!(
+                %placeholder,
+                %vsid,
+                "assigning NVMe VSID in VTL2 settings"
+            );
+            dev.device_path = vsid.to_string();
+        }
+    }
+}
+
+/// Inject an NVMe-emulator-backed SCSI LUN into VTL2 settings.
+///
+/// Finds the SCSI controller matching `scsi_controller_id` and appends a new
+/// LUN at `scsi_lun` backed by the NVMe physical device at
+/// `(actual_vsid, nvme_nsid)`.
+fn inject_nvme_emulator_lun(
+    settings: &mut Vtl2Settings,
+    scsi_controller_id: Guid,
+    scsi_lun: u32,
+    actual_vsid: Guid,
+    nvme_nsid: u32,
+) {
+    use crate::vtl2_settings::ControllerType;
+    use crate::vtl2_settings::Vtl2LunBuilder;
+    use crate::vtl2_settings::Vtl2StorageBackingDeviceBuilder;
+
+    let Some(dynamic) = settings.dynamic.as_mut() else {
+        tracing::warn!("no dynamic VTL2 settings — cannot inject NVMe emulator LUN");
+        return;
+    };
+
+    let controller_id_str = scsi_controller_id.to_string();
+    let controller = dynamic
+        .storage_controllers
+        .iter_mut()
+        .find(|c| c.instance_id == controller_id_str);
+
+    let Some(controller) = controller else {
+        tracing::warn!(
+            %scsi_controller_id,
+            "SCSI controller not found in VTL2 settings — cannot inject NVMe emulator LUN"
+        );
+        return;
+    };
+
+    tracing::info!(
+        %scsi_controller_id,
+        scsi_lun,
+        %actual_vsid,
+        nvme_nsid,
+        "injecting NVMe emulator LUN into VTL2 settings"
+    );
+
+    controller.luns.push(
+        Vtl2LunBuilder::disk()
+            .with_location(scsi_lun)
+            .with_physical_device(Vtl2StorageBackingDeviceBuilder::new(
+                ControllerType::Nvme,
+                actual_vsid,
+                nvme_nsid,
+            ))
+            .build(),
+    );
 }
 
 fn acl_read_for_vm(path: &Path, id: Option<Guid>) -> anyhow::Result<()> {
