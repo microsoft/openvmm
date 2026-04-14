@@ -121,12 +121,9 @@ impl virt::Hypervisor for LinuxMshv {
         // configuration. LAPIC is always enabled (the hypervisor emulates
         // the local APIC). X2APIC is only enabled when the topology
         // requests it.
-        let mut pt_flags: u64 = set_bits!(
-            u64,
-            mshv_bindings::MSHV_PT_BIT_LAPIC,
-            mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES,
-            mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES
-        );
+        let mut pt_flags: u64 = 1 << mshv_bindings::MSHV_PT_BIT_LAPIC
+            | 1 << mshv_bindings::MSHV_PT_BIT_GPA_SUPER_PAGES
+            | 1 << mshv_bindings::MSHV_PT_BIT_CPU_AND_XSAVE_FEATURES;
 
         match config.processor_topology.apic_mode() {
             vm_topology::processor::x86::ApicMode::X2ApicSupported
@@ -175,19 +172,26 @@ impl virt::Hypervisor for LinuxMshv {
             let synthetic_features = hvdef::HvPartitionSyntheticProcessorFeatures::new()
                 .with_hypervisor_present(true)
                 .with_hv1(true)
+                .with_access_vp_run_time_reg(true)
                 .with_access_partition_reference_counter(true)
                 .with_access_synic_regs(true)
                 .with_access_synthetic_timer_regs(true)
-                .with_access_partition_reference_tsc(true)
-                .with_access_frequency_regs(true)
                 .with_access_intr_ctrl_regs(true)
-                .with_access_vp_index(true)
                 .with_access_hypercall_regs(true)
+                .with_access_vp_index(true)
+                .with_access_partition_reference_tsc(true)
                 .with_access_guest_idle_reg(true)
+                .with_access_frequency_regs(true)
+                .with_enable_extended_gva_ranges_for_flush_virtual_address_list(true)
+                .with_fast_hypercall_output(true)
+                .with_direct_synthetic_timers(true)
+                .with_extended_processor_masks(true)
                 .with_tb_flush_hypercalls(true)
                 .with_synthetic_cluster_ipi(true)
-                .with_direct_synthetic_timers(true)
-                .with_access_vp_regs(true);
+                .with_notify_long_spin_wait(true)
+                .with_query_numa_distance(true)
+                .with_signal_events(true)
+                .with_retarget_device_interrupt(true);
 
             vmfd.set_partition_property(
                 mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
