@@ -70,6 +70,14 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     skip_vhd_prompt: bool,
 
+    /// Download all disk images upfront instead of streaming on demand.
+    ///
+    /// By default, VHD/ISO disk images are streamed on demand via HTTP
+    /// and cached locally, avoiding large upfront downloads. Use this
+    /// flag to force all images to be downloaded before tests run.
+    #[clap(long)]
+    no_lazy_fetch: bool,
+
     /// Optional: custom kernel modules
     #[clap(long)]
     custom_kernel_modules: Option<PathBuf>,
@@ -99,6 +107,7 @@ impl IntoPipeline for VmmTestsRunCli {
             build_only,
             copy_extras,
             skip_vhd_prompt,
+            no_lazy_fetch,
             custom_kernel_modules,
             custom_kernel,
             custom_uefi_firmware,
@@ -117,11 +126,12 @@ impl IntoPipeline for VmmTestsRunCli {
         // 3. Run artifact discovery inline at pipeline construction time
         log::info!("Step 1: Discovering required artifacts...");
         let repo_root = crate::repo_root();
-        let artifacts_json = discover_artifacts(&repo_root, &target_str, &filter, release)
-            .context("during artifact discovery")?;
+        let (artifacts_json, test_names) =
+            discover_artifacts(&repo_root, &target_str, &filter, release)
+                .context("during artifact discovery")?;
 
         // 4. Resolve to build selections
-        let resolved = ResolvedArtifactSelections::from_artifact_list_json(
+        let mut resolved = ResolvedArtifactSelections::from_artifact_list_json(
             &artifacts_json,
             target_architecture,
             target_os,
@@ -135,6 +145,33 @@ impl IntoPipeline for VmmTestsRunCli {
             );
         }
 
+        // 5. Determine lazy fetch mode.
+        //
+        // By default, VHD/ISO downloads are skipped and disk images are
+        // streamed on demand via HTTP (with local SQLite caching). This
+        // avoids multi-GB upfront downloads for dev-inner-loop scenarios.
+        //
+        // Lazy fetch is disabled when:
+        //   - The user passes --no-lazy-fetch
+        //   - Any Hyper-V test is selected (Hyper-V requires local files)
+        let lazy_fetch = if no_lazy_fetch {
+            log::info!("Lazy fetch disabled by --no-lazy-fetch");
+            false
+        } else {
+            let has_hyperv_tests = test_names.iter().any(|name| name.contains("hyperv_"));
+            if has_hyperv_tests {
+                log::info!("Hyper-V tests detected in selection, downloading disk images upfront");
+                false
+            } else {
+                true
+            }
+        };
+
+        if lazy_fetch {
+            log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
+            resolved.downloads.clear();
+        }
+
         log::info!("Resolved build selections: {:?}", resolved.build);
         log::info!(
             "Resolved downloads: {:?}",
@@ -143,7 +180,7 @@ impl IntoPipeline for VmmTestsRunCli {
 
         let selections = selections_from_resolved(filter, resolved, target_os);
 
-        // 5. Construct and return the pipeline
+        // 6. Construct and return the pipeline
         log::info!("Step 2: Building and running tests...");
         build_vmm_tests_pipeline(
             backend_hint,
@@ -169,13 +206,14 @@ impl IntoPipeline for VmmTestsRunCli {
 /// Run artifact discovery by invoking `cargo nextest list` and the test
 /// binary's `--list-required-artifacts` flag.
 ///
-/// Returns the raw JSON string describing required/optional artifacts.
+/// Returns the raw JSON string describing required/optional artifacts, plus
+/// the list of matching test names (used for backend detection).
 fn discover_artifacts(
     repo_root: &Path,
     target: &str,
     filter: &str,
     release: bool,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Vec<String>)> {
     // Check that cargo-nextest is available
     let nextest_check = Command::new("cargo")
         .args(["nextest", "--version"])
@@ -228,7 +266,7 @@ fn discover_artifacts(
             "required": [],
             "optional": []
         });
-        return Ok(serde_json::to_string_pretty(&empty_output)?);
+        return Ok((serde_json::to_string_pretty(&empty_output)?, Vec::new()));
     }
 
     log::info!("Found {} matching tests", test_names.len());
@@ -269,7 +307,8 @@ fn discover_artifacts(
     let artifact_stdout = String::from_utf8(artifact_output.stdout)
         .map_err(|e| anyhow::anyhow!("test output is not valid UTF-8: {}", e))?;
 
-    parse_artifacts_output(&artifact_stdout, target)
+    let json = parse_artifacts_output(&artifact_stdout, target)?;
+    Ok((json, test_names))
 }
 
 /// Parse `cargo nextest list --message-format json` output to extract test
