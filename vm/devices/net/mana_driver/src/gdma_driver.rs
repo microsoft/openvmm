@@ -883,9 +883,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         // read as zero when talking to an older socmana that does not populate
         // them, rather than containing stale data.
         let expected_resp_size = size_of::<GdmaRespHdr>() + size_of::<Resp>();
-        if expected_resp_size > PAGE_SIZE {
-            anyhow::bail!("response size {expected_resp_size} exceeds PAGE_SIZE");
-        }
+        assert!(
+            expected_resp_size <= PAGE_SIZE,
+            "response size {expected_resp_size} exceeds {PAGE_SIZE}"
+        );
         self.dma_buffer
             .write_zeros(RESPONSE_PAGE * PAGE_SIZE, expected_resp_size);
 
@@ -937,7 +938,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 .dma_buffer
                 .read_obj::<GdmaRespHdr>(RESPONSE_PAGE * PAGE_SIZE);
 
-            if resp_hdr.response.msg_size < size_of::<Resp>() as u32 {
+            if resp_hdr.response.msg_size < size_of::<GdmaRespHdr>() as u32 {
                 anyhow::bail!(
                     "response too small, request={:#x}, activity_id={:#x}",
                     req_msg_type,

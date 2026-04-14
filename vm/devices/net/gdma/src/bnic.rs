@@ -30,8 +30,6 @@ use anyhow::Context;
 use anyhow::anyhow;
 use gdma_defs::GdmaQueueType;
 use gdma_defs::GdmaReqHdr;
-use gdma_defs::GdmaRespHdr;
-use gdma_defs::PAGE_SIZE32;
 use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
@@ -165,7 +163,6 @@ impl BufferAccess for GuestBuffers {
 #[derive(Default)]
 pub struct BnicConfig {
     /// Adapter link speed in megabits per second.
-    /// When 0, the host-side MANA stack reports a 200 Gbps fallback value.
     pub adapter_link_speed_mbps: u32,
 }
 
@@ -263,20 +260,11 @@ impl BasicNic {
 
                 let resp_bytes = resp.as_bytes();
                 let guest_resp_size = MemoryWrite::len(&write);
-
-                // Reject guest-specified response sizes that exceed a single HWC response page
-                // to prevent unbounded processing driven by guest input
-                const MAX_QUERY_DEV_CONFIG_RESP_SIZE: usize =
-                    PAGE_SIZE32 as usize - size_of::<GdmaRespHdr>();
-                if guest_resp_size > MAX_QUERY_DEV_CONFIG_RESP_SIZE {
-                    anyhow::bail!(
-                        "MANA_QUERY_DEV_CONFIG response size {guest_resp_size} exceeds maximum {MAX_QUERY_DEV_CONFIG_RESP_SIZE}"
-                    );
-                }
-
                 // Zero the guest response buffer before writing the actual response
-                // to prevent leaking stale data when the guest response buffer is
-                // larger than the response data we produce.
+                // to maintain forward compatibility: a newer VF driver may request
+                // fields added in a later protocol version that this emulator does
+                // not yet populate. Zeroing ensures those fields read as zero rather
+                // than containing undefined data.
                 let mut zero_write = write.clone();
                 zero_write.write(&vec![0u8; guest_resp_size])?;
 
