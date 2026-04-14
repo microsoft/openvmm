@@ -228,6 +228,8 @@ pub enum NewDeviceError {
     InvalidFileType,
     #[error("invalid disk size {0:#x}")]
     InvalidDiskSize(u64),
+    #[error("driver does not support io-uring")]
+    NoIoUring,
 }
 
 impl BlockDevice {
@@ -246,9 +248,7 @@ impl BlockDevice {
         bounce_buffer_tracker: Arc<BounceBufferTracker>,
         always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
-        let uring = driver
-            .io_uring_submit()
-            .expect("driver does not support io-uring");
+        let uring = driver.io_uring_submit().ok_or(NewDeviceError::NoIoUring)?;
         assert!(uring.probe(opcode::Read::CODE));
         assert!(uring.probe(opcode::Write::CODE));
         assert!(uring.probe(opcode::Readv::CODE));
