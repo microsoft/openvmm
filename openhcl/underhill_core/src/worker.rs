@@ -2304,6 +2304,85 @@ async fn new_underhill_vm(
         .context("failed to initialize UnderhillLocalClock emuplat")?,
     )));
 
+    let mut serial_inputs = [None, None, None, None];
+
+    if dps.general.com1_vmbus_redirector {
+        serial_inputs[0] = Some(Resource::new(
+            vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
+                &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM1,
+                dps.general.management_vtl_features.tx_only_serial_port(),
+            )
+            .context("failed to open com1")?,
+        ));
+    }
+
+    if dps.general.com2_vmbus_redirector {
+        serial_inputs[1] = Some(Resource::new(
+            vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
+                &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM2,
+                dps.general.management_vtl_features.tx_only_serial_port(),
+            )
+            .context("failed to open com2")?,
+        ));
+    }
+
+    let with_serial = serial_inputs.iter().any(|transport| transport.is_some());
+
+    let mut chipset = vm_manifest_builder::VmManifestBuilder::new(
+        match firmware_type {
+            FirmwareType::Pcat => vm_manifest_builder::BaseChipsetType::HypervGen1,
+            FirmwareType::Uefi => vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
+            FirmwareType::None => vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
+        },
+        if cfg!(guest_arch = "x86_64") {
+            vm_manifest_builder::MachineArch::X86_64
+        } else if cfg!(guest_arch = "aarch64") {
+            vm_manifest_builder::MachineArch::Aarch64
+        } else {
+            anyhow::bail!("unsupported guest architecture")
+        },
+    );
+
+    if with_serial {
+        chipset = chipset.with_serial(serial_inputs);
+        if env_cfg.emulated_serial_wait_for_rts {
+            chipset = chipset.with_serial_wait_for_rts();
+        }
+    }
+
+    if matches!(firmware_type, FirmwareType::Pcat) {
+        // Use the stub floppy implementation for compatibility with existing
+        // releases and because we don't need a functional floppy disk.
+        chipset = chipset.with_stub_floppy();
+        // Use the host's VGA implementation, at least for now.
+        chipset = chipset.with_proxy_vga();
+    } else {
+        if dps.general.watchdog_enabled {
+            chipset = chipset.with_guest_watchdog();
+        }
+
+        if dps.general.psp_enabled {
+            chipset = chipset.with_psp();
+        }
+    }
+
+    if dps.general.battery_enabled {
+        chipset = chipset.with_battery(
+            get_client
+                .take_battery_status_recv()
+                .await
+                .context("failed to get battery status channel")?,
+        );
+    }
+
+    let vm_manifest_builder::VmChipsetResult {
+        chipset,
+        mut chipset_devices,
+        capabilities,
+    } = chipset
+        .build()
+        .context("failed to build chipset configuration")?;
+
     #[cfg(guest_arch = "x86_64")]
     let mut deps_hyperv_firmware_pcat = None;
     #[cfg(not(guest_arch = "x86_64"))]
@@ -2325,7 +2404,7 @@ async fn new_underhill_vm(
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                     with_ioapic: true, // openhcl always runs with ioapic
                     with_pic: true,    // pcat always runs with pic and pit
-                    with_pit: true,
+                    with_pit: capabilities.with_pit,
                     with_psp: dps.general.psp_enabled,
                     pm_base: PM_BASE,
                     acpi_irq: SYSTEM_IRQ_ACPI,
@@ -2538,30 +2617,6 @@ async fn new_underhill_vm(
         FirmwareType::None => {}
     };
 
-    let mut serial_inputs = [None, None, None, None];
-
-    if dps.general.com1_vmbus_redirector {
-        serial_inputs[0] = Some(Resource::new(
-            vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
-                &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM1,
-                dps.general.management_vtl_features.tx_only_serial_port(),
-            )
-            .context("failed to open com1")?,
-        ));
-    }
-
-    if dps.general.com2_vmbus_redirector {
-        serial_inputs[1] = Some(Resource::new(
-            vmbus_serial_guest::OpenVmbusSerialGuestConfig::open(
-                &vmbus_serial_guest::UART_INTERFACE_INSTANCE_COM2,
-                dps.general.management_vtl_features.tx_only_serial_port(),
-            )
-            .context("failed to open com2")?,
-        ));
-    }
-
-    let with_serial = serial_inputs.iter().any(|transport| transport.is_some());
-
     if dps.general.processor_idle_enabled {
         // TODO: Will likely address along with battery task above
         tracing::warn!(
@@ -2661,61 +2716,6 @@ async fn new_underhill_vm(
     let emuplat_adjust_gpa_range;
 
     let synic = virt::Hv1::synic(partition.as_ref());
-
-    let mut chipset = vm_manifest_builder::VmManifestBuilder::new(
-        match firmware_type {
-            FirmwareType::Pcat => vm_manifest_builder::BaseChipsetType::HypervGen1,
-            FirmwareType::Uefi => vm_manifest_builder::BaseChipsetType::HypervGen2Uefi,
-            FirmwareType::None => vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
-        },
-        if cfg!(guest_arch = "x86_64") {
-            vm_manifest_builder::MachineArch::X86_64
-        } else if cfg!(guest_arch = "aarch64") {
-            vm_manifest_builder::MachineArch::Aarch64
-        } else {
-            anyhow::bail!("unsupported guest architecture")
-        },
-    );
-
-    if with_serial {
-        chipset = chipset.with_serial(serial_inputs);
-        if env_cfg.emulated_serial_wait_for_rts {
-            chipset = chipset.with_serial_wait_for_rts();
-        }
-    }
-
-    if matches!(firmware_type, FirmwareType::Pcat) {
-        // Use the stub floppy implementation for compatibility with existing
-        // releases and because we don't need a functional floppy disk.
-        chipset = chipset.with_stub_floppy();
-        // Use the host's VGA implementation, at least for now.
-        chipset = chipset.with_proxy_vga();
-    } else {
-        if dps.general.watchdog_enabled {
-            chipset = chipset.with_guest_watchdog();
-        }
-
-        if dps.general.psp_enabled {
-            chipset = chipset.with_psp();
-        }
-    }
-
-    if dps.general.battery_enabled {
-        chipset = chipset.with_battery(
-            get_client
-                .take_battery_status_recv()
-                .await
-                .context("failed to get battery status channel")?,
-        );
-    }
-
-    let vm_manifest_builder::VmChipsetResult {
-        chipset,
-        mut chipset_devices,
-        capabilities: _,
-    } = chipset
-        .build()
-        .context("failed to build chipset configuration")?;
 
     let deps_generic_ioapic = chipset.with_generic_ioapic.then(|| dev::GenericIoApicDeps {
         num_entries: virt::irqcon::IRQ_LINES as u8,
