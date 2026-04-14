@@ -34,8 +34,10 @@ pub trait IoUringSubmit: Send + Sync {
     /// that owns the underlying memory. So, this is safe:
     ///
     /// ```rust,ignore
-    /// async fn write(uring: &impl IoUringSubmit, fd: i32, buf: Vec<u8>) -> io::Result<usize> {
-    ///     let sqe = opcode::Write::new(types::Fd(fd), buf.as_ptr(), buf.len() as u32).build();
+    /// async fn write(uring: &impl IoUringSubmit, file: &File, buf: Vec<u8>) -> io::Result<usize> {
+    ///     let sqe = opcode::Write::new(
+    ///         types::Fd(file.as_raw_fd()), buf.as_ptr(), buf.len() as u32,
+    ///     ).build();
     ///     // SAFETY: `buf` is owned by this async function's state machine.
     ///     // If the outer future is leaked, `buf` leaks with it, so the
     ///     // memory remains valid for the io-uring operation.
@@ -47,8 +49,10 @@ pub trait IoUringSubmit: Send + Sync {
     /// But this is not:
     ///
     /// ```rust,ignore
-    /// async fn write(uring: &impl IoUringSubmit, fd: i32, buf: &[u8]) -> io::Result<usize> {
-    ///     let sqe = opcode::Write::new(types::Fd(fd), buf.as_ptr(), buf.len() as u32).build();
+    /// async fn write(uring: &impl IoUringSubmit, file: &File, buf: &[u8]) -> io::Result<usize> {
+    ///     let sqe = opcode::Write::new(
+    ///         types::Fd(file.as_raw_fd()), buf.as_ptr(), buf.len() as u32,
+    ///     ).build();
     ///     // NOT SAFE: `buf` is a borrow. If the outer future is leaked,
     ///     // the referent can be freed while the io-uring operation is
     ///     // still in flight.
