@@ -4101,7 +4101,7 @@ pub struct HvX64RegisterPage {
     pub rflags: u64,
     pub reserved: u64,
     pub xmm: [u128; 6],
-    pub segment: [u128; 6],
+    pub segment: [HvX64SegmentRegister; 6],
     // Misc. control registers (cannot be set via this interface).
     pub cr0: u64,
     pub cr3: u64,

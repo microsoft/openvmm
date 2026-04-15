@@ -25,7 +25,7 @@ impl MshvProcessor<'_> {
 
         regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
 
-        self.inner
+        self.runner
             .vcpufd
             .set_hvdef_regs(&assoc[..])
             .map_err(Error::Register)?;
@@ -44,7 +44,7 @@ impl MshvProcessor<'_> {
             value: FromZeros::new_zeroed(),
         });
 
-        self.inner
+        self.runner
             .vcpufd
             .get_hvdef_regs(&mut assoc[..])
             .map_err(Error::Register)?;
@@ -96,14 +96,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
             pad: [0; 3],
             value: FromZeros::new_zeroed(),
         }];
-        self.inner
+        self.runner
             .vcpufd
             .get_hvdef_regs(&mut assoc)
             .map_err(Error::Register)?;
         let apic_base = assoc[0].value.as_u64();
 
         // Get the LAPIC state page.
-        let lapic = self.inner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::Register)?;
         let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
 
         // Clear the non-architectural NMI pending bit.
@@ -115,13 +115,16 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
         // Set the APIC base register first to set the APIC mode before
         // updating the APIC register state.
-        self.inner
+        self.runner
             .vcpufd
-            .set_hvdef_regs_64(&[(HvX64RegisterName::ApicBase, value.apic_base)])
+            .set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvX64RegisterName::ApicBase,
+                value.apic_base,
+            ))])
             .map_err(Error::Register)?;
 
         // Preserve the current NMI pending state across the restore.
-        let current_lapic = self.inner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let current_lapic = self.runner.vcpufd.get_lapic().map_err(Error::Register)?;
         let current_page: [u8; 1024] = current_lapic.regs.map(|b| b as u8);
         let nmi_pending = vp::hv_apic_nmi_pending(&current_page);
 
@@ -131,7 +134,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         let lapic = LapicState {
             regs: page.map(|b| b as std::os::raw::c_char),
         };
-        self.inner
+        self.runner
             .vcpufd
             .set_lapic(&lapic)
             .map_err(Error::Register)?;

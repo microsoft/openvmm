@@ -279,7 +279,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     | HvX64RegisterName::Fs
                     | HvX64RegisterName::Gs => {
                         reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize] =
-                            value.as_u128();
+                            value.into();
                         reg_page.dirty.set_segments(true);
                         true
                     }
@@ -374,9 +374,9 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     | HvX64RegisterName::Ss
                     | HvX64RegisterName::Ds
                     | HvX64RegisterName::Fs
-                    | HvX64RegisterName::Gs => Some(HvRegisterValue(
-                        reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize].into(),
-                    )),
+                    | HvX64RegisterName::Gs => {
+                        Some(reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize].into())
+                    }
                     HvX64RegisterName::Cr0 => Some(HvRegisterValue((reg_page.cr0).into())),
                     HvX64RegisterName::Cr3 => Some(HvRegisterValue((reg_page.cr3).into())),
                     HvX64RegisterName::Cr4 => Some(HvRegisterValue((reg_page.cr4).into())),

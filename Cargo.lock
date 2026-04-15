@@ -8927,7 +8927,6 @@ name = "virt_mshv"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "arrayvec",
  "build_rs_guest_arch",
  "guestmem",
  "headervec",
