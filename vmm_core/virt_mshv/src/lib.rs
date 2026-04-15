@@ -418,6 +418,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         // Attach all the resources created above to a Partition object.
         let inner = Arc::new(MshvPartitionInner {
             vmfd: self.vmfd,
+            bsp_vcpufd: self.bsp,
             memory: Default::default(),
             gm: config.guest_memory.clone(),
             vps: self.vps,
@@ -434,7 +435,6 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             inner,
         };
 
-        let mut bsp = Some(self.bsp);
         let vps = self
             .config
             .processor_topology
@@ -442,7 +442,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             .map(|vp| MshvProcessorBinder {
                 partition: partition.inner.clone(),
                 vpindex: vp.vp_index,
-                vcpufd: bsp.take(),
+                vcpufd: None,
             })
             .collect();
 
@@ -462,6 +462,10 @@ pub struct MshvPartition {
 struct MshvPartitionInner {
     #[inspect(skip)]
     vmfd: VmFd,
+    /// The BSP's VcpuFd, retained for partition-level register access
+    /// (VM state get/set). Only used while VPs are stopped.
+    #[inspect(skip)]
+    bsp_vcpufd: VcpuFd,
     #[inspect(skip)]
     memory: Mutex<MshvMemoryRangeState>,
     gm: GuestMemory,
@@ -496,7 +500,7 @@ impl Drop for MshvVpInnerCleaner<'_> {
 
 impl virt::Partition for MshvPartition {
     fn supports_reset(&self) -> Option<&dyn virt::ResetPartition<Error = Error>> {
-        None
+        Some(self)
     }
 
     fn doorbell_registration(
@@ -546,6 +550,28 @@ impl virt::X86Partition for MshvPartition {
     fn pulse_lint(&self, vp_index: VpIndex, vtl: Vtl, lint: u8) {
         // TODO
         tracelimit::warn_ratelimited!(?vp_index, ?vtl, lint, "ignored lint pulse");
+    }
+}
+
+impl virt::ResetPartition for MshvPartition {
+    type Error = Error;
+
+    fn reset(&self) -> Result<(), Error> {
+        use virt::x86::vm::AccessVmState;
+
+        // Reset IRQ routing table to the initial state (all routes cleared).
+        for irq in 0..virt::irqcon::IRQ_LINES as u8 {
+            self.inner.irq_routes.set_irq_route(irq, None);
+        }
+
+        // Reset VM-level HV registers (GuestOsId, Hypercall, ReferenceTsc)
+        // via the BSP's VcpuFd. VPs must be stopped when this is called.
+        let bsp_vp_info = &self.inner.vps[0].vp_info;
+        self.access_state(Vtl::Vtl0)
+            .reset_all(bsp_vp_info)
+            .map_err(|e| Error::ResetState(Box::new(e)))?;
+
+        Ok(())
     }
 }
 
@@ -670,16 +696,21 @@ impl virt::BindProcessor for MshvProcessorBinder {
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
         let inner = &self.partition.vps[self.vpindex.index() as usize];
 
-        if self.vcpufd.is_none() {
-            let vcpufd = self
-                .partition
-                .vmfd
-                .create_vcpu(u8::try_from(self.vpindex.index()).expect("validated above"))
-                .map_err(Error::CreateVcpu)?;
-            self.vcpufd = Some(vcpufd);
+        // The BSP's VcpuFd lives in the partition (for VM-level state
+        // access). Other VPs create their fd lazily here.
+        let vcpufd = if self.vpindex.is_bsp() {
+            &self.partition.bsp_vcpufd
+        } else {
+            if self.vcpufd.is_none() {
+                let vcpufd = self
+                    .partition
+                    .vmfd
+                    .create_vcpu(u8::try_from(self.vpindex.index()).expect("validated above"))
+                    .map_err(Error::CreateVcpu)?;
+                self.vcpufd = Some(vcpufd);
+            }
+            self.vcpufd.as_ref().unwrap()
         };
-
-        let vcpufd = self.vcpufd.as_ref().unwrap();
 
         let reg_page_ptr = vcpufd
             .get_vp_reg_page()
@@ -1123,6 +1154,10 @@ pub enum Error {
     SetPartitionProperty(#[source] anyhow::Error),
     #[error("register access error")]
     Register(#[source] MshvError),
+    #[error("failed to get/set VP state")]
+    VpState(#[source] MshvError),
+    #[error("failed to reset state")]
+    ResetState(#[source] Box<virt::state::StateError<Self>>),
     #[error("install instercept failed")]
     InstallIntercept(#[source] MshvError),
     #[error("failed to register cpuid override")]
@@ -1540,6 +1575,25 @@ impl virt::Processor for MshvProcessor<'_> {
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         self
+    }
+
+    fn reset(&mut self) -> Result<(), impl std::error::Error + Send + Sync + 'static> {
+        use virt::x86::vp::AccessVpState;
+
+        // Reset all VP state elements to their initial values.
+        let vp_info = self.inner.vp_info;
+        self.access_state(Vtl::Vtl0)
+            .reset_all(&vp_info)
+            .map_err(|e| Error::ResetState(Box::new(e)))?;
+
+        // Clear VMM-side message queues.
+        self.inner.message_queues.clear();
+
+        // Reset deliverability notifications.
+        *self.inner.deliverability_notifications.lock() =
+            HvDeliverabilityNotificationsRegister::new();
+
+        Ok::<(), Error>(())
     }
 }
 

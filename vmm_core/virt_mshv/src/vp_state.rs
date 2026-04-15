@@ -7,10 +7,15 @@ use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
 use mshv_bindings::LapicState;
+use mshv_bindings::MSHV_VP_STATE_SIEFP;
+use mshv_bindings::MSHV_VP_STATE_SIMP;
+use mshv_bindings::MSHV_VP_STATE_SYNTHETIC_TIMERS;
+use mshv_bindings::mshv_get_set_vp_state;
 use virt::state::HvRegisterState;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
 use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 impl MshvProcessor<'_> {
     pub(crate) fn set_register_state<T, const N: usize>(&self, regs: &T) -> Result<(), Error>
@@ -74,19 +79,47 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
-        self.get_register_state()
+        let mut activity: vp::Activity = self.get_register_state()?;
+        // The NMI pending bit is not part of the register state; it lives
+        // in the APIC page.
+        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
+        let page: [u8; 1024] = lapic.regs.map(|b| b as u8);
+        activity.nmi_pending = vp::hv_apic_nmi_pending(&page);
+        Ok(activity)
     }
 
     fn set_activity(&mut self, value: &vp::Activity) -> Result<(), Self::Error> {
-        self.set_register_state(value)
+        self.set_register_state(value)?;
+        // The NMI pending bit is not part of the register state; it must
+        // be set via the APIC page.
+        let mut lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
+        let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
+        vp::set_hv_apic_nmi_pending(&mut page, value.nmi_pending);
+        lapic.regs = page.map(|b| b as std::os::raw::c_char);
+        self.runner
+            .vcpufd
+            .set_lapic(&lapic)
+            .map_err(Error::VpState)?;
+        Ok(())
     }
 
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
-        Err(Error::NotSupported)
+        let xsave = self.runner.vcpufd.get_xsave().map_err(Error::VpState)?;
+        Ok(vp::Xsave::from_compact(&xsave.buffer, &self.partition.caps))
     }
 
-    fn set_xsave(&mut self, _value: &vp::Xsave) -> Result<(), Self::Error> {
-        Err(Error::NotSupported)
+    fn set_xsave(&mut self, value: &vp::Xsave) -> Result<(), Self::Error> {
+        let data = value.compact();
+        let vp_state = mshv_get_set_vp_state {
+            type_: mshv_bindings::MSHV_VP_STATE_XSAVE as u8,
+            buf_sz: data.len() as u32,
+            buf_ptr: data.as_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .set_vp_state_ioctl(&vp_state)
+            .map_err(Error::VpState)
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
@@ -103,7 +136,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         let apic_base = assoc[0].value.as_u64();
 
         // Get the LAPIC state page.
-        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
         let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
 
         // Clear the non-architectural NMI pending bit.
@@ -124,7 +157,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
             .map_err(Error::Register)?;
 
         // Preserve the current NMI pending state across the restore.
-        let current_lapic = self.runner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let current_lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
         let current_page: [u8; 1024] = current_lapic.regs.map(|b| b as u8);
         let nmi_pending = vp::hv_apic_nmi_pending(&current_page);
 
@@ -137,7 +170,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.runner
             .vcpufd
             .set_lapic(&lapic)
-            .map_err(Error::Register)?;
+            .map_err(Error::VpState)?;
 
         Ok(())
     }
@@ -231,40 +264,102 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn synic_timers(&mut self) -> Result<vp::SynicTimers, Self::Error> {
-        Err(Error::NotSupported)
+        let mut state = hvdef::HvSyntheticTimersState::new_zeroed();
+        let mut vp_state = mshv_get_set_vp_state {
+            type_: MSHV_VP_STATE_SYNTHETIC_TIMERS as u8,
+            buf_sz: size_of_val(&state) as u32,
+            buf_ptr: state.as_mut_bytes().as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .get_vp_state_ioctl(&mut vp_state)
+            .map_err(Error::VpState)?;
+        Ok(vp::SynicTimers::from_hv(state))
     }
 
-    fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
-        Err(Error::NotSupported)
+    fn set_synic_timers(&mut self, value: &vp::SynicTimers) -> Result<(), Self::Error> {
+        let state = value.as_hv();
+        let vp_state = mshv_get_set_vp_state {
+            type_: MSHV_VP_STATE_SYNTHETIC_TIMERS as u8,
+            buf_sz: size_of_val(&state) as u32,
+            buf_ptr: state.as_bytes().as_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .set_vp_state_ioctl(&vp_state)
+            .map_err(Error::VpState)
     }
 
     fn synic_message_queues(&mut self) -> Result<vp::SynicMessageQueues, Self::Error> {
-        Err(Error::NotSupported)
+        Ok(self.inner.message_queues.save())
     }
 
     fn set_synic_message_queues(
         &mut self,
-        _value: &vp::SynicMessageQueues,
+        value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
-        Err(Error::NotSupported)
+        self.inner.message_queues.restore(value);
+        Ok(())
     }
 
     fn synic_message_page(&mut self) -> Result<vp::SynicMessagePage, Self::Error> {
-        Err(Error::NotSupported)
+        let mut state = vp::SynicMessagePage { data: [0; 4096] };
+        let mut vp_state = mshv_get_set_vp_state {
+            type_: MSHV_VP_STATE_SIMP as u8,
+            buf_sz: size_of_val(&state.data) as u32,
+            buf_ptr: state.data.as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .get_vp_state_ioctl(&mut vp_state)
+            .map_err(Error::VpState)?;
+        Ok(state)
     }
 
-    fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
-        Err(Error::NotSupported)
+    fn set_synic_message_page(&mut self, value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
+        let vp_state = mshv_get_set_vp_state {
+            type_: MSHV_VP_STATE_SIMP as u8,
+            buf_sz: size_of_val(&value.data) as u32,
+            buf_ptr: value.data.as_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .set_vp_state_ioctl(&vp_state)
+            .map_err(Error::VpState)
     }
 
     fn synic_event_flags_page(&mut self) -> Result<vp::SynicEventFlagsPage, Self::Error> {
-        Err(Error::NotSupported)
+        let mut state = vp::SynicEventFlagsPage { data: [0; 4096] };
+        let mut vp_state = mshv_get_set_vp_state {
+            type_: MSHV_VP_STATE_SIEFP as u8,
+            buf_sz: size_of_val(&state.data) as u32,
+            buf_ptr: state.data.as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .get_vp_state_ioctl(&mut vp_state)
+            .map_err(Error::VpState)?;
+        Ok(state)
     }
 
     fn set_synic_event_flags_page(
         &mut self,
-        _value: &vp::SynicEventFlagsPage,
+        value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
-        Err(Error::NotSupported)
+        let vp_state = mshv_get_set_vp_state {
+            type_: MSHV_VP_STATE_SIEFP as u8,
+            buf_sz: size_of_val(&value.data) as u32,
+            buf_ptr: value.data.as_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .set_vp_state_ioctl(&vp_state)
+            .map_err(Error::VpState)
     }
 }
