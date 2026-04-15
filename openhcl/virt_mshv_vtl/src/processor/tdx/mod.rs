@@ -3687,29 +3687,12 @@ impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, TdxBacked> {
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
-        let gps = self.vp.runner.tdx_enter_guest_gps();
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => gps[TdxGp::RAX],
-            hv1_hypercall::X64HypercallRegister::Rcx => gps[TdxGp::RCX],
-            hv1_hypercall::X64HypercallRegister::Rdx => gps[TdxGp::RDX],
-            hv1_hypercall::X64HypercallRegister::Rbx => gps[TdxGp::RBX],
-            hv1_hypercall::X64HypercallRegister::Rsi => gps[TdxGp::RSI],
-            hv1_hypercall::X64HypercallRegister::Rdi => gps[TdxGp::RDI],
-            hv1_hypercall::X64HypercallRegister::R8 => gps[TdxGp::R8],
-        }
+        self.vp.runner.tdx_enter_guest_gps()[n as usize]
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
         let gps = self.vp.runner.tdx_enter_guest_gps_mut();
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => gps[TdxGp::RAX] = value,
-            hv1_hypercall::X64HypercallRegister::Rcx => gps[TdxGp::RCX] = value,
-            hv1_hypercall::X64HypercallRegister::Rdx => gps[TdxGp::RDX] = value,
-            hv1_hypercall::X64HypercallRegister::Rbx => gps[TdxGp::RBX] = value,
-            hv1_hypercall::X64HypercallRegister::Rsi => gps[TdxGp::RSI] = value,
-            hv1_hypercall::X64HypercallRegister::Rdi => gps[TdxGp::RDI] = value,
-            hv1_hypercall::X64HypercallRegister::R8 => gps[TdxGp::R8] = value,
-        }
+        gps[n as usize] = value;
     }
 
     // TODO: cleanup xmm to not use same as mshv

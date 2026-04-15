@@ -224,16 +224,14 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             | HvX64RegisterName::R13
             | HvX64RegisterName::R14
             | HvX64RegisterName::R15 => {
-                runner.cpu_context_mut().gps[(name.0 - HvX64RegisterName::Rax.0) as usize] =
+                runner.cpu_context_mut().gps_no_rsp[(name.0 - HvX64RegisterName::Rax.0) as usize] =
                     value.as_u64();
                 true
             }
 
             HvX64RegisterName::Cr2 => {
                 // CR2 is stored in the RSP slot.
-                runner.cpu_context_mut().gps
-                    [(HvX64RegisterName::Rsp.0 - HvX64RegisterName::Rax.0) as usize] =
-                    value.as_u64();
+                runner.cpu_context_mut().gps_no_rsp[crate::protocol::CR2] = value.as_u64();
                 true
             }
 
@@ -330,17 +328,14 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             | HvX64RegisterName::R12
             | HvX64RegisterName::R13
             | HvX64RegisterName::R14
-            | HvX64RegisterName::R15 => {
-                Some(runner.cpu_context().gps[(name.0 - HvX64RegisterName::Rax.0) as usize].into())
-            }
+            | HvX64RegisterName::R15 => Some(
+                runner.cpu_context().gps_no_rsp[(name.0 - HvX64RegisterName::Rax.0) as usize]
+                    .into(),
+            ),
 
             HvX64RegisterName::Cr2 => {
                 // CR2 is stored in the RSP slot.
-                Some(
-                    runner.cpu_context().gps
-                        [(HvX64RegisterName::Rsp.0 - HvX64RegisterName::Rax.0) as usize]
-                        .into(),
-                )
+                Some(runner.cpu_context().gps_no_rsp[crate::protocol::CR2].into())
             }
 
             HvX64RegisterName::Xmm0

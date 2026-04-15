@@ -1257,18 +1257,6 @@ impl DoorbellRegistration for MshvPartition {
     }
 }
 
-fn gp_index(n: hv1_hypercall::X64HypercallRegister) -> usize {
-    match n {
-        hv1_hypercall::X64HypercallRegister::Rax => 0,
-        hv1_hypercall::X64HypercallRegister::Rcx => 1,
-        hv1_hypercall::X64HypercallRegister::Rdx => 2,
-        hv1_hypercall::X64HypercallRegister::Rbx => 3,
-        hv1_hypercall::X64HypercallRegister::Rsi => 6,
-        hv1_hypercall::X64HypercallRegister::Rdi => 7,
-        hv1_hypercall::X64HypercallRegister::R8 => 8,
-    }
-}
-
 impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     fn rip(&mut self) -> u64 {
         self.reg_page.rip
@@ -1280,11 +1268,11 @@ impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
-        self.reg_page.gp_registers[gp_index(n)]
+        self.reg_page.gp_registers[n as usize]
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
-        self.reg_page.gp_registers[gp_index(n)] = value;
+        self.reg_page.gp_registers[n as usize] = value;
         self.reg_page.dirty.set_general_purpose(true);
     }
 
