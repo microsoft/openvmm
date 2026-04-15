@@ -1290,18 +1290,31 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
     }
 
     fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
+        let unmap_start = addr >> HV_PAGE_SHIFT;
+        let unmap_end = (addr + size) >> HV_PAGE_SHIFT;
         let mut state = self.memory.lock();
-        let (slot, range) = state
-            .ranges
-            .iter_mut()
-            .enumerate()
-            .find(|(_, range)| {
-                range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr >> HV_PAGE_SHIFT, size))
-            })
-            .expect("can only unmap existing ranges of exact size");
-
-        self.vmfd.unmap_user_memory(range.unwrap())?;
-        state.ranges[slot] = None;
+        for entry in &mut state.ranges {
+            let Some(region) = entry.as_ref() else {
+                continue;
+            };
+            let region_start = region.guest_pfn;
+            let region_end = region.guest_pfn + (region.size >> HV_PAGE_SHIFT);
+            if unmap_start <= region_start && region_end <= unmap_end {
+                // Region is fully contained in the unmap range.
+                self.vmfd.unmap_user_memory(*region)?;
+                *entry = None;
+            } else {
+                assert!(
+                    region_end <= unmap_start || unmap_end <= region_start,
+                    "can only unmap existing ranges of exact size: \
+                     unmap range {:#x}..{:#x} partially overlaps mapped range {:#x}..{:#x})",
+                    unmap_start << HV_PAGE_SHIFT,
+                    unmap_end << HV_PAGE_SHIFT,
+                    region_start << HV_PAGE_SHIFT,
+                    region_end << HV_PAGE_SHIFT,
+                );
+            }
+        }
         Ok(())
     }
 }
