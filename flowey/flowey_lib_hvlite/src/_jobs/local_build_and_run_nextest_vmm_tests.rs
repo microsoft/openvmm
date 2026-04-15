@@ -769,11 +769,11 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let dep_install_cmds = rt.read(dep_install_cmds);
 
-                for cmd in &dep_install_cmds {
-                    log::info!("{cmd}");
-                }
-
                 if !dep_install_cmds.is_empty() {
+                    log::info!("Dependency install commands (written to install_deps.ps1):");
+                    for cmd in &dep_install_cmds {
+                        log::info!("  {cmd}");
+                    }
                     let script_contents = dep_install_cmds.join("\n");
                     fs_err::write(test_content_dir.join("install_deps.ps1"), script_contents)?;
                 }
