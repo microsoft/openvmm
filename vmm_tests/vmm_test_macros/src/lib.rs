@@ -817,7 +817,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements = build_requirements(&config.firmware, &name, config.vmm);
+        let requirements = build_requirements(&config.firmware, config.vmm);
         let requirements = if let Some(req) = requirements {
             quote! { Some(#req) }
         } else {
@@ -881,7 +881,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(firmware: &Firmware, name: &str, resolved_vmm: Vmm) -> Option<TokenStream> {
+fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm) -> Option<TokenStream> {
     let mut requirement_expr: Option<TokenStream> = None;
     let mut is_vbs = false;
     // Add isolation requirement if specified
