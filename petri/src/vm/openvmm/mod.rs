@@ -220,9 +220,17 @@ fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
 
     let cache_dir = super::petri_disk_cache_dir();
 
-    // Use the URL path's filename as the cache key (query params stripped
-    // to avoid platform-invalid chars and leaking secrets like SAS tokens).
-    let cache_key = url_path.rsplit('/').next().unwrap_or(url_path).to_owned();
+    // For VHD1-formatted blobs, let the auto-cache layer derive the cache key
+    // from the VHD's unique ID (a UUID embedded in the footer). This means the
+    // cache automatically invalidates when the image is replaced with a new one,
+    // even if the filename stays the same. For flat-format blobs (e.g. ISOs),
+    // fall back to the URL filename since there's no embedded ID.
+    let cache_key = match format {
+        disk_backend_resources::BlobDiskFormat::FixedVhd1 => None,
+        disk_backend_resources::BlobDiskFormat::Flat => {
+            Some(url_path.rsplit('/').next().unwrap_or(url_path).to_owned())
+        }
+    };
 
     Ok(LayeredDiskHandle {
         layers: vec![
@@ -237,7 +245,7 @@ fn memdiff_remote_disk(url: &str) -> anyhow::Result<Resource<DiskHandleKind>> {
                 write_through: false,
                 layer: SqliteAutoCacheDiskLayerHandle {
                     cache_path: cache_dir,
-                    cache_key: Some(cache_key),
+                    cache_key,
                 }
                 .into_resource(),
             },
