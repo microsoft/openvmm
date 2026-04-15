@@ -833,13 +833,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
         let name = format!("{}_{original_name}", config.name_prefix());
 
         // Build requirements based on the configuration and resolved VMM
-        let requirements =
-            build_requirements(&config.firmware, &name, config.vmm, config.requires_vpci);
-        let requirements = if let Some(req) = requirements {
-            quote! { Some(#req) }
-        } else {
-            quote! { None }
-        };
+        let requirements = build_requirements(&config.firmware, config.vmm, config.requires_vpci);
 
         // Now move the values for the FirmwareAndArch and extra_deps
         let extra_deps = config.extra_deps;
@@ -883,7 +877,7 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
                         #original_name(#original_args).await
                     })
                 },
-                #requirements,
+                Some(#requirements),
                 #unstable,
             ).into(),
         };
@@ -898,13 +892,8 @@ fn make_vmm_test(args: ArgsWithOverrides, item: ItemFn) -> syn::Result<TokenStre
 }
 
 // Helper to build requirements TokenStream for firmware and resolved VMM
-fn build_requirements(
-    firmware: &Firmware,
-    name: &str,
-    resolved_vmm: Vmm,
-    requires_vpci: bool,
-) -> Option<TokenStream> {
-    let mut requirement_expr: Option<TokenStream> = None;
+fn build_requirements(firmware: &Firmware, resolved_vmm: Vmm, requires_vpci: bool) -> TokenStream {
+    let mut requirement_expr: TokenStream = quote!(::petri::requirements::TestRequirement::Any);
     let mut is_vbs = false;
     // Add isolation requirement if specified
     if let Firmware::OpenhclUefi(
@@ -929,44 +918,25 @@ fn build_requirements(
             )),
         };
 
-        requirement_expr = Some(isolation_requirement);
+        requirement_expr = quote!(#requirement_expr.and(#isolation_requirement));
     }
 
     let is_hyperv = resolved_vmm == Vmm::HyperV;
 
     if is_hyperv && is_vbs {
-        let hyperv_vbs_requirement_expr = quote!(
+        requirement_expr = quote!(#requirement_expr.and(
             ::petri::requirements::TestRequirement::ExecutionEnvironment(
                 ::petri::requirements::ExecutionEnvironment::Baremetal
             )
-        );
-        requirement_expr = match requirement_expr {
-            Some(existing) => Some(quote!(
-                ::petri::requirements::TestRequirement::And(
-                    Box::new(#existing),
-                    Box::new(#hyperv_vbs_requirement_expr)
-                )
-            )),
-            None => Some(hyperv_vbs_requirement_expr),
-        };
+        ));
     }
 
     if requires_vpci {
-        let vpci_expr = quote!(::petri::requirements::TestRequirement::VpciSupport);
-        requirement_expr = match requirement_expr {
-            Some(existing) => Some(quote!(
-                ::petri::requirements::TestRequirement::And(
-                    Box::new(#existing),
-                    Box::new(#vpci_expr)
-                )
-            )),
-            None => Some(vpci_expr),
-        };
+        requirement_expr =
+            quote!(#requirement_expr.and(::petri::requirements::TestRequirement::VpciSupport));
     }
 
-    if requirement_expr.is_some() {
-        Some(quote!(::petri::requirements::TestCaseRequirements::new(#requirement_expr)))
-    } else {
-        None
-    }
+    quote!(
+        ::petri::requirements::TestCaseRequirements::new(#requirement_expr)
+    )
 }
