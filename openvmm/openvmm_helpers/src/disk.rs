@@ -22,12 +22,26 @@ fn disk_open_error(path: &Path, verb: &str) -> String {
     msg
 }
 
+/// Options for opening a disk file.
+#[derive(Clone, Copy, Default)]
+pub struct OpenDiskOptions {
+    /// Open the disk as read-only.
+    pub read_only: bool,
+    /// Bypass the OS page cache for direct disk I/O (Linux only, ignored
+    /// elsewhere).
+    pub direct: bool,
+}
+
 /// Opens the resources needed for using a disk from a file at `path`.
 ///
 /// If the file ends with .vhd and is a fixed VHD1, it will be opened using
 /// the user-mode VHD parser. Otherwise, if the file ends with .vhd or
 /// .vhdx, the file will be opened using the kernel-mode VHD parser.
-pub fn open_disk_type(path: &Path, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
+pub fn open_disk_type(
+    path: &Path,
+    options: OpenDiskOptions,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
+    let read_only = options.read_only;
     Ok(match path.extension().and_then(|s| s.to_str()) {
         Some("vhd") => {
             let file = std::fs::OpenOptions::new()
@@ -80,13 +94,31 @@ pub fn open_disk_type(path: &Path, read_only: bool) -> anyhow::Result<Resource<D
             Resource::new(disk_backend_resources::FixedVhd1DiskHandle(file))
         }
         _ => {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(!read_only)
+            if options.direct && !cfg!(target_os = "linux") {
+                anyhow::bail!("direct I/O is only supported on Linux");
+            }
+
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true).write(!read_only);
+
+            #[cfg(target_os = "linux")]
+            if options.direct {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.custom_flags(libc::O_DIRECT);
+            }
+
+            let file = opts
                 .open(path)
                 .with_context(|| disk_open_error(path, "failed to open"))?;
 
-            Resource::new(disk_backend_resources::FileDiskHandle(file))
+            #[cfg(target_os = "linux")]
+            {
+                Resource::new(disk_backend_resources::BlockDeviceDiskHandle { file })
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Resource::new(disk_backend_resources::FileDiskHandle(file))
+            }
         }
     })
 }

@@ -50,6 +50,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disk_crypt")]
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
+    #[cfg(target_os = "linux")]
+    disk_blockdevice::resolver::StaticBlockDeviceResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,

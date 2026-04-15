@@ -525,7 +525,7 @@ impl BounceBufferTracker {
         &'b self,
         size: usize,
         thread: usize,
-    ) -> Box<TrackedBounceBuffer<'a>>
+    ) -> TrackedBounceBuffer<'a>
     where
         'b: 'a,
     {
@@ -544,11 +544,11 @@ impl BounceBufferTracker {
             listener.await;
         }
 
-        Box::new(TrackedBounceBuffer {
+        TrackedBounceBuffer {
             buffer: BounceBuffer::new(size),
             free_pages,
             event,
-        })
+        }
     }
 }
 

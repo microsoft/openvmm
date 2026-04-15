@@ -47,6 +47,7 @@ use mesh::Receiver;
 use mesh::Sender;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_defs::config::Config;
+use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
@@ -193,8 +194,14 @@ struct PetriVmResourcesOpenVmm {
 }
 
 fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let disk = open_disk_type(path, true)
-        .with_context(|| format!("failed to open disk: {}", path.display()))?;
+    let disk = open_disk_type(
+        path,
+        OpenDiskOptions {
+            read_only: true,
+            ..Default::default()
+        },
+    )
+    .with_context(|| format!("failed to open disk: {}", path.display()))?;
     Ok(LayeredDiskHandle {
         layers: vec![
             RamDiskLayerHandle {
@@ -290,7 +297,7 @@ fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>
         .into_resource(),
         Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path)?,
         Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
-        Disk::Persistent(path) => open_disk_type(path.as_ref(), false)?,
-        Disk::Temporary(path) => open_disk_type(path.as_ref(), false)?,
+        Disk::Persistent(path) => open_disk_type(path.as_ref(), Default::default())?,
+        Disk::Temporary(path) => open_disk_type(path.as_ref(), Default::default())?,
     })
 }

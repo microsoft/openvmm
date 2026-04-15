@@ -11,7 +11,7 @@ use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
-use disk_blockdevice::OpenBlockDeviceConfig;
+use disk_backend_resources::BlockDeviceDiskHandle;
 use futures::StreamExt;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guid::Guid;
@@ -1099,7 +1099,7 @@ async fn make_disk_type_from_physical_device(
 
     let disk_path = Path::new("/dev").join(devname);
 
-    let file = disk_blockdevice::open_file_for_block(&disk_path, read_only).map_err(|e| {
+    let file = disk_blockdevice::open_file_for_block(&disk_path, read_only, true).map_err(|e| {
         Error::StorageCannotOpenVtl2Device {
             device_type: single_device.device_type,
             instance_id: controller_instance_id,
@@ -1109,7 +1109,7 @@ async fn make_disk_type_from_physical_device(
         }
     })?;
 
-    Ok(Resource::new(OpenBlockDeviceConfig { file }))
+    Ok(Resource::new(BlockDeviceDiskHandle { file }))
 }
 
 fn make_disk_config_inner(

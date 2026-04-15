@@ -12,9 +12,9 @@
 
 mod ioctl;
 mod nvme;
+pub mod resolver;
 
 use anyhow::Context;
-use async_trait::async_trait;
 use blocking::unblock;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -23,19 +23,17 @@ use disk_backend::pr::PersistentReservation;
 use disk_backend::pr::ReservationCapabilities;
 use disk_backend::pr::ReservationReport;
 use disk_backend::pr::ReservationType;
-use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedDisk;
 use fs_err::PathExt;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use inspect::Inspect;
 use io_uring::opcode;
 use io_uring::types;
-use mesh::MeshPayload;
 use nvme::check_nvme_status;
 use nvme_spec::nvm;
 use pal::unix::affinity;
 use pal_async::driver::Driver;
+use scsi_buffers::BounceBuffer;
 use scsi_buffers::BounceBufferTracker;
 use scsi_buffers::RequestBuffers;
 use std::fmt::Debug;
@@ -52,83 +50,46 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 use uevent::CallbackHandle;
 use uevent::UeventListener;
-use vm_resource::AsyncResolveResource;
-use vm_resource::ResourceId;
-use vm_resource::ResourceResolver;
-use vm_resource::kind::DiskHandleKind;
 
-pub struct BlockDeviceResolver {
-    uevent_listener: Option<Arc<UeventListener>>,
-    bounce_buffer_tracker: Arc<BounceBufferTracker>,
-    always_bounce: bool,
-}
-
-impl BlockDeviceResolver {
-    pub fn new(
-        uevent_listener: Option<Arc<UeventListener>>,
-        bounce_buffer_tracker: Arc<BounceBufferTracker>,
-        always_bounce: bool,
-    ) -> Self {
-        Self {
-            uevent_listener,
-            bounce_buffer_tracker,
-            always_bounce,
-        }
-    }
-}
-
-#[derive(MeshPayload)]
-pub struct OpenBlockDeviceConfig {
-    pub file: fs::File,
-}
-
-impl ResourceId<DiskHandleKind> for OpenBlockDeviceConfig {
-    const ID: &'static str = "block";
-}
-
-#[derive(Debug, Error)]
-pub enum ResolveDiskError {
-    #[error("failed to create new device")]
-    NewDevice(#[source] NewDeviceError),
-    #[error("invalid disk")]
-    InvalidDisk(#[source] disk_backend::InvalidDisk),
-}
-
-#[async_trait]
-impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDeviceResolver {
-    type Output = ResolvedDisk;
-    type Error = ResolveDiskError;
-
-    async fn resolve(
-        &self,
-        _resolver: &ResourceResolver,
-        rsrc: OpenBlockDeviceConfig,
-        input: ResolveDiskParameters<'_>,
-    ) -> Result<Self::Output, Self::Error> {
-        let disk = BlockDevice::new(
-            rsrc.file,
-            input.read_only,
-            input.driver_source.simple(),
-            self.uevent_listener.as_deref(),
-            self.bounce_buffer_tracker.clone(),
-            self.always_bounce,
-        )
-        .await
-        .map_err(ResolveDiskError::NewDevice)?;
-        ResolvedDisk::new(disk).map_err(ResolveDiskError::InvalidDisk)
-    }
-}
-
-/// Opens a file for use with [`BlockDevice`] or [`OpenBlockDeviceConfig`].
-pub fn open_file_for_block(path: &Path, read_only: bool) -> std::io::Result<fs::File> {
+/// Opens a file for use with [`BlockDevice`] or
+/// [`disk_backend_resources::BlockDeviceDiskHandle`].
+pub fn open_file_for_block(
+    path: &Path,
+    read_only: bool,
+    direct: bool,
+) -> std::io::Result<fs::File> {
     use std::os::unix::prelude::*;
 
-    tracing::debug!(?path, read_only, "open_file_for_block");
-    fs::OpenOptions::new()
-        .read(true)
-        .write(!read_only)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
+    tracing::debug!(?path, read_only, direct, "open_file_for_block");
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true).write(!read_only);
+    if direct {
+        opts.custom_flags(libc::O_DIRECT);
+    }
+    opts.open(path)
+}
+
+/// A bounce buffer that may or may not be tracked by a
+/// [`BounceBufferTracker`].
+enum MaybeBounceBuffer<'a> {
+    Tracked(scsi_buffers::TrackedBounceBuffer<'a>),
+    Untracked(BounceBuffer),
+}
+
+impl MaybeBounceBuffer<'_> {
+    fn io_vecs(&self) -> &[scsi_buffers::IoBuffer<'_>] {
+        match self {
+            Self::Tracked(t) => t.buffer.io_vecs(),
+            Self::Untracked(b) => b.io_vecs(),
+        }
+    }
+
+    fn as_mut_bytes(&mut self) -> &mut [u8] {
+        match self {
+            Self::Tracked(t) => t.buffer.as_mut_bytes(),
+            Self::Untracked(b) => b.as_mut_bytes(),
+        }
+    }
 }
 
 /// A storvsp disk backed by a raw block device.
@@ -153,7 +114,7 @@ pub struct BlockDevice {
     resize_epoch: Arc<ResizeEpoch>,
     resized_acked: AtomicU64,
     #[inspect(skip)]
-    bounce_buffer_tracker: Arc<BounceBufferTracker>,
+    bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
     always_bounce: bool,
 }
 
@@ -245,7 +206,7 @@ impl BlockDevice {
         read_only: bool,
         driver: impl Driver,
         uevent_listener: Option<&UeventListener>,
-        bounce_buffer_tracker: Arc<BounceBufferTracker>,
+        bounce_buffer_tracker: Option<Arc<BounceBufferTracker>>,
         always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
         let uring = driver.io_uring_submit().ok_or(NewDeviceError::NoIoUring)?;
@@ -320,6 +281,18 @@ impl BlockDevice {
         self.driver
             .io_uring_submit()
             .expect("driver does not support io-uring")
+    }
+
+    async fn acquire_bounce_buffer(&self, size: usize) -> Box<MaybeBounceBuffer<'_>> {
+        Box::new(if let Some(tracker) = &self.bounce_buffer_tracker {
+            MaybeBounceBuffer::Tracked(
+                tracker
+                    .acquire_bounce_buffers(size, affinity::get_cpu_number() as usize)
+                    .await,
+            )
+        } else {
+            MaybeBounceBuffer::Untracked(BounceBuffer::new(size))
+        })
     }
 
     fn handle_resize(&self) {
@@ -561,12 +534,7 @@ impl DiskIo for BlockDevice {
             tracing::trace!("double buffering IO");
 
             bounce_buffer
-                .insert(
-                    self.bounce_buffer_tracker
-                        .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
-                        .await,
-                )
-                .buffer
+                .insert(self.acquire_bounce_buffer(buffers.len()).await)
                 .io_vecs()
         };
 
@@ -593,9 +561,7 @@ impl DiskIo for BlockDevice {
         }
 
         if let Some(mut bounce_buffer) = bounce_buffer {
-            buffers
-                .writer()
-                .write(bounce_buffer.buffer.as_mut_bytes())?;
+            buffers.writer().write(bounce_buffer.as_mut_bytes())?;
         }
         Ok(())
     }
@@ -624,12 +590,9 @@ impl DiskIo for BlockDevice {
             locked.io_vecs()
         } else {
             tracing::trace!("double buffering IO");
-            bounce_buffer = self
-                .bounce_buffer_tracker
-                .acquire_bounce_buffers(buffers.len(), affinity::get_cpu_number() as usize)
-                .await;
-            buffers.reader().read(bounce_buffer.buffer.as_mut_bytes())?;
-            bounce_buffer.buffer.io_vecs()
+            bounce_buffer = self.acquire_bounce_buffer(buffers.len()).await;
+            buffers.reader().read(bounce_buffer.as_mut_bytes())?;
+            bounce_buffer.io_vecs()
         };
 
         // SAFETY: `io_vecs` and the underlying locked pages are locals
@@ -854,11 +817,6 @@ mod tests {
             })
             .map_err(|err| NewDeviceError::IoctlError(DiskError::Io(err)))?;
 
-        let bounce_buffer_tracker = Arc::new(BounceBufferTracker::new(
-            2048,
-            affinity::num_procs() as usize,
-        ));
-
         let test_file = tempfile::tempfile().unwrap();
         test_file.set_len(1024 * 64).unwrap();
         block_on(BlockDevice::new(
@@ -866,7 +824,7 @@ mod tests {
             false,
             client.initiator().clone(),
             None,
-            bounce_buffer_tracker,
+            None,
             false,
         ))
     }

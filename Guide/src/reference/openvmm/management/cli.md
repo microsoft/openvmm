@@ -13,10 +13,15 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also pass `--hv`. The `DISK` argument can be:
+* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also
+  pass `--hv`. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
+
+  On Linux, raw files and block devices use the `disk_blockdevice` backend
+  (io_uring-based async I/O) by default. Append `;direct` to the path to
+  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
 * `--private-memory`: Use private anonymous memory for guest RAM
   instead of shared file-backed sections.
 * `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only).

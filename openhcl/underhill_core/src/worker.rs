@@ -66,8 +66,8 @@ use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
-use disk_blockdevice::BlockDeviceResolver;
-use disk_blockdevice::OpenBlockDeviceConfig;
+use disk_backend_resources::BlockDeviceDiskHandle;
+use disk_blockdevice::resolver::BlockDeviceResolver;
 use firmware_uefi::LogLevel;
 use firmware_uefi::UefiCommandSet;
 use futures::executor::block_on;
@@ -2230,7 +2230,7 @@ async fn new_underhill_vm(
     // Currently we always bounce for CVM as well, due to underhill_mem not
     // supporting registering shared or private memory with the kernel.
     let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
-    resolver.add_async_resolver::<DiskHandleKind, _, OpenBlockDeviceConfig, _>(
+    resolver.add_async_resolver::<DiskHandleKind, _, BlockDeviceDiskHandle, _>(
         BlockDeviceResolver::new(
             Some(uevent_listener.clone()),
             bounce_buffer_tracker,

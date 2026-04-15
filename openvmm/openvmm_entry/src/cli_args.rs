@@ -160,8 +160,9 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>[;create=<len>]`   file-backed disk
+    `file:<path>[;direct][;create=<len>]`   file-backed disk
         <path>: path to file
+        `;direct`: bypass the OS page cache
     `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
     `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
     `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
@@ -195,8 +196,9 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>[;create=<len>]`   file-backed disk
+    `file:<path>[;direct][;create=<len>]`   file-backed disk
         <path>: path to file
+        `;direct`: bypass the OS page cache
     `sql:<path>[;create=<len>]`    SQLite-backed disk (dev/test)
     `sqldiff:<path>[;create]:<disk>` SQLite diff layer on a backing disk
     `autocache:<key>:<disk>`       auto-cached SQLite layer (use `autocache::<disk>` to omit key; needs OPENVMM_AUTO_CACHE_PATH)
@@ -229,8 +231,9 @@ valid disk kinds:
         <len>: length of ramdisk, e.g.: `1G`
     `memdiff:<disk>`               memory backed diff disk
         <disk>: lower disk, e.g.: `file:base.img`
-    `file:<path>`                  file-backed disk
+    `file:<path>[;direct]`                  file-backed disk
         <path>: path to file
+        `;direct`: bypass the OS page cache
 
 flags:
     `ro`                           open disk as read-only
@@ -985,10 +988,11 @@ pub enum DiskCliKind {
     },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
-    // file:<path>[;create=<len>]
+    // file:<path>[;direct][;create=<len>]
     File {
         path: PathBuf,
         create_with_len: Option<u64>,
+        direct: bool,
     },
     // blob:<type>:<url>
     Blob {
@@ -1020,18 +1024,35 @@ pub enum BlobKind {
     Vhd1,
 }
 
-fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
-    Ok(match arg.split_once(';') {
-        Some((path, len)) => {
-            let Some(len) = len.strip_prefix("create=") else {
-                anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
-            };
+struct FileOpts {
+    path: PathBuf,
+    create_with_len: Option<u64>,
+    direct: bool,
+}
 
-            let len = parse_memory(len)?;
+fn parse_file_opts(arg: &str) -> anyhow::Result<FileOpts> {
+    let mut path = arg;
+    let mut create_with_len = None;
+    let mut direct = false;
 
-            (path.into(), Some(len))
+    // Parse semicolon-delimited options after the path.
+    if let Some((p, rest)) = arg.split_once(';') {
+        path = p;
+        for opt in rest.split(';') {
+            if let Some(len) = opt.strip_prefix("create=") {
+                create_with_len = Some(parse_memory(len)?);
+            } else if opt == "direct" {
+                direct = true;
+            } else {
+                anyhow::bail!("invalid file option '{opt}', expected 'create=<len>' or 'direct'");
+            }
         }
-        None => (arg.into(), None),
+    }
+
+    Ok(FileOpts {
+        path: path.into(),
+        create_with_len,
+        direct,
     })
 }
 
@@ -1059,17 +1080,26 @@ impl FromStr for DiskCliKind {
         let disk = match s.split_once(':') {
             // convenience support for passing bare paths as file disks
             None => {
-                let (path, create_with_len) = parse_path_and_len(s)?;
+                let FileOpts {
+                    path,
+                    create_with_len,
+                    direct,
+                } = parse_file_opts(s)?;
                 DiskCliKind::File {
                     path,
                     create_with_len,
+                    direct,
                 }
             }
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
                 "sql" => {
-                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    let FileOpts {
+                        path,
+                        create_with_len,
+                        ..
+                    } = parse_file_opts(arg)?;
                     DiskCliKind::Sqlite {
                         path,
                         create_with_len,
@@ -1102,10 +1132,15 @@ impl FromStr for DiskCliKind {
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => {
-                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    let FileOpts {
+                        path,
+                        create_with_len,
+                        direct,
+                    } = parse_file_opts(arg)?;
                     DiskCliKind::File {
                         path,
                         create_with_len,
+                        direct,
                     }
                 }
                 "blob" => {
@@ -1137,11 +1172,16 @@ impl FromStr for DiskCliKind {
                     //
                     // in this case, we actually want to treat that leading `d:` as part of the
                     // path, rather than as a disk with `kind == 'd'`
-                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    let FileOpts {
+                        path,
+                        create_with_len,
+                        direct,
+                    } = parse_file_opts(s)?;
                     if path.has_root() {
                         DiskCliKind::File {
                             path,
                             create_with_len,
+                            direct,
                         }
                     } else {
                         anyhow::bail!("invalid disk kind {kind}");
@@ -2157,6 +2197,7 @@ mod tests {
             DiskCliKind::File {
                 path,
                 create_with_len,
+                ..
             } => {
                 assert_eq!(path, PathBuf::from("test.vhd"));
                 assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
@@ -2174,6 +2215,7 @@ mod tests {
             DiskCliKind::File {
                 path,
                 create_with_len,
+                ..
             } => {
                 assert_eq!(path, PathBuf::from("test.vhd"));
                 assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
@@ -2231,6 +2273,7 @@ mod tests {
                 DiskCliKind::File {
                     path,
                     create_with_len,
+                    ..
                 } => {
                     assert_eq!(path, PathBuf::from("base.img"));
                     assert_eq!(create_with_len, None);
@@ -2284,6 +2327,7 @@ mod tests {
                     DiskCliKind::File {
                         path,
                         create_with_len,
+                        ..
                     } => {
                         assert_eq!(path, PathBuf::from("base.img"));
                         assert_eq!(create_with_len, None);
@@ -2305,6 +2349,7 @@ mod tests {
                     DiskCliKind::File {
                         path,
                         create_with_len,
+                        ..
                     } => {
                         assert_eq!(path, PathBuf::from("base.img"));
                         assert_eq!(create_with_len, None);
@@ -2704,6 +2749,7 @@ mod tests {
             DiskCliKind::File {
                 path,
                 create_with_len,
+                ..
             } => {
                 assert_eq!(path.to_str().unwrap(), "/path/to/floppy.img");
                 assert_eq!(create_with_len, None);

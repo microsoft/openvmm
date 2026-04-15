@@ -91,6 +91,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
@@ -1806,12 +1807,19 @@ fn disk_open_inner(
         DiskCliKind::File {
             path,
             create_with_len,
+            direct,
         } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
             create_disk_type(path, *size)
                 .with_context(|| format!("failed to create {}", path.display()))?
         } else {
-            open_disk_type(path, read_only)
-                .with_context(|| format!("failed to open {}", path.display()))?
+            open_disk_type(
+                path,
+                OpenDiskOptions {
+                    read_only,
+                    direct: *direct,
+                },
+            )
+            .with_context(|| format!("failed to open {}", path.display()))?
         })),
         DiskCliKind::Blob { kind, url } => {
             layers.push(disk(disk_backend_resources::BlobDiskHandle {
