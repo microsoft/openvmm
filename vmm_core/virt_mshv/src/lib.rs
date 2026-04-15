@@ -1306,12 +1306,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             } else {
                 assert!(
                     region_end <= unmap_start || unmap_end <= region_start,
-                    "can only unmap existing ranges of exact size: \
-                     unmap range {:#x}..{:#x} partially overlaps mapped range {:#x}..{:#x})",
-                    unmap_start << HV_PAGE_SHIFT,
-                    unmap_end << HV_PAGE_SHIFT,
-                    region_start << HV_PAGE_SHIFT,
-                    region_end << HV_PAGE_SHIFT,
+                    "unmap range partially overlaps a mapped region"
                 );
             }
         }
