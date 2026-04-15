@@ -1809,8 +1809,15 @@ fn disk_open_inner(
             create_with_len,
             direct,
         } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
-            create_disk_type(path, *size)
-                .with_context(|| format!("failed to create {}", path.display()))?
+            create_disk_type(
+                path,
+                *size,
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: *direct,
+                },
+            )
+            .with_context(|| format!("failed to create {}", path.display()))?
         } else {
             open_disk_type(
                 path,

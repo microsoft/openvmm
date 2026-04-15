@@ -283,6 +283,8 @@ impl BlockDevice {
             .expect("driver does not support io-uring")
     }
 
+    /// Use a box to avoid embedding a large `TrackedBounceBuffer` directly in
+    /// the calling future.
     async fn acquire_bounce_buffer(&self, size: usize) -> Box<MaybeBounceBuffer<'_>> {
         Box::new(if let Some(tracker) = &self.bounce_buffer_tracker {
             MaybeBounceBuffer::Tracked(

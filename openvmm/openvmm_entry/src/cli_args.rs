@@ -1098,8 +1098,11 @@ impl FromStr for DiskCliKind {
                     let FileOpts {
                         path,
                         create_with_len,
-                        ..
+                        direct,
                     } = parse_file_opts(arg)?;
+                    if direct {
+                        anyhow::bail!("'direct' is not supported for 'sql' disks");
+                    }
                     DiskCliKind::Sqlite {
                         path,
                         create_with_len,
