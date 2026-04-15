@@ -18,7 +18,7 @@ let
   hashes = {
     hcl-main = {
       std = {
-        x64 = "sha256-X9WQj5C6MZy9QdIe43NR9AhxT9PZiOmM5ycpxGg2UoA=";
+        x64 = "sha256-H0UOWFufD2NwtvANSQrj0z0mmaAz8wB4e8rJC7+471Y=";
         arm64 = "sha256-X9WQj5C6MZy9QdIe43NR9AhxT9PZiOmM5ycpxGg2UoA=";
       };
       cvm = {
@@ -28,11 +28,11 @@ let
     };
     hcl-dev = {
       std = {
-        x64 = "sha256-X9WQj5C6MZy9QdIe43NR9AhxT9PZiOmM5ycpxGg2UoA=";
-        arm64 = "sha256-X9WQj5C6MZy9QdIe43NR9AhxT9PZiOmM5ycpxGg2UoA=";
+        x64 = "sha256-q5RyCt3d+Zu5GBd8X0bHKLh7Av1qhA2Xjf/XTWHod6Y=";
+        arm64 = "sha256-xfbFgUKd0mec87E8z252LeknBMpvHcFfi9QXjDlfjjw=";
       };
       cvm = {
-        x64 = "sha256-5X4CwBw4+fbTmD1AVHZ9+SBPcMZRknl7+/mOU+YRqas=";
+        x64 = "sha256-o1XszcOWkpacpQKsp3AAOQuWtHnQrZfkdDuqyNh/UgU=";
         arm64 = throw "openhcl-kernel: dev cvm arm64 variant not available";
       };
     };
