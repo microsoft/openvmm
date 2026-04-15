@@ -231,18 +231,17 @@ fn compile_matcher(dep: &str) -> RegexMatcher {
     // Syntax documentation: https://docs.rs/regex/latest/regex/#syntax
     //
     // Breaking down this regular expression: given a line,
-    // - `use (::)?(?i){name}(?-i)(::|;| as)`: matches `use foo;`, `use foo::bar`, `use foo as bar;`, with
+    // - `use (::)?{name}(::|;| as)`: matches `use foo;`, `use foo::bar`, `use foo as bar;`, with
     // an optional "::" in front of the crate's name.
-    // - `(?:[^:]|^|\W::)\b(?i){name}(?-i)::`: matches `foo::X`, but not `barfoo::X`. To ensure there's no polluting
+    // - `(?:[^:]|^|\W::)\b{name}::`: matches `foo::X`, but not `barfoo::X`. To ensure there's no polluting
     //   prefix we add `(?:[^:]|^|\W::)\b`, meaning that the crate name must be prefixed by either:
     //    * Not a `:` (therefore not a sub module)
     //    * The start of a line
     //    * Not a word character followed by `::` (to allow ::my_crate)
-    // - `extern crate (?i){name}(?-i)( |;)`: matches `extern crate foo`, or `extern crate foo as bar`.
-    // - `(?i){name}(?-i)` makes the match against the crate's name case insensitive
-    let regex = format!(
-        r#"use (::)?(?i){name}(?-i)(::|;| as)|(?:[^:]|^|\W::)\b(?i){name}(?-i)::|extern crate (?i){name}(?-i)( |;)"#
-    );
+    // - `extern crate {name}( |;)`: matches `extern crate foo`, or `extern crate foo as bar`.
+    // - `{name}` makes the match against the crate's name case insensitive
+    let regex =
+        format!(r#"use (::)?{name}(::|;| as)|(?:[^:]|^|\W::)\b{name}::|extern crate {name}( |;)"#);
     RegexMatcher::new_line_matcher(&regex).unwrap()
 }
 
