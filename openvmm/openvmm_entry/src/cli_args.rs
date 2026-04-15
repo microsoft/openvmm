@@ -2191,6 +2191,8 @@ impl FromStr for VhostUserCli {
 mod tests {
     use super::*;
 
+    use std::path::Path;
+
     #[test]
     fn test_parse_file_opts() {
         // file: prefix with create
@@ -2198,7 +2200,7 @@ mod tests {
         assert!(matches!(
             &disk,
             DiskCliKind::File { path, create_with_len: Some(len), direct: false }
-                if *path == PathBuf::from("test.vhd") && *len == 1024 * 1024 * 1024
+                if path == Path::new("test.vhd") && *len == 1024 * 1024 * 1024
         ));
 
         // bare path with create (no file: prefix)
@@ -2206,7 +2208,7 @@ mod tests {
         assert!(matches!(
             &disk,
             DiskCliKind::File { path, create_with_len: Some(len), direct: false }
-                if *path == PathBuf::from("test.vhd") && *len == 1024 * 1024 * 1024
+                if path == Path::new("test.vhd") && *len == 1024 * 1024 * 1024
         ));
 
         // direct flag
@@ -2214,7 +2216,7 @@ mod tests {
         assert!(matches!(
             &disk,
             DiskCliKind::File { path, create_with_len: None, direct: true }
-                if *path == PathBuf::from("/dev/sdb")
+                if path == Path::new("/dev/sdb")
         ));
 
         // direct + create in either order
@@ -2222,14 +2224,14 @@ mod tests {
         assert!(matches!(
             &disk,
             DiskCliKind::File { path, create_with_len: Some(len), direct: true }
-                if *path == PathBuf::from("disk.img") && *len == 1024 * 1024 * 1024
+                if path == Path::new("disk.img") && *len == 1024 * 1024 * 1024
         ));
 
         let disk = DiskCliKind::from_str("file:disk.img;create=1G;direct").unwrap();
         assert!(matches!(
             &disk,
             DiskCliKind::File { path, create_with_len: Some(len), direct: true }
-                if *path == PathBuf::from("disk.img") && *len == 1024 * 1024 * 1024
+                if path == Path::new("disk.img") && *len == 1024 * 1024 * 1024
         ));
 
         // plain path, no options
@@ -2237,7 +2239,7 @@ mod tests {
         assert!(matches!(
             &disk,
             DiskCliKind::File { path, create_with_len: None, direct: false }
-                if *path == PathBuf::from("disk.img")
+                if path == Path::new("disk.img")
         ));
 
         // invalid option rejected
