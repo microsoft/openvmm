@@ -261,13 +261,10 @@ fn remove_from_deps(doc: &mut DocumentMut, dep_name: &str, is_workspace: bool) {
 
     if is_workspace {
         // Remove from [workspace.dependencies]
-        if let Some(deps) = doc
-            .get_mut("workspace")
-            .and_then(|w| w.get_mut("dependencies"))
-            .and_then(|d| d.as_table_like_mut())
-        {
-            deps.remove(dep_name);
-        }
+        let deps = doc["workspace"]["dependencies"]
+            .as_table_like_mut()
+            .unwrap();
+        deps.remove(dep_name);
     } else {
         // Remove from root-level dep tables.
         for table_name in DEP_TABLE_NAMES {
