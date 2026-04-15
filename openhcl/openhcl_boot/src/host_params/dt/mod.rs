@@ -675,6 +675,12 @@ fn topology_from_persisted_state(
         cpus_with_outstanding_io,
     } = parsed_protobuf;
 
+    log::info!(
+        "persisted state: cpus_with_mapped_interrupts_no_io={:?}, cpus_with_outstanding_io={:?}",
+        cpus_with_mapped_interrupts_no_io,
+        cpus_with_outstanding_io,
+    );
+
     // FUTURE: should memory allocation mode should persist in saved state and
     // verify the host did not change it?
     let memory_allocation_mode = parsed.memory_allocation_mode;
@@ -914,25 +920,25 @@ impl PartitionInfo {
         init_heap(params);
 
         let persisted_state_header = read_persisted_region_header(params);
-        let (topology, has_devices_that_should_disable_sidecar) =
-            if let Some(header) = persisted_state_header {
-                log::info!("found persisted state header");
-                let persisted_topology =
-                    topology_from_persisted_state(header, params, parsed, address_space)?;
-
-                (
-                    persisted_topology.topology,
-                    !(persisted_topology
-                        .cpus_with_mapped_interrupts_no_io
-                        .is_empty()
-                        && persisted_topology.cpus_with_outstanding_io.is_empty()),
-                )
-            } else {
-                (
-                    topology_from_host_dt(params, parsed, &options, address_space)?,
-                    false,
-                )
-            };
+        log::info!(
+            "read_from_dt: persisted_state_header present={}, sidecar={:?}",
+            persisted_state_header.is_some(),
+            options.sidecar,
+        );
+        let (topology, cpus_with_outstanding_io) = if let Some(header) = persisted_state_header {
+            log::info!("found persisted state header");
+            let persisted_topology =
+                topology_from_persisted_state(header, params, parsed, address_space)?;
+            (
+                persisted_topology.topology,
+                persisted_topology.cpus_with_outstanding_io,
+            )
+        } else {
+            (
+                topology_from_host_dt(params, parsed, &options, address_space)?,
+                Vec::new(),
+            )
+        };
 
         let Self {
             vtl2_ram,
@@ -940,6 +946,7 @@ impl PartitionInfo {
             isolation,
             bsp_reg,
             cpus,
+            sidecar_cpu_overrides,
             vmbus_vtl0,
             vmbus_vtl2,
             cmdline: _,
@@ -953,19 +960,44 @@ impl PartitionInfo {
             boot_options,
         } = storage;
 
-        if let (SidecarOptions::Enabled { cpu_threshold, .. }, true) = (
-            &boot_options.sidecar,
-            has_devices_that_should_disable_sidecar,
-        ) {
-            if cpu_threshold.is_none()
-                || cpu_threshold
-                    .and_then(|threshold| threshold.try_into().ok())
-                    .is_some_and(|threshold| parsed.cpu_count() < threshold)
+        // During servicing restore, selectively exclude CPUs with outstanding IO
+        // from sidecar startup. These CPUs need immediate kernel access to handle
+        // device interrupts. All other CPUs still benefit from sidecar's parallel
+        // startup. Falls back to disabling sidecar entirely if CPU IDs exceed the
+        // per-CPU state array capacity (>400 CPUs).
+        //
+        // Sidecar is automatically disabled when: all NUMA nodes have exactly
+        // one CPU (nothing to parallelize), x2apic is unavailable, the VM is
+        // isolated (CVM), or the sidecar image is not present (sidecar_size == 0).
+        // It is also disabled via command line with OPENHCL_SIDECAR=off. In all
+        // other cases sidecar is active and uses a fan-out pattern to bring up
+        // APs in parallel across NUMA nodes.
+        //
+        // TODO: the `cpu_threshold` field in `SidecarOptions::Enabled` is
+        // not used at present. Based on production performance data, either
+        // remove `cpu_threshold` from `SidecarOptions` in cmdline.rs, or
+        // add a VP-count cutoff here to disable sidecar for small VMs.
+        if let (SidecarOptions::Enabled { .. }, true) =
+            (&boot_options.sidecar, !cpus_with_outstanding_io.is_empty())
+        {
+            let max_cpu_id = *cpus_with_outstanding_io.iter().max().unwrap() as usize;
+            if parsed.cpu_count() <= sidecar_cpu_overrides.sidecar_starts_cpu.len()
+                && max_cpu_id < sidecar_cpu_overrides.sidecar_starts_cpu.len()
             {
-                // If we are in the restore path, disable sidecar for small VMs, as the amortization
-                // benefits don't apply when devices are kept alive; the CPUs need to be powered on anyway
-                // to check for interrupts.
-                log::info!("disabling sidecar, as we are restoring from persisted state");
+                // Mark specific CPUs as kernel-started instead of sidecar-started.
+                sidecar_cpu_overrides.per_cpu_state_specified = true;
+                for &cpu_id in &cpus_with_outstanding_io {
+                    sidecar_cpu_overrides.sidecar_starts_cpu[cpu_id as usize] = false;
+                }
+                log::info!(
+                    "sidecar: excluding CPUs {:?} due to outstanding IO",
+                    cpus_with_outstanding_io,
+                );
+            } else {
+                // CPU IDs exceed per-cpu array capacity; disable sidecar entirely.
+                log::info!(
+                    "sidecar: disabling, too many CPUs for per-CPU state (max id {max_cpu_id})"
+                );
                 boot_options.sidecar = SidecarOptions::DisabledServicing;
                 options.sidecar = SidecarOptions::DisabledServicing;
             }

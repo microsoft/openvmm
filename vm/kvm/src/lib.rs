@@ -187,6 +187,8 @@ pub enum Error {
     CreateDevice(#[source] nix::Error),
     #[error("SetDeviceAttr")]
     SetDeviceAttr(#[source] nix::Error),
+    #[error("CheckExtension")]
+    CheckExtension(#[source] nix::Error),
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -306,6 +308,18 @@ impl Kvm {
 impl AsFd for Kvm {
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.0.as_fd()
+    }
+}
+
+impl From<File> for Kvm {
+    fn from(fd: File) -> Self {
+        Self(fd)
+    }
+}
+
+impl From<Kvm> for File {
+    fn from(kvm: Kvm) -> Self {
+        kvm.0
     }
 }
 
@@ -633,6 +647,25 @@ impl Partition {
             ioctl::kvm_create_device(self.vm.as_raw_fd(), &mut device)?;
             Ok(Device(File::from_raw_fd(device.fd as i32)))
         }
+    }
+
+    /// Tests whether a device type can be created without actually creating it.
+    ///
+    /// Uses `KVM_CREATE_DEVICE_TEST` to probe support. Unlike
+    /// [`create_device`](Self::create_device), this does not wrap any fd.
+    pub fn test_create_device(&self, ty: u32) -> nix::Result<()> {
+        // SAFETY: With KVM_CREATE_DEVICE_TEST the kernel only checks
+        // whether the device type is supported and does not populate
+        // `device.fd`.
+        unsafe {
+            let mut device = kvm_create_device {
+                type_: ty,
+                fd: 0,
+                flags: KVM_CREATE_DEVICE_TEST,
+            };
+            ioctl::kvm_create_device(self.vm.as_raw_fd(), &mut device)?;
+        }
+        Ok(())
     }
 
     /// Gets the current kvmclock value.

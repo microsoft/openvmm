@@ -1335,7 +1335,15 @@ impl VmbusDevice for Nic {
             }
 
             // Note that this await is not restartable.
-            self.coordinator.task_mut().endpoint.stop().await;
+            self.coordinator
+                .task_mut()
+                .endpoint
+                .stop()
+                .instrument(tracing::info_span!(
+                    "stopping coordinator endpoint",
+                    instance_id = %self.instance_id,
+                ))
+                .await;
 
             // Keep any VF's added to the guest. This is required to keep guest compat as
             // some apps (such as DPDK) relies on the VF sticking around even after vmbus

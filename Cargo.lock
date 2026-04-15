@@ -421,6 +421,11 @@ dependencies = [
  "guid",
  "jiff",
  "libc",
+ "mesh",
+ "mesh_process",
+ "net_backend_resources",
+ "net_tap",
+ "netvsp_resources",
  "openvmm_defs",
  "openvmm_helpers",
  "pal_async",
@@ -2350,11 +2355,11 @@ name = "fuzz_firmware_uefi"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "crypto",
  "firmware_uefi",
  "guestmem",
  "guid",
  "libfuzzer-sys",
- "openssl",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "xtask_fuzz",
@@ -4439,9 +4444,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-bindings"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805cf329582f770f62cc612716a04c14815276ae266b6298375a672d3c5a5184"
+checksum = "a94fc3871dd23738188e5bc76a1d1a5930ebcaf9308c560a7274aa62b1770594"
 dependencies = [
  "libc",
  "num_enum",
@@ -4453,9 +4458,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-ioctls"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefaab4c067cf5226a917227640d835327b25b71a8d465f815f74f490344e10a"
+checksum = "1339723fe3a26baf4041459de20ad923e89d312c3bb25dbf9f60738c22a47f5e"
 dependencies = [
  "libc",
  "mshv-bindings",
@@ -5476,6 +5481,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "fs-err",
  "hypervisor_resources",
  "openvmm_core",
  "virt_hvf",
@@ -5658,6 +5664,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.3",
  "headervec",
+ "io-uring",
  "libc",
  "loan_cell",
  "once_cell",
@@ -8554,6 +8561,7 @@ dependencies = [
  "cvm_tracing",
  "fs-err",
  "inspect",
+ "io-uring",
  "loan_cell",
  "pal",
  "pal_async",
@@ -8943,12 +8951,12 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "signal-hook",
- "static_assertions",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "virt",
  "virt_support_x86emu",
+ "vm_topology",
  "vmcore",
  "x86defs",
  "x86emu",

@@ -71,8 +71,8 @@ pub struct VhostUserFrontend {
     /// reads are served locally and `VHOST_USER_PROTOCOL_F_CONFIG` is
     /// not negotiated with the backend.
     config_space: Option<Vec<u8>>,
-    /// Raw feature bits from GET_FEATURES (used to mask guest features).
-    device_features_raw: u64,
+    /// Device feature bits from GET_FEATURES (used to mask guest features).
+    device_features_raw: VirtioDeviceFeatures,
     guest_features_sent: bool,
     /// Whether packed ring (VIRTIO_F_RING_PACKED) is active. Set when
     /// guest-negotiated features are sent to the backend.
@@ -130,11 +130,13 @@ impl VhostUserFrontend {
         config_space: Option<Vec<u8>>,
     ) -> anyhow::Result<Self> {
         // 1. GET_FEATURES
-        let device_features_raw = send_get_u64(&socket, VhostUserRequestCode::GET_FEATURES).await?;
-        tracing::trace!(features = %format!("0x{device_features_raw:x}"), "GET_FEATURES");
+        let device_features_raw = VirtioDeviceFeatures::from_bits(
+            send_get_u64(&socket, VhostUserRequestCode::GET_FEATURES).await?,
+        );
+        tracing::trace!(features = %format!("0x{:x}", device_features_raw.into_bits()), "GET_FEATURES");
 
         // 2. Negotiate protocol features (only if the backend advertises them).
-        let negotiated_proto = if device_features_raw & VHOST_USER_F_PROTOCOL_FEATURES != 0 {
+        let negotiated_proto = if device_features_raw.vhost_user_protocol_features() {
             let proto_features_raw =
                 send_get_u64(&socket, VhostUserRequestCode::GET_PROTOCOL_FEATURES).await?;
             let wanted = VhostUserProtocolFeatures::new()
@@ -170,8 +172,7 @@ impl VhostUserFrontend {
         tracing::trace!(max_queues, "GET_QUEUE_NUM");
 
         // Build DeviceTraits from the wire features.
-        let device_features =
-            features_from_u64(device_features_raw & !(VHOST_USER_F_PROTOCOL_FEATURES));
+        let device_features = device_features_raw.with_vhost_user_protocol_features(false);
 
         // Determine the config register length.
         //
@@ -300,31 +301,29 @@ impl VirtioDevice for VhostUserFrontend {
         // first queue is started.  The backend needs this to know which
         // features are active.
         if !self.guest_features_sent {
-            let guest_bits = features.bank(0) as u64 | ((features.bank(1) as u64) << 32);
             // Mask to only include features the backend actually advertised.
             // The VMM transport may add features (e.g., RING_PACKED) that
             // the backend doesn't support. Always include PROTOCOL_FEATURES
             // if it was negotiated — backends (e.g., virtiofsd) treat its
             // absence in SET_FEATURES as de-negotiation.
-            let masked_bits =
-                (guest_bits & self.device_features_raw) | VHOST_USER_F_PROTOCOL_FEATURES;
+            let negotiated = VirtioDeviceFeatures::from_bits(
+                features.into_bits() & self.device_features_raw.into_bits(),
+            );
+            let on_wire = negotiated.with_vhost_user_protocol_features(true);
             tracing::trace!(
                 idx,
-                features = %format!("0x{masked_bits:x}"),
+                features = %format!("0x{:x}", on_wire.into_bits()),
                 "SET_FEATURES (guest-negotiated)",
             );
             send_set_u64(
                 &self.socket,
                 VhostUserRequestCode::SET_FEATURES,
-                masked_bits,
+                on_wire.into_bits(),
                 self.reply_ack(),
             )
             .await?;
             self.guest_features_sent = true;
-            // Determine the effective ring format from the actually-
-            // negotiated features (intersection of guest and backend).
-            let negotiated = features_from_u64(masked_bits);
-            self.packed_ring = negotiated.bank1().ring_packed();
+            self.packed_ring = negotiated.ring_packed();
         }
 
         let packed_ring = self.packed_ring;
@@ -933,17 +932,6 @@ async fn send_set_config(
     Ok(())
 }
 
-/// Convert a u64 to VirtioDeviceFeatures.
-// TODO: VirtioDeviceFeatures should just be a u64-based enum/bitfield instead
-// of a Vec<u32> bank model. The spec's bank-indexed transport registers don't
-// require the in-memory representation to match, and every VMM (QEMU, CH,
-// Linux) uses a flat u64. That would eliminate these helpers entirely.
-fn features_from_u64(value: u64) -> VirtioDeviceFeatures {
-    VirtioDeviceFeatures::new()
-        .with_bank(0, value as u32)
-        .with_bank(1, (value >> 32) as u32)
-}
-
 /// Read a little-endian `u32` from config bytes, zero-padding any trailing
 /// bytes when the read overlaps the end of the slice.
 fn read_config_u32(config: &[u8], offset: usize) -> u32 {
@@ -1377,9 +1365,7 @@ mod tests {
 
     impl SaveRestoreMockDevice {
         fn new(packed_ring: bool, stop_avail: u16, stop_used: u16) -> Self {
-            use virtio::spec::VirtioDeviceFeaturesBank1;
-            let features = VirtioDeviceFeatures::new()
-                .with_bank1(VirtioDeviceFeaturesBank1::new().with_ring_packed(packed_ring));
+            let features = VirtioDeviceFeatures::new().with_ring_packed(packed_ring);
             Self {
                 traits: DeviceTraits {
                     device_id: VirtioDeviceType::BLK,
@@ -1492,9 +1478,7 @@ mod tests {
             setup_frontend_backend_with_device(&driver, device).await;
 
         // Features must include packed ring so the frontend knows.
-        use virtio::spec::VirtioDeviceFeaturesBank1;
-        let features = VirtioDeviceFeatures::new()
-            .with_bank1(VirtioDeviceFeaturesBank1::new().with_ring_packed(true));
+        let features = VirtioDeviceFeatures::new().with_ring_packed(true);
         let resources =
             dummy_queue_resources(Interrupt::from_event(Event::new()), guest_memory.clone());
         frontend

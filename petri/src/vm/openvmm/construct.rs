@@ -430,6 +430,7 @@ impl PetriVmConfigOpenVmm {
             chipset,
             mut chipset_devices,
             pci_chipset_devices,
+            capabilities,
         } = chipset;
 
         // Add the TPM
@@ -450,6 +451,7 @@ impl PetriVmConfigOpenVmm {
             chipset,
             chipset_devices,
             pci_chipset_devices,
+            chipset_capabilities: capabilities,
 
             // Basic virtualization device support
             hypervisor: HypervisorConfig {

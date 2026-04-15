@@ -69,6 +69,7 @@ use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
+use tracing::Instrument;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
@@ -490,6 +491,10 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 default_rxobj: None,
                 indirection_table: None,
             })
+            .instrument(tracing::info_span!(
+                "clearing rx configuration",
+                vport_id = self.vport.id()
+            ))
             .await
         {
             tracing::warn!(
@@ -499,12 +504,25 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         }
 
         self.queues.clear();
-        self.vport.destroy(std::mem::take(&mut self.arena)).await;
+        self.vport
+            .destroy(std::mem::take(&mut self.arena))
+            .instrument(tracing::info_span!(
+                "destroying vport resources",
+                vport_id = self.vport.id()
+            ))
+            .await;
         // Wait for all outstanding queues. There can be a delay switching out
         // the queues when an endpoint is removed, and the queue has access to
         // the vport which is being stopped here.
         if self.queue_tracker.0.load(Ordering::Acquire) > 0 {
-            self.queue_tracker.1.wait().await;
+            self.queue_tracker
+                .1
+                .wait()
+                .instrument(tracing::info_span!(
+                    "waiting for outstanding queues to stop",
+                    vport_id = self.vport.id()
+                ))
+                .await;
         }
     }
 

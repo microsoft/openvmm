@@ -16,6 +16,8 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
+#[cfg(target_os = "linux")]
+use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 use vmm_test_macros::vmm_test_with;
@@ -481,10 +483,13 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
 /// virtio transport → frontend protocol → socket → backend protocol →
 /// virtio-blk device → disk file.
 #[cfg(target_os = "linux")]
-#[openvmm_test(linux_direct_x64, linux_direct_aarch64)]
-async fn vhost_user_blk_device(
+#[openvmm_test(
+    linux_direct_x64[OPENVMM_VHOST_NATIVE],
+    linux_direct_aarch64[OPENVMM_VHOST_NATIVE],
+)]
+async fn vhost_user_blk_device<T>(
     config: PetriVmBuilder<OpenVmmPetriBackend>,
-    _extra_deps: (),
+    extra_deps: (petri::ResolvedArtifact<T>,),
     driver: pal_async::DefaultDriver,
 ) -> anyhow::Result<()> {
     use openvmm_defs::config::VirtioBus;
@@ -493,8 +498,8 @@ async fn vhost_user_blk_device(
     use virtio_resources::vhost_user::VhostUserDeviceHandle;
     use vm_resource::IntoResource;
 
-    let openvmm_vhost_path =
-        petri_artifact_resolver_openvmm_known_paths::get_output_executable_path("openvmm_vhost")?;
+    let (openvmm_vhost_artifact,) = extra_deps;
+    let openvmm_vhost_path = openvmm_vhost_artifact.get();
 
     let log_file = config.log_source().log_file("openvmm_vhost")?;
 
@@ -513,7 +518,7 @@ async fn vhost_user_blk_device(
     // Spawn the openvmm_vhost backend process. Pipe stderr so we can
     // forward it to the petri log system.
     let (stderr_read, stderr_write) = pal::pipe_pair()?;
-    let backend_child = std::process::Command::new(&openvmm_vhost_path)
+    let backend_child = std::process::Command::new(openvmm_vhost_path)
         .arg("--socket")
         .arg(&socket_path)
         .arg("blk")
