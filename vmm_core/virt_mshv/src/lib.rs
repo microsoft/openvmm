@@ -64,6 +64,8 @@ use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
 use virt::state::StateElement as _;
+use virt::x86::apic_software_device::ApicSoftwareDevice;
+use virt::x86::apic_software_device::ApicSoftwareDevices;
 use virt::x86::max_physical_address_size_from_cpuid;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
@@ -302,6 +304,17 @@ impl virt::Hypervisor for LinuxMshv {
         })
         .map_err(Error::InstallIntercept)?;
 
+        // Intercept HvRetargetDeviceInterrupt for device IDs the
+        // hypervisor doesn't know about (i.e. all software VPCI devices)
+        // so the VMM can update the interrupt routing table.
+        vmfd.install_intercept(mshv_install_intercept {
+            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+            intercept_type:
+                hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
+            intercept_parameter: Default::default(),
+        })
+        .map_err(Error::InstallIntercept)?;
+
         // Set up a signal for forcing vcpufd.run() ioctl to exit.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
         // SAFETY: The signal handler does not perform any actions that are forbidden
@@ -418,6 +431,13 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         )
         .map_err(Error::Capabilities)?;
 
+        let apic_id_map = self
+            .config
+            .processor_topology
+            .vps_arch()
+            .map(|vp| vp.apic_id)
+            .collect();
+
         // Attach all the resources created above to a Partition object.
         let inner = Arc::new(MshvPartitionInner {
             vmfd: self.vmfd,
@@ -429,6 +449,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             caps,
             synic_ports: Default::default(),
             cpuid,
+            software_devices: ApicSoftwareDevices::new(apic_id_map),
         });
 
         let partition = MshvPartition {
@@ -450,7 +471,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     }
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 pub struct MshvPartition {
     #[inspect(flatten)]
     inner: Arc<MshvPartitionInner>,
@@ -458,7 +479,7 @@ pub struct MshvPartition {
     synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 struct MshvPartitionInner {
     #[inspect(skip)]
     vmfd: VmFd,
@@ -473,9 +494,9 @@ struct MshvPartitionInner {
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
     cpuid: virt::CpuidLeafSet,
+    software_devices: ApicSoftwareDevices,
 }
 
-#[derive(Debug)]
 struct MshvVpInner {
     vcpufd: VcpuFd,
     vp_info: TargetVpInfo,
@@ -564,7 +585,7 @@ impl PartitionAccessState for MshvPartition {
 
 impl Hv1 for MshvPartition {
     type Error = Error;
-    type Device = virt::UnimplementedDevice;
+    type Device = ApicSoftwareDevice;
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
         Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>))
@@ -573,11 +594,20 @@ impl Hv1 for MshvPartition {
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
-        None
+        Some(self)
     }
 
     fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
         self.synic_ports.clone()
+    }
+}
+
+impl virt::DeviceBuilder for MshvPartition {
+    fn build(&self, _vtl: Vtl, device_id: u64) -> Result<Self::Device, Self::Error> {
+        self.inner
+            .software_devices
+            .new_device(self.inner.clone(), device_id)
+            .map_err(Error::NewDevice)
     }
 }
 
@@ -1183,6 +1213,8 @@ pub enum Error {
     Capabilities(#[source] virt::PartitionCapabilitiesError),
     #[error("too many virtual processors: {0}")]
     TooManyVps(u32),
+    #[error("failed to create virtual device")]
+    NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
 }
 
 impl MshvPartitionInner {
@@ -1407,7 +1439,11 @@ struct MshvHypercallHandler<'a> {
 impl MshvHypercallHandler<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
-        [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
+        [
+            hv1_hypercall::HvPostMessage,
+            hv1_hypercall::HvSignalEvent,
+            hv1_hypercall::HvRetargetDeviceInterrupt,
+        ],
     );
 }
 
@@ -1424,6 +1460,27 @@ impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
         self.partition
             .synic_ports
             .handle_signal_event(Vtl::Vtl0, connection_id, flag)
+    }
+}
+
+impl hv1_hypercall::RetargetDeviceInterrupt for MshvHypercallHandler<'_> {
+    fn retarget_interrupt(
+        &mut self,
+        device_id: u64,
+        address: u64,
+        data: u32,
+        params: hv1_hypercall::HvInterruptParameters<'_>,
+    ) -> hvdef::HvResult<()> {
+        let target_processors = Vec::from_iter(params.target_processors);
+        let vpci_params = vmcore::vpci_msi::VpciInterruptParameters {
+            vector: params.vector,
+            multicast: params.multicast,
+            target_processors: &target_processors,
+        };
+
+        self.partition
+            .software_devices
+            .retarget_interrupt(device_id, address, data, &vpci_params)
     }
 }
 
