@@ -363,7 +363,7 @@ async fn tpm_ak_cert_retry<T>(
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings
 /// in the Hyper-V VM name (see `resolve_test_config`).  Each
-/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// image/isolation combination listed in the `#[vmm_test]` attribute
 /// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
 /// test function (`ak_cert_cache`), they all map to
 /// `AkCertPersistentAcrossBootExtended`.
@@ -435,7 +435,7 @@ async fn ak_cert_cache<T, S, U: PetriVmmBackend>(
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings
 /// in the Hyper-V VM name (see `resolve_test_config`).  Each
-/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// image/isolation combination listed in the `#[vmm_test]` attribute
 /// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
 /// test function (`ak_cert_retry`), they all map to
 /// `AkCertRequestFailureAndRetryExtended`.
@@ -709,7 +709,7 @@ async fn cvm_tpm_guest_tests<T, S, U: PetriVmmBackend>(
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings
 /// in the Hyper-V VM name (see `resolve_test_config`).  Each
-/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// image/isolation combination listed in the `#[vmm_test]` attribute
 /// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
 /// test function (`skip_hw_unseal`), they all map to
 /// `KeyReleaseFailureSkipHwUnsealing`.
@@ -805,7 +805,7 @@ async fn skip_hw_unseal<T, U: PetriVmmBackend>(
 /// Config mapping: the `test_igvm_agent_rpc_server` resolves each VM's
 /// test config by matching `{image}_{isolation}_{test_fn}` substrings
 /// in the Hyper-V VM name (see `resolve_test_config`).  Each
-/// image×isolation combination listed in the `#[vmm_test]` attribute
+/// image/isolation combination listed in the `#[vmm_test]` attribute
 /// must have a corresponding entry in `KNOWN_TEST_CONFIGS`.  For this
 /// test function (`use_hw_unseal`), they all map to
 /// `KeyReleaseFailure`.

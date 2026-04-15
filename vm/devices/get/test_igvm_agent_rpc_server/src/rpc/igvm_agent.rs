@@ -61,7 +61,7 @@ fn registry() -> &'static Mutex<AgentRegistry> {
 /// Hyper-V VM names are built as:
 ///   `{module}::{vmm}_{firmware}_{arch}_{image}_{isolation}_{test_fn}`
 ///
-/// We intentionally list each image×isolation combination separately
+/// We intentionally list each image/isolation combination separately
 /// rather than matching on just the short test-function suffix.  The RPC
 /// server is shared across *all* concurrent VMs, and each VM gets its
 /// own agent keyed by its full name.  If two tests share the same
@@ -72,7 +72,7 @@ fn registry() -> &'static Mutex<AgentRegistry> {
 ///
 /// Hyper-V truncates VM names to 100 characters, and the test macro
 /// prefix can consume ~85 characters on worst-case image names.  Keep
-/// `{test_fn}` names short (≤ 15 characters) so the distinctive part
+/// `{test_fn}` names short (<= 15 characters) so the distinctive part
 /// is never truncated.
 ///
 /// When adding a new image or isolation variant for an existing test
