@@ -48,6 +48,8 @@ use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::io;
+use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::Weak;
@@ -504,8 +506,6 @@ impl virt::Partition for MshvPartition {
         self: &Arc<Self>,
         _minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
-        // TODO: implementation
-
         Some(self.clone())
     }
 
@@ -1306,19 +1306,98 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
     }
 }
 
-// TODO: implementation
-struct MshvDoorbellEntry;
+/// Holds the state needed to deassign an MSHV ioeventfd on drop.
+///
+/// The kernel's `mshv_deassign_ioeventfd` matches entries by (eventfd,
+/// addr, len, datamatch/wildcard), so we must keep all of these alive
+/// for the deassign ioctl.
+struct MshvDoorbellEntry {
+    partition: Weak<MshvPartitionInner>,
+    event: Event,
+    guest_address: u64,
+    datamatch: u64,
+    len: u32,
+    flags: u32,
+}
 
 impl MshvDoorbellEntry {
     fn new(
-        _guest_address: u64,
-        _value: Option<u64>,
-        _length: Option<u32>,
-        _fd: &Event,
+        partition: &Arc<MshvPartitionInner>,
+        guest_address: u64,
+        value: Option<u64>,
+        length: Option<u32>,
+        fd: &Event,
     ) -> io::Result<MshvDoorbellEntry> {
-        // TODO: implementation
+        let flags = if value.is_some() {
+            1 << mshv_bindings::MSHV_IOEVENTFD_BIT_DATAMATCH
+        } else {
+            0
+        };
+        let datamatch = value.unwrap_or(0);
+        let len = length.unwrap_or(0);
+        let event = fd.clone();
 
-        Ok(Self)
+        let ioeventfd = mshv_bindings::mshv_user_ioeventfd {
+            datamatch,
+            addr: guest_address,
+            len,
+            fd: event.as_fd().as_raw_fd(),
+            flags,
+            ..Default::default()
+        };
+        // SAFETY: `partition.vmfd` is valid because it is owned by
+        // `MshvPartitionInner`. The `ioeventfd` struct is properly
+        // initialized on the stack.
+        let ret = unsafe {
+            libc::ioctl(
+                partition.vmfd.as_raw_fd(),
+                mshv_ioctls::MSHV_IOEVENTFD() as _,
+                std::ptr::from_ref(&ioeventfd),
+            )
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            partition: Arc::downgrade(partition),
+            event,
+            guest_address,
+            datamatch,
+            len,
+            flags,
+        })
+    }
+}
+
+impl Drop for MshvDoorbellEntry {
+    fn drop(&mut self) {
+        if let Some(partition) = self.partition.upgrade() {
+            let ioeventfd = mshv_bindings::mshv_user_ioeventfd {
+                datamatch: self.datamatch,
+                addr: self.guest_address,
+                len: self.len,
+                fd: self.event.as_fd().as_raw_fd(),
+                flags: self.flags | (1 << mshv_bindings::MSHV_IOEVENTFD_BIT_DEASSIGN),
+                ..Default::default()
+            };
+            // SAFETY: `partition.vmfd` is valid because we successfully
+            // upgraded the weak reference. The `ioeventfd` struct is
+            // properly initialized on the stack.
+            let ret = unsafe {
+                libc::ioctl(
+                    partition.vmfd.as_raw_fd(),
+                    mshv_ioctls::MSHV_IOEVENTFD() as _,
+                    std::ptr::from_ref(&ioeventfd),
+                )
+            };
+            assert!(
+                ret >= 0,
+                "failed to unregister doorbell at {:#x}: {}",
+                self.guest_address,
+                io::Error::last_os_error()
+            );
+        }
     }
 }
 
@@ -1331,6 +1410,7 @@ impl DoorbellRegistration for MshvPartition {
         fd: &Event,
     ) -> io::Result<Box<dyn Send + Sync>> {
         Ok(Box::new(MshvDoorbellEntry::new(
+            &self.inner,
             guest_address,
             value,
             length,
