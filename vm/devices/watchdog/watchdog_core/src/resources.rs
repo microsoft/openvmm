@@ -5,8 +5,8 @@
 
 use crate::platform::WatchdogPlatform;
 use parking_lot::Mutex;
-use std::convert::Infallible;
 use std::sync::Arc;
+use thiserror::Error;
 use vm_resource::CanResolveTo;
 use vm_resource::PlatformResource;
 use vm_resource::ResolveResource;
@@ -25,41 +25,45 @@ impl CanResolveTo<ResolvedWatchdogPlatform> for WatchdogPlatformHandleKind {
     type Input<'a> = ();
 }
 
-/// A one-shot watchdog platform capability.
-///
-/// The underlying platform object is consumed once via [`Self::take`].
-#[derive(Clone)]
-pub struct ResolvedWatchdogPlatform(Arc<Mutex<Option<Box<dyn WatchdogPlatform>>>>);
+/// An owned watchdog platform capability consumed at resolve-time.
+pub struct ResolvedWatchdogPlatform(Box<dyn WatchdogPlatform>);
 
 impl ResolvedWatchdogPlatform {
-    /// Creates a new one-shot platform capability around `platform`.
-    pub fn new(platform: Box<dyn WatchdogPlatform>) -> Self {
-        Self(Arc::new(Mutex::new(Some(platform))))
-    }
-
-    /// Takes ownership of the platform object.
-    ///
-    /// Returns `None` if it has already been taken.
-    pub fn take(&self) -> Option<Box<dyn WatchdogPlatform>> {
-        let mut guard = self.0.lock();
-        guard.take()
+    pub fn into_inner(self) -> Box<dyn WatchdogPlatform> {
+        self.0
     }
 }
 
+#[derive(Debug, Error)]
+pub enum ResolveWatchdogPlatformError {
+    #[error("watchdog platform capability has already been consumed")]
+    AlreadyConsumed,
+}
+
 /// A static platform resolver that serves a pre-built watchdog platform.
-pub struct StaticWatchdogPlatformResolver(pub ResolvedWatchdogPlatform);
+pub struct StaticWatchdogPlatformResolver(Arc<Mutex<Option<Box<dyn WatchdogPlatform>>>>);
+
+impl StaticWatchdogPlatformResolver {
+    pub fn new(platform: Box<dyn WatchdogPlatform>) -> Self {
+        Self(Arc::new(Mutex::new(Some(platform))))
+    }
+}
 
 impl ResolveResource<WatchdogPlatformHandleKind, PlatformResource>
     for StaticWatchdogPlatformResolver
 {
     type Output = ResolvedWatchdogPlatform;
-    type Error = Infallible;
+    type Error = ResolveWatchdogPlatformError;
 
     fn resolve(
         &self,
         _resource: PlatformResource,
         _input: (),
     ) -> Result<Self::Output, Self::Error> {
-        Ok(self.0.clone())
+        let mut guard = self.0.lock();
+        guard
+            .take()
+            .map(ResolvedWatchdogPlatform)
+            .ok_or(ResolveWatchdogPlatformError::AlreadyConsumed)
     }
 }

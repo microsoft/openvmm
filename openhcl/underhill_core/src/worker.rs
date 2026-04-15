@@ -188,7 +188,6 @@ use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
-use watchdog_core::resources::ResolvedWatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 use zerocopy::FromZeros;
 
@@ -2844,9 +2843,9 @@ async fn new_underhill_vm(
             UnderhillWatchdogPlatform::new(store, get_client.clone()).await?;
         underhill_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-        resolver.add_resolver(StaticWatchdogPlatformResolver(
-            ResolvedWatchdogPlatform::new(Box::new(underhill_watchdog_platform)),
-        ));
+        resolver.add_resolver(StaticWatchdogPlatformResolver::new(Box::new(
+            underhill_watchdog_platform,
+        )));
     }
 
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };

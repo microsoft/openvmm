@@ -151,7 +151,6 @@ use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
 use watchdog_core::platform::WatchdogCallback;
 use watchdog_core::platform::WatchdogPlatform;
-use watchdog_core::resources::ResolvedWatchdogPlatform;
 use watchdog_core::resources::StaticWatchdogPlatformResolver;
 
 const PM_BASE: u16 = 0x400;
@@ -1400,9 +1399,9 @@ impl InitializedVm {
             // Add callbacks
             base_watchdog_platform.add_callback(Box::new(watchdog_callback));
 
-            resolver.add_resolver(StaticWatchdogPlatformResolver(
-                ResolvedWatchdogPlatform::new(Box::new(base_watchdog_platform)),
-            ));
+            resolver.add_resolver(StaticWatchdogPlatformResolver::new(Box::new(
+                base_watchdog_platform,
+            )));
         }
 
         let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {

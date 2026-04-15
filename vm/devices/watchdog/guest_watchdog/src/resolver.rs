@@ -30,9 +30,6 @@ pub enum ResolveGuestWatchdogError {
     /// Failed to resolve the watchdog platform capability.
     #[error("failed to resolve watchdog platform capability")]
     ResolvePlatform(#[source] ResolveError),
-    /// The platform capability has already been consumed.
-    #[error("watchdog platform capability has already been consumed")]
-    PlatformAlreadyConsumed,
 }
 
 #[async_trait]
@@ -51,14 +48,11 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, HyperVGuestWatchdogDeviceHand
         let mut pio_static_wdat_port = input.register_pio.new_io_region("wdat_port", 8);
         pio_static_wdat_port.map(resource.port_base);
 
-        let resolved_platform = resolver
+        let watchdog_platform = resolver
             .resolve::<WatchdogPlatformHandleKind, _>(resource.platform, ())
             .await
-            .map_err(ResolveGuestWatchdogError::ResolvePlatform)?;
-
-        let watchdog_platform = resolved_platform
-            .take()
-            .ok_or(ResolveGuestWatchdogError::PlatformAlreadyConsumed)?;
+            .map_err(ResolveGuestWatchdogError::ResolvePlatform)?
+            .into_inner();
 
         let device = GuestWatchdogServices::new(
             input.vmtime.access("guest-watchdog-time"),
