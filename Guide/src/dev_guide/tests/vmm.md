@@ -39,28 +39,89 @@ engineers' local machines and in CI. Put these special words in your test to opt
 - `heavy` - if your test is heavier than the typical vmm_test. E.g., your test explicitly requests 16 virtual processors.
 - `very_heavy` if your test is heavier than a `heavy` test. E.g., your test explicitly requests 32 virtual processors.
 
-## Running VMM Tests (Flowey)
+### "unstable" tests
 
-The easiest way to run the VMM tests locally is using the
-`cargo xflowey vmm-tests` command. To see the most up-to-date options, run:
-`cargo xflowey vmm-tests --help`. When running Hyper-V tests, you will need
-to use an administrator terminal window (this works even if you are running
-from WSL2). When running Windows tests, the output dir should be on the
-Windows file system. For example, from WSL2:
+If a test is not yet reliable enough to gate PRs, add `unstable` to the macro.
 
-```bash
-cargo xflowey vmm-tests --target windows-x64 --dir /mnt/e/vmm_tests
+For individual variants:
+
+```rust,ignore
+#[vmm_test(
+    // unstable variant:
+    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // other reliable variants:
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    // ...
+)]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
 ```
 
-This command will build or download all the test dependencies and copy them
-to a self-contained folder that can be copied to another system for testing.
-The folder will contain scripts for installing dependencies
-(install_deps.ps1 on Windows) and running the tests (run.ps1 on Windows).
-You can either specify a list of flags to disable certain tests and avoid
-building/downloading some dependencies, or you can specify a custom
-[nextest filter](https://nexte.st/docs/filtersets/) and list of artifacts.
-In this case, all possible dependencies will be obtained since deriving them
-from a test filter is not yet supported.
+For all variants of the test:
+
+```rust,ignore
+#[vmm_test_with(unstable(
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    // ...
+))]
+async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
+    // ...
+}
+```
+
+Unstable tests run in the same CI job as stable tests. When an unstable test fails
+the CI run will pass with a warning
+
+To promote an unstable test to stable, remove `unstable` from the macro. This is
+a single-place change — no CI or configuration updates are required.
+
+To ignore these `unstable` tags and report failures for all tests when running
+locally, set the following environment variable: `PETRI_REPORT_UNSTABLE_FAIL=1`
+
+## Running VMM Tests (Flowey)
+
+The easiest way to run VMM tests locally is `cargo xflowey vmm-tests-run`. It
+automatically discovers required artifacts, builds dependencies, and runs your
+tests in a single command.
+
+To run a **specific test** (or set of tests), use `--filter` with a
+[nextest filter](https://nexte.st/docs/filtersets/) expression:
+
+```bash
+cargo xflowey vmm-tests-run --filter "test(my_test_name)" --dir /tmp/vmm-tests-run
+```
+
+### Targeting a Platform
+
+By default, `vmm-tests-run` builds for the current host. Use `--target` to
+build for a different platform. The supported targets are:
+
+| Target | Description |
+|--------|-------------|
+| `windows-x64` | Windows x86_64 (Hyper-V / WHP) |
+| `windows-aarch64` | Windows ARM64 (Hyper-V / WHP) |
+| `linux-x64` | Linux x86_64 |
+
+**Cross-compiling for Windows from WSL2** is fully supported, you can build
+and run Windows VMM tests directly from your WSL2 shell. This requires the
+cross-compilation environment to be set up first.
+
+Then target Windows as usual. The output directory **must** be on the Windows
+filesystem (e.g., `/mnt/d/...`):
+
+```bash
+cargo xflowey vmm-tests-run --target windows-x64 --dir /mnt/d/vmm_tests
+```
+
+For full cross-compilation setup instructions, see
+[Cross Compiling for Windows](../getting_started/cross_compile.md).
+
+When running Hyper-V tests, your user account must be a member of the
+Hyper-V Administrators group.
+
+To see all available options: `cargo xflowey vmm-tests-run --help`.
 
 ## Running VMM Tests (Manual)
 
@@ -92,7 +153,7 @@ which provide detailed instructions on how to build / acquire the missing
 artifact. Some dependencies can only be built on Linux (OpenHCL and Linux
 pipette, for example). If you are building on Linux and want to run Windows
 guest tests, pipette will need to be
-[cross compiled for Windows](#linux-cross-compiling-pipetteexe). 
+[cross compiled for Windows](#linux-cross-compiling-pipetteexe).
 
 ```admonish warning
 `cargo nextest run` won't rebuild any of your changes. Make sure you `cargo build`

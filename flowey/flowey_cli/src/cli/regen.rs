@@ -51,8 +51,13 @@ impl Regen {
                     // build the requested flowey
                     {
                         let quiet = self.quiet.then_some("-q");
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "not in a flowey runtime context"
+                        )]
                         let sh = xshell::Shell::new()?;
                         sh.change_dir(&working_dir);
+                        #[expect(clippy::disallowed_macros)]
                         xshell::cmd!(sh, "cargo build -p {bin_name} {quiet...}").run()?;
                     }
 
@@ -84,8 +89,13 @@ impl Regen {
                             vec![]
                         };
 
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "not in a flowey runtime context"
+                        )]
                         let sh = xshell::Shell::new()?;
                         sh.change_dir(&working_dir);
+                        #[expect(clippy::disallowed_macros)]
                         let res = xshell::cmd!(
                             sh,
                             "{bin} pipeline {backend} --out {file} {check...} {cmd...}"
@@ -185,11 +195,14 @@ fn install_flowey_merge_driver() -> anyhow::Result<()> {
     const DRIVER_NAME: &str = "flowey-theirs merge driver";
     const DRIVER_COMMAND: &str = "cp %B %A";
 
+    #[expect(clippy::disallowed_methods, reason = "not in a flowey runtime context")]
     let sh = xshell::Shell::new()?;
+    #[expect(clippy::disallowed_macros, reason = "not in a flowey runtime context")]
     xshell::cmd!(sh, "git config merge.flowey-theirs.name {DRIVER_NAME}")
         .quiet()
         .ignore_status()
         .run()?;
+    #[expect(clippy::disallowed_macros, reason = "not in a flowey runtime context")]
     xshell::cmd!(sh, "git config merge.flowey-theirs.driver {DRIVER_COMMAND}")
         .quiet()
         .ignore_status()

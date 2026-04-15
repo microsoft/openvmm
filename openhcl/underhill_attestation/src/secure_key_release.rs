@@ -5,8 +5,8 @@
 //! encryption keys.
 
 use crate::IgvmAttestRequestHelper;
-use crate::crypto;
 use crate::igvm_attest;
+use crypto::rsa::RsaKeyPair;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
@@ -16,8 +16,6 @@ use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
 use tee_call::TeeCall;
 use thiserror::Error;
 use vmgs::Vmgs;
@@ -25,7 +23,7 @@ use vmgs::Vmgs;
 #[derive(Debug, Error)]
 pub(crate) enum RequestVmgsEncryptionKeysError {
     #[error("failed to generate an RSA transfer key")]
-    GenerateTransferKey(#[source] openssl::error::ErrorStack),
+    GenerateTransferKey(#[source] crypto::rsa::RsaError),
     #[error("failed to get a TEE attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
     #[error("failed to create an IgvmAttest WRAPPED_KEY request")]
@@ -56,7 +54,55 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     #[error("failed to parse the IgvmAttest KEY_RELEASE response")]
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
-    Pkcs11RsaAesKeyUnwrap(#[source] crypto::Pkcs11RsaAesKeyUnwrapError),
+    Pkcs11RsaAesKeyUnwrap(#[source] Pkcs11RsaAesKeyUnwrapError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum Pkcs11RsaAesKeyUnwrapError {
+    #[error("expected wrapped AES key blob to be {0} bytes, but found {1} bytes")]
+    UndersizedWrappedAesKey(usize, usize),
+    #[error("wrapped RSA key blob cannot be empty")]
+    EmptyWrappedRsaKey,
+    #[error("RSA unwrap failed")]
+    RsaUnwrap(#[source] crypto::rsa::RsaError),
+    #[error("AES unwrap failed")]
+    AesUnwrap(#[source] crypto::aes_key_wrap::AesKeyWrapError),
+    #[error("failed to parse PKCS#8 DER as RSA key")]
+    ParsePkcs8Der(#[source] crypto::rsa::RsaError),
+}
+
+/// PKCS#11 RSA AES key unwrap implementation.
+fn pkcs11_rsa_aes_key_unwrap(
+    unwrapping_rsa_key: &RsaKeyPair,
+    wrapped_key_blob: &[u8],
+) -> Result<RsaKeyPair, Pkcs11RsaAesKeyUnwrapError> {
+    use crypto::rsa::OaepHashAlgorithm;
+
+    let modulus_size = unwrapping_rsa_key.modulus_size();
+
+    let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
+        .split_at_checked(modulus_size)
+        .ok_or_else(|| {
+            Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
+                modulus_size,
+                wrapped_key_blob.len(),
+            )
+        })?;
+
+    if wrapped_rsa_key.is_empty() {
+        return Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey);
+    }
+
+    let unwrapped_aes_key = unwrapping_rsa_key
+        .oaep_decrypt(wrapped_aes_key, OaepHashAlgorithm::Sha1)
+        .map_err(Pkcs11RsaAesKeyUnwrapError::RsaUnwrap)?;
+    let unwrapped_rsa_key = crypto::aes_key_wrap::AesKeyWrap::new(&unwrapped_aes_key)
+        .and_then(|kw| kw.unwrapper()?.unwrap(wrapped_rsa_key))
+        .map_err(Pkcs11RsaAesKeyUnwrapError::AesUnwrap)?;
+    let unwrapped_rsa_key = RsaKeyPair::from_pkcs8_der(&unwrapped_rsa_key)
+        .map_err(Pkcs11RsaAesKeyUnwrapError::ParsePkcs8Der)?;
+
+    Ok(unwrapped_rsa_key)
 }
 
 /// The return values of [`make_igvm_attest_requests`].
@@ -72,7 +118,7 @@ struct WrappedKeyVmgsEncryptionKeys {
 pub struct VmgsEncryptionKeys {
     /// Optional ingress RSA key-encryption key.
     /// `None` indicate secure key release failed.
-    pub ingress_rsa_kek: Option<Rsa<Private>>,
+    pub ingress_rsa_kek: Option<RsaKeyPair>,
     /// Optional DiskEncryptionSettings key used by key rotation.
     pub wrapped_des_key: Option<Vec<u8>>,
     /// Optional TCB version used by hardware key sealing.
@@ -90,16 +136,16 @@ pub async fn request_vmgs_encryption_keys(
     const TRANSFER_RSA_KEY_BITS: u32 = 2048;
 
     // Generate an ephemeral transfer key
-    let transfer_key = Rsa::generate(TRANSFER_RSA_KEY_BITS).map_err(|e| {
+    let transfer_key = RsaKeyPair::generate(TRANSFER_RSA_KEY_BITS).map_err(|e| {
         (
             RequestVmgsEncryptionKeysError::GenerateTransferKey(e),
             false,
         )
     })?;
 
-    let exponent = transfer_key.e().to_vec();
-    let modulus = transfer_key.n().to_vec();
-    let host_time = get_host_epoch_time(get).await;
+    let exponent = transfer_key.public_exponent();
+    let modulus = transfer_key.modulus();
+    let host_time = get.host_time().await.to_jiff().timestamp().as_second();
 
     let mut igvm_attest_request_helper = IgvmAttestRequestHelper::prepare_key_release_request(
         tee_call.tee_type(),
@@ -109,7 +155,7 @@ pub async fn request_vmgs_encryption_keys(
         attestation_vm_config,
     );
 
-    let vmgs_encrypted = vmgs.is_encrypted();
+    let vmgs_encrypted = vmgs.encrypted();
 
     tracing::info!(CVM_ALLOWED, "attempt to get VMGS key-encryption key");
 
@@ -138,9 +184,8 @@ pub async fn request_vmgs_encryption_keys(
             rsa_aes_wrapped_key,
             wrapped_des_key,
         }) => {
-            let ingress_rsa_kek =
-                    crypto::pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
-                        .map_err(|e| {(RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false)})?;
+            let ingress_rsa_kek = pkcs11_rsa_aes_key_unwrap(&transfer_key, &rsa_aes_wrapped_key)
+                .map_err(|e| (RequestVmgsEncryptionKeysError::Pkcs11RsaAesKeyUnwrap(e), false))?;
 
             Ok(VmgsEncryptionKeys {
                 ingress_rsa_kek: Some(ingress_rsa_kek),
@@ -201,28 +246,10 @@ pub async fn request_vmgs_encryption_keys(
     }
 }
 
-/// Get windows epoch from host via GET and covert it into unix epoch.
-async fn get_host_epoch_time(get: &GuestEmulationTransportClient) -> i64 {
-    const WINDOWS_EPOCH: time::OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
-    const NANOS_IN_SECOND: i64 = 1_000_000_000;
-    const NANOS_100_IN_SECOND: i64 = NANOS_IN_SECOND / 100;
-    let response = get.host_time().await;
-
-    let host_time_since_windows_epoch = time::Duration::new(
-        response.utc / NANOS_100_IN_SECOND,
-        (response.utc % NANOS_100_IN_SECOND) as i32,
-    );
-
-    let linux_time =
-        WINDOWS_EPOCH + host_time_since_windows_epoch - time::OffsetDateTime::UNIX_EPOCH;
-
-    linux_time.whole_seconds()
-}
-
 /// Make the `IGVM_ATTEST` request to GET.
 async fn make_igvm_attest_requests(
     get: &GuestEmulationTransportClient,
-    transfer_key: &Rsa<Private>,
+    transfer_key: &RsaKeyPair,
     igvm_attest_request_helper: &mut IgvmAttestRequestHelper,
     attestation_report: &[u8],
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
@@ -339,7 +366,7 @@ async fn make_igvm_attest_requests(
         }
     };
 
-    match igvm_attest::key_release::parse_response(&response.response, transfer_key.size() as usize)
+    match igvm_attest::key_release::parse_response(&response.response, transfer_key.modulus_size())
     {
         Ok(rsa_aes_wrapped_key) => Ok(WrappedKeyVmgsEncryptionKeys {
             rsa_aes_wrapped_key,
@@ -351,5 +378,61 @@ async fn make_igvm_attest_requests(
 
             Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crypto::rsa::OaepHashAlgorithm;
+
+    #[test]
+    fn fail_to_unwrap_pkcs11_rsa_aes_with_undersized_wrapped_key_blob() {
+        let rsa = RsaKeyPair::generate(2048).unwrap();
+
+        // undersized aes key blob
+        let wrapped_key_blob = vec![0; 256 - 1];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(matches!(
+            result,
+            Err(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
+                256, 255
+            ))
+        ));
+
+        // empty rsa key blob
+        let wrapped_key_blob = vec![0; 256];
+        let result = pkcs11_rsa_aes_key_unwrap(&rsa, &wrapped_key_blob);
+        assert!(matches!(
+            result,
+            Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey)
+        ));
+    }
+
+    #[test]
+    fn pkcs11_rsa_aes_key_unwrap_roundtrip() {
+        let target_key = RsaKeyPair::generate(2048).unwrap();
+        let pkcs8_target_key = target_key.to_pkcs8_der().unwrap();
+
+        let mut wrapping_aes_key = [0u8; 32];
+        getrandom::fill(&mut wrapping_aes_key).expect("rng failure");
+
+        let wrapping_rsa_key = RsaKeyPair::generate(2048).unwrap();
+        let wrapped_aes_key = wrapping_rsa_key
+            .oaep_encrypt(&wrapping_aes_key, OaepHashAlgorithm::Sha1)
+            .unwrap();
+        let wrapped_target_key = crypto::aes_key_wrap::AesKeyWrap::new(&wrapping_aes_key)
+            .unwrap()
+            .wrapper()
+            .unwrap()
+            .wrap(&pkcs8_target_key)
+            .unwrap();
+        let wrapped_key_blob = [wrapped_aes_key, wrapped_target_key].concat();
+        let unwrapped_target_key =
+            pkcs11_rsa_aes_key_unwrap(&wrapping_rsa_key, wrapped_key_blob.as_slice()).unwrap();
+        assert_eq!(
+            unwrapped_target_key.to_private_key_der().unwrap(),
+            target_key.to_private_key_der().unwrap()
+        );
     }
 }

@@ -16,9 +16,11 @@ use petri::openvmm::OpenVmmPetriBackend;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use vmm_test_macros::openvmm_test_no_agent;
+#[cfg(target_os = "linux")]
+use petri_artifacts_vmm_test::artifacts::OPENVMM_VHOST_NATIVE;
+use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
-use vmm_test_macros::vmm_test_no_agent;
+use vmm_test_macros::vmm_test_with;
 
 /// Tests for Hyper-V integration components.
 mod ic;
@@ -36,13 +38,13 @@ mod vmbus_relay;
 mod vmgs;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_x64(none),
     openvmm_openhcl_uefi_x64(none),
     openvmm_uefi_aarch64(none),
     hyperv_openhcl_uefi_aarch64(none),
     hyperv_openhcl_uefi_x64(none)
-)]
+))]
 async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config.run_without_agent().await?;
     vm.wait_for_clean_teardown().await?;
@@ -52,6 +54,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
 /// Basic boot test.
 #[vmm_test(
     openvmm_linux_direct_x64,
+    openvmm_linux_direct_aarch64,
     openvmm_openhcl_linux_direct_x64,
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_pcat_x64(vhd(ubuntu_2404_server_x64)),
@@ -71,7 +74,7 @@ async fn frontpage<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Res
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -84,6 +87,28 @@ async fn boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<(
     let (vm, agent) = config.run().await?;
     agent.power_off().await?;
     vm.wait_for_clean_teardown().await?;
+    Ok(())
+}
+
+/// Boot with private anonymous memory instead of shared memory sections.
+#[openvmm_test(
+    linux_direct_x64,
+    // TODO: add linux_direct_aarch64 (GH #1798)
+)]
+async fn boot_private_memory(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .modify_backend(|b| {
+            b.with_custom_config(|c| {
+                c.memory.private_memory = true;
+            })
+        })
+        .run()
+        .await?;
+
+    agent.ping().await?;
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
     Ok(())
 }
 
@@ -110,10 +135,10 @@ async fn boot_small<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 }
 
 /// Basic boot test without agent
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
     openvmm_pcat_x64(iso(freebsd_13_2_x64))
-)]
+))]
 async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -135,11 +160,11 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_pcat_x64(vhd(ubuntu_2504_server_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -149,19 +174,8 @@ async fn boot_no_agent<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow:
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64))
 )]
 async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    let is_openhcl = config.is_openhcl();
     let (vm, agent) = config
-        .with_processor_topology(ProcessorTopology {
-            vp_count: 16,
-            vps_per_socket: Some(8),
-            ..Default::default()
-        })
-        // multiarch::openvmm_uefi_x64_windows_datacenter_core_2022_x64_boot_heavy
-        // fails with 4GB of RAM (the default), and openhcl tests fail with 1GB.
-        .with_memory(MemoryConfig {
-            startup_bytes: if is_openhcl { 4 * SIZE_1_GB } else { SIZE_1_GB },
-            ..Default::default()
-        })
+        .with_processor_topology(ProcessorTopology::heavy())
         .run()
         .await?;
     agent.power_off().await?;
@@ -171,7 +185,7 @@ async fn boot_heavy<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Re
 
 /// Basic boot test with a single VP.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
@@ -253,7 +267,7 @@ async fn boot_nvme_vpci_relay<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> 
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64)),
-    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
+    unstable_openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64_prepped)),
     // openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2504_server_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(ubuntu_2504_server_x64)),
@@ -376,7 +390,7 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
 
 /// Verify that secure boot fails with a mismatched template.
 /// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2504_server_x64)),
@@ -390,7 +404,7 @@ async fn secure_boot<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::R
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2504_server_x64))
-)]
+))]
 async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
@@ -408,14 +422,16 @@ async fn secure_boot_mismatched_template<T: PetriVmmBackend>(
     Ok(())
 }
 
-/// Test EFI diagnostics with no boot devices on OpenVMM.
+/// Test EFI diagnostics with no boot devices.
 /// TODO:
-///   - kmsg support in Hyper-V
-///   - openhcl_uefi_aarch64 support
 ///   - uefi_x64 + uefi_aarch64 trace searching support
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
-async fn efi_diagnostics_no_boot(
-    config: PetriVmBuilder<OpenVmmPetriBackend>,
+#[vmm_test_with(noagent(
+    hyperv_openhcl_uefi_x64(none),
+    hyperv_openhcl_uefi_aarch64(none),
+    openvmm_openhcl_uefi_x64(none)
+))]
+async fn efi_diagnostics_no_boot<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
 ) -> anyhow::Result<()> {
     let vm = config.with_uefi_frontpage(true).run_without_agent().await?;
 
@@ -438,68 +454,14 @@ async fn efi_diagnostics_no_boot(
     anyhow::bail!("Did not find expected message in kmsg");
 }
 
-/// Test that AziHsm is present in UEFI by checking for AziHsm log messages.
-/// Boots with TPM and AziHsm enabled, no boot disk required.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
-async fn azi_hsm_present(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    let vm = config
-        .with_tpm(true)
-        .with_azi_hsm_enabled(true)
-        .with_uefi_frontpage(true)
-        .run_without_agent()
-        .await?;
-
-    // Look for AziHsm log messages in kmsg
-    const AZI_HSM_PREFIX: &str = "AziHsm:";
-
-    let mut kmsg = vm.kmsg().await?;
-    while let Some(data) = kmsg.next().await {
-        let data = data.context("reading kmsg")?;
-        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
-        let raw = msg.message.as_raw();
-        if raw.contains(AZI_HSM_PREFIX) {
-            return Ok(());
-        }
-    }
-
-    anyhow::bail!("Did not find expected AziHsm message in kmsg");
-}
-
-/// Test that AziHsm is absent when disabled
-/// Boots with TPM enabled but AziHsm disabled, no boot disk required.
-#[openvmm_test_no_agent(openhcl_uefi_x64(none))]
-async fn azi_hsm_absent(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::Result<()> {
-    let vm = config
-        .with_tpm(true)
-        .with_azi_hsm_enabled(false)
-        .with_uefi_frontpage(true)
-        .run_without_agent()
-        .await?;
-
-    // Verify AziHsm log messages do NOT appear in kmsg
-    const AZI_HSM_PREFIX: &str = "AziHsm:";
-
-    let mut kmsg = vm.kmsg().await?;
-    while let Some(data) = kmsg.next().await {
-        let data = data.context("reading kmsg")?;
-        let msg = kmsg::KmsgParsedEntry::new(&data).unwrap();
-        let raw = msg.message.as_raw();
-        if raw.contains(AZI_HSM_PREFIX) {
-            anyhow::bail!("Found unexpected AziHsm message in kmsg when AziHsm should be disabled");
-        }
-    }
-
-    Ok(())
-}
-
 /// Boot our guest-test UEFI image, which will run some tests,
 /// and then purposefully triple fault itself via an expiring
 /// watchdog timer.
-#[vmm_test_no_agent(
+#[vmm_test_with(noagent(
     openvmm_uefi_x64(guest_test_uefi_x64),
     openvmm_uefi_aarch64(guest_test_uefi_aarch64),
     openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
-)]
+))]
 async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
     let vm = config
         .with_windows_secure_boot_template()
@@ -513,5 +475,166 @@ async fn guest_test_uefi<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyho
         MachineArch::X86_64 => assert!(matches!(halt_reason, PetriHaltReason::TripleFault)),
         MachineArch::Aarch64 => assert!(matches!(halt_reason, PetriHaltReason::Reset)),
     }
+    Ok(())
+}
+
+/// Boot with a virtio-blk device served by the openvmm_vhost binary over
+/// a vhost-user Unix socket.  Verifies the full stack: guest driver →
+/// virtio transport → frontend protocol → socket → backend protocol →
+/// virtio-blk device → disk file.
+#[cfg(target_os = "linux")]
+#[openvmm_test(
+    linux_direct_x64[OPENVMM_VHOST_NATIVE],
+    linux_direct_aarch64[OPENVMM_VHOST_NATIVE],
+)]
+async fn vhost_user_blk_device<T>(
+    config: PetriVmBuilder<OpenVmmPetriBackend>,
+    extra_deps: (petri::ResolvedArtifact<T>,),
+    driver: pal_async::DefaultDriver,
+) -> anyhow::Result<()> {
+    use openvmm_defs::config::VirtioBus;
+    use pal_async::pipe::PolledPipe;
+    use pal_async::task::Spawn;
+    use virtio_resources::vhost_user::VhostUserBlkHandle;
+    use vm_resource::IntoResource;
+
+    let (openvmm_vhost_artifact,) = extra_deps;
+    let openvmm_vhost_path = openvmm_vhost_artifact.get();
+
+    let log_file = config.log_source().log_file("openvmm_vhost")?;
+
+    // Create a temporary directory for the socket and disk file.
+    let tmp_dir = tempfile::tempdir().context("create temp dir")?;
+    let socket_path = tmp_dir.path().join("vhost.sock");
+    let disk_path = tmp_dir.path().join("test.raw");
+
+    // Create a small raw disk file (8 MiB).
+    let disk_size: u64 = 8 * 1024 * 1024;
+    {
+        let f = std::fs::File::create(&disk_path).context("create disk file")?;
+        f.set_len(disk_size).context("set disk length")?;
+    }
+
+    // Spawn the openvmm_vhost backend process. Pipe stderr so we can
+    // forward it to the petri log system.
+    let (stderr_read, stderr_write) = pal::pipe_pair()?;
+    let backend_child = std::process::Command::new(openvmm_vhost_path)
+        .arg("--socket")
+        .arg(&socket_path)
+        .arg("blk")
+        .arg("--disk")
+        .arg(&disk_path)
+        .env("RUST_LOG", "debug")
+        .stdout(stderr_write.try_clone()?)
+        .stderr(stderr_write)
+        .spawn()
+        .context("spawn openvmm_vhost")?;
+
+    // Guard that kills the backend if the test exits early.
+    struct ChildGuard(Option<std::process::Child>);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+    let mut backend_guard = ChildGuard(Some(backend_child));
+
+    // Forward backend stderr to a petri log file.
+    let _log_task = driver.spawn(
+        "openvmm_vhost stderr",
+        petri::log_task(
+            log_file,
+            PolledPipe::new(&driver, stderr_read)?,
+            "openvmm_vhost",
+        ),
+    );
+
+    // Wait for the socket to appear (the server creates it on listen).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !socket_path.exists() {
+        if std::time::Instant::now() > deadline {
+            if let Some(status) = backend_guard.0.as_mut().unwrap().try_wait()? {
+                anyhow::bail!("openvmm_vhost exited early with status: {status}");
+            }
+            anyhow::bail!(
+                "timed out waiting for vhost-user socket at {}",
+                socket_path.display()
+            );
+        }
+        pal_async::timer::PolledTimer::new(&driver)
+            .sleep(std::time::Duration::from_millis(50))
+            .await;
+    }
+
+    // Connect to the backend and build the VM config.
+    let stream =
+        unix_socket::UnixStream::connect(&socket_path).context("connect to vhost-user socket")?;
+
+    let vhost_resource = VhostUserBlkHandle {
+        socket: stream.into(),
+        num_queues: None,
+        queue_size: None,
+    }
+    .into_resource();
+
+    let (vm, agent) = config
+        .modify_backend(move |b| {
+            b.with_custom_config(|c| {
+                c.virtio_devices.push((VirtioBus::Mmio, vhost_resource));
+            })
+        })
+        .run()
+        .await?;
+
+    let sh = agent.unix_shell();
+
+    // Verify the virtio-blk device appears as /dev/vda.
+    let vda_size = cmd!(sh, "cat /sys/block/vda/size")
+        .read()
+        .await
+        .context("virtio-blk device /dev/vda not found")?;
+    let vda_sectors: u64 = vda_size.trim().parse().context("parse vda size")?;
+    let expected_sectors = disk_size / 512;
+    assert_eq!(
+        vda_sectors, expected_sectors,
+        "unexpected disk size in sectors"
+    );
+
+    // Write data and read it back.
+    cmd!(
+        sh,
+        "sh -c 'echo hello_vhost_user | dd of=/dev/vda bs=512 count=1 conv=notrunc 2>/dev/null'"
+    )
+    .read()
+    .await
+    .context("write to vhost-user-blk device")?;
+    let readback = cmd!(
+        sh,
+        "sh -c 'dd if=/dev/vda bs=512 count=1 2>/dev/null | head -c 16'"
+    )
+    .read()
+    .await
+    .context("read from vhost-user-blk device")?;
+    assert!(
+        readback.starts_with("hello_vhost_user"),
+        "read back data mismatch: {readback}"
+    );
+
+    // Clean shutdown.
+    agent.power_off().await?;
+    vm.wait_for_clean_teardown().await?;
+
+    // The backend serves one connection and exits. Take the child out
+    // of the guard so we can wait for clean exit.
+    let mut backend_child = backend_guard.0.take().unwrap();
+    let status = backend_child.wait().context("wait for openvmm_vhost")?;
+    assert!(
+        status.success(),
+        "openvmm_vhost exited with non-zero status: {status}"
+    );
+
     Ok(())
 }

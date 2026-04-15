@@ -10,7 +10,6 @@ use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use openvmm_pcat_locator::RomFileLocation;
-use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
 use vm_resource::kind::PciDeviceHandleKind;
@@ -19,6 +18,7 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 
 #[derive(MeshPayload, Debug)]
 pub struct Config {
@@ -41,8 +41,6 @@ pub struct Config {
     pub framebuffer: Option<framebuffer::Framebuffer>,
     pub vga_firmware: Option<RomFileLocation>,
     pub vtl2_gfx: bool,
-    pub virtio_console_pci: bool,
-    pub virtio_serial: Option<SerialPipes>,
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
@@ -54,6 +52,7 @@ pub struct Config {
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
+    pub chipset_capabilities: VmChipsetCapabilities,
     pub generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     // This is used for testing. TODO: resourcify, and also store this in VMGS.
     pub rtc_delta_milliseconds: i64,
@@ -100,7 +99,43 @@ pub const DEFAULT_GIC_REDISTRIBUTORS_BASE: u64 = if cfg!(target_os = "linux") {
     0xEFFE_E000
 };
 
-pub const DEFAULT_PCIE_ECAM_BASE: u64 = 0x8_0000_0000; // 32GB, size depends on configuration
+/// Base address of the GIC v2m MSI frame. Must not overlap GIC dist/redist,
+/// serial UARTs, or VMBus MMIO. Matches the Hyper-V convention.
+pub const DEFAULT_GIC_V2M_MSI_FRAME_BASE: u64 = 0xEFFE_8000;
+/// Size of the v2m MSI frame (one 4KB page is the architectural minimum).
+pub const GIC_V2M_MSI_FRAME_SIZE: u64 = 0x1000;
+
+/// First GIC interrupt ID reserved for PCIe MSIs via the v2m frame.
+/// Must be in the SPI range (32–1019) and not conflict with other devices.
+pub const DEFAULT_GIC_V2M_SPI_BASE: u32 = 512;
+/// Number of SPIs reserved for PCIe MSIs.
+pub const DEFAULT_GIC_V2M_SPI_COUNT: u32 = 64;
+
+/// Default virtual timer PPI (GIC INTID). PPI 4 = INTID 16 + 4 = 20.
+/// This is the EL1 virtual timer interrupt used across Hyper-V, KVM, and HVF.
+pub const DEFAULT_VIRT_TIMER_PPI: u32 = 20;
+
+/// Default total number of GIC interrupts (SGIs + PPIs + SPIs).
+/// Must satisfy KVM constraints: 64 <= n <= 1023, multiple of 32.
+/// 992 = 31 × 32 is the largest valid value.
+pub const DEFAULT_GIC_NR_IRQS: u32 = 992;
+
+/// Default VMBus PPI (GIC INTID). PPI 2 = INTID 16 + 2 = 18.
+pub const DEFAULT_VMBUS_PPI: u32 = 18;
+
+/// How firmware tables are presented to the guest in Linux direct boot.
+///
+/// On x86, `DeviceTree` is not supported and will be rejected. On aarch64,
+/// this selects between a full device tree or an ACPI boot path.
+#[derive(MeshPayload, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxDirectBootMode {
+    /// Full device tree with all devices described in DT nodes (aarch64 only).
+    DeviceTree,
+    /// ACPI tables for device discovery. On aarch64, this also synthesizes
+    /// an EFI system table so the kernel enters its ACPI code path. On x86,
+    /// ACPI tables are always provided via the zero page.
+    Acpi,
+}
 
 #[derive(MeshPayload, Debug)]
 pub enum LoadMode {
@@ -110,6 +145,7 @@ pub enum LoadMode {
         cmdline: String,
         enable_serial: bool,
         custom_dsdt: Option<Vec<u8>>,
+        boot_mode: LinuxDirectBootMode,
     },
     Uefi {
         firmware: File,
@@ -123,7 +159,6 @@ pub enum LoadMode {
         uefi_console_mode: Option<UefiConsoleMode>,
         default_boot_always_attempt: bool,
         bios_guid: Guid,
-        azi_hsm_enabled: bool,
     },
     Pcat {
         firmware: RomFileLocation,
@@ -179,8 +214,9 @@ pub struct PcieRootComplexConfig {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
-    pub low_mmio_size: u32,
-    pub high_mmio_size: u64,
+    pub ecam_range: MemoryRange,
+    pub low_mmio: MemoryRange,
+    pub high_mmio: MemoryRange,
     pub ports: Vec<PcieRootPortConfig>,
 }
 
@@ -249,6 +285,8 @@ pub enum PmuGsivConfig {
     Platform,
     /// Use the specified GSIV value for the PMU.
     Gsiv(u32),
+    /// Disable the PMU.
+    Disabled,
 }
 
 #[derive(Debug, Protobuf, Default, Clone)]
@@ -257,8 +295,28 @@ pub struct Aarch64TopologyConfig {
     pub pmu_gsiv: PmuGsivConfig,
 }
 
+/// GIC configuration for the virtual machine.
+///
+/// The variant selects the GIC version. `None` inner config means use
+/// defaults for that version's addresses.
 #[derive(Debug, Protobuf, Clone)]
-pub struct GicConfig {
+pub enum GicConfig {
+    /// GICv2 with optional address overrides.
+    V2(Option<GicV2Config>),
+    /// GICv3 with optional address overrides.
+    V3(Option<GicV3Config>),
+}
+
+/// GICv2-specific address configuration.
+#[derive(Debug, Protobuf, Clone)]
+pub struct GicV2Config {
+    pub gic_distributor_base: u64,
+    pub cpu_interface_base: u64,
+}
+
+/// GICv3-specific address configuration.
+#[derive(Debug, Protobuf, Clone)]
+pub struct GicV3Config {
     pub gic_distributor_base: u64,
     pub gic_redistributors_base: u64,
 }
@@ -272,9 +330,12 @@ pub enum ArchTopologyConfig {
 #[derive(Debug, MeshPayload)]
 pub struct MemoryConfig {
     pub mem_size: u64,
-    pub mmio_gaps: Vec<MemoryRange>,
     pub prefetch_memory: bool,
-    pub pcie_ecam_base: u64,
+    pub private_memory: bool,
+    pub transparent_hugepages: bool,
+    pub mmio_gaps: Vec<MemoryRange>,
+    pub pci_ecam_gaps: Vec<MemoryRange>,
+    pub pci_mmio_gaps: Vec<MemoryRange>,
 }
 
 #[derive(Debug, MeshPayload, Default)]
@@ -294,53 +355,6 @@ pub struct HypervisorConfig {
     pub user_mode_apic: bool,
     pub with_vtl2: Option<Vtl2Config>,
     pub with_isolation: Option<IsolationType>,
-}
-
-#[derive(Debug, Copy, Clone, MeshPayload)]
-pub enum Hypervisor {
-    Kvm,
-    MsHv,
-    Whp,
-    Hvf,
-}
-
-impl fmt::Display for Hypervisor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad(match self {
-            Self::Kvm => "kvm",
-            Self::MsHv => "mshv",
-            Self::Whp => "whp",
-            Self::Hvf => "hvf",
-        })
-    }
-}
-
-/// Input and output for a connected serial port.
-#[derive(Debug, MeshPayload)]
-pub struct SerialPipes {
-    /// Input for a serial port.
-    ///
-    /// If the file reaches EOF, then the serial port will report carrier drop
-    /// to the guest. Use `None` when the port should remain connected
-    /// indefinitely.
-    pub input: Option<File>,
-    /// Output for a serial port.
-    ///
-    /// If the file write fails with [`std::io::ErrorKind::BrokenPipe`], then
-    /// the serial port will report carrier drop to the guest.
-    ///
-    /// `None` is equivalent to `/dev/null`--it will silently succeed all
-    /// writes.
-    pub output: Option<File>,
-}
-
-impl SerialPipes {
-    pub fn try_clone(&self) -> std::io::Result<Self> {
-        Ok(Self {
-            input: self.input.as_ref().map(File::try_clone).transpose()?,
-            output: self.output.as_ref().map(File::try_clone).transpose()?,
-        })
-    }
 }
 
 #[derive(Debug, MeshPayload)]

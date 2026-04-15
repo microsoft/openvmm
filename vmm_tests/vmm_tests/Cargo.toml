@@ -26,6 +26,7 @@ petri.workspace = true
 
 get_resources.workspace = true
 openvmm_defs.workspace = true
+openvmm_helpers.workspace = true
 disk_backend_resources.workspace = true
 hyperv_ic_resources.workspace = true
 memory_range.workspace = true

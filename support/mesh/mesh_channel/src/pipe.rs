@@ -4,8 +4,8 @@
 //! Implementation a unidirectional byte stream pipe over mesh.
 
 use crate::ChannelError;
-use futures_io::AsyncRead;
-use futures_io::AsyncWrite;
+use futures::io::AsyncRead;
+use futures::io::AsyncWrite;
 use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;

@@ -4,7 +4,7 @@
 //! Module defining associations between partition properties and types.
 
 use crate::abi;
-use winapi::shared::minwindef::BOOL;
+use windows_sys::core::BOOL;
 
 pub trait AssociatedType {
     type Type: ?Sized;
@@ -17,6 +17,7 @@ pub trait AssociatedType {
 macro_rules! pp {
     ($($(#[$attr:meta])* ($internal_name:ident, $code:ident, $ty:ty),)*) => {
         $(
+            #[expect(clippy::allow_attributes)]
             #[allow(dead_code)]
             $(#[$attr])*
             pub struct $internal_name;

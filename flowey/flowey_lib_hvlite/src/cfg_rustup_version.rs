@@ -8,7 +8,7 @@
 
 use flowey::node::prelude::*;
 
-pub const RUSTUP_TOOLCHAIN: &str = "1.91.1";
+pub const RUSTUP_TOOLCHAIN: &str = "1.94.0";
 
 new_simple_flow_node!(struct Node);
 
@@ -20,9 +20,10 @@ impl SimpleFlowNode for Node {
     }
 
     fn process_request(_: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        ctx.req(flowey_lib_common::install_rust::Request::Version(
-            RUSTUP_TOOLCHAIN.into(),
-        ));
+        ctx.config(flowey_lib_common::install_rust::Config {
+            version: Some(RUSTUP_TOOLCHAIN.into()),
+            ..Default::default()
+        });
         Ok(())
     }
 }

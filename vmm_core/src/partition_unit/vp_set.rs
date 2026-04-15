@@ -6,7 +6,6 @@
 use super::HaltReason;
 use super::HaltReasonReceiver;
 use super::InternalHaltReason;
-#[cfg(feature = "gdb")]
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -72,6 +71,12 @@ trait ControlVp: ProtobufSaveRestore {
         state: &InitialRegs,
         to_set: RegistersToSet,
     ) -> Result<(), RegisterSetError>;
+
+    /// Reset per-VP state.
+    fn reset(&mut self) -> anyhow::Result<()>;
+
+    /// Scrub per-VP state for a VTL.
+    fn scrub(&mut self, vtl: Vtl) -> anyhow::Result<()>;
 
     #[cfg(feature = "gdb")]
     fn debug(&mut self) -> &mut dyn DebugVp;
@@ -187,6 +192,14 @@ where
                 );
             }
         }
+    }
+
+    fn reset(&mut self) -> anyhow::Result<()> {
+        self.vp.reset().map_err(Into::into)
+    }
+
+    fn scrub(&mut self, vtl: Vtl) -> anyhow::Result<()> {
+        self.vp.scrub(vtl).map_err(Into::into)
     }
 
     fn set_initial_regs(
@@ -798,6 +811,40 @@ impl VpSet {
         }
     }
 
+    /// Resets per-VP state on all VPs concurrently.
+    pub async fn reset(&mut self) -> anyhow::Result<()> {
+        assert!(!self.started);
+        self.vps
+            .iter()
+            .enumerate()
+            .map(|(index, vp)| async move {
+                vp.send
+                    .call_failable(|x| VpEvent::State(StateEvent::Reset(x)), ())
+                    .await
+                    .with_context(|| format!("vp{index} reset"))
+            })
+            .collect::<TryJoinAll<_>>()
+            .await?;
+        Ok(())
+    }
+
+    /// Scrubs per-VP state for a VTL on all VPs concurrently.
+    pub async fn scrub(&mut self, vtl: Vtl) -> anyhow::Result<()> {
+        assert!(!self.started);
+        self.vps
+            .iter()
+            .enumerate()
+            .map(|(index, vp)| async move {
+                vp.send
+                    .call_failable(|x| VpEvent::State(StateEvent::Scrub(x)), vtl)
+                    .await
+                    .with_context(|| format!("vp{index} scrub"))
+            })
+            .collect::<TryJoinAll<_>>()
+            .await?;
+        Ok(())
+    }
+
     pub async fn save(&mut self) -> Result<Vec<(VpIndex, SavedStateBlob)>, SaveError> {
         assert!(!self.started);
         self.vps
@@ -1000,6 +1047,8 @@ enum StateEvent {
     SetInitialRegs(Rpc<(Vtl, Arc<InitialRegs>, RegistersToSet), Result<(), RegisterSetError>>),
     Save(Rpc<(), Result<SavedStateBlob, SaveError>>),
     Restore(Rpc<SavedStateBlob, Result<(), RestoreError>>),
+    Reset(mesh::rpc::FailableRpc<(), ()>),
+    Scrub(mesh::rpc::FailableRpc<Vtl, ()>),
     #[cfg(feature = "gdb")]
     Debug(DebugEvent),
 }
@@ -1242,6 +1291,8 @@ impl RunnerInner {
             }
             StateEvent::Save(rpc) => rpc.handle_sync(|()| vp.save()),
             StateEvent::Restore(rpc) => rpc.handle_sync(|data| vp.restore(data)),
+            StateEvent::Reset(rpc) => rpc.handle_failable_sync(|()| vp.reset()),
+            StateEvent::Scrub(rpc) => rpc.handle_failable_sync(|vtl| vp.scrub(vtl)),
             #[cfg(feature = "gdb")]
             StateEvent::Debug(event) => match event {
                 DebugEvent::SetDebugState(rpc) => {

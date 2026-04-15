@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use crate::download_uefi_mu_msvm::MuMsvmArch;
-use crate::init_openvmm_magicpath_linux_test_kernel::OpenvmmLinuxTestKernelArch;
 use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
+use crate::resolve_openvmm_deps::OpenvmmDepsArch;
 use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 
@@ -11,7 +11,8 @@ flowey_request! {
     pub struct Request{
         pub arches: Vec<CommonArch>,
         pub done: WriteVar<SideEffect>,
-        pub release_artifact: ReadVar<PathBuf>,
+        /// If `None`, skip downloading OpenHCL IGVM release files.
+        pub release_artifact: Option<ReadVar<PathBuf>>,
     }
 }
 
@@ -21,8 +22,8 @@ impl SimpleFlowNode for Node {
     type Request = Request;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::init_openvmm_magicpath_linux_test_kernel::Node>();
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
+        ctx.import::<crate::init_openvmm_magicpath_openvmm_deps::Node>();
         ctx.import::<crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
@@ -53,12 +54,10 @@ impl SimpleFlowNode for Node {
                             arch: MuMsvmArch::X86_64,
                             done,
                         }),
-                        ctx.reqv(
-                            |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
-                                arch: OpenvmmLinuxTestKernelArch::X64,
-                                done,
-                            },
-                        ),
+                        ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request {
+                            arch: OpenvmmDepsArch::X86_64,
+                            done,
+                        }),
                     ]);
                 }
                 CommonArch::Aarch64 => {
@@ -75,28 +74,28 @@ impl SimpleFlowNode for Node {
                             arch: MuMsvmArch::Aarch64,
                             done,
                         }),
-                        ctx.reqv(
-                            |done| crate::init_openvmm_magicpath_linux_test_kernel::Request {
-                                arch: OpenvmmLinuxTestKernelArch::Aarch64,
-                                done,
-                            },
-                        ),
+                        ctx.reqv(|done| crate::init_openvmm_magicpath_openvmm_deps::Request {
+                            arch: OpenvmmDepsArch::Aarch64,
+                            done,
+                        }),
                     ]);
                 }
             }
 
-            deps.push(
-                ctx.reqv(
-                    |v| crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Request {
-                        arch,
-                        release_version:
-                            crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
-                        release_artifact:release_artifact.clone(),
-                        done: v,
-                    },
-                )
-                .into_side_effect(),
-            );
+            if let Some(release_artifact) = &release_artifact {
+                deps.push(
+                    ctx.reqv(
+                        |v| crate::init_openvmm_magicpath_release_openhcl_igvm::resolve::Request {
+                            arch,
+                            release_version:
+                                crate::download_release_igvm_files_from_gh::OpenhclReleaseVersion::latest(),
+                            release_artifact: release_artifact.clone(),
+                            done: v,
+                        },
+                    )
+                    .into_side_effect(),
+                );
+            }
         }
 
         ctx.emit_side_effect_step(deps, [done]);

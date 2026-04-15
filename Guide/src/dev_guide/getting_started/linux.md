@@ -31,6 +31,12 @@ profile that should have been created.
 If you intend to cross-compile OpenVMM for Windows, please ensure you are
 running a recent version of Windows 11. Windows 10 is no longer supported as a
 development platform, due to needed WHP APIs.
+
+For the best OpenHCL development experience, we recommend **Windows 11 26H1**
+(Insider Canary channel, build 28000+) if available for your device — this
+enables COM3 serial output for kernel logs and matches the CI runners. See
+[Debugging OpenHCL](../../reference/openhcl/debugging.md#recommended-host-os-for-openhcl-development)
+for details.
 ```
 
 All subsequent commands on this page must be run within WSL2.

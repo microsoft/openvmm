@@ -221,8 +221,6 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub management_vtl_features: ManagementVtlFeatures,
     #[serde(default)]
     pub hv_sint_enabled: bool,
-    #[serde(default)]
-    pub azi_hsm_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

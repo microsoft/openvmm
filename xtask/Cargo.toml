@@ -11,7 +11,9 @@ vmm_test_images = { workspace = true, features = ["clap"] }
 
 anyhow.workspace = true
 cargo_toml.workspace = true
+ci_logger.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
+clap_dyn_complete.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fs-err.workspace = true
 futures.workspace = true
@@ -19,19 +21,18 @@ glob.workspace = true
 gptman.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true
+guid.workspace = true
+heck.workspace = true
 ignore.workspace = true
 log.workspace = true
 object = { workspace = true, features = ["read_core", "elf", "std"] }
 rayon.workspace = true
-serde_json = { workspace = true, features = ["std"]}
 serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"]}
 toml_edit = { workspace = true, features = ["serde"] }
 walkdir.workspace = true
 which.workspace = true
 xshell.workspace = true
-ci_logger.workspace = true
-clap_dyn_complete.workspace = true
-guid.workspace = true
 
 [lints]
 workspace = true

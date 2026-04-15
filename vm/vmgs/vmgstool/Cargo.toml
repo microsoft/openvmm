@@ -3,21 +3,19 @@
 
 [package]
 name = "vmgstool"
+version = "2.0.0"
 edition.workspace = true
 rust-version.workspace = true
 
 [features]
 default = []
 
-# Use native windows crypto APIs
-encryption_win = ["vmgs/encryption_win"]
-# Use OpenSSL crypto APIs
-encryption_ossl = ["vmgs/encryption_ossl"]
+encryption = ["vmgs/encryption", "crypto/vendored"]
 
-test_helpers = ["vmgs/test_helpers", "getrandom"]
+test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
 
-# run windows encryption unit tests in CI
-ci = ["encryption_win"]
+# run encryption unit tests in CI
+ci = ["encryption"]
 
 [dependencies]
 disk_backend.workspace = true
@@ -34,16 +32,24 @@ vmgs_format.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, optional = true }
 hex.workspace = true
 fs-err.workspace = true
 getrandom = { workspace = true, optional = true}
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["std"] }
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 ucs2.workspace = true
+resource_dll_parser = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

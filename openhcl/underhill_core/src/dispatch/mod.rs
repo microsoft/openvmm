@@ -83,6 +83,8 @@ pub enum UhVmRpc {
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
+    #[cfg(feature = "mem-profile-tracing")]
+    MemoryProfileTrace(FailableRpc<i32, Vec<u8>>),
 }
 
 #[async_trait]
@@ -199,6 +201,8 @@ pub(crate) struct LoadedVm {
     pub dma_manager: OpenhclDmaManager,
     pub config_timeout_in_seconds: u64,
     pub servicing_timeout_dump_collection_in_ms: u64,
+    #[cfg(feature = "mem-profile-tracing")]
+    pub profiler: mem_profile_tracing::HeapProfiler,
 }
 
 pub struct LoadedVmState<T> {
@@ -417,6 +421,17 @@ impl LoadedVm {
                                 .as_ref()
                                 .context("No network settings have been set up")?;
                             network_settings.packet_capture(params).await
+                        })
+                        .await
+                    }
+                    #[cfg(feature = "mem-profile-tracing")]
+                    UhVmRpc::MemoryProfileTrace(rpc) => {
+                        rpc.handle_failable(async |pid| {
+                            if pid == std::process::id() as i32 {
+                                Ok(self.profiler.capture_and_restart())
+                            } else {
+                                anyhow::bail!("Process with PID {pid} not found");
+                            }
                         })
                         .await
                     }
@@ -881,6 +896,9 @@ impl LoadedVm {
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
+        // Save the emulation platform state prior to any network settings so that
+        // it can capture any relevant state from the network devices that may be
+        // needed for a successful restore.
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
         // Only save dma manager state if we are expected to keep VF devices
@@ -916,7 +934,6 @@ impl LoadedVm {
         };
 
         let units = self.save_units().await.context("state unit save failed")?;
-
         let mana_state = if let Some(network_settings) = &mut self.network_settings
             && mana_keepalive_mode.is_enabled()
         {

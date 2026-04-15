@@ -88,12 +88,14 @@ fn direct_run_do_work(
     for idx in order {
         let ResolvedPipelineJob {
             ref root_nodes,
+            ref root_configs,
             ref patches,
             ref label,
             platform,
             arch,
             cond_param_idx,
             timeout_minutes: _,
+            ref command_wrapper,
             ado_pool: _,
             ado_variables: _,
             gh_override_if: _,
@@ -155,25 +157,42 @@ fn direct_run_do_work(
             continue;
         }
 
+        // Use the job's declared platform for DAG resolution and runtime,
+        // except when --windows-as-wsl is active: in that case, the job
+        // declares Windows but we're actually running on Linux/WSL, so
+        // use the host platform instead.
+        let runtime_platform = if windows_as_wsl
+            && matches!(platform, FlowPlatform::Windows)
+            && matches!(flow_platform, FlowPlatform::Linux(_))
+        {
+            flow_platform
+        } else {
+            platform
+        };
+
         let nodes = {
             let mut resolved_local_steps = Vec::new();
 
-            let (mut output_graph, _, err_unreachable_nodes) =
-                crate::flow_resolver::stage1_dag::stage1_dag(
-                    FlowBackend::Local,
-                    flow_platform,
-                    flow_arch,
-                    patches.clone(),
-                    root_nodes
-                        .clone()
-                        .into_iter()
-                        .map(|(node, requests)| (node, (true, requests)))
-                        .collect(),
-                    external_read_vars.clone(),
-                    Some(VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR.into()),
-                )?;
+            let crate::flow_resolver::stage1_dag::Stage1DagOutput {
+                mut output_graph,
+                found_unreachable_nodes,
+                ..
+            } = crate::flow_resolver::stage1_dag::stage1_dag(
+                FlowBackend::Local,
+                runtime_platform,
+                arch,
+                patches.clone(),
+                root_nodes
+                    .clone()
+                    .into_iter()
+                    .map(|(node, requests)| (node, (true, requests)))
+                    .collect(),
+                root_configs.clone(),
+                external_read_vars.clone(),
+                Some(VAR_DB_SEEDVAR_FLOWEY_PERSISTENT_STORAGE_DIR.into()),
+            )?;
 
-            if err_unreachable_nodes.is_some() {
+            if found_unreachable_nodes {
                 anyhow::bail!("detected unreachable nodes")
             }
 
@@ -340,9 +359,13 @@ fn direct_run_do_work(
         let mut runtime_services = flowey_core::node::steps::rust::new_rust_runtime_services(
             &mut in_mem_var_db,
             FlowBackend::Local,
-            platform,
-            flow_arch,
+            runtime_platform,
+            arch,
         )?;
+
+        if let Some(wrapper) = command_wrapper {
+            runtime_services.sh.set_wrapper(Some(wrapper.clone()));
+        }
 
         for ResolvedRunnableStep {
             node_handle,

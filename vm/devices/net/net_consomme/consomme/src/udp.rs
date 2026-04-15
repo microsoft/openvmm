@@ -53,7 +53,7 @@ use std::task::Poll;
 use std::time::Duration;
 use std::time::Instant;
 
-pub const DNS_PORT: u16 = 53;
+use crate::DNS_PORT;
 
 pub(crate) struct Udp {
     connections: HashMap<SocketAddr, UdpConnection>,
@@ -174,7 +174,10 @@ impl UdpConnection {
                     self.last_activity = Instant::now();
                 }
                 Poll::Ready(Err(err)) => {
-                    tracing::error!(error = &err as &dyn std::error::Error, "recv error");
+                    tracelimit::error_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "recv error"
+                    );
                     break false;
                 }
                 Poll::Pending => break true,
@@ -191,8 +194,8 @@ impl<T: Client> Access<'_, T> {
         self.inner.udp.connections.retain(|dst_addr, conn| {
             // Check if connection has timed out
             if now.duration_since(conn.last_activity) > timeout {
-                tracing::warn!(
-                    addr = %format!("{}:{}", dst_addr.ip(), dst_addr.port()),
+                tracing::debug!(
+                    addr = %dst_addr,
                     "UDP connection timed out"
                 );
                 return false;
@@ -204,7 +207,7 @@ impl<T: Client> Access<'_, T> {
             self.inner
                 .dns
                 .as_mut()
-                .and_then(|dns| match dns.poll_response(cx) {
+                .and_then(|dns| match dns.poll_udp_response(cx) {
                     Poll::Ready(resp) => resp,
                     Poll::Pending => None,
                 })
@@ -442,16 +445,25 @@ impl<T: Client> Access<'_, T> {
                 dst_port: udp.dst_port(),
                 gateway_mac: self.inner.state.params.gateway_mac,
                 client_mac: frame.src_addr,
+                transport: crate::dns_resolver::DnsTransport::Udp,
             },
             dns_query: udp.payload(),
         };
 
-        // Submit the DNS query with addressing information
-        // The response will be queued and sent later in poll_udp
-        dns.handle_dns(&request).map_err(|e| {
+        // Submit the DNS query with addressing information.
+        // The response will be queued and sent later in poll_udp, unless the
+        // resolver is rate-limited, in which case it returns a SERVFAIL to
+        // emit immediately.
+        let immediate_response = dns.submit_udp_query(&request).map_err(|e| {
             tracelimit::error_ratelimited!(error = ?e, "Failed to start DNS query");
             DropReason::Packet(smoltcp::wire::Error)
         })?;
+
+        if let Some(response) = immediate_response {
+            if let Err(e) = self.send_dns_response(&response) {
+                tracelimit::error_ratelimited!(error = ?e, "Failed to send DNS SERVFAIL response");
+            }
+        }
 
         Ok(true)
     }
@@ -659,9 +671,7 @@ mod tests {
         let mut access = consomme.access(&mut client);
         let _ = access.send(&buffer[..packet_len], &ChecksumState::NONE);
 
-        #[allow(clippy::disallowed_methods)]
-        let waker = futures::task::noop_waker();
-        let mut cx = Context::from_waker(&waker);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
         access.poll(&mut cx);
 
         assert_eq!(

@@ -11,8 +11,6 @@ use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
 use vmcore::save_restore::SaveRestore;
 
-const NANOS_IN_SECOND: i64 = 1_000_000_000;
-const NANOS_100_IN_SECOND: i64 = NANOS_IN_SECOND / 100;
 const MILLIS_IN_TWO_DAYS: i64 = 1000 * 60 * 60 * 24 * 2;
 
 /// Implementation of [`LocalClock`], backed a real time source on the host.
@@ -80,13 +78,13 @@ impl UnderhillLocalClock {
                         // _local_ time, whereas Linux assume the time stored in the RTC
                         // stores UTC.
                         let skew = this.host_time.now().offset();
-                        let skew = time::Duration::seconds(skew.whole_seconds().into());
+                        let skew = LocalClockDelta::from_millis(skew.seconds() as i64 * 1000);
                         tracing::info!(
                             CVM_ALLOWED,
                             ?skew,
                             "no saved skew found: defaulting to host local time"
                         );
-                        skew.into()
+                        skew
                     }
                 }
             }
@@ -116,12 +114,10 @@ async fn fetch_skew_from_store(
     };
 
     let raw_skew_100ns = i64::from_le_bytes(raw_skew.try_into().expect("invalid stored RTC skew"));
-    let skew = time::Duration::new(
-        raw_skew_100ns / NANOS_100_IN_SECOND,
-        (raw_skew_100ns % NANOS_100_IN_SECOND) as i32,
-    );
+    let skew_millis = raw_skew_100ns / 10_000; // 100ns units to millis
+    let skew = LocalClockDelta::from_millis(skew_millis);
     tracing::info!(CVM_ALLOWED, ?skew, "restored existing RTC skew");
-    Ok(Some(skew.into()))
+    Ok(Some(skew))
 }
 
 impl LocalClock for UnderhillLocalClock {
@@ -134,9 +130,7 @@ impl LocalClock for UnderhillLocalClock {
         self.offset_from_host_time = new_skew;
 
         // persist the skew in units of 100ns
-        let raw_skew: i64 = (time::Duration::from(new_skew).whole_nanoseconds() / 100)
-            .try_into()
-            .unwrap();
+        let raw_skew: i64 = new_skew.as_millis() * 10_000; // millis to 100ns units
 
         // TODO: swap this out for a non-blocking version that guarantees the skew is written out _eventually_
         let res = pal_async::local::block_on(self.store.persist(raw_skew.to_le_bytes().into()));
@@ -151,20 +145,18 @@ impl LocalClock for UnderhillLocalClock {
 }
 
 mod host_time {
-    use super::NANOS_100_IN_SECOND;
     use inspect::Inspect;
+    use jiff::Zoned;
     use parking_lot::Mutex;
     use std::time::Duration;
     use std::time::Instant;
-    use time::OffsetDateTime;
-    use time::UtcOffset;
 
     /// Encapsulates all the nitty-gritty details of how real time gets fetched
     /// from the Host.
     #[derive(Debug)]
     pub struct HostSystemTimeAccess {
         get: guest_emulation_transport::GuestEmulationTransportClient,
-        cached_host_time: Mutex<Option<(Instant, OffsetDateTime)>>,
+        cached_host_time: Mutex<Option<(Instant, Zoned)>>,
     }
 
     impl Inspect for HostSystemTimeAccess {
@@ -176,9 +168,9 @@ mod host_time {
 
             let mut res = req.respond();
 
-            if let Some((last_query, cached_time)) = *cached_host_time.lock() {
+            if let Some((last_query, ref cached_time)) = *cached_host_time.lock() {
                 res.display_debug("since_last_query", &(Instant::now() - last_query))
-                    .display("cached_time", &cached_time);
+                    .display("cached_time", cached_time);
             }
         }
     }
@@ -194,7 +186,7 @@ mod host_time {
         }
 
         /// Return the host's current time
-        pub fn now(&self) -> OffsetDateTime {
+        pub fn now(&self) -> Zoned {
             // The RTC only has 1s time granularity, so there's no reason to
             // spam the GET with time requests if the previous request was less
             // than a second ago.
@@ -209,41 +201,23 @@ mod host_time {
             let now = Instant::now();
             let mut cached_host_time = self.cached_host_time.lock();
 
-            match *cached_host_time {
+            match &*cached_host_time {
                 Some((last_query, cached_time))
-                    if now.duration_since(last_query) < Duration::from_secs(1) =>
+                    if now.duration_since(*last_query) < Duration::from_secs(1) =>
                 {
-                    cached_time
+                    cached_time.clone()
                 }
                 _ => {
                     // TODO: this block_on really ain't great, but since we're
                     // not hammering the GET on _each_ access, it's okay for now...
-                    let new_time = get_time_to_date_time(pal_async::local::block_with_io(|_| {
-                        self.get.host_time()
-                    }));
+                    let new_time =
+                        pal_async::local::block_with_io(|_| self.get.host_time()).to_jiff();
+                    let result = new_time.clone();
                     *cached_host_time = Some((now, new_time));
-                    new_time
+                    result
                 }
             }
         }
-    }
-
-    fn get_time_to_date_time(time: guest_emulation_transport::api::Time) -> OffsetDateTime {
-        const WINDOWS_EPOCH: OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
-
-        let host_time_since_windows_epoch = time::Duration::new(
-            time.utc / NANOS_100_IN_SECOND,
-            (time.utc % NANOS_100_IN_SECOND) as i32,
-        );
-
-        let host_time_utc = WINDOWS_EPOCH + host_time_since_windows_epoch;
-
-        // the timezone reported by the host is negative minutes from utc
-        // i.e. Localtime = UTC - TimeZone
-        host_time_utc.to_offset(
-            UtcOffset::from_whole_seconds(-time.time_zone as i32 * 60)
-                .expect("unexpectedly large timezone offset"),
-        )
     }
 }
 

@@ -8,19 +8,20 @@
 
 use crate::_util::cargo_output;
 use flowey::node::prelude::*;
+use flowey::shell::FloweyCmd;
 use std::collections::BTreeMap;
-
 #[derive(Serialize, Deserialize)]
 pub struct CargoDocCommands {
     cmds: Vec<Vec<String>>,
     cargo_work_dir: PathBuf,
+    no_incremental: bool,
 }
 
 impl CargoDocCommands {
     /// Execute the doc command(s), returning a path to the built docs
     /// directory.
-    pub fn run(self, sh: &xshell::Shell) -> anyhow::Result<PathBuf> {
-        self.run_with(sh, |x| x)
+    pub fn run(self, rt: &RustRuntimeServices<'_>) -> anyhow::Result<PathBuf> {
+        self.run_with(rt, |x| x)
     }
 
     /// Execute the doc command(s), returning path(s) to the built artifact.
@@ -30,21 +31,27 @@ impl CargoDocCommands {
     /// artifacts will be placed, etc...).
     pub fn run_with(
         self,
-        sh: &xshell::Shell,
-        f: impl Fn(xshell::Cmd<'_>) -> xshell::Cmd<'_>,
+        rt: &RustRuntimeServices<'_>,
+        f: impl Fn(FloweyCmd<'_>) -> FloweyCmd<'_>,
     ) -> anyhow::Result<PathBuf> {
         let Self {
             cmds,
             cargo_work_dir,
+            no_incremental,
         } = self;
 
-        let out_dir = sh.current_dir();
-        sh.change_dir(cargo_work_dir);
+        let out_dir = rt.sh.current_dir();
+        rt.sh.change_dir(cargo_work_dir);
 
         let mut json = String::new();
         for mut cmd in cmds {
             let argv0 = cmd.remove(0);
-            let cmd = xshell::cmd!(sh, "{argv0} {cmd...}");
+            let cmd = flowey::shell_cmd!(rt, "{argv0} {cmd...}");
+            let cmd = if no_incremental {
+                cmd.env("CARGO_INCREMENTAL", "0")
+            } else {
+                cmd
+            };
             let cmd = f(cmd);
             json.push_str(&cmd.read()?);
         }
@@ -188,7 +195,11 @@ impl FlowNode for Node {
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
 
-                    let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
+                    let crate::cfg_cargo_common_flags::Flags {
+                        locked,
+                        verbose,
+                        no_incremental,
+                    } = flags;
 
                     let mut cmds = Vec::new();
                     let ResolvedDocPackages {
@@ -270,6 +281,7 @@ impl FlowNode for Node {
                     let cmd = CargoDocCommands {
                         cmds,
                         cargo_work_dir: in_folder.clone(),
+                        no_incremental,
                     };
 
                     rt.write(write_doc_cmd, &cmd);

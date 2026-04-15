@@ -8,7 +8,7 @@
 
 pub mod resolver;
 
-use block_crypto::XtsAes256;
+use crypto::xts_aes_256::XtsAes256;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -34,7 +34,7 @@ pub struct CryptDisk {
 pub enum NewDiskError {
     /// An error occurred during cryptographic operations.
     #[error("crypto error")]
-    Crypto(#[source] block_crypto::Error),
+    Crypto(#[source] crypto::xts_aes_256::XtsAes256Error),
     /// The key size is invalid.
     #[error("invalid key size for cipher")]
     InvalidKeySize,
@@ -187,7 +187,7 @@ impl DiskIo for CryptDisk {
     }
 }
 
-fn crypto_error(err: block_crypto::Error) -> DiskError {
+fn crypto_error(err: crypto::xts_aes_256::XtsAes256Error) -> DiskError {
     DiskError::Io(std::io::Error::other(err))
 }
 

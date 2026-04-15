@@ -11,7 +11,6 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::lock::Mutex;
 use futures_concurrency::future::Race;
-use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
@@ -234,13 +233,12 @@ impl Endpoint for PacketCaptureEndpoint {
 
     async fn get_queues(
         &mut self,
-        config: Vec<QueueConfig<'_>>,
+        config: Vec<QueueConfig>,
         rss: Option<&RssConfig<'_>>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
         if self.pcap.enabled.load(Ordering::Relaxed) {
             tracing::trace!("using packet capture queues");
-            let mem = config[0].pool.guest_memory().clone();
             let mut queues_inner: Vec<Box<dyn Queue>> = Vec::new();
             self.current_mut()
                 .get_queues(config, rss, &mut queues_inner)
@@ -248,8 +246,8 @@ impl Endpoint for PacketCaptureEndpoint {
             while let Some(inner) = queues_inner.pop() {
                 queues.push(Box::new(PacketCaptureQueue {
                     queue: inner,
-                    mem: mem.clone(),
                     pcap: self.pcap.clone(),
+                    scratch_segments: Vec::new(),
                 }));
             }
         } else {
@@ -444,8 +442,8 @@ impl Pcap {
 
 struct PacketCaptureQueue {
     queue: Box<dyn Queue>,
-    mem: GuestMemory,
     pcap: Arc<Pcap>,
+    scratch_segments: Vec<net_backend::RxBufferSegment>,
 }
 
 impl PacketCaptureQueue {
@@ -460,54 +458,62 @@ impl Queue for PacketCaptureQueue {
         self.current_mut().update_target_vp(target_vp).await
     }
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        self.current_mut().poll_ready(cx)
+    fn poll_ready(&mut self, cx: &mut Context<'_>, pool: &mut dyn BufferAccess) -> Poll<()> {
+        self.current_mut().poll_ready(cx, pool)
     }
 
-    fn rx_avail(&mut self, done: &[RxId]) {
-        self.current_mut().rx_avail(done)
+    fn rx_avail(&mut self, pool: &mut dyn BufferAccess, done: &[RxId]) {
+        self.current_mut().rx_avail(pool, done)
     }
 
-    fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
-        let n = self.current_mut().rx_poll(packets)?;
+    fn rx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        packets: &mut [RxId],
+    ) -> anyhow::Result<usize> {
+        let n = self.current_mut().rx_poll(pool, packets)?;
         if self.pcap.enabled.load(Ordering::Relaxed) {
-            if let Some(pool) = self.queue.buffer_access() {
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or(Duration::new(0, 0));
-                let snaplen = self.pcap.snaplen.load(Ordering::Relaxed);
-                for id in &packets[..n] {
-                    let mut buf = vec![0; snaplen];
-                    let mut len = 0;
-                    let mut pkt_len = 0;
-                    for segment in pool.guest_addresses(*id).iter() {
-                        pkt_len += segment.len;
-                        if len == buf.len() {
-                            continue;
-                        }
-
-                        let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                        let _ = self.mem.read_at(segment.gpa, &mut buf[len..]);
-                        len += copy_length;
-                    }
-
-                    if len == 0 {
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or(Duration::new(0, 0));
+            let snaplen = self.pcap.snaplen.load(Ordering::Relaxed);
+            for id in &packets[..n] {
+                let mut buf = vec![0; snaplen];
+                let mut len = 0;
+                let mut pkt_len = 0;
+                self.scratch_segments.clear();
+                pool.push_guest_addresses(*id, &mut self.scratch_segments);
+                for segment in &self.scratch_segments {
+                    pkt_len += segment.len;
+                    if len == buf.len() {
                         continue;
                     }
 
-                    if !self
-                        .pcap
-                        .write_packet(&buf[..len], pkt_len, snaplen as u32, &timestamp)
-                    {
-                        break;
-                    }
+                    let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
+                    let _ = pool.guest_memory().read_at(segment.gpa, &mut buf[len..]);
+                    len += copy_length;
+                }
+
+                if len == 0 {
+                    continue;
+                }
+
+                if !self
+                    .pcap
+                    .write_packet(&buf[..len], pkt_len, snaplen as u32, &timestamp)
+                {
+                    break;
                 }
             }
         }
         Ok(n)
     }
 
-    fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)> {
+    fn tx_avail(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        segments: &[TxSegment],
+    ) -> anyhow::Result<(bool, usize)> {
         if self.pcap.enabled.load(Ordering::Relaxed) {
             let mut segments = segments;
             let timestamp = SystemTime::now()
@@ -528,7 +534,7 @@ impl Queue for PacketCaptureQueue {
                     }
 
                     let copy_length = std::cmp::min(buf.len() - len, segment.len as usize);
-                    let _ = self.mem.read_at(segment.gpa, &mut buf[len..]);
+                    let _ = pool.guest_memory().read_at(segment.gpa, &mut buf[len..]);
                     len += copy_length;
                 }
 
@@ -544,15 +550,15 @@ impl Queue for PacketCaptureQueue {
                 }
             }
         }
-        self.current_mut().tx_avail(segments)
+        self.current_mut().tx_avail(pool, segments)
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
-        self.current_mut().tx_poll(done)
-    }
-
-    fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess> {
-        self.queue.buffer_access()
+    fn tx_poll(
+        &mut self,
+        pool: &mut dyn BufferAccess,
+        done: &mut [TxId],
+    ) -> Result<usize, TxError> {
+        self.current_mut().tx_poll(pool, done)
     }
 }
 

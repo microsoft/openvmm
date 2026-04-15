@@ -69,6 +69,7 @@ impl Request<'_> {
             node: send,
             sensitivity: self.params.root.sensitivity,
             number_format: self.params.number_format,
+            parent_sensitivity: self.params.parent_sensitivity,
         }))
     }
 }
@@ -100,6 +101,7 @@ struct DeferredInner {
     depth: usize,
     node: mesh::OneshotSender<InternalNode>,
     sensitivity: SensitivityLevel,
+    parent_sensitivity: SensitivityLevel,
     number_format: NumberFormat,
 }
 
@@ -156,6 +158,7 @@ impl Deferred {
             path_start: 0,
             depth: self.0.depth,
             number_format: self.0.number_format,
+            parent_sensitivity: self.0.parent_sensitivity,
         }
     }
 

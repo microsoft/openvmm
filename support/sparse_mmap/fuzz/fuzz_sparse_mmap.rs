@@ -340,7 +340,7 @@ fn exec_action(
             let len = len_pages
                 .checked_mul(page_size)
                 .ok_or(arbitrary::Error::IncorrectFormat)?;
-            match alloc_shared_memory(len) {
+            match alloc_shared_memory(len, "fuzz") {
                 Ok(fd) => {
                     for offset in offsets {
                         match mapping.map_file(*offset, len, &fd, file_offset, writable) {

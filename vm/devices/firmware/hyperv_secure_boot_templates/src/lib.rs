@@ -47,13 +47,13 @@ macro_rules! include_templates {
 pub mod aarch64 {
     include_templates! {
         (microsoft_windows, "aarch64/MicrosoftWindows_Template.json"),
-        (microsoft_uefi_ca, "aarch64/MicrosoftUEFICertificateAuthority_Template.json"),
+        (microsoft_uefi_ca, "aarch64/MicrosoftUEFI_Template.json"),
     }
 }
 
 pub mod x64 {
     include_templates! {
         (microsoft_windows, "x64/MicrosoftWindows_Template.json"),
-        (microsoft_uefi_ca, "x64/MicrosoftUEFICertificateAuthority_Template.json"),
+        (microsoft_uefi_ca, "x64/MicrosoftUEFI_Template.json"),
     }
 }

@@ -73,6 +73,7 @@ use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use service::diagnostics::DEFAULT_LOGS_PER_PERIOD;
+use service::diagnostics::WATCHDOG_LOGS_PER_PERIOD;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
 use std::task::Context;
@@ -276,7 +277,13 @@ impl UefiDevice {
                 self.service.diagnostics.set_gpa(data)
             }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD))
+                let _ = self.process_diagnostics(
+                    false,
+                    service::diagnostics::DiagnosticsEmitter::Tracing {
+                        limit: Some(DEFAULT_LOGS_PER_PERIOD),
+                    },
+                    None,
+                );
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -284,20 +291,54 @@ impl UefiDevice {
 
     /// Extra inspection fields for the UEFI device.
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
+        const USAGE: &str =
+            "Use: inspect -u <default|info|full>,<stdout|tracing> vm/uefi/process_diagnostics";
+
         resp.field_mut_with("process_diagnostics", |v| {
-            // NOTE: Today, the inspect source code will fail if we invoke like below
-            // `inspect -u vm/uefi/process_diagnostics`. This is true, even for other
-            // mutable paths in the inspect graph.
-            if v.is_some() {
-                self.process_diagnostics(true, None);
-                Result::<_, std::convert::Infallible>::Ok(
-                    "attempted to process diagnostics through inspect".to_string(),
-                )
-            } else {
-                Result::<_, std::convert::Infallible>::Ok(
-                    "Use: inspect -u 1 vm/uefi/process_diagnostics".to_string(),
-                )
-            }
+            let output = (|| {
+                let value = v?;
+                let (level_str, dest_str) = value.split_once(',').unwrap_or((value, "stdout"));
+
+                let log_level_override = match level_str {
+                    "default" => Some(LogLevel::make_default()),
+                    "info" => Some(LogLevel::make_info()),
+                    "full" => Some(LogLevel::make_full()),
+                    _ => return None,
+                };
+
+                Some(match dest_str {
+                    "stdout" => match self.process_diagnostics(
+                        true,
+                        service::diagnostics::DiagnosticsEmitter::String,
+                        log_level_override,
+                    ) {
+                        Ok(Some(output)) if output.is_empty() => {
+                            "(no diagnostics entries found)".to_string()
+                        }
+                        Ok(Some(output)) => output,
+                        Ok(None) => unreachable!("String emitter should return output"),
+                        Err(error) => format!("error processing diagnostics: {error}"),
+                    },
+                    "tracing" => {
+                        match self.process_diagnostics(
+                            true,
+                            service::diagnostics::DiagnosticsEmitter::Tracing { limit: None },
+                            log_level_override,
+                        ) {
+                            Ok(_) => format!(
+                                "processed diagnostics via tracing \
+                                 (log_level_override: {level_str})"
+                            ),
+                            Err(error) => {
+                                format!("error processing diagnostics: {error}")
+                            }
+                        }
+                    }
+                    _ => return None,
+                })
+            })();
+
+            Result::<_, std::convert::Infallible>::Ok(output.unwrap_or_else(|| USAGE.to_string()))
         });
     }
 }
@@ -343,7 +384,15 @@ impl PollDevice for UefiDevice {
             // NOTE: Do not allow reprocessing diagnostics here.
             // UEFI programs the watchdog's configuration, so we should assume that
             // this path could trigger multiple times.
-            self.process_diagnostics(false, Some(DEFAULT_LOGS_PER_PERIOD));
+            //
+            // Here, we emit diagnostics to tracing with INFO level and no limit
+            let _ = self.process_diagnostics(
+                false,
+                service::diagnostics::DiagnosticsEmitter::Tracing {
+                    limit: Some(WATCHDOG_LOGS_PER_PERIOD),
+                },
+                Some(LogLevel::make_info()),
+            );
         }
     }
 }

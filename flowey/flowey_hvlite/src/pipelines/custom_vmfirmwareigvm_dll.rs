@@ -78,13 +78,12 @@ impl IntoPipeline for CustomVmfirmwareigvmDllCli {
                 local_only: Some(flowey_lib_hvlite::_jobs::cfg_common::LocalOnlyParams {
                     interactive: true,
                     auto_install: false,
-                    force_nuget_mono: false, // no oss nuget packages
-                    external_nuget_auth: false,
                     ignore_rust_version: true,
                 }),
                 verbose: ReadVar::from_static(false),
                 locked: false,
                 deny_warnings: false,
+                no_incremental: false,
             })
             .dep_on(
                 |ctx| flowey_lib_hvlite::_jobs::local_custom_vmfirmwareigvm_dll::Params {

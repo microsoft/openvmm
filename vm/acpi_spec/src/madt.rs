@@ -42,6 +42,7 @@ open_enum! {
         X2APIC = 0x9,
         GICC = 0xb,
         GICD = 0xc,
+        GIC_MSI_FRAME = 0xd,
     }
 }
 
@@ -235,6 +236,39 @@ impl MadtGicd {
     }
 }
 
+/// ACPI 6.5 MADT GIC MSI Frame structure (Table 5-67).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct MadtGicMsiFrame {
+    pub typ: MadtType,
+    pub length: u8,
+    pub reserved: u16,
+    pub gic_msi_frame_id: u32,
+    pub base_address: u64,
+    pub flags: u32,
+    pub spi_count: u16,
+    pub spi_base: u16,
+}
+
+const_assert_eq!(size_of::<MadtGicMsiFrame>(), 24);
+
+pub const GIC_MSI_FRAME_FLAGS_SPI_SELECT: u32 = 1 << 0;
+
+impl MadtGicMsiFrame {
+    pub fn new(gic_msi_frame_id: u32, base_address: u64, spi_base: u16, spi_count: u16) -> Self {
+        Self {
+            typ: MadtType::GIC_MSI_FRAME,
+            length: size_of::<Self>() as u8,
+            reserved: 0,
+            gic_msi_frame_id,
+            base_address,
+            flags: GIC_MSI_FRAME_FLAGS_SPI_SELECT,
+            spi_count,
+            spi_base,
+        }
+    }
+}
+
 // TODO: use LE types everywhere, as here, to avoid #[repr(packed)] and to be
 // specific about endianness (which the ACPI spec dictates is always LE).
 #[repr(C)]
@@ -263,20 +297,13 @@ pub struct MadtGicc {
 const_assert_eq!(size_of::<MadtGicc>(), 80);
 
 impl MadtGicc {
-    pub fn new(
-        acpi_processor_uid: u32,
-        mpidr: u64,
-        gicr: u64,
-        performance_monitoring_gsiv: u32,
-    ) -> Self {
+    pub fn new(acpi_processor_uid: u32, mpidr: u64) -> Self {
         Self {
             typ: MadtType::GICC,
             length: size_of::<Self>() as u8,
             flags: u32::from(MadtGiccFlags::new().with_enabled(true)).into(),
             acpi_processor_uid: acpi_processor_uid.into(),
             mpidr: mpidr.into(),
-            gicr_base_address: gicr.into(),
-            performance_monitoring_gsiv: performance_monitoring_gsiv.into(),
             ..Self::new_zeroed()
         }
     }

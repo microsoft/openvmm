@@ -2,6 +2,10 @@
 // Licensed under the MIT License.
 
 //! Resource definitions for NVMe controllers.
+//!
+//! [`NvmeControllerHandle`] configures the controller with its initial
+//! namespaces, MSI-X count, and queue limits. [`NvmeControllerRequest`] enables
+//! runtime namespace add/remove.
 
 #![forbid(unsafe_code)]
 
@@ -57,6 +61,8 @@ pub struct NvmeFaultControllerHandle {
     pub namespaces: Vec<NamespaceDefinition>,
     /// Configuration for the fault
     pub fault_config: FaultConfiguration,
+    /// Enable TDISP testing on this device when presented by a TDISP host.
+    pub enable_tdisp_tests: bool,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeFaultControllerHandle {

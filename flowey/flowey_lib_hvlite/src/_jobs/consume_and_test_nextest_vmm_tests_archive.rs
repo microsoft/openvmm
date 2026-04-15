@@ -6,6 +6,7 @@
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
+use crate::build_openvmm_vhost::OpenvmmVhostOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::build_prep_steps::PrepStepsOutput;
 use crate::build_test_igvm_agent_rpc_server::TestIgvmAgentRpcServerOutput;
@@ -22,6 +23,7 @@ use vmm_test_images::KnownTestArtifacts;
 #[derive(Serialize, Deserialize)]
 pub struct VmmTestsDepArtifacts {
     pub openvmm: Option<ReadVar<OpenvmmOutput>>,
+    pub openvmm_vhost: Option<ReadVar<OpenvmmVhostOutput>>,
     pub pipette_windows: Option<ReadVar<PipetteOutput>>,
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
@@ -105,6 +107,7 @@ impl SimpleFlowNode for Node {
 
         let VmmTestsDepArtifacts {
             openvmm: register_openvmm,
+            openvmm_vhost: register_openvmm_vhost,
             pipette_windows: register_pipette_windows,
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
@@ -133,8 +136,8 @@ impl SimpleFlowNode for Node {
         let disk_images_dir =
             ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
-        ctx.req(crate::install_vmm_tests_deps::Request::Select(
-            match target.operating_system {
+        ctx.config(crate::install_vmm_tests_deps::Config {
+            selections: Some(match target.operating_system {
                 target_lexicon::OperatingSystem::Windows => VmmTestsDepSelections::Windows {
                     hyperv: true,
                     whp: true,
@@ -142,8 +145,9 @@ impl SimpleFlowNode for Node {
                 },
                 target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                 os => anyhow::bail!("unsupported target operating system: {os}"),
-            },
-        ));
+            }),
+            auto_install: None,
+        });
 
         let arch = match target.architecture {
             target_lexicon::Architecture::X86_64 => {
@@ -175,6 +179,7 @@ impl SimpleFlowNode for Node {
             test_content_dir,
             vmm_tests_target: target.clone(),
             register_openvmm,
+            register_openvmm_vhost,
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,

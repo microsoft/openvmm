@@ -321,6 +321,7 @@ impl Session {
                     mapper.clear();
                 }
                 self.destroy();
+                sender.send_empty(request.unique())?;
             }
             FuseOperation::Ioctl { arg, data } => {
                 let out = self.fs.ioctl(&request, arg, data)?;

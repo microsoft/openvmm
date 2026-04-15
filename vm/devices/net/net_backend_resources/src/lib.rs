@@ -72,6 +72,7 @@ pub mod dio {
 }
 
 /// Linux TAP backend.
+#[cfg(target_os = "linux")]
 pub mod tap {
     use mesh::MeshPayload;
     use vm_resource::ResourceId;
@@ -80,10 +81,9 @@ pub mod tap {
     /// A handle to a TAP device.
     #[derive(MeshPayload)]
     pub struct TapHandle {
-        /// The name of the TAP device.
-        ///
-        /// FUTURE: change this to a pre-opened `File`.
-        pub name: String,
+        /// A pre-opened TAP file descriptor, configured with
+        /// `IFF_TAP | IFF_NO_PI | IFF_VNET_HDR`.
+        pub fd: std::os::fd::OwnedFd,
     }
 
     impl ResourceId<NetEndpointHandleKind> for TapHandle {

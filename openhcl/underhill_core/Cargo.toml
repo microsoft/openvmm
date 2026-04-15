@@ -9,13 +9,14 @@ rust-version.workspace = true
 [features]
 # Enable profiler support
 profiler = ["dep:profiler_worker", "diag_server/profiler"]
+# Enable profiler tracing (heap profiling) support
+mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-tracing"]
 
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["underhill_attestation/openssl-vendored"]
+# Enable TIO support for SEV-SNP
+dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 
 # Enable VPCI device support
 vpci = []
@@ -28,6 +29,7 @@ vmotherboard = { workspace = true, features = [
 ] }
 build_info.workspace = true
 cvm_tracing.workspace = true
+mem_profile_tracing = { workspace = true, optional = true }
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
@@ -69,7 +71,6 @@ kmsg_defs.workspace = true
 kmsg_writer.workspace = true
 hcl.workspace = true
 mana_driver.workspace = true
-mcr_resources.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 net_packet_capture.workspace = true
@@ -118,7 +119,6 @@ watchdog_core.workspace = true
 watchdog_vmgs_format.workspace = true
 scsi_buffers.workspace = true
 
-aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 hvdef.workspace = true
 igvm.workspace = true
@@ -130,8 +130,8 @@ vm_topology.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
-vmgs = { workspace = true, features = ["encryption_ossl", "save_restore"] }
-vmgs_broker = { workspace = true, features = ["encryption_ossl"] }
+vmgs = { workspace = true, features = ["encryption", "save_restore"] }
+vmgs_broker = { workspace = true, features = ["encryption"] }
 vmgs_format.workspace = true
 vmgs_resources.workspace = true
 x86defs.workspace = true
@@ -139,6 +139,7 @@ x86defs.workspace = true
 safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
+crypto = { workspace = true, features = ["vendored"] }
 inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
@@ -166,6 +167,7 @@ fs-err.workspace = true
 futures-concurrency.workspace = true
 futures.workspace = true
 getrandom.workspace = true
+jiff.workspace = true
 libc.workspace = true
 parking_lot.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -173,11 +175,14 @@ serde_helpers.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 socket2.workspace = true
 thiserror = { workspace = true, features = ["std"] }
-time = { workspace = true, features = ["macros"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
-[target.'cfg(target_arch = "x86_64")'.dependencies]
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+aarch64defs.workspace = true
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 firmware_pcat.workspace = true
 
 [dev-dependencies]
@@ -190,3 +195,7 @@ build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

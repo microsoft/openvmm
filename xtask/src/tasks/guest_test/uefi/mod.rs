@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use crate::Xtask;
+use crate::shell::XtaskShell;
 use clap::Parser;
 use std::path::Path;
 use std::path::PathBuf;
-use xshell::cmd;
 
 mod gpt_efi_disk;
 
@@ -47,12 +47,16 @@ impl Xtask for Uefi {
             if let Some(bootx64) = bootx64 {
                 files.push((Path::new("efi/boot/bootx64.efi"), bootx64.as_path()));
             } else {
-                let sh = xshell::Shell::new()?;
-                cmd!(
-                    sh,
-                    "cargo build -p guest_test_uefi --target x86_64-unknown-uefi"
-                )
-                .run()?;
+                let sh = XtaskShell::new()?;
+                sh.cmd("cargo")
+                    .args([
+                        "build",
+                        "-p",
+                        "guest_test_uefi",
+                        "--target",
+                        "x86_64-unknown-uefi",
+                    ])
+                    .run()?;
 
                 files.push((
                     Path::new("efi/boot/bootx64.efi"),
@@ -65,12 +69,16 @@ impl Xtask for Uefi {
             if let Some(bootaa64) = bootaa64 {
                 files.push((Path::new("efi/boot/bootaa64.efi"), bootaa64.as_path()))
             } else {
-                let sh = xshell::Shell::new()?;
-                cmd!(
-                    sh,
-                    "cargo build -p guest_test_uefi --target aarch64-unknown-uefi"
-                )
-                .run()?;
+                let sh = XtaskShell::new()?;
+                sh.cmd("cargo")
+                    .args([
+                        "build",
+                        "-p",
+                        "guest_test_uefi",
+                        "--target",
+                        "aarch64-unknown-uefi",
+                    ])
+                    .run()?;
 
                 files.push((
                     Path::new("efi/boot/bootaa64.efi"),

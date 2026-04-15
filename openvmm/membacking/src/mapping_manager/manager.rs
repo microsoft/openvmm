@@ -13,6 +13,8 @@ use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
 use futures::StreamExt;
 use futures::future::join_all;
+use guestmem::ProvideShareableRegions;
+use guestmem::ShareableRegion;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
@@ -35,7 +37,11 @@ pub struct MappingManager {
 
 impl MappingManager {
     /// Returns a new mapping manager that can map addresses up to `max_addr`.
-    pub fn new(spawn: impl Spawn, max_addr: u64) -> Self {
+    ///
+    /// If `private_ram` is true, mappers created from this manager will use
+    /// anonymous private memory for guest RAM instead of shared file-backed
+    /// memory.
+    pub fn new(spawn: impl Spawn, max_addr: u64, private_ram: bool) -> Self {
         let (req_send, mut req_recv) = mesh::mpsc_channel();
         spawn
             .spawn("mapping_manager", {
@@ -50,6 +56,7 @@ impl MappingManager {
                 id: ObjectId::new(),
                 req_send,
                 max_addr,
+                private_ram,
             },
         }
     }
@@ -67,6 +74,7 @@ pub struct MappingManagerClient {
     req_send: mesh::Sender<MappingRequest>,
     id: ObjectId,
     max_addr: u64,
+    private_ram: bool,
 }
 
 static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
@@ -74,13 +82,16 @@ static MAPPER_CACHE: ObjectCache<VaMapper> = ObjectCache::new();
 impl MappingManagerClient {
     /// Returns a VA mapper for this guest memory.
     ///
-    /// This will single instance the mapper, so this is safe to call multiple times.
+    /// This will single instance the mapper, so this is safe to call multiple
+    /// times. If `private_ram` was set when creating the [`MappingManager`],
+    /// the mapper will use anonymous private memory for guest RAM.
     pub async fn new_mapper(&self) -> Result<Arc<VaMapper>, VaMapperError> {
         // Get the VA mapper from the mapper cache if possible to avoid keeping
         // multiple VA ranges for this memory per process.
+        let private_ram = self.private_ram;
         MAPPER_CACHE
             .get_or_insert_with(&self.id, async {
-                VaMapper::new(self.req_send.clone(), self.max_addr, None).await
+                VaMapper::new(self.req_send.clone(), self.max_addr, None, private_ram).await
             })
             .await
     }
@@ -89,12 +100,19 @@ impl MappingManagerClient {
     /// address space of `process`.
     ///
     /// Each call will allocate a new unique mapper.
+    ///
+    /// Returns an error if private memory mode is enabled, since private
+    /// anonymous pages would be committed in the remote process and not
+    /// accessible locally.
     pub async fn new_remote_mapper(
         &self,
         process: RemoteProcess,
     ) -> Result<Arc<VaMapper>, VaMapperError> {
+        if self.private_ram {
+            return Err(VaMapperError::RemoteWithPrivateMemory);
+        }
         Ok(Arc::new(
-            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process)).await?,
+            VaMapper::new(self.req_send.clone(), self.max_addr, Some(process), false).await?,
         ))
     }
 
@@ -103,20 +121,7 @@ impl MappingManagerClient {
     /// TODO: currently this will panic if the mapping overlaps an existing
     /// mapping. This needs to be fixed to allow this to overlap existing
     /// mappings, in which case the old ones will be split and replaced.
-    pub async fn add_mapping(
-        &self,
-        range: MemoryRange,
-        mappable: Mappable,
-        file_offset: u64,
-        writable: bool,
-    ) {
-        let params = MappingParams {
-            range,
-            mappable,
-            file_offset,
-            writable,
-        };
-
+    pub async fn add_mapping(&self, params: MappingParams) {
         self.req_send
             .call(MappingRequest::AddMapping, params)
             .await
@@ -142,6 +147,8 @@ pub enum MappingRequest {
     SendMappings(MapperId, MemoryRange),
     AddMapping(Rpc<MappingParams, ()>),
     RemoveMappings(Rpc<MemoryRange, ()>),
+    /// Returns all mappings that have `dma_target` set.
+    GetDmaTargetMappings(Rpc<(), Vec<MappingParams>>),
     Inspect(inspect::Deferred),
 }
 
@@ -162,6 +169,7 @@ fn inspect_mappings(mappings: &Vec<Mapping>) -> impl '_ + Inspect {
                 inspect::adhoc(|req| {
                     req.respond()
                         .field("writable", mapping.params.writable)
+                        .field("dma_target", mapping.params.dma_target)
                         .hex("file_offset", mapping.params.file_offset);
                 }),
             );
@@ -185,6 +193,12 @@ pub struct MappingParams {
     pub file_offset: u64,
     /// Whether to map the memory as writable.
     pub writable: bool,
+    /// Whether this mapping is a DMA target (guest RAM or similar).
+    ///
+    /// DMA-target mappings are exposed via [`GuestMemorySharing`](guestmem::GuestMemorySharing) so
+    /// that external consumers (vhost-user backends, etc.) can share the
+    /// backing memory.
+    pub dma_target: bool,
 }
 
 struct Mappers {
@@ -236,6 +250,9 @@ impl MappingManagerTask {
                 MappingRequest::RemoveMappings(rpc) => {
                     rpc.handle(async |range| self.remove_mappings(range).await)
                         .await
+                }
+                MappingRequest::GetDmaTargetMappings(rpc) => {
+                    rpc.handle_sync(|()| self.get_dma_target_mappings())
                 }
                 MappingRequest::Inspect(deferred) => deferred.inspect(&mut *self),
             }
@@ -306,6 +323,14 @@ impl MappingManagerTask {
         });
     }
 
+    fn get_dma_target_mappings(&self) -> Vec<MappingParams> {
+        self.mappings
+            .iter()
+            .filter(|m| m.params.dma_target)
+            .map(|m| m.params.clone())
+            .collect()
+    }
+
     async fn remove_mappings(&mut self, range: MemoryRange) {
         let mut mappers = Vec::new();
         self.mappings.retain_mut(|mapping| {
@@ -342,5 +367,108 @@ impl Mappers {
             }
         }))
         .await;
+    }
+}
+
+/// Implements [`ProvideShareableRegions`] by querying the
+/// [`MappingManager`] for DMA-target mappings. Used by `VaMapper`'s
+/// `sharing()` implementation.
+pub(crate) struct DmaRegionProvider {
+    pub req_send: mesh::Sender<MappingRequest>,
+}
+
+impl ProvideShareableRegions for DmaRegionProvider {
+    async fn get_regions(&self) -> Result<Vec<ShareableRegion>, guestmem::ShareableRegionError> {
+        let mappings = self
+            .req_send
+            .call(MappingRequest::GetDmaTargetMappings, ())
+            .await?;
+
+        Ok(mappings
+            .into_iter()
+            .map(|m| ShareableRegion {
+                guest_address: m.range.start(),
+                size: m.range.len(),
+                file: m.mappable.inner_arc(),
+                file_offset: m.file_offset,
+            })
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guestmem::ProvideShareableRegions;
+    use memory_range::MemoryRange;
+
+    #[pal_async::async_test]
+    async fn test_dma_target_regions_returned(spawn: impl Spawn) {
+        let mm = MappingManager::new(&spawn, 0x200000, false);
+        let client = mm.client().clone();
+
+        let ram: Mappable = sparse_mmap::alloc_shared_memory(0x100000, "test-ram")
+            .unwrap()
+            .into();
+        let device: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test-dev")
+            .unwrap()
+            .into();
+
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x100000),
+                mappable: ram,
+                file_offset: 0,
+                writable: true,
+                dma_target: true,
+            })
+            .await;
+
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0x100000..0x101000),
+                mappable: device,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+            })
+            .await;
+
+        let provider = DmaRegionProvider {
+            req_send: client.req_send.clone(),
+        };
+        let regions = provider.get_regions().await.unwrap();
+
+        // Only the DMA-target mapping should appear.
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].guest_address, 0);
+        assert_eq!(regions[0].size, 0x100000);
+        assert_eq!(regions[0].file_offset, 0);
+    }
+
+    #[pal_async::async_test]
+    async fn test_no_dma_targets_returns_empty(spawn: impl Spawn) {
+        let mm = MappingManager::new(&spawn, 0x100000, false);
+        let client = mm.client().clone();
+
+        let mappable: Mappable = sparse_mmap::alloc_shared_memory(0x1000, "test")
+            .unwrap()
+            .into();
+
+        client
+            .add_mapping(MappingParams {
+                range: MemoryRange::new(0..0x1000),
+                mappable,
+                file_offset: 0,
+                writable: true,
+                dma_target: false,
+            })
+            .await;
+
+        let provider = DmaRegionProvider {
+            req_send: client.req_send.clone(),
+        };
+        let regions = provider.get_regions().await.unwrap();
+        assert!(regions.is_empty());
     }
 }
