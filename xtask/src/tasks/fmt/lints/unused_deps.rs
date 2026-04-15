@@ -317,15 +317,9 @@ fn remove_from_deps(doc: &mut DocumentMut, dep_name: &str, is_workspace: bool) {
 /// Remove a name from the `ignored` metadata array
 fn remove_from_ignored(doc: &mut DocumentMut, dep_name: &str, is_workspace: bool) {
     let top_key = if is_workspace { "workspace" } else { "package" };
-    let ignored_array = doc
-        .get_mut(top_key)
-        .and_then(|w| w.get_mut("metadata"))
-        .and_then(|m| m.get_mut("xtask"))
-        .and_then(|x| x.get_mut("unused-deps"))
-        .and_then(|u| u.get_mut("ignored"))
-        .and_then(|i| i.as_array_mut())
+    let ignored_array = doc[top_key]["metadata"]["xtask"]["unused-deps"]["ignored"]
+        .as_array_mut()
         .unwrap();
-
     ignored_array.retain(|v| v.as_str() != Some(dep_name));
 }
 
