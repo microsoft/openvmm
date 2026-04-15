@@ -2192,39 +2192,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_file_disk_with_create() {
-        let s = "file:test.vhd;create=1G";
-        let disk = DiskCliKind::from_str(s).unwrap();
+    fn test_parse_file_opts() {
+        // file: prefix with create
+        let disk = DiskCliKind::from_str("file:test.vhd;create=1G").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: false }
+                if *path == PathBuf::from("test.vhd") && *len == 1024 * 1024 * 1024
+        ));
 
-        match disk {
-            DiskCliKind::File {
-                path,
-                create_with_len,
-                ..
-            } => {
-                assert_eq!(path, PathBuf::from("test.vhd"));
-                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
-            }
-            _ => panic!("Expected File variant"),
-        }
-    }
+        // bare path with create (no file: prefix)
+        let disk = DiskCliKind::from_str("test.vhd;create=1G").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: false }
+                if *path == PathBuf::from("test.vhd") && *len == 1024 * 1024 * 1024
+        ));
 
-    #[test]
-    fn test_parse_direct_file_with_create() {
-        let s = "test.vhd;create=1G";
-        let disk = DiskCliKind::from_str(s).unwrap();
+        // direct flag
+        let disk = DiskCliKind::from_str("file:/dev/sdb;direct").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: None, direct: true }
+                if *path == PathBuf::from("/dev/sdb")
+        ));
 
-        match disk {
-            DiskCliKind::File {
-                path,
-                create_with_len,
-                ..
-            } => {
-                assert_eq!(path, PathBuf::from("test.vhd"));
-                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
-            }
-            _ => panic!("Expected File variant"),
-        }
+        // direct + create in either order
+        let disk = DiskCliKind::from_str("file:disk.img;direct;create=1G").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: true }
+                if *path == PathBuf::from("disk.img") && *len == 1024 * 1024 * 1024
+        ));
+
+        let disk = DiskCliKind::from_str("file:disk.img;create=1G;direct").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: Some(len), direct: true }
+                if *path == PathBuf::from("disk.img") && *len == 1024 * 1024 * 1024
+        ));
+
+        // plain path, no options
+        let disk = DiskCliKind::from_str("file:disk.img").unwrap();
+        assert!(matches!(
+            &disk,
+            DiskCliKind::File { path, create_with_len: None, direct: false }
+                if *path == PathBuf::from("disk.img")
+        ));
+
+        // invalid option rejected
+        assert!(DiskCliKind::from_str("file:disk.img;bogus").is_err());
+
+        // direct rejected for sql disks
+        assert!(DiskCliKind::from_str("sql:db.sqlite;direct").is_err());
     }
 
     #[test]
