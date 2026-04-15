@@ -135,9 +135,19 @@ impl Lint for UnusedDeps {
     }
 
     fn visit_file(&mut self, content: &mut Lintable<String>) {
+        if self.crate_found_deps.len() == self.crate_deps.len() {
+            return;
+        }
+
         let unfound = self.crate_deps.difference(&self.crate_found_deps);
         let mut found = Vec::new();
         for looking in unfound {
+            let needle = looking.replace('-', "_");
+            // Fast rejection: if the identifier doesn't appear at all, the regex can't match.
+            if !content.contains(&needle) {
+                continue;
+            }
+            // ... run regex only for candidates that pass the pre-filter
             let mut sink = StopAfterFirstMatch::new();
             self.searcher
                 .search_slice(
