@@ -35,8 +35,7 @@ use mesh::MeshPayload;
 use nvme::check_nvme_status;
 use nvme_spec::nvm;
 use pal::unix::affinity;
-use pal_uring::Initiate;
-use pal_uring::IoInitiator;
+use pal_async::driver::Driver;
 use scsi_buffers::BounceBufferTracker;
 use scsi_buffers::RequestBuffers;
 use std::fmt::Debug;
@@ -59,7 +58,6 @@ use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 
 pub struct BlockDeviceResolver {
-    uring: Arc<dyn Initiate>,
     uevent_listener: Option<Arc<UeventListener>>,
     bounce_buffer_tracker: Arc<BounceBufferTracker>,
     always_bounce: bool,
@@ -67,13 +65,11 @@ pub struct BlockDeviceResolver {
 
 impl BlockDeviceResolver {
     pub fn new(
-        uring: Arc<dyn Initiate>,
         uevent_listener: Option<Arc<UeventListener>>,
         bounce_buffer_tracker: Arc<BounceBufferTracker>,
         always_bounce: bool,
     ) -> Self {
         Self {
-            uring,
             uevent_listener,
             bounce_buffer_tracker,
             always_bounce,
@@ -112,7 +108,7 @@ impl AsyncResolveResource<DiskHandleKind, OpenBlockDeviceConfig> for BlockDevice
         let disk = BlockDevice::new(
             rsrc.file,
             input.read_only,
-            self.uring.clone(),
+            input.driver_source.simple(),
             self.uevent_listener.as_deref(),
             self.bounce_buffer_tracker.clone(),
             self.always_bounce,
@@ -147,7 +143,7 @@ pub struct BlockDevice {
     optimal_unmap_sectors: u32,
     read_only: bool,
     #[inspect(skip)]
-    uring: Arc<dyn Initiate>,
+    driver: Box<dyn Driver>,
     #[inspect(flatten)]
     device_type: DeviceType,
     supports_pr: bool,
@@ -232,6 +228,8 @@ pub enum NewDeviceError {
     InvalidFileType,
     #[error("invalid disk size {0:#x}")]
     InvalidDiskSize(u64),
+    #[error("driver does not support io-uring")]
+    NoIoUring,
 }
 
 impl BlockDevice {
@@ -240,22 +238,22 @@ impl BlockDevice {
     /// # Arguments
     /// * `file` - The backing device opened for raw access.
     /// * `read_only` - Indicates whether the device is opened for read-only access.
-    /// * `uring` - The IO uring to use for issuing IOs.
+    /// * `driver` - The async driver to use for issuing IOs (must support io-uring).
     /// * `always_bounce` - Whether to always use bounce buffers for IOs, even for those that are aligned.
     pub async fn new(
         file: fs::File,
         read_only: bool,
-        uring: Arc<dyn Initiate>,
+        driver: impl Driver,
         uevent_listener: Option<&UeventListener>,
         bounce_buffer_tracker: Arc<BounceBufferTracker>,
         always_bounce: bool,
     ) -> Result<BlockDevice, NewDeviceError> {
-        let initiator = uring.initiator();
-        assert!(initiator.probe(opcode::Read::CODE));
-        assert!(initiator.probe(opcode::Write::CODE));
-        assert!(initiator.probe(opcode::Readv::CODE));
-        assert!(initiator.probe(opcode::Writev::CODE));
-        assert!(initiator.probe(opcode::Fsync::CODE));
+        let uring = driver.io_uring_submit().ok_or(NewDeviceError::NoIoUring)?;
+        assert!(uring.probe(opcode::Read::CODE));
+        assert!(uring.probe(opcode::Write::CODE));
+        assert!(uring.probe(opcode::Readv::CODE));
+        assert!(uring.probe(opcode::Writev::CODE));
+        assert!(uring.probe(opcode::Fsync::CODE));
 
         let metadata = file.metadata().map_err(DiskError::Io)?;
 
@@ -304,7 +302,7 @@ impl BlockDevice {
             sector_count: sector_count.into(),
             optimal_unmap_sectors: unmap_granularity,
             read_only,
-            uring,
+            driver: Box::new(driver),
             device_type: devmeta.device_type,
             supports_pr: devmeta.supports_pr,
             supports_fua: devmeta.fua,
@@ -318,8 +316,10 @@ impl BlockDevice {
         Ok(device)
     }
 
-    fn initiator(&self) -> &IoInitiator {
-        self.uring.initiator()
+    fn uring(&self) -> &dyn pal_async::io_uring::IoUringSubmit {
+        self.driver
+            .io_uring_submit()
+            .expect("driver does not support io-uring")
     }
 
     fn handle_resize(&self) {
@@ -570,23 +570,23 @@ impl DiskIo for BlockDevice {
                 .io_vecs()
         };
 
-        // SAFETY: the buffers for the IO are this stack, and they will be
-        // kept alive for the duration of the IO since we immediately call
-        // await on the IO.
-        let (r, _) = unsafe {
-            self.initiator().issue_io((), |_| {
+        // SAFETY: `io_vecs` and the underlying locked pages are locals
+        // in this `async fn`--they are part of the same state machine as
+        // the returned future and will not be freed before it completes
+        // or is dropped (which aborts).
+        let bytes_read = unsafe {
+            self.uring().submit(
                 opcode::Readv::new(
                     types::Fd(self.file.as_raw_fd()),
                     io_vecs.as_ptr().cast(),
                     io_vecs.len() as u32,
                 )
                 .offset((sector * self.sector_size() as u64) as _)
-                .build()
-            })
+                .build(),
+            )
         }
-        .await;
-
-        let bytes_read = r.map_err(|err| self.map_io_error(err))?;
+        .await
+        .map_err(|err| self.map_io_error(err))?;
         tracing::trace!(bytes_read, "read_vectored");
         if bytes_read != io_size as i32 {
             return Err(DiskError::IllegalBlock);
@@ -632,11 +632,12 @@ impl DiskIo for BlockDevice {
             bounce_buffer.buffer.io_vecs()
         };
 
-        // SAFETY: the buffers for the IO are this stack, and they will be
-        // kept alive for the duration of the IO since we immediately call
-        // await on the IO.
-        let (r, _) = unsafe {
-            self.initiator().issue_io((), |_| {
+        // SAFETY: `io_vecs` and the underlying locked pages are locals
+        // in this `async fn`--they are part of the same state machine as
+        // the returned future and will not be freed before it completes
+        // or is dropped (which aborts).
+        let bytes_written = unsafe {
+            self.uring().submit(
                 opcode::Writev::new(
                     types::Fd(self.file.as_raw_fd()),
                     io_vecs.as_ptr().cast::<libc::iovec>(),
@@ -644,12 +645,11 @@ impl DiskIo for BlockDevice {
                 )
                 .offset((sector * self.sector_size() as u64) as _)
                 .rw_flags(if fua { libc::RWF_DSYNC } else { 0 })
-                .build()
-            })
+                .build(),
+            )
         }
-        .await;
-
-        let bytes_written = r.map_err(|err| self.map_io_error(err))?;
+        .await
+        .map_err(|err| self.map_io_error(err))?;
         tracing::trace!(bytes_written, "write_vectored");
         if bytes_written != io_size as i32 {
             return Err(DiskError::IllegalBlock);
@@ -661,14 +661,11 @@ impl DiskIo for BlockDevice {
     async fn sync_cache(&self) -> Result<(), DiskError> {
         // SAFETY: No data buffers.
         unsafe {
-            self.initiator()
-                .issue_io((), |_| {
-                    opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build()
-                })
-                .await
-                .0
-                .map_err(|err| self.map_io_error(err))?;
+            self.uring()
+                .submit(opcode::Fsync::new(types::Fd(self.file.as_raw_fd())).build())
         }
+        .await
+        .map_err(|err| self.map_io_error(err))?;
         Ok(())
     }
 
@@ -827,6 +824,7 @@ mod tests {
     use once_cell::sync::OnceCell;
     use pal_async::async_test;
     use pal_uring::IoUringPool;
+    use pal_uring::PoolClient;
     use scsi_buffers::OwnedRequestBuffers;
 
     fn is_buggy_kernel() -> bool {
@@ -845,14 +843,14 @@ mod tests {
 
     fn new_block_device() -> Result<BlockDevice, NewDeviceError> {
         // TODO: switch to std::sync::OnceLock once `get_or_try_init` is stable
-        static POOL: OnceCell<Arc<IoInitiator>> = OnceCell::new();
+        static POOL: OnceCell<PoolClient> = OnceCell::new();
 
-        let initiator = POOL
+        let client = POOL
             .get_or_try_init(|| {
                 let pool = IoUringPool::new("test", 16)?;
-                let initiator = pool.client().initiator().clone();
+                let client = pool.client().clone();
                 std::thread::spawn(|| pool.run());
-                Ok(Arc::new(initiator))
+                Ok(client)
             })
             .map_err(|err| NewDeviceError::IoctlError(DiskError::Io(err)))?;
 
@@ -866,7 +864,7 @@ mod tests {
         block_on(BlockDevice::new(
             test_file.try_clone().unwrap(),
             false,
-            initiator.clone(),
+            client.initiator().clone(),
             None,
             bounce_buffer_tracker,
             false,

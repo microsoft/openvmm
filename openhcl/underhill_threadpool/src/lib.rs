@@ -8,13 +8,17 @@
 //!
 //! This is built on top of [`pal_uring`] and [`pal_async`].
 
-#![forbid(unsafe_code)]
+// UNSAFETY: Implementing the `IoUringSubmit` trait, which has an `unsafe fn`
+// method signature. The implementation delegates to `IoInitiator` which
+// handles the actual unsafe io-uring interaction.
+#![expect(unsafe_code)]
 
 use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
 use loan_cell::LoanCell;
 use pal::unix::affinity::CpuSet;
 use pal_async::fd::FdReadyDriver;
+use pal_async::io_uring::IoUringSubmit;
 use pal_async::task::Runnable;
 use pal_async::task::Schedule;
 use pal_async::task::Spawn;
@@ -358,6 +362,20 @@ impl Initiate for AffinitizedThreadpool {
     }
 }
 
+impl IoUringSubmit for AffinitizedThreadpool {
+    fn probe(&self, opcode: u8) -> bool {
+        self.current_driver().initiator().probe(opcode)
+    }
+
+    unsafe fn submit(
+        &self,
+        sqe: io_uring::squeue::Entry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
+        // SAFETY: caller guarantees the SQE references valid memory.
+        unsafe { self.current_driver().initiator().submit(sqe) }
+    }
+}
+
 /// The state for the thread pool thread for the currently running CPU.
 #[derive(Debug, Copy, Clone)]
 pub struct Thread {
@@ -651,6 +669,12 @@ impl TimerDriver for ThreadpoolDriver {
     }
 }
 
+impl pal_async::driver::IoUringDriver for ThreadpoolDriver {
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+        Some(self.client(None).initiator())
+    }
+}
+
 /// A driver for [`AffinitizedThreadpool`] that can be retargeted to different
 /// CPUs.
 #[derive(Debug, Clone)]
@@ -744,5 +768,11 @@ impl TimerDriver for RetargetableDriver {
 
     fn new_timer(&self) -> Self::Timer {
         Timer::new(self.clone())
+    }
+}
+
+impl pal_async::driver::IoUringDriver for RetargetableDriver {
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+        Some(self.inner.current_driver().initiator())
     }
 }

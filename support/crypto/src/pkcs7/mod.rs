@@ -37,6 +37,21 @@ impl Pkcs7SignedData {
         sys::Pkcs7SignedDataInner::from_der(data).map(Self)
     }
 
+    /// Encode this PKCS#7 object as DER bytes.
+    pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
+        self.0.to_der()
+    }
+
+    /// Creates a PKCS#7 signed-data object by signing `data` with the given
+    /// certificate and key pair.
+    pub fn sign(
+        cert: &super::x509::X509Certificate,
+        key_pair: &super::rsa::RsaKeyPair,
+        data: &[u8],
+    ) -> Result<Self, Pkcs7Error> {
+        sys::Pkcs7SignedDataInner::sign(cert, key_pair, data).map(Self)
+    }
+
     /// Verifies signed data against a trusted certificate store.
     ///
     /// Consumes the store, since the backend may need to finalize it.

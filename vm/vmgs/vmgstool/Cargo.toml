@@ -10,7 +10,7 @@ rust-version.workspace = true
 [features]
 default = []
 
-encryption = ["vmgs/encryption"]
+encryption = ["vmgs/encryption", "crypto/vendored"]
 
 test_helpers = ["vmgs/test_helpers", "getrandom", "dep:resource_dll_parser"]
 
@@ -32,6 +32,7 @@ vmgs_format.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 clap = { workspace = true, features = ["derive"] }
+crypto = { workspace = true, optional = true }
 hex.workspace = true
 fs-err.workspace = true
 getrandom = { workspace = true, optional = true}
@@ -48,3 +49,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

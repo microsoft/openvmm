@@ -1874,11 +1874,11 @@ pub fn extract_helper<T: RegisterName>(_: T, value: &abi::WHV_REGISTER_VALUE) ->
 #[macro_export]
 macro_rules! set_registers {
     ($vp:expr, [$(($name:expr, $value:expr)),+ $(,)? ] $(,)? ) => {
+        #[expect(clippy::allow_attributes)]
+        #[allow(unused_parens)]
         {
             let names = [$($crate::RegisterName::as_abi(&($name))),+];
-            #[allow(unused_parens)]
             let values = [$($crate::inject_helper(($name), &($value))),+];
-            #[allow(unused_parens)]
             ($vp).set_registers(&names, &values)
         }
     }
@@ -1892,6 +1892,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
+                #[expect(clippy::allow_attributes)]
                 #[allow(unused_assignments)]
                 ($({
                     let n = $name;

@@ -110,9 +110,8 @@ use vm_topology::pcie::PcieHostBridge;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
-use vm_topology::processor::aarch64::Aarch64PlatformConfig;
 use vm_topology::processor::aarch64::Aarch64Topology;
-use vm_topology::processor::aarch64::GicV2mInfo;
+use vm_topology::processor::aarch64::GicVersion;
 use vm_topology::processor::x86::X86Topology;
 use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::HvsockRelayChannel;
@@ -144,6 +143,7 @@ use vmotherboard::ChipsetDevices;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
@@ -192,6 +192,7 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            chipset_capabilities: config.chipset_capabilities,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -239,6 +240,7 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    chipset_capabilities: VmChipsetCapabilities,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -396,7 +398,10 @@ pub(crate) struct InitializedVm {
 }
 
 trait BuildTopology<T: ArchTopology + Inspect> {
-    fn to_topology(&self, platform_gsiv: Option<u32>) -> anyhow::Result<ProcessorTopology<T>>;
+    fn to_topology(
+        &self,
+        platform_info: &virt::PlatformInfo,
+    ) -> anyhow::Result<ProcessorTopology<T>>;
 }
 
 trait ExtractTopologyConfig {
@@ -427,7 +432,7 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
 impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
     fn to_topology(
         &self,
-        _platform_gsiv: Option<u32>,
+        _platform_info: &virt::PlatformInfo,
     ) -> anyhow::Result<ProcessorTopology<X86Topology>> {
         use vm_topology::processor::x86::X2ApicState;
 
@@ -465,9 +470,19 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
             vps_per_socket: Some(self.reserved_vps_per_socket()),
             enable_smt: Some(self.smt_enabled()),
             arch: Some(ArchTopologyConfig::Aarch64(Aarch64TopologyConfig {
-                gic_config: Some(GicConfig {
-                    gic_distributor_base: self.gic_distributor_base(),
-                    gic_redistributors_base: self.gic_redistributors_base(),
+                gic_config: Some(match self.gic_version() {
+                    GicVersion::V3 {
+                        redistributors_base,
+                    } => GicConfig::V3(Some(openvmm_defs::config::GicV3Config {
+                        gic_distributor_base: self.gic_distributor_base(),
+                        gic_redistributors_base: redistributors_base,
+                    })),
+                    GicVersion::V2 { cpu_interface_base } => {
+                        GicConfig::V2(Some(openvmm_defs::config::GicV2Config {
+                            gic_distributor_base: self.gic_distributor_base(),
+                            cpu_interface_base,
+                        }))
+                    }
                 }),
                 pmu_gsiv: match self.pmu_gsiv() {
                     Some(gsiv) => PmuGsivConfig::Gsiv(gsiv),
@@ -478,11 +493,15 @@ impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
     }
 }
 
+#[cfg(guest_arch = "aarch64")]
 impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
     fn to_topology(
         &self,
-        platform_gsiv: Option<u32>,
+        platform_info: &virt::PlatformInfo,
     ) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
+        use vm_topology::processor::aarch64::Aarch64PlatformConfig;
+        use vm_topology::processor::aarch64::GicV2mInfo;
+
         let arch = match &self.arch {
             None => Default::default(),
             Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
@@ -496,7 +515,7 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
         let pmu_gsiv = match arch.pmu_gsiv {
             PmuGsivConfig::Disabled => None,
             PmuGsivConfig::Gsiv(gsiv) => Some(gsiv),
-            PmuGsivConfig::Platform => platform_gsiv,
+            PmuGsivConfig::Platform => platform_info.platform_gsiv,
         };
 
         // TODO: When this value is supported on all platforms, we should change
@@ -506,22 +525,69 @@ impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
             tracing::warn!("PMU GSIV is not set");
         }
 
-        let platform = if let Some(gic_config) = &arch.gic_config {
-            Aarch64PlatformConfig {
-                gic_distributor_base: gic_config.gic_distributor_base,
-                gic_redistributors_base: gic_config.gic_redistributors_base,
-                gic_v2m,
-                pmu_gsiv,
-                virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+        let (gic_distributor_base, gic_version) = match &arch.gic_config {
+            Some(GicConfig::V3(config)) => {
+                let dist = config
+                    .as_ref()
+                    .map(|c| c.gic_distributor_base)
+                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+                let redist = config
+                    .as_ref()
+                    .map(|c| c.gic_redistributors_base)
+                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+                (
+                    dist,
+                    GicVersion::V3 {
+                        redistributors_base: redist,
+                    },
+                )
             }
-        } else {
-            Aarch64PlatformConfig {
-                gic_distributor_base: openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE,
-                gic_redistributors_base: openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE,
-                gic_v2m,
-                pmu_gsiv,
-                virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+            Some(GicConfig::V2(config)) => {
+                let dist = config
+                    .as_ref()
+                    .map(|c| c.gic_distributor_base)
+                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE);
+                let cpu_if = config
+                    .as_ref()
+                    .map(|c| c.cpu_interface_base)
+                    .unwrap_or(openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE);
+                (
+                    dist,
+                    GicVersion::V2 {
+                        cpu_interface_base: cpu_if,
+                    },
+                )
             }
+            None => {
+                // No explicit GIC config — use the hypervisor's detected version
+                // with default addresses.
+                let dist = openvmm_defs::config::DEFAULT_GIC_DISTRIBUTOR_BASE;
+                let second = openvmm_defs::config::DEFAULT_GIC_REDISTRIBUTORS_BASE;
+                if platform_info.supports_gic_v3 {
+                    (
+                        dist,
+                        GicVersion::V3 {
+                            redistributors_base: second,
+                        },
+                    )
+                } else {
+                    (
+                        dist,
+                        GicVersion::V2 {
+                            cpu_interface_base: second,
+                        },
+                    )
+                }
+            }
+        };
+
+        let platform = Aarch64PlatformConfig {
+            gic_distributor_base,
+            gic_version,
+            gic_v2m,
+            pmu_gsiv,
+            virt_timer_ppi: openvmm_defs::config::DEFAULT_VIRT_TIMER_PPI,
+            gic_nr_irqs: openvmm_defs::config::DEFAULT_GIC_NR_IRQS,
         };
 
         let mut builder = TopologyBuilder::new_aarch64(platform);
@@ -577,6 +643,7 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    chipset_capabilities: VmChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -695,7 +762,7 @@ impl InitializedVm {
     pub(crate) async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
-        platform_gsiv: Option<u32>,
+        platform_info: virt::PlatformInfo,
         cfg: Manifest,
         shared_memory: Option<SharedMemoryBacking>,
     ) -> anyhow::Result<Self>
@@ -743,7 +810,7 @@ impl InitializedVm {
             None
         };
 
-        let processor_topology = cfg.processor_topology.to_topology(platform_gsiv)?;
+        let processor_topology = cfg.processor_topology.to_topology(&platform_info)?;
 
         let proto = hypervisor
             .new_partition(virt::ProtoPartitionConfig {
@@ -1133,7 +1200,7 @@ impl InitializedVm {
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset.with_generic_ioapic,
                                 with_pic: cfg.chipset.with_generic_pic,
-                                with_pit: cfg.chipset.with_generic_pit,
+                                with_pit: cfg.chipset_capabilities.with_pit,
                                 with_psp: cfg.chipset.with_generic_psp,
                                 pm_base: PM_BASE,
                                 acpi_irq: SYSTEM_IRQ_ACPI,
@@ -1452,7 +1519,6 @@ impl InitializedVm {
 
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
 
-        let deps_generic_pit = (cfg.chipset.with_generic_pit).then_some(dev::GenericPitDeps {});
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
         let deps_hyperv_framebuffer =
@@ -1538,7 +1604,6 @@ impl InitializedVm {
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_pic,
-                deps_generic_pit,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
@@ -2218,6 +2283,7 @@ impl InitializedVm {
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
                 chipset_cfg: cfg.chipset,
+                chipset_capabilities: cfg.chipset_capabilities,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_count,
@@ -2268,7 +2334,7 @@ impl LoadedVmInner {
                 with_ioapic: self.chipset_cfg.with_generic_ioapic,
                 with_psp: self.chipset_cfg.with_generic_psp,
                 with_pic: self.chipset_cfg.with_generic_pic,
-                with_pit: self.chipset_cfg.with_generic_pit,
+                with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
             },
@@ -2464,6 +2530,8 @@ impl LoadedVmInner {
                 };
                 super::vm_loaders::igvm::load_igvm(params)?
             }
+
+            #[expect(clippy::allow_attributes)]
             #[allow(unreachable_patterns)]
             _ => anyhow::bail!("load mode not supported on this platform"),
         };
@@ -2998,15 +3066,16 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
+            debugger_rpc: None,      // TODO
+            vmbus_devices: vec![],   // TODO
+            chipset_devices: vec![], // TODO
+            chipset_capabilities: self.inner.chipset_capabilities,
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,
             efi_diagnostics_log_level: Default::default(),
         };
-        #[allow(unreachable_code, reason = "TODO")]
+        #[expect(unreachable_code, reason = "TODO")]
         RestartState {
             manifest,
             running: self.running,

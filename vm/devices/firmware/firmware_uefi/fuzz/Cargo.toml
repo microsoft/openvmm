@@ -9,11 +9,11 @@ rust-version.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 arbitrary = { workspace = true, features = ["derive"] }
-firmware_uefi = { workspace = true, features = ["auth-var-verify-crypto", "fuzzing", "ossl_vendored"] }
+crypto = { workspace = true, features = ["vendored"] }
+firmware_uefi = { workspace = true, features = ["auth-var-verify-crypto", "fuzzing"] }
 guid.workspace = true
 guestmem.workspace = true
 libfuzzer-sys.workspace = true
-openssl.workspace = true
 ucs2.workspace = true
 uefi_nvram_specvars.workspace = true
 xtask_fuzz.workspace = true

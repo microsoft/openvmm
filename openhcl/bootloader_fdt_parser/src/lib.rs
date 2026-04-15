@@ -533,11 +533,15 @@ fn parse_gic(node: &Node<'_>) -> anyhow::Result<Aarch64PlatformConfig> {
 
     Ok(Aarch64PlatformConfig {
         gic_distributor_base: reg[0],
-        gic_redistributors_base: reg[2],
+        // The OpenHCL paravisor boot path always receives a GICv3 layout.
+        gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
+            redistributors_base: reg[2],
+        },
         gic_v2m: None,
         pmu_gsiv: None,
         // TODO: parse from the DT timer node instead of hardcoding.
         virt_timer_ppi: 20,
+        gic_nr_irqs: 992,
     })
 }
 
@@ -826,16 +830,21 @@ mod tests {
             let p_redist_stride = root_builder.add_string("redistributor-stride")?;
             let p_interrupt_controller = root_builder.add_string("interrupt-controller")?;
             let p_phandle = root_builder.add_string("phandle")?;
+            let gic_redist_base = match gic.gic_version {
+                vm_topology::processor::aarch64::GicVersion::V3 {
+                    redistributors_base,
+                } => redistributors_base,
+                vm_topology::processor::aarch64::GicVersion::V2 { cpu_interface_base } => {
+                    cpu_interface_base
+                }
+            };
             let name = format!("intc@{}", gic.gic_distributor_base);
             root_builder = root_builder
                 .start_node(name.as_ref())?
                 .add_str(p_compatible, "arm,gic-v3")?
                 .add_u32(p_redist_regions, 1)?
                 .add_u64(p_redist_stride, 0)?
-                .add_u64_array(
-                    p_reg,
-                    &[gic.gic_distributor_base, 0, gic.gic_redistributors_base, 0],
-                )?
+                .add_u64_array(p_reg, &[gic.gic_distributor_base, 0, gic_redist_base, 0])?
                 .add_u32(p_address_cells, 2)?
                 .add_u32(p_size_cells, 2)?
                 .add_u32(p_interrupt_cells, 3)?
@@ -1066,10 +1075,13 @@ mod tests {
             vtl0_alias_map: Some(1 << 48),
             gic: Some(Aarch64PlatformConfig {
                 gic_distributor_base: 0x10000,
-                gic_redistributors_base: 0x20000,
+                gic_version: vm_topology::processor::aarch64::GicVersion::V3 {
+                    redistributors_base: 0x20000,
+                },
                 gic_v2m: None,
                 pmu_gsiv: Some(0x17),
                 virt_timer_ppi: 20,
+                gic_nr_irqs: 992,
             }),
             accepted_ranges: vec![
                 MemoryRange::new(0x10000..0x20000),

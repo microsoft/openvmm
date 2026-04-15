@@ -101,12 +101,9 @@ impl VirtioDevice for VirtioFsDevice {
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::FS,
             device_features: VirtioDeviceFeatures::new()
-                .with_bank0(
-                    virtio::spec::VirtioDeviceFeaturesBank0::new()
-                        .with_ring_event_idx(true)
-                        .with_ring_indirect_desc(true),
-                )
-                .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true)),
+                .with_ring_event_idx(true)
+                .with_ring_indirect_desc(true)
+                .with_ring_packed(true),
             max_queues: 2,
             device_register_length: self.config.as_bytes().len() as u32,
             shared_memory: DeviceTraitsSharedMemory {
@@ -159,7 +156,7 @@ impl VirtioDevice for VirtioFsDevice {
         let queue_event = PolledWait::new(&self.driver, resources.event)
             .context("failed to create polled wait")?;
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory.clone(),
             resources.notify,

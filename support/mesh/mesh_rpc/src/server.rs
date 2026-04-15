@@ -623,6 +623,7 @@ mod tests {
     use pal_async::socket::PolledSocket;
     use test_with_tracing::test;
 
+    #[expect(clippy::allow_attributes)]
     mod items {
         include!(concat!(env!("OUT_DIR"), "/ttrpc.example.v1.rs"));
     }

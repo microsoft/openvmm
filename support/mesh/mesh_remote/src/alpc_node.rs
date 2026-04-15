@@ -878,7 +878,7 @@ impl AlpcNode {
             .map_err(|_| JoinError::InvalidDirectoryPath)?;
         let directory = open_object_directory(
             ObjectAttributes::new().name(&path),
-            DIRECTORY_TRAVERSE | DIRECTORY_QUERY,
+            DIRECTORY_TRAVERSE | DIRECTORY_QUERY | DIRECTORY_CREATE_OBJECT,
         )
         .map_err(|e| JoinError::OpenDirectory {
             path: invitation.directory_path.clone(),

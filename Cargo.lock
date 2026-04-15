@@ -421,6 +421,11 @@ dependencies = [
  "guid",
  "jiff",
  "libc",
+ "mesh",
+ "mesh_process",
+ "net_backend_resources",
+ "net_tap",
+ "netvsp_resources",
  "openvmm_defs",
  "openvmm_helpers",
  "pal_async",
@@ -1013,6 +1018,7 @@ version = "0.0.0"
 dependencies = [
  "hex",
  "openssl",
+ "openssl_kdf",
  "thiserror 2.0.16",
  "tracing",
  "wchar",
@@ -2069,6 +2075,7 @@ dependencies = [
  "flowey_lib_hvlite",
  "log",
  "serde",
+ "serde_json",
  "target-lexicon",
  "vmm_test_images",
 ]
@@ -2095,10 +2102,12 @@ dependencies = [
 name = "flowey_lib_hvlite"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "crossterm",
  "flowey",
  "flowey_lib_common",
  "igvmfilegen_config",
+ "log",
  "powershell_builder",
  "serde",
  "serde_json",
@@ -2343,11 +2352,11 @@ name = "fuzz_firmware_uefi"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "crypto",
  "firmware_uefi",
  "guestmem",
  "guid",
  "libfuzzer-sys",
- "openssl",
  "ucs2 0.0.0",
  "uefi_nvram_specvars",
  "xtask_fuzz",
@@ -4214,6 +4223,8 @@ dependencies = [
  "pal",
  "pal_async",
  "slab",
+ "tempfile",
+ "test_with_tracing",
  "tracing",
  "unicycle",
 ]
@@ -4430,9 +4441,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-bindings"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "805cf329582f770f62cc612716a04c14815276ae266b6298375a672d3c5a5184"
+checksum = "a94fc3871dd23738188e5bc76a1d1a5930ebcaf9308c560a7274aa62b1770594"
 dependencies = [
  "libc",
  "num_enum",
@@ -4444,9 +4455,9 @@ dependencies = [
 
 [[package]]
 name = "mshv-ioctls"
-version = "0.6.0"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aefaab4c067cf5226a917227640d835327b25b71a8d465f815f74f490344e10a"
+checksum = "1339723fe3a26baf4041459de20ad923e89d312c3bb25dbf9f60738c22a47f5e"
 dependencies = [
  "libc",
  "mshv-bindings",
@@ -5166,6 +5177,7 @@ dependencies = [
 name = "opentmk"
 version = "0.0.0"
 dependencies = [
+ "acpi_spec",
  "bitfield-struct 0.11.0",
  "cfg-if",
  "hvdef",
@@ -5320,6 +5332,7 @@ dependencies = [
  "clap",
  "clap_dyn_complete",
  "console_relay",
+ "crypto",
  "debug_worker_defs",
  "diag_client",
  "dirs",
@@ -5351,7 +5364,6 @@ dependencies = [
  "net_tap",
  "netvsp_resources",
  "nvme_resources",
- "openssl",
  "openvmm_defs",
  "openvmm_helpers",
  "openvmm_pcat_locator",
@@ -5382,7 +5394,6 @@ dependencies = [
  "unix_socket",
  "video_core",
  "virt_whp",
- "virtio",
  "virtio_resources",
  "vm_manifest_builder",
  "vm_resource",
@@ -5464,6 +5475,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "fs-err",
  "hypervisor_resources",
  "openvmm_core",
  "virt_hvf",
@@ -5645,6 +5657,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.3",
  "headervec",
+ "io-uring",
  "libc",
  "loan_cell",
  "once_cell",
@@ -5837,6 +5850,7 @@ dependencies = [
  "chipset_device",
  "inspect",
  "memory_range",
+ "mesh",
  "pal_async",
  "parking_lot",
  "pci_bus",
@@ -8240,6 +8254,8 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "base64-serde",
+ "constant_time_eq",
+ "crypto",
  "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
@@ -8250,8 +8266,6 @@ dependencies = [
  "guid",
  "mesh",
  "openhcl_attestation_protocol",
- "openssl",
- "openssl_kdf",
  "pal_async",
  "serde",
  "serde_json",
@@ -8304,6 +8318,7 @@ dependencies = [
  "chipset_device_worker_defs",
  "chipset_legacy",
  "closeable_mutex",
+ "crypto",
  "cvm_tracing",
  "debug_ptr",
  "debug_worker_defs",
@@ -8540,6 +8555,7 @@ dependencies = [
  "cvm_tracing",
  "fs-err",
  "inspect",
+ "io-uring",
  "loan_cell",
  "pal",
  "pal_async",
@@ -8929,12 +8945,12 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "signal-hook",
- "static_assertions",
  "thiserror 2.0.16",
  "tracelimit",
  "tracing",
  "virt",
  "virt_support_x86emu",
+ "vm_topology",
  "vmcore",
  "x86defs",
  "x86emu",
@@ -9829,6 +9845,7 @@ dependencies = [
 name = "vmgs_lib"
 version = "0.0.0"
 dependencies = [
+ "crypto",
  "disk_backend",
  "disk_vhd1",
  "futures",
@@ -9852,6 +9869,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "crypto",
  "disk_backend",
  "disk_vhd1",
  "fs-err",

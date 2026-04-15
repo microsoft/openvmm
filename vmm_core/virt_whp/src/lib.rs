@@ -671,7 +671,10 @@ impl virt::BindProcessor for WhpProcessorBinder {
                     .for_op("set mpidr")?;
                 vp.vp
                     .whp(vtl)
-                    .set_register(whp::Register64::GicrBaseGpa, vp_info.gicr)
+                    .set_register(
+                        whp::Register64::GicrBaseGpa,
+                        vp_info.gicr.expect("WHP always uses GICv3"),
+                    )
                     .for_op("set GICR base")?;
             }
         }
@@ -730,6 +733,8 @@ pub enum Error {
     InvalidApicBase(#[source] virt_support_apic::InvalidApicBase),
     #[error("host does not support required cpu capabilities")]
     Capabilities(virt::PartitionCapabilitiesError),
+    #[error("WHP does not support GICv2; only GICv3 is supported")]
+    GicV2NotSupported,
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
 }
@@ -752,6 +757,20 @@ impl virt::Hypervisor for Whp {
     type Partition = WhpPartition;
     type Error = Error;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        #[cfg(guest_arch = "x86_64")]
+        {
+            virt::PlatformInfo {}
+        }
+        #[cfg(guest_arch = "aarch64")]
+        {
+            virt::PlatformInfo {
+                platform_gsiv: Some(WHP_PMU_GSIV),
+                supports_gic_v3: true,
+            }
+        }
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -768,11 +787,6 @@ impl virt::Hypervisor for Whp {
         };
 
         Ok(WhpProtoPartition { vtl0, vtl2, config })
-    }
-
-    #[cfg(guest_arch = "aarch64")]
-    fn platform_gsiv(&self) -> Option<u32> {
-        Some(WHP_PMU_GSIV)
     }
 }
 
@@ -812,6 +826,17 @@ impl ProtoPartition for WhpProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        #[cfg(guest_arch = "aarch64")]
+        {
+            use vm_topology::processor::aarch64::GicVersion;
+            if matches!(
+                self.config.processor_topology.gic_version(),
+                GicVersion::V2 { .. }
+            ) {
+                return Err(Error::GicV2NotSupported);
+            }
+        }
+
         let inner = Arc::new(WhpPartitionInner::new(
             config,
             &self.config,

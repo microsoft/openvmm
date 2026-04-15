@@ -70,11 +70,9 @@ pub(crate) struct VirtioTransportCore {
     #[inspect(skip)]
     pub _device_task: Task<()>,
     pub state: TransportState,
-    #[inspect(skip)]
     pub device_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
     pub device_feature_select: u32,
-    #[inspect(skip)]
     pub driver_feature: VirtioDeviceFeatures,
     #[inspect(hex)]
     pub driver_feature_select: u32,
@@ -123,10 +121,7 @@ impl VirtioTransportCore {
             })
             .collect::<std::io::Result<Vec<_>>>()?;
 
-        let device_feature = traits
-            .device_features
-            .clone()
-            .with_bank1(traits.device_features.bank1().with_version_1(true));
+        let device_feature = traits.device_features.with_version_1(true);
         let supports_save_restore = device.supports_save_restore();
 
         let (sender, receiver) = mesh::channel();
@@ -311,7 +306,7 @@ impl VirtioTransportCore {
         if !self.device_status.driver_ok() && new_status.driver_ok() {
             self.install_doorbells(ops);
 
-            let features = self.driver_feature.clone();
+            let features = self.driver_feature;
             let queues: Vec<_> = self
                 .queues
                 .iter()
@@ -359,7 +354,7 @@ impl VirtioTransportCore {
     /// `ChangeDeviceState::start()` implementation.
     pub fn start(&mut self, ops: &mut dyn TransportOps) {
         if self.device_status.driver_ok() {
-            let features = self.driver_feature.clone();
+            let features = self.driver_feature;
             let mut queues = Vec::new();
             for (i, qd) in self.queues.iter_mut().enumerate() {
                 if !qd.params.enable {
@@ -438,9 +433,7 @@ impl VirtioTransportCore {
         }
         Ok(super::saved_state::state::CommonSavedState {
             device_status: self.device_status.into(),
-            driver_feature_banks: (0..self.device_feature.len())
-                .map(|i| self.driver_feature.bank(i))
-                .collect(),
+            driver_feature_banks: (0..2usize).map(|i| self.driver_feature.bank(i)).collect(),
             device_feature_select: self.device_feature_select,
             driver_feature_select: self.driver_feature_select,
             queue_select: self.queue_select,

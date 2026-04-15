@@ -246,8 +246,12 @@ options:
     /// The first positional argument is the socket path. Options:
     ///
     /// ```text
-    ///   type=blk|net|rng|console|fs|pmem  — device type (shorthand)
+    ///   type=blk|fs                        — device type (shorthand)
     ///   device_id=N                        — numeric virtio device ID
+    ///   tag=NAME                           — mount tag (required for type=fs)
+    ///   num_queues=N                       — queue count (type=blk/fs only)
+    ///   queue_size=N                       — per-queue size (type=blk/fs only)
+    ///   queue_sizes=[N,N,N]                — per-queue sizes (device_id= only)
     ///   pcie_port=NAME                     — present on PCIe under the specified port
     /// ```
     ///
@@ -255,8 +259,11 @@ options:
     ///
     /// ```text
     ///   --vhost-user /tmp/vhost.sock,type=blk
-    ///   --vhost-user /tmp/vhost.sock,device_id=2
+    ///   --vhost-user /tmp/vhost.sock,type=blk,num_queues=4,queue_size=512
+    ///   --vhost-user /tmp/vhost.sock,device_id=2,queue_sizes=[128,128]
     ///   --vhost-user /tmp/vhost.sock,type=blk,pcie_port=port0
+    ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
+    ///   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,num_queues=2,queue_size=1024
     /// ```
     #[cfg(target_os = "linux")]
     #[clap(long = "vhost-user")]
@@ -1974,10 +1981,59 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
 
 #[cfg(target_os = "linux")]
 #[derive(Clone)]
+pub enum VhostUserDeviceTypeCli {
+    /// Block device — config from backend via GET_CONFIG, with num_queues
+    /// patched by the frontend.
+    Blk {
+        num_queues: Option<u16>,
+        queue_size: Option<u16>,
+    },
+    /// Filesystem device — frontend-owned config with mount tag.
+    Fs {
+        tag: String,
+        num_queues: Option<u16>,
+        queue_size: Option<u16>,
+    },
+    /// Generic device identified by numeric virtio device ID.
+    Other {
+        device_id: u16,
+        queue_sizes: Vec<u16>,
+    },
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone)]
 pub struct VhostUserCli {
     pub socket_path: String,
-    pub device_id: u16,
+    pub device_type: VhostUserDeviceTypeCli,
     pub pcie_port: Option<String>,
+}
+
+/// Split a string on commas, but not inside `[…]` brackets.
+///
+/// Returns an error on mismatched brackets (unmatched `]` or unclosed `[`).
+#[cfg(target_os = "linux")]
+fn split_respecting_brackets(s: &str) -> anyhow::Result<Vec<&str>> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut depth: i32 = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                anyhow::ensure!(depth >= 0, "unmatched ']' in option string");
+            }
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    anyhow::ensure!(depth == 0, "unclosed '[' in option string");
+    result.push(&s[start..]);
+    Ok(result)
 }
 
 #[cfg(target_os = "linux")]
@@ -1985,41 +2041,104 @@ impl FromStr for VhostUserCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
-        let mut opts = s.split(',');
-        let socket_path = opts.next().context("missing socket path")?.to_string();
+        // Split on commas, but not inside brackets (for queue_sizes=[N,N]).
+        let parts = split_respecting_brackets(s)?;
+        let mut parts_iter = parts.into_iter();
+        let socket_path = parts_iter
+            .next()
+            .context("missing socket path")?
+            .to_string();
 
         let mut device_id: Option<u16> = None;
+        let mut tag: Option<String> = None;
         let mut pcie_port: Option<String> = None;
-        for opt in opts {
+        let mut type_name = None;
+        let mut num_queues: Option<u16> = None;
+        let mut queue_size: Option<u16> = None;
+        let mut queue_sizes: Option<Vec<u16>> = None;
+        for opt in parts_iter {
             let (key, val) = opt.split_once('=').context("expected key=value option")?;
             match key {
                 "type" => {
-                    use virtio::spec::VirtioDeviceType;
-                    device_id = Some(match val {
-                        "net" => VirtioDeviceType::NET.0,
-                        "blk" => VirtioDeviceType::BLK.0,
-                        "console" => VirtioDeviceType::CONSOLE.0,
-                        "rng" => VirtioDeviceType::RNG.0,
-                        "fs" => VirtioDeviceType::FS.0,
-                        "pmem" => VirtioDeviceType::PMEM.0,
-                        other => anyhow::bail!("unknown vhost-user device type: '{other}'"),
-                    });
+                    type_name = Some(val);
                 }
                 "device_id" => {
                     device_id = Some(val.parse().context("invalid device_id")?);
                 }
+                "tag" => {
+                    tag = Some(val.to_string());
+                }
                 "pcie_port" => {
                     pcie_port = Some(val.to_string());
+                }
+                "num_queues" => {
+                    num_queues = Some(val.parse().context("invalid num_queues")?);
+                }
+                "queue_size" => {
+                    queue_size = Some(val.parse().context("invalid queue_size")?);
+                }
+                "queue_sizes" => {
+                    // Parse bracket-delimited comma-separated list: [N,N,N]
+                    let trimmed = val
+                        .strip_prefix('[')
+                        .and_then(|v| v.strip_suffix(']'))
+                        .context("queue_sizes must be bracketed: [N,N,N]")?;
+                    let sizes: Vec<u16> = trimmed
+                        .split(',')
+                        .map(|s| s.parse().context("invalid queue size in queue_sizes"))
+                        .collect::<anyhow::Result<_>>()?;
+                    anyhow::ensure!(!sizes.is_empty(), "queue_sizes must be non-empty");
+                    queue_sizes = Some(sizes);
                 }
                 other => anyhow::bail!("unknown vhost-user option: '{other}'"),
             }
         }
 
-        let device_id = device_id.context("must specify type=<name> or device_id=<N>")?;
+        if type_name.is_some() == device_id.is_some() {
+            anyhow::bail!("must specify type=<name> or device_id=<N>");
+        }
+
+        // Build the typed device variant.
+        let device_type = match type_name {
+            Some("fs") => {
+                let tag = tag.take().context("type=fs requires tag=<name>")?;
+                VhostUserDeviceTypeCli::Fs {
+                    tag,
+                    num_queues: num_queues.take(),
+                    queue_size: queue_size.take(),
+                }
+            }
+            Some("blk") => VhostUserDeviceTypeCli::Blk {
+                num_queues: num_queues.take(),
+                queue_size: queue_size.take(),
+            },
+            Some(ty) => anyhow::bail!("unknown vhost-user device type: '{ty}'"),
+            None => {
+                let queue_sizes = queue_sizes
+                    .take()
+                    .context("device_id= requires queue_sizes=[N,N,...]")?;
+                VhostUserDeviceTypeCli::Other {
+                    device_id: device_id.unwrap(),
+                    queue_sizes,
+                }
+            }
+        };
+
+        if tag.is_some() {
+            anyhow::bail!("tag= is only valid for type=fs");
+        }
+        if queue_sizes.is_some() {
+            anyhow::bail!("queue_sizes= is only valid for device_id=");
+        }
+        if num_queues.is_some() || queue_size.is_some() {
+            anyhow::bail!(
+                "num_queues= and queue_size= are not valid for device_id=; use queue_sizes="
+            );
+        }
 
         Ok(VhostUserCli {
             socket_path,
-            device_id,
+            device_type,
             pcie_port,
         })
     }

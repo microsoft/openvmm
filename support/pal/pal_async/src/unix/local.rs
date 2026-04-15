@@ -208,3 +208,10 @@ impl WaitDriver for LocalDriver {
         Ok(FdWait::new(fd, self.new_fd_ready(fd)?, read_size))
     }
 }
+
+#[cfg(target_os = "linux")]
+impl crate::driver::IoUringDriver for LocalDriver {
+    fn io_uring_submit(&self) -> Option<&dyn crate::io_uring::IoUringSubmit> {
+        None
+    }
+}

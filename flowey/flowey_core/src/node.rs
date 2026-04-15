@@ -1856,25 +1856,23 @@ pub mod steps {
             ado_var: Cow<'static, str>,
         }
 
-        #[allow(non_upper_case_globals)]
         impl AdoRuntimeVar {
             /// `build.SourceBranch`
             ///
             /// NOTE: Includes the full branch ref (ex: `refs/heads/main`) so
             /// unlike `build.SourceBranchName`, a branch like `user/foo/bar`
             /// won't be stripped to just `bar`
-            pub const BUILD__SOURCE_BRANCH: AdoRuntimeVar =
-                AdoRuntimeVar::new("build.SourceBranch");
+            pub const BUILD_SOURCE_BRANCH: AdoRuntimeVar = AdoRuntimeVar::new("build.SourceBranch");
 
             /// `build.BuildNumber`
-            pub const BUILD__BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
+            pub const BUILD_BUILD_NUMBER: AdoRuntimeVar = AdoRuntimeVar::new("build.BuildNumber");
 
             /// `System.AccessToken`
-            pub const SYSTEM__ACCESS_TOKEN: AdoRuntimeVar =
+            pub const SYSTEM_ACCESS_TOKEN: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.AccessToken");
 
             /// `System.System.JobAttempt`
-            pub const SYSTEM__JOB_ATTEMPT: AdoRuntimeVar =
+            pub const SYSTEM_JOB_ATTEMPT: AdoRuntimeVar =
                 AdoRuntimeVar::new_secret("System.JobAttempt");
         }
 
