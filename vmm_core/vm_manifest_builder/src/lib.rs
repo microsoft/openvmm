@@ -20,6 +20,7 @@ use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
@@ -102,7 +103,6 @@ pub struct VmChipsetResult {
     pub capabilities: VmChipsetCapabilities,
 }
 
-const WDAT_PORT: u16 = 0x30;
 /// Error type for building a VM manifest.
 #[derive(Debug, Error)]
 #[error(transparent)]
@@ -466,9 +466,9 @@ impl VmChipsetResult {
 
     fn attach_guest_watchdog(&mut self) -> &mut Self {
         self.chipset_devices.push(ChipsetDeviceHandle {
-            name: "hyperv-guest-watchdog".to_owned(),
+            name: "guest-watchdog".to_owned(),
             resource: HyperVGuestWatchdogDeviceHandle {
-                port_base: WDAT_PORT,
+                port_base: DEFAULT_WDAT_PORT_BASE,
                 platform: PlatformResource.into_resource(),
             }
             .into_resource(),

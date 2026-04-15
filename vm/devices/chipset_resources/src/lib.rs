@@ -175,6 +175,9 @@ pub mod hyperv_guest_watchdog {
     use vm_resource::kind::ChipsetDeviceHandleKind;
     use watchdog_core::resources::WatchdogPlatformHandleKind;
 
+    /// Default base port IO address for the Hyper-V guest watchdog register window.
+    pub const DEFAULT_WDAT_PORT_BASE: u16 = 0x30;
+
     /// A handle to the Hyper-V guest watchdog device.
     #[derive(MeshPayload)]
     pub struct HyperVGuestWatchdogDeviceHandle {
