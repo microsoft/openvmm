@@ -35,7 +35,7 @@
 use super::Lint;
 use super::LintCtx;
 use super::Lintable;
-use regex::Regex;
+use grep_regex::RegexMatcher;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use toml_edit::DocumentMut;
@@ -54,11 +54,14 @@ pub struct UnusedDeps {
     /// Pre-compiled regex matchers keyed by dependency name, built once for
     /// all workspace dependency names and extended lazily for any
     /// non-workspace deps encountered in individual crates.
-    dep_matchers: BTreeMap<String, Regex>,
+    dep_matchers: BTreeMap<String, RegexMatcher>,
 
     /// Whether we are linting only diffed files (workspace-level check is
     /// unreliable in this mode because not all crates are visited).
     only_diffed: bool,
+
+    /// Prebuilt grep searcher to avoid rebuilds
+    searcher: grep_searcher::Searcher,
 }
 
 impl Lint for UnusedDeps {
@@ -70,6 +73,9 @@ impl Lint for UnusedDeps {
             crate_found_deps: BTreeSet::new(),
             dep_matchers: BTreeMap::new(),
             only_diffed: ctx.only_diffed,
+            searcher: grep_searcher::SearcherBuilder::new()
+                .line_number(false)
+                .build(),
         }
     }
 
@@ -132,7 +138,15 @@ impl Lint for UnusedDeps {
         let unfound = self.crate_deps.difference(&self.crate_found_deps);
         let mut found = Vec::new();
         for looking in unfound {
-            if self.dep_matchers[&**looking].is_match(content) {
+            let mut sink = StopAfterFirstMatch::new();
+            self.searcher
+                .search_slice(
+                    &self.dep_matchers[&**looking],
+                    content.as_bytes(),
+                    &mut sink,
+                )
+                .unwrap();
+            if sink.found {
                 found.push(looking.clone());
             }
         }
@@ -212,7 +226,7 @@ fn exit_toml(
     }
 }
 
-fn compile_matcher(dep: &str) -> Regex {
+fn compile_matcher(dep: &str) -> RegexMatcher {
     let name = dep.replace('-', "_");
     // Syntax documentation: https://docs.rs/regex/latest/regex/#syntax
     //
@@ -229,7 +243,7 @@ fn compile_matcher(dep: &str) -> Regex {
     let regex = format!(
         r#"use (::)?(?i){name}(?-i)(::|;| as)|(?:[^:]|^|\W::)\b(?i){name}(?-i)::|extern crate (?i){name}(?-i)( |;)"#
     );
-    Regex::new(&regex).unwrap()
+    RegexMatcher::new_line_matcher(&regex).unwrap()
 }
 
 /// Remove a dependency from all dep tables and its references in `[features]`.
@@ -307,4 +321,46 @@ fn remove_from_ignored(doc: &mut DocumentMut, dep_name: &str, is_workspace: bool
         .unwrap();
 
     ignored_array.retain(|v| v.as_str() != Some(dep_name));
+}
+
+struct StopAfterFirstMatch {
+    found: bool,
+}
+
+impl StopAfterFirstMatch {
+    fn new() -> Self {
+        Self { found: false }
+    }
+}
+
+impl grep_searcher::Sink for StopAfterFirstMatch {
+    type Error = Box<dyn std::error::Error>;
+
+    fn matched(
+        &mut self,
+        _searcher: &grep_searcher::Searcher,
+        mat: &grep_searcher::SinkMatch<'_>,
+    ) -> Result<bool, Self::Error> {
+        let mat = mat.bytes().trim_ascii();
+
+        if mat.starts_with(b"//")
+            && !(mat.starts_with(b"/// # use")
+                || mat.starts_with(b"/// use")
+                || mat.starts_with(b"//! # use")
+                || mat.starts_with(b"//! use"))
+        {
+            // Continue if seeing what resembles a comment or an inner doc
+            // comment.
+            // Certain exceptions for outer doc comments (`///`) because they may contain code
+            // examples that use dependencies, and skipping them could cause us to miss usages
+            // relevant for dependency detection. Unfortunately we can't check whether the example
+            // is within a code snippet without actually parsing the code.
+            return Ok(true);
+        }
+
+        // Otherwise, we've found it: mark to true, and return false to indicate that we can stop
+        // searching.
+        self.found = true;
+        Ok(false)
+    }
 }

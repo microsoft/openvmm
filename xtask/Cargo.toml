@@ -19,12 +19,13 @@ fs-err.workspace = true
 futures.workspace = true
 glob.workspace = true
 gptman.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
 guid.workspace = true
 heck.workspace = true
 ignore.workspace = true
 log.workspace = true
 object = { workspace = true, features = ["read_core", "elf", "std"] }
-regex.workspace = true
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"]}
 toml_edit = { workspace = true, features = ["serde"] }
