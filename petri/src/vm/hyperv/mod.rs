@@ -138,7 +138,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             let mut vhd = Err(anyhow::Error::msg("haven't tried to open the vhd yet"));
             // The VM may not be fully shut down immediately, do some retries
             for _ in 0..5 {
-                vhd = VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
+                vhd = VhdmpDisk::options()
+                    .read_only(true)
+                    .open(hook_crash_disk.as_ref())
                     .context("failed opening vhd");
                 if vhd.is_ok() {
                     break;

@@ -41,6 +41,12 @@ pub fn open_disk_type(
     options: OpenDiskOptions,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {
     let read_only = options.read_only;
+    let ensure_no_direct = |ext| {
+        if options.direct {
+            anyhow::bail!("direct I/O is not supported for .{ext} files");
+        };
+        Ok(())
+    };
     Ok(match path.extension().and_then(|s| s.to_str()) {
         Some("vhd") => {
             let file = std::fs::OpenOptions::new()
@@ -50,14 +56,20 @@ pub fn open_disk_type(
                 .with_context(|| disk_open_error(path, "failed to open"))?;
 
             match disk_vhd1::Vhd1Disk::open_fixed(file, read_only) {
-                Ok(vhd) => Resource::new(disk_backend_resources::FixedVhd1DiskHandle(
-                    vhd.into_inner(),
-                )),
+                Ok(vhd) => {
+                    ensure_no_direct("fixed VHD")?;
+                    Resource::new(disk_backend_resources::FixedVhd1DiskHandle(
+                        vhd.into_inner(),
+                    ))
+                }
                 Err(disk_vhd1::OpenError::NotFixed) => {
                     #[cfg(windows)]
                     {
                         Resource::new(disk_vhdmp::OpenVhdmpDiskConfig(
-                            disk_vhdmp::VhdmpDisk::open_vhd(path, read_only)
+                            disk_vhdmp::VhdmpDisk::options()
+                                .read_only(read_only)
+                                .cached_io(!options.direct)
+                                .open(path)
                                 .with_context(|| disk_open_error(path, "failed to open"))?,
                         ))
                     }
@@ -71,7 +83,10 @@ pub fn open_disk_type(
             #[cfg(windows)]
             {
                 Resource::new(disk_vhdmp::OpenVhdmpDiskConfig(
-                    disk_vhdmp::VhdmpDisk::open_vhd(path, read_only)
+                    disk_vhdmp::VhdmpDisk::options()
+                        .read_only(read_only)
+                        .cached_io(!options.direct)
+                        .open(path)
                         .with_context(|| disk_open_error(path, "failed to open"))?,
                 ))
             }
@@ -82,6 +97,7 @@ pub fn open_disk_type(
             anyhow::bail!("iso file cannot be opened as read/write")
         }
         Some("vmgs") => {
+            ensure_no_direct("vmgs")?;
             // VMGS files are fixed VHD1s. Don't bother to validate the footer
             // here; let the resource resolver do that later.
             let file = std::fs::OpenOptions::new()
