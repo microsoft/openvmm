@@ -239,6 +239,15 @@ impl BasicNic {
     ) -> anyhow::Result<usize> {
         tracing::debug!(msg_type = ?ManaCommandCode(hdr.req.msg_type), "bnic request");
 
+        // Zero the guest response buffer before writing the actual response
+        // to maintain forward compatibility: a newer VF driver may request
+        // fields added in a later protocol version that this emulator does
+        // not yet populate. Zeroing ensures those fields read as zero rather
+        // than containing undefined data.
+        let guest_resp_size = MemoryWrite::len(&write);
+        let mut zero_write = write.clone();
+        zero_write.write(&vec![0u8; guest_resp_size])?;
+
         let response_len = match ManaCommandCode(hdr.req.msg_type) {
             ManaCommandCode::MANA_QUERY_DEV_CONFIG => {
                 let _req: ManaQueryDeviceCfgReq = read
@@ -259,15 +268,6 @@ impl BasicNic {
                 };
 
                 let resp_bytes = resp.as_bytes();
-                let guest_resp_size = MemoryWrite::len(&write);
-                // Zero the guest response buffer before writing the actual response
-                // to maintain forward compatibility: a newer VF driver may request
-                // fields added in a later protocol version that this emulator does
-                // not yet populate. Zeroing ensures those fields read as zero rather
-                // than containing undefined data.
-                let mut zero_write = write.clone();
-                zero_write.write(&vec![0u8; guest_resp_size])?;
-
                 let write_len = guest_resp_size.min(resp_bytes.len());
                 write.write(&resp_bytes[..write_len])?;
                 write_len
