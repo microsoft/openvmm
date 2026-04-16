@@ -2049,10 +2049,7 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
         });
     }
 
-    DefaultPool::run_with(async |driver| {
-        let mesh = VmmMesh::new(&driver, opt.single_process)?;
-        run_control(&driver, mesh, opt).await
-    })
+    DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
 }
 
 fn new_hvsock_service_id(port: u32) -> Guid {
@@ -2064,8 +2061,24 @@ fn new_hvsock_service_id(port: u32) -> Guid {
     }
 }
 
-async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> anyhow::Result<()> {
-    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, &mesh, &opt).await?;
+async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<()> {
+    let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
+    let result = run_control_inner(driver, &mut mesh, opt).await;
+    // If setup failed before the mesh was handed to the controller, shut it
+    // down so the child host process exits cleanly without noisy logs.
+    if let Some(mesh) = mesh {
+        mesh.shutdown().await;
+    }
+    result
+}
+
+async fn run_control_inner(
+    driver: &DefaultDriver,
+    mesh_slot: &mut Option<VmmMesh>,
+    opt: Options,
+) -> anyhow::Result<()> {
+    let mesh = mesh_slot.as_ref().unwrap();
+    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc {
@@ -2200,7 +2213,7 @@ async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> any
 
     // Build the VmController with exclusive resources.
     let controller = vm_controller::VmController {
-        mesh,
+        mesh: mesh_slot.take().unwrap(),
         vm_worker,
         vnc_worker,
         gdb_worker,
