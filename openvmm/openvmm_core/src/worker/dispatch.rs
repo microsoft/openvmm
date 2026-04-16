@@ -11,6 +11,8 @@ use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
+use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
 use chipset_resources::cmos_rtc_time_source::SystemTimeClockHandle;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
@@ -1414,23 +1416,39 @@ impl InitializedVm {
             None
         };
 
-        let initial_rtc_cmos = if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
-            Some(firmware_pcat::default_cmos_values(&mem_layout))
-        } else {
-            None
-        };
+        let mut chipset_device_handles = cfg.chipset_devices;
 
-        let deps_generic_cmos_rtc = (cfg.chipset.with_generic_cmos_rtc).then(|| {
-            dev::GenericCmosRtcDeps {
-                irq: 8,
-                time_source: SystemTimeClockHandle {
-                    delta_milliseconds: cfg.rtc_delta_milliseconds,
+        // Emit CMOS RTC device handles based on load mode / architecture.
+        // PCAT uses the PIIX4 variant; other x86 configurations use the generic variant.
+        if matches!(cfg.load_mode, LoadMode::Pcat { .. }) {
+            let initial_rtc_cmos = Some(firmware_pcat::default_cmos_values(&mem_layout));
+            chipset_device_handles.push(ChipsetDeviceHandle {
+                name: "piix4-rtc".to_owned(),
+                resource: Piix4CmosRtcDeviceHandle {
+                    initial_cmos: initial_rtc_cmos,
+                    enlightened_interrupts: true,
+                    time_source: SystemTimeClockHandle {
+                        delta_milliseconds: cfg.rtc_delta_milliseconds,
+                    }
+                    .into_resource(),
                 }
                 .into_resource(),
-                century_reg_idx: 0x32, // TODO: automatically sync with FADT
-                initial_cmos: initial_rtc_cmos,
-            }
-        });
+            });
+        } else if cfg!(guest_arch = "x86_64") {
+            chipset_device_handles.push(ChipsetDeviceHandle {
+                name: "rtc".to_owned(),
+                resource: GenericCmosRtcDeviceHandle {
+                    irq: 8,
+                    century_reg_idx: 0x32,
+                    initial_cmos: None,
+                    time_source: SystemTimeClockHandle {
+                        delta_milliseconds: cfg.rtc_delta_milliseconds,
+                    }
+                    .into_resource(),
+                }
+                .into_resource(),
+            });
+        }
 
         #[cfg(guest_arch = "x86_64")]
         let deps_generic_ioapic =
@@ -1568,17 +1586,6 @@ impl InitializedVm {
             bus_id: pci_bus_id_piix4.clone(),
         });
 
-        let deps_piix4_cmos_rtc = (cfg.chipset.with_piix4_cmos_rtc).then(|| {
-            dev::Piix4CmosRtcDeps {
-                time_source: SystemTimeClockHandle {
-                    delta_milliseconds: cfg.rtc_delta_milliseconds,
-                }
-                .into_resource(),
-                initial_cmos: initial_rtc_cmos,
-                enlightened_interrupts: true, // As advertised by the PCAT BIOS.
-            }
-        });
-
         let [primary_channel_drives, secondary_channel_drives] = ide_drives;
         let deps_hyperv_ide = (cfg.chipset.with_hyperv_ide).then_some(dev::HyperVIdeDeps {
             attached_to: pci_bus_id_piix4.clone(),
@@ -1598,7 +1605,6 @@ impl InitializedVm {
 
         let base_chipset_devices = {
             BaseChipsetDevices {
-                deps_generic_cmos_rtc,
                 deps_generic_ioapic,
                 deps_generic_isa_dma,
                 deps_generic_isa_floppy,
@@ -1612,7 +1618,6 @@ impl InitializedVm {
                 deps_hyperv_power_management,
                 deps_hyperv_vga,
                 deps_i440bx_host_pci_bridge,
-                deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_piix4_pci_isa_bridge,
                 deps_piix4_power_management,
@@ -1644,7 +1649,7 @@ impl InitializedVm {
             base_chipset_devices,
         )
         .with_expected_manifest(cfg.chipset.clone())
-        .with_device_handles(cfg.chipset_devices)
+        .with_device_handles(chipset_device_handles)
         .with_pci_device_handles(cfg.pci_chipset_devices)
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)

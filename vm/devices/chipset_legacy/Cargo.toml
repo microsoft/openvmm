@@ -28,6 +28,7 @@ vm_resource.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
+async-trait.workspace = true
 
 [dev-dependencies]
 pal_async.workspace = true
