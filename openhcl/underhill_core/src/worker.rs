@@ -2774,9 +2774,6 @@ async fn new_underhill_vm(
         None
     };
 
-    let deps_generic_isa_dma = chipset
-        .with_generic_isa_dma
-        .then_some(dev::GenericIsaDmaDeps);
     let deps_piix4_power_management =
         chipset
             .with_piix4_power_management
@@ -2965,7 +2962,6 @@ async fn new_underhill_vm(
         deps_hyperv_firmware_uefi,
         deps_hyperv_guest_watchdog,
         deps_hyperv_power_management,
-        deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
         deps_hyperv_firmware_pcat,

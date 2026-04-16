@@ -21,6 +21,7 @@ use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
+use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
 use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_pci_isa_bridge::PIIX4_PCI_ISA_BRIDGE_BDF;
 use chipset_resources::piix4_pci_isa_bridge::Piix4PciIsaBridgeDeviceHandle;
@@ -229,6 +230,7 @@ impl VmManifestBuilder {
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
+                with_generic_isa_dma: false,
                 with_psp: false,
             },
         };
@@ -247,6 +249,7 @@ impl VmManifestBuilder {
                     return Err(Error(ErrorInner::UnsupportedArch));
                 }
                 result.attach_i8042();
+                result.attach_generic_isa_dma();
                 result.attach_piix4_pci_usb_uhci_stub();
                 result.attach_piix4_pci_isa_bridge();
                 // This chipset always has a serial port even if not requested.
@@ -257,7 +260,6 @@ impl VmManifestBuilder {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: false,
                     with_generic_ioapic: true,
-                    with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: false,
@@ -289,7 +291,6 @@ impl VmManifestBuilder {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
                     with_generic_ioapic: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
@@ -331,7 +332,6 @@ impl VmManifestBuilder {
                 result.chipset = BaseChipsetManifest {
                     with_generic_cmos_rtc: is_x86,
                     with_generic_ioapic: is_x86,
-                    with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_psp: self.psp,
@@ -394,6 +394,15 @@ impl VmChipsetResult {
             }
             .into_resource(),
         });
+        self
+    }
+
+    fn attach_generic_isa_dma(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: "dma".to_owned(),
+            resource: GenericIsaDmaDeviceHandle.into_resource(),
+        });
+        self.capabilities.with_generic_isa_dma = true;
         self
     }
 

@@ -29,6 +29,22 @@ pub mod i8042 {
     }
 }
 
+pub mod isa_dma {
+    //! Resource definitions for the generic ISA DMA controller.
+
+    use mesh::MeshPayload;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// A handle to a generic dual 8237 ISA DMA controller.
+    #[derive(MeshPayload)]
+    pub struct GenericIsaDmaDeviceHandle;
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenericIsaDmaDeviceHandle {
+        const ID: &'static str = "genericIsaDma";
+    }
+}
+
 pub mod pic {
     //! Resource definitions for the PIC (dual 8259 Programmable Interrupt Controller).
 
