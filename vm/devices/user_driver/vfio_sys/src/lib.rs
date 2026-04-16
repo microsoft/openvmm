@@ -222,7 +222,7 @@ pub fn setup_vfio_container_group(
 
     let group = match iommu_type {
         IommuType::NoIommu => Group::open_noiommu(group_id),
-        _ => Group::open(group_id),
+        IommuType::Type1v2 => Group::open(group_id),
     }
     .with_context(|| format!("failed to open VFIO group {group_id}"))?;
 
