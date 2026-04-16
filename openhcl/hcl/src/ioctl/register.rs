@@ -145,7 +145,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     .get_vp_registers_hypercall(vtl, hv_names, &mut values)
                     .map_err(GetRegError::Hypercall)?;
 
-                for (dest, value) in hv_values.iter_mut().zip(values.into_iter()) {
+                for (dest, value) in hv_values.iter_mut().zip(values) {
                     **dest = value;
                 }
                 hv_names.clear();

@@ -82,12 +82,10 @@ fn pkcs11_rsa_aes_key_unwrap(
 
     let (wrapped_aes_key, wrapped_rsa_key) = wrapped_key_blob
         .split_at_checked(modulus_size)
-        .ok_or_else(|| {
-            Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
-                modulus_size,
-                wrapped_key_blob.len(),
-            )
-        })?;
+        .ok_or(Pkcs11RsaAesKeyUnwrapError::UndersizedWrappedAesKey(
+            modulus_size,
+            wrapped_key_blob.len(),
+        ))?;
 
     if wrapped_rsa_key.is_empty() {
         return Err(Pkcs11RsaAesKeyUnwrapError::EmptyWrappedRsaKey);

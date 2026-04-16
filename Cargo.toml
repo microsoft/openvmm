@@ -701,6 +701,7 @@ unnecessary_box_returns = "warn"
 # flattened statements.
 collapsible_else_if = "allow"
 collapsible_if = "allow"
+collapsible_match = "allow"
 # There are types where it makes sense to define the length, but it can never
 # be empty. This lint is reasonable for container-like data-structures, but
 # makes less sense for hardware-backed data structures.
