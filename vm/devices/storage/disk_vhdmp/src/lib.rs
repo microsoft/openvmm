@@ -452,7 +452,7 @@ impl OpenOptions {
                 &mut storage_type,
                 path16.as_ptr(),
                 0,
-                0,
+                self.flags,
                 Some(&mut parameters),
                 &mut handle,
             ))?;

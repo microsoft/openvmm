@@ -23,7 +23,7 @@ fn disk_open_error(path: &Path, verb: &str) -> String {
 }
 
 /// Options for opening a disk file.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct OpenDiskOptions {
     /// Open the disk as read-only.
     pub read_only: bool,
@@ -43,7 +43,7 @@ pub fn open_disk_type(
     let read_only = options.read_only;
     let ensure_no_direct = |ext| {
         if options.direct {
-            anyhow::bail!("direct I/O is not supported for .{ext} files");
+            anyhow::bail!("direct I/O is not supported for {ext} files");
         };
         Ok(())
     };
@@ -57,7 +57,7 @@ pub fn open_disk_type(
 
             match disk_vhd1::Vhd1Disk::open_fixed(file, read_only) {
                 Ok(vhd) => {
-                    ensure_no_direct("fixed VHD")?;
+                    ensure_no_direct("fixed .vhd")?;
                     Resource::new(disk_backend_resources::FixedVhd1DiskHandle(
                         vhd.into_inner(),
                     ))
@@ -97,7 +97,7 @@ pub fn open_disk_type(
             anyhow::bail!("iso file cannot be opened as read/write")
         }
         Some("vmgs") => {
-            ensure_no_direct("vmgs")?;
+            ensure_no_direct(".vmgs")?;
             // VMGS files are fixed VHD1s. Don't bother to validate the footer
             // here; let the resource resolver do that later.
             let file = std::fs::OpenOptions::new()

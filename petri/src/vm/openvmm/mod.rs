@@ -198,7 +198,7 @@ fn memdiff_disk(path: &Path) -> anyhow::Result<Resource<DiskHandleKind>> {
         path,
         OpenDiskOptions {
             read_only: true,
-            ..Default::default()
+            direct: false,
         },
     )
     .with_context(|| format!("failed to open disk: {}", path.display()))?;
@@ -297,7 +297,19 @@ fn petri_disk_to_openvmm(disk: &Disk) -> anyhow::Result<Resource<DiskHandleKind>
         .into_resource(),
         Disk::Differencing(DiskPath::Local(path)) => memdiff_disk(path)?,
         Disk::Differencing(DiskPath::Remote { url }) => memdiff_remote_disk(url)?,
-        Disk::Persistent(path) => open_disk_type(path.as_ref(), Default::default())?,
-        Disk::Temporary(path) => open_disk_type(path.as_ref(), Default::default())?,
+        Disk::Persistent(path) => open_disk_type(
+            path.as_ref(),
+            OpenDiskOptions {
+                read_only: false,
+                direct: false,
+            },
+        )?,
+        Disk::Temporary(path) => open_disk_type(
+            path.as_ref(),
+            OpenDiskOptions {
+                read_only: false,
+                direct: false,
+            },
+        )?,
     })
 }

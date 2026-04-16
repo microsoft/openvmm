@@ -771,7 +771,7 @@ fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPa
                 disk.host_path.as_ref(),
                 OpenDiskOptions {
                     read_only: disk.read_only,
-                    ..Default::default()
+                    direct: false,
                 },
             )
             .with_context(|| format!("failed to open {}", disk.host_path))?,

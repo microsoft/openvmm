@@ -895,7 +895,7 @@ pub(crate) async fn run_repl(
                                 path.as_ref(),
                                 openvmm_helpers::disk::OpenDiskOptions {
                                     read_only,
-                                    ..Default::default()
+                                    direct: false,
                                 },
                             )
                             .with_context(|| format!("failed to open {}", path.display()))?
@@ -1089,7 +1089,7 @@ pub(crate) async fn run_repl(
                             path.as_ref(),
                             openvmm_helpers::disk::OpenDiskOptions {
                                 read_only,
-                                ..Default::default()
+                                direct: false,
                             },
                         )
                         .with_context(|| format!("failed to open {}", path.display()))?,
