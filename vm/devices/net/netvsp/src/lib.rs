@@ -3750,7 +3750,12 @@ impl Adapter {
                 let value = value.read_n::<u16>(info.value_length as usize / 2)?;
                 let value =
                     String::from_utf16(&value).map_err(|_| OidError::InvalidInput("value"))?;
-                let as_num = value.as_bytes().first().map_or(0, |c| c - b'0');
+                let as_num = value
+                    .as_bytes()
+                    .first()
+                    .map(|c| c.wrapping_sub(b'0'))
+                    .filter(|&c| c <= 9)
+                    .ok_or(OidError::InvalidInput("value as num"))?;
                 let tx = as_num & 1 != 0;
                 let rx = as_num & 2 != 0;
 
