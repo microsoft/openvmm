@@ -76,6 +76,48 @@ pub mod cmos_rtc_time_source {
     }
 }
 
+pub mod cmos_rtc {
+    //! Resource definitions for CMOS RTC devices.
+
+    use super::CmosRtcTimeSourceHandleKind;
+    use mesh::MeshPayload;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Handle for the generic MC146818-compatible CMOS RTC device.
+    #[derive(MeshPayload)]
+    pub struct GenericCmosRtcDeviceHandle {
+        /// IRQ line to signal RTC device events.
+        pub irq: u32,
+        /// Which CMOS RAM register contains the century register.
+        pub century_reg_idx: u8,
+        /// Initial state of CMOS RAM.
+        pub initial_cmos: Option<[u8; 256]>,
+        /// Runtime clock source for this RTC instance.
+        pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenericCmosRtcDeviceHandle {
+        const ID: &'static str = "genericCmosRtc";
+    }
+
+    /// Handle for the PIIX4 CMOS RTC device.
+    #[derive(MeshPayload)]
+    pub struct Piix4CmosRtcDeviceHandle {
+        /// Initial state of CMOS RAM.
+        pub initial_cmos: Option<[u8; 256]>,
+        /// Whether enlightened interrupts are enabled.
+        pub enlightened_interrupts: bool,
+        /// Runtime clock source for this RTC instance.
+        pub time_source: Resource<CmosRtcTimeSourceHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for Piix4CmosRtcDeviceHandle {
+        const ID: &'static str = "piix4CmosRtc";
+    }
+}
+
 pub mod i8042 {
     //! Resource definitions for the i8042 PS2 keyboard/mouse controller.
 

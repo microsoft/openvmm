@@ -396,7 +396,6 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
-                    with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
                     with_underhill_vga_proxy: self.proxy_vga,
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
@@ -422,7 +421,6 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
-                    with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
@@ -463,7 +461,6 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
-                    with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
 
                     with_underhill_vga_proxy: false,

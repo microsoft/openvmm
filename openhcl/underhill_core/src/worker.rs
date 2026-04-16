@@ -62,6 +62,12 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device_worker_defs::RemoteChipsetDeviceHandle;
+use chipset_resources::CmosRtcTimeSourceHandleKind;
+use chipset_resources::ResolvedCmosRtcTimeSource;
+#[cfg(guest_arch = "x86_64")]
+use chipset_resources::cmos_rtc::GenericCmosRtcDeviceHandle;
+#[cfg(guest_arch = "x86_64")]
+use chipset_resources::cmos_rtc::Piix4CmosRtcDeviceHandle;
 use closeable_mutex::CloseableMutex;
 use cvm_tracing::CVM_ALLOWED;
 use debug_ptr::DebugPtr;
@@ -2867,16 +2873,6 @@ async fn new_underhill_vm(
         .with_winbond_super_io_and_floppy_stub
         .then_some(dev::WinbondSuperIoAndFloppyStubDeps);
 
-    #[cfg(not(guest_arch = "x86_64"))]
-    let deps_piix4_cmos_rtc = None;
-
-    #[cfg(guest_arch = "x86_64")]
-    let deps_piix4_cmos_rtc = chipset.with_piix4_cmos_rtc.then(|| dev::Piix4CmosRtcDeps {
-        time_source: PlatformResource.into_resource(),
-        initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
-        enlightened_interrupts: true, // As advertised by the PCAT BIOS.
-    });
-
     let deps_hyperv_ide = if chipset.with_hyperv_ide {
         let [primary_channel_drives, secondary_channel_drives] = ide_drives;
         Some(dev::HyperVIdeDeps {
@@ -2927,14 +2923,30 @@ async fn new_underhill_vm(
 
     let deps_generic_psp = { chipset.with_generic_psp.then_some(dev::GenericPspDeps {}) };
 
-    let deps_generic_cmos_rtc = chipset
-        .with_generic_cmos_rtc
-        .then(|| dev::GenericCmosRtcDeps {
-            irq: 8,
-            time_source: PlatformResource.into_resource(),
-            century_reg_idx: 0x32,
-            initial_cmos: None,
+    // Emit CMOS RTC device handles based on firmware type / architecture.
+    #[cfg(guest_arch = "x86_64")]
+    if firmware_type == FirmwareType::Pcat {
+        chipset_devices.push(ChipsetDeviceHandle {
+            name: "piix4-rtc".to_owned(),
+            resource: Piix4CmosRtcDeviceHandle {
+                initial_cmos: Some(firmware_pcat::default_cmos_values(&mem_layout)),
+                enlightened_interrupts: true,
+                time_source: PlatformResource.into_resource(),
+            }
+            .into_resource(),
         });
+    } else {
+        chipset_devices.push(ChipsetDeviceHandle {
+            name: "rtc".to_owned(),
+            resource: GenericCmosRtcDeviceHandle {
+                irq: 8,
+                century_reg_idx: 0x32,
+                initial_cmos: None,
+                time_source: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+        });
+    }
 
     if dps.general.tpm_enabled {
         let no_persistent_secrets =
@@ -3026,6 +3038,7 @@ async fn new_underhill_vm(
 
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
+        deps_generic_ioapic,
         deps_generic_psp,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
@@ -3033,7 +3046,6 @@ async fn new_underhill_vm(
         deps_hyperv_framebuffer: None,
         deps_hyperv_ide,
         deps_hyperv_vga: None,
-        deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
         deps_underhill_vga_proxy,
         deps_winbond_super_io_and_floppy_stub,

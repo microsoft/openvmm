@@ -244,7 +244,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_framebuffer,
             deps_hyperv_ide,
             deps_hyperv_vga,
-            deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
@@ -431,52 +430,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         secondary_channel_line_interrupt,
                     )
                 })?;
-        }
-
-        if let Some(options::dev::GenericCmosRtcDeps {
-            irq,
-            time_source,
-            century_reg_idx,
-            initial_cmos,
-        }) = deps_generic_cmos_rtc
-        {
-            let resolved = resolver
-                .resolve(time_source, ())
-                .await
-                .map_err(BaseChipsetBuilderError::ResolveResource)?;
-            builder.arc_mutex_device("rtc").add(|services| {
-                cmos_rtc::Rtc::new(
-                    resolved.0,
-                    services.new_line(IRQ_LINE_SET, "interrupt", irq),
-                    services.register_vmtime(),
-                    century_reg_idx,
-                    initial_cmos,
-                    false,
-                )
-            })?;
-        }
-
-        if let Some(options::dev::Piix4CmosRtcDeps {
-            time_source,
-            initial_cmos,
-            enlightened_interrupts,
-        }) = deps_piix4_cmos_rtc
-        {
-            let resolved = resolver
-                .resolve(time_source, ())
-                .await
-                .map_err(BaseChipsetBuilderError::ResolveResource)?;
-            builder.arc_mutex_device("piix4-rtc").add(|services| {
-                // hard-coded to IRQ line 8, as per PIIX4 spec
-                let rtc_interrupt = services.new_line(IRQ_LINE_SET, "interrupt", 8);
-                chipset_legacy::piix4_cmos_rtc::Piix4CmosRtc::new(
-                    resolved.0,
-                    rtc_interrupt,
-                    services.register_vmtime(),
-                    initial_cmos,
-                    enlightened_interrupts,
-                )
-            })?;
         }
 
         // The ACPI GPE0 line to use for generation ID. This must match the
@@ -1020,7 +973,6 @@ pub mod options {
             hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
-            piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
@@ -1189,6 +1141,14 @@ pub mod options {
             /// Whether enlightened interrupts are enabled. Needed when
             /// advertised by ACPI WAET table.
             pub enlightened_interrupts: bool,
+        }
+
+        /// Generic IO Advanced Programmable Interrupt Controller (IOAPIC)
+        pub struct GenericIoApicDeps {
+            /// Number of IO-APIC entries
+            pub num_entries: u8,
+            /// Trait allowing the IO-APIC device to assert VM interrupts.
+            pub routing: Box<dyn ioapic::IoApicRouting>,
         }
 
         /// Hyper-V specific ACPI-compatible battery device

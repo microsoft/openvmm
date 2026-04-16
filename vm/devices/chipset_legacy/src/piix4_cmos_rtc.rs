@@ -18,6 +18,8 @@ use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::vmtime::VmTimeSource;
 
+pub mod resolver;
+
 open_enum::open_enum! {
     enum Piix4CmosRtcIoPort: u16 {
         ADDRESS          = 0x70,
