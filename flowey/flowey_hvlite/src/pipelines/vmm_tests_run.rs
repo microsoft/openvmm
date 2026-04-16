@@ -253,6 +253,7 @@ fn discover_artifacts(
     // Step 1: Use nextest to resolve the filter expression to test names and
     // get the binary path
     let mut cmd = Command::new("cargo");
+    cmd.stderr(Stdio::inherit());
     cmd.current_dir(repo_root).args([
         "nextest",
         "list",
@@ -271,8 +272,7 @@ fn discover_artifacts(
     let nextest_output = cmd.output().context("failed to run cargo nextest list")?;
     anyhow::ensure!(
         nextest_output.status.success(),
-        "cargo nextest list failed: {}",
-        String::from_utf8_lossy(&nextest_output.stderr)
+        "cargo nextest list failed",
     );
     let nextest_stdout = String::from_utf8(nextest_output.stdout)
         .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
