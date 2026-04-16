@@ -1150,6 +1150,8 @@ pub enum Error {
     AvailableCheck(#[source] io::Error),
     #[error("failed to open /dev/mshv")]
     OpenMshv(#[source] MshvError),
+    #[error("failed to get partition property")]
+    GetPartitionProperty(#[source] anyhow::Error),
     #[error("failed to set partition property")]
     SetPartitionProperty(#[source] anyhow::Error),
     #[error("register access error")]
