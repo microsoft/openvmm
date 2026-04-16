@@ -306,6 +306,17 @@ pub struct RxMetadata {
     pub l4_checksum: RxChecksumState,
     /// The L4 protocol.
     pub l4_protocol: L4Protocol,
+    /// The L3 protocol (IPv4/IPv6). Used for GSO/LRO metadata.
+    pub l3_protocol: L3Protocol,
+    /// L2 (Ethernet) header length in bytes (e.g. 14, or 18 with VLAN).
+    pub l2_len: u8,
+    /// L3 (IP) header length in bytes.
+    pub l3_len: u16,
+    /// L4 (TCP/UDP) header length in bytes.
+    pub l4_len: u8,
+    /// If non-zero, this is a GSO/LRO packet and this value is the MSS
+    /// (maximum segment size) that should be advertised to the guest.
+    pub gso_size: u16,
 }
 
 impl Default for RxMetadata {
@@ -316,6 +327,11 @@ impl Default for RxMetadata {
             ip_checksum: RxChecksumState::Unknown,
             l4_checksum: RxChecksumState::Unknown,
             l4_protocol: L4Protocol::Unknown,
+            l3_protocol: L3Protocol::Unknown,
+            l2_len: 0,
+            l3_len: 0,
+            l4_len: 0,
+            gso_size: 0,
         }
     }
 }

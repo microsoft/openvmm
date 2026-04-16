@@ -14,6 +14,7 @@ use futures::io::AsyncRead;
 use inspect::InspectMut;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
+use net_backend::L3Protocol;
 use net_backend::L4Protocol;
 use net_backend::Queue;
 use net_backend::QueueConfig;
@@ -115,25 +116,20 @@ pub struct TapEndpoint {
 
 impl TapEndpoint {
     pub fn new(tap: tap::Tap) -> Result<Self, tap::Error> {
-        // Do not enable any RX offloads (TUN_F_CSUM, TUN_F_TSO*, etc.).
+        // Enable RX offloads so the kernel can deliver large coalesced
+        // (GRO/LRO) TCP packets instead of segmenting them. This reduces
+        // per-packet overhead and improves throughput when the guest has
+        // negotiated VIRTIO_NET_F_GUEST_TSO4/6.
         //
-        // The TUN_F_* flags are the TAP equivalent of VIRTIO_NET_F_GUEST_*:
-        // they tell the kernel that our reader can handle partial checksums
-        // (NEEDS_CSUM) and unsegmented GSO packets. Since net_backend's
-        // RxMetadata has no way to represent "checksum needs to be completed"
-        // (only Good/Bad/Unknown), and no concept of receive-side GRO/RSC,
-        // accepting such packets would force us to either lie about checksum
-        // state or complete checksums in software.
+        // TUN_F_CSUM (1) — we can handle NEEDS_CSUM (partial checksum)
+        // TUN_F_TSO4 (2) — we can handle TSOv4 (large IPv4/TCP packets)
+        // TUN_F_TSO6 (4) — we can handle TSOv6 (large IPv6/TCP packets)
         //
-        // With offloads set to 0, the kernel completes all checksums and
-        // segments all GSO packets before delivering them to us. This is
-        // correct and simple. The TX path is unaffected — writes with
-        // NEEDS_CSUM and GSO types in the vnet header are processed by the
-        // kernel regardless of these flags.
-        //
-        // We explicitly set 0 rather than skipping the call, in case a
-        // previous user of this TAP fd set offloads to a non-zero value.
-        tap.set_offloads(0)?;
+        // TUN_F_CSUM is required for TUN_F_TSO4/6.
+        const TUN_F_CSUM: u32 = 1;
+        const TUN_F_TSO4: u32 = 2;
+        const TUN_F_TSO6: u32 = 4;
+        tap.set_offloads(TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6)?;
 
         Ok(Self {
             tap: Arc::new(Mutex::new(Some(tap))),
@@ -480,16 +476,18 @@ fn build_vnet_hdr(meta: &TxMetadata) -> VirtioNetHdr {
 
 /// Parse a `VirtioNetHdr` from the TAP device into receive metadata.
 ///
-/// Because we do not set any `TUN_F_*` RX offload flags (see
-/// [`TapEndpoint::new`]), the kernel will never send us `NEEDS_CSUM` or GSO
-/// packets. We only need to handle `DATA_VALID` (checksum verified by the
-/// kernel) and the default case (no information).
-///
-/// The `gso_type` field should always be `GSO_NONE` since we didn't enable
-/// receive-side GSO, but we still parse it defensively to extract L4 protocol
-/// information if present.
+/// With `TUN_F_CSUM | TUN_F_TSO4 | TUN_F_TSO6` enabled, the kernel may
+/// deliver large coalesced packets with `NEEDS_CSUM` set and a non-NONE
+/// `gso_type`. We translate these into `RxMetadata` GSO fields so the
+/// virtio-net device can pass them to the guest as LRO packets.
 fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
     let (ip_checksum, l4_checksum) = if hdr.flags.data_valid() {
+        (RxChecksumState::Good, RxChecksumState::Good)
+    } else if hdr.flags.needs_csum() {
+        // NEEDS_CSUM means the data is valid but the L4 checksum in the
+        // header is incomplete (partial). For our purposes treat the
+        // checksums as good — the guest will be told via NEEDS_CSUM in
+        // the virtio header to complete them.
         (RxChecksumState::Good, RxChecksumState::Good)
     } else {
         (RxChecksumState::Unknown, RxChecksumState::Unknown)
@@ -501,12 +499,48 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
         _ => L4Protocol::Unknown,
     };
 
+    // Extract GSO metadata when the kernel delivers a coalesced packet.
+    let gso_protocol = hdr.gso_type.protocol();
+    let (l3_protocol, gso_size, l2_len, l3_len, l4_len) =
+        if hdr.gso_size > 0
+            && (gso_protocol == VirtioNetHdrGsoProtocol::TCPV4
+                || gso_protocol == VirtioNetHdrGsoProtocol::TCPV6)
+        {
+            let l3_proto = if gso_protocol == VirtioNetHdrGsoProtocol::TCPV4 {
+                L3Protocol::Ipv4
+            } else {
+                L3Protocol::Ipv6
+            };
+            // csum_start = l2_len + l3_len; we assume standard Ethernet (14 bytes)
+            // unless csum_start indicates otherwise.
+            let l2 = if hdr.csum_start > 14 { 14u8 } else { 0 };
+            let l3 = if l2 > 0 {
+                hdr.csum_start - l2 as u16
+            } else {
+                0
+            };
+            let l4 = if hdr.hdr_len > hdr.csum_start {
+                let v = hdr.hdr_len - hdr.csum_start;
+                if v <= u8::MAX as u16 { v as u8 } else { 0 }
+            } else {
+                0
+            };
+            (l3_proto, hdr.gso_size, l2, l3, l4)
+        } else {
+            (L3Protocol::Unknown, 0, 0, 0, 0)
+        };
+
     RxMetadata {
         offset: 0,
         len: 0,
         ip_checksum,
         l4_checksum,
         l4_protocol,
+        l3_protocol,
+        gso_size,
+        l2_len,
+        l3_len,
+        l4_len,
     }
 }
 
@@ -601,18 +635,57 @@ mod tests {
     }
 
     #[test]
-    fn rx_metadata_from_vnet_hdr_needs_csum_treated_as_unknown() {
-        // We don't set TUN_F_CSUM so the kernel should never send NEEDS_CSUM,
-        // but if it did, we conservatively treat it as Unknown (not Good).
+    fn rx_metadata_from_vnet_hdr_needs_csum_treated_as_good() {
+        // With TUN_F_CSUM enabled, NEEDS_CSUM means data is valid but
+        // checksum is partial — treat as Good for our purposes.
         let hdr = VirtioNetHdr {
             flags: VirtioNetHdrFlags::new().with_needs_csum(true),
             gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
             ..Default::default()
         };
         let meta = parse_vnet_hdr(&hdr);
-        assert_eq!(meta.ip_checksum, RxChecksumState::Unknown);
-        assert_eq!(meta.l4_checksum, RxChecksumState::Unknown);
+        assert_eq!(meta.ip_checksum, RxChecksumState::Good);
+        assert_eq!(meta.l4_checksum, RxChecksumState::Good);
         assert_eq!(meta.l4_protocol, L4Protocol::Tcp);
+    }
+
+    #[test]
+    fn rx_metadata_from_vnet_hdr_gso_tcpv4() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV4),
+            hdr_len: 14 + 20 + 32, // eth + ipv4 + tcp w/options
+            gso_size: 1460,
+            csum_start: 14 + 20,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let meta = parse_vnet_hdr(&hdr);
+        assert_eq!(meta.l3_protocol, L3Protocol::Ipv4);
+        assert_eq!(meta.gso_size, 1460);
+        assert_eq!(meta.l2_len, 14);
+        assert_eq!(meta.l3_len, 20);
+        assert_eq!(meta.l4_len, 32);
+        assert_eq!(meta.l4_protocol, L4Protocol::Tcp);
+    }
+
+    #[test]
+    fn rx_metadata_from_vnet_hdr_gso_tcpv6() {
+        let hdr = VirtioNetHdr {
+            flags: VirtioNetHdrFlags::new().with_needs_csum(true),
+            gso_type: VirtioNetHdrGso::new().with_protocol(VirtioNetHdrGsoProtocol::TCPV6),
+            hdr_len: 14 + 40 + 20,
+            gso_size: 1440,
+            csum_start: 14 + 40,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let meta = parse_vnet_hdr(&hdr);
+        assert_eq!(meta.l3_protocol, L3Protocol::Ipv6);
+        assert_eq!(meta.gso_size, 1440);
+        assert_eq!(meta.l2_len, 14);
+        assert_eq!(meta.l3_len, 40);
+        assert_eq!(meta.l4_len, 20);
     }
 
     #[test]

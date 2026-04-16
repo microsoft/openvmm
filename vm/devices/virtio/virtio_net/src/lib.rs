@@ -263,6 +263,8 @@ impl VirtioDevice for Device {
             .with_mac(true)
             .with_csum(csum)
             .with_guest_csum(true)
+            .with_guest_tso4(true)
+            .with_guest_tso6(true)
             .with_host_tso4(host_tso)
             .with_host_tso6(host_tso);
 

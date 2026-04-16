@@ -3,10 +3,13 @@
 
 use crate::VirtioNetHeader;
 use crate::VirtioNetHeaderFlags;
+use crate::VirtioNetHeaderGso;
+use crate::VirtioNetHeaderGsoProtocol;
 use crate::header_size;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use net_backend::BufferAccess;
+use net_backend::L3Protocol;
 use net_backend::RxBufferSegment;
 use net_backend::RxId;
 use net_backend::RxMetadata;
@@ -170,8 +173,41 @@ impl BufferAccess for VirtioWorkPool {
         let data_valid = metadata.ip_checksum.is_valid() && metadata.l4_checksum.is_valid();
         let flags = VirtioNetHeaderFlags::new().with_data_valid(data_valid);
 
+        // Build GSO fields when the backend indicates a large/coalesced packet.
+        let (gso_type, gso_size, hdr_len, csum_start, csum_offset) =
+            if metadata.gso_size > 0 && metadata.l2_len > 0 && metadata.l3_len > 0 {
+                let gso_protocol = match metadata.l3_protocol {
+                    L3Protocol::Ipv4 => VirtioNetHeaderGsoProtocol::TCPV4,
+                    L3Protocol::Ipv6 => VirtioNetHeaderGsoProtocol::TCPV6,
+                    L3Protocol::Unknown => VirtioNetHeaderGsoProtocol::NONE,
+                };
+                let gso_type_byte: u8 =
+                    VirtioNetHeaderGso::new().with_protocol(gso_protocol).into();
+                let total_hdr =
+                    metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16;
+                let csum_start = metadata.l2_len as u16 + metadata.l3_len;
+                // TCP checksum offset within TCP header is 16.
+                let csum_offset: u16 = 16;
+                (gso_type_byte, metadata.gso_size, total_hdr, csum_start, csum_offset)
+            } else {
+                (0, 0, 0, 0, 0)
+            };
+
+        // When GSO is active, set NEEDS_CSUM so the guest computes
+        // per-segment checksums.
+        let flags = if gso_size > 0 {
+            flags.with_needs_csum(true)
+        } else {
+            flags
+        };
+
         let virtio_net_header = VirtioNetHeader {
             flags: flags.into(),
+            gso_type,
+            gso_size,
+            hdr_len,
+            csum_start,
+            csum_offset,
             num_buffers: 1,
             ..FromZeros::new_zeroed()
         };
