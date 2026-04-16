@@ -27,8 +27,15 @@ impl ResourceKind for HypervisorKind {
 }
 
 /// Handle for the KVM hypervisor backend.
+///
+/// Contains the open `/dev/kvm` file descriptor so that it can be probed
+/// early and reused when creating the partition.
 #[derive(MeshPayload)]
-pub struct KvmHandle;
+pub struct KvmHandle {
+    /// An open `/dev/kvm` file descriptor, open with read and write
+    /// permissions.
+    pub kvm: std::fs::File,
+}
 
 impl ResourceId<HypervisorKind> for KvmHandle {
     const ID: &'static str = "kvm";

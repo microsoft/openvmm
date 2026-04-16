@@ -118,9 +118,8 @@ impl VirtioDevice for VirtioVsockDevice {
             .with_no_implied_stream(true);
         DeviceTraits {
             device_id: VirtioDeviceType::VSOCK,
-            device_features: VirtioDeviceFeatures::new().with_bank0(
-                virtio::spec::VirtioDeviceFeaturesBank0::from_bits(features_bank0.into_bits()),
-            ),
+            device_features: VirtioDeviceFeatures::new()
+                .with_device_specific_low(features_bank0.into_bits()),
             max_queues: QUEUE_COUNT.try_into().unwrap(),
             device_register_length: size_of::<VsockConfig>() as u32,
             ..Default::default()
@@ -176,7 +175,7 @@ impl VirtioDevice for VirtioVsockDevice {
             .context("failed to create queue event")?;
 
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory.clone(),
             resources.notify,

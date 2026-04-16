@@ -76,7 +76,7 @@ Use the `-GuestStateIsolationType OpenHCL` parameter to `New-VM`. The following 
 
 ```powershell
 # Names, directories, etc.
-# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc. See [cross-compile](../../../dev_guide/getting_started/cross_compile.md) and [vmm-test](../../../dev_guide/tests/vmm.md) docs for additional info.
+# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests-run --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc. See [cross-compile](../../../dev_guide/getting_started/cross_compile.md) and [vmm-test](../../../dev_guide/tests/vmm.md) docs for additional info.
 $repoDir = "home\<your-wsl-username-for-example>\openvmm" # for prereqs below, the path relative to the root of your WSL file system where you have cloned the openvmm repo
 
 $VmName = "OpenHCLTestVM"
@@ -144,7 +144,7 @@ While these steps guide you to create a second SCSI controller, your generation 
 
 ```powershell
 # Names, directories, etc.
-# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc. See [cross-compile](../../../dev_guide/getting_started/cross_compile.md) and [vmm-test](../../../dev_guide/tests/vmm.md) docs for additional info.
+# cargo xflowey will do some heavy lifting for you. You can run `cargo xflowey vmm-tests-run --build-only --dir /mnt/q/win-vmm-tests ...` from your WSL to get images, compiled OpenHCL, etc. See [cross-compile](../../../dev_guide/getting_started/cross_compile.md) and [vmm-test](../../../dev_guide/tests/vmm.md) docs for additional info.
 $repoDir = "home\<your-wsl-username-for-example>\openvmm" # for prereqs below, the path relative to the root of your WSL file system where you have cloned the openvmm repo
 
 $VmName = "OpenHCLTestVM"

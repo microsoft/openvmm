@@ -68,6 +68,9 @@ flowey_request! {
         pub release_igvm_files: Option<ReadVar<crate::download_release_igvm_files_from_gh::ReleaseOutput>>,
         /// Use paths relative to `test_content_dir` for environment variables
         pub use_relative_paths: bool,
+        /// Disable lazy remote artifact fetching (set PETRI_REMOTE_ARTIFACTS=0).
+        /// Should be true in CI where all images are pre-downloaded.
+        pub disable_remote_artifacts: bool,
     }
 }
 
@@ -104,6 +107,7 @@ impl SimpleFlowNode for Node {
             get_env,
             release_igvm_files,
             use_relative_paths,
+            disable_remote_artifacts,
         } = request;
 
         let openvmm_deps_arch = match vmm_tests_target.architecture {
@@ -256,6 +260,10 @@ impl SimpleFlowNode for Node {
                         "VMM_TEST_IMAGES".into(),
                         make_portable_path(disk_image_dir)?,
                     );
+                }
+
+                if disable_remote_artifacts {
+                    env.insert("PETRI_REMOTE_ARTIFACTS".into(), "0".into());
                 }
 
                 if let Some(openvmm) = openvmm {

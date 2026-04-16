@@ -1297,7 +1297,7 @@ impl VirtioDevice for TestDevice {
 
         let queue_event = PolledWait::new(&self.driver, resources.event).unwrap();
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory,
             resources.notify,
@@ -2567,7 +2567,7 @@ async fn verify_device_queue_simple_inner(
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: features.clone(),
+                device_features: features,
                 max_queues: 1,
                 device_register_length: 0,
                 ..Default::default()
@@ -2656,7 +2656,7 @@ async fn verify_device_multi_queue_inner(
             &driver_source,
             DeviceTraits {
                 device_id: VirtioDeviceType::CONSOLE,
-                device_features: features.clone(),
+                device_features: features,
                 max_queues: num_queues + 1,
                 device_register_length: 0,
                 ..Default::default()

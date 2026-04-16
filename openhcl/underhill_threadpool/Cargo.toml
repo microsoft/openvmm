@@ -15,6 +15,7 @@ pal_async.workspace = true
 pal_uring.workspace = true
 
 fs-err.workspace = true
+io-uring.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

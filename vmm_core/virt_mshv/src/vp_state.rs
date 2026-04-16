@@ -2,12 +2,11 @@
 // Licensed under the MIT License.
 
 use super::Error;
+use super::VcpuFdExt;
 use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
-use mshv_bindings::hv_register_assoc;
-use static_assertions::assert_eq_size;
-use std::mem::offset_of;
+use mshv_bindings::LapicState;
 use virt::state::HvRegisterState;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
@@ -26,9 +25,9 @@ impl MshvProcessor<'_> {
 
         regs.get_values(assoc.iter_mut().map(|assoc| &mut assoc.value));
 
-        self.inner
+        self.runner
             .vcpufd
-            .set_reg(hvdef_to_mshv(&assoc[..]))
+            .set_hvdef_regs(&assoc[..])
             .map_err(Error::Register)?;
 
         Ok(())
@@ -45,42 +44,14 @@ impl MshvProcessor<'_> {
             value: FromZeros::new_zeroed(),
         });
 
-        self.inner
+        self.runner
             .vcpufd
-            .get_reg(hvdef_to_mshv_mut(&mut assoc[..]))
+            .get_hvdef_regs(&mut assoc[..])
             .map_err(Error::Register)?;
 
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)
     }
-}
-
-fn hvdef_to_mshv(regs: &[HvRegisterAssoc]) -> &[hv_register_assoc] {
-    assert_eq_size!(HvRegisterAssoc, hv_register_assoc);
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, name),
-        offset_of!(hv_register_assoc, name)
-    );
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, value),
-        offset_of!(hv_register_assoc, value)
-    );
-    // SAFETY: HvRegisterAssoc and hv_register_assoc have compatible definitions.
-    unsafe { std::mem::transmute(regs) }
-}
-
-fn hvdef_to_mshv_mut(regs: &mut [HvRegisterAssoc]) -> &mut [hv_register_assoc] {
-    assert_eq_size!(HvRegisterAssoc, hv_register_assoc);
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, name),
-        offset_of!(hv_register_assoc, name)
-    );
-    assert_eq!(
-        offset_of!(HvRegisterAssoc, value),
-        offset_of!(hv_register_assoc, value)
-    );
-    // SAFETY: HvRegisterAssoc and hv_register_assoc have compatible definitions.
-    unsafe { std::mem::transmute(regs) }
 }
 
 impl AccessVpState for &'_ mut MshvProcessor<'_> {
@@ -111,19 +82,64 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_xsave(&mut self, _value: &vp::Xsave) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
-        todo!()
+        // Get the APIC base register.
+        let mut assoc = [HvRegisterAssoc {
+            name: HvX64RegisterName::ApicBase.into(),
+            pad: [0; 3],
+            value: FromZeros::new_zeroed(),
+        }];
+        self.runner
+            .vcpufd
+            .get_hvdef_regs(&mut assoc)
+            .map_err(Error::Register)?;
+        let apic_base = assoc[0].value.as_u64();
+
+        // Get the LAPIC state page.
+        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
+
+        // Clear the non-architectural NMI pending bit.
+        vp::set_hv_apic_nmi_pending(&mut page, false);
+
+        Ok(vp::Apic::from_page(apic_base, &page))
     }
 
-    fn set_apic(&mut self, _value: &vp::Apic) -> Result<(), Self::Error> {
-        todo!()
+    fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
+        // Set the APIC base register first to set the APIC mode before
+        // updating the APIC register state.
+        self.runner
+            .vcpufd
+            .set_hvdef_regs(&[HvRegisterAssoc::from((
+                HvX64RegisterName::ApicBase,
+                value.apic_base,
+            ))])
+            .map_err(Error::Register)?;
+
+        // Preserve the current NMI pending state across the restore.
+        let current_lapic = self.runner.vcpufd.get_lapic().map_err(Error::Register)?;
+        let current_page: [u8; 1024] = current_lapic.regs.map(|b| b as u8);
+        let nmi_pending = vp::hv_apic_nmi_pending(&current_page);
+
+        // Set the LAPIC state page, restoring the NMI pending bit.
+        let mut page = value.as_page();
+        vp::set_hv_apic_nmi_pending(&mut page, nmi_pending);
+        let lapic = LapicState {
+            regs: page.map(|b| b as std::os::raw::c_char),
+        };
+        self.runner
+            .vcpufd
+            .set_lapic(&lapic)
+            .map_err(Error::Register)?;
+
+        Ok(())
     }
 
     fn xcr(&mut self) -> Result<vp::Xcr0, Self::Error> {
@@ -215,40 +231,40 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn synic_timers(&mut self) -> Result<vp::SynicTimers, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_message_queues(&mut self) -> Result<vp::SynicMessageQueues, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_message_queues(
         &mut self,
         _value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_message_page(&mut self) -> Result<vp::SynicMessagePage, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn synic_event_flags_page(&mut self) -> Result<vp::SynicEventFlagsPage, Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 
     fn set_synic_event_flags_page(
         &mut self,
         _value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
-        todo!()
+        Err(Error::NotSupported)
     }
 }

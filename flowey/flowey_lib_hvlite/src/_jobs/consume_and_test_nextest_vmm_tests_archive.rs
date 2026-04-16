@@ -146,6 +146,7 @@ impl SimpleFlowNode for Node {
                 target_lexicon::OperatingSystem::Linux => VmmTestsDepSelections::Linux,
                 os => anyhow::bail!("unsupported target operating system: {os}"),
             }),
+            auto_install: None,
         });
 
         let arch = match target.architecture {
@@ -195,6 +196,7 @@ impl SimpleFlowNode for Node {
             get_env: v,
             release_igvm_files,
             use_relative_paths: false,
+            disable_remote_artifacts: true,
         });
 
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).

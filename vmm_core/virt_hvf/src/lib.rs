@@ -92,6 +92,13 @@ impl virt::Hypervisor for HvfHypervisor {
     type Partition = HvfPartition;
     type Error = Error;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {
+            platform_gsiv: None,
+            supports_gic_v3: true,
+        }
+    }
+
     fn new_partition<'a>(
         &'a mut self,
         config: virt::ProtoPartitionConfig<'a>,
@@ -113,6 +120,19 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         self,
         config: virt::PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
+        use vm_topology::processor::aarch64::GicVersion;
+
+        let gic_redistributors_base = match self.config.processor_topology.gic_version() {
+            GicVersion::V3 {
+                redistributors_base,
+            } => redistributors_base,
+            GicVersion::V2 { .. } => {
+                return Err(
+                    anyhow::anyhow!("HVF does not support GICv2; only GICv3 is supported").into(),
+                );
+            }
+        };
+
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
@@ -127,8 +147,8 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         let mut gicd = gic::Distributor::new(
             self.config.processor_topology.gic_distributor_base(),
             MemoryRange::new(
-                self.config.processor_topology.gic_redistributors_base()
-                    ..self.config.processor_topology.gic_redistributors_base()
+                gic_redistributors_base
+                    ..gic_redistributors_base
                         + aarch64defs::GIC_REDISTRIBUTOR_SIZE
                             * self.config.processor_topology.vp_count() as u64,
             ),
@@ -186,7 +206,11 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
                         .config
                         .vmtime
                         .access(format!("vp{}", vp.base.vp_index.index())),
-                    gicr_range: vp.gicr..vp.gicr + aarch64defs::GIC_REDISTRIBUTOR_SIZE,
+                    gicr_range: {
+                        // Guaranteed to be Some since we validated GICv3 above.
+                        let gicr = vp.gicr.unwrap();
+                        gicr..gicr + aarch64defs::GIC_REDISTRIBUTOR_SIZE
+                    },
                 }),
             });
         }

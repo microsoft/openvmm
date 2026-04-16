@@ -8,6 +8,7 @@
 use hypervisor_resources::HypervisorKind;
 use hypervisor_resources::KvmHandle;
 use openvmm_core::hypervisor_backend::ResolvedHypervisorBackend;
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 
 /// KVM probe for auto-detection.
@@ -19,7 +20,16 @@ impl hypervisor_resources::HypervisorProbe for KvmProbe {
     }
 
     fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>> {
-        Ok(virt_kvm::is_available()?.then(|| Resource::new(KvmHandle)))
+        let kvm = match fs_err::File::options()
+            .read(true)
+            .write(true)
+            .open("/dev/kvm")
+        {
+            Ok(kvm) => kvm,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        Ok(Some(KvmHandle { kvm: kvm.into() }.into_resource()))
     }
 }
 
@@ -28,10 +38,13 @@ pub struct KvmResolver;
 
 impl vm_resource::ResolveResource<HypervisorKind, KvmHandle> for KvmResolver {
     type Output = ResolvedHypervisorBackend;
-    type Error = std::convert::Infallible;
+    type Error = virt_kvm::KvmError;
 
-    fn resolve(&self, _resource: KvmHandle, _input: ()) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedHypervisorBackend::new(virt_kvm::Kvm))
+    fn resolve(&self, resource: KvmHandle, _input: ()) -> Result<Self::Output, Self::Error> {
+        let kvm = resource.kvm;
+        Ok(ResolvedHypervisorBackend::new(virt_kvm::Kvm::from_kvm(
+            kvm,
+        )?))
     }
 }
 

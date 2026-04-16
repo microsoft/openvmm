@@ -164,9 +164,12 @@ impl VhostUserDeviceServer {
 
         match code {
             VhostUserRequestCode::GET_FEATURES => {
-                let mut features = features_to_u64(&traits.device_features);
-                features |= VHOST_USER_F_PROTOCOL_FEATURES;
-                let reply_payload = VhostUserU64Msg { value: features };
+                let features = traits
+                    .device_features
+                    .with_vhost_user_protocol_features(true);
+                let reply_payload = VhostUserU64Msg {
+                    value: features.into_bits(),
+                };
                 send_reply(socket, hdr, reply_payload.as_bytes(), &[]).await?;
             }
 
@@ -177,10 +180,10 @@ impl VhostUserDeviceServer {
                 // VHOST_F_LOG_ALL may be toggled). We don't currently support
                 // any features that require restarting queues on change, so
                 // just storing the new value is correct.
-                // Mask out VHOST_USER_F_PROTOCOL_FEATURES — it's a
+                // Mask out the vhost-user protocol features bit — it's a
                 // vhost-user control bit, not a virtio device feature.
-                state.negotiated_features =
-                    features_from_u64(msg.value & !VHOST_USER_F_PROTOCOL_FEATURES);
+                state.negotiated_features = VirtioDeviceFeatures::from_bits(msg.value)
+                    .with_vhost_user_protocol_features(false);
                 maybe_ack(socket, hdr, state).await?
             }
 
@@ -360,7 +363,7 @@ impl VhostUserDeviceServer {
                 // For packed ring, pack both avail and used state into
                 // the reply (avail in low 16, used in high 16). For split
                 // ring, only the avail index matters.
-                let num = if state.negotiated_features.bank1().ring_packed() {
+                let num = if state.negotiated_features.ring_packed() {
                     (queue_state.avail_index as u32) | ((queue_state.used_index as u32) << 16)
                 } else {
                     queue_state.avail_index as u32
@@ -418,8 +421,7 @@ impl VhostUserDeviceServer {
                                 q.try_activate(self.guest_memory.clone())
                             {
                                 // Split raw_base into QueueState based on ring type.
-                                let queue_state = if state.negotiated_features.bank1().ring_packed()
-                                {
+                                let queue_state = if state.negotiated_features.ring_packed() {
                                     // Packed: low 16 = avail state, high 16 = used state.
                                     QueueState {
                                         avail_index: raw_base as u16,
@@ -694,22 +696,6 @@ fn parse_payload<T: FromBytes>(payload: &[u8]) -> anyhow::Result<T> {
         })
 }
 
-/// Convert a u64 to VirtioDeviceFeatures (bank0 = low 32 bits, bank1 = high 32 bits).
-// TODO: VirtioDeviceFeatures should just be a u64-based enum/bitfield instead
-// of a Vec<u32> bank model. The spec's bank-indexed transport registers don't
-// require the in-memory representation to match, and every VMM (QEMU, CH,
-// Linux) uses a flat u64. That would eliminate these helpers entirely.
-fn features_from_u64(value: u64) -> VirtioDeviceFeatures {
-    VirtioDeviceFeatures::new()
-        .with_bank(0, value as u32)
-        .with_bank(1, (value >> 32) as u32)
-}
-
-/// Convert VirtioDeviceFeatures to a u64 (bank0 = low 32 bits, bank1 = high 32 bits).
-fn features_to_u64(features: &VirtioDeviceFeatures) -> u64 {
-    features.bank(0) as u64 | ((features.bank(1) as u64) << 32)
-}
-
 /// Create a `pal_event::Event` from an `OwnedFd`.
 ///
 /// The fd should be an eventfd. On Linux, `pal_event::Event` wraps an eventfd.
@@ -856,13 +842,15 @@ mod tests {
             let reply = send_and_recv(&frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
             let features_msg = VhostUserU64Msg::read_from_bytes(&reply).unwrap();
             assert!(
-                features_msg.value & VHOST_USER_F_PROTOCOL_FEATURES != 0,
+                VirtioDeviceFeatures::from_bits(features_msg.value).vhost_user_protocol_features(),
                 "should advertise PROTOCOL_FEATURES"
             );
 
             // SET_FEATURES (must include PROTOCOL_FEATURES bit)
             let set_features = VhostUserU64Msg {
-                value: VHOST_USER_F_PROTOCOL_FEATURES,
+                value: VirtioDeviceFeatures::new()
+                    .with_vhost_user_protocol_features(true)
+                    .into_bits(),
             };
             send_msg(
                 &frontend,
@@ -950,11 +938,13 @@ mod tests {
         // GET_FEATURES
         let reply = send_and_recv(frontend, VhostUserRequestCode::GET_FEATURES, &[]).await;
         let features_msg = VhostUserU64Msg::read_from_bytes(&reply).unwrap();
-        assert!(features_msg.value & VHOST_USER_F_PROTOCOL_FEATURES != 0);
+        assert!(VirtioDeviceFeatures::from_bits(features_msg.value).vhost_user_protocol_features());
 
         // SET_FEATURES
         let set_features = VhostUserU64Msg {
-            value: VHOST_USER_F_PROTOCOL_FEATURES,
+            value: VirtioDeviceFeatures::new()
+                .with_vhost_user_protocol_features(true)
+                .into_bits(),
         };
         send_msg(
             frontend,

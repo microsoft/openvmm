@@ -34,6 +34,32 @@ impl Pkcs7SignedDataInner {
             .map_err(|e| err(e, "decoding pkcs#7 from DER"))
     }
 
+    pub fn to_der(&self) -> Result<Vec<u8>, Pkcs7Error> {
+        self.0
+            .to_der()
+            .map_err(|e| err(e, "encoding pkcs#7 as DER"))
+    }
+
+    pub fn sign(
+        cert: &crate::x509::X509Certificate,
+        key_pair: &crate::rsa::RsaKeyPair,
+        data: &[u8],
+    ) -> Result<Self, Pkcs7Error> {
+        let pkey = openssl::pkey::PKey::from_rsa(key_pair.0.rsa.clone())
+            .map_err(|e| err(e, "converting RSA key for pkcs7 signing"))?;
+        let certs =
+            openssl::stack::Stack::new().map_err(|e| err(e, "creating empty certificate stack"))?;
+        let pkcs7 = openssl::pkcs7::Pkcs7::sign(
+            &cert.0.cert,
+            &pkey,
+            &certs,
+            data,
+            openssl::pkcs7::Pkcs7Flags::empty(),
+        )
+        .map_err(|e| err(e, "pkcs7 signing"))?;
+        Ok(Self(pkcs7))
+    }
+
     pub fn verify(
         &self,
         mut store: Pkcs7CertStoreInner,

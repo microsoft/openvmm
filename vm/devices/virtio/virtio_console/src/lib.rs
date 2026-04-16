@@ -67,7 +67,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 pub struct VirtioConsoleDevice {
     driver: VmTaskDriver,
     config: VirtioConsoleConfig,
-    #[inspect(skip)]
+    #[inspect(mut)]
     worker: TaskControl<ConsoleWorker, ConsoleWorkerState>,
 }
 
@@ -85,13 +85,10 @@ impl VirtioConsoleDevice {
 impl VirtioDevice for VirtioConsoleDevice {
     fn traits(&self) -> DeviceTraits {
         let features = VirtioDeviceFeatures::new()
-            .with_bank0(
-                virtio::spec::VirtioDeviceFeaturesBank0::new()
-                    .with_device_specific(1 << VIRTIO_CONSOLE_F_SIZE)
-                    .with_ring_event_idx(true)
-                    .with_ring_indirect_desc(true),
-            )
-            .with_bank1(virtio::spec::VirtioDeviceFeaturesBank1::new().with_ring_packed(true));
+            .with_device_specific_low(1 << VIRTIO_CONSOLE_F_SIZE)
+            .with_ring_event_idx(true)
+            .with_ring_indirect_desc(true)
+            .with_ring_packed(true);
         DeviceTraits {
             device_id: virtio::spec::VirtioDeviceType::CONSOLE,
             device_features: features,
@@ -118,7 +115,7 @@ impl VirtioDevice for VirtioConsoleDevice {
     ) -> anyhow::Result<()> {
         let guest_memory = resources.guest_memory.clone();
         let queue = VirtioQueue::new(
-            features.clone(),
+            *features,
             resources.params,
             resources.guest_memory,
             resources.notify,

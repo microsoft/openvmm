@@ -177,7 +177,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
         }
-        let inner = Arc::into_inner(self.inner).unwrap();
+
+        let inner = Arc::into_inner(self.inner)
+            .expect("MANA device save failed, multiple references remain.");
         let mut driver = inner.gdma.into_inner();
 
         if let Ok(saved_state) = driver.save().await {
@@ -304,7 +306,8 @@ impl<T: DeviceBacking> ManaDevice<T> {
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
         }
-        let inner = Arc::into_inner(self.inner).unwrap();
+        let inner = Arc::into_inner(self.inner)
+            .expect("MANA device shutdown failed, multiple references remain.");
         let mut driver = inner.gdma.into_inner();
         let result = driver.deregister_device(inner.dev_id).await;
         (result, driver.into_device())

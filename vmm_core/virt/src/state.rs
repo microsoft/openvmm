@@ -63,6 +63,7 @@ mod macros {
             $(($field_num:literal, $id:expr, $get:ident, $set:ident, $ty:ty $(,)?)),* $(,)?
         ) => {
             #[doc = $doc]
+            #[expect(clippy::allow_attributes)]
             pub trait $trait {
                 type Error: 'static + std::error::Error + Send + Sync;
 

@@ -73,11 +73,17 @@ impl IntoPipeline for CheckinGatesCli {
         // configure pr/ci branch triggers and add gh pipeline name
         {
             let branches = vec!["main".into(), "release/*".into()];
+
+            // Paths that don't affect the Rust build or tests. Changes
+            // to only these paths will not trigger the checkin-gates pipeline.
+            let paths_ignore = vec!["Guide/**".into(), "petri/logview/**".into()];
+
             match config {
                 PipelineConfig::Ci => {
                     pipeline
                         .gh_set_ci_triggers(GhCiTriggers {
                             branches,
+                            paths_ignore: paths_ignore.clone(),
                             ..Default::default()
                         })
                         .gh_set_name("OpenVMM CI");
@@ -86,11 +92,13 @@ impl IntoPipeline for CheckinGatesCli {
                     pipeline
                         .gh_set_pr_triggers(GhPrTriggers {
                             branches,
+                            paths_ignore: paths_ignore.clone(),
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("OpenVMM PR")
                         .ado_set_pr_triggers(AdoPrTriggers {
                             branches: vec!["main".into(), "release/*".into(), "embargo/*".into()],
+                            exclude_paths: paths_ignore.clone(),
                             ..Default::default()
                         });
                 }
@@ -98,6 +106,7 @@ impl IntoPipeline for CheckinGatesCli {
                     // This workflow is triggered when a specific label is present on a PR.
                     let mut triggers = GhPrTriggers::new_draftable();
                     triggers.branches = branches;
+                    triggers.paths_ignore = paths_ignore.clone();
                     triggers.types.push("labeled".into());
                     pipeline
                         .gh_set_pr_triggers(triggers)

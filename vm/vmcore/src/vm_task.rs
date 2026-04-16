@@ -276,6 +276,11 @@ impl Driver for VmTaskDriver {
         // SAFETY: passthru from caller
         unsafe { self.inner.driver().new_dyn_overlapped_file(handle) }
     }
+
+    #[cfg(target_os = "linux")]
+    fn io_uring_submit(&self) -> Option<&dyn pal_async::io_uring::IoUringSubmit> {
+        self.inner.driver().io_uring_submit()
+    }
 }
 
 impl Spawn for VmTaskDriver {

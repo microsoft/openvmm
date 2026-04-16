@@ -109,11 +109,13 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 
     /// Gets a reference to the TDX enter guest state's GP list.
+    /// These are in canonical x86_64 order.
     pub fn tdx_enter_guest_gps(&self) -> &[u64; 16] {
         &self.tdx_enter_guest_state().gps
     }
 
     /// Gets a mutable reference to the TDX enter guest state's GP list.
+    /// These are in canonical x86_64 order.
     pub fn tdx_enter_guest_gps_mut(&mut self) -> &mut [u64; 16] {
         &mut self.tdx_enter_guest_state_mut().gps
     }

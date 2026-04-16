@@ -10,6 +10,8 @@
 use crate::fd::FdReadyDriver;
 #[cfg(unix)]
 use crate::fd::PollFdReady;
+#[cfg(target_os = "linux")]
+use crate::io_uring::IoUringSubmit;
 use crate::socket::PollSocketReady;
 use crate::socket::SocketReadyDriver;
 #[cfg(windows)]
@@ -72,9 +74,27 @@ pub trait Driver: 'static + Send + Sync {
         &self,
         handle: RawHandle,
     ) -> io::Result<PollImpl<dyn IoOverlapped>>;
+
+    /// Returns an io-uring submitter, if the driver supports io-uring.
+    ///
+    /// Returns `None` if the driver does not support io-uring.
+    #[cfg(target_os = "linux")]
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit>;
 }
 
-#[cfg(unix)]
+/// Component trait for drivers that optionally support io-uring submission.
+///
+/// All types that participate in the `Driver` blanket impl on Linux must
+/// implement this trait. There is no default—implementors must explicitly
+/// return `None` if they do not support io-uring, so that wrapper types
+/// do not silently drop the capability.
+#[cfg(target_os = "linux")]
+pub trait IoUringDriver {
+    /// Returns an io-uring submitter, if supported.
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit>;
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
 impl<T> Driver for T
 where
     T: 'static + Send + Sync + FdReadyDriver + TimerDriver + SocketReadyDriver + WaitDriver,
@@ -93,6 +113,39 @@ where
 
     fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>> {
         Ok(smallbox::smallbox!(self.new_wait(fd, read_size)?))
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl<T> Driver for T
+where
+    T: 'static
+        + Send
+        + Sync
+        + FdReadyDriver
+        + TimerDriver
+        + SocketReadyDriver
+        + WaitDriver
+        + IoUringDriver,
+{
+    fn new_dyn_timer(&self) -> PollImpl<dyn PollTimer> {
+        smallbox::smallbox!(self.new_timer())
+    }
+
+    fn new_dyn_fd_ready(&self, fd: RawFd) -> io::Result<PollImpl<dyn PollFdReady>> {
+        Ok(smallbox::smallbox!(self.new_fd_ready(fd)?))
+    }
+
+    fn new_dyn_socket_ready(&self, socket: RawFd) -> io::Result<PollImpl<dyn PollSocketReady>> {
+        Ok(smallbox::smallbox!(self.new_socket_ready(socket)?))
+    }
+
+    fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>> {
+        Ok(smallbox::smallbox!(self.new_wait(fd, read_size)?))
+    }
+
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+        IoUringDriver::io_uring_submit(self)
     }
 }
 
@@ -141,6 +194,11 @@ impl Driver for Box<dyn Driver> {
     fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>> {
         self.as_ref().new_dyn_wait(fd, read_size)
     }
+
+    #[cfg(target_os = "linux")]
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+        self.as_ref().io_uring_submit()
+    }
 }
 
 #[cfg(windows)]
@@ -182,6 +240,11 @@ impl Driver for Arc<dyn Driver> {
 
     fn new_dyn_wait(&self, fd: RawFd, read_size: usize) -> io::Result<PollImpl<dyn PollWait>> {
         self.as_ref().new_dyn_wait(fd, read_size)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn io_uring_submit(&self) -> Option<&dyn IoUringSubmit> {
+        self.as_ref().io_uring_submit()
     }
 }
 

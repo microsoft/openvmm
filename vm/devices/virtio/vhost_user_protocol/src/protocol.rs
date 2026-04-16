@@ -22,9 +22,6 @@ pub const VHOST_USER_FLAG_REPLY: u32 = 0x4;
 /// Header flag: the frontend requests a reply to this message.
 pub const VHOST_USER_FLAG_NEED_REPLY: u32 = 0x8;
 
-/// Feature bit indicating vhost-user protocol features are available.
-pub const VHOST_USER_F_PROTOCOL_FEATURES: u64 = 1 << 30;
-
 /// SET_VRING_KICK/CALL/ERR: bit 8 means "no fd".
 pub const VHOST_USER_VRING_NOFD_MASK: u64 = 1 << 8;
 /// Index bits for SET_VRING_KICK/CALL/ERR.

@@ -26,6 +26,7 @@ pub const HV_PAGE_SHIFT: u64 = 12;
 
 pub const HV_PARTITION_ID_SELF: u64 = u64::MAX;
 pub const HV_VP_INDEX_SELF: u32 = 0xfffffffe;
+pub const HV_ANY_VP: u32 = 0xffffffff;
 
 pub const HV_CPUID_FUNCTION_VERSION_AND_FEATURES: u32 = 0x00000001;
 pub const HV_CPUID_FUNCTION_HV_VENDOR_AND_MAX_FUNCTION: u32 = 0x40000000;
@@ -103,6 +104,245 @@ pub struct HvPartitionPrivilege {
     pub isolation: bool,
     #[bits(9)]
     _reserved3: u64,
+}
+
+/// Partition processor features (bank 0).
+///
+/// Each bit indicates whether the corresponding processor feature is enabled
+/// for a partition. When used in `mshv_create_partition_v2.pt_cpu_fbanks`,
+/// the sense is *inverted*: a set bit means the feature is **disabled**.
+#[bitfield(u64)]
+pub struct HvX64PartitionProcessorFeatures {
+    pub sse3_support: bool,
+    pub lahf_sahf_support: bool,
+    pub ssse3_support: bool,
+    pub sse4_1_support: bool,
+    pub sse4_2_support: bool,
+    pub sse4a_support: bool,
+    pub xop_support: bool,
+    pub pop_cnt_support: bool,
+    pub cmpxchg16b_support: bool,
+    pub altmovcr8_support: bool,
+    pub lzcnt_support: bool,
+    pub mis_align_sse_support: bool,
+    pub mmx_ext_support: bool,
+    pub amd3d_now_support: bool,
+    pub extended_amd3d_now_support: bool,
+    pub page_1gb_support: bool,
+    pub aes_support: bool,
+    pub pclmulqdq_support: bool,
+    pub pcid_support: bool,
+    pub fma4_support: bool,
+    pub f16c_support: bool,
+    pub rd_rand_support: bool,
+    pub rd_wr_fs_gs_support: bool,
+    pub smep_support: bool,
+    pub enhanced_fast_string_support: bool,
+    pub bmi1_support: bool,
+    pub bmi2_support: bool,
+    pub hle_support_deprecated: bool,
+    pub rtm_support_deprecated: bool,
+    pub movbe_support: bool,
+    pub npiep1_support: bool,
+    pub dep_x87_fpu_save_support: bool,
+    pub rd_seed_support: bool,
+    pub adx_support: bool,
+    pub intel_prefetch_support: bool,
+    pub smap_support: bool,
+    pub hle_support: bool,
+    pub rtm_support: bool,
+    pub rdtscp_support: bool,
+    pub clflushopt_support: bool,
+    pub clwb_support: bool,
+    pub sha_support: bool,
+    pub x87_pointers_saved_support: bool,
+    pub invpcid_support: bool,
+    pub ibrs_support: bool,
+    pub stibp_support: bool,
+    pub ibpb_support: bool,
+    pub unrestricted_guest_support: bool,
+    pub mdd_support: bool,
+    pub fast_short_rep_mov_support: bool,
+    pub l1d_cache_flush_support: bool,
+    pub rdcl_no_support: bool,
+    pub ibrs_all_support: bool,
+    pub skip_l1df_support: bool,
+    pub ssb_no_support: bool,
+    pub rsb_a_no_support: bool,
+    pub virt_spec_ctrl_support: bool,
+    pub rd_pid_support: bool,
+    pub umip_support: bool,
+    pub mbs_no_support: bool,
+    pub mb_clear_support: bool,
+    pub taa_no_support: bool,
+    pub tsx_ctrl_support: bool,
+    _reserved_bank0: bool,
+}
+
+/// Partition processor features (bank 1).
+#[bitfield(u64)]
+pub struct HvX64PartitionProcessorFeatures1 {
+    pub a_count_m_count_support: bool,
+    pub tsc_invariant_support: bool,
+    pub cl_zero_support: bool,
+    pub rdpru_support: bool,
+    pub la57_support: bool,
+    pub mbec_support: bool,
+    pub nested_virt_support: bool,
+    pub psfd_support: bool,
+    pub cet_ss_support: bool,
+    pub cet_ibt_support: bool,
+    pub vmx_exception_inject_support: bool,
+    pub enqcmd_support: bool,
+    pub umwait_tpause_support: bool,
+    pub movdiri_support: bool,
+    pub movdir64b_support: bool,
+    pub cldemote_support: bool,
+    pub serialize_support: bool,
+    pub tsc_deadline_tmr_support: bool,
+    pub tsc_adjust_support: bool,
+    pub fz_l_rep_movsb: bool,
+    pub fs_rep_stosb: bool,
+    pub fs_rep_cmpsb: bool,
+    pub tsx_ld_trk_support: bool,
+    pub vmx_ins_outs_exit_info_support: bool,
+    pub hlat_support: bool,
+    pub sbdr_ssdp_no_support: bool,
+    pub fbsdp_no_support: bool,
+    pub psdp_no_support: bool,
+    pub fb_clear_support: bool,
+    pub btc_no_support: bool,
+    pub ibpb_rsb_flush_support: bool,
+    pub stibp_always_on_support: bool,
+    pub perf_global_ctrl_support: bool,
+    pub npt_execute_only_support: bool,
+    pub npt_ad_flags_support: bool,
+    pub npt_1gb_page_support: bool,
+    pub amd_processor_topology_node_id_support: bool,
+    pub local_machine_check_support: bool,
+    pub extended_topology_leaf_fp256_amd_support: bool,
+    pub gds_no_support: bool,
+    pub cmpccxadd_support: bool,
+    pub tsc_aux_virtualization_support: bool,
+    pub rmp_query_support: bool,
+    pub bhi_no_support: bool,
+    pub bhi_dis_support: bool,
+    pub prefetch_i_support: bool,
+    pub sha512_support: bool,
+    pub mitigation_ctrl_support: bool,
+    pub rfds_no_support: bool,
+    pub rfds_clear_support: bool,
+    pub sm3_support: bool,
+    pub sm4_support: bool,
+    pub secure_avic_support: bool,
+    pub guest_intercept_ctrl_support: bool,
+    pub sbpb_support: bool,
+    pub ibpb_br_type_support: bool,
+    pub srso_no_support: bool,
+    pub srso_user_kernel_no_support: bool,
+    pub vrew_clear_support: bool,
+    pub tsa_l1_no_support: bool,
+    pub tsa_sq_no_support: bool,
+    pub lass_support: bool,
+    #[bits(2)]
+    _reserved_bank1: u8,
+}
+
+/// Partition processor XSAVE features.
+#[bitfield(u64)]
+pub struct HvX64PartitionProcessorXsaveFeatures {
+    pub xsave_support: bool,
+    pub xsaveopt_support: bool,
+    pub avx_support: bool,
+    pub avx2_support: bool,
+    pub fma_support: bool,
+    pub mpx_support: bool,
+    pub avx512_support: bool,
+    pub avx512_dq_support: bool,
+    pub avx512_cd_support: bool,
+    pub avx512_bw_support: bool,
+    pub avx512_vl_support: bool,
+    pub xsave_comp_support: bool,
+    pub xsave_supervisor_support: bool,
+    pub xcr1_support: bool,
+    pub avx512_bitalg_support: bool,
+    pub avx512_ifma_support: bool,
+    pub avx512_vbmi_support: bool,
+    pub avx512_vbmi2_support: bool,
+    pub avx512_vnni_support: bool,
+    pub gfni_support: bool,
+    pub vaes_support: bool,
+    pub avx512_vpopcntdq_support: bool,
+    pub vpclmulqdq_support: bool,
+    pub avx512_bf16_support: bool,
+    pub avx512_vp2_intersect_support: bool,
+    pub avx512_fp16_support: bool,
+    pub xfd_support: bool,
+    pub amx_tile_support: bool,
+    pub amx_bf16_support: bool,
+    pub amx_int8_support: bool,
+    pub avx_vnni_support: bool,
+    pub avx_ifma_support: bool,
+    pub avx_ne_convert_support: bool,
+    pub avx_vnni_int8_support: bool,
+    pub avx_vnni_int16_support: bool,
+    pub avx10_1_256_support: bool,
+    pub avx10_1_512_support: bool,
+    pub amx_fp16_support: bool,
+    #[bits(26)]
+    _reserved: u64,
+}
+
+/// Synthetic processor features that control which Hyper-V enlightenments
+/// are exposed to a guest partition.
+#[bitfield(u64)]
+pub struct HvPartitionSyntheticProcessorFeatures {
+    pub hypervisor_present: bool,
+    pub hv1: bool,
+    pub access_vp_run_time_reg: bool,
+    pub access_partition_reference_counter: bool,
+    pub access_synic_regs: bool,
+    pub access_synthetic_timer_regs: bool,
+    pub access_intr_ctrl_regs: bool,
+    pub access_hypercall_regs: bool,
+    pub access_vp_index: bool,
+    pub access_partition_reference_tsc: bool,
+    pub access_guest_idle_reg: bool,
+    pub access_frequency_regs: bool,
+    _reserved_z12: bool,
+    _reserved_z13: bool,
+    _reserved_z14: bool,
+    pub enable_extended_gva_ranges_for_flush_virtual_address_list: bool,
+    _reserved_z16: bool,
+    _reserved_z17: bool,
+    pub fast_hypercall_output: bool,
+    _reserved_z19: bool,
+    pub start_virtual_processor: bool,
+    _reserved_z21: bool,
+    pub direct_synthetic_timers: bool,
+    _reserved_z23: bool,
+    pub extended_processor_masks: bool,
+    pub tb_flush_hypercalls: bool,
+    pub synthetic_cluster_ipi: bool,
+    pub notify_long_spin_wait: bool,
+    pub query_numa_distance: bool,
+    pub signal_events: bool,
+    pub retarget_device_interrupt: bool,
+    pub restore_time: bool,
+    pub enlightened_vmcs: bool,
+    pub nested_debug_ctl: bool,
+    pub synthetic_time_unhalted_timer: bool,
+    pub idle_spec_ctrl: bool,
+    _reserved_z36: bool,
+    pub wake_vps: bool,
+    pub access_vp_regs: bool,
+    _reserved_z39: bool,
+    pub management_vtl_synic_support: bool,
+    pub proxy_interrupt_doorbell_support: bool,
+    _reserved_z42: bool,
+    pub mmio_hypercalls: bool,
+    #[bits(20)]
+    _reserved: u64,
 }
 
 open_enum! {
@@ -306,6 +546,7 @@ open_enum! {
         HvCallGetSystemProperty = 0x007b,
         HvCallRetargetDeviceInterrupt = 0x007e,
         HvCallNotifyPartitionEvent = 0x0087,
+        HvCallRegisterInterceptResult = 0x0091,
         HvCallAssertVirtualInterrupt = 0x0094,
         HvCallStartVirtualProcessor = 0x0099,
         HvCallGetVpIndexFromApicId = 0x009A,
@@ -1264,6 +1505,51 @@ pub mod hypercall {
         pub access_type_mask: u32,
         pub intercept_type: HvInterceptType,
         pub intercept_parameters: HvInterceptParameters,
+    }
+
+    /// Input for [`HypercallCode::HvCallRegisterInterceptResult`] with CPUID intercept type.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct RegisterInterceptResultCpuid {
+        pub partition_id: u64,
+        pub vp_index: u32,
+        pub intercept_type: HvInterceptType,
+        pub parameters: HvRegisterX64CpuidResultParameters,
+        /// Explicit tail padding (struct alignment is 8 due to partition_id).
+        pub _reserved: u32,
+    }
+
+    /// CPUID intercept result parameters.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct HvRegisterX64CpuidResultParameters {
+        pub input: HvRegisterX64CpuidResultParametersInput,
+        pub result: HvRegisterX64CpuidResultParametersOutput,
+    }
+
+    /// Input portion of CPUID intercept result parameters.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct HvRegisterX64CpuidResultParametersInput {
+        pub eax: u32,
+        pub ecx: u32,
+        pub subleaf_specific: u8,
+        pub always_override: u8,
+        pub padding: u16,
+    }
+
+    /// Output portion of CPUID intercept result parameters.
+    #[repr(C)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
+    pub struct HvRegisterX64CpuidResultParametersOutput {
+        pub eax: u32,
+        pub eax_mask: u32,
+        pub ebx: u32,
+        pub ebx_mask: u32,
+        pub ecx: u32,
+        pub ecx_mask: u32,
+        pub edx: u32,
+        pub edx_mask: u32,
     }
 
     #[repr(C)]
@@ -2342,6 +2628,51 @@ registers! {
         UmwaitControl = 0x00080098,
         Xfd = 0x00080099,
         XfdErr = 0x0008009A,
+
+        // X64 Apic registers. These match the equivalent x2APIC MSR offsets.
+        ApicId = 0x00084802,
+        ApicVersion = 0x00084803,
+        ApicTpr = 0x00084808,
+        ApicPpr = 0x0008480a,
+        ApicEoi = 0x0008480b,
+        ApicLdr = 0x0008480d,
+        ApicSpurious = 0x0008480f,
+        ApicIsr0 = 0x00084810,
+        ApicIsr1 = 0x00084811,
+        ApicIsr2 = 0x00084812,
+        ApicIsr3 = 0x00084813,
+        ApicIsr4 = 0x00084814,
+        ApicIsr5 = 0x00084815,
+        ApicIsr6 = 0x00084816,
+        ApicIsr7 = 0x00084817,
+        ApicTmr0 = 0x00084818,
+        ApicTmr1 = 0x00084819,
+        ApicTmr2 = 0x0008481a,
+        ApicTmr3 = 0x0008481b,
+        ApicTmr4 = 0x0008481c,
+        ApicTmr5 = 0x0008481d,
+        ApicTmr6 = 0x0008481e,
+        ApicTmr7 = 0x0008481f,
+        ApicIrr0 = 0x00084820,
+        ApicIrr1 = 0x00084821,
+        ApicIrr2 = 0x00084822,
+        ApicIrr3 = 0x00084823,
+        ApicIrr4 = 0x00084824,
+        ApicIrr5 = 0x00084825,
+        ApicIrr6 = 0x00084826,
+        ApicIrr7 = 0x00084827,
+        ApicEse = 0x00084828,
+        ApicIcr = 0x00084830,
+        ApicLvtTimer = 0x00084832,
+        ApicLvtThermal = 0x00084833,
+        ApicLvtPerfmon = 0x00084834,
+        ApicLvtLint0 = 0x00084835,
+        ApicLvtLint1 = 0x00084836,
+        ApicLvtError = 0x00084837,
+        ApicInitCount = 0x00084838,
+        ApicCurrentCount = 0x00084839,
+        ApicDivide = 0x0008483e,
+        ApicSelfIpi = 0x0008483f,
 
         Hypercall = 0x00090001,
         RegisterPage = 0x0009001C,
@@ -3765,12 +4096,14 @@ pub struct HvX64RegisterPage {
     pub is_valid: u8,
     pub vtl: u8,
     pub dirty: HvX64RegisterPageDirtyFlags,
+    /// General-purpose registers. These are in the order defined by the x86-64
+    /// architecture.
     pub gp_registers: [u64; 16],
     pub rip: u64,
     pub rflags: u64,
     pub reserved: u64,
     pub xmm: [u128; 6],
-    pub segment: [u128; 6],
+    pub segment: [HvX64SegmentRegister; 6],
     // Misc. control registers (cannot be set via this interface).
     pub cr0: u64,
     pub cr3: u64,

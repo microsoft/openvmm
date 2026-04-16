@@ -49,6 +49,7 @@ disklayer_sqlite = { workspace = true, optional = true }
 
 # Chipset devices
 chipset.workspace = true
+chipset_legacy.workspace = true
 missing_dev.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }
 

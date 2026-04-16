@@ -5,6 +5,7 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
+#![expect(clippy::allow_attributes)]
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.

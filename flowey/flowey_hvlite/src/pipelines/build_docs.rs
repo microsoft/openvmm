@@ -40,7 +40,8 @@ impl IntoPipeline for BuildDocsCli {
 
         let mut pipeline = Pipeline::new();
 
-        // The docs pipeline should only run on the main branch.
+        // The docs pipeline should only run on the main branch, and only when
+        // the Guide directory or the docs workflow/pipeline definitions are modified.
         {
             let branches = vec!["main".into()];
             match config {
