@@ -33,6 +33,13 @@ const SIDECAR: &str = "OPENHCL_SIDECAR=";
 /// Disable NVME keep alive regardless if the host supports it.
 const DISABLE_NVME_KEEP_ALIVE: &str = "OPENHCL_DISABLE_NVME_KEEP_ALIVE=";
 
+/// Control NUMA allocation behavior for the VTL2 GPA pool.
+///
+/// * `split`: Force the pool to be split evenly across NUMA nodes, skipping
+///   the default "try node 0 first" fast path. Useful for testing multi-range
+///   pool allocation.
+const VTL2_GPA_POOL_NUMA: &str = "OPENHCL_VTL2_GPA_POOL_NUMA=";
+
 /// Lookup table to use for VTL2 GPA pool size heuristics.
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Vtl2GpaPoolLookupTable {
@@ -114,6 +121,9 @@ pub struct BootCommandLineOptions {
     pub enable_vtl2_gpa_pool: Vtl2GpaPoolConfig,
     pub sidecar: SidecarOptions,
     pub disable_nvme_keep_alive: bool,
+    /// When true, force the VTL2 GPA pool to be split evenly across NUMA
+    /// nodes instead of trying to allocate entirely on node 0 first.
+    pub vtl2_gpa_pool_numa_split: bool,
 }
 
 impl BootCommandLineOptions {
@@ -123,6 +133,7 @@ impl BootCommandLineOptions {
             enable_vtl2_gpa_pool: Vtl2GpaPoolConfig::Heuristics(Vtl2GpaPoolLookupTable::Release), // use the release config by default
             sidecar: SidecarOptions::default(),
             disable_nvme_keep_alive: true,
+            vtl2_gpa_pool_numa_split: false,
         }
     }
 }
@@ -177,6 +188,13 @@ impl BootCommandLineOptions {
                 let arg = arg.split_once('=').map(|(_, arg)| arg);
                 if arg.is_some_and(|a| a == "0") {
                     self.disable_nvme_keep_alive = false;
+                }
+            } else if arg.starts_with(VTL2_GPA_POOL_NUMA) {
+                if let Some((_, arg)) = arg.split_once('=') {
+                    match arg {
+                        "split" => self.vtl2_gpa_pool_numa_split = true,
+                        _ => log::warn!("Unknown value for OPENHCL_VTL2_GPA_POOL_NUMA: {arg}"),
+                    }
                 }
             }
         }

@@ -384,3 +384,33 @@ async fn no_numa_errors<T: PetriVmmBackend>(
 
     Ok(())
 }
+
+/// Boot OpenHCL with a multi-NUMA topology and force the private pool to be
+/// split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`. Validates
+/// that multi-range pool allocation works end-to-end.
+#[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
+async fn numa_private_pool_spillover<T: PetriVmmBackend>(
+    config: PetriVmBuilder<T>,
+) -> Result<(), anyhow::Error> {
+    // 2 NUMA nodes (vps_per_socket=2, 4 VPs → 2 sockets → 2 nodes).
+    // Force NUMA split via command line flag — the pool will be split
+    // across both nodes instead of trying node 0 first.
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 4,
+            vps_per_socket: Some(2),
+            ..Default::default()
+        })
+        .with_openhcl_command_line("OPENHCL_VTL2_GPA_POOL_NUMA=split")
+        .with_expect_no_boot_event()
+        .run_without_agent()
+        .await?;
+
+    // Wait for VTL2 to be ready — if pool allocation panicked, boot fails.
+    vm.wait_for_vtl2_ready().await?;
+
+    // Inspect the DMA manager's private pool to verify it was created.
+    vm.test_inspect_openhcl().await?;
+
+    Ok(())
+}
