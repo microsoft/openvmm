@@ -194,10 +194,55 @@ impl Container {
 ///
 /// Only Type1v2 and NoIommu are supported. Type1 (v1) is a legacy interface
 /// that does not support fine-grained DMA mapping and is intentionally excluded.
+#[derive(Copy, Clone)]
 #[repr(u32)]
 pub enum IommuType {
     Type1v2 = vfio_bindings::bindings::vfio::VFIO_TYPE1v2_IOMMU,
     NoIommu = vfio_bindings::bindings::vfio::VFIO_NOIOMMU_IOMMU,
+}
+
+/// Perform the common VFIO container and group setup for a PCI device.
+///
+/// This opens a new VFIO container and the IOMMU group that contains the
+/// device at `device_sysfs_path`, attaches the group to the container,
+/// verifies the group is viable, and configures the IOMMU type.
+///
+/// When `iommu_type` is [`IommuType::NoIommu`] the group is opened in
+/// no-IOMMU mode; otherwise a regular IOMMU group is used.
+///
+/// Returns the configured container and group ready for
+/// [`Group::open_device`].
+pub fn setup_vfio_container_group(
+    device_sysfs_path: &Path,
+    iommu_type: IommuType,
+) -> anyhow::Result<(Container, Group)> {
+    let container = Container::new().context("failed to open VFIO container")?;
+    let group_id = Group::find_group_for_device(device_sysfs_path)
+        .context("failed to find IOMMU group for device")?;
+
+    let group = match iommu_type {
+        IommuType::NoIommu => Group::open_noiommu(group_id),
+        _ => Group::open(group_id),
+    }
+    .with_context(|| format!("failed to open VFIO group {group_id}"))?;
+
+    group
+        .set_container(&container)
+        .context("failed to set VFIO container")?;
+
+    anyhow::ensure!(
+        group
+            .status()
+            .context("failed to check VFIO group status")?
+            .viable(),
+        "VFIO group {group_id} is not viable (all devices in the group must be bound to vfio-pci)"
+    );
+
+    container
+        .set_iommu(iommu_type)
+        .context("failed to set VFIO IOMMU type")?;
+
+    Ok((container, group))
 }
 
 pub struct Group {

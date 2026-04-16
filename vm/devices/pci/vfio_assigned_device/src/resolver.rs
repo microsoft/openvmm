@@ -42,26 +42,9 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
 
         tracing::info!(pci_id, "opening VFIO device");
 
-        let container = vfio_sys::Container::new().context("failed to open VFIO container")?;
-        let group_id = vfio_sys::Group::find_group_for_device(&sysfs_path)
-            .with_context(|| format!("failed to find IOMMU group for {pci_id}"))?;
-        let group = vfio_sys::Group::open(group_id)
-            .with_context(|| format!("failed to open VFIO group {group_id}"))?;
-        group
-            .set_container(&container)
-            .context("failed to set VFIO container")?;
-
-        anyhow::ensure!(
-            group
-                .status()
-                .context("failed to check VFIO group status")?
-                .viable(),
-            "VFIO group {group_id} is not viable (all devices in the group must be bound to vfio-pci)"
-        );
-
-        container
-            .set_iommu(vfio_sys::IommuType::Type1v2)
-            .context("failed to set VFIO IOMMU type to Type1v2 (IOMMU required)")?;
+        let (container, group) =
+            vfio_sys::setup_vfio_container_group(&sysfs_path, vfio_sys::IommuType::Type1v2)
+                .with_context(|| format!("failed VFIO setup for {pci_id}"))?;
 
         // Map guest RAM into the IOMMU for device DMA access. Each
         // shareable region is identity-mapped (IOVA == GPA) so that device
