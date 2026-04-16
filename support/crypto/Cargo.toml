@@ -7,14 +7,18 @@ edition.workspace = true
 rust-version.workspace = true
 
 [features]
-ossl_vendored = ["openssl/vendored"]
+# If the chosen backend supports it, vendor it.
+# If the chosen backend is natively available, this feature is a no-op.
+# If the chosen backend is not natively available and can't be vendored, this will trigger a compile error.
+vendored = ["openssl/vendored"]
 
 [dependencies]
 thiserror.workspace = true
 tracing.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-openssl.workspace = true 
+openssl_kdf.workspace = true
+openssl.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 wchar.workspace = true

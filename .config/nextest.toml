@@ -47,6 +47,20 @@ filter = 'package(~vmm_tests)'
 # threads running via the -j cli arg.
 threads-required = 2
 
+# Profile for AI agent runs. Minimizes output noise: only prints slow, failing,
+# and flaky tests. Agents should use: cargo nextest run -p <pkg> --profile agent
+[profile.agent]
+# Only show slow and failing tests during the run (hide PASS lines).
+status-level = "slow"
+# Show failures and flaky tests in the final summary.
+final-status-level = "flaky"
+# Mark tests slow after 5s, kill after 30s (6 periods).
+slow-timeout = { period = "5s", terminate-after = 6 }
+# Print failure output immediately so humans watching can see it.
+failure-output = "immediate"
+# Don't fail fast--let the agent see all failures at once.
+fail-fast = false
+
 # Profile for CI runs.
 [profile.ci]
 # Set the default timeout to 1 second, with tests terminated after 10 seconds

@@ -38,6 +38,7 @@ impl PackedQueueCompletionContext {
 }
 
 #[derive(Debug, Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct PackedQueueGetWork {
     #[inspect(skip)]
     queue_desc: GuestMemory,
@@ -50,6 +51,14 @@ pub(crate) struct PackedQueueGetWork {
 }
 
 impl PackedQueueGetWork {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        if let Ok(event) = self.device_event.read_plain::<PackedEventSuppression>(0) {
+            resp.field("device_event_flags", event.flags());
+            resp.field("device_event_offset", event.offset());
+            resp.field("device_event_wrap", event.wrap());
+        }
+    }
+
     pub fn new(
         _features: VirtioDeviceFeatures,
         mem: GuestMemory,
@@ -149,9 +158,12 @@ impl PackedQueueGetWork {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(extra = "Self::inspect_extra")]
 pub(crate) struct PackedQueueCompleteWork {
+    #[inspect(skip)]
     queue_desc: GuestMemory,
+    #[inspect(skip)]
     driver_event: GuestMemory,
     queue_size: u16,
     next_index: u16,
@@ -160,6 +172,14 @@ pub(crate) struct PackedQueueCompleteWork {
 }
 
 impl PackedQueueCompleteWork {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        if let Ok(event) = self.driver_event.read_plain::<PackedEventSuppression>(0) {
+            resp.field("driver_event_flags", event.flags());
+            resp.field("driver_event_offset", event.offset());
+            resp.field("driver_event_wrap", event.wrap());
+        }
+    }
+
     pub fn new(
         features: VirtioDeviceFeatures,
         mem: GuestMemory,
@@ -183,7 +203,7 @@ impl PackedQueueCompleteWork {
             queue_size: params.size,
             next_index: initial_index,
             wrapped_bit: initial_wrap,
-            use_event_index: features.bank0().ring_event_idx(),
+            use_event_index: features.ring_event_idx(),
         })
     }
 

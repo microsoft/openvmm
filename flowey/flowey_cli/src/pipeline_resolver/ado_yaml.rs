@@ -587,6 +587,19 @@ EOF
         })
     }
 
+    fn resolve_trigger_paths(
+        paths: Vec<String>,
+        exclude_paths: Vec<String>,
+    ) -> anyhow::Result<Option<schema_ado_yaml::TriggerPaths>> {
+        match (paths.is_empty(), exclude_paths.is_empty()) {
+            (true, true) => Ok(None),
+            (true, false) | (false, _) => Ok(Some(schema_ado_yaml::TriggerPaths {
+                include: paths,
+                exclude: (!exclude_paths.is_empty()).then_some(exclude_paths),
+            })),
+        }
+    }
+
     let ado_pipeline = schema_ado_yaml::Pipeline {
         name: ado_name,
         trigger: Some(match ado_ci_triggers {
@@ -598,6 +611,8 @@ EOF
                     tags,
                     exclude_tags,
                     batch,
+                    paths,
+                    exclude_paths,
                 } = t;
 
                 if branches.is_empty() && tags.is_empty() {
@@ -638,6 +653,7 @@ EOF
                             },
                         })
                     },
+                    paths: resolve_trigger_paths(paths, exclude_paths)?,
                 }
             }
         }),
@@ -649,6 +665,8 @@ EOF
                     exclude_branches,
                     run_on_draft,
                     auto_cancel,
+                    paths,
+                    exclude_paths,
                 } = t;
 
                 schema_ado_yaml::PrTrigger::Some {
@@ -662,6 +680,7 @@ EOF
                             Some(exclude_branches)
                         },
                     },
+                    paths: resolve_trigger_paths(paths, exclude_paths)?,
                 }
             }
         }),

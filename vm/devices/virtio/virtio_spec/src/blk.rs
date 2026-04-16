@@ -6,11 +6,6 @@
 //! Based on OASIS VIRTIO v1.2, Section 5.2.
 //! <https://docs.oasis-open.org/virtio/virtio/v1.2/cs01/virtio-v1.2-cs01.html>
 
-#![expect(
-    dead_code,
-    reason = "This module defines constants and types for the virtio-blk spec, but not all of them are used in our implementation."
-)]
-
 use inspect::Inspect;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -50,15 +45,6 @@ pub const VIRTIO_BLK_S_UNSUPP: u8 = 2;
 
 /// Maximum length of the device ID string (spec §5.2.6).
 pub const VIRTIO_BLK_ID_BYTES: usize = 20;
-
-/// Maximum number of segments per request advertised via `seg_max` (spec §5.2.4).
-///
-/// This is the maximum number of data descriptors (excluding header and
-/// status) in a single request. The virtio spec requires that a
-/// descriptor chain is no longer than the queue size, and each block
-/// request uses one descriptor for the header and one for the status
-/// byte, so the data segment limit is `DEFAULT_QUEUE_SIZE - 2`.
-pub const DEFAULT_SEG_MAX: u32 = virtio::DEFAULT_QUEUE_SIZE as u32 - 2;
 
 /// Flag bit in `VirtioBlkDiscardWriteZeroes::flags` (spec §5.2.6).
 /// When set in a write zeroes command, allows the device to deallocate

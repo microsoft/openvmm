@@ -103,13 +103,28 @@ jobs:
           run_id: ${{ github.event.workflow_run.id }}
 
       - name: Upload to memory validation results to Azure Blob Storage
-        if: ${{ github.event.workflow_run.event == 'push' }}
         run: |
+          # ignore this job for builds that we don't run memory validation on to keep
+          # storage account clean
+          if ! find results -path '*/*memory_validation*/petri.jsonl' | grep -q .; then
+            exit 0
+          fi
+
           az storage blob upload-batch \
             --destination "$BASE_URL/memoryvalidation" \
             --destination-path "$run_id" \
             --source results \
             --pattern '*/*memory_validation*/petri.jsonl' \
+            --auth-mode login
+
+          # Store the PR number in the storage account as well to associate memory validation
+          # results with their code changes. We want to include PR events as well to collect
+          # results from architectures that can't have their meminfo queried for release builds
+          az storage blob upload \
+            --blob-url "$BASE_URL/memoryvalidation/runs/$run_id" \
+            --file /dev/null \
+            --metadata \
+              "ghpr=$SOURCE_PR" \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}

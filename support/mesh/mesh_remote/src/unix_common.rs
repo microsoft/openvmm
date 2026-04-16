@@ -29,10 +29,11 @@ const MAX_FDS_PER_MSG: usize = 64;
 
 /// Sends a packet, including the specified file descriptors. May fail with
 /// ErrorKind::WouldBlock.
+#[expect(clippy::allow_attributes)]
 #[allow(
     clippy::needless_update,
     clippy::useless_conversion,
-    reason = "libc::cmsghdr has different type defs on different platforms"
+    reason = "libc::cmsghdr has different type defs on gnu vs musl"
 )]
 pub(crate) fn try_send(
     fd: BorrowedFd<'_>,
@@ -132,7 +133,6 @@ pub(crate) fn try_recv(
         // SAFETY: cmsg_ptr is valid per CMSG_FIRSTHDR/CMSG_NXTHDR contract.
         let cmsg = unsafe { &*cmsg_ptr };
         if cmsg.cmsg_level == libc::SOL_SOCKET && cmsg.cmsg_type == libc::SCM_RIGHTS {
-            #[allow(clippy::unnecessary_cast)] // cmsg_len is u32 on musl and usize on gnu.
             let data_len = cmsg.cmsg_len as usize - size_of::<libc::cmsghdr>();
             let fd_count = data_len / size_of::<RawFd>();
             // SAFETY: CMSG_DATA returns a pointer to the cmsg payload, which

@@ -342,8 +342,14 @@ fn make_disk_resource(
     size_bytes: u64,
 ) -> anyhow::Result<vm_resource::Resource<vm_resource::kind::DiskHandleKind>> {
     match path {
-        Some(p) => openvmm_helpers::disk::open_disk_type(p, false)
-            .with_context(|| format!("failed to open data disk at {}", p.display())),
+        Some(p) => openvmm_helpers::disk::open_disk_type(
+            p,
+            openvmm_helpers::disk::OpenDiskOptions {
+                read_only: false,
+                direct: false,
+            },
+        )
+        .with_context(|| format!("failed to open data disk at {}", p.display())),
         None => {
             use disk_backend_resources::LayeredDiskHandle;
             use disk_backend_resources::layer::RamDiskLayerHandle;

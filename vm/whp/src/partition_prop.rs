@@ -17,6 +17,7 @@ pub trait AssociatedType {
 macro_rules! pp {
     ($($(#[$attr:meta])* ($internal_name:ident, $code:ident, $ty:ty),)*) => {
         $(
+            #[expect(clippy::allow_attributes)]
             #[allow(dead_code)]
             $(#[$attr])*
             pub struct $internal_name;

@@ -138,7 +138,9 @@ impl PetriVmmBackend for HyperVPetriBackend {
             let mut vhd = Err(anyhow::Error::msg("haven't tried to open the vhd yet"));
             // The VM may not be fully shut down immediately, do some retries
             for _ in 0..5 {
-                vhd = VhdmpDisk::open_vhd(hook_crash_disk.as_ref(), true)
+                vhd = VhdmpDisk::options()
+                    .read_only(true)
+                    .open(hook_crash_disk.as_ref())
                     .context("failed opening vhd");
                 if vhd.is_ok() {
                     break;
@@ -647,6 +649,14 @@ async fn petri_disk_to_hyperv(
         None => None,
         Some(Disk::Memory(_)) => None, // TODO: Hyper-V memory disk
         Some(Disk::Differencing(parent_path)) => {
+            let parent_path = match parent_path {
+                crate::DiskPath::Local(path) => path,
+                crate::DiskPath::Remote { .. } => {
+                    anyhow::bail!(
+                        "Hyper-V backend requires local disk files; remote disk artifacts are not supported"
+                    )
+                }
+            };
             let diff_disk_path = temp_dir
                 .path()
                 .join(parent_path.file_name().context("path has no filename")?);

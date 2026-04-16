@@ -41,6 +41,7 @@ use openvmm_defs::config::VpciDeviceConfig;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::open_disk_type;
 use openvmm_ttrpc_vmservice as vmservice;
 use pal_async::DefaultDriver;
@@ -113,6 +114,7 @@ impl Worker for TtrpcWorker {
                 RpcTransport::Ttrpc => ResolvedTransport::Ttrpc,
                 #[cfg(feature = "grpc")]
                 RpcTransport::Grpc => ResolvedTransport::Grpc,
+                #[expect(clippy::allow_attributes)]
                 #[allow(unreachable_patterns)]
                 transport => bail!("unsupported transport {transport}"),
             },
@@ -512,6 +514,8 @@ impl VmService {
             firmware_event_send: None,
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
+            pci_chipset_devices: chipset.pci_chipset_devices,
+            chipset_capabilities: chipset.capabilities,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
             automatic_guest_reset: true,
@@ -763,8 +767,14 @@ fn make_disk_config(disk: vmservice::ScsiDisk) -> anyhow::Result<ScsiDeviceAndPa
             lun: disk.lun.try_into().ok().context("lun value out of range")?,
         },
         device: SimpleScsiDiskHandle {
-            disk: open_disk_type(disk.host_path.as_ref(), disk.read_only)
-                .with_context(|| format!("failed to open {}", disk.host_path))?,
+            disk: open_disk_type(
+                disk.host_path.as_ref(),
+                OpenDiskOptions {
+                    read_only: disk.read_only,
+                    direct: false,
+                },
+            )
+            .with_context(|| format!("failed to open {}", disk.host_path))?,
             read_only: disk.read_only,
             parameters: Default::default(),
         }

@@ -56,6 +56,8 @@ pub struct PartitionInfo {
     pub bsp_reg: u32,
     /// Cpu info for enabled cpus.
     pub cpus: ArrayVec<CpuEntry, MAX_CPU_COUNT>,
+    /// Per-CPU state to apply when starting the sidecar kernel.
+    pub sidecar_cpu_overrides: sidecar_defs::PerCpuState,
     /// VMBUS info for VTL2.
     pub vmbus_vtl2: VmbusInfo,
     /// VMBUS info for VTL0.
@@ -90,6 +92,10 @@ impl PartitionInfo {
             isolation: IsolationType::None,
             bsp_reg: 0,
             cpus: ArrayVec::new_const(),
+            sidecar_cpu_overrides: sidecar_defs::PerCpuState {
+                per_cpu_state_specified: false,
+                sidecar_starts_cpu: [true; sidecar_defs::NUM_CPUS_SUPPORTED_FOR_PER_CPU_STATE],
+            },
             vmbus_vtl2: VmbusInfo {
                 mmio: ArrayVec::new_const(),
                 connection_id: 0,

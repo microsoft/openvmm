@@ -196,7 +196,7 @@ impl PetriVmConfigOpenVmm {
                 ProcessConfig::new("vmm")
                     .process_name(&resources.openvmm_path)
                     .stderr(Some(stderr_write))
-                    .env(vmm_env.into_iter()),
+                    .env(vmm_env),
                 openvmm_defs::entrypoint::MeshHostParams { runner },
             )
             .await?;

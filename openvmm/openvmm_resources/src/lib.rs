@@ -11,6 +11,10 @@ vm_resource::register_static_resolvers! {
     // Chipset devices
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pit::resolver::PitResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,
@@ -46,6 +50,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(feature = "disk_crypt")]
     disk_crypt::resolver::DiskCryptResolver,
     disk_file::FileDiskResolver,
+    #[cfg(target_os = "linux")]
+    disk_blockdevice::resolver::StaticBlockDeviceResolver,
     disk_prwrap::DiskWithReservationsResolver,
     disk_delay::resolver::DelayDiskResolver,
     disk_vhd1::Vhd1Resolver,
@@ -64,6 +70,8 @@ vm_resource::register_static_resolvers! {
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
     virtio::resolver::VirtioPciResolver,
+    #[cfg(target_os = "linux")]
+    vfio_assigned_device::resolver::VfioDeviceResolver,
 
     // SCSI
     scsidisk::resolver::SimpleScsiResolver,

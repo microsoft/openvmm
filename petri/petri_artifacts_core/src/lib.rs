@@ -20,6 +20,27 @@ use std::ffi::OsStr;
 use std::marker::PhantomData;
 use std::path::Path;
 
+/// How an artifact can be accessed.
+#[derive(Debug, Clone)]
+pub enum ArtifactSource {
+    /// Artifact is available as a local file.
+    Local(PathBuf),
+    /// Artifact is available at a remote URL (not yet downloaded).
+    Remote {
+        /// The URL where the artifact can be fetched.
+        url: String,
+    },
+}
+
+/// Whether remote artifact access is allowed for a particular requirement.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RemoteAccess {
+    /// Allow the artifact to resolve to a remote URL if not available locally.
+    Allow,
+    /// Require a local file; fail if not available locally.
+    LocalOnly,
+}
+
 /// A trait that marks a type as being the type-safe ID for a petri artifact.
 ///
 /// This trait should never be implemented manually! It will be automatically
@@ -126,35 +147,98 @@ impl<A> ResolvedOptionalArtifact<A> {
     }
 }
 
+/// A resolved artifact source for artifact `A`, which may be local or remote.
+pub struct ResolvedArtifactSource<A = ()>(Option<ArtifactSource>, PhantomData<A>);
+
+impl<A> Clone for ResolvedArtifactSource<A> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1)
+    }
+}
+
+impl<A> std::fmt::Debug for ResolvedArtifactSource<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResolvedArtifactSource")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl<A> ResolvedArtifactSource<A> {
+    /// Erases the type `A`.
+    pub fn erase(self) -> ResolvedArtifactSource {
+        ResolvedArtifactSource(self.0, PhantomData)
+    }
+
+    /// Gets the resolved source of the artifact.
+    #[track_caller]
+    pub fn get(&self) -> &ArtifactSource {
+        self.0
+            .as_ref()
+            .expect("cannot get source in requirements phase")
+    }
+}
+
 /// An artifact resolver, used both to express requirements for artifacts and to
 /// resolve them to paths.
-pub struct ArtifactResolver<'a>(ArtifactResolverInner<'a>);
+pub struct ArtifactResolver<'a> {
+    inner: ArtifactResolverInner<'a>,
+    remote_policy: RemoteAccess,
+}
 
 impl<'a> ArtifactResolver<'a> {
+    /// Returns the default remote access policy, checking the
+    /// `PETRI_REMOTE_ARTIFACTS` environment variable.
+    ///
+    /// Set `PETRI_REMOTE_ARTIFACTS=0` to force all artifacts to be resolved
+    /// locally, even if `RemoteAccess::Allow` is specified per-call.
+    fn default_remote_policy() -> RemoteAccess {
+        match std::env::var("PETRI_REMOTE_ARTIFACTS").as_deref() {
+            Ok("0") | Ok("false") => RemoteAccess::LocalOnly,
+            _ => RemoteAccess::Allow,
+        }
+    }
+
     /// Returns a resolver to collect requirements; the artifact objects returned by
     /// [`require`](Self::require) will panic if used.
     pub fn collector(requirements: &'a mut TestArtifactRequirements) -> Self {
-        ArtifactResolver(ArtifactResolverInner::Collecting(RefCell::new(
-            requirements,
-        )))
+        ArtifactResolver {
+            inner: ArtifactResolverInner::Collecting(RefCell::new(requirements)),
+            remote_policy: Self::default_remote_policy(),
+        }
     }
 
     /// Returns a resolver to resolve artifacts.
     pub fn resolver(artifacts: &'a TestArtifacts) -> Self {
-        ArtifactResolver(ArtifactResolverInner::Resolving(artifacts))
+        ArtifactResolver {
+            inner: ArtifactResolverInner::Resolving(artifacts),
+            remote_policy: Self::default_remote_policy(),
+        }
     }
 
-    /// Resolve a required artifact.
-    pub fn require<A: ArtifactId>(&self, handle: ArtifactHandle<A>) -> ResolvedArtifact<A> {
-        match &self.0 {
-            ArtifactResolverInner::Collecting(requirements) => {
-                requirements.borrow_mut().require(handle.erase());
-                ResolvedArtifact(None, PhantomData)
-            }
-            ArtifactResolverInner::Resolving(artifacts) => {
-                ResolvedArtifact(Some(artifacts.get(handle).to_owned()), PhantomData)
-            }
+    /// Returns the effective remote access for a given per-call policy,
+    /// respecting the resolver-wide policy.
+    fn effective_remote(&self, per_call: RemoteAccess) -> RemoteAccess {
+        if matches!(self.remote_policy, RemoteAccess::LocalOnly) {
+            RemoteAccess::LocalOnly
+        } else {
+            per_call
         }
+    }
+
+    /// Resolve a required artifact. The artifact must be available locally.
+    pub fn require<A: ArtifactId>(&self, handle: ArtifactHandle<A>) -> ResolvedArtifact<A> {
+        let source = self.require_source(handle, RemoteAccess::LocalOnly);
+        ResolvedArtifact(
+            source.0.map(|s| match s {
+                ArtifactSource::Local(p) => p,
+                ArtifactSource::Remote { url } => panic!(
+                    "artifact required via require() resolved to remote source `{url}`; \
+                     use require_source(..., RemoteAccess::Allow) or download the artifact locally"
+                ),
+            }),
+            PhantomData,
+        )
     }
 
     /// Resolve an optional artifact.
@@ -162,7 +246,7 @@ impl<'a> ArtifactResolver<'a> {
         &self,
         handle: ArtifactHandle<A>,
     ) -> ResolvedOptionalArtifact<A> {
-        match &self.0 {
+        match &self.inner {
             ArtifactResolverInner::Collecting(requirements) => {
                 requirements.borrow_mut().try_require(handle.erase());
                 ResolvedOptionalArtifact(OptionalArtifactState::Collecting, PhantomData)
@@ -175,6 +259,31 @@ impl<'a> ArtifactResolver<'a> {
                     }),
                 PhantomData,
             ),
+        }
+    }
+
+    /// Resolve an artifact, returning either a local path or a remote URL.
+    ///
+    /// The `remote` parameter controls whether a remote URL is acceptable for
+    /// this particular artifact. The resolver's configured remote policy may
+    /// further restrict this request and force the effective access mode to
+    /// `LocalOnly`.
+    pub fn require_source<A: ArtifactId>(
+        &self,
+        handle: ArtifactHandle<A>,
+        remote: RemoteAccess,
+    ) -> ResolvedArtifactSource<A> {
+        let effective = self.effective_remote(remote);
+        match &self.inner {
+            ArtifactResolverInner::Collecting(requirements) => {
+                requirements
+                    .borrow_mut()
+                    .require_source(handle.erase(), effective);
+                ResolvedArtifactSource(None, PhantomData)
+            }
+            ArtifactResolverInner::Resolving(artifacts) => {
+                ResolvedArtifactSource(Some(artifacts.get_source(handle).clone()), PhantomData)
+            }
         }
     }
 }
@@ -292,18 +401,39 @@ pub trait ResolveTestArtifact {
     /// This method must use type-erased handles, as using typed artifact
     /// handles in this API would cause the trait to no longer be object-safe.
     fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf>;
+
+    /// Given an artifact handle, return its source (local path or remote URL).
+    ///
+    /// The default implementation wraps the result of [`resolve`](Self::resolve)
+    /// in [`ArtifactSource::Local`]. Override this to return
+    /// [`ArtifactSource::Remote`] for artifacts that are available at a URL
+    /// but not downloaded locally.
+    fn resolve_source(&self, id: ErasedArtifactHandle) -> anyhow::Result<ArtifactSource> {
+        self.resolve(id).map(ArtifactSource::Local)
+    }
 }
 
 impl<T: ResolveTestArtifact + ?Sized> ResolveTestArtifact for &T {
     fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
         (**self).resolve(id)
     }
+
+    fn resolve_source(&self, id: ErasedArtifactHandle) -> anyhow::Result<ArtifactSource> {
+        (**self).resolve_source(id)
+    }
+}
+
+/// How an artifact was required.
+#[derive(Debug, Copy, Clone)]
+struct ArtifactRequirement {
+    optional: bool,
+    remote: RemoteAccess,
 }
 
 /// A set of dependencies required to run a test.
 #[derive(Clone)]
 pub struct TestArtifactRequirements {
-    artifacts: Vec<(ErasedArtifactHandle, bool)>,
+    artifacts: Vec<(ErasedArtifactHandle, ArtifactRequirement)>,
 }
 
 impl TestArtifactRequirements {
@@ -314,15 +444,36 @@ impl TestArtifactRequirements {
         }
     }
 
-    /// Add a dependency to the set of required artifacts.
+    /// Add a dependency to the set of required artifacts (must be local).
     pub fn require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
-        self.artifacts.push((dependency.erase(), false));
-        self
+        self.require_source(dependency, RemoteAccess::LocalOnly)
     }
 
     /// Add an optional dependency to the set of artifacts.
     pub fn try_require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
-        self.artifacts.push((dependency.erase(), true));
+        self.artifacts.push((
+            dependency.erase(),
+            ArtifactRequirement {
+                optional: true,
+                remote: RemoteAccess::LocalOnly,
+            },
+        ));
+        self
+    }
+
+    /// Add a dependency that may resolve to a remote URL.
+    pub fn require_source(
+        &mut self,
+        dependency: impl AsArtifactHandle,
+        remote: RemoteAccess,
+    ) -> &mut Self {
+        self.artifacts.push((
+            dependency.erase(),
+            ArtifactRequirement {
+                optional: false,
+                remote,
+            },
+        ));
         self
     }
 
@@ -330,41 +481,58 @@ impl TestArtifactRequirements {
     pub fn required_artifacts(&self) -> impl Iterator<Item = ErasedArtifactHandle> + '_ {
         self.artifacts
             .iter()
-            .filter_map(|&(a, optional)| (!optional).then_some(a))
+            .filter_map(|&(a, req)| (!req.optional).then_some(a))
     }
 
     /// Returns the current list of optional dependencies.
     pub fn optional_artifacts(&self) -> impl Iterator<Item = ErasedArtifactHandle> + '_ {
         self.artifacts
             .iter()
-            .filter_map(|&(a, optional)| optional.then_some(a))
+            .filter_map(|&(a, req)| req.optional.then_some(a))
     }
 
     /// Resolve the set of dependencies.
+    ///
+    /// Remote access for each artifact is determined by the
+    /// [`RemoteAccess`] flags recorded during collection, subject to any
+    /// process-wide override configured via the `PETRI_REMOTE_ARTIFACTS`
+    /// environment variable.
     pub fn resolve(&self, resolver: impl ResolveTestArtifact) -> anyhow::Result<TestArtifacts> {
         let mut failed = String::new();
         let mut resolved = HashMap::new();
 
         // Merge duplicate registrations by handle, keeping the strictest
-        // requirement (treat as required if any registration is required).
-        let mut merged: HashMap<ErasedArtifactHandle, bool> = HashMap::new();
-        for &(a, optional) in &self.artifacts {
+        // requirement (treat as required if any registration is required,
+        // use the most restrictive remote access).
+        let mut merged: HashMap<ErasedArtifactHandle, ArtifactRequirement> = HashMap::new();
+        for &(a, req) in &self.artifacts {
             merged
                 .entry(a)
-                .and_modify(|existing_optional| {
-                    // `optional == true` means optional; `false` means required.
-                    // We want the strictest semantics: required if any registration is required.
-                    *existing_optional = *existing_optional && optional;
+                .and_modify(|existing| {
+                    // required if any registration is required
+                    existing.optional = existing.optional && req.optional;
+                    // use LocalOnly if any registration requires it
+                    if matches!(req.remote, RemoteAccess::LocalOnly) {
+                        existing.remote = RemoteAccess::LocalOnly;
+                    }
                 })
-                .or_insert(optional);
+                .or_insert(req);
         }
 
-        for (a, optional) in merged {
-            match resolver.resolve(a) {
-                Ok(p) => {
-                    resolved.insert(a, p);
+        for (a, req) in merged {
+            let use_source = matches!(req.remote, RemoteAccess::Allow);
+
+            let result = if use_source {
+                resolver.resolve_source(a)
+            } else {
+                resolver.resolve(a).map(ArtifactSource::Local)
+            };
+
+            match result {
+                Ok(source) => {
+                    resolved.insert(a, source);
                 }
-                Err(_) if optional => {}
+                Err(_) if req.optional => {}
                 Err(e) => failed.push_str(&format!("{:?} - {:#}\n", a, e)),
             }
         }
@@ -383,20 +551,46 @@ impl TestArtifactRequirements {
 /// [`TestArtifactRequirements::resolve`].
 #[derive(Clone)]
 pub struct TestArtifacts {
-    artifacts: Arc<HashMap<ErasedArtifactHandle, PathBuf>>,
+    artifacts: Arc<HashMap<ErasedArtifactHandle, ArtifactSource>>,
 }
 
 impl TestArtifacts {
     /// Try to get the resolved path of an artifact.
+    ///
+    /// Returns `None` if the artifact was not required. Panics if the artifact
+    /// is only available remotely.
     #[track_caller]
     pub fn try_get(&self, artifact: impl AsArtifactHandle) -> Option<&Path> {
-        self.artifacts.get(&artifact.erase()).map(|p| p.as_ref())
+        self.artifacts.get(&artifact.erase()).map(|source| {
+            match source {
+                ArtifactSource::Local(p) => p.as_path(),
+                ArtifactSource::Remote { .. } => panic!(
+                    "Artifact {:?} is only available remotely; use require_source() or download it locally",
+                    artifact.erase()
+                ),
+            }
+        })
     }
 
     /// Get the resolved path of an artifact.
+    ///
+    /// Panics if the artifact was not required or is only available remotely.
     #[track_caller]
     pub fn get(&self, artifact: impl AsArtifactHandle) -> &Path {
         self.try_get(artifact.erase())
+            .unwrap_or_else(|| panic!("Artifact not initially required: {:?}", artifact.erase()))
+    }
+
+    /// Try to get the resolved source of an artifact.
+    #[track_caller]
+    pub fn try_get_source(&self, artifact: impl AsArtifactHandle) -> Option<&ArtifactSource> {
+        self.artifacts.get(&artifact.erase())
+    }
+
+    /// Get the resolved source of an artifact.
+    #[track_caller]
+    pub fn get_source(&self, artifact: impl AsArtifactHandle) -> &ArtifactSource {
+        self.try_get_source(artifact.erase())
             .unwrap_or_else(|| panic!("Artifact not initially required: {:?}", artifact.erase()))
     }
 }

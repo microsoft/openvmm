@@ -695,10 +695,8 @@ mod tests {
             index: CpuidPageIndex::new(pages.as_slice()),
         };
 
-        let mut expected_value = 1;
-        for entry in iter {
+        for (entry, expected_value) in iter.zip(1..) {
             assert_eq!(expected_value, entry.result.eax);
-            expected_value += 1;
         }
     }
 }

@@ -20,6 +20,9 @@ on:
     - synchronize
     - reopened
     - ready_for_review
+    paths-ignore:
+    - Guide/**
+    - petri/logview/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
