@@ -1709,8 +1709,16 @@ pub async fn wait_for_mana(
     let (pci_id, devpath) = vpci_path(instance_id);
 
     // Wait for the device to show up.
-    uevent_listener.wait_for_devpath(&devpath).await?;
-    wait_for_pci_path(&pci_id).await;
+    uevent_listener
+        .wait_for_devpath(&devpath)
+        .instrument(tracing::info_span!(
+            "waiting for device in filesystem",
+            dev_path = devpath.to_str().unwrap_or("unknown path")
+        ))
+        .await?;
+    wait_for_pci_path(&pci_id)
+        .instrument(tracing::info_span!("waiting for device in pci", pci_id))
+        .await;
 
     // Validate the device and vendor.
     let vendor = fs_err::read_to_string(devpath.join("vendor"))?;
@@ -1850,6 +1858,10 @@ impl InitialControllers {
                 is_restoring,
                 default_io_queue_depth,
             )
+            .instrument(tracing::info_span!(
+                "setting up storage controllers",
+                use_nvme_vfio
+            ))
             .await?
         } else {
             (None, Vec::new(), Vec::new())

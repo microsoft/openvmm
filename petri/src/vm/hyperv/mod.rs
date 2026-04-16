@@ -647,6 +647,14 @@ async fn petri_disk_to_hyperv(
         None => None,
         Some(Disk::Memory(_)) => None, // TODO: Hyper-V memory disk
         Some(Disk::Differencing(parent_path)) => {
+            let parent_path = match parent_path {
+                crate::DiskPath::Local(path) => path,
+                crate::DiskPath::Remote { .. } => {
+                    anyhow::bail!(
+                        "Hyper-V backend requires local disk files; remote disk artifacts are not supported"
+                    )
+                }
+            };
             let diff_disk_path = temp_dir
                 .path()
                 .join(parent_path.file_name().context("path has no filename")?);

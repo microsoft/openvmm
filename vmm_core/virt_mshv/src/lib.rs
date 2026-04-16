@@ -12,7 +12,6 @@ pub mod irqfd;
 mod vm_state;
 mod vp_state;
 
-use arrayvec::ArrayVec;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hv1_emulator::message_queues::MessageQueues;
@@ -23,6 +22,7 @@ use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
 use hvdef::HvX64RegisterName;
+use hvdef::HvX64RegisterPage;
 use hvdef::Vtl;
 use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_EXECUTE;
 use hvdef::hypercall::HvRegisterAssoc;
@@ -30,9 +30,6 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mshv_bindings::MSHV_SET_MEM_BIT_EXECUTABLE;
 use mshv_bindings::MSHV_SET_MEM_BIT_WRITABLE;
-use mshv_bindings::hv_message;
-use mshv_bindings::hv_register_assoc;
-use mshv_bindings::hv_x64_segment_register;
 use mshv_bindings::mshv_install_intercept;
 use mshv_bindings::mshv_user_mem_region;
 use mshv_ioctls::InterruptRequest;
@@ -48,6 +45,8 @@ use parking_lot::RwLock;
 use pci_core::msi::SignalMsi;
 use std::convert::Infallible;
 use std::io;
+use std::os::fd::AsFd;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::Weak;
@@ -63,6 +62,9 @@ use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
+use virt::state::StateElement as _;
+use virt::x86::apic_software_device::ApicSoftwareDevice;
+use virt::x86::apic_software_device::ApicSoftwareDevices;
 use virt::x86::max_physical_address_size_from_cpuid;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
@@ -71,6 +73,7 @@ use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vm_topology::processor::TargetVpInfo;
 use vmcore::interrupt::Interrupt;
 use vmcore::reference_time::GetReferenceTime;
 use vmcore::reference_time::ReferenceTimeResult;
@@ -84,11 +87,11 @@ use zerocopy::IntoBytes;
 trait VcpuFdExt {
     fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), MshvError>;
     fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), MshvError>;
-    fn set_hvdef_regs_64(&self, regs: &[(HvX64RegisterName, u64)]) -> Result<(), MshvError>;
 }
 
 impl VcpuFdExt for VcpuFd {
     fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), MshvError> {
+        use mshv_bindings::hv_register_assoc;
         const {
             assert!(size_of::<HvRegisterAssoc>() == size_of::<hv_register_assoc>());
             assert!(align_of::<HvRegisterAssoc>() >= align_of::<hv_register_assoc>());
@@ -100,6 +103,7 @@ impl VcpuFdExt for VcpuFd {
     }
 
     fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), MshvError> {
+        use mshv_bindings::hv_register_assoc;
         const {
             assert!(size_of::<HvRegisterAssoc>() == size_of::<hv_register_assoc>());
             assert!(align_of::<HvRegisterAssoc>() >= align_of::<hv_register_assoc>());
@@ -109,32 +113,10 @@ impl VcpuFdExt for VcpuFd {
             std::mem::transmute::<&[HvRegisterAssoc], &[hv_register_assoc]>(regs)
         })
     }
-
-    // TODO: this is only used for registers that are on the register page.
-    // Remove once the register page is implemented.
-    fn set_hvdef_regs_64(&self, regs: &[(HvX64RegisterName, u64)]) -> Result<(), MshvError> {
-        let assocs: ArrayVec<HvRegisterAssoc, 18> = regs
-            .iter()
-            .map(|&(name, value)| HvRegisterAssoc::from((name, value)))
-            .collect();
-        self.set_hvdef_regs(&assocs)
-    }
 }
 
 #[derive(Debug)]
 pub struct LinuxMshv;
-
-struct MshvEmuCache {
-    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
-    gps: [u64; 16],
-    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
-    segs: [SegmentRegister; 6],
-    rip: u64,
-    rflags: RFlags,
-
-    cr0: u64,
-    efer: u64,
-}
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -170,6 +152,10 @@ impl virt::Hypervisor for LinuxMshv {
                 pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_X2APIC;
             }
             vm_topology::processor::x86::ApicMode::XApic => {}
+        }
+
+        if config.processor_topology.smt_enabled() {
+            pt_flags |= 1 << mshv_bindings::MSHV_PT_BIT_SMT_ENABLED_GUEST;
         }
 
         // pt_cpu_fbanks expects *disabled* processor features (bit = 1
@@ -242,20 +228,30 @@ impl virt::Hypervisor for LinuxMshv {
         vmfd.initialize()
             .map_err(|e| Error::CreateVMInitFailed(e.into()))?;
 
+        // Tell the hypervisor how many VPs are in each socket so it can
+        // generate the correct topology CPUID leaves (01h, 04h, 0Bh, 1Fh,
+        // AMD 80000008h/1Dh/1Eh) automatically.
+        vmfd.set_partition_property(
+            mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_PROCESSORS_PER_SOCKET,
+            config.processor_topology.reserved_vps_per_socket() as u64,
+        )
+        .map_err(|e| Error::SetPartitionProperty(e.into()))?;
+
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
+
+        // /dev/mshv only supports 256 VPs right now for some reason.
+        if config.processor_topology.vp_count() > u8::MAX as u32 {
+            return Err(Error::TooManyVps(config.processor_topology.vp_count()));
+        }
+
+        // We have to create the BSP now to get access to some partition state.
+        // Everything else is created later.
+        let bsp = vmfd.create_vcpu(0).map_err(Error::CreateVcpu)?;
+
         for vp in config.processor_topology.vps_arch() {
-            if vp.base.vp_index.index() != vp.apic_id {
-                // TODO
-                return Err(Error::NotSupported);
-            }
-
-            let vcpufd = vmfd
-                .create_vcpu(vp.base.vp_index.index() as u8)
-                .map_err(Error::CreateVcpu)?;
-
             vps.push(MshvVpInner {
-                vcpufd,
+                vp_info: vp,
                 thread: RwLock::new(None),
                 needs_yield: NeedsYield::new(),
                 message_queues: MessageQueues::new(),
@@ -285,6 +281,17 @@ impl virt::Hypervisor for LinuxMshv {
         })
         .map_err(Error::InstallIntercept)?;
 
+        // Intercept HvRetargetDeviceInterrupt for device IDs the
+        // hypervisor doesn't know about (i.e. all software VPCI devices)
+        // so the VMM can update the interrupt routing table.
+        vmfd.install_intercept(mshv_install_intercept {
+            access_type_mask: HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+            intercept_type:
+                hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
+            intercept_parameter: Default::default(),
+        })
+        .map_err(Error::InstallIntercept)?;
+
         // Set up a signal for forcing vcpufd.run() ioctl to exit.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
         // SAFETY: The signal handler does not perform any actions that are forbidden
@@ -303,7 +310,12 @@ impl virt::Hypervisor for LinuxMshv {
             }
         }
 
-        Ok(MshvProtoPartition { config, vmfd, vps })
+        Ok(MshvProtoPartition {
+            config,
+            vmfd,
+            vps,
+            bsp,
+        })
     }
 }
 
@@ -321,6 +333,7 @@ pub struct MshvProtoPartition<'a> {
     config: ProtoPartitionConfig<'a>,
     vmfd: VmFd,
     vps: Vec<MshvVpInner>,
+    bsp: VcpuFd,
 }
 
 impl ProtoPartition for MshvProtoPartition<'_> {
@@ -330,8 +343,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
 
     fn max_physical_address_size(&self) -> u8 {
         max_physical_address_size_from_cpuid(&|eax, ecx| {
-            self.vps[0]
-                .vcpufd
+            self.bsp
                 .get_cpuid_values(eax, ecx, 0, 0)
                 .expect("cpuid should not fail")
         })
@@ -341,21 +353,11 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        // Build topology CPUID leaves.
-        let mut cpuid_leaves: Vec<virt::CpuidLeaf> = config.cpuid.to_vec();
-        virt::x86::topology::topology_cpuid(
-            self.config.processor_topology,
-            &|eax, ecx| {
-                self.vps[0]
-                    .vcpufd
-                    .get_cpuid_values(eax, ecx, 0, 0)
-                    .expect("cpuid should not fail")
-            },
-            &mut cpuid_leaves,
-        )
-        .map_err(Error::TopologyCpuid)?;
-
-        let cpuid = virt::CpuidLeafSet::new(cpuid_leaves);
+        // Use the non-topology CPUID overrides from the caller (feature
+        // flags, etc.). Topology CPUID leaves are handled natively by
+        // the hypervisor via the ProcessorsPerSocket partition property
+        // and SMT creation flag set during partition creation.
+        let cpuid = virt::CpuidLeafSet::new(config.cpuid.to_vec());
 
         // Apply CPUID overrides partition-wide.
         // The hypervisor handles per-VP APIC ID fixups in topology leaves
@@ -399,17 +401,19 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         let caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
             &mut |function, index| {
-                cpuid.result(
-                    function,
-                    index,
-                    &self.vps[0]
-                        .vcpufd
-                        .get_cpuid_values(function, index, 0, 0)
-                        .expect("cpuid should not fail"),
-                )
+                self.bsp
+                    .get_cpuid_values(function, index, 0, 0)
+                    .expect("cpuid should not fail")
             },
         )
         .map_err(Error::Capabilities)?;
+
+        let apic_id_map = self
+            .config
+            .processor_topology
+            .vps_arch()
+            .map(|vp| vp.apic_id)
+            .collect();
 
         // Attach all the resources created above to a Partition object.
         let inner = Arc::new(MshvPartitionInner {
@@ -422,6 +426,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             caps,
             synic_ports: Default::default(),
             cpuid,
+            software_devices: ApicSoftwareDevices::new(apic_id_map),
         });
 
         let partition = MshvPartition {
@@ -429,6 +434,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             inner,
         };
 
+        let mut bsp = Some(self.bsp);
         let vps = self
             .config
             .processor_topology
@@ -436,6 +442,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             .map(|vp| MshvProcessorBinder {
                 partition: partition.inner.clone(),
                 vpindex: vp.vp_index,
+                vcpufd: bsp.take(),
             })
             .collect();
 
@@ -443,7 +450,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     }
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 pub struct MshvPartition {
     #[inspect(flatten)]
     inner: Arc<MshvPartitionInner>,
@@ -451,7 +458,7 @@ pub struct MshvPartition {
     synic_ports: Arc<virt::synic::SynicPorts<MshvPartitionInner>>,
 }
 
-#[derive(Debug, Inspect)]
+#[derive(Inspect)]
 struct MshvPartitionInner {
     #[inspect(skip)]
     vmfd: VmFd,
@@ -466,11 +473,11 @@ struct MshvPartitionInner {
     caps: virt::PartitionCapabilities,
     synic_ports: virt::synic::SynicPortMap,
     cpuid: virt::CpuidLeafSet,
+    software_devices: ApicSoftwareDevices,
 }
 
-#[derive(Debug)]
 struct MshvVpInner {
-    vcpufd: VcpuFd,
+    vp_info: TargetVpInfo,
     thread: RwLock<Option<Pthread>>,
     needs_yield: NeedsYield,
     message_queues: MessageQueues,
@@ -496,8 +503,6 @@ impl virt::Partition for MshvPartition {
         self: &Arc<Self>,
         _minimum_vtl: Vtl,
     ) -> Option<Arc<dyn DoorbellRegistration>> {
-        // TODO: implementation
-
         Some(self.clone())
     }
 
@@ -556,7 +561,7 @@ impl PartitionAccessState for MshvPartition {
 
 impl Hv1 for MshvPartition {
     type Error = Error;
-    type Device = virt::UnimplementedDevice;
+    type Device = ApicSoftwareDevice;
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
         Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>))
@@ -565,7 +570,7 @@ impl Hv1 for MshvPartition {
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
-        None
+        Some(self)
     }
 
     fn synic(&self) -> Arc<dyn vmcore::synic::SynicPortAccess> {
@@ -573,17 +578,25 @@ impl Hv1 for MshvPartition {
     }
 }
 
+impl virt::DeviceBuilder for MshvPartition {
+    fn build(&self, _vtl: Vtl, device_id: u64) -> Result<Self::Device, Self::Error> {
+        self.inner
+            .software_devices
+            .new_device(self.inner.clone(), device_id)
+            .map_err(Error::NewDevice)
+    }
+}
+
 impl GetReferenceTime for MshvPartitionInner {
     fn now(&self) -> ReferenceTimeResult {
-        let mut regs = [HvRegisterAssoc::from((
-            hvdef::HvAllArchRegisterName::TimeRefCount,
-            0u64,
-        ))];
-        self.vp(VpIndex::BSP)
-            .vcpufd
-            .get_hvdef_regs(&mut regs)
+        // Use the partition property instead of a VP register to avoid
+        // deadlocking when VPs are running.
+        let ref_time = self
+            .vmfd
+            .get_partition_property(
+                mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME,
+            )
             .unwrap();
-        let ref_time = regs[0].value.as_u64();
         ReferenceTimeResult {
             ref_time,
             system_time: None,
@@ -620,7 +633,31 @@ impl MshvPartitionInner {
 
 pub struct MshvProcessorBinder {
     partition: Arc<MshvPartitionInner>,
+    vcpufd: Option<VcpuFd>,
     vpindex: VpIndex,
+}
+
+struct MshvVpRunner<'a> {
+    vcpufd: &'a VcpuFd,
+    reg_page: *mut HvX64RegisterPage,
+}
+
+impl MshvVpRunner<'_> {
+    fn run(&mut self) -> Result<HvMessage, MshvError> {
+        self.vcpufd.run().map(|msg| {
+            // SAFETY: hv_message and HvMessage have the same size
+            // (256 bytes) and compatible layout (header + 240-byte
+            // payload).
+            unsafe { std::mem::transmute::<mshv_bindings::hv_message, HvMessage>(msg) }
+        })
+    }
+
+    fn reg_page(&mut self) -> &mut HvX64RegisterPage {
+        // SAFETY: VP is stopped (returned from run()), so we have exclusive
+        // access. The raw pointer was obtained from the kernel's mmap of
+        // the register page and remains valid for the VP's lifetime.
+        unsafe { &mut *self.reg_page }
+    }
 }
 
 impl virt::BindProcessor for MshvProcessorBinder {
@@ -631,11 +668,62 @@ impl virt::BindProcessor for MshvProcessorBinder {
     type Error = Error;
 
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
-        Ok(MshvProcessor {
+        let inner = &self.partition.vps[self.vpindex.index() as usize];
+
+        if self.vcpufd.is_none() {
+            let vcpufd = self
+                .partition
+                .vmfd
+                .create_vcpu(u8::try_from(self.vpindex.index()).expect("validated above"))
+                .map_err(Error::CreateVcpu)?;
+            self.vcpufd = Some(vcpufd);
+        };
+
+        let vcpufd = self.vcpufd.as_ref().unwrap();
+
+        let reg_page_ptr = vcpufd
+            .get_vp_reg_page()
+            .expect("register page must be mapped")
+            .0
+            .cast::<HvX64RegisterPage>();
+
+        let runner = MshvVpRunner {
+            vcpufd,
+            reg_page: reg_page_ptr,
+        };
+
+        let this = MshvProcessor {
             partition: &self.partition,
-            inner: &self.partition.vps[self.vpindex.index() as usize],
+            inner,
             vpindex: self.vpindex,
-        })
+            runner,
+        };
+
+        // Set the APIC state: APIC IDs and APIC base register (the latter to
+        // make sure the X2APIC enabled state is consistent with the partition
+        // settings).
+        let apic_base =
+            virt::vp::Apic::at_reset(&this.partition.caps, &this.inner.vp_info).apic_base;
+
+        let regs = &[
+            HvRegisterAssoc::from((
+                HvX64RegisterName::InitialApicId,
+                u64::from(inner.vp_info.apic_id),
+            )),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicBase, apic_base)),
+            HvRegisterAssoc::from((HvX64RegisterName::ApicId, u64::from(inner.vp_info.apic_id))),
+        ];
+
+        // When X2APIC is supported, the APIC ID register is statically assigned
+        // to the initial APIC ID and cannot be changed. When it is not supported,
+        // it must be explicitly set.
+        let reg_count = if this.partition.caps.x2apic { 2 } else { 3 };
+
+        vcpufd
+            .set_hvdef_regs(&regs[..reg_count])
+            .map_err(Error::Register)?;
+
+        Ok(this)
     }
 }
 
@@ -643,16 +731,16 @@ pub struct MshvProcessor<'a> {
     partition: &'a MshvPartitionInner,
     inner: &'a MshvVpInner,
     vpindex: VpIndex,
+    runner: MshvVpRunner<'a>,
 }
 
 impl MshvProcessor<'_> {
     async fn emulate(
-        &self,
+        &mut self,
         message: &HvMessage,
         devices: &impl CpuIo,
         interruption_pending: bool,
     ) -> Result<(), VpHaltReason> {
-        let cache = self.emulation_cache();
         let emu_mem = virt_support_x86emu::emulate::EmulatorMemoryAccess {
             gm: &self.partition.gm,
             kx_gm: &self.partition.gm,
@@ -661,17 +749,17 @@ impl MshvProcessor<'_> {
 
         let mut support = MshvEmulationState {
             partition: self.partition,
-            processor: self.inner,
+            vcpufd: self.runner.vcpufd,
+            reg_page: self.runner.reg_page(),
             vp_index: self.vpindex,
             message,
             interruption_pending,
-            cache,
         };
         virt_support_x86emu::emulate::emulate(&mut support, &emu_mem, devices).await
     }
 
     async fn handle_io_port_intercept(
-        &self,
+        &mut self,
         message: &HvMessage,
         devices: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
@@ -696,21 +784,18 @@ impl MshvProcessor<'_> {
 
             let insn_len = info.header.instruction_len() as u64;
 
-            /* Advance RIP and update RAX */
-            self.inner
-                .vcpufd
-                .set_hvdef_regs_64(&[
-                    (HvX64RegisterName::Rip, info.header.rip + insn_len),
-                    (HvX64RegisterName::Rax, ret_rax),
-                ])
-                .unwrap();
+            let rp = self.runner.reg_page();
+            rp.gp_registers[x86emu::Gp::RAX as usize] = ret_rax;
+            rp.rip = info.header.rip + insn_len;
+            rp.dirty.set_general_purpose(true);
+            rp.dirty.set_instruction_pointer(true);
         }
 
         Ok(())
     }
 
     async fn handle_mmio_intercept(
-        &self,
+        &mut self,
         message: &HvMessage,
         devices: &impl CpuIo,
     ) -> Result<(), VpHaltReason> {
@@ -725,69 +810,20 @@ impl MshvProcessor<'_> {
         self.flush_messages(info.deliverable_sints);
     }
 
-    fn handle_hypercall_intercept(&self, message: &HvMessage, _devices: &impl CpuIo) {
+    fn handle_hypercall_intercept(&mut self, message: &HvMessage, _devices: &impl CpuIo) {
         let info = message.as_message::<hvdef::HvX64HypercallInterceptMessage>();
         let is_64bit =
             info.header.execution_state.cr0_pe() && info.header.execution_state.efer_lma();
-        let mut hpc_context = MshvHypercallContext {
-            rax: info.rax,
-            rbx: info.rbx,
-            rcx: info.rcx,
-            rdx: info.rdx,
-            r8: info.r8,
-            rsi: info.rsi,
-            rdi: info.rdi,
-            xmm: info
-                .xmm_registers
-                .map(|x| u128::from_ne_bytes(x.as_ne_bytes())),
-        };
+
         let mut handler = MshvHypercallHandler {
             partition: self.partition,
-            context: &mut hpc_context,
-            rip: info.header.rip,
-            rip_dirty: false,
-            xmm_dirty: false,
-            gp_dirty: false,
+            reg_page: self.runner.reg_page(),
         };
 
         MshvHypercallHandler::DISPATCHER.dispatch(
             &self.partition.gm,
             X64RegisterIo::new(&mut handler, is_64bit),
         );
-
-        let mut dirty_regs = ArrayVec::<HvRegisterAssoc, 14>::new();
-
-        if handler.gp_dirty {
-            dirty_regs.extend([
-                HvRegisterAssoc::from((HvX64RegisterName::Rax, handler.context.rax)),
-                HvRegisterAssoc::from((HvX64RegisterName::Rbx, handler.context.rbx)),
-                HvRegisterAssoc::from((HvX64RegisterName::Rcx, handler.context.rcx)),
-                HvRegisterAssoc::from((HvX64RegisterName::Rdx, handler.context.rdx)),
-                HvRegisterAssoc::from((HvX64RegisterName::R8, handler.context.r8)),
-                HvRegisterAssoc::from((HvX64RegisterName::Rsi, handler.context.rsi)),
-                HvRegisterAssoc::from((HvX64RegisterName::Rdi, handler.context.rdi)),
-            ]);
-        }
-
-        if handler.xmm_dirty {
-            dirty_regs.extend((0..5u32).map(|i| {
-                HvRegisterAssoc::from((
-                    HvX64RegisterName(HvX64RegisterName::Xmm0.0 + i),
-                    handler.context.xmm[i as usize],
-                ))
-            }));
-        }
-
-        if handler.rip_dirty {
-            dirty_regs.push(HvRegisterAssoc::from((HvX64RegisterName::Rip, handler.rip)));
-        }
-
-        if !dirty_regs.is_empty() {
-            self.inner
-                .vcpufd
-                .set_hvdef_regs(&dirty_regs)
-                .expect("RIP setting is not a fallable operation");
-        }
     }
 
     fn flush_messages(&self, deliverable_sints: u16) {
@@ -824,46 +860,15 @@ impl MshvProcessor<'_> {
                 .request_sint_notifications(self.vpindex, nonempty_sints);
         }
     }
-
-    fn emulation_cache(&self) -> MshvEmuCache {
-        let regs = self.inner.vcpufd.get_regs().unwrap();
-        let gps = [
-            regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
-            regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
-        ];
-        let rip = regs.rip;
-        let rflags = regs.rflags;
-
-        let sregs = self.inner.vcpufd.get_sregs().unwrap();
-        let segs = [
-            x86emu_sreg_from_mshv_sreg(sregs.es),
-            x86emu_sreg_from_mshv_sreg(sregs.cs),
-            x86emu_sreg_from_mshv_sreg(sregs.ss),
-            x86emu_sreg_from_mshv_sreg(sregs.ds),
-            x86emu_sreg_from_mshv_sreg(sregs.fs),
-            x86emu_sreg_from_mshv_sreg(sregs.gs),
-        ];
-        let cr0 = sregs.cr0;
-        let efer = sregs.efer;
-
-        MshvEmuCache {
-            gps,
-            segs,
-            rip,
-            rflags: rflags.into(),
-            cr0,
-            efer,
-        }
-    }
 }
 
 struct MshvEmulationState<'a> {
     partition: &'a MshvPartitionInner,
-    processor: &'a MshvVpInner,
+    vcpufd: &'a VcpuFd,
+    reg_page: &'a mut HvX64RegisterPage,
     vp_index: VpIndex,
     message: &'a HvMessage,
     interruption_pending: bool,
-    cache: MshvEmuCache,
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {
@@ -876,80 +881,71 @@ impl EmulatorSupport for MshvEmulationState<'_> {
     }
 
     fn gp(&mut self, reg: x86emu::Gp) -> u64 {
-        self.cache.gps[reg as usize]
+        self.reg_page.gp_registers[reg as usize]
     }
 
     fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
-        self.cache.gps[reg as usize] = v;
+        self.reg_page.gp_registers[reg as usize] = v;
+        self.reg_page.dirty.set_general_purpose(true);
     }
 
     fn rip(&mut self) -> u64 {
-        self.cache.rip
+        self.reg_page.rip
     }
 
     fn set_rip(&mut self, v: u64) {
-        self.cache.rip = v;
+        self.reg_page.rip = v;
+        self.reg_page.dirty.set_instruction_pointer(true);
     }
 
     fn segment(&mut self, reg: x86emu::Segment) -> SegmentRegister {
-        self.cache.segs[reg as usize]
+        virt::x86::SegmentRegister::from(self.reg_page.segment[reg as usize]).into()
     }
 
     fn efer(&mut self) -> u64 {
-        self.cache.efer
+        self.reg_page.efer
     }
 
     fn cr0(&mut self) -> u64 {
-        self.cache.cr0
+        self.reg_page.cr0
     }
 
     fn rflags(&mut self) -> RFlags {
-        self.cache.rflags
+        RFlags::from(self.reg_page.rflags)
     }
 
     fn set_rflags(&mut self, v: RFlags) {
-        self.cache.rflags = v;
+        self.reg_page.rflags = v.into();
+        self.reg_page.dirty.set_flags(true);
     }
 
     fn xmm(&mut self, reg: usize) -> u128 {
         assert!(reg < 16);
-        let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
-        let mut assoc = [HvRegisterAssoc::from((name, 0u128))];
-        let _ = self.processor.vcpufd.get_hvdef_regs(&mut assoc);
-        assoc[0].value.as_u128()
+        if reg < 6 {
+            self.reg_page.xmm[reg]
+        } else {
+            let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
+            let mut assoc = [HvRegisterAssoc::from((name, 0u128))];
+            let _ = self.vcpufd.get_hvdef_regs(&mut assoc);
+            assoc[0].value.as_u128()
+        }
     }
 
     fn set_xmm(&mut self, reg: usize, value: u128) {
         assert!(reg < 16);
-        let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
-        let assoc = [HvRegisterAssoc::from((name, value))];
-        self.processor.vcpufd.set_hvdef_regs(&assoc).unwrap();
+        if reg < 6 {
+            self.reg_page.xmm[reg] = value;
+            self.reg_page.dirty.set_xmm(true);
+        } else {
+            let name = HvX64RegisterName(HvX64RegisterName::Xmm0.0 + reg as u32);
+            let assoc = [HvRegisterAssoc::from((name, value))];
+            self.vcpufd.set_hvdef_regs(&assoc).unwrap();
+        }
     }
 
     fn flush(&mut self) {
-        self.processor
-            .vcpufd
-            .set_hvdef_regs_64(&[
-                (HvX64RegisterName::Rip, self.cache.rip),
-                (HvX64RegisterName::Rflags, self.cache.rflags.into()),
-                (HvX64RegisterName::Rax, self.cache.gps[0]),
-                (HvX64RegisterName::Rcx, self.cache.gps[1]),
-                (HvX64RegisterName::Rdx, self.cache.gps[2]),
-                (HvX64RegisterName::Rbx, self.cache.gps[3]),
-                (HvX64RegisterName::Rsp, self.cache.gps[4]),
-                (HvX64RegisterName::Rbp, self.cache.gps[5]),
-                (HvX64RegisterName::Rsi, self.cache.gps[6]),
-                (HvX64RegisterName::Rdi, self.cache.gps[7]),
-                (HvX64RegisterName::R8, self.cache.gps[8]),
-                (HvX64RegisterName::R9, self.cache.gps[9]),
-                (HvX64RegisterName::R10, self.cache.gps[10]),
-                (HvX64RegisterName::R11, self.cache.gps[11]),
-                (HvX64RegisterName::R12, self.cache.gps[12]),
-                (HvX64RegisterName::R13, self.cache.gps[13]),
-                (HvX64RegisterName::R14, self.cache.gps[14]),
-                (HvX64RegisterName::R15, self.cache.gps[15]),
-            ])
-            .unwrap();
+        // Writes already went to the register page with dirty bits set.
+        // No additional work needed.
     }
 
     fn instruction_bytes(&self) -> &[u8] {
@@ -1037,8 +1033,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
     }
 
     fn inject_pending_event(&mut self, event_info: hvdef::HvX64PendingEvent) {
-        self.processor
-            .vcpufd
+        self.vcpufd
             .set_hvdef_regs(&[
                 HvRegisterAssoc::from((
                     HvX64RegisterName::PendingEvent0,
@@ -1090,28 +1085,16 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
     }
 
     fn registers(&mut self) -> TranslationRegisters {
-        let mut reg = [
-            HvX64RegisterName::Cr0,
-            HvX64RegisterName::Cr4,
-            HvX64RegisterName::Efer,
-            HvX64RegisterName::Cr3,
-            HvX64RegisterName::Rflags,
-            HvX64RegisterName::Ss,
-        ]
-        .map(|n| HvRegisterAssoc::from((n, 0u64)));
-
-        // SAFETY: `HvRegisterAssoc` and `hv_register_assoc` have the same size.
-        self.processor.vcpufd.get_hvdef_regs(&mut reg[..]).unwrap();
-
-        let [cr0, cr4, efer, cr3, rflags, ss] = reg.map(|v| v.value);
-
         TranslationRegisters {
-            cr0: cr0.as_u64(),
-            cr4: cr4.as_u64(),
-            efer: efer.as_u64(),
-            cr3: cr3.as_u64(),
-            rflags: rflags.as_u64(),
-            ss: from_seg(ss.as_segment()),
+            cr0: self.reg_page.cr0,
+            cr4: self.reg_page.cr4,
+            efer: self.reg_page.efer,
+            cr3: self.reg_page.cr3,
+            rflags: self.reg_page.rflags,
+            ss: virt::x86::SegmentRegister::from(
+                self.reg_page.segment[x86emu::Segment::SS as usize],
+            )
+            .into(),
             encryption_mode: virt_support_x86emu::translate::EncryptionMode::None,
         }
     }
@@ -1145,9 +1128,11 @@ pub enum Error {
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] MshvError),
     #[error("host does not support required cpu capabilities")]
-    Capabilities(virt::PartitionCapabilitiesError),
-    #[error("failed to compute topology cpuid")]
-    TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
+    Capabilities(#[source] virt::PartitionCapabilitiesError),
+    #[error("too many virtual processors: {0}")]
+    TooManyVps(u32),
+    #[error("failed to create virtual device")]
+    NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
 }
 
 impl MshvPartitionInner {
@@ -1255,35 +1240,122 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
     }
 
     fn unmap_range(&self, addr: u64, size: u64) -> anyhow::Result<()> {
+        let unmap_start = addr >> HV_PAGE_SHIFT;
+        let unmap_end = (addr + size) >> HV_PAGE_SHIFT;
         let mut state = self.memory.lock();
-        let (slot, range) = state
-            .ranges
-            .iter_mut()
-            .enumerate()
-            .find(|(_, range)| {
-                range.as_ref().map(|r| (r.guest_pfn, r.size)) == Some((addr >> HV_PAGE_SHIFT, size))
-            })
-            .expect("can only unmap existing ranges of exact size");
-
-        self.vmfd.unmap_user_memory(range.unwrap())?;
-        state.ranges[slot] = None;
+        for entry in &mut state.ranges {
+            let Some(region) = entry.as_ref() else {
+                continue;
+            };
+            let region_start = region.guest_pfn;
+            let region_end = region.guest_pfn + (region.size >> HV_PAGE_SHIFT);
+            if unmap_start <= region_start && region_end <= unmap_end {
+                // Region is fully contained in the unmap range.
+                self.vmfd.unmap_user_memory(*region)?;
+                *entry = None;
+            } else {
+                assert!(
+                    region_end <= unmap_start || unmap_end <= region_start,
+                    "unmap range partially overlaps a mapped region"
+                );
+            }
+        }
         Ok(())
     }
 }
 
-// TODO: implementation
-struct MshvDoorbellEntry;
+/// Holds the state needed to deassign an MSHV ioeventfd on drop.
+///
+/// The kernel's `mshv_deassign_ioeventfd` matches entries by (eventfd,
+/// addr, len, datamatch/wildcard), so we must keep all of these alive
+/// for the deassign ioctl.
+struct MshvDoorbellEntry {
+    partition: Weak<MshvPartitionInner>,
+    event: Event,
+    guest_address: u64,
+    datamatch: u64,
+    len: u32,
+    flags: u32,
+}
 
 impl MshvDoorbellEntry {
     fn new(
-        _guest_address: u64,
-        _value: Option<u64>,
-        _length: Option<u32>,
-        _fd: &Event,
+        partition: &Arc<MshvPartitionInner>,
+        guest_address: u64,
+        value: Option<u64>,
+        length: Option<u32>,
+        fd: &Event,
     ) -> io::Result<MshvDoorbellEntry> {
-        // TODO: implementation
+        let flags = if value.is_some() {
+            1 << mshv_bindings::MSHV_IOEVENTFD_BIT_DATAMATCH
+        } else {
+            0
+        };
+        let datamatch = value.unwrap_or(0);
+        let len = length.unwrap_or(0);
+        let event = fd.clone();
 
-        Ok(Self)
+        let ioeventfd = mshv_bindings::mshv_user_ioeventfd {
+            datamatch,
+            addr: guest_address,
+            len,
+            fd: event.as_fd().as_raw_fd(),
+            flags,
+            ..Default::default()
+        };
+        // SAFETY: `partition.vmfd` is valid because it is owned by
+        // `MshvPartitionInner`. The `ioeventfd` struct is properly
+        // initialized on the stack.
+        let ret = unsafe {
+            libc::ioctl(
+                partition.vmfd.as_raw_fd(),
+                mshv_ioctls::MSHV_IOEVENTFD() as _,
+                std::ptr::from_ref(&ioeventfd),
+            )
+        };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            partition: Arc::downgrade(partition),
+            event,
+            guest_address,
+            datamatch,
+            len,
+            flags,
+        })
+    }
+}
+
+impl Drop for MshvDoorbellEntry {
+    fn drop(&mut self) {
+        if let Some(partition) = self.partition.upgrade() {
+            let ioeventfd = mshv_bindings::mshv_user_ioeventfd {
+                datamatch: self.datamatch,
+                addr: self.guest_address,
+                len: self.len,
+                fd: self.event.as_fd().as_raw_fd(),
+                flags: self.flags | (1 << mshv_bindings::MSHV_IOEVENTFD_BIT_DEASSIGN),
+                ..Default::default()
+            };
+            // SAFETY: `partition.vmfd` is valid because we successfully
+            // upgraded the weak reference. The `ioeventfd` struct is
+            // properly initialized on the stack.
+            let ret = unsafe {
+                libc::ioctl(
+                    partition.vmfd.as_raw_fd(),
+                    mshv_ioctls::MSHV_IOEVENTFD() as _,
+                    std::ptr::from_ref(&ioeventfd),
+                )
+            };
+            assert!(
+                ret >= 0,
+                "failed to unregister doorbell at {:#x}: {}",
+                self.guest_address,
+                io::Error::last_os_error()
+            );
+        }
     }
 }
 
@@ -1296,6 +1368,7 @@ impl DoorbellRegistration for MshvPartition {
         fd: &Event,
     ) -> io::Result<Box<dyn Send + Sync>> {
         Ok(Box::new(MshvDoorbellEntry::new(
+            &self.inner,
             guest_address,
             value,
             length,
@@ -1304,75 +1377,48 @@ impl DoorbellRegistration for MshvPartition {
     }
 }
 
-struct MshvHypercallContext {
-    rax: u64,
-    rbx: u64,
-    rcx: u64,
-    rdx: u64,
-    r8: u64,
-    rsi: u64,
-    rdi: u64,
-    xmm: [u128; 6],
-}
-
 impl hv1_hypercall::X64RegisterState for MshvHypercallHandler<'_> {
     fn rip(&mut self) -> u64 {
-        self.rip
+        self.reg_page.rip
     }
 
     fn set_rip(&mut self, rip: u64) {
-        self.rip = rip;
-        self.rip_dirty = true;
+        self.reg_page.rip = rip;
+        self.reg_page.dirty.set_instruction_pointer(true);
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => self.context.rax,
-            hv1_hypercall::X64HypercallRegister::Rcx => self.context.rcx,
-            hv1_hypercall::X64HypercallRegister::Rdx => self.context.rdx,
-            hv1_hypercall::X64HypercallRegister::Rbx => self.context.rbx,
-            hv1_hypercall::X64HypercallRegister::Rsi => self.context.rsi,
-            hv1_hypercall::X64HypercallRegister::Rdi => self.context.rdi,
-            hv1_hypercall::X64HypercallRegister::R8 => self.context.r8,
-        }
+        self.reg_page.gp_registers[n as usize]
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
-        *match n {
-            hv1_hypercall::X64HypercallRegister::Rax => &mut self.context.rax,
-            hv1_hypercall::X64HypercallRegister::Rcx => &mut self.context.rcx,
-            hv1_hypercall::X64HypercallRegister::Rdx => &mut self.context.rdx,
-            hv1_hypercall::X64HypercallRegister::Rbx => &mut self.context.rbx,
-            hv1_hypercall::X64HypercallRegister::Rsi => &mut self.context.rsi,
-            hv1_hypercall::X64HypercallRegister::Rdi => &mut self.context.rdi,
-            hv1_hypercall::X64HypercallRegister::R8 => &mut self.context.r8,
-        } = value;
-        self.gp_dirty = true;
+        self.reg_page.gp_registers[n as usize] = value;
+        self.reg_page.dirty.set_general_purpose(true);
     }
 
     fn xmm(&mut self, n: usize) -> u128 {
-        self.context.xmm[n]
+        self.reg_page.xmm[n]
     }
 
     fn set_xmm(&mut self, n: usize, value: u128) {
-        self.context.xmm[n] = value;
-        self.xmm_dirty = true;
+        self.reg_page.xmm[n] = value;
+        self.reg_page.dirty.set_xmm(true);
     }
 }
 
 struct MshvHypercallHandler<'a> {
     partition: &'a MshvPartitionInner,
-    context: &'a mut MshvHypercallContext,
-    rip: u64,
-    rip_dirty: bool,
-    xmm_dirty: bool,
-    gp_dirty: bool,
+    reg_page: &'a mut HvX64RegisterPage,
 }
 
 impl MshvHypercallHandler<'_> {
     const DISPATCHER: hv1_hypercall::Dispatcher<Self> = hv1_hypercall::dispatcher!(
         Self,
-        [hv1_hypercall::HvPostMessage, hv1_hypercall::HvSignalEvent],
+        [
+            hv1_hypercall::HvPostMessage,
+            hv1_hypercall::HvSignalEvent,
+            hv1_hypercall::HvRetargetDeviceInterrupt,
+        ],
     );
 }
 
@@ -1389,6 +1435,27 @@ impl hv1_hypercall::SignalEvent for MshvHypercallHandler<'_> {
         self.partition
             .synic_ports
             .handle_signal_event(Vtl::Vtl0, connection_id, flag)
+    }
+}
+
+impl hv1_hypercall::RetargetDeviceInterrupt for MshvHypercallHandler<'_> {
+    fn retarget_interrupt(
+        &mut self,
+        device_id: u64,
+        address: u64,
+        data: u32,
+        params: hv1_hypercall::HvInterruptParameters<'_>,
+    ) -> hvdef::HvResult<()> {
+        let target_processors = Vec::from_iter(params.target_processors);
+        let vpci_params = vmcore::vpci_msi::VpciInterruptParameters {
+            vector: params.vector,
+            multicast: params.multicast,
+            target_processors: &target_processors,
+        };
+
+        self.partition
+            .software_devices
+            .retarget_interrupt(device_id, address, data, &vpci_params)
     }
 }
 
@@ -1419,7 +1486,6 @@ impl virt::Processor for MshvProcessor<'_> {
     ) -> Result<Infallible, VpHaltReason> {
         let vpinner = self.inner;
         let _cleaner = MshvVpInnerCleaner { vpinner };
-        let vcpufd = &vpinner.vcpufd;
 
         // Ensure this thread is uniquely running the VP, and store the thread
         // ID to support cancellation.
@@ -1429,41 +1495,34 @@ impl virt::Processor for MshvProcessor<'_> {
             vpinner.needs_yield.maybe_yield().await;
             stop.check()?;
 
-            match vcpufd.run() {
-                Ok(exit) => {
-                    // SAFETY: hv_message and HvMessage have the same size
-                    // (256 bytes) and compatible layout (header + 240-byte
-                    // payload).
-                    let exit: HvMessage =
-                        unsafe { std::mem::transmute::<hv_message, HvMessage>(exit) };
-                    match exit.header.typ {
-                        HvMessageType::HvMessageTypeUnrecoverableException => {
-                            return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
-                        }
-                        HvMessageType::HvMessageTypeX64IoPortIntercept => {
-                            self.handle_io_port_intercept(&exit, dev).await?;
-                        }
-                        HvMessageType::HvMessageTypeUnmappedGpa
-                        | HvMessageType::HvMessageTypeGpaIntercept => {
-                            self.handle_mmio_intercept(&exit, dev).await?;
-                        }
-                        HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                            tracing::trace!("SYNIC_SINT_DELIVERABLE");
-                            self.handle_synic_deliverable_exit(&exit, dev);
-                        }
-                        HvMessageType::HvMessageTypeHypercallIntercept => {
-                            tracing::trace!("HYPERCALL_INTERCEPT");
-                            self.handle_hypercall_intercept(&exit, dev);
-                        }
-                        HvMessageType::HvMessageTypeX64ApicEoi => {
-                            let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
-                            dev.handle_eoi(msg.interrupt_vector);
-                        }
-                        exit => {
-                            panic!("Unhandled vcpu exit code {exit:?}");
-                        }
+            match self.runner.run() {
+                Ok(exit) => match exit.header.typ {
+                    HvMessageType::HvMessageTypeUnrecoverableException => {
+                        return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
                     }
-                }
+                    HvMessageType::HvMessageTypeX64IoPortIntercept => {
+                        self.handle_io_port_intercept(&exit, dev).await?;
+                    }
+                    HvMessageType::HvMessageTypeUnmappedGpa
+                    | HvMessageType::HvMessageTypeGpaIntercept => {
+                        self.handle_mmio_intercept(&exit, dev).await?;
+                    }
+                    HvMessageType::HvMessageTypeSynicSintDeliverable => {
+                        tracing::trace!("SYNIC_SINT_DELIVERABLE");
+                        self.handle_synic_deliverable_exit(&exit, dev);
+                    }
+                    HvMessageType::HvMessageTypeHypercallIntercept => {
+                        tracing::trace!("HYPERCALL_INTERCEPT");
+                        self.handle_hypercall_intercept(&exit, dev);
+                    }
+                    HvMessageType::HvMessageTypeX64ApicEoi => {
+                        let msg = exit.as_message::<hvdef::HvX64ApicEoiMessage>();
+                        dev.handle_eoi(msg.interrupt_vector);
+                    }
+                    exit => {
+                        panic!("Unhandled vcpu exit code {exit:?}");
+                    }
+                },
 
                 Err(e) => match e.errno() {
                     libc::EAGAIN | libc::EINTR => {}
@@ -1481,28 +1540,6 @@ impl virt::Processor for MshvProcessor<'_> {
     fn access_state(&mut self, vtl: Vtl) -> Self::StateAccess<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         self
-    }
-}
-
-fn x86emu_sreg_from_mshv_sreg(reg: mshv_bindings::SegmentRegister) -> SegmentRegister {
-    let reg: hv_x64_segment_register = hv_x64_segment_register::from(reg);
-    // SAFETY: This union only contains one field.
-    let attributes: u16 = unsafe { reg.__bindgen_anon_1.attributes };
-
-    SegmentRegister {
-        base: reg.base,
-        limit: reg.limit,
-        selector: reg.selector,
-        attributes: attributes.into(),
-    }
-}
-
-fn from_seg(reg: hvdef::HvX64SegmentRegister) -> SegmentRegister {
-    SegmentRegister {
-        base: reg.base,
-        limit: reg.limit,
-        selector: reg.selector,
-        attributes: reg.attributes.into(),
     }
 }
 

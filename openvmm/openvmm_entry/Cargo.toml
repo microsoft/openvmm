@@ -9,9 +9,7 @@ rust-version.workspace = true
 [features]
 default = ["ttrpc", "grpc"]
 
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["openssl/vendored"]
+vendored_crypto = ["crypto/vendored"]
 
 encryption = ["vmotherboard/encryption"]
 
@@ -57,7 +55,6 @@ tpm_resources.workspace = true
 uidevices_resources.workspace = true
 video_core.workspace = true
 virtio_resources.workspace = true
-virtio.workspace = true
 vmbfs_resources.workspace = true
 vmbus_core.workspace = true
 vmbus_serial_resources.workspace = true
@@ -71,6 +68,7 @@ pcie_remote_resources.workspace = true
 
 clap_dyn_complete.workspace = true
 console_relay.workspace = true
+crypto = { workspace = true, optional = true }
 guid.workspace = true
 inspect.workspace = true
 inspect_proto.workspace = true
@@ -93,7 +91,6 @@ fs-err.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 getrandom.workspace = true
-openssl = { optional = true, workspace = true }
 parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
@@ -128,5 +125,5 @@ build_rs_guest_arch.workspace = true
 workspace = true
 
 [package.metadata.xtask.unused-deps]
-# keep the ossl dep so we can specify the vendored feature
-ignored = ["openssl"]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

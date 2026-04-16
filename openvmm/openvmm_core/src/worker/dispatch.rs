@@ -10,6 +10,7 @@ use acpi::dsdt;
 use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use debug_ptr::DebugPtr;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -140,9 +141,11 @@ use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::ChipsetDevices;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetDevices;
 use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 #[cfg(all(windows, feature = "virt_whp"))]
 use vpci::bus::VpciBus;
 use watchdog_core::platform::BaseWatchdogPlatform;
@@ -191,6 +194,8 @@ impl Manifest {
             debugger_rpc: config.debugger_rpc,
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
+            pci_chipset_devices: config.pci_chipset_devices,
+            chipset_capabilities: config.chipset_capabilities,
             generation_id_recv: config.generation_id_recv,
             rtc_delta_milliseconds: config.rtc_delta_milliseconds,
             automatic_guest_reset: config.automatic_guest_reset,
@@ -238,6 +243,8 @@ pub struct Manifest {
     debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
+    pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    chipset_capabilities: VmChipsetCapabilities,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
     rtc_delta_milliseconds: i64,
     automatic_guest_reset: bool,
@@ -640,6 +647,7 @@ struct LoadedVmInner {
     vtl2_framebuffer_gpa_base: Option<u64>,
 
     chipset_cfg: BaseChipsetManifest,
+    chipset_capabilities: VmChipsetCapabilities,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
     #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
@@ -1196,7 +1204,7 @@ impl InitializedVm {
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                                 with_ioapic: cfg.chipset.with_generic_ioapic,
                                 with_pic: cfg.chipset.with_generic_pic,
-                                with_pit: cfg.chipset.with_generic_pit,
+                                with_pit: cfg.chipset_capabilities.with_pit,
                                 with_psp: cfg.chipset.with_generic_psp,
                                 pm_base: PM_BASE,
                                 acpi_irq: SYSTEM_IRQ_ACPI,
@@ -1504,7 +1512,7 @@ impl InitializedVm {
         };
 
         let pci_bus_id_generic = vmotherboard::BusId::new("generic");
-        let pci_bus_id_piix4 = vmotherboard::BusId::new("i440bx");
+        let pci_bus_id_piix4 = vmotherboard::BusId::new(LEGACY_CHIPSET_PCI_BUS_NAME);
 
         let deps_generic_pci_bus =
             (cfg.chipset.with_generic_pci_bus).then_some(dev::GenericPciBusDeps {
@@ -1515,7 +1523,6 @@ impl InitializedVm {
 
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
 
-        let deps_generic_pit = (cfg.chipset.with_generic_pit).then_some(dev::GenericPitDeps {});
         let deps_generic_psp = (cfg.chipset.with_generic_psp).then_some(dev::GenericPspDeps {});
 
         let deps_hyperv_framebuffer =
@@ -1583,10 +1590,6 @@ impl InitializedVm {
             (cfg.chipset.with_piix4_pci_isa_bridge).then_some(dev::Piix4PciIsaBridgeDeps {
                 attached_to: pci_bus_id_piix4.clone(),
             });
-        let deps_piix4_pci_usb_uhci_stub =
-            (cfg.chipset.with_piix4_pci_usb_uhci_stub).then_some(dev::Piix4PciUsbUhciStubDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-            });
         let deps_piix4_power_management =
             (cfg.chipset.with_piix4_power_management).then_some(dev::Piix4PowerManagementDeps {
                 attached_to: pci_bus_id_piix4.clone(),
@@ -1601,7 +1604,6 @@ impl InitializedVm {
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_pic,
-                deps_generic_pit,
                 deps_generic_psp,
                 deps_hyperv_firmware_pcat,
                 deps_hyperv_firmware_uefi,
@@ -1614,7 +1616,6 @@ impl InitializedVm {
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_piix4_pci_isa_bridge,
-                deps_piix4_pci_usb_uhci_stub,
                 deps_piix4_power_management,
                 deps_underhill_vga_proxy: None,
                 deps_winbond_super_io_and_floppy_stub: None,
@@ -1645,6 +1646,7 @@ impl InitializedVm {
         )
         .with_expected_manifest(cfg.chipset.clone())
         .with_device_handles(cfg.chipset_devices)
+        .with_pci_device_handles(cfg.pci_chipset_devices)
         .with_trace_unknown_pio(true) // todo: add CLI param?
         .build(&driver_source, &state_units, &resolver)
         .await?;
@@ -2281,6 +2283,7 @@ impl InitializedVm {
                 _kernel_vmnics: kernel_vmnics,
                 vmbus_devices,
                 chipset_cfg: cfg.chipset,
+                chipset_capabilities: cfg.chipset_capabilities,
                 firmware_event_send: cfg.firmware_event_send,
                 load_mode: cfg.load_mode,
                 virtio_mmio_count,
@@ -2331,7 +2334,7 @@ impl LoadedVmInner {
                 with_ioapic: self.chipset_cfg.with_generic_ioapic,
                 with_psp: self.chipset_cfg.with_generic_psp,
                 with_pic: self.chipset_cfg.with_generic_pic,
-                with_pit: self.chipset_cfg.with_generic_pit,
+                with_pit: self.chipset_capabilities.with_pit,
                 pm_base: PM_BASE,
                 acpi_irq: SYSTEM_IRQ_ACPI,
             },
@@ -3063,9 +3066,11 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,        // TODO
-            vmbus_devices: vec![],     // TODO
-            chipset_devices: vec![],   // TODO
+            debugger_rpc: None,          // TODO
+            vmbus_devices: vec![],       // TODO
+            chipset_devices: vec![],     // TODO
+            pci_chipset_devices: vec![], // TODO
+            chipset_capabilities: self.inner.chipset_capabilities,
             generation_id_recv: None,  // TODO
             rtc_delta_milliseconds: 0, // TODO
             automatic_guest_reset: self.inner.automatic_guest_reset,

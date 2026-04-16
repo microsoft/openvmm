@@ -7,6 +7,7 @@ use super::threadpool::Io;
 use super::threadpool::IoInitiator;
 use futures::FutureExt;
 use io_uring::opcode;
+use io_uring::squeue;
 use io_uring::types::TimeoutFlags;
 use io_uring::types::Timespec;
 use pal_async::fd::FdReadyDriver;
@@ -329,6 +330,28 @@ impl TimerDriver for IoInitiator {
     }
 }
 
+impl pal_async::io_uring::IoUringSubmit for IoInitiator {
+    fn probe(&self, opcode: u8) -> bool {
+        self.probe(opcode)
+    }
+
+    unsafe fn submit(
+        &self,
+        sqe: squeue::Entry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
+        let this = self.clone();
+        // SAFETY: the caller guarantees the SQE only references memory that is
+        // valid for the lifetime of the returned future.
+        Box::pin(async move { unsafe { this.issue_io((), |_| sqe).await.0 } })
+    }
+}
+
+impl pal_async::driver::IoUringDriver for IoInitiator {
+    fn io_uring_submit(&self) -> Option<&dyn pal_async::io_uring::IoUringSubmit> {
+        Some(self)
+    }
+}
+
 impl<T: Initiate> PollTimer for Timer<T> {
     fn poll_timer(&mut self, cx: &mut Context<'_>, deadline: Option<Instant>) -> Poll<Instant> {
         if let Some(deadline) = deadline {
@@ -470,5 +493,14 @@ pub(crate) mod tests {
     fn socket_works() {
         let pool = get_pool_or_skip!();
         run_until(pool, executor_tests::socket_tests(pool.initiator().clone()))
+    }
+
+    #[test]
+    fn uring_works() {
+        let pool = get_pool_or_skip!();
+        run_until(
+            pool,
+            executor_tests::io_uring_tests::uring_tests(pool.initiator().clone()),
+        )
     }
 }

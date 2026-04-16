@@ -11,6 +11,10 @@ vm_resource::register_static_resolvers! {
     // Chipset devices
     #[cfg(guest_arch = "x86_64")]
     chipset::i8042::resolver::I8042Resolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset_legacy::piix4_uhci::resolver::Piix4PciUsbUhciStubResolver,
+    #[cfg(guest_arch = "x86_64")]
+    chipset::pit::resolver::PitResolver,
     missing_dev::resolver::MissingDevResolver,
     #[cfg(feature = "tpm")]
     tpm_device::resolver::TpmDeviceResolver,

@@ -15,10 +15,6 @@ mem-profile-tracing = ["dep:mem_profile_tracing", "diag_server/mem-profile-traci
 # Enable gdbstub support
 gdb = ["debug_worker_defs", "vmm_core/gdb", "virt_mshv_vtl/gdb"]
 
-# Enable locally compiling and statically linking a copy of OpenSSL.
-# The build process requires a C compiler, perl, and make.
-openssl-vendored = ["underhill_attestation/openssl-vendored"]
-
 # Enable TIO support for SEV-SNP
 dev_snp_ohcl_tio_support = ["tee_call/dev_snp_ohcl_tio_support"]
 
@@ -143,6 +139,7 @@ x86defs.workspace = true
 safe_intrinsics.workspace = true
 debug_ptr.workspace = true
 guid.workspace = true
+crypto = { workspace = true, features = ["vendored"] }
 inspect.workspace = true
 kmsg.workspace = true
 local_clock.workspace = true
@@ -198,3 +195,7 @@ build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# keep the crypto dep so we can specify the vendored feature
+ignored = ["crypto"]

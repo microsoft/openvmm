@@ -725,6 +725,7 @@ impl SimpleFlowNode for Node {
             get_env: v,
             release_igvm_files,
             use_relative_paths: build_only,
+            disable_remote_artifacts: false,
         });
 
         let mut side_effects = Vec::new();
