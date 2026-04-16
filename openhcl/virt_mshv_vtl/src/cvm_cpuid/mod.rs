@@ -648,9 +648,9 @@ impl CpuidResults {
 
         let CpuidResult {
             eax: xsave_low,
-            ebx: xsave_high,
+            ebx: _,
             ecx: _,
-            edx: _,
+            edx: xsave_high,
         } = *self
             .leaf_result_ref(CpuidFunction::ExtendedStateEnumeration, Some(0), true)
             .expect("validated this subleaf exists");
