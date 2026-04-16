@@ -123,9 +123,8 @@ impl VfioDevice {
         tracing::info!(pci_id, keepalive, "device arrived");
         vfio_sys::print_relevant_params();
 
-        let (container, group) =
-            vfio_sys::setup_vfio_container_group(&path, IommuType::NoIommu)
-                .with_context(|| format!("failed VFIO setup for {pci_id}"))?;
+        let (container, group) = vfio_sys::setup_vfio_container_group(&path, IommuType::NoIommu)
+            .with_context(|| format!("failed VFIO setup for {pci_id}"))?;
 
         let driver = driver_source.simple();
         if keepalive {
