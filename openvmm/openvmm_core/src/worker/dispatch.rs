@@ -1551,6 +1551,22 @@ impl InitializedVm {
         let deps_generic_isa_dma =
             (cfg.chipset.with_generic_isa_dma).then_some(dev::GenericIsaDmaDeps {});
 
+        #[cfg(guest_arch = "x86_64")]
+        let deps_generic_ioapic =
+            (cfg.chipset.with_generic_ioapic).then(|| dev::GenericIoApicDeps {
+                num_entries: virt::irqcon::IRQ_LINES as u8,
+                routing: Box::new(vmm_core::emuplat::ioapic::IoApicRouting(
+                    partition.clone().ioapic_routing(),
+                )),
+            });
+
+        #[cfg(guest_arch = "aarch64")]
+        let deps_generic_ioapic = if cfg.chipset.with_generic_ioapic {
+            anyhow::bail!("ioapic not supported on this architecture");
+        } else {
+            None
+        };
+
         let mut primary_disk_drive = floppy::DriveRibbon::None;
         let mut secondary_disk_drive = floppy::DriveRibbon::None;
         if cfg.chipset.with_winbond_super_io_and_floppy_full {
@@ -1683,6 +1699,7 @@ impl InitializedVm {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
                 deps_generic_isa_dma,
+                deps_generic_ioapic,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
                 deps_generic_psp,

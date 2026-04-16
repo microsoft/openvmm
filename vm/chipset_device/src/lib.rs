@@ -68,6 +68,12 @@ pub trait ChipsetDevice: 'static + Send /* see DEVNOTE before adding bounds */ {
     fn supports_tdisp(&mut self) -> Option<&mut dyn tdisp::TdispHostDeviceTarget> {
         None
     }
+
+    /// Optionally returns a trait object for ISA DMA controller access.
+    #[inline(always)]
+    fn supports_isa_dma_controller(&mut self) -> Option<&mut dyn isa_dma::IsaDmaController> {
+        None
+    }
 }
 
 /// Shared by `mmio` and `pio`
@@ -136,6 +142,7 @@ macro_rules! io_region {
 
 pub mod interrupt;
 pub mod io;
+pub mod isa_dma;
 pub mod mmio;
 pub mod pci;
 pub mod pio;

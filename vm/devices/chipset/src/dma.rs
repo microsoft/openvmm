@@ -21,6 +21,9 @@
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::isa_dma::IsaDmaController;
+use chipset_device::isa_dma::IsaDmaTransferBuffer;
+use chipset_device::isa_dma::IsaDmaTransferDirection;
 use chipset_device::pio::PortIoIntercept;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -29,6 +32,8 @@ use std::ops::RangeInclusive;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::isa_dma_channel::IsaDmaBuffer;
 use vmcore::isa_dma_channel::IsaDmaDirection;
+
+pub mod resolver;
 
 // Skip registering page port 0x80 so that the PCAT BIOS can handle
 // it for debugging purposes.
@@ -207,6 +212,34 @@ impl ChangeDeviceState for DmaController {
 impl ChipsetDevice for DmaController {
     fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
         Some(self)
+    }
+
+    fn supports_isa_dma_controller(&mut self) -> Option<&mut dyn IsaDmaController> {
+        Some(self)
+    }
+}
+
+impl IsaDmaController for DmaController {
+    fn check_transfer_size(&mut self, channel_number: usize) -> u16 {
+        self.check_transfer_size(channel_number)
+    }
+
+    fn request(
+        &mut self,
+        channel_number: usize,
+        direction: IsaDmaTransferDirection,
+    ) -> Option<IsaDmaTransferBuffer> {
+        let direction = match direction {
+            IsaDmaTransferDirection::Write => IsaDmaDirection::Write,
+            IsaDmaTransferDirection::Read => IsaDmaDirection::Read,
+        };
+
+        self.request(channel_number, direction)
+            .map(|IsaDmaBuffer { address, size }| IsaDmaTransferBuffer { address, size })
+    }
+
+    fn complete(&mut self, channel_number: usize) {
+        self.complete(channel_number)
     }
 }
 
