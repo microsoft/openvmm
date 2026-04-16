@@ -123,6 +123,19 @@ Hyper-V Administrators group.
 
 To see all available options: `cargo xflowey vmm-tests-run --help`.
 
+### Lazy Fetch (Default)
+
+By default, VHD/ISO disk images are streamed on demand via HTTP and cached
+locally in a SQLite database. This avoids multi-GB upfront downloads and
+significantly speeds up the dev inner loop once the cache is warm.
+
+Lazy fetch is automatically disabled for Hyper-V tests, which require local
+files. To force all images to be downloaded upfront, pass `--no-lazy-fetch`:
+
+```bash
+cargo xflowey vmm-tests-run --filter "test(my_test)" --dir /tmp/vmm-tests-run --no-lazy-fetch
+```
+
 ## Running VMM Tests (Manual)
 
 ```admonish tip

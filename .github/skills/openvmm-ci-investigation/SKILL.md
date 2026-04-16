@@ -39,11 +39,23 @@ Read the script's output to identify:
 
 Then use the information to diagnose the issue and suggest fixes.
 
-## Step 3: Reproduce Locally (VMM Test Failures)
+## Step 3: Diagnose from Logs and Code
 
-If the failure is a VMM test, check whether the failing platform matches
-your host architecture — you can only reproduce tests locally on the same
-arch. If it doesn't match, diagnose from CI logs and test code alone.
+**Always try to diagnose the failure from CI logs, test code, and error
+messages first.** Most failures can be understood without local reproduction.
+Read the relevant test source, trace the error through the code, and form
+a hypothesis before considering local repro.
+
+## Step 4: Reproduce Locally (Only If Needed)
+
+If you cannot diagnose the failure from logs alone, **ask the user** whether
+they want to attempt local reproduction before proceeding. Do not
+automatically start building or running tests on the user's machine.
+
+If the user agrees, check whether the failing platform matches the host
+architecture — you can only reproduce tests locally on the same arch. If
+it doesn't match, explain this to the user and continue diagnosing from
+CI logs and test code.
 
 To reproduce locally, load the `vmm-tests` skill for instructions on
 running with `cargo xflowey vmm-tests-run`. Do **not** use

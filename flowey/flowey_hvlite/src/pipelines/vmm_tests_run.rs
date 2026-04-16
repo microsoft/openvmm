@@ -170,11 +170,9 @@ impl IntoPipeline for VmmTestsRunCli {
             if hyperv_names.is_empty() {
                 log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
                 resolved.downloads.clear();
-            } else if hyperv_names.len() == test_names.len() {
-                log::info!("All selected tests are Hyper-V tests, downloading disk images upfront");
             } else {
                 log::info!(
-                    "Mixed selection: downloading only disk images required by {} Hyper-V tests",
+                    "Downloading disk images required by {} Hyper-V tests",
                     hyperv_names.len()
                 );
                 let hyperv_json =
@@ -270,10 +268,7 @@ fn discover_artifacts(
         cmd.arg("--release");
     }
     let nextest_output = cmd.output().context("failed to run cargo nextest list")?;
-    anyhow::ensure!(
-        nextest_output.status.success(),
-        "cargo nextest list failed",
-    );
+    anyhow::ensure!(nextest_output.status.success(), "cargo nextest list failed",);
     let nextest_stdout = String::from_utf8(nextest_output.stdout)
         .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
     let (test_binary, test_names) = parse_nextest_output(&nextest_stdout)?;
@@ -305,7 +300,8 @@ fn discover_artifacts(
 /// Query the test binary for required artifacts given a list of test names.
 ///
 /// This invokes the binary with `--list-required-artifacts --tests-from-stdin`
-/// and returns the parsed JSON output.
+/// and returns the resulting JSON as a string after processing it to inject
+/// the `target` field.
 fn query_test_binary_artifacts(
     test_binary: &Path,
     test_names: &[String],

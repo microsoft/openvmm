@@ -1,12 +1,12 @@
 ---
 name: vmm-tests
-description: "Run VMM tests locally with cargo xflowey vmm-tests-run. Load when writing, running, or debugging VMM tests, or when you need to understand the petri test framework, artifact handling, or cross-compilation for VMM tests."
+description: "Run VMM tests locally with cargo xflowey vmm-tests-run. Load when running or debugging VMM tests, or when you need to understand the petri test framework, artifact handling, or cross-compilation for VMM tests."
 ---
 
 # Running VMM Tests
 
 VMM tests boot full virtual machines and validate behavior. They live in
-`vmm_tests/vmm_tests/tests/` and use the `petri` test framework.
+`vmm_tests/vmm_tests/tests/tests/` and use the `petri` test framework.
 
 **Always use `cargo xflowey vmm-tests-run`** — never raw `cargo nextest run -p
 vmm_tests`. The xflowey command handles artifact discovery, dependency
@@ -26,6 +26,8 @@ cargo xflowey vmm-tests-run --filter "all()" --dir /tmp/vmm-tests-run
 ```
 
 The `--dir` flag is **required** and specifies where build artifacts go.
+**Always ask the user** which directory to use for `--dir` — do not guess
+or pick a default. Storage requirements vary and the user knows their setup.
 
 ## Filter Syntax
 
@@ -90,42 +92,6 @@ OPENVMM_LOG=trace cargo xflowey vmm-tests-run --filter "test(foo)" --dir /tmp/vm
 | `--custom-kernel <PATH>` | Use a custom kernel image |
 
 Run `cargo xflowey vmm-tests-run --help` for the full option list.
-
-## Writing VMM Tests
-
-Tests use the `petri` framework with the `#[vmm_test]` macro for
-parameterized test generation. Start by reading:
-
-- Existing tests: `vmm_tests/vmm_tests/tests/tests/multiarch.rs`
-- `petri` rustdoc: `cargo doc -p petri --open`
-
-### Test weight annotations
-
-Put these words in your test name to control resource allocation:
-
-- `heavy` — test needs more resources (e.g., 16 VPs)
-- `very_heavy` — even more resources (e.g., 32 VPs)
-
-### Unstable tests
-
-If a test isn't reliable enough to gate PRs, mark individual variants
-or the whole test as `unstable`:
-
-```rust,ignore
-#[vmm_test(
-    unstable_hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-)]
-async fn my_test<T: PetriVmmBackend>(config: PetriVmBuilder<T>) -> anyhow::Result<()> {
-    // ...
-}
-```
-
-Unstable tests run in CI but don't gate PRs. To promote to stable, remove
-`unstable` from the macro — no CI config changes needed.
-
-To treat unstable failures as errors locally:
-`PETRI_REPORT_UNSTABLE_FAIL=1`
 
 ## Common Pitfalls
 
