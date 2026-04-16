@@ -3,12 +3,13 @@
 
 //! See [`BuildIgvmCli`]
 
+use crate::pipelines_shared::cfg_common_params::CommonArchCli;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
 use flowey_lib_hvlite::build_openvmm_hcl::MaxTraceLevel;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
+use flowey_lib_hvlite::common::CommonArch;
 use std::path::PathBuf;
 
 #[derive(clap::ValueEnum, Copy, Clone)]
@@ -99,7 +100,7 @@ pub struct BuildIgvmCliCustomizations {
     /// Override architecture used when building. You probably don't want this -
     /// prefer changing the base recipe to something more appropriate.
     #[clap(long)]
-    pub override_arch: Option<BuildIgvmArch>,
+    pub override_arch: Option<CommonArchCli>,
 
     /// Override the json manifest passed to igvmfilegen, none means the
     /// debug/release manifest from the base recipe will be used.
@@ -237,12 +238,6 @@ impl From<MaxTraceLevelCli> for MaxTraceLevel {
     }
 }
 
-#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum BuildIgvmArch {
-    X86_64,
-    Aarch64,
-}
-
 pub fn bail_if_running_in_ci() -> anyhow::Result<()> {
     const OVERRIDE_ENV: &str = "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI";
 
@@ -340,12 +335,7 @@ impl IntoPipeline for BuildIgvmCli {
         };
 
         // Use the effective arch, accounting for any --override-arch
-        let effective_arch = override_arch
-            .map(|a| match a {
-                BuildIgvmArch::X86_64 => CommonArch::X86_64,
-                BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
-            })
-            .unwrap_or(recipe_arch);
+        let effective_arch = override_arch.map(CommonArch::from).unwrap_or(recipe_arch);
 
         let mut job = pipeline.new_job(
             FlowPlatform::host(backend_hint),
@@ -437,10 +427,7 @@ impl IntoPipeline for BuildIgvmCli {
 
             customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                 build_label,
-                override_arch: override_arch.map(|a| match a {
-                    BuildIgvmArch::X86_64 => CommonArch::X86_64,
-                    BuildIgvmArch::Aarch64 => CommonArch::Aarch64,
-                }),
+                override_arch: override_arch.map(CommonArch::from),
                 with_perf_tools,
                 with_debuginfo,
                 with_mi_secure,

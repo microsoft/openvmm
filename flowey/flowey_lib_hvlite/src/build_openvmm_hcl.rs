@@ -3,9 +3,8 @@
 
 //! Build `openvmm_hcl` binaries (NOT IGVM FILES!)
 
-use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoFeatureSet;
 use std::collections::BTreeMap;
@@ -118,18 +117,11 @@ impl FlowNode for Node {
 
             let target = target.as_triple();
 
-            let arch = CommonArch::from_triple(&target).ok_or_else(|| {
-                anyhow::anyhow!("cannot build openvmm_hcl on {}", target.architecture)
-            })?;
+            let arch = CommonArch::from_triple(&target)
+                .with_context(|| format!("cannot build openvmm_hcl on {}", target.architecture))?;
 
-            let openhcl_deps_path =
-                ctx.reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request {
-                    arch: match arch {
-                        CommonArch::X86_64 => OpenvmmSysrootArch::X64,
-                        CommonArch::Aarch64 => OpenvmmSysrootArch::Aarch64,
-                    },
-                    path: v,
-                });
+            let openhcl_deps_path = ctx
+                .reqv(|v| crate::init_openvmm_magicpath_openhcl_sysroot::Request { arch, path: v });
 
             // required due to ambient dependencies in openvmm_hcl's source code
             pre_build_deps.push(openhcl_deps_path.clone().into_side_effect());

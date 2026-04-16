@@ -8,8 +8,8 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use flowey::node::prelude::*;
 
 flowey_request! {

@@ -3,14 +3,9 @@
 
 //! Download pre-built mu_msvm package from its GitHub Release.
 
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-
-#[derive(Serialize, Deserialize, Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum MuMsvmArch {
-    X86_64,
-    Aarch64,
-}
 
 flowey_config! {
     /// Config for the download_uefi_mu_msvm node.
@@ -18,7 +13,7 @@ flowey_config! {
         /// Specify version of mu_msvm to use
         pub version: Option<String>,
         /// Use a local MSVM.fd path, keyed by architecture
-        pub local_paths: BTreeMap<MuMsvmArch, ConfigVar<PathBuf>>,
+        pub local_paths: BTreeMap<CommonArch, ConfigVar<PathBuf>>,
     }
 }
 
@@ -26,7 +21,7 @@ flowey_request! {
     pub enum Request {
         /// Download the mu_msvm package for the given arch
         GetMsvmFd {
-            arch: MuMsvmArch,
+            arch: CommonArch,
             msvm_fd: WriteVar<PathBuf>
         }
     }
@@ -50,7 +45,7 @@ impl FlowNodeWithConfig for Node {
     ) -> anyhow::Result<()> {
         let version = config.version;
         let local_paths = config.local_paths;
-        let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
+        let mut reqs: BTreeMap<CommonArch, Vec<WriteVar<PathBuf>>> = BTreeMap::new();
 
         for req in requests {
             match req {
@@ -89,8 +84,8 @@ impl FlowNodeWithConfig for Node {
                             log::info!(
                                 "using local uefi for {} at path {:?}",
                                 match arch {
-                                    MuMsvmArch::X86_64 => "x64",
-                                    MuMsvmArch::Aarch64 => "aarch64",
+                                    CommonArch::X86_64 => "x64",
+                                    CommonArch::Aarch64 => "aarch64",
                                 },
                                 msvm_fd
                             );
@@ -109,8 +104,8 @@ impl FlowNodeWithConfig for Node {
 
         for (arch, out_vars) in reqs {
             let file_name = match arch {
-                MuMsvmArch::X86_64 => "RELEASE-X64-artifacts.zip",
-                MuMsvmArch::Aarch64 => "RELEASE-AARCH64-artifacts.zip",
+                CommonArch::X86_64 => "RELEASE-X64-artifacts.zip",
+                CommonArch::Aarch64 => "RELEASE-AARCH64-artifacts.zip",
             };
 
             let mu_msvm_zip = ctx.reqv(|v| flowey_lib_common::download_gh_release::Request {
@@ -129,8 +124,8 @@ impl FlowNodeWithConfig for Node {
                     format!(
                         "unpack mu_msvm package ({})",
                         match arch {
-                            MuMsvmArch::X86_64 => "x64",
-                            MuMsvmArch::Aarch64 => "aarch64",
+                            CommonArch::X86_64 => "x64",
+                            CommonArch::Aarch64 => "aarch64",
                         },
                     )
                 },

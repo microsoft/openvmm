@@ -350,7 +350,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       $(FLOWEY_BIN) e 16 flowey_lib_hvlite::init_cross_build 3
-    displayName: extract X64 sysroot.tar.gz
+    displayName: extract X86_64 sysroot.tar.gz
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 16 flowey_lib_common::run_cargo_build 2
@@ -559,7 +559,7 @@ jobs:
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::resolve_openvmm_deps 0
     displayName: unpack openvmm-deps archive
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
-    displayName: extract X64 sysroot.tar.gz
+    displayName: extract X86_64 sysroot.tar.gz
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_hvlite::init_openvmm_cargo_config_deny_warnings 0
     displayName: set '-Dwarnings' in .cargo/config.toml
   - bash: $(FLOWEY_BIN) e 12 flowey_lib_common::resolve_protoc 0
@@ -1245,7 +1245,7 @@ jobs:
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       $(FLOWEY_BIN) e 9 flowey_lib_hvlite::init_cross_build 3
-    displayName: extract X64 sysroot.tar.gz
+    displayName: extract X86_64 sysroot.tar.gz
   - bash: |-
       set -e
       $(FLOWEY_BIN) e 9 flowey_lib_common::run_cargo_build 2

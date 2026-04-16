@@ -8,22 +8,22 @@
 //! To add a new dep file, add an entry to `dep_files` — no other modules
 //! need to change.
 
-use crate::resolve_openvmm_deps::OpenvmmDepsArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 new_flow_node!(struct Node);
 
-fn dir_name(arch: OpenvmmDepsArch) -> &'static str {
+fn dir_name(arch: CommonArch) -> &'static str {
     match arch {
-        OpenvmmDepsArch::Aarch64 => "aarch64",
-        OpenvmmDepsArch::X86_64 => "x64",
+        CommonArch::Aarch64 => "aarch64",
+        CommonArch::X86_64 => "x64",
     }
 }
 
 flowey_request! {
     pub struct Request {
-        pub arch: OpenvmmDepsArch,
+        pub arch: CommonArch,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -34,7 +34,7 @@ struct DepFile {
     dep: crate::resolve_openvmm_deps::OpenvmmDepFile,
     /// Destination filename (relative to `underhill-deps-private/{arch}/`).
     /// When arch-dependent, use a closure; when fixed, the `_arch` is ignored.
-    dest_filename: fn(OpenvmmDepsArch) -> &'static str,
+    dest_filename: fn(CommonArch) -> &'static str,
 }
 
 /// The table of dep files to copy. To add a new dep, add an entry here.
@@ -44,8 +44,8 @@ fn dep_files() -> Vec<DepFile> {
         DepFile {
             dep: OpenvmmDepFile::LinuxTestKernel,
             dest_filename: |arch| match arch {
-                OpenvmmDepsArch::Aarch64 => "Image",
-                OpenvmmDepsArch::X86_64 => "vmlinux",
+                CommonArch::Aarch64 => "Image",
+                CommonArch::X86_64 => "vmlinux",
             },
         },
         DepFile {
@@ -68,7 +68,7 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut by_arch: BTreeMap<OpenvmmDepsArch, Vec<WriteVar<SideEffect>>> = BTreeMap::new();
+        let mut by_arch: BTreeMap<CommonArch, Vec<WriteVar<SideEffect>>> = BTreeMap::new();
         for Request { arch, done } in requests {
             by_arch.entry(arch).or_default().push(done);
         }

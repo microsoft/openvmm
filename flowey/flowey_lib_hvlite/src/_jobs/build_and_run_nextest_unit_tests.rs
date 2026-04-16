@@ -4,7 +4,7 @@
 //! Build and run the cargo-nextest based unit tests.
 
 use crate::build_nextest_unit_tests::BuildNextestUnitTestMode;
-use crate::run_cargo_build::common::CommonProfile;
+use crate::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;

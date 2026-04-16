@@ -18,8 +18,8 @@ use crate::build_openvmm_hcl::MaxTraceLevel;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_openvmm_hcl::OpenvmmHclFeature;
 use crate::build_openvmm_hcl::OpenvmmHclOutput;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonTriple;
 use crate::run_igvmfilegen::IgvmOutput;
 
 #[derive(Default, Serialize, Deserialize, PartialEq, Eq)]
