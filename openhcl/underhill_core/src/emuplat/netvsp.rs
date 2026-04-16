@@ -293,12 +293,21 @@ impl std::fmt::Display for Vtl0Bus {
     }
 }
 
-// enum WorkerState {
-//     Starting,
-//     Running,
-//     VfReconfiguring(u32),
-//     Shutdown
-// }
+// The worker's lifecycle is tracked across a few orthogonal pieces of state
+// rather than a single enum:
+//
+// - `self.is_shutdown_active` gates guest-driven transitions.
+// - `Vtl2DeviceState` tracks whether the VTL2 VF is present, missing, or in the
+//   middle of a reconfiguration retry loop.
+// - `self.vtl0_bus_control` tracks whether the VTL0 VF exists and whether it is
+//   currently hidden from the guest.
+// - `self.guest_state` is the guest-visible projection of that internal state.
+// - `self.mana_device.is_some()` means the worker currently owns a live VTL2
+//   MANA device and its endpoints may be connected.
+//
+// The helper methods below document the assumptions and post-state they rely on
+// so a reader can reason about transitions without having to keep the whole
+// `run()` loop in mind.
 
 #[derive(Inspect)]
 struct HclNetworkVFManagerWorker {
@@ -339,8 +348,11 @@ struct HclNetworkVFManagerWorker {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Vtl2DeviceState {
+    /// The VTL2 VF is bound and VTL0 updates may be applied immediately.
     Present,
+    /// The VTL2 VF is gone; VTL0 changes are recorded locally until it returns.
     Missing,
+    /// The VTL2 VF was shut down for recovery and a restart retry is pending.
     Reconfiguring,
 }
 
@@ -464,6 +476,11 @@ impl HclNetworkVFManagerWorker {
         Ok(endpoint_info)
     }
 
+    /// Notifies all guest-facing listeners that VF state changed.
+    ///
+    /// The notification does not itself mutate worker state; callers are
+    /// expected to update `self.guest_state` before invoking it so observers see
+    /// a consistent view.
     async fn send_vf_state_change_notifications(&self) -> anyhow::Result<()> {
         let all_results =
             futures::future::join_all(self.guest_state_notifications.iter().map(async |update| {
@@ -480,6 +497,13 @@ impl HclNetworkVFManagerWorker {
             .map(drop)
     }
 
+    /// Gives the guest a chance to react to VTL0 VF removal and then revokes it.
+    ///
+    /// This method intentionally clears `guest_state.offered_to_guest` before
+    /// waiting on guest notifications so repeat removal requests are harmless.
+    /// 
+    /// On return, the worker will no longer treat the VF as offered, regardless
+    /// of whether notification or revoke operations encountered errors.
     async fn try_notify_guest_and_revoke_vtl0_vf(&mut self, bus_control: &Vtl0Bus) {
         if !self.guest_state.is_offered_to_guest().await {
             return;
@@ -578,6 +602,11 @@ impl HclNetworkVFManagerWorker {
         }
     }
 
+    /// Tears down the current VTL2 device and disconnects all endpoints.
+    ///
+    /// On return, `self.mana_device` is `None` and packet capture controls have
+    /// been dropped. If `keep_vf_alive` is true, the device handle is leaked on
+    /// purpose so the host-side VF stays alive across servicing.
     pub async fn shutdown_vtl2_device(&mut self, keep_vf_alive: bool) {
         self.disconnect_all_endpoints().await;
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
@@ -624,6 +653,11 @@ impl HclNetworkVFManagerWorker {
         }
     }
 
+    /// Offers the visible VTL0 VF to the guest.
+    ///
+    /// Assumes the caller has already rejected shutdown-time requests. On
+    /// return, `guest_state.offered_to_guest` is true only if the offer RPC
+    /// succeeds; otherwise the worker state is left unchanged.
     async fn add_vtl0_vf(&mut self) {
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
         if !self.guest_state.is_offered_to_guest().await
@@ -661,6 +695,13 @@ impl HclNetworkVFManagerWorker {
         }
     }
 
+    /// Applies a hide or unhide request for the VTL0 VF.
+    ///
+    /// `vtl2_device_state` is passed explicitly because visibility changes are
+    /// applied immediately only while the VTL2 device is present. If the device
+    /// is missing or reconfiguring, the new bus state is staged on `self` and
+    /// will take effect when VTL2 comes back. On return,
+    /// `save_state.hidden_vtl0` always reflects the requested visibility.
     async fn hide_vtl0_vf(&mut self, rpc: Rpc<bool, ()>, vtl2_device_state: &Vtl2DeviceState) {
         rpc.handle(async |hide_vtl0| {
             tracing::info!(
@@ -669,8 +710,8 @@ impl HclNetworkVFManagerWorker {
                 hide_vtl0,
                 "VTL0 VF device is hidden"
             );
+            *self.save_state.hidden_vtl0.lock() = Some(hide_vtl0);
             if hide_vtl0 {
-                *self.save_state.hidden_vtl0.lock() = Some(true);
                 if !matches!(self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
                     let old_bus_control =
                         std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent);
@@ -688,7 +729,6 @@ impl HclNetworkVFManagerWorker {
                     }
                 }
             } else {
-                *self.save_state.hidden_vtl0.lock() = Some(false);
                 if matches!(self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
                     let Vtl0Bus::HiddenPresent(bus_control) =
                         std::mem::replace(&mut self.vtl0_bus_control, Vtl0Bus::NotPresent)
@@ -709,12 +749,17 @@ impl HclNetworkVFManagerWorker {
         .await
     }
 
+    /// Updates which VTL0 VF, if any, is associated with this worker.
+    ///
+    /// When `vtl2_device_state` is `Present`, the guest-visible VF id and
+    /// arrival/removal notifications are updated immediately. Otherwise the bus
+    /// change is recorded on `self.vtl0_bus_control` and the guest-facing state
+    /// remains cleared until the VTL2 device is started again.
     async fn update_vtl0_vf(
         &mut self,
         rpc: Rpc<Option<HclVpciBusControl>, ()>,
         vtl2_device_state: &Vtl2DeviceState,
     ) {
-        let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
         rpc.handle(async |bus_control| {
             let is_present = matches!(
                 self.vtl0_bus_control,
@@ -722,7 +767,7 @@ impl HclNetworkVFManagerWorker {
             );
             assert!(is_present != bus_control.is_some());
             tracing::info!(
-                vtl2_vfid,
+                vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control),
                 vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
                 present = bus_control.is_some(),
                 "VTL0 VF device change"
@@ -757,6 +802,12 @@ impl HclNetworkVFManagerWorker {
         .await
     }
 
+    /// Revokes the VTL0 VF from the guest.
+    ///
+    /// The guest-facing offer bit is cleared before the revoke RPC is issued so
+    /// duplicate removals become no-ops. On return,
+    /// `guest_state.offered_to_guest` is always false even if the RPC fails or
+    /// times out.
     async fn remove_vtl0_vf(&mut self) {
         let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
         let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
@@ -831,6 +882,12 @@ impl HclNetworkVFManagerWorker {
             .await
     }
 
+    /// Attempts to recreate the VTL2 MANA device and reconnect its endpoints.
+    ///
+    /// On success, `self.mana_device` is repopulated, endpoint controls are
+    /// connected again, and a visible VTL0 VF is re-announced to the guest.
+    /// The caller remains responsible for updating the loop-local
+    /// `Vtl2DeviceState`.
     async fn startup_vtl2_device(&mut self, update_vtl2_device_bind_state: bool) -> bool {
         // Each async call within this function handles its own tracing.
         let mut vtl2_device_present = false;
@@ -954,6 +1011,12 @@ impl HclNetworkVFManagerWorker {
         .await
     }
 
+    /// Begins recovery after the MANA device requests VF reconfiguration.
+    ///
+    /// This clears the guest-visible VTL0 state, revokes any offered VF, and
+    /// tears down the current VTL2 device. On return, `vtl2_device_state` is
+    /// `Reconfiguring` and the returned backoff schedules the first restart
+    /// attempt.
     async fn reconfigure_vf(
         &mut self,
         vtl2_device_state: &mut Vtl2DeviceState,
@@ -971,8 +1034,7 @@ impl HclNetworkVFManagerWorker {
         }
 
         // Don't 'keep alive'. VTL2 is reconfigured when in a bad state.
-        let keep_vf_alive = false;
-        self.shutdown_vtl2_device(keep_vf_alive).await;
+        self.shutdown_vtl2_device(false).await;
 
         // Start the VTL2 device and resubscribe to notifications.
         // After sending the VF Reconfiguration notification, the SoC may need time to recover.
@@ -985,6 +1047,11 @@ impl HclNetworkVFManagerWorker {
         })
     }
 
+    /// Attempts to restart the VTL2 device while the worker is reconfiguring the VF.
+    ///
+    /// On success, returns `Ok(None)` and sets device state to `Present` when the device has
+    /// started up. If retries have run out, sets device state to `Missing` and returns an
+    /// error; otherwise, `Ok(Some(backoff))` with updated retry timing.
     async fn reconfigure_vf_restart(
         &mut self,
         vtl2_device_state: &mut Vtl2DeviceState,
@@ -1030,6 +1097,12 @@ impl HclNetworkVFManagerWorker {
         }
     }
 
+    /// Handles a VTL2 arrival event after the device was previously missing.
+    ///
+    /// Assumes the run loop has already ruled out shutdown and any pending
+    /// reconfiguration timer. On return, `vtl2_device_state` is set to
+    /// `Present` only if startup succeeds; otherwise the worker stays in its
+    /// prior degraded state and waits for another recovery signal.
     async fn mana_device_arrived(&mut self, vtl2_device_state: &mut Vtl2DeviceState) {
         let mut ctx = mesh::CancelContext::new().with_timeout(std::time::Duration::from_secs(1));
         // Ignore error here for waiting for the PCI path and continue to create the MANA device.
@@ -1055,6 +1128,12 @@ impl HclNetworkVFManagerWorker {
         }
     }
 
+    /// Handles VTL2 device removal from the vPCI bus.
+    ///
+    /// This always clears the guest-visible VTL0 identity, tears down the VTL2
+    /// device, and cancels any outstanding reconfiguration retry. On return,
+    /// `vtl2_device_state` is `Missing` and the host has been told the device is
+    /// no longer bound.
     async fn mana_device_removed(
         &mut self,
         vtl2_device_state: &mut Vtl2DeviceState,
