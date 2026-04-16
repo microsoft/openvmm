@@ -211,51 +211,46 @@ pub mod io_uring_tests {
     #![expect(unsafe_code)]
 
     use crate::driver::Driver;
-    use crate::io_uring::IoUringSubmit;
     use io_uring::opcode;
     use io_uring::types;
     use std::task::Poll;
 
     /// Runs all io-uring tests.
     pub async fn uring_tests(driver: impl Driver) {
-        let uring = driver
-            .io_uring_submit()
-            .expect("driver does not support io-uring");
-
-        uring_nop(uring).await;
-        uring_probe(uring).await;
-        uring_multiple_nops(uring).await;
-        uring_sq_full(uring).await;
-        uring_cq_saturation(uring).await;
-        uring_remote_submit(uring).await;
-        uring_remote_batch(uring).await;
-        uring_busy_loop_completions(uring).await;
-        uring_read_write(uring).await;
-        uring_pipe_round_trip(uring).await;
+        uring_nop(&driver).await;
+        uring_probe(&driver).await;
+        uring_multiple_nops(&driver).await;
+        uring_sq_full(&driver).await;
+        uring_cq_saturation(&driver).await;
+        uring_remote_submit(&driver).await;
+        uring_remote_batch(&driver).await;
+        uring_busy_loop_completions(&driver).await;
+        uring_read_write(&driver).await;
+        uring_pipe_round_trip(&driver).await;
     }
 
     /// Submit a single NOP and await its completion.
-    async fn uring_nop(uring: &dyn IoUringSubmit) {
+    async fn uring_nop(uring: &dyn Driver) {
         let sqe = opcode::Nop::new().build();
         // SAFETY: NOP references no memory.
-        let result = unsafe { uring.submit(sqe) }.await.unwrap();
+        let result = unsafe { uring.io_uring_submit(sqe) }.await.unwrap();
         assert_eq!(result, 0);
     }
 
     /// Verify probe returns true for NOP and false for an invalid opcode.
-    async fn uring_probe(uring: &dyn IoUringSubmit) {
-        assert!(uring.probe(opcode::Nop::CODE));
+    async fn uring_probe(uring: &dyn Driver) {
+        assert!(uring.io_uring_probe(opcode::Nop::CODE));
         // Opcode 255 is not a valid io-uring opcode.
-        assert!(!uring.probe(255));
+        assert!(!uring.io_uring_probe(255));
     }
 
     /// Submit multiple NOPs concurrently and verify all complete.
-    async fn uring_multiple_nops(uring: &dyn IoUringSubmit) {
+    async fn uring_multiple_nops(uring: &dyn Driver) {
         let mut futures: Vec<_> = (0..10)
             .map(|_| {
                 let sqe = opcode::Nop::new().build();
                 // SAFETY: NOP references no memory.
-                unsafe { uring.submit(sqe) }
+                unsafe { uring.io_uring_submit(sqe) }
             })
             .collect();
 
@@ -267,13 +262,13 @@ pub mod io_uring_tests {
 
     /// Submit more NOPs than the SQ can hold (64), forcing the on-thread
     /// fast path to hit SQ-full and submit inline.
-    async fn uring_sq_full(uring: &dyn IoUringSubmit) {
+    async fn uring_sq_full(uring: &dyn Driver) {
         let count = 80;
         let mut futures: Vec<_> = (0..count)
             .map(|_| {
                 let sqe = opcode::Nop::new().build();
                 // SAFETY: NOP references no memory.
-                unsafe { uring.submit(sqe) }
+                unsafe { uring.io_uring_submit(sqe) }
             })
             .collect();
 
@@ -287,13 +282,13 @@ pub mod io_uring_tests {
     /// Submit more NOPs than the CQ can hold (default 2×SQ = 128),
     /// verifying all completions are delivered even when the CQ must
     /// be drained and refilled multiple times.
-    async fn uring_cq_saturation(uring: &dyn IoUringSubmit) {
+    async fn uring_cq_saturation(uring: &dyn Driver) {
         let count = 256;
         let mut futures: Vec<_> = (0..count)
             .map(|_| {
                 let sqe = opcode::Nop::new().build();
                 // SAFETY: NOP references no memory.
-                unsafe { uring.submit(sqe) }
+                unsafe { uring.io_uring_submit(sqe) }
             })
             .collect();
 
@@ -311,10 +306,10 @@ pub mod io_uring_tests {
     /// calls `queue_sqe` via the remote/off-thread path), then awaits
     /// the future on the executor thread where the event loop flushes
     /// the remote queue and delivers the completion.
-    async fn uring_remote_submit(uring: &dyn IoUringSubmit) {
+    async fn uring_remote_submit(uring: &dyn Driver) {
         let sqe = opcode::Nop::new().build();
         // SAFETY: NOP references no memory.
-        let fut = unsafe { uring.submit(sqe) };
+        let fut = unsafe { uring.io_uring_submit(sqe) };
         let fut = parking_lot::Mutex::new(Some(fut));
 
         std::thread::scope(|s| {
@@ -334,7 +329,7 @@ pub mod io_uring_tests {
 
     /// Submit NOPs from multiple threads concurrently, stressing
     /// the remote queue under contention.
-    async fn uring_remote_batch(uring: &dyn IoUringSubmit) {
+    async fn uring_remote_batch(uring: &dyn Driver) {
         let count_per_thread = 20;
         let num_threads = 4;
 
@@ -348,7 +343,7 @@ pub mod io_uring_tests {
                     for _ in 0..count_per_thread {
                         let sqe = opcode::Nop::new().build();
                         // SAFETY: NOP references no memory.
-                        let mut fut = unsafe { uring.submit(sqe) };
+                        let mut fut = unsafe { uring.io_uring_submit(sqe) };
                         // Poll once to queue via remote path.
                         let _ = fut.as_mut().poll(&mut cx);
                         futures.lock().push(fut);
@@ -367,10 +362,10 @@ pub mod io_uring_tests {
 
     /// Submit a NOP, then busy-loop the executor to verify CQ drain
     /// happens during RunAgain (not just before sleep).
-    async fn uring_busy_loop_completions(uring: &dyn IoUringSubmit) {
+    async fn uring_busy_loop_completions(uring: &dyn Driver) {
         let sqe = opcode::Nop::new().build();
         // SAFETY: NOP references no memory.
-        let mut fut = unsafe { uring.submit(sqe) };
+        let mut fut = unsafe { uring.io_uring_submit(sqe) };
 
         // Busy-loop: yield back to the executor several times while
         // re-waking ourselves, as RunAgain would.
@@ -394,7 +389,7 @@ pub mod io_uring_tests {
 
     /// Submit a real read via io-uring on an eventfd, verifying
     /// non-NOP operations work end-to-end.
-    async fn uring_read_write(uring: &dyn IoUringSubmit) {
+    async fn uring_read_write(uring: &dyn Driver) {
         // Create an eventfd for testing.
         // SAFETY: eventfd with valid flags.
         let efd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
@@ -419,7 +414,7 @@ pub mod io_uring_tests {
         // SAFETY: read_buf is a local in this async fn; it lives as
         // long as the returned future. The abort-on-drop guard ensures
         // soundness on cancellation.
-        let result = unsafe { uring.submit(sqe) }.await.unwrap();
+        let result = unsafe { uring.io_uring_submit(sqe) }.await.unwrap();
         assert_eq!(result, 8);
         assert_eq!(read_buf, 42);
 
@@ -429,7 +424,7 @@ pub mod io_uring_tests {
 
     /// Submit a write + read via io-uring to a pipe, verifying the
     /// data round-trips correctly.
-    async fn uring_pipe_round_trip(uring: &dyn IoUringSubmit) {
+    async fn uring_pipe_round_trip(uring: &dyn Driver) {
         let mut fds = [0i32; 2];
         // SAFETY: pipe2 with valid args.
         let ret = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
@@ -446,7 +441,7 @@ pub mod io_uring_tests {
         .build();
 
         // SAFETY: write_buf is a static-lifetime byte string literal.
-        let result = unsafe { uring.submit(write_sqe) }.await.unwrap();
+        let result = unsafe { uring.io_uring_submit(write_sqe) }.await.unwrap();
         assert_eq!(result, 5);
 
         // Read back via io-uring.
@@ -459,7 +454,7 @@ pub mod io_uring_tests {
         .build();
 
         // SAFETY: read_buf is a local in this async fn.
-        let result = unsafe { uring.submit(read_sqe) }.await.unwrap();
+        let result = unsafe { uring.io_uring_submit(read_sqe) }.await.unwrap();
         assert_eq!(result, 5);
         assert_eq!(&read_buf, b"hello");
 

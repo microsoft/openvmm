@@ -210,8 +210,10 @@ impl WaitDriver for LocalDriver {
 }
 
 #[cfg(target_os = "linux")]
-impl crate::driver::IoUringDriver for LocalDriver {
-    fn io_uring_submit(&self) -> Option<&dyn crate::io_uring::IoUringSubmit> {
+impl crate::io_uring::IoUringDriver for LocalDriver {
+    type Submitter = crate::io_uring::NoIoUring;
+
+    fn io_uring_submitter(&self) -> Option<&Self::Submitter> {
         None
     }
 }

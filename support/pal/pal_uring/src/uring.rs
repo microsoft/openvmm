@@ -338,16 +338,17 @@ impl pal_async::io_uring::IoUringSubmit for IoInitiator {
     unsafe fn submit(
         &self,
         sqe: squeue::Entry,
-    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<i32>> + Send + '_>> {
-        let this = self.clone();
+    ) -> impl Future<Output = io::Result<i32>> + Send + '_ {
         // SAFETY: the caller guarantees the SQE only references memory that is
         // valid for the lifetime of the returned future.
-        Box::pin(async move { unsafe { this.issue_io((), |_| sqe).await.0 } })
+        async move { unsafe { self.issue_io((), |_| sqe).await.0 } }
     }
 }
 
-impl pal_async::driver::IoUringDriver for IoInitiator {
-    fn io_uring_submit(&self) -> Option<&dyn pal_async::io_uring::IoUringSubmit> {
+impl pal_async::io_uring::IoUringDriver for IoInitiator {
+    type Submitter = Self;
+
+    fn io_uring_submitter(&self) -> Option<&Self> {
         Some(self)
     }
 }
