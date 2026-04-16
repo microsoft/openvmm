@@ -693,7 +693,7 @@ exit 1
     ) -> anyhow::Result<()> {
         let mut sh = agent.unix_shell();
         sh.chroot("/perf");
-        let features = cmd!(sh, "ethtool -k {dev}")
+        let features = cmd!(sh, "/usr/sbin/ethtool -k {dev}")
             .read()
             .await
             .context("failed to run `ethtool -k` in guest (missing from petritools erofs?)")?;
@@ -729,7 +729,7 @@ exit 1
         // and ignore individual failures so an unsupported feature does not
         // break the test, but log the result for debugging.
         for feat in ["gro", "lro", "tso"] {
-            let out = cmd!(sh, "ethtool -K {dev} {feat} {onoff}")
+            let out = cmd!(sh, "/usr/sbin/ethtool -K {dev} {feat} {onoff}")
                 .ignore_status()
                 .read()
                 .await
