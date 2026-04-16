@@ -968,7 +968,6 @@ pub struct ArcMutexIsaDmaChannel {
 }
 
 impl ArcMutexIsaDmaChannel {
-    #[allow(dead_code)] // use is feature dependent
     pub fn new(dma: Arc<CloseableMutex<ErasedChipsetDevice>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
