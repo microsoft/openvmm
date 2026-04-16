@@ -381,11 +381,11 @@ impl IoUringSubmit for EpollIoUring {
 ///
 /// The completion state is embedded in this future, and the io-uring
 /// `user_data` is set to the address of the `completion` field. This
-/// requires the future to be pinned (ensured by `Box::pin` in `submit`).
+/// requires the future to be pinned before first poll.
 ///
 /// **Aborts on drop** if the IO is in flight, because the kernel holds
 /// a pointer into this future's memory.
-pub struct IoFuture<'a> {
+struct IoFuture<'a> {
     state: IoFutureState<'a>,
 }
 
