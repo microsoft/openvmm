@@ -183,12 +183,17 @@ impl BufferAccess for VirtioWorkPool {
                 };
                 let gso_type_byte: u8 =
                     VirtioNetHeaderGso::new().with_protocol(gso_protocol).into();
-                let total_hdr =
-                    metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16;
+                let total_hdr = metadata.l2_len as u16 + metadata.l3_len + metadata.l4_len as u16;
                 let csum_start = metadata.l2_len as u16 + metadata.l3_len;
                 // TCP checksum offset within TCP header is 16.
                 let csum_offset: u16 = 16;
-                (gso_type_byte, metadata.gso_size, total_hdr, csum_start, csum_offset)
+                (
+                    gso_type_byte,
+                    metadata.gso_size,
+                    total_hdr,
+                    csum_start,
+                    csum_offset,
+                )
             } else {
                 (0, 0, 0, 0, 0)
             };

@@ -506,8 +506,7 @@ impl consomme::Client for Client<'_> {
             // Determine L3 protocol and header lengths for GSO metadata.
             // Parse the Ethernet header to find IP version, then derive
             // l2_len and l3_len from the packet.
-            let (l3_protocol, l2_len, l3_len, l4_len) =
-                parse_rx_header_lengths(data, checksum);
+            let (l3_protocol, l2_len, l3_len, l4_len) = parse_rx_header_lengths(data, checksum);
 
             let gso_size = checksum.tso.unwrap_or(0);
 
@@ -555,10 +554,7 @@ impl consomme::Client for Client<'_> {
 ///
 /// Used to populate `RxMetadata` GSO fields on the receive path so that
 /// the virtio-net device can construct proper virtio headers for LRO packets.
-fn parse_rx_header_lengths(
-    data: &[u8],
-    checksum: &ChecksumState,
-) -> (L3Protocol, u8, u16, u8) {
+fn parse_rx_header_lengths(data: &[u8], checksum: &ChecksumState) -> (L3Protocol, u8, u16, u8) {
     const ETHERTYPE_IPV4: u16 = 0x0800;
     const ETHERTYPE_IPV6: u16 = 0x86DD;
 

@@ -501,34 +501,33 @@ fn parse_vnet_hdr(hdr: &VirtioNetHdr) -> RxMetadata {
 
     // Extract GSO metadata when the kernel delivers a coalesced packet.
     let gso_protocol = hdr.gso_type.protocol();
-    let (l3_protocol, gso_size, l2_len, l3_len, l4_len) =
-        if hdr.gso_size > 0
-            && (gso_protocol == VirtioNetHdrGsoProtocol::TCPV4
-                || gso_protocol == VirtioNetHdrGsoProtocol::TCPV6)
-        {
-            let l3_proto = if gso_protocol == VirtioNetHdrGsoProtocol::TCPV4 {
-                L3Protocol::Ipv4
-            } else {
-                L3Protocol::Ipv6
-            };
-            // csum_start = l2_len + l3_len; we assume standard Ethernet (14 bytes)
-            // unless csum_start indicates otherwise.
-            let l2 = if hdr.csum_start > 14 { 14u8 } else { 0 };
-            let l3 = if l2 > 0 {
-                hdr.csum_start - l2 as u16
-            } else {
-                0
-            };
-            let l4 = if hdr.hdr_len > hdr.csum_start {
-                let v = hdr.hdr_len - hdr.csum_start;
-                if v <= u8::MAX as u16 { v as u8 } else { 0 }
-            } else {
-                0
-            };
-            (l3_proto, hdr.gso_size, l2, l3, l4)
+    let (l3_protocol, gso_size, l2_len, l3_len, l4_len) = if hdr.gso_size > 0
+        && (gso_protocol == VirtioNetHdrGsoProtocol::TCPV4
+            || gso_protocol == VirtioNetHdrGsoProtocol::TCPV6)
+    {
+        let l3_proto = if gso_protocol == VirtioNetHdrGsoProtocol::TCPV4 {
+            L3Protocol::Ipv4
         } else {
-            (L3Protocol::Unknown, 0, 0, 0, 0)
+            L3Protocol::Ipv6
         };
+        // csum_start = l2_len + l3_len; we assume standard Ethernet (14 bytes)
+        // unless csum_start indicates otherwise.
+        let l2 = if hdr.csum_start > 14 { 14u8 } else { 0 };
+        let l3 = if l2 > 0 {
+            hdr.csum_start - l2 as u16
+        } else {
+            0
+        };
+        let l4 = if hdr.hdr_len > hdr.csum_start {
+            let v = hdr.hdr_len - hdr.csum_start;
+            if v <= u8::MAX as u16 { v as u8 } else { 0 }
+        } else {
+            0
+        };
+        (l3_proto, hdr.gso_size, l2, l3, l4)
+    } else {
+        (L3Protocol::Unknown, 0, 0, 0, 0)
+    };
 
     RxMetadata {
         offset: 0,

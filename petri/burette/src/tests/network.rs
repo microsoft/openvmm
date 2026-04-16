@@ -72,6 +72,18 @@ pub struct NetworkTestState {
     _helper_mesh: mesh_process::Mesh,
     /// Async driver for timers.
     driver: pal_async::DefaultDriver,
+    /// Kernel interface name of the virtio-net NIC in the guest, discovered
+    /// during setup. Set only for `NetBackend::Tap` + `NicBackend::VirtioNet`;
+    /// used by the LRO-off paired metric to toggle guest-side receive
+    /// offloads via `ethtool -K`.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "only read by TAP + virtio-net LRO-off paired metric, which is Linux-only"
+        )
+    )]
+    virtio_nic_dev: Option<String>,
 }
 
 fn build_firmware(resolver: &petri::ArtifactResolver<'_>) -> petri::Firmware {
@@ -300,6 +312,24 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             .await
             .context("failed to prepare chroot at /perf")?;
 
+        // For TAP + virtio-net, discover the guest NIC name and verify that
+        // GRO (the guest-visible face of VIRTIO_NET_F_GUEST_TSO4/6, i.e. LRO)
+        // is advertised. Captured here so `run_once` can toggle offloads
+        // between iterations to produce a paired LRO-off metric.
+        let virtio_nic_dev = match (self.backend, self.nic) {
+            #[cfg(target_os = "linux")]
+            (NetBackend::Tap, NicBackend::VirtioNet) => {
+                let dev = tap::discover_virtio_nic(&agent)
+                    .await
+                    .context("failed to discover virtio-net NIC in guest")?;
+                tap::verify_lro_advertised(&agent, &dev)
+                    .await
+                    .context("LRO not advertised on virtio-net NIC")?;
+                Some(dev)
+            }
+            _ => None,
+        };
+
         Ok(NetworkTestState {
             vm,
             agent,
@@ -307,6 +337,7 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             iperf_requests: ready.requests,
             _helper_mesh: helper_mesh,
             driver: driver.clone(),
+            virtio_nic_dev,
         })
     }
 
@@ -339,6 +370,31 @@ impl crate::harness::WarmPerfTest for NetworkTest {
             .context("TCP RX test failed")?;
         recorder.stop()?;
         metrics.push(m);
+
+        // Paired LRO-off TCP RX metric for TAP + virtio-net. Disable GRO/LRO/
+        // TSO on the guest NIC so the virtio-net receive path cannot coalesce
+        // segments, rerun the same flow, and restore offloads afterwards so
+        // subsequent iterations start in the default LRO-on state.
+        #[cfg(target_os = "linux")]
+        if let (NetBackend::Tap, NicBackend::VirtioNet, Some(dev)) =
+            (self.backend, self.nic, state.virtio_nic_dev.clone())
+        {
+            tap::set_offloads(&state.agent, &dev, false)
+                .await
+                .context("failed to disable receive offloads on guest NIC")?;
+            let name = format!("{prefix}_tcp_rx_lro_off_gbps");
+            recorder.start(&name)?;
+            let result = self
+                .run_iperf3(state, host_ip, base_port + 3, &name, IperfMode::TcpRx)
+                .await;
+            recorder.stop()?;
+            // Always try to re-enable offloads even if the RX run failed so
+            // later iterations are not left with offloads disabled.
+            let restore = tap::set_offloads(&state.agent, &dev, true).await;
+            let m = result.context("TCP RX (LRO off) test failed")?;
+            restore.context("failed to re-enable receive offloads on guest NIC")?;
+            metrics.push(m);
+        }
 
         // UDP TX (guest sends to host)
         let name = format!("{prefix}_udp_tx_pps");
@@ -594,6 +650,93 @@ done
             .context("failed to configure guest NICs")?;
 
         Ok("192.168.100.1".to_string())
+    }
+
+    /// Discover the kernel interface name of the virtio-net TAP NIC in the
+    /// guest by matching on its MAC address.
+    pub(super) async fn discover_virtio_nic(
+        agent: &petri::pipette::PipetteClient,
+    ) -> anyhow::Result<String> {
+        let sh = agent.unix_shell();
+        // Emit the device name for the interface whose MAC matches the TAP
+        // NIC MAC (…:13) configured above.
+        let script = r#"
+for dev in /sys/class/net/*/; do
+  name=$(basename "$dev")
+  mac=$(cat "$dev/address")
+  if [ "$mac" = "00:15:5d:12:12:13" ]; then
+    printf '%s' "$name"
+    exit 0
+  fi
+done
+exit 1
+"#;
+        let name = cmd!(sh, "sh -c {script}")
+            .read()
+            .await
+            .context("failed to locate virtio-net NIC by MAC in guest")?;
+        let name = name.trim().to_string();
+        anyhow::ensure!(
+            !name.is_empty(),
+            "virtio-net NIC not found in /sys/class/net by MAC"
+        );
+        tracing::info!(dev = %name, "discovered guest virtio-net NIC");
+        Ok(name)
+    }
+
+    /// Assert that the guest NIC advertises GRO (the receive-side face of
+    /// VIRTIO_NET_F_GUEST_TSO4/6, i.e. LRO). Runs `ethtool -k` from the
+    /// petritools erofs via the `/perf` chroot.
+    pub(super) async fn verify_lro_advertised(
+        agent: &petri::pipette::PipetteClient,
+        dev: &str,
+    ) -> anyhow::Result<()> {
+        let mut sh = agent.unix_shell();
+        sh.chroot("/perf");
+        let features = cmd!(sh, "ethtool -k {dev}")
+            .read()
+            .await
+            .context("failed to run `ethtool -k` in guest (missing from petritools erofs?)")?;
+        tracing::info!(dev = %dev, features = %features, "guest NIC offload features");
+        // Only check the `on` state; we don't require the feature to be
+        // fixed, just that the kernel is willing to do GRO on this NIC.
+        let gro_on = features
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("generic-receive-offload:") && line.contains("on"));
+        anyhow::ensure!(
+            gro_on,
+            "generic-receive-offload is not advertised as `on` for {dev}; \
+             LRO (VIRTIO_NET_F_GUEST_TSO) is not being exercised"
+        );
+        Ok(())
+    }
+
+    /// Toggle the guest NIC's receive-side segmentation offloads. When
+    /// `enabled` is false, GRO/LRO/TSO are all disabled so the virtio-net
+    /// receive path cannot coalesce segments; when true, they are turned
+    /// back on.
+    pub(super) async fn set_offloads(
+        agent: &petri::pipette::PipetteClient,
+        dev: &str,
+        enabled: bool,
+    ) -> anyhow::Result<()> {
+        let mut sh = agent.unix_shell();
+        sh.chroot("/perf");
+        let onoff = if enabled { "on" } else { "off" };
+        // Not every feature is supported on every kernel/NIC combination —
+        // `ethtool -K` will fail for fixed features. Run each independently
+        // and ignore individual failures so an unsupported feature does not
+        // break the test, but log the result for debugging.
+        for feat in ["gro", "lro", "tso"] {
+            let out = cmd!(sh, "ethtool -K {dev} {feat} {onoff}")
+                .ignore_status()
+                .read()
+                .await
+                .unwrap_or_default();
+            tracing::info!(dev = %dev, feat = %feat, onoff = %onoff, out = %out, "ethtool -K");
+        }
+        Ok(())
     }
 }
 
