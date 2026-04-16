@@ -248,7 +248,7 @@ impl BasicNic {
         let mut zero_write = write.clone();
         zero_write.write(&vec![0u8; guest_resp_size])?;
 
-        let response_len = match ManaCommandCode(hdr.req.msg_type) {
+        match ManaCommandCode(hdr.req.msg_type) {
             ManaCommandCode::MANA_QUERY_DEV_CONFIG => {
                 let _req: ManaQueryDeviceCfgReq = read
                     .read_plain()
@@ -270,7 +270,6 @@ impl BasicNic {
                 let resp_bytes = resp.as_bytes();
                 let write_len = guest_resp_size.min(resp_bytes.len());
                 write.write(&resp_bytes[..write_len])?;
-                write_len
             }
             ManaCommandCode::MANA_CONFIG_VPORT_TX => {
                 let req: ManaConfigVportReq = read
@@ -287,7 +286,6 @@ impl BasicNic {
                     reserved: 0,
                 };
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_CREATE_WQ_OBJ => {
                 let req: ManaCreateWqobjReq =
@@ -339,7 +337,6 @@ impl BasicNic {
                 // Take ownership of the DMA regions.
                 state.remove_dma_region(req.wq_gdma_region).unwrap();
                 state.remove_dma_region(req.cq_gdma_region).unwrap();
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_DESTROY_WQ_OBJ => {
                 let req: ManaDestroyWqobjReq = read
@@ -361,7 +358,6 @@ impl BasicNic {
                 let (wq_id, cq_id) = queues.take().context("specified queue does not exist")?;
                 state.queues.free_wq(is_send, wq_id).unwrap();
                 state.queues.free_cq(cq_id).unwrap();
-                0
             }
             ManaCommandCode::MANA_CONFIG_VPORT_RX => {
                 let req: ManaCfgRxSteerReq = read
@@ -420,7 +416,6 @@ impl BasicNic {
                     }
                     _ => {}
                 }
-                0
             }
             ManaCommandCode::MANA_VTL2_MOVE_FILTER => {
                 anyhow::bail!("unsupported command MANA_VTL2_MOVE_FILTER");
@@ -440,7 +435,6 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_QUERY_VPORT_CONFIG => {
                 let req: ManaQueryVportCfgReq = read
@@ -462,7 +456,6 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
             }
             ManaCommandCode::MANA_VTL2_ASSIGN_SERIAL_NUMBER => {
                 let req: ManaSetVportSerialNo =
@@ -472,11 +465,10 @@ impl BasicNic {
                     .get_mut(req.vport as usize)
                     .context("invalid vport")?;
                 vport.serial_no = req.serial_no;
-                0
             }
             n => anyhow::bail!("unsupported request {:?}", n),
-        };
-        Ok(response_len)
+        }
+        Ok(guest_resp_size)
     }
 }
 
