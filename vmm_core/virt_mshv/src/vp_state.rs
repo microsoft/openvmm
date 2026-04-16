@@ -6,12 +6,14 @@ use super::VcpuFdExt;
 use crate::MshvProcessor;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
-use mshv_bindings::LapicState;
 use mshv_bindings::MSHV_VP_STATE_SIEFP;
 use mshv_bindings::MSHV_VP_STATE_SIMP;
 use mshv_bindings::MSHV_VP_STATE_SYNTHETIC_TIMERS;
 use mshv_bindings::mshv_get_set_vp_state;
+use std::ptr::NonNull;
+use std::sync::OnceLock;
 use virt::state::HvRegisterState;
+use virt::vp::ApicRegisters;
 use virt::x86::vp;
 use virt::x86::vp::AccessVpState;
 use zerocopy::FromZeros;
@@ -57,6 +59,120 @@ impl MshvProcessor<'_> {
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)
     }
+
+    fn set_state(&self, ty: u32, data: &[u8]) -> Result<(), Error> {
+        // The kernel requires a page-aligned buffer for VP state operations.
+        let mut buf = PageAlignedBuffer::new(data.len());
+        buf.as_mut_bytes().copy_from_slice(data);
+
+        let vp_state = mshv_get_set_vp_state {
+            type_: ty as u8,
+            buf_sz: buf.aligned_len() as u32,
+            buf_ptr: buf.as_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .set_vp_state_ioctl(&vp_state)
+            .map_err(|e| Error::SetVpState {
+                error: e,
+                ty: ty as u8,
+            })
+    }
+
+    fn get_fixed_state<T: zerocopy::FromBytes>(&self, ty: u32) -> Result<T, Error> {
+        let state = self.get_state(ty, size_of::<T>())?;
+        Ok(T::read_from_prefix(state.as_bytes()).unwrap().0)
+    }
+
+    fn get_state(&self, ty: u32, size: usize) -> Result<PageAlignedBuffer, Error> {
+        // The kernel requires a page-aligned buffer for VP state operations.
+        let mut buf = PageAlignedBuffer::new(size);
+        let mut vp_state = mshv_get_set_vp_state {
+            type_: ty as u8,
+            buf_sz: buf.aligned_len() as u32,
+            buf_ptr: buf.as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        self.runner
+            .vcpufd
+            .get_vp_state_ioctl(&mut vp_state)
+            .map_err(|e| Error::GetVpState {
+                error: e,
+                ty: ty as u8,
+            })?;
+        Ok(buf)
+    }
+
+    fn get_lapic(&self) -> Result<ApicRegisters, Error> {
+        let hv_state: hvdef::HvX64InterruptControllerState =
+            self.get_fixed_state(mshv_bindings::MSHV_VP_STATE_LAPIC)?;
+
+        Ok(ApicRegisters::from(hv_state))
+    }
+
+    fn set_lapic(&self, lapic: &ApicRegisters) -> Result<(), Error> {
+        let hv_state: hvdef::HvX64InterruptControllerState = (*lapic).into();
+        self.set_state(mshv_bindings::MSHV_VP_STATE_LAPIC, hv_state.as_bytes())
+    }
+}
+
+struct PageAlignedBuffer {
+    ptr: NonNull<u8>,
+    len: usize,
+    layout: std::alloc::Layout,
+}
+
+impl PageAlignedBuffer {
+    fn page_size() -> usize {
+        static PAGE_SIZE: OnceLock<usize> = OnceLock::new();
+        // SAFETY: sysconf(_SC_PAGESIZE) is always safe to call.
+        *PAGE_SIZE.get_or_init(|| unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize)
+    }
+
+    fn new(len: usize) -> Self {
+        let page_size = Self::page_size();
+        let layout =
+            std::alloc::Layout::from_size_align(len.next_multiple_of(page_size), page_size)
+                .unwrap();
+        // SAFETY: layout has non-zero size and page alignment.
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        let Some(ptr) = NonNull::new(ptr) else {
+            std::alloc::handle_alloc_error(layout);
+        };
+        Self { ptr, len, layout }
+    }
+
+    fn aligned_len(&self) -> usize {
+        self.layout.size()
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.ptr.as_ptr()
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // SAFETY: ptr is valid for layout.size() >= self.len bytes and is
+        // uniquely owned.
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len) }
+    }
+
+    fn as_mut_bytes(&mut self) -> &mut [u8] {
+        // SAFETY: ptr is valid for layout.size() >= self.len bytes, and &mut
+        // self guarantees exclusive access.
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
+    }
+}
+
+impl Drop for PageAlignedBuffer {
+    fn drop(&mut self) {
+        // SAFETY: ptr was allocated with this layout via alloc_zeroed.
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout) };
+    }
 }
 
 impl AccessVpState for &'_ mut MshvProcessor<'_> {
@@ -82,9 +198,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         let mut activity: vp::Activity = self.get_register_state()?;
         // The NMI pending bit is not part of the register state; it lives
         // in the APIC page.
-        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
-        let page: [u8; 1024] = lapic.regs.map(|b| b as u8);
-        activity.nmi_pending = vp::hv_apic_nmi_pending(&page);
+        activity.nmi_pending = self.get_lapic()?.hv_apic_nmi_pending();
         Ok(activity)
     }
 
@@ -92,34 +206,28 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         self.set_register_state(value)?;
         // The NMI pending bit is not part of the register state; it must
         // be set via the APIC page.
-        let mut lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
-        let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
-        vp::set_hv_apic_nmi_pending(&mut page, value.nmi_pending);
-        lapic.regs = page.map(|b| b as std::os::raw::c_char);
-        self.runner
-            .vcpufd
-            .set_lapic(&lapic)
-            .map_err(Error::VpState)?;
+        let mut lapic = self.get_lapic()?;
+        if lapic.hv_apic_nmi_pending() != value.nmi_pending {
+            lapic.set_hv_apic_nmi_pending(value.nmi_pending);
+            self.set_lapic(&lapic)?;
+        }
         Ok(())
     }
 
     fn xsave(&mut self) -> Result<vp::Xsave, Self::Error> {
-        let xsave = self.runner.vcpufd.get_xsave().map_err(Error::VpState)?;
-        Ok(vp::Xsave::from_compact(&xsave.buffer, &self.partition.caps))
+        let xsave = self.get_state(
+            mshv_bindings::MSHV_VP_STATE_XSAVE,
+            self.partition.caps.xsave.compact_len as usize,
+        )?;
+        Ok(vp::Xsave::from_compact(
+            xsave.as_bytes(),
+            &self.partition.caps,
+        ))
     }
 
     fn set_xsave(&mut self, value: &vp::Xsave) -> Result<(), Self::Error> {
-        let data = value.compact();
-        let vp_state = mshv_get_set_vp_state {
-            type_: mshv_bindings::MSHV_VP_STATE_XSAVE as u8,
-            buf_sz: data.len() as u32,
-            buf_ptr: data.as_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .set_vp_state_ioctl(&vp_state)
-            .map_err(Error::VpState)
+        self.set_state(mshv_bindings::MSHV_VP_STATE_XSAVE, value.compact())?;
+        Ok(())
     }
 
     fn apic(&mut self) -> Result<vp::Apic, Self::Error> {
@@ -136,13 +244,10 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         let apic_base = assoc[0].value.as_u64();
 
         // Get the LAPIC state page.
-        let lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
-        let mut page: [u8; 1024] = lapic.regs.map(|b| b as u8);
-
+        let mut lapic = self.get_lapic()?;
         // Clear the non-architectural NMI pending bit.
-        vp::set_hv_apic_nmi_pending(&mut page, false);
-
-        Ok(vp::Apic::from_page(apic_base, &page))
+        lapic.set_hv_apic_nmi_pending(false);
+        Ok(vp::Apic::new(apic_base.into(), lapic, [0; 8]))
     }
 
     fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
@@ -157,20 +262,12 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
             .map_err(Error::Register)?;
 
         // Preserve the current NMI pending state across the restore.
-        let current_lapic = self.runner.vcpufd.get_lapic().map_err(Error::VpState)?;
-        let current_page: [u8; 1024] = current_lapic.regs.map(|b| b as u8);
-        let nmi_pending = vp::hv_apic_nmi_pending(&current_page);
+        let nmi_pending = self.get_lapic()?.hv_apic_nmi_pending();
 
         // Set the LAPIC state page, restoring the NMI pending bit.
-        let mut page = value.as_page();
-        vp::set_hv_apic_nmi_pending(&mut page, nmi_pending);
-        let lapic = LapicState {
-            regs: page.map(|b| b as std::os::raw::c_char),
-        };
-        self.runner
-            .vcpufd
-            .set_lapic(&lapic)
-            .map_err(Error::VpState)?;
+        let mut lapic = *value.registers();
+        lapic.set_hv_apic_nmi_pending(nmi_pending);
+        self.set_lapic(&lapic)?;
 
         Ok(())
     }
@@ -264,32 +361,14 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn synic_timers(&mut self) -> Result<vp::SynicTimers, Self::Error> {
-        let mut state = hvdef::HvSyntheticTimersState::new_zeroed();
-        let mut vp_state = mshv_get_set_vp_state {
-            type_: MSHV_VP_STATE_SYNTHETIC_TIMERS as u8,
-            buf_sz: size_of_val(&state) as u32,
-            buf_ptr: state.as_mut_bytes().as_mut_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .get_vp_state_ioctl(&mut vp_state)
-            .map_err(Error::VpState)?;
-        Ok(vp::SynicTimers::from_hv(state))
+        Ok(vp::SynicTimers::from_hv(
+            self.get_fixed_state(MSHV_VP_STATE_SYNTHETIC_TIMERS)?,
+        ))
     }
 
     fn set_synic_timers(&mut self, value: &vp::SynicTimers) -> Result<(), Self::Error> {
-        let state = value.as_hv();
-        let vp_state = mshv_get_set_vp_state {
-            type_: MSHV_VP_STATE_SYNTHETIC_TIMERS as u8,
-            buf_sz: size_of_val(&state) as u32,
-            buf_ptr: state.as_bytes().as_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .set_vp_state_ioctl(&vp_state)
-            .map_err(Error::VpState)
+        self.set_state(MSHV_VP_STATE_SYNTHETIC_TIMERS, value.as_hv().as_bytes())?;
+        Ok(())
     }
 
     fn synic_message_queues(&mut self) -> Result<vp::SynicMessageQueues, Self::Error> {
@@ -305,61 +384,23 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
     }
 
     fn synic_message_page(&mut self) -> Result<vp::SynicMessagePage, Self::Error> {
-        let mut state = vp::SynicMessagePage { data: [0; 4096] };
-        let mut vp_state = mshv_get_set_vp_state {
-            type_: MSHV_VP_STATE_SIMP as u8,
-            buf_sz: size_of_val(&state.data) as u32,
-            buf_ptr: state.data.as_mut_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .get_vp_state_ioctl(&mut vp_state)
-            .map_err(Error::VpState)?;
-        Ok(state)
+        let data = self.get_fixed_state(MSHV_VP_STATE_SIMP)?;
+        Ok(vp::SynicMessagePage { data })
     }
 
     fn set_synic_message_page(&mut self, value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
-        let vp_state = mshv_get_set_vp_state {
-            type_: MSHV_VP_STATE_SIMP as u8,
-            buf_sz: size_of_val(&value.data) as u32,
-            buf_ptr: value.data.as_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .set_vp_state_ioctl(&vp_state)
-            .map_err(Error::VpState)
+        self.set_state(MSHV_VP_STATE_SIMP, &value.data)
     }
 
     fn synic_event_flags_page(&mut self) -> Result<vp::SynicEventFlagsPage, Self::Error> {
-        let mut state = vp::SynicEventFlagsPage { data: [0; 4096] };
-        let mut vp_state = mshv_get_set_vp_state {
-            type_: MSHV_VP_STATE_SIEFP as u8,
-            buf_sz: size_of_val(&state.data) as u32,
-            buf_ptr: state.data.as_mut_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .get_vp_state_ioctl(&mut vp_state)
-            .map_err(Error::VpState)?;
-        Ok(state)
+        let data = self.get_fixed_state(MSHV_VP_STATE_SIEFP)?;
+        Ok(vp::SynicEventFlagsPage { data })
     }
 
     fn set_synic_event_flags_page(
         &mut self,
         value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
-        let vp_state = mshv_get_set_vp_state {
-            type_: MSHV_VP_STATE_SIEFP as u8,
-            buf_sz: size_of_val(&value.data) as u32,
-            buf_ptr: value.data.as_ptr() as u64,
-            ..Default::default()
-        };
-        self.runner
-            .vcpufd
-            .set_vp_state_ioctl(&vp_state)
-            .map_err(Error::VpState)
+        self.set_state(MSHV_VP_STATE_SIEFP, &value.data)
     }
 }

@@ -398,15 +398,19 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         }
 
         // Get caps via cpuid
-        let caps = virt::PartitionCapabilities::from_cpuid(
-            self.config.processor_topology,
-            &mut |function, index| {
-                self.bsp
-                    .get_cpuid_values(function, index, 0, 0)
-                    .expect("cpuid should not fail")
-            },
-        )
-        .map_err(Error::Capabilities)?;
+        let caps = {
+            let mut caps = virt::PartitionCapabilities::from_cpuid(
+                self.config.processor_topology,
+                &mut |function, index| {
+                    self.bsp
+                        .get_cpuid_values(function, index, 0, 0)
+                        .expect("cpuid should not fail")
+                },
+            )
+            .map_err(Error::Capabilities)?;
+            caps.xsaves_state_bv_broken = true;
+            caps
+        };
 
         let apic_id_map = self
             .config
@@ -1156,11 +1160,21 @@ pub enum Error {
     SetPartitionProperty(#[source] anyhow::Error),
     #[error("register access error")]
     Register(#[source] MshvError),
-    #[error("failed to get/set VP state")]
-    VpState(#[source] MshvError),
+    #[error("failed to get VP state {ty}")]
+    GetVpState {
+        #[source]
+        error: MshvError,
+        ty: u8,
+    },
+    #[error("failed to set VP state {ty}")]
+    SetVpState {
+        #[source]
+        error: MshvError,
+        ty: u8,
+    },
     #[error("failed to reset state")]
     ResetState(#[source] Box<virt::state::StateError<Self>>),
-    #[error("install instercept failed")]
+    #[error("install intercept failed")]
     InstallIntercept(#[source] MshvError),
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] MshvError),

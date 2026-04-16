@@ -4203,3 +4203,31 @@ pub struct HvRegisterCrInterceptControl {
     #[bits(35)]
     _rsvd_z: u64,
 }
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvX64InterruptControllerState {
+    pub apic_id: u32,
+    pub apic_version: u32,
+    pub apic_ldr: u32,
+    pub apic_dfr: u32,
+    pub apic_spurious: u32,
+    pub apic_isr: [u32; 8],
+    pub apic_tmr: [u32; 8],
+    pub apic_irr: [u32; 8],
+    pub apic_esr: u32,
+    pub apic_icr_high: u32,
+    pub apic_icr_low: u32,
+    pub apic_lvt_timer: u32,
+    pub apic_lvt_thermal: u32,
+    pub apic_lvt_perfmon: u32,
+    pub apic_lvt_lint0: u32,
+    pub apic_lvt_lint1: u32,
+    pub apic_lvt_error: u32,
+    pub apic_lvt_cmci: u32,
+    pub apic_error_status: u32,
+    pub apic_initial_count: u32,
+    pub apic_counter_value: u32,
+    pub apic_divide_configuration: u32,
+    pub apic_remote_read: u32,
+}
