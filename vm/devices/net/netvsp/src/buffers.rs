@@ -17,6 +17,7 @@ use net_backend::RxMetadata;
 use safeatomic::AtomicSliceOps;
 use std::ops::Range;
 use std::sync::Arc;
+use thiserror::Error;
 use vmbus_channel::gpadl::GpadlView;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -25,6 +26,19 @@ use zerocopy::KnownLayout;
 
 const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE32: u32 = 4096;
+
+/// Error returned when a write to the receive buffer would exceed the locked
+/// page range.
+#[derive(Debug, Error)]
+#[error(
+    "rx buffer write overflow: offset={offset} len={len} \
+     total_size={total_size}"
+)]
+struct RxBufferWriteOverflow {
+    offset: usize,
+    len: usize,
+    total_size: usize,
+}
 
 /// A type providing access to the netvsp receive buffer.
 pub struct GuestBuffers {
@@ -74,8 +88,31 @@ impl GuestBuffers {
         })
     }
 
-    fn write_at(&self, offset: u32, mut buf: &[u8]) {
+    fn write_at(&self, offset: u32, mut buf: &[u8]) -> Result<(), RxBufferWriteOverflow> {
         let mut offset = offset as usize;
+        let total_size = self
+            .locked_pages
+            .pages()
+            .len()
+            .checked_mul(PAGE_SIZE)
+            .ok_or(RxBufferWriteOverflow {
+                offset,
+                len: buf.len(),
+                total_size: usize::MAX,
+            })?;
+        // Check for arithmetic overflow.
+        let end = offset.checked_add(buf.len()).ok_or(RxBufferWriteOverflow {
+            offset,
+            len: buf.len(),
+            total_size,
+        })?;
+        if end > total_size {
+            return Err(RxBufferWriteOverflow {
+                offset,
+                len: buf.len(),
+                total_size,
+            });
+        }
         while !buf.is_empty() {
             let len = (PAGE_SIZE - offset % PAGE_SIZE).min(buf.len());
             let (this, next) = buf.split_at(len);
@@ -84,6 +121,7 @@ impl GuestBuffers {
             buf = next;
             offset += len;
         }
+        Ok(())
     }
 }
 
@@ -141,7 +179,14 @@ impl BufferAccess for BufferPool {
     }
 
     fn write_data(&mut self, id: RxId, data: &[u8]) {
-        self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data);
+        if let Err(err) = self.buffers.write_at(self.offset(id) + RX_HEADER_LEN, data) {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                rx_id = id.0,
+                data_len = data.len(),
+                "rx buffer write overflow in write_data",
+            );
+        }
     }
 
     fn write_header(&mut self, id: RxId, metadata: &RxMetadata) {
@@ -216,7 +261,13 @@ impl BufferAccess for BufferPool {
             },
         };
 
-        self.buffers.write_at(self.offset(id), header.as_bytes());
+        if let Err(err) = self.buffers.write_at(self.offset(id), header.as_bytes()) {
+            tracelimit::warn_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                rx_id = id.0,
+                "rx buffer write overflow in write_header",
+            );
+        }
     }
 }
 
