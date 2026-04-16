@@ -838,7 +838,6 @@ pub struct ArcMutexIsaDmaChannel {
     feature = "dev_winbond_super_io_and_floppy_stub"
 ))]
 impl ArcMutexIsaDmaChannel {
-    #[allow(dead_code)] // use is feature dependent
     pub fn new(dma: Arc<CloseableMutex<ErasedChipsetDevice>>, channel_num: u8) -> Self {
         Self { dma, channel_num }
     }
