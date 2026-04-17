@@ -147,6 +147,65 @@ pub mod piix4_pci_isa_bridge {
     }
 }
 
+pub mod ioapic {
+    //! Resource definitions for the generic IO-APIC device.
+
+    use mesh::MeshPayload;
+    use std::fmt;
+    use std::fmt::Debug;
+    use vm_resource::CanResolveTo;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// The number of IO-APIC entries used by the platform.
+    pub const IOAPIC_NUM_ENTRIES: u8 = 24;
+
+    /// Trait allowing the IO-APIC device to assert VM interrupts.
+    pub trait IoApicRouting: Send + Sync {
+        /// Asserts virtual interrupt line `irq`.
+        fn assert(&self, irq: u8);
+        /// Sets the MSI parameters to use when virtual interrupt line `irq` is
+        /// asserted.
+        fn set_route(&self, irq: u8, request: Option<(u64, u32)>);
+    }
+
+    impl Debug for dyn IoApicRouting {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.pad("IoApicRouting")
+        }
+    }
+
+    /// Resource kind for resolving IO-APIC routing implementations.
+    pub enum IoApicRoutingHandleKind {}
+
+    impl ResourceKind for IoApicRoutingHandleKind {
+        const NAME: &'static str = "ioapic_routing";
+    }
+
+    /// Resolved IO-APIC routing implementation.
+    ///
+    /// Wraps `Box<dyn IoApicRouting>` in a newtype to avoid lifetime issues
+    /// with `async_trait` and `CanResolveTo`.
+    pub struct ResolvedIoApicRouting(pub Box<dyn IoApicRouting>);
+
+    impl CanResolveTo<ResolvedIoApicRouting> for IoApicRoutingHandleKind {
+        type Input<'a> = ();
+    }
+
+    /// A handle to a generic IO-APIC device.
+    #[derive(MeshPayload)]
+    pub struct GenericIoApicDeviceHandle {
+        /// Resource for resolving the IoApicRouting implementation.
+        pub routing: Resource<IoApicRoutingHandleKind>,
+    }
+
+    impl ResourceId<ChipsetDeviceHandleKind> for GenericIoApicDeviceHandle {
+        const ID: &'static str = "generic-ioapic";
+    }
+}
+
 pub mod piix4_uhci {
     //! Resource definitions for the PIIX4 USB UHCI stub device.
 

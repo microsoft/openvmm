@@ -20,6 +20,7 @@ aarch64defs.workspace = true
 acpi_spec = { workspace = true, features = ["std"] }
 acpi.workspace = true
 chipset_device_resources.workspace = true
+chipset_resources.workspace = true
 hcl_compat_uefi_nvram_storage.workspace = true
 hvdef.workspace = true
 memory_range = { workspace = true, features = ["inspect"] }

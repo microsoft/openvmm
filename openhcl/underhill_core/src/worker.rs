@@ -2207,6 +2207,9 @@ async fn new_underhill_vm(
     let halt_vps = Arc::new(halt_vps);
 
     resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+    resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+        partition.ioapic_routing(),
+    ));
 
     let bounce_buffer_tracker = {
         let size = {
@@ -2402,7 +2405,7 @@ async fn new_underhill_vm(
                 cache_topology: None,
                 pcie_host_bridges: &vec![],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                    with_ioapic: true, // openhcl always runs with ioapic
+                    with_ioapic: capabilities.with_ioapic,
                     with_pic: capabilities.with_pic,
                     with_pit: capabilities.with_pit,
                     with_psp: dps.general.psp_enabled,
@@ -2717,13 +2720,6 @@ async fn new_underhill_vm(
 
     let synic = virt::Hv1::synic(partition.as_ref());
 
-    let deps_generic_ioapic = chipset.with_generic_ioapic.then(|| dev::GenericIoApicDeps {
-        num_entries: virt::irqcon::IRQ_LINES as u8,
-        routing: Box::new(vmm_core::emuplat::ioapic::IoApicRouting(
-            partition.ioapic_routing(),
-        )),
-    });
-
     use vmotherboard::options::dev;
 
     let pci_bus_id_piix4 = vmotherboard::BusId::new("i440bx");
@@ -2960,7 +2956,6 @@ async fn new_underhill_vm(
 
     let devices = BaseChipsetDevices {
         deps_generic_cmos_rtc,
-        deps_generic_ioapic,
         deps_generic_psp,
         deps_hyperv_firmware_uefi,
         deps_hyperv_guest_watchdog,

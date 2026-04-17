@@ -21,16 +21,18 @@ use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
+use chipset_resources::ioapic::IoApicRouting;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use std::fmt;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
 use vmcore::device_state::ChangeDeviceState;
 use x86defs::apic::DeliveryMode;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
+
+pub mod resolver;
 
 pub const IOAPIC_DEVICE_MMIO_REGION_BASE_ADDRESS: u64 = 0xfec00000;
 
@@ -231,21 +233,6 @@ struct IoApicStats {
     #[inspect(iter_by_index)]
     interrupts_per_irq: Vec<Counter>,
     interrupts: Counter,
-}
-
-/// Trait allowing the IO-APIC device to assert VM interrupts.
-pub trait IoApicRouting: Send + Sync {
-    /// Asserts virtual interrupt line `irq`.
-    fn assert(&self, irq: u8);
-    /// Sets the MSI parameters to use when virtual interrupt line `irq` is
-    /// asserted.
-    fn set_route(&self, irq: u8, request: Option<(u64, u32)>);
-}
-
-impl Debug for dyn IoApicRouting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.pad("IoApicRouting")
-    }
 }
 
 impl IoApicDevice {

@@ -215,7 +215,6 @@ impl<'a> BaseChipsetBuilder<'a> {
         // oh boy, time to build all the devices!
         let options::BaseChipsetDevices {
             deps_generic_cmos_rtc,
-            deps_generic_ioapic,
             deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
@@ -235,17 +234,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_winbond_super_io_and_floppy_stub,
             deps_winbond_super_io_and_floppy_full,
         } = devices;
-
-        if let Some(options::dev::GenericIoApicDeps {
-            num_entries,
-            routing,
-        }) = deps_generic_ioapic
-        {
-            builder.arc_mutex_device("ioapic").add(|services| {
-                services.add_line_target(IRQ_LINE_SET, 0..=num_entries as u32 - 1, 0);
-                ioapic::IoApicDevice::new(num_entries, routing)
-            })?;
-        }
 
         if let Some(options::dev::GenericPciBusDeps {
             bus_id,
@@ -1111,7 +1099,6 @@ pub mod options {
 
         devices {
             generic_cmos_rtc:            dev::GenericCmosRtcDeps,
-            generic_ioapic:              dev::GenericIoApicDeps,
             generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
@@ -1295,14 +1282,6 @@ pub mod options {
                 /// handled externally, by the platform itself)
                 pub rom: Option<Box<dyn guestmem::MapRom>>,
             }
-        }
-
-        /// Generic IO Advanced Programmable Interrupt Controller (IOAPIC)
-        pub struct GenericIoApicDeps {
-            /// Number of IO-APIC entries
-            pub num_entries: u8,
-            /// Trait allowing the IO-APIC device to assert VM interrupts.
-            pub routing: Box<dyn ioapic::IoApicRouting>,
         }
 
         /// Generic MC146818A compatible RTC + CMOS device

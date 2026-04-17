@@ -1096,6 +1096,9 @@ impl InitializedVm {
         let halt_vps = Arc::new(halt_vps);
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+        resolver.add_resolver(vmm_core::platform_resolvers::IoApicRoutingResolver(
+            partition.clone().ioapic_routing(),
+        ));
 
         let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
 
@@ -1204,7 +1207,7 @@ impl InitializedVm {
                             cache_topology: None,
                             pcie_host_bridges: &Vec::new(),
                             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                                with_ioapic: cfg.chipset.with_generic_ioapic,
+                                with_ioapic: cfg.chipset_capabilities.with_ioapic,
                                 with_pic: cfg.chipset_capabilities.with_pic,
                                 with_pit: cfg.chipset_capabilities.with_pit,
                                 with_psp: cfg.chipset.with_generic_psp,
@@ -1430,22 +1433,6 @@ impl InitializedVm {
             }
         });
 
-        #[cfg(guest_arch = "x86_64")]
-        let deps_generic_ioapic =
-            (cfg.chipset.with_generic_ioapic).then(|| dev::GenericIoApicDeps {
-                num_entries: virt::irqcon::IRQ_LINES as u8,
-                routing: Box::new(vmm_core::emuplat::ioapic::IoApicRouting(
-                    partition.clone().ioapic_routing(),
-                )),
-            });
-
-        #[cfg(guest_arch = "aarch64")]
-        let deps_generic_ioapic = if cfg.chipset.with_generic_ioapic {
-            anyhow::bail!("ioapic not supported on this architecture");
-        } else {
-            None
-        };
-
         let deps_generic_isa_dma =
             (cfg.chipset.with_generic_isa_dma).then_some(dev::GenericIsaDmaDeps {});
 
@@ -1595,7 +1582,6 @@ impl InitializedVm {
         let base_chipset_devices = {
             BaseChipsetDevices {
                 deps_generic_cmos_rtc,
-                deps_generic_ioapic,
                 deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
@@ -2356,7 +2342,7 @@ impl LoadedVmInner {
             pcie_host_bridges: &self.pcie_host_bridges,
             #[cfg(guest_arch = "x86_64")]
             arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
-                with_ioapic: self.chipset_cfg.with_generic_ioapic,
+                with_ioapic: self.chipset_capabilities.with_ioapic,
                 with_psp: self.chipset_cfg.with_generic_psp,
                 with_pic: self.chipset_capabilities.with_pic,
                 with_pit: self.chipset_capabilities.with_pit,
