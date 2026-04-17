@@ -222,7 +222,7 @@ impl virt::Hypervisor for LinuxMshv {
                 mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
                 u64::from(synthetic_features),
             )
-            .map_err(|e| Error::SetPartitionProperty(e.into()))?;
+            .map_err(Error::SetPartitionProperty)?;
         }
 
         vmfd.initialize()
@@ -235,7 +235,7 @@ impl virt::Hypervisor for LinuxMshv {
             mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_PROCESSORS_PER_SOCKET,
             config.processor_topology.reserved_vps_per_socket() as u64,
         )
-        .map_err(|e| Error::SetPartitionProperty(e.into()))?;
+        .map_err(Error::SetPartitionProperty)?;
 
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
@@ -398,15 +398,20 @@ impl ProtoPartition for MshvProtoPartition<'_> {
         }
 
         // Get caps via cpuid
-        let caps = virt::PartitionCapabilities::from_cpuid(
-            self.config.processor_topology,
-            &mut |function, index| {
-                self.bsp
-                    .get_cpuid_values(function, index, 0, 0)
-                    .expect("cpuid should not fail")
-            },
-        )
-        .map_err(Error::Capabilities)?;
+        let caps = {
+            let mut caps = virt::PartitionCapabilities::from_cpuid(
+                self.config.processor_topology,
+                &mut |function, index| {
+                    self.bsp
+                        .get_cpuid_values(function, index, 0, 0)
+                        .expect("cpuid should not fail")
+                },
+            )
+            .map_err(Error::Capabilities)?;
+            caps.xsaves_state_bv_broken = true;
+            caps.can_freeze_time = true;
+            caps
+        };
 
         let apic_id_map = self
             .config
@@ -428,6 +433,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
             synic_ports: Default::default(),
             cpuid,
             software_devices: ApicSoftwareDevices::new(apic_id_map),
+            time_frozen: Mutex::new(false),
         });
 
         let partition = MshvPartition {
@@ -478,6 +484,9 @@ struct MshvPartitionInner {
     synic_ports: virt::synic::SynicPortMap,
     cpuid: virt::CpuidLeafSet,
     software_devices: ApicSoftwareDevices,
+    /// Set to `true` when partition time is frozen (e.g. during reset).
+    /// The first VP to enter `run_vp` after a freeze will thaw time.
+    time_frozen: Mutex<bool>,
 }
 
 struct MshvVpInner {
@@ -564,6 +573,11 @@ impl virt::ResetPartition for MshvPartition {
             self.inner.irq_routes.set_irq_route(irq, None);
         }
 
+        // Freeze partition time so that reference time and per-VP TSC
+        // can be reset to zero without advancing. Time will be thawed
+        // by the first VP to enter run_vp.
+        self.inner.freeze_time()?;
+
         // Reset VM-level HV registers (GuestOsId, Hypercall, ReferenceTsc)
         // via the BSP's VcpuFd. VPs must be stopped when this is called.
         let bsp_vp_info = &self.inner.vps[0].vp_info;
@@ -633,6 +647,38 @@ impl GetReferenceTime for MshvPartitionInner {
 impl MshvPartitionInner {
     fn vp(&self, vp_index: VpIndex) -> &MshvVpInner {
         &self.vps[vp_index.index() as usize]
+    }
+
+    /// Freezes partition time. Time will remain frozen until [`thaw_time`] is
+    /// called (typically on the first VP run after reset).
+    fn freeze_time(&self) -> Result<(), Error> {
+        let mut frozen = self.time_frozen.lock();
+        if !*frozen {
+            self.vmfd
+                .set_partition_property(
+                    mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_TIME_FREEZE,
+                    1,
+                )
+                .map_err(Error::SetPartitionProperty)?;
+            *frozen = true;
+        }
+        Ok(())
+    }
+
+    /// Thaws partition time if it is currently frozen. This is a no-op if
+    /// time is already running.
+    fn thaw_time(&self) -> Result<(), Error> {
+        let mut frozen = self.time_frozen.lock();
+        if *frozen {
+            self.vmfd
+                .set_partition_property(
+                    mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_TIME_FREEZE,
+                    0,
+                )
+                .map_err(Error::SetPartitionProperty)?;
+            *frozen = false;
+        }
+        Ok(())
     }
 
     fn post_message(&self, vp_index: VpIndex, sint: u8, message: &HvMessage) {
@@ -1151,16 +1197,26 @@ pub enum Error {
     #[error("failed to open /dev/mshv")]
     OpenMshv(#[source] MshvError),
     #[error("failed to get partition property")]
-    GetPartitionProperty(#[source] anyhow::Error),
+    GetPartitionProperty(#[source] MshvError),
     #[error("failed to set partition property")]
-    SetPartitionProperty(#[source] anyhow::Error),
+    SetPartitionProperty(#[source] MshvError),
     #[error("register access error")]
     Register(#[source] MshvError),
-    #[error("failed to get/set VP state")]
-    VpState(#[source] MshvError),
+    #[error("failed to get VP state {ty}")]
+    GetVpState {
+        #[source]
+        error: MshvError,
+        ty: u8,
+    },
+    #[error("failed to set VP state {ty}")]
+    SetVpState {
+        #[source]
+        error: MshvError,
+        ty: u8,
+    },
     #[error("failed to reset state")]
     ResetState(#[source] Box<virt::state::StateError<Self>>),
-    #[error("install instercept failed")]
+    #[error("install intercept failed")]
     InstallIntercept(#[source] MshvError),
     #[error("failed to register cpuid override")]
     RegisterCpuid(#[source] MshvError),
@@ -1527,6 +1583,12 @@ impl virt::Processor for MshvProcessor<'_> {
         // Ensure this thread is uniquely running the VP, and store the thread
         // ID to support cancellation.
         assert!(vpinner.thread.write().replace(Pthread::current()).is_none());
+
+        // Thaw partition time if it was frozen (e.g. after reset). The first
+        // VP to reach this point will do the actual thaw; others will no-op.
+        self.partition
+            .thaw_time()
+            .expect("failed to thaw partition time");
 
         loop {
             vpinner.needs_yield.maybe_yield().await;

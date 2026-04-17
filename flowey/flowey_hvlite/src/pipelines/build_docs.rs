@@ -9,7 +9,7 @@ use flowey::node::prelude::GhPermissionValue;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use flowey_lib_hvlite::common::CommonTriple;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {

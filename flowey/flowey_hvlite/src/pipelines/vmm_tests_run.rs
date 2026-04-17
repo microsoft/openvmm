@@ -14,9 +14,9 @@ use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_hvlite::_jobs::local_build_and_run_nextest_vmm_tests::VmmTestSelections;
 use flowey_lib_hvlite::artifact_to_build_mapping::ResolvedArtifactSelections;
+use flowey_lib_hvlite::common::CommonArch;
+use flowey_lib_hvlite::common::CommonTriple;
 use flowey_lib_hvlite::install_vmm_tests_deps::VmmTestsDepSelections;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
 use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
@@ -70,6 +70,14 @@ pub struct VmmTestsRunCli {
     #[clap(long)]
     skip_vhd_prompt: bool,
 
+    /// Download all disk images upfront instead of streaming on demand.
+    ///
+    /// By default, VHD/ISO disk images are streamed on demand via HTTP
+    /// and cached locally, avoiding large upfront downloads. Use this
+    /// flag to force all images to be downloaded before tests run.
+    #[clap(long)]
+    no_lazy_fetch: bool,
+
     /// Optional: custom kernel modules
     #[clap(long)]
     custom_kernel_modules: Option<PathBuf>,
@@ -99,6 +107,7 @@ impl IntoPipeline for VmmTestsRunCli {
             build_only,
             copy_extras,
             skip_vhd_prompt,
+            no_lazy_fetch,
             custom_kernel_modules,
             custom_kernel,
             custom_uefi_firmware,
@@ -117,11 +126,12 @@ impl IntoPipeline for VmmTestsRunCli {
         // 3. Run artifact discovery inline at pipeline construction time
         log::info!("Step 1: Discovering required artifacts...");
         let repo_root = crate::repo_root();
-        let artifacts_json = discover_artifacts(&repo_root, &target_str, &filter, release)
-            .context("during artifact discovery")?;
+        let (artifacts_json, test_names, test_binary) =
+            discover_artifacts(&repo_root, &target_str, &filter, release)
+                .context("during artifact discovery")?;
 
         // 4. Resolve to build selections
-        let resolved = ResolvedArtifactSelections::from_artifact_list_json(
+        let mut resolved = ResolvedArtifactSelections::from_artifact_list_json(
             &artifacts_json,
             target_architecture,
             target_os,
@@ -135,6 +145,49 @@ impl IntoPipeline for VmmTestsRunCli {
             );
         }
 
+        // 5. Determine lazy fetch mode.
+        //
+        // By default, VHD/ISO downloads are skipped and disk images are
+        // streamed on demand via HTTP (with local SQLite caching). This
+        // avoids multi-GB upfront downloads for dev-inner-loop scenarios.
+        //
+        // Lazy fetch is disabled when:
+        //   - The user passes --no-lazy-fetch
+        //   - Any Hyper-V test is selected (Hyper-V requires local files)
+        //
+        // When both Hyper-V and non-Hyper-V tests are selected, only the
+        // artifacts required by Hyper-V tests are downloaded upfront; the
+        // rest are lazy-fetched.
+        if no_lazy_fetch {
+            log::info!("Lazy fetch disabled by --no-lazy-fetch");
+        } else {
+            let hyperv_names: Vec<_> = test_names
+                .iter()
+                .filter(|name| name.contains("hyperv_"))
+                .cloned()
+                .collect();
+
+            if hyperv_names.is_empty() {
+                log::info!("Lazy fetch enabled: disk images will be streamed on demand via HTTP");
+                resolved.downloads.clear();
+            } else {
+                log::info!(
+                    "Downloading disk images required by {} Hyper-V tests",
+                    hyperv_names.len()
+                );
+                let hyperv_json =
+                    query_test_binary_artifacts(&test_binary, &hyperv_names, &target_str)
+                        .context("during Hyper-V artifact discovery")?;
+                let hyperv_resolved = ResolvedArtifactSelections::from_artifact_list_json(
+                    &hyperv_json,
+                    target_architecture,
+                    target_os,
+                )
+                .context("failed to parse Hyper-V artifacts")?;
+                resolved.downloads = hyperv_resolved.downloads;
+            }
+        }
+
         log::info!("Resolved build selections: {:?}", resolved.build);
         log::info!(
             "Resolved downloads: {:?}",
@@ -143,7 +196,7 @@ impl IntoPipeline for VmmTestsRunCli {
 
         let selections = selections_from_resolved(filter, resolved, target_os);
 
-        // 5. Construct and return the pipeline
+        // 6. Construct and return the pipeline
         log::info!("Step 2: Building and running tests...");
         build_vmm_tests_pipeline(
             backend_hint,
@@ -169,13 +222,15 @@ impl IntoPipeline for VmmTestsRunCli {
 /// Run artifact discovery by invoking `cargo nextest list` and the test
 /// binary's `--list-required-artifacts` flag.
 ///
-/// Returns the raw JSON string describing required/optional artifacts.
+/// Returns the raw JSON string describing required/optional artifacts, the
+/// list of matching test names (used for backend detection), and the path
+/// to the test binary (for follow-up queries).
 fn discover_artifacts(
     repo_root: &Path,
     target: &str,
     filter: &str,
     release: bool,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, Vec<String>, PathBuf)> {
     // Check that cargo-nextest is available
     let nextest_check = Command::new("cargo")
         .args(["nextest", "--version"])
@@ -196,6 +251,7 @@ fn discover_artifacts(
     // Step 1: Use nextest to resolve the filter expression to test names and
     // get the binary path
     let mut cmd = Command::new("cargo");
+    cmd.stderr(Stdio::inherit());
     cmd.current_dir(repo_root).args([
         "nextest",
         "list",
@@ -212,11 +268,7 @@ fn discover_artifacts(
         cmd.arg("--release");
     }
     let nextest_output = cmd.output().context("failed to run cargo nextest list")?;
-    anyhow::ensure!(
-        nextest_output.status.success(),
-        "cargo nextest list failed: {}",
-        String::from_utf8_lossy(&nextest_output.stderr)
-    );
+    anyhow::ensure!(nextest_output.status.success(), "cargo nextest list failed",);
     let nextest_stdout = String::from_utf8(nextest_output.stdout)
         .map_err(|e| anyhow::anyhow!("nextest output is not valid UTF-8: {}", e))?;
     let (test_binary, test_names) = parse_nextest_output(&nextest_stdout)?;
@@ -228,7 +280,11 @@ fn discover_artifacts(
             "required": [],
             "optional": []
         });
-        return Ok(serde_json::to_string_pretty(&empty_output)?);
+        return Ok((
+            serde_json::to_string_pretty(&empty_output)?,
+            Vec::new(),
+            test_binary,
+        ));
     }
 
     log::info!("Found {} matching tests", test_names.len());
@@ -237,13 +293,27 @@ fn discover_artifacts(
     }
 
     // Step 2: Query petri for artifacts of each matching test
+    let json = query_test_binary_artifacts(&test_binary, &test_names, target)?;
+    Ok((json, test_names, test_binary))
+}
+
+/// Query the test binary for required artifacts given a list of test names.
+///
+/// This invokes the binary with `--list-required-artifacts --tests-from-stdin`
+/// and returns the resulting JSON as a string after processing it to inject
+/// the `target` field.
+fn query_test_binary_artifacts(
+    test_binary: &Path,
+    test_names: &[String],
+    target: &str,
+) -> anyhow::Result<String> {
     log::info!("Using test binary: {}", test_binary.display());
     log::info!("Querying artifacts for {} tests", test_names.len());
     let stdin_data = test_names
         .iter()
         .map(|n| format!("{n}\n"))
         .collect::<String>();
-    let mut child = Command::new(&test_binary)
+    let mut child = Command::new(test_binary)
         .args(["--list-required-artifacts", "--tests-from-stdin"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

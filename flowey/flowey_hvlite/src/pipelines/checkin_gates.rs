@@ -14,10 +14,10 @@ use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Openhc
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclFeature;
-use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
-use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
-use flowey_lib_hvlite::run_cargo_build::common::CommonProfile;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use flowey_lib_hvlite::common::CommonArch;
+use flowey_lib_hvlite::common::CommonPlatform;
+use flowey_lib_hvlite::common::CommonProfile;
+use flowey_lib_hvlite::common::CommonTriple;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
