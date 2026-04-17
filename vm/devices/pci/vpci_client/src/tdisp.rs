@@ -42,6 +42,10 @@ struct VpciClientTdispMutableState {
     /// Cleared on unbind so that ranges are re-validated after re-attestation.
     #[inspect(iter_by_index)]
     validated_mmio_bars: HashSet<u16>,
+    /// The most recently obtained TDI interface report, populated during attestation.
+    /// Cleared on unbind so that it is re-fetched after re-attestation.
+    #[inspect(debug)]
+    tdi_report: Option<TdiReportStruct>,
 }
 
 impl VpciClientTdispMutableState {
@@ -97,6 +101,7 @@ impl VpciClientTdispState {
                 tdi_state: TdispTdiState::Uninitialized,
                 guest_device_id: 0,
                 validated_mmio_bars: HashSet::new(),
+                tdi_report: None,
             },
             isolation_type,
             vtom,
@@ -315,6 +320,7 @@ impl VpciClientTdispState {
         match res.response::<TdispCommandResponseUnbind>() {
             Ok(_) => {
                 self.mutable_state.validated_mmio_bars.clear();
+                self.mutable_state.tdi_report = None;
                 Ok(())
             }
             Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
@@ -415,13 +421,21 @@ impl VpciClientTdispState {
         let guest_device_id_u16 = u16::try_from(guest_device_id)
             .context("tdisp_attest_device: guest device ID must fit within u16")?;
 
+        // Fetch and save the TDI interface report so callers can inspect the
+        // attested device's reported capabilities and MMIO ranges.
+        let tdi_report = self.tdisp_get_tdi_report().await.context(
+            "tdisp_attest_device: failed to get TDI interface report after starting device",
+        )?;
+
         tracing::info!(
+            ?tdi_report,
             %guest_device_id,
             "tdisp_attest_device: device attestation flow completed successfully, waiting on resources to be assigned"
         );
 
         self.mutable_state
             .update_guest_device_id(guest_device_id_u16);
+        self.mutable_state.tdi_report = Some(tdi_report);
 
         // Device is now in the Run state without resource validation being performed.
         // Platform specific validation methods should be called to unblock resources.
@@ -436,9 +450,16 @@ impl VpciClientTdispState {
     /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
     /// validator is present, unblocks the MMIO range for the device.
     ///
+    /// Consults the TDI interface report saved during attestation to decide
+    /// whether the MMIO range actually requires validation. Ranges whose
+    /// `is_non_tee_mem` flag is set are not protected memory and must NOT be
+    /// passed to `tdisp_unblock_mmio`; only ranges with `is_non_tee_mem` clear
+    /// are validated.
+    ///
     /// # Arguments
     ///
-    /// * `bar_id` - The BAR index being configured.
+    /// * `bar_id` - The BAR index being configured. Matched against the
+    ///   `range_id` of the MMIO ranges reported in the TDI interface report.
     /// * `base_address` - The base guest physical address of the MMIO range.
     /// * `length` - The length in bytes of the MMIO range.
     pub fn tdisp_on_mmio_reconfigured(
@@ -464,6 +485,40 @@ impl VpciClientTdispState {
                     bar_id,
                     "skipping MMIO unblock for BAR that has already been validated"
                 );
+                return Ok(());
+            }
+
+            // Look up the MMIO range in the TDI interface report by range_id
+            // (which matches the BAR index for the guest protocols we
+            // currently support). Only TEE memory (is_non_tee_mem == false)
+            // should be passed to tdisp_unblock_mmio; non-TEE ranges are
+            // unprotected and must not be validated.
+            let report = self.mutable_state.tdi_report.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "tdisp_on_mmio_reconfigured: TDI interface report not available; device has not been attested"
+                )
+            })?;
+
+            let mmio_range = report
+                .mmio_interface_info
+                .iter()
+                .find(|r| r.range_id == bar_id)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "tdisp_on_mmio_reconfigured: BAR {bar_id} not present in TDI interface report"
+                    )
+                })?;
+
+            if mmio_range.flags.is_non_tee_mem() {
+                tracing::info!(
+                    bar_id,
+                    base_address,
+                    length,
+                    "skipping MMIO unblock for BAR because the TDI report marks it as non-TEE memory"
+                );
+                // Record the BAR as handled so we don't repeatedly re-check
+                // the report on subsequent reconfiguration callbacks.
+                self.mutable_state.validated_mmio_bars.insert(bar_id);
                 return Ok(());
             }
 
