@@ -28,6 +28,7 @@ use nvme_resources::fault::PciFaultConfig;
 use nvme_test::command_match::CommandMatchBuilder;
 use openvmm_defs::config::DeviceVtl;
 use openvmm_defs::config::VpciDeviceConfig;
+use petri::MemoryConfig;
 use petri::OpenHclServicingFlags;
 use petri::PetriGuestStateLifetime;
 use petri::PetriVm;
@@ -171,6 +172,10 @@ async fn servicing_numa_private_pool<T: PetriVmmBackend>(
             .with_processor_topology(ProcessorTopology {
                 vp_count: 4,
                 vps_per_socket: Some(2),
+                ..Default::default()
+            })
+            .with_memory(MemoryConfig {
+                numa_mem_sizes: Some(vec![2 * 1024 * 1024 * 1024, 2 * 1024 * 1024 * 1024]),
                 ..Default::default()
             })
             .with_openhcl_command_line(
