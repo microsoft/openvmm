@@ -579,13 +579,7 @@ impl HclNetworkVFManagerWorker {
                 bus_control
             };
 
-            let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
-
-            ctx.until_cancelled(vpci_bus_control.revoke_device().instrument(
-                tracing::info_span!("revoking vtl0 vf", vtl2_vfid, vtl0_bus = %bus_control),
-            ))
-            .await
-            .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
+            self.revoke_vtl0_vf(vpci_bus_control).await
         } {
             tracing::error!(
                 vtl2_vfid,
@@ -749,6 +743,21 @@ impl HclNetworkVFManagerWorker {
         .await
     }
 
+    /// Revoke the VTL0 VF with a timeout in case VTL0 doesn't respond.
+    ///
+    /// Takes an HclVpciBusControl pulled from `self.vtl0_bus_control` and
+    /// revokes with a `MAX_WAIT_TIMEOUT` cancel context; empirical evidence
+    /// shows that the vast majority of devices either revoke well within that
+    /// timeout, or do not resolve at all.
+    async fn revoke_vtl0_vf(&self, bus_control: &HclVpciBusControl) -> anyhow::Result<()> {
+        let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
+        ctx.until_cancelled(bus_control.revoke_device().instrument(
+            tracing::info_span!("revoking vtl0 vf", vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control), vtl0_bus = %bus_control),
+        ))
+        .await
+        .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
+    }
+
     /// Updates which VTL0 VF, if any, is associated with this worker.
     ///
     /// When `vtl2_device_state` is `Present`, the guest-visible VF id and
@@ -814,14 +823,7 @@ impl HclNetworkVFManagerWorker {
         if self.guest_state.is_offered_to_guest().await {
             *self.guest_state.offered_to_guest.lock().await = false;
             if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                let mut ctx = mesh::CancelContext::new().with_timeout(MAX_WAIT_TIMEOUT);
-                match ctx
-                    .until_cancelled(vtl0_bus_control.revoke_device().instrument(
-                        tracing::info_span!("Removing VF from VTL0", vtl2_vfid, vtl0_vfid,),
-                    ))
-                    .await
-                    .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
-                {
+                match self.revoke_vtl0_vf(vtl0_bus_control).await {
                     Ok(_) => (),
                     Err(err) => {
                         tracing::error!(
