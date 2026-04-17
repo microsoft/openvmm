@@ -165,7 +165,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         // enough to bother skipping.
         let regs = vp::Registers::at_reset(&params.partition.caps, params.vp_info);
         *params.runner.cpu_context_mut() = protocol::hcl_cpu_context_x64 {
-            gps: [
+            gps_no_rsp: [
                 regs.rax, regs.rcx, regs.rdx, regs.rbx, 0, /* cr2 */
                 regs.rbp, regs.rsi, regs.rdi, regs.r8, regs.r9, regs.r10, regs.r11, regs.r12,
                 regs.r13, regs.r14, regs.r15,
@@ -707,7 +707,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "io_port");
 
-        assert_eq!(message.rax, self.vp.runner.cpu_context().gps[protocol::RAX]);
+        assert_eq!(
+            message.rax,
+            self.vp.runner.cpu_context().gps_no_rsp[protocol::RAX]
+        );
 
         let interruption_pending = message.header.execution_state.interruption_pending();
 
@@ -723,7 +726,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 self.vp.vp_index(),
                 message.header.intercept_access_type == HvInterceptAccessType::WRITE,
                 message.port_number,
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RAX],
+                &mut self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RAX],
                 access_size,
                 dev,
             )
@@ -781,10 +784,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 .result(message.rax as u32, message.rcx as u32, &default_result);
 
         let next_rip = next_rip(&message.header);
-        self.vp.runner.cpu_context_mut().gps[protocol::RAX] = eax.into();
-        self.vp.runner.cpu_context_mut().gps[protocol::RBX] = ebx.into();
-        self.vp.runner.cpu_context_mut().gps[protocol::RCX] = ecx.into();
-        self.vp.runner.cpu_context_mut().gps[protocol::RDX] = edx.into();
+        self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RAX] = eax.into();
+        self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RBX] = ebx.into();
+        self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RCX] = ecx.into();
+        self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RDX] = edx.into();
 
         self.vp.set_rip(self.intercepted_vtl, next_rip);
     }
@@ -816,8 +819,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                     }
                 };
 
-                self.vp.runner.cpu_context_mut().gps[protocol::RAX] = value & 0xffff_ffff;
-                self.vp.runner.cpu_context_mut().gps[protocol::RDX] = value >> 32;
+                self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RAX] = value & 0xffff_ffff;
+                self.vp.runner.cpu_context_mut().gps_no_rsp[protocol::RDX] = value >> 32;
             }
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
@@ -1083,15 +1086,15 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
     fn gp(&mut self, reg: x86emu::Gp) -> u64 {
         match reg {
             x86emu::Gp::RSP => self.cache.rsp,
-            _ => self.vp.runner.cpu_context().gps[reg as usize],
+            _ => self.vp.runner.cpu_context().gps_no_rsp[reg as usize],
         }
     }
 
     fn set_gp(&mut self, reg: x86emu::Gp, v: u64) {
-        if reg == x86emu::Gp::RSP {
-            self.cache.rsp = v;
+        match reg {
+            x86emu::Gp::RSP => self.cache.rsp = v,
+            _ => self.vp.runner.cpu_context_mut().gps_no_rsp[reg as usize] = v,
         }
-        self.vp.runner.cpu_context_mut().gps[reg as usize] = v;
     }
 
     fn xmm(&mut self, index: usize) -> u128 {
@@ -1407,55 +1410,13 @@ impl hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, HypervisorBa
     }
 
     fn gp(&mut self, n: hv1_hypercall::X64HypercallRegister) -> u64 {
-        match n {
-            hv1_hypercall::X64HypercallRegister::Rax => {
-                self.vp.runner.cpu_context().gps[protocol::RAX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rcx => {
-                self.vp.runner.cpu_context().gps[protocol::RCX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rdx => {
-                self.vp.runner.cpu_context().gps[protocol::RDX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rbx => {
-                self.vp.runner.cpu_context().gps[protocol::RBX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rsi => {
-                self.vp.runner.cpu_context().gps[protocol::RSI]
-            }
-            hv1_hypercall::X64HypercallRegister::Rdi => {
-                self.vp.runner.cpu_context().gps[protocol::RDI]
-            }
-            hv1_hypercall::X64HypercallRegister::R8 => {
-                self.vp.runner.cpu_context().gps[protocol::R8]
-            }
-        }
+        // Note that RSP is not a hypercall register, so this is OK.
+        self.vp.runner.cpu_context().gps_no_rsp[n as usize]
     }
 
     fn set_gp(&mut self, n: hv1_hypercall::X64HypercallRegister, value: u64) {
-        *match n {
-            hv1_hypercall::X64HypercallRegister::Rax => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RAX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rcx => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RCX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rdx => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RDX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rbx => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RBX]
-            }
-            hv1_hypercall::X64HypercallRegister::Rsi => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RSI]
-            }
-            hv1_hypercall::X64HypercallRegister::Rdi => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::RDI]
-            }
-            hv1_hypercall::X64HypercallRegister::R8 => {
-                &mut self.vp.runner.cpu_context_mut().gps[protocol::R8]
-            }
-        } = value;
+        // Note that RSP is not a hypercall register, so this is OK.
+        self.vp.runner.cpu_context_mut().gps_no_rsp[n as usize] = value;
     }
 
     fn xmm(&mut self, n: usize) -> u128 {
@@ -1973,7 +1934,7 @@ mod save_restore {
                 r13,
                 r14,
                 r15,
-            ] = self.runner.cpu_context().gps;
+            ] = self.runner.cpu_context().gps_no_rsp;
 
             // We are responsible for saving shared MSRs too, but other than
             // the MTRRs all shared MSRs are read-only. So this is all we need.
@@ -2137,7 +2098,7 @@ mod save_restore {
             } = state;
 
             let dr6_shared = self.partition.hcl.dr6_shared();
-            self.runner.cpu_context_mut().gps = [
+            self.runner.cpu_context_mut().gps_no_rsp = [
                 rax, rcx, rdx, rbx, cr2, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
             ];
             if fx_state.len() != self.runner.cpu_context_mut().fx_state.as_bytes().len() {

@@ -5,6 +5,7 @@
 //! with a customizable configuration of semi-standardized device.
 
 use crate::ChipsetDeviceHandle;
+use crate::LegacyPciChipsetDeviceHandle;
 use crate::PowerEvent;
 use crate::chipset::ChipsetBuilder;
 use crate::chipset::backing::arc_mutex::device::AddDeviceError;
@@ -76,6 +77,7 @@ pub struct BaseChipsetBuilder<'a> {
     foundation: options::BaseChipsetFoundation<'a>,
     devices: options::BaseChipsetDevices,
     device_handles: Vec<ChipsetDeviceHandle>,
+    pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
     expected_manifest: Option<options::BaseChipsetManifest>,
     fallback_mmio_device: Option<Arc<CloseableMutex<dyn chipset_device::ChipsetDevice>>>,
     flags: BaseChipsetBuilderFlags,
@@ -96,6 +98,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             foundation,
             devices,
             device_handles: Vec::new(),
+            pci_device_handles: Vec::new(),
             expected_manifest: None,
             fallback_mmio_device: None,
             flags: BaseChipsetBuilderFlags {
@@ -132,6 +135,15 @@ impl<'a> BaseChipsetBuilder<'a> {
     /// Adds device handles to be resolved and instantiated.
     pub fn with_device_handles(mut self, mut device_handles: Vec<ChipsetDeviceHandle>) -> Self {
         self.device_handles.append(&mut device_handles);
+        self
+    }
+
+    /// Adds legacy PCI device handles to be resolved and instantiated.
+    pub fn with_pci_device_handles(
+        mut self,
+        mut pci_device_handles: Vec<LegacyPciChipsetDeviceHandle>,
+    ) -> Self {
+        self.pci_device_handles.append(&mut pci_device_handles);
         self
     }
 
@@ -175,6 +187,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             foundation,
             devices,
             device_handles,
+            pci_device_handles,
             expected_manifest,
             fallback_mmio_device,
             flags,
@@ -208,7 +221,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
             deps_generic_pic,
-            deps_generic_pit,
             deps_generic_psp: _, // not actually a device... yet
             deps_hyperv_firmware_pcat,
             deps_hyperv_firmware_uefi,
@@ -221,7 +233,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_piix4_pci_isa_bridge,
-            deps_piix4_pci_usb_uhci_stub,
             deps_piix4_power_management,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
@@ -334,25 +345,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                         set_a20_signal,
                     )
                 })?;
-        }
-
-        if let Some(options::dev::Piix4PciUsbUhciStubDeps { attached_to }) =
-            deps_piix4_pci_usb_uhci_stub
-        {
-            builder
-                .arc_mutex_device("piix4-usb-uhci-stub")
-                .on_pci_bus(attached_to)
-                .add(|_| chipset_legacy::piix4_uhci::Piix4UsbUhciStub::new())?;
-        }
-
-        if let Some(options::dev::GenericPitDeps {}) = deps_generic_pit {
-            // hard-coded IRQ lines, as per x86 spec
-            builder.arc_mutex_device("pit").add(|services| {
-                pit::PitDevice::new(
-                    services.new_line(IRQ_LINE_SET, "timer0", 2),
-                    services.register_vmtime().access("pit"),
-                )
-            })?;
         }
 
         let _ = dma;
@@ -739,14 +731,52 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in device_handles {
+            let ChipsetDeviceHandle { name, resource } = device;
+
             builder
-                .arc_mutex_device(device.name.as_ref())
+                .arc_mutex_device(name.as_ref())
                 .try_add_async(async |services| {
                     resolver
                         .resolve(
-                            device.resource,
+                            resource,
                             ResolveChipsetDeviceHandleParams {
-                                device_name: device.name.as_ref(),
+                                device_name: name.as_ref(),
+                                guest_memory: &foundation.untrusted_dma_memory,
+                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
+                                vmtime: foundation.vmtime,
+                                is_restoring: foundation.is_restoring,
+                                task_driver_source: driver_source,
+                                register_mmio: &mut services.register_mmio(),
+                                register_pio: &mut services.register_pio(),
+                                configure: services,
+                            },
+                        )
+                        .await
+                        .map(|dev| dev.0)
+                })
+                .await?;
+        }
+
+        for device in pci_device_handles {
+            let LegacyPciChipsetDeviceHandle {
+                name,
+                resource,
+                pci_bus_name,
+                bdf,
+            } = device;
+
+            let (bus, slot, function) = bdf;
+
+            builder
+                .arc_mutex_device(name.as_ref())
+                .on_pci_bus(crate::BusId::new(pci_bus_name.as_str()))
+                .with_pci_addr(bus, slot, function)
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            resource,
+                            ResolveChipsetDeviceHandleParams {
+                                device_name: name.as_ref(),
                                 guest_memory: &foundation.untrusted_dma_memory,
                                 encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
                                 vmtime: foundation.vmtime,
@@ -1130,7 +1160,6 @@ pub mod options {
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
             generic_pic:                 dev::GenericPicDeps,
-            generic_pit:                 dev::GenericPitDeps,
             generic_psp:                 dev::GenericPspDeps,
 
             hyperv_firmware_pcat:        dev::HyperVFirmwarePcat,
@@ -1146,7 +1175,6 @@ pub mod options {
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
             piix4_pci_isa_bridge:        dev::Piix4PciIsaBridgeDeps,
-            piix4_pci_usb_uhci_stub:     dev::Piix4PciUsbUhciStubDeps,
             piix4_power_management:      dev::Piix4PowerManagementDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
@@ -1154,6 +1182,19 @@ pub mod options {
             winbond_super_io_and_floppy_stub: dev::WinbondSuperIoAndFloppyStubDeps,
             winbond_super_io_and_floppy_full: dev::WinbondSuperIoAndFloppyFullDeps,
         }
+    }
+
+    /// Derived capabilities for the configured chipset devices.
+    #[derive(MeshPayload, Debug, Copy, Clone)]
+    pub struct VmChipsetCapabilities {
+        /// Whether the VM exposes an IOAPIC.
+        pub with_ioapic: bool,
+        /// Whether the VM exposes a legacy PIC.
+        pub with_pic: bool,
+        /// Whether the VM exposes a PIT.
+        pub with_pit: bool,
+        /// Whether the VM exposes a PSP.
+        pub with_psp: bool,
     }
 
     /// Device specific dependencies
@@ -1197,15 +1238,6 @@ pub mod options {
             pub primary_channel_drives: [Option<ide::DriveMedia>; 2],
             /// Drives attached to the secondary IDE channel
             pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
-        }
-
-        /// PIIX4 USB UHCI controller (fixed pci address: 0:7.2)
-        ///
-        /// NOTE: current implementation is a minimal stub, implementing just
-        /// enough to keep the PCAT BIOS happy.
-        pub struct Piix4PciUsbUhciStubDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
         }
 
         /// PIIX4 power management device (fixed pci address: 0:7.3)
@@ -1303,9 +1335,6 @@ pub mod options {
             /// Interface to create GPA alias ranges.
             pub adjust_gpa_range: Box<dyn chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange>,
         }
-
-        /// Generic Intel 8253/8254 Programmable Interval Timer (PIT)
-        pub struct GenericPitDeps;
 
         feature_gated! {
             feature = "dev_hyperv_vga";

@@ -16,10 +16,14 @@
 
 #![forbid(unsafe_code)]
 
+use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
+use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
+use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
+use chipset_resources::pit::PitDeviceHandle;
 use input_core::MultiplexedInputHandle;
 use missing_dev_resources::MissingDevHandle;
 use serial_16550_resources::Serial16550DeviceHandle;
@@ -30,9 +34,12 @@ use std::iter::zip;
 use thiserror::Error;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::ResourceId;
 use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::LegacyPciChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
+use vmotherboard::options::VmChipsetCapabilities;
 
 /// Builder for a VM manifest.
 pub struct VmManifestBuilder {
@@ -84,6 +91,10 @@ pub struct VmChipsetResult {
     pub chipset: BaseChipsetManifest,
     /// The list of chipset devices present in the VM.
     pub chipset_devices: Vec<ChipsetDeviceHandle>,
+    /// The list of legacy PCI chipset devices with explicit placement metadata.
+    pub pci_chipset_devices: Vec<LegacyPciChipsetDeviceHandle>,
+    /// Derived chipset capabilities needed by firmware and table generation.
+    pub capabilities: VmChipsetCapabilities,
 }
 
 /// Error type for building a VM manifest.
@@ -209,7 +220,14 @@ impl VmManifestBuilder {
     pub fn build(self) -> Result<VmChipsetResult, Error> {
         let mut result = VmChipsetResult {
             chipset_devices: Vec::new(),
+            pci_chipset_devices: Vec::new(),
             chipset: BaseChipsetManifest::empty(),
+            capabilities: VmChipsetCapabilities {
+                with_ioapic: false,
+                with_pic: false,
+                with_pit: false,
+                with_psp: false,
+            },
         };
 
         if let Some((backend, port)) = self.debugcon {
@@ -226,6 +244,7 @@ impl VmManifestBuilder {
                     return Err(Error(ErrorInner::UnsupportedArch));
                 }
                 result.attach_i8042();
+                result.attach_piix4_pci_usb_uhci_stub();
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
@@ -238,7 +257,6 @@ impl VmManifestBuilder {
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_pic: true,
-                    with_generic_pit: true,
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_firmware_uefi: false,
@@ -251,12 +269,14 @@ impl VmManifestBuilder {
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
                     with_piix4_pci_isa_bridge: true,
-                    with_piix4_pci_usb_uhci_stub: true,
                     with_piix4_power_management: true,
                     with_underhill_vga_proxy: self.proxy_vga,
                     with_winbond_super_io_and_floppy_stub: self.stub_floppy,
                     with_winbond_super_io_and_floppy_full: !self.stub_floppy,
                 };
+                result.capabilities.with_ioapic = true;
+                result.capabilities.with_pic = true;
+                result.attach_pit();
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
                     result.attach_battery(self.arch, recv);
@@ -271,7 +291,6 @@ impl VmManifestBuilder {
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_pic: is_x86,
-                    with_generic_pit: is_x86,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: false,
@@ -284,12 +303,17 @@ impl VmManifestBuilder {
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_piix4_pci_isa_bridge: false,
-                    with_piix4_pci_usb_uhci_stub: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
+                result.capabilities.with_ioapic = is_x86;
+                result.capabilities.with_pic = is_x86;
+                result.capabilities.with_psp = self.psp;
+                if is_x86 {
+                    result.attach_pit();
+                }
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
@@ -311,7 +335,6 @@ impl VmManifestBuilder {
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
                     with_generic_pic: false,
-                    with_generic_pit: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
@@ -324,12 +347,13 @@ impl VmManifestBuilder {
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_piix4_pci_isa_bridge: false,
-                    with_piix4_pci_usb_uhci_stub: false,
                     with_piix4_power_management: false,
                     with_underhill_vga_proxy: false,
                     with_winbond_super_io_and_floppy_stub: false,
                     with_winbond_super_io_and_floppy_full: false,
                 };
+                result.capabilities.with_ioapic = is_x86;
+                result.capabilities.with_psp = self.psp;
                 result
                     .maybe_attach_arch_serial(
                         self.arch,
@@ -358,6 +382,7 @@ impl VmManifestBuilder {
                 }
             }
         }
+
         Ok(result)
     }
 }
@@ -371,6 +396,15 @@ impl VmChipsetResult {
             }
             .into_resource(),
         });
+        self
+    }
+
+    fn attach_pit(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: PitDeviceHandle::ID.to_owned(),
+            resource: PitDeviceHandle.into_resource(),
+        });
+        self.capabilities.with_pit = true;
         self
     }
 
@@ -393,6 +427,16 @@ impl VmChipsetResult {
             },
         });
 
+        self
+    }
+
+    fn attach_piix4_pci_usb_uhci_stub(&mut self) -> &mut Self {
+        self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+            name: "piix4-usb-uhci-stub".to_string(),
+            resource: Piix4PciUsbUhciStubDeviceHandle.into_resource(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: PIIX4_PCI_USB_UHCI_STUB_BDF,
+        });
         self
     }
 

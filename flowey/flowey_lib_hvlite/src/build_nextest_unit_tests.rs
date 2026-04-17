@@ -7,11 +7,9 @@
 //! doesn't require any special dependencies (e.g: additional binaries, disk
 //! images, etc...), and can be run simply by invoking the test bin itself.
 
-use crate::init_openvmm_magicpath_openhcl_sysroot::OpenvmmSysrootArch;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
+use crate::common::CommonArch;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
@@ -67,21 +65,9 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let flowey_platform = ctx.platform();
-        let flowey_arch = ctx.arch();
-
         let xtask_target = CommonTriple::Common {
-            arch: match flowey_arch {
-                FlowArch::X86_64 => CommonArch::X86_64,
-                FlowArch::Aarch64 => CommonArch::Aarch64,
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            },
-            platform: match flowey_platform {
-                FlowPlatform::Windows => CommonPlatform::WindowsMsvc,
-                FlowPlatform::Linux(_) => CommonPlatform::LinuxGnu,
-                FlowPlatform::MacOs => CommonPlatform::MacOs,
-                platform => anyhow::bail!("unsupported platform {platform}"),
-            },
+            arch: ctx.arch().try_into()?,
+            platform: ctx.platform().try_into()?,
         };
         let xtask = ctx.reqv(|v| crate::build_xtask::Request {
             target: xtask_target,
@@ -156,11 +142,7 @@ impl FlowNode for Node {
         {
             let mut pre_run_deps = ambient_deps.clone();
 
-            let sysroot_arch = match target.architecture {
-                target_lexicon::Architecture::X86_64 => OpenvmmSysrootArch::X64,
-                target_lexicon::Architecture::Aarch64(_) => OpenvmmSysrootArch::Aarch64,
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            };
+            let sysroot_arch = CommonArch::from_architecture(target.architecture)?;
 
             // See comment in `crate::cargo_build` for why this is necessary.
             //

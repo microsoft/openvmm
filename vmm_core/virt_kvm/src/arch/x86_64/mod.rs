@@ -93,7 +93,24 @@ use zerocopy::IntoBytes;
 const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
 #[derive(Debug)]
-pub struct Kvm;
+pub struct Kvm {
+    kvm: kvm::Kvm,
+}
+
+impl Kvm {
+    /// Creates a new KVM hypervisor instance.
+    pub fn new() -> Result<Self, KvmError> {
+        Ok(Self {
+            kvm: kvm::Kvm::new()?,
+        })
+    }
+
+    /// Creates a KVM hypervisor instance from a pre-opened `/dev/kvm` fd.
+    pub fn from_kvm(file: std::fs::File) -> Result<Self, KvmError> {
+        let kvm = kvm::Kvm::from(file);
+        Ok(Self { kvm })
+    }
+}
 
 /// CPUID leaf and flag for GB page support.
 const GB_PAGE_LEAF: u32 = 0x80000001;
@@ -110,6 +127,10 @@ impl virt::Hypervisor for Kvm {
     type Partition = KvmPartition;
     type Error = KvmError;
 
+    fn platform_info(&self) -> virt::PlatformInfo {
+        virt::PlatformInfo {}
+    }
+
     fn new_partition<'a>(
         &mut self,
         config: ProtoPartitionConfig<'a>,
@@ -118,8 +139,8 @@ impl virt::Hypervisor for Kvm {
             return Err(KvmError::IsolationNotSupported);
         }
 
-        let kvm = kvm::Kvm::new()?;
-        let mut cpuid_entries = kvm
+        let mut cpuid_entries = self
+            .kvm
             .supported_cpuid()?
             .into_iter()
             .filter_map(|entry| {
@@ -238,7 +259,7 @@ impl virt::Hypervisor for Kvm {
 
         let cpuid_entries = CpuidLeafSet::new(cpuid_entries);
 
-        let vm = kvm.new_vm()?;
+        let vm = self.kvm.new_vm()?;
         vm.enable_split_irqchip(virt::irqcon::IRQ_LINES as u32)?;
         vm.enable_x2apic_api()?;
         vm.enable_unknown_msr_exits()?;

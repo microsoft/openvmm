@@ -20,8 +20,6 @@ auth-var-verify-crypto = ["crypto", "der"]
 # exposes private modules so that they can be fuzzed
 fuzzing = []
 
-ossl_vendored = ["crypto?/ossl_vendored"]
-
 [dependencies]
 firmware_uefi_custom_vars.workspace = true
 uefi_nvram_storage = { workspace = true, features = ["inspect", "save_restore"] }

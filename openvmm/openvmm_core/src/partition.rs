@@ -92,6 +92,9 @@ pub trait HvlitePartition: Inspect + Send + Sync + RequestYield {
     /// Gets the [`SignalMsi`] interface for a particular VTL.
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>>;
 
+    /// Gets the irqfd routing interface, if supported.
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>>;
+
     /// Returns whether virtual devices are supported.
     fn supports_virtual_devices(&self) -> bool;
 
@@ -211,6 +214,10 @@ where
 
     fn as_signal_msi(&self, minimum_vtl: Vtl) -> Option<Arc<dyn SignalMsi>> {
         self.as_signal_msi(minimum_vtl)
+    }
+
+    fn irqfd(&self) -> Option<Arc<dyn virt::irqfd::IrqFd>> {
+        Partition::irqfd(self)
     }
 
     fn supports_virtual_devices(&self) -> bool {

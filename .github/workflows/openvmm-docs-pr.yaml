@@ -19,11 +19,6 @@ on:
     - synchronize
     - reopened
     - ready_for_review
-    paths:
-    - Guide/**
-    - petri/logview/**
-    - .github/workflows/openvmm-docs-*.yaml
-    - flowey/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

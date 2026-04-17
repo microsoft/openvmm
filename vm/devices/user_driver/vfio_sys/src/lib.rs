@@ -36,6 +36,8 @@ mod ioctl {
     use vfio_bindings::bindings::vfio::VFIO_TYPE;
     use vfio_bindings::bindings::vfio::vfio_device_info;
     use vfio_bindings::bindings::vfio::vfio_group_status;
+    use vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_map;
+    use vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap;
     use vfio_bindings::bindings::vfio::vfio_irq_info;
     use vfio_bindings::bindings::vfio::vfio_irq_set;
     use vfio_bindings::bindings::vfio::vfio_region_info;
@@ -83,6 +85,18 @@ mod ioctl {
         request_code_none!(VFIO_TYPE, VFIO_PRIVATE_BASE),
         c_char
     );
+    // VFIO_IOMMU_MAP_DMA
+    nix::ioctl_write_ptr_bad!(
+        vfio_iommu_map_dma,
+        request_code_none!(VFIO_TYPE, VFIO_BASE + 13),
+        vfio_iommu_type1_dma_map
+    );
+    // VFIO_IOMMU_UNMAP_DMA
+    nix::ioctl_readwrite_bad!(
+        vfio_iommu_unmap_dma,
+        request_code_none!(VFIO_TYPE, VFIO_BASE + 14),
+        vfio_iommu_type1_dma_unmap
+    );
 }
 
 pub struct Container {
@@ -108,10 +122,81 @@ impl Container {
         }
         Ok(())
     }
+
+    /// Map a host virtual address range into the IOMMU for device DMA access.
+    ///
+    /// `iova` is the IO virtual address the device will use (typically the
+    /// guest physical address). `vaddr` is the host virtual address backing
+    /// the memory. `size` is the length in bytes. All three must be
+    /// page-aligned.
+    ///
+    /// Only valid when the container uses a Type1v2 IOMMU.
+    pub fn map_dma(&self, iova: u64, vaddr: u64, size: u64) -> anyhow::Result<()> {
+        use vfio_bindings::bindings::vfio::VFIO_DMA_MAP_FLAG_READ;
+        use vfio_bindings::bindings::vfio::VFIO_DMA_MAP_FLAG_WRITE;
+
+        // SAFETY: sysconf(_SC_PAGESIZE) is always safe and returns the
+        // host page size.
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        anyhow::ensure!(page_size > 0, "sysconf(_SC_PAGESIZE) failed");
+        let page_size = page_size as u64;
+        let page_mask = page_size - 1;
+        anyhow::ensure!(
+            iova & page_mask == 0 && vaddr & page_mask == 0 && size & page_mask == 0,
+            "VFIO DMA mapping requires page-aligned iova ({iova:#x}), vaddr ({vaddr:#x}), and size ({size:#x}), page size {page_size:#x}"
+        );
+
+        let dma_map = vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_map {
+            argsz: size_of::<vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_map>() as u32,
+            flags: VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
+            vaddr,
+            iova,
+            size,
+        };
+        // SAFETY: The file descriptor is valid and a correctly constructed
+        // struct is being passed.
+        unsafe {
+            ioctl::vfio_iommu_map_dma(self.file.as_raw_fd(), &dma_map)
+                .context("VFIO_IOMMU_MAP_DMA failed")?;
+        }
+        Ok(())
+    }
+
+    /// Unmap a previously mapped IOVA range from the IOMMU.
+    ///
+    /// `iova` and `size` must match a previous `map_dma` call.
+    pub fn unmap_dma(&self, iova: u64, size: u64) -> anyhow::Result<()> {
+        let mut dma_unmap = vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap {
+            argsz: size_of::<vfio_bindings::bindings::vfio::vfio_iommu_type1_dma_unmap>() as u32,
+            flags: 0,
+            iova,
+            size,
+        };
+        // SAFETY: The file descriptor is valid and a correctly constructed
+        // struct is being passed.
+        unsafe {
+            ioctl::vfio_iommu_unmap_dma(self.file.as_raw_fd(), &mut dma_unmap)
+                .context("VFIO_IOMMU_UNMAP_DMA failed")?;
+        }
+        if dma_unmap.size != size {
+            tracing::warn!(
+                iova,
+                requested = size,
+                actual = dma_unmap.size,
+                "VFIO_IOMMU_UNMAP_DMA: unmapped size differs from requested"
+            );
+        }
+        Ok(())
+    }
 }
 
+/// IOMMU type for VFIO container.
+///
+/// Only Type1v2 and NoIommu are supported. Type1 (v1) is a legacy interface
+/// that does not support fine-grained DMA mapping and is intentionally excluded.
 #[repr(u32)]
 pub enum IommuType {
+    Type1v2 = vfio_bindings::bindings::vfio::VFIO_TYPE1v2_IOMMU,
     NoIommu = vfio_bindings::bindings::vfio::VFIO_NOIOMMU_IOMMU,
 }
 
@@ -398,10 +483,12 @@ impl Device {
         I: IntoIterator,
         I::Item: AsFd,
     {
+        const MAX_MSIX_VECTORS: usize = 256;
+
         #[repr(C)]
         struct VfioIrqSetWithArray {
             header: vfio_irq_set,
-            fd: [i32; 256],
+            fd: [i32; MAX_MSIX_VECTORS],
         }
         let mut param = VfioIrqSetWithArray {
             header: vfio_irq_set {
@@ -413,13 +500,22 @@ impl Device {
                 // data is a zero-sized array, the real data is fd.
                 data: Default::default(),
             },
-            fd: [-1; 256],
+            fd: [-1; MAX_MSIX_VECTORS],
         };
 
-        for (x, y) in eventfd.into_iter().zip(&mut param.fd) {
+        let fds: Vec<_> = eventfd.into_iter().collect();
+        anyhow::ensure!(
+            fds.len() <= MAX_MSIX_VECTORS,
+            "MSI-X vector count {} exceeds maximum {MAX_MSIX_VECTORS}",
+            fds.len()
+        );
+
+        let mut count = 0u32;
+        for (x, y) in fds.iter().zip(&mut param.fd) {
             *y = x.as_fd().as_raw_fd();
-            param.header.count += 1;
+            count += 1;
         }
+        param.header.count = count;
 
         if param.header.count == 0 {
             param.header.flags |= VFIO_IRQ_SET_DATA_NONE;

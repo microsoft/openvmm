@@ -149,15 +149,7 @@ impl SimpleFlowNode for Node {
             auto_install: None,
         });
 
-        let arch = match target.architecture {
-            target_lexicon::Architecture::X86_64 => {
-                crate::run_cargo_build::common::CommonArch::X86_64
-            }
-            target_lexicon::Architecture::Aarch64(_) => {
-                crate::run_cargo_build::common::CommonArch::Aarch64
-            }
-            a => anyhow::bail!("unsupported target architecture: {a}"),
-        };
+        let arch = crate::common::CommonArch::from_architecture(target.architecture)?;
         let release_igvm_files = if !matches!(ctx.backend(), FlowBackend::Ado) {
             Some(ctx.reqv(
                 |v| crate::download_release_igvm_files_from_gh::resolve::Request {
@@ -196,6 +188,7 @@ impl SimpleFlowNode for Node {
             get_env: v,
             release_igvm_files,
             use_relative_paths: false,
+            disable_remote_artifacts: true,
         });
 
         // Start the test_igvm_agent_rpc_server before running tests (Windows only).

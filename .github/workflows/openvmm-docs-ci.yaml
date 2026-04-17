@@ -14,11 +14,6 @@ on:
   push:
     branches:
     - main
-    paths:
-    - Guide/**
-    - petri/logview/**
-    - .github/workflows/openvmm-docs-*.yaml
-    - flowey/**
 jobs:
   job0:
     name: build mdbook guide

@@ -1384,21 +1384,6 @@ impl<B: Backing> hv1_hypercall::RestorePartitionTime for UhHypercallHandler<'_, 
         reference_time_in_100_ns: u64,
         tsc: u64,
     ) -> hvdef::HvResult<()> {
-        // Temporarily ignore restore_partition_time intercepts on Intel processors,
-        // until a new Linux kernel with proper support is ingested.
-        // xtask-fmt allow-target-arch cpu-intrinsic
-        #[cfg(target_arch = "x86_64")]
-        {
-            let result =
-                safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::ExtendedFeatures.0, 0);
-            if x86defs::cpuid::ExtendedFeatureSubleaf0Ebx::from(result.ebx).tsc_adjust() {
-                tracelimit::info_ratelimited!(
-                    "restore_partition_time ignored due to TSC adjustment support"
-                );
-                return Err(HvError::OperationDenied);
-            }
-        }
-
         tracelimit::info_ratelimited!(
             partition_id,
             tsc_sequence,

@@ -891,8 +891,14 @@ pub(crate) async fn run_repl(
                     let disk_type = match ram {
                         None => {
                             let path = file_path.context("no filename passed")?;
-                            openvmm_helpers::disk::open_disk_type(path.as_ref(), read_only)
-                                .with_context(|| format!("failed to open {}", path.display()))?
+                            openvmm_helpers::disk::open_disk_type(
+                                path.as_ref(),
+                                openvmm_helpers::disk::OpenDiskOptions {
+                                    read_only,
+                                    direct: false,
+                                },
+                            )
+                            .with_context(|| format!("failed to open {}", path.display()))?
                         }
                         Some(size) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
@@ -1079,10 +1085,14 @@ pub(crate) async fn run_repl(
                 let action = async {
                     let nvme = nvme_vtl2_rpc.as_ref().context("no vtl2 nvme controller")?;
                     let disk_type = match (ram, file_path) {
-                        (None, Some(path)) => {
-                            openvmm_helpers::disk::open_disk_type(path.as_ref(), read_only)
-                                .with_context(|| format!("failed to open {}", path.display()))?
-                        }
+                        (None, Some(path)) => openvmm_helpers::disk::open_disk_type(
+                            path.as_ref(),
+                            openvmm_helpers::disk::OpenDiskOptions {
+                                read_only,
+                                direct: false,
+                            },
+                        )
+                        .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
                                 RamDiskLayerHandle {

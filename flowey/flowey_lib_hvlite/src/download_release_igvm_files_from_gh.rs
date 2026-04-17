@@ -54,7 +54,7 @@ impl std::fmt::Display for OpenhclReleaseVersion {
 pub mod resolve {
     use super::OpenhclReleaseVersion;
     use super::ReleaseOutput;
-    use crate::run_cargo_build::common::CommonArch;
+    use crate::common::CommonArch;
     use flowey::node::prelude::*;
 
     flowey_request! {

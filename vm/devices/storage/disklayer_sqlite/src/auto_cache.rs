@@ -42,7 +42,7 @@ impl LayerAttach for AutoCacheSqliteDiskLayer {
                 let disk_id = metadata
                     .disk_id
                     .context("cannot cache without a disk ID to use as a key")?;
-                Ok(disk_id.map(|b| format!("{b:2x}")).join(""))
+                Ok(disk_id.map(|b| format!("{b:02x}")).join(""))
             },
             anyhow::Ok,
         )?;

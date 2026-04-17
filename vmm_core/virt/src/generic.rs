@@ -42,6 +42,24 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
+/// Platform capabilities detected from the hypervisor before partition
+/// creation. On x86 there are currently no pre-partition queries.
+#[cfg(guest_arch = "x86_64")]
+#[derive(Debug, Clone, Default)]
+pub struct PlatformInfo {}
+
+/// Platform capabilities detected from the hypervisor before partition
+/// creation.
+#[cfg(guest_arch = "aarch64")]
+#[derive(Debug, Clone)]
+pub struct PlatformInfo {
+    /// The platform PMU GSIV (GIC INTID), if available.
+    pub platform_gsiv: Option<u32>,
+    /// Whether the hypervisor supports GICv3. When `false`, only
+    /// GICv2 is available (e.g., Raspberry Pi 5 with GIC-400).
+    pub supports_gic_v3: bool,
+}
+
 pub trait Hypervisor: 'static {
     /// The prototype partition type.
     type ProtoPartition<'a>: ProtoPartition<Partition = Self::Partition>;
@@ -50,13 +68,12 @@ pub trait Hypervisor: 'static {
     /// The error type when creating the partition.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Returns the platform PMU GSIV for this hypervisor, if any.
+    /// Returns platform capabilities detected from the hypervisor.
     ///
-    /// On aarch64, this is used to configure the GIC topology with the
-    /// correct PMU interrupt ID before creating the partition.
-    fn platform_gsiv(&self) -> Option<u32> {
-        None
-    }
+    /// This is called before partition creation to query platform-specific
+    /// information needed for topology construction and firmware table
+    /// generation.
+    fn platform_info(&self) -> PlatformInfo;
 
     /// Returns a new prototype partition from the given configuration.
     fn new_partition<'a>(

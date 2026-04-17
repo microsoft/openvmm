@@ -19,10 +19,8 @@ use anyhow::Context as _;
 use guestmem::GuestMemory;
 use guestmem::ShareableRegion;
 use inspect::InspectMut;
-use pal_async::socket::PolledSocket;
 use std::os::fd::AsFd;
 use std::os::fd::OwnedFd;
-use unix_socket::UnixStream;
 use vhost_user_protocol::*;
 use virtio::DeviceTraits;
 use virtio::DeviceTraitsSharedMemory;
@@ -50,6 +48,31 @@ use zerocopy::IntoBytes;
 /// there is no possible collision with any valid GPA.
 const GPA_TO_VA_OFFSET: u64 = 1 << 52;
 
+/// Configuration for creating a `VhostUserFrontend`.
+///
+/// Each device-type resolver builds an appropriate `VhostUserConfig`:
+/// - FS: `use_backend_config: false`, full config as a patch at offset 0
+/// - BLK: `use_backend_config: true`, num_queues patched
+/// - Generic: `use_backend_config: true`, no patches
+pub struct VhostUserConfig {
+    /// Virtio device ID (e.g., BLK, FS).
+    pub device_id: VirtioDeviceType,
+    /// When true, negotiate `VHOST_USER_PROTOCOL_F_CONFIG` with the
+    /// backend and use GET_CONFIG/SET_CONFIG for config reads/writes.
+    /// When false, config reads start from zeros (patches still apply)
+    /// and writes are dropped.
+    pub use_backend_config: bool,
+    /// Per-queue sizes. Length determines the queue count; must be
+    /// non-empty.
+    pub queue_sizes: Vec<u16>,
+    /// Sparse patches applied to config reads before returning to the
+    /// guest. Each entry is `(byte_offset, replacement_bytes)`. The
+    /// base is either GET_CONFIG (when `use_backend_config` is true)
+    /// or zeros. Writes pass through to SET_CONFIG unchanged when
+    /// `use_backend_config` is true.
+    pub config_patches: Vec<(u16, Vec<u8>)>,
+}
+
 /// Per-queue tracking state.
 struct FrontendQueueState {
     active: bool,
@@ -67,12 +90,13 @@ pub struct VhostUserFrontend {
     device_traits: DeviceTraits,
     protocol_features: VhostUserProtocolFeatures,
     socket: VhostUserSocket,
-    /// Frontend-owned config space, if provided. When `Some`, config
-    /// reads are served locally and `VHOST_USER_PROTOCOL_F_CONFIG` is
-    /// not negotiated with the backend.
-    config_space: Option<Vec<u8>>,
-    /// Raw feature bits from GET_FEATURES (used to mask guest features).
-    device_features_raw: u64,
+    /// Per-queue sizes. `queue_size()` indexes into this.
+    queue_sizes: Vec<u16>,
+    /// Sparse patches applied to config reads. Each entry is
+    /// `(byte_offset, replacement_bytes)`.
+    config_patches: Vec<(u16, Vec<u8>)>,
+    /// Device feature bits from GET_FEATURES (used to mask guest features).
+    device_features_raw: VirtioDeviceFeatures,
     guest_features_sent: bool,
     /// Whether packed ring (VIRTIO_F_RING_PACKED) is active. Set when
     /// guest-negotiated features are sent to the backend.
@@ -94,53 +118,26 @@ impl VhostUserFrontend {
         self.protocol_features.reply_ack()
     }
 
-    /// Connect to a vhost-user backend, negotiate features, and send
-    /// the memory table.
-    ///
-    /// `device_id` is the virtio device ID (e.g., 2 for block) —
-    /// vhost-user has no GET_DEVICE_ID message so this must come from
-    /// the resource configuration.
-    pub async fn new(
-        driver: VmTaskDriver,
-        socket_path: &std::path::Path,
-        device_id: VirtioDeviceType,
-    ) -> anyhow::Result<Self> {
-        let stream = UnixStream::connect(socket_path)
-            .with_context(|| format!("failed to connect to {}", socket_path.display()))?;
-        let polled = PolledSocket::new(&driver, stream)?;
-        let socket = VhostUserSocket::new(polled);
-
-        Self::from_socket(driver, socket, device_id, None).await
-    }
-
-    /// Create from an already-connected socket (useful for testing with
-    /// socketpairs).
-    ///
-    /// When `config_space` is `Some`, the frontend owns the device config
-    /// space and serves all config reads locally; `VHOST_USER_PROTOCOL_F_CONFIG`
-    /// is not negotiated with the backend and writes are dropped.
-    ///
-    /// When `config_space` is `None`, config reads/writes are forwarded
-    /// to the backend via `GET_CONFIG`/`SET_CONFIG` (if the backend
-    /// supports it).
+    /// Create from an already-connected socket.
     pub async fn from_socket(
         driver: VmTaskDriver,
         socket: VhostUserSocket,
-        device_id: VirtioDeviceType,
-        config_space: Option<Vec<u8>>,
+        config: VhostUserConfig,
     ) -> anyhow::Result<Self> {
         // 1. GET_FEATURES
-        let device_features_raw = send_get_u64(&socket, VhostUserRequestCode::GET_FEATURES).await?;
-        tracing::trace!(features = %format!("0x{device_features_raw:x}"), "GET_FEATURES");
+        let device_features_raw = VirtioDeviceFeatures::from_bits(
+            send_get_u64(&socket, VhostUserRequestCode::GET_FEATURES).await?,
+        );
+        tracing::trace!(features = %format!("0x{:x}", device_features_raw.into_bits()), "GET_FEATURES");
 
         // 2. Negotiate protocol features (only if the backend advertises them).
-        let negotiated_proto = if device_features_raw & VHOST_USER_F_PROTOCOL_FEATURES != 0 {
+        let negotiated_proto = if device_features_raw.vhost_user_protocol_features() {
             let proto_features_raw =
                 send_get_u64(&socket, VhostUserRequestCode::GET_PROTOCOL_FEATURES).await?;
             let wanted = VhostUserProtocolFeatures::new()
                 .with_mq(true)
                 .with_reply_ack(true)
-                .with_config(config_space.is_none())
+                .with_config(config.use_backend_config)
                 .with_reset_device(true);
             let negotiated =
                 VhostUserProtocolFeatures::from_bits(proto_features_raw & wanted.into_bits());
@@ -160,35 +157,60 @@ impl VhostUserFrontend {
         send_simple(&socket, VhostUserRequestCode::SET_OWNER, false).await?;
 
         // 4. GET_QUEUE_NUM (requires MQ protocol feature)
-        let max_queues = if negotiated_proto.mq() {
-            send_get_u64(&socket, VhostUserRequestCode::GET_QUEUE_NUM)
-                .await
-                .unwrap_or(1) as u16
+        let backend_max_queues = if negotiated_proto.mq() {
+            Some(
+                send_get_u64(&socket, VhostUserRequestCode::GET_QUEUE_NUM)
+                    .await
+                    .context("GET_QUEUE_NUM failed despite MQ being negotiated")?
+                    as u16,
+            )
         } else {
-            1
+            None
         };
-        tracing::trace!(max_queues, "GET_QUEUE_NUM");
+        tracing::trace!(?backend_max_queues, "GET_QUEUE_NUM");
+
+        // Validate the requested queue count against the backend.
+        anyhow::ensure!(
+            !config.queue_sizes.is_empty(),
+            "queue_sizes must be non-empty"
+        );
+        let max_queues = u16::try_from(config.queue_sizes.len()).map_err(|_| {
+            anyhow::anyhow!(
+                "queue_sizes has {} entries, exceeding maximum supported queue count {}",
+                config.queue_sizes.len(),
+                u16::MAX
+            )
+        })?;
+        if let Some(backend_max) = backend_max_queues {
+            anyhow::ensure!(
+                max_queues <= backend_max,
+                "requested {max_queues} queues but backend supports at most {backend_max}"
+            );
+        }
+        let queue_sizes = config.queue_sizes;
 
         // Build DeviceTraits from the wire features.
-        let device_features =
-            features_from_u64(device_features_raw & !(VHOST_USER_F_PROTOCOL_FEATURES));
+        let device_features = device_features_raw.with_vhost_user_protocol_features(false);
 
         // Determine the config register length.
         //
-        // When the frontend owns config, use the provided length.
-        // Otherwise, if the backend supports GET_CONFIG/SET_CONFIG, use
-        // the vhost-user max config size (256); reads beyond the
-        // backend's actual config space will return zeros.
-        let device_register_length = if let Some(ref cs) = config_space {
-            cs.len() as u32
-        } else if negotiated_proto.config() {
+        // When the backend supports GET_CONFIG, use the vhost-user max
+        // config size (256); reads beyond the backend's actual config
+        // space will return zeros. Otherwise, derive the length from
+        // the patches (the guest only sees patched fields).
+        let device_register_length = if negotiated_proto.config() {
             256
         } else {
-            0
+            config
+                .config_patches
+                .iter()
+                .map(|(off, data)| *off as u32 + data.len() as u32)
+                .max()
+                .unwrap_or(0)
         };
 
         let device_traits = DeviceTraits {
-            device_id,
+            device_id: config.device_id,
             device_features,
             max_queues,
             device_register_length,
@@ -208,7 +230,8 @@ impl VhostUserFrontend {
             device_traits,
             protocol_features: negotiated_proto,
             socket,
-            config_space,
+            queue_sizes,
+            config_patches: config.config_patches,
             device_features_raw,
             guest_features_sent: false,
             mem_table_sent: false,
@@ -224,33 +247,54 @@ impl VirtioDevice for VhostUserFrontend {
         self.device_traits.clone()
     }
 
-    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
-        if let Some(ref config) = self.config_space {
-            return read_config_u32(config, offset as usize);
-        }
+    fn queue_size(&self, queue_index: u16) -> u16 {
+        self.queue_sizes[queue_index as usize]
+    }
 
-        if !self.protocol_features.config() {
-            return 0;
-        }
-        match send_get_config(&self.socket, offset as u32, 4).await {
-            Ok(data) if data.len() >= 4 => u32::from_le_bytes(data[..4].try_into().unwrap()),
-            Ok(_) => 0,
-            Err(e) => {
-                tracelimit::warn_ratelimited!(
-                    error = &*e as &dyn std::error::Error,
-                    offset,
-                    "GET_CONFIG failed"
-                );
-                0
+    async fn read_registers_u32(&mut self, offset: u16) -> u32 {
+        let mut buf = if self.protocol_features.config() {
+            match send_get_config(&self.socket, offset as u32, 4).await {
+                Ok(data) if data.len() >= 4 => {
+                    let mut b = [0u8; 4];
+                    b.copy_from_slice(&data[..4]);
+                    b
+                }
+                Ok(_) => [0u8; 4],
+                Err(e) => {
+                    tracelimit::warn_ratelimited!(
+                        error = &*e as &dyn std::error::Error,
+                        offset,
+                        "GET_CONFIG failed"
+                    );
+                    [0u8; 4]
+                }
+            }
+        } else {
+            [0u8; 4]
+        };
+
+        // Apply config patches to the read buffer.
+        for (patch_offset, patch_data) in &self.config_patches {
+            let p_start = *patch_offset as usize;
+            let p_end = p_start + patch_data.len();
+            let r_start = offset as usize;
+            let r_end = r_start + 4;
+            // Check for overlap.
+            if p_start < r_end && p_end > r_start {
+                let overlap_start = p_start.max(r_start);
+                let overlap_end = p_end.min(r_end);
+                let buf_offset = overlap_start - r_start;
+                let patch_src_offset = overlap_start - p_start;
+                let len = overlap_end - overlap_start;
+                buf[buf_offset..buf_offset + len]
+                    .copy_from_slice(&patch_data[patch_src_offset..patch_src_offset + len]);
             }
         }
+
+        u32::from_le_bytes(buf)
     }
 
     async fn write_registers_u32(&mut self, offset: u16, val: u32) {
-        if self.config_space.is_some() {
-            return;
-        }
-
         if !self.protocol_features.config() {
             return;
         }
@@ -300,31 +344,29 @@ impl VirtioDevice for VhostUserFrontend {
         // first queue is started.  The backend needs this to know which
         // features are active.
         if !self.guest_features_sent {
-            let guest_bits = features.bank(0) as u64 | ((features.bank(1) as u64) << 32);
             // Mask to only include features the backend actually advertised.
             // The VMM transport may add features (e.g., RING_PACKED) that
             // the backend doesn't support. Always include PROTOCOL_FEATURES
             // if it was negotiated — backends (e.g., virtiofsd) treat its
             // absence in SET_FEATURES as de-negotiation.
-            let masked_bits =
-                (guest_bits & self.device_features_raw) | VHOST_USER_F_PROTOCOL_FEATURES;
+            let negotiated = VirtioDeviceFeatures::from_bits(
+                features.into_bits() & self.device_features_raw.into_bits(),
+            );
+            let on_wire = negotiated.with_vhost_user_protocol_features(true);
             tracing::trace!(
                 idx,
-                features = %format!("0x{masked_bits:x}"),
+                features = %format!("0x{:x}", on_wire.into_bits()),
                 "SET_FEATURES (guest-negotiated)",
             );
             send_set_u64(
                 &self.socket,
                 VhostUserRequestCode::SET_FEATURES,
-                masked_bits,
+                on_wire.into_bits(),
                 self.reply_ack(),
             )
             .await?;
             self.guest_features_sent = true;
-            // Determine the effective ring format from the actually-
-            // negotiated features (intersection of guest and backend).
-            let negotiated = features_from_u64(masked_bits);
-            self.packed_ring = negotiated.bank1().ring_packed();
+            self.packed_ring = negotiated.ring_packed();
         }
 
         let packed_ring = self.packed_ring;
@@ -933,28 +975,6 @@ async fn send_set_config(
     Ok(())
 }
 
-/// Convert a u64 to VirtioDeviceFeatures.
-// TODO: VirtioDeviceFeatures should just be a u64-based enum/bitfield instead
-// of a Vec<u32> bank model. The spec's bank-indexed transport registers don't
-// require the in-memory representation to match, and every VMM (QEMU, CH,
-// Linux) uses a flat u64. That would eliminate these helpers entirely.
-fn features_from_u64(value: u64) -> VirtioDeviceFeatures {
-    VirtioDeviceFeatures::new()
-        .with_bank(0, value as u32)
-        .with_bank(1, (value >> 32) as u32)
-}
-
-/// Read a little-endian `u32` from config bytes, zero-padding any trailing
-/// bytes when the read overlaps the end of the slice.
-fn read_config_u32(config: &[u8], offset: usize) -> u32 {
-    let mut buf = [0u8; 4];
-    if offset < config.len() {
-        let end = std::cmp::min(offset + buf.len(), config.len());
-        buf[..end - offset].copy_from_slice(&config[offset..end]);
-    }
-    u32::from_le_bytes(buf)
-}
-
 /// Read the used_index from the used ring in guest memory.
 ///
 /// The used ring starts at `params.used_addr`. The `idx` field is at
@@ -987,7 +1007,9 @@ mod tests {
     use std::sync::atomic::AtomicU32;
     use std::sync::atomic::Ordering;
     use test_with_tracing::test;
+    use unix_socket::UnixStream;
     use vhost_user_backend::VhostUserDeviceServer;
+    use virtio::DEFAULT_QUEUE_SIZE;
     use virtio::DeviceTraits;
     use virtio::DeviceTraitsSharedMemory;
     use virtio::QueueResources;
@@ -1153,10 +1175,18 @@ mod tests {
         let guest_memory = ShareableGuestMemory::new(65536).into_guest_memory();
 
         let vm_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
-        let frontend =
-            VhostUserFrontend::from_socket(vm_driver, frontend_socket, VirtioDeviceType::BLK, None)
-                .await
-                .expect("frontend handshake failed");
+        let frontend = VhostUserFrontend::from_socket(
+            vm_driver,
+            frontend_socket,
+            VhostUserConfig {
+                device_id: VirtioDeviceType::BLK,
+                use_backend_config: true,
+                queue_sizes: vec![DEFAULT_QUEUE_SIZE; 2],
+                config_patches: vec![],
+            },
+        )
+        .await
+        .expect("frontend handshake failed");
 
         (frontend, guest_memory, backend_task)
     }
@@ -1341,7 +1371,25 @@ mod tests {
         driver: &DefaultDriver,
         device: impl VirtioDevice + 'static,
     ) -> (VhostUserFrontend, GuestMemory, pal_async::task::Task<()>) {
-        let device_id = device.traits().device_id;
+        setup_frontend_backend_with_config(
+            driver,
+            device,
+            VhostUserConfig {
+                device_id: VirtioDeviceType::BLK,
+                use_backend_config: true,
+                queue_sizes: vec![DEFAULT_QUEUE_SIZE; 2],
+                config_patches: vec![],
+            },
+        )
+        .await
+    }
+
+    /// Create a frontend+backend pair with a custom device and config.
+    async fn setup_frontend_backend_with_config(
+        driver: &DefaultDriver,
+        device: impl VirtioDevice + 'static,
+        config: VhostUserConfig,
+    ) -> (VhostUserFrontend, GuestMemory, pal_async::task::Task<()>) {
         let (frontend_stream, backend_stream) = socket_pair();
 
         let backend_polled = PolledSocket::new(driver, backend_stream).unwrap();
@@ -1359,7 +1407,7 @@ mod tests {
         let guest_memory = ShareableGuestMemory::new(65536).into_guest_memory();
 
         let vm_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
-        let frontend = VhostUserFrontend::from_socket(vm_driver, frontend_socket, device_id, None)
+        let frontend = VhostUserFrontend::from_socket(vm_driver, frontend_socket, config)
             .await
             .expect("frontend handshake failed");
 
@@ -1377,9 +1425,7 @@ mod tests {
 
     impl SaveRestoreMockDevice {
         fn new(packed_ring: bool, stop_avail: u16, stop_used: u16) -> Self {
-            use virtio::spec::VirtioDeviceFeaturesBank1;
-            let features = VirtioDeviceFeatures::new()
-                .with_bank1(VirtioDeviceFeaturesBank1::new().with_ring_packed(packed_ring));
+            let features = VirtioDeviceFeatures::new().with_ring_packed(packed_ring);
             Self {
                 traits: DeviceTraits {
                     device_id: VirtioDeviceType::BLK,
@@ -1492,9 +1538,7 @@ mod tests {
             setup_frontend_backend_with_device(&driver, device).await;
 
         // Features must include packed ring so the frontend knows.
-        use virtio::spec::VirtioDeviceFeaturesBank1;
-        let features = VirtioDeviceFeatures::new()
-            .with_bank1(VirtioDeviceFeaturesBank1::new().with_ring_packed(true));
+        let features = VirtioDeviceFeatures::new().with_ring_packed(true);
         let resources =
             dummy_queue_resources(Interrupt::from_event(Event::new()), guest_memory.clone());
         frontend
@@ -1516,8 +1560,9 @@ mod tests {
         backend_task.await;
     }
 
-    /// When `config_space` is provided, the frontend owns config reads
-    /// locally and does not negotiate VHOST_USER_PROTOCOL_F_CONFIG.
+    /// When `use_backend_config` is false with a full config patch, the
+    /// frontend serves config reads from the patch and does not negotiate
+    /// VHOST_USER_PROTOCOL_F_CONFIG.
     #[async_test]
     async fn frontend_owned_config_space(driver: DefaultDriver) {
         use virtio::spec::fs as virtio_fs;
@@ -1549,8 +1594,12 @@ mod tests {
         let mut frontend = VhostUserFrontend::from_socket(
             vm_driver,
             frontend_socket,
-            VirtioDeviceType::FS,
-            Some(config_bytes.clone()),
+            VhostUserConfig {
+                device_id: VirtioDeviceType::FS,
+                use_backend_config: false,
+                queue_sizes: vec![1024; 2], // hiprio + 1 request queue
+                config_patches: vec![(0, config_bytes.clone())],
+            },
         )
         .await
         .expect("frontend handshake failed");
@@ -1580,6 +1629,163 @@ mod tests {
         frontend.write_registers_u32(0, 0xdeadbeef).await;
 
         drop(frontend);
+        backend_task.await;
+    }
+
+    /// FS with num_request_queues=2: 3 total queues (1 hiprio + 2 request),
+    /// queue_size returns 1024 for all, config reads back num_request_queues=2.
+    #[async_test]
+    async fn fs_multi_queue_config(driver: DefaultDriver) {
+        use virtio::spec::fs as virtio_fs;
+        use zerocopy::IntoBytes;
+
+        let num_request_queues: u16 = 2;
+        let queue_size: u16 = 1024;
+        let total_queues = 1 + num_request_queues as usize; // hiprio + request
+
+        let mut fs_config = virtio_fs::Config {
+            tag: [0; virtio_fs::TAG_LEN],
+            num_request_queues: (num_request_queues as u32).into(),
+        };
+        let tag = b"testfs";
+        fs_config.tag[..tag.len()].copy_from_slice(tag);
+
+        let config = VhostUserConfig {
+            device_id: VirtioDeviceType::FS,
+            use_backend_config: false,
+            queue_sizes: vec![queue_size; total_queues],
+            config_patches: vec![(0, fs_config.as_bytes().to_vec())],
+        };
+
+        // Need a mock device with enough queues (3).
+        let mut mock = MockBackendDevice::new();
+        mock.traits.max_queues = 4;
+
+        let (mut frontend, _guest_memory, backend_task) =
+            setup_frontend_backend_with_config(&driver, mock, config).await;
+
+        // Verify total queue count.
+        assert_eq!(frontend.traits().max_queues, total_queues as u16);
+
+        // Verify queue_size returns 1024 for all queues.
+        for i in 0..total_queues {
+            assert_eq!(frontend.queue_size(i as u16), queue_size);
+        }
+
+        // Verify config space reads back num_request_queues=2.
+        let val = frontend.read_registers_u32(virtio_fs::TAG_LEN as u16).await;
+        assert_eq!(val, num_request_queues as u32);
+
+        drop(frontend);
+        backend_task.await;
+    }
+
+    /// BLK with num_queues=2, queue_size=512: 2 queues, queue_size returns
+    /// 512 for all, config patch overrides num_queues.
+    #[async_test]
+    async fn blk_multi_queue_config(driver: DefaultDriver) {
+        use virtio::spec::blk;
+
+        let num_queues: u16 = 2; // MockBackendDevice supports max 2
+        let queue_size: u16 = 512;
+        let num_queues_offset = core::mem::offset_of!(blk::VirtioBlkConfig, num_queues) as u16;
+
+        let config = VhostUserConfig {
+            device_id: VirtioDeviceType::BLK,
+            use_backend_config: true,
+            queue_sizes: vec![queue_size; num_queues as usize],
+            config_patches: vec![(num_queues_offset, num_queues.to_le_bytes().to_vec())],
+        };
+
+        // Backend needs config space so CONFIG protocol feature is
+        // negotiated and GET_CONFIG works.
+        let mut mock = MockBackendDevice::new();
+        mock.traits.device_register_length = 64;
+
+        let (mut frontend, _guest_memory, backend_task) =
+            setup_frontend_backend_with_config(&driver, mock, config).await;
+
+        // Verify queue count.
+        assert_eq!(frontend.traits().max_queues, num_queues);
+
+        // Verify queue_size returns 512 for all queues.
+        for i in 0..num_queues {
+            assert_eq!(frontend.queue_size(i), queue_size);
+        }
+
+        // Verify the config patch is applied: reading num_queues from
+        // config space should return the patched value.
+        let val = frontend.read_registers_u32(num_queues_offset).await;
+        assert_eq!(val, num_queues as u32);
+
+        drop(frontend);
+        backend_task.await;
+    }
+
+    /// Generic with queue_sizes=[256, 512]: 2 queues with per-queue sizes.
+    #[async_test]
+    async fn generic_per_queue_sizes(driver: DefaultDriver) {
+        let queue_sizes = vec![256u16, 512u16];
+
+        let config = VhostUserConfig {
+            device_id: VirtioDeviceType::BLK, // device type doesn't matter for this test
+            use_backend_config: true,
+            queue_sizes: queue_sizes.clone(),
+            config_patches: vec![],
+        };
+
+        let (frontend, _guest_memory, backend_task) =
+            setup_frontend_backend_with_config(&driver, MockBackendDevice::new(), config).await;
+
+        // Verify queue count.
+        assert_eq!(frontend.traits().max_queues, 2);
+
+        // Verify per-queue sizes.
+        assert_eq!(frontend.queue_size(0), 256);
+        assert_eq!(frontend.queue_size(1), 512);
+
+        drop(frontend);
+        backend_task.await;
+    }
+
+    /// Requesting more queues than the backend supports should fail.
+    #[async_test]
+    async fn queue_count_exceeds_backend(driver: DefaultDriver) {
+        // MockBackendDevice supports max_queues=2.
+        let config = VhostUserConfig {
+            device_id: VirtioDeviceType::BLK,
+            use_backend_config: true,
+            queue_sizes: vec![256; 4], // 4 > 2
+            config_patches: vec![],
+        };
+
+        let (frontend_stream, backend_stream) = socket_pair();
+
+        let backend_polled = PolledSocket::new(&driver, backend_stream).unwrap();
+        let backend_socket = VhostUserSocket::new(backend_polled);
+
+        let server = VhostUserDeviceServer::new(Box::new(MockBackendDevice::new()));
+        let backend_task = driver.spawn("backend", async move {
+            // The backend will see the connection drop when the frontend
+            // rejects the queue count. Ignore the serve error.
+            let _ = server.serve_connection(backend_socket).await;
+        });
+
+        let frontend_polled = PolledSocket::new(&driver, frontend_stream).unwrap();
+        let frontend_socket = VhostUserSocket::new(frontend_polled);
+
+        let vm_driver = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())).simple();
+        let result = VhostUserFrontend::from_socket(vm_driver, frontend_socket, config).await;
+
+        let err = result
+            .err()
+            .expect("should fail when queue count exceeds backend");
+        let err_msg = format!("{err}");
+        assert!(
+            err_msg.contains("4 queues"),
+            "error should mention requested count: {err_msg}"
+        );
+
         backend_task.await;
     }
 }

@@ -109,6 +109,8 @@ cat > user-data <<'USERDATA'
 #cloud-config
 runcmd:
   - echo 'root:alpine' | chpasswd
+  - grep -q hvc0 /etc/inittab || echo 'hvc0::respawn:/sbin/getty 115200 hvc0' >> /etc/inittab
+  - kill -HUP 1
 USERDATA
 
 cat > meta-data <<'METADATA'
@@ -141,12 +143,15 @@ To boot with OpenVMM (from the openvmm repo root):
     -k ${ABSDIR}/vmlinux-virt \\
     -r ${ABSDIR}/initramfs-virt \\
     --pcie-root-complex rc0,segment=0,start_bus=0,end_bus=255,low_mmio=4M,high_mmio=1G \\
-    --pcie-root-port rc0:rp0 \\
-    --pcie-root-port rc0:rp1 \\
-    --pcie-root-port rc0:rp2 \\
-    --virtio-blk file:${ABSDIR}/disk.raw,pcie_port=rp0 \\
-    --virtio-blk file:${ABSDIR}/cidata.img,ro,pcie_port=rp1 \\
-    --virtio-net pcie_port=rp2:consomme \\
+    --pcie-root-port rc0:disk \\
+    --pcie-root-port rc0:cidata \\
+    --pcie-root-port rc0:net \\
+    --pcie-root-port rc0:console \\
+    --virtio-blk file:${ABSDIR}/disk.raw,pcie_port=disk \\
+    --virtio-blk file:${ABSDIR}/cidata.img,ro,pcie_port=cidata \\
+    --virtio-net pcie_port=net:consomme \\
+    --com1 none \\
+    --virtio-console console --virtio-console-pcie-port console \\
     -c "root=/dev/vda2 rootfstype=ext4 modules=virtio_pci,virtio_blk,ext4" \\
     -m 512M \\
     -p 2 \\

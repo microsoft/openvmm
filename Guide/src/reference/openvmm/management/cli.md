@@ -13,10 +13,15 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS
-* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also pass `--hv`. The `DISK` argument can be:
+* `--disk file:<DISK>`: Exposes a single disk over VMBus. You must also
+  pass `--hv`. The `DISK` argument can be:
   * A flat binary disk image
   * A VHD file with an extension of .vhd (Windows host only)
   * A VHDX file with an extension of .vhdx (Windows host only)
+
+  On Linux, raw files and block devices use the `disk_blockdevice` backend
+  (io_uring-based async I/O) by default. Append `;direct` to the path to
+  bypass the OS page cache, e.g. `--disk file:/dev/sdb;direct`.
 * `--private-memory`: Use private anonymous memory for guest RAM
   instead of shared file-backed sections.
 * `--thp`: Enable Transparent Huge Pages for guest RAM (Linux only).
@@ -39,18 +44,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
   The guest kernel must have `CONFIG_HW_RANDOM_VIRTIO` enabled.
 * `--virtio-rng-bus <BUS>`: Select the bus for the virtio-rng device (`auto`, `mmio`, `pci`, `vpci`).
   Defaults to `auto`.
-* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,pcie_port=<PORT>]`: Attach a
+* `--vhost-user <SOCKET_PATH>,type=<TYPE>[,tag=<NAME>][,num_queues=<N>][,queue_size=<N>][,pcie_port=<PORT>]`: Attach a
   vhost-user device backed by an external process over a Unix socket (Linux
   only). The backend process must already be listening on `SOCKET_PATH`.
   Supported `type` values: `blk`, `fs`. For `type=fs`, `tag=<NAME>` is required
   and specifies the mount tag exposed to the guest (max 36 bytes).
+  `num_queues` and `queue_size` control the queue layout (defaults: blk
+  num_queues=1/queue_size=128, fs num_queues=1/queue_size=1024).
   Alternatively, use `device_id=<N>` instead of `type=` to specify the numeric
-  virtio device ID directly. Examples:
+  virtio device ID directly, with `queue_sizes=[N,N,N]` for per-queue sizes.
+  Examples:
   ```sh
   --vhost-user /tmp/vhost-blk.sock,type=blk
+  --vhost-user /tmp/vhost-blk.sock,type=blk,num_queues=4,queue_size=512
   --vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
   --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs
-  --vhost-user /tmp/vhost.sock,device_id=26
+  --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,num_queues=2,queue_size=1024
+  --vhost-user /tmp/vhost.sock,device_id=26,queue_sizes=[256,256]
   ```
 
 Serial devices can be configured to appear as different devices inside the guest:
@@ -127,4 +137,10 @@ For `--virtio-rng` and `--virtio-console`, use their separate PCIe port flags:
 ```sh
 --vhost-user /tmp/vhost-blk.sock,type=blk,pcie_port=rp0
 --vhost-user /tmp/virtiofsd.sock,type=fs,tag=myfs,pcie_port=rp0
+```
+
+**VFIO device assignment** (Linux only): `--vfio`
+
+```sh
+--vfio rp0:0000:01:00.0
 ```

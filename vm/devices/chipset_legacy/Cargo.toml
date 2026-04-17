@@ -9,6 +9,8 @@ rust-version.workspace = true
 [dependencies]
 chipset_device.workspace = true
 chipset.workspace = true
+chipset_device_resources.workspace = true
+chipset_resources.workspace = true
 floppy_pcat_stub.workspace = true
 floppy.workspace = true
 guestmem.workspace = true
@@ -21,6 +23,7 @@ vmcore.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
+vm_resource.workspace = true
 
 thiserror.workspace = true
 tracelimit.workspace = true

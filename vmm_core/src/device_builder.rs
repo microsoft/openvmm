@@ -16,6 +16,7 @@ use vm_resource::ResourceResolver;
 use vm_resource::kind::PciDeviceHandleKind;
 use vmbus_server::Guid;
 use vmbus_server::VmbusServerControl;
+use vmcore::irqfd::IrqFd;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmotherboard::ArcMutexChipsetDeviceBuilder;
@@ -50,6 +51,7 @@ pub async fn build_vpci_device(
         resource,
         doorbell_registration,
         mapper,
+        None,
     )
     .await?;
 
@@ -99,6 +101,7 @@ pub async fn build_pcie_device(
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
     interrupt_target: Option<Arc<dyn SignalMsi>>,
+    irqfd: Option<Arc<dyn IrqFd>>,
 ) -> anyhow::Result<()> {
     let dev_name = format!("pcie:{}-{}", port_name, resource.id());
     let device_builder = chipset_builder
@@ -113,6 +116,7 @@ pub async fn build_pcie_device(
         resource,
         doorbell_registration,
         mapper,
+        irqfd,
     )
     .await?;
 
@@ -132,6 +136,7 @@ pub async fn resolve_and_add_pci_device(
     resource: Resource<PciDeviceHandleKind>,
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
+    irqfd: Option<Arc<dyn IrqFd>>,
 ) -> anyhow::Result<(Arc<CloseableMutex<ErasedChipsetDevice>>, MsiConnection)> {
     let msi_conn = MsiConnection::new();
 
@@ -148,6 +153,7 @@ pub async fn resolve_and_add_pci_device(
                             guest_memory,
                             doorbell_registration,
                             shared_mem_mapper: mapper,
+                            irqfd,
                         },
                     )
                     .await

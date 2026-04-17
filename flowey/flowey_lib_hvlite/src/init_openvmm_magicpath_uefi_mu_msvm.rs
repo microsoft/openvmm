@@ -11,13 +11,13 @@
 //! various other bits of repo tooling (notably: petri's `known_paths`
 //! resolver).
 
-use crate::download_uefi_mu_msvm::MuMsvmArch;
+use crate::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 flowey_request! {
     pub struct Request {
-        pub arch: MuMsvmArch,
+        pub arch: CommonArch,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -33,7 +33,7 @@ impl FlowNode for Node {
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
-        let mut reqs: BTreeMap<MuMsvmArch, Vec<WriteVar<SideEffect>>> = BTreeMap::new();
+        let mut reqs: BTreeMap<CommonArch, Vec<WriteVar<SideEffect>>> = BTreeMap::new();
         for Request { arch, done } in requests {
             reqs.entry(arch).or_default().push(done);
         }
@@ -69,15 +69,15 @@ impl FlowNode for Node {
                         .join(format!(
                             "hyperv.uefi.mscoreuefi.{}.RELEASE",
                             match arch {
-                                MuMsvmArch::Aarch64 => "AARCH64",
-                                MuMsvmArch::X86_64 => "x64",
+                                CommonArch::Aarch64 => "AARCH64",
+                                CommonArch::X86_64 => "x64",
                             }
                         ))
                         .join(format!(
                             "Msvm{}",
                             match arch {
-                                MuMsvmArch::Aarch64 => "AARCH64",
-                                MuMsvmArch::X86_64 => "X64",
+                                CommonArch::Aarch64 => "AARCH64",
+                                CommonArch::X86_64 => "X64",
                             }
                         ))
                         .join("RELEASE_VS2022/FV");

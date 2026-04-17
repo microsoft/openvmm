@@ -9,7 +9,7 @@ use flowey::node::prelude::GhPermissionValue;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
 use flowey_lib_common::git_checkout::RepoSource;
-use flowey_lib_hvlite::run_cargo_build::common::CommonTriple;
+use flowey_lib_hvlite::common::CommonTriple;
 
 #[derive(Copy, Clone, clap::ValueEnum)]
 enum PipelineConfig {
@@ -44,18 +44,11 @@ impl IntoPipeline for BuildDocsCli {
         // the Guide directory or the docs workflow/pipeline definitions are modified.
         {
             let branches = vec!["main".into()];
-            let paths = vec![
-                "Guide/**".into(),
-                "petri/logview/**".into(),
-                ".github/workflows/openvmm-docs-*.yaml".into(),
-                "flowey/**".into(),
-            ];
             match config {
                 PipelineConfig::Ci => {
                     pipeline
                         .gh_set_ci_triggers(GhCiTriggers {
                             branches,
-                            paths,
                             ..Default::default()
                         })
                         .gh_set_name("OpenVMM Docs CI");
@@ -64,7 +57,6 @@ impl IntoPipeline for BuildDocsCli {
                     pipeline
                         .gh_set_pr_triggers(GhPrTriggers {
                             branches,
-                            paths,
                             ..GhPrTriggers::new_draftable()
                         })
                         .gh_set_name("OpenVMM Docs PR");

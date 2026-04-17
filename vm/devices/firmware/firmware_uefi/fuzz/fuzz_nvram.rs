@@ -6,23 +6,14 @@
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
 use arbitrary::Arbitrary;
+use crypto::pkcs7::Pkcs7SignedData;
+use crypto::rsa::RsaKeyPair;
+use crypto::x509::X509Builder;
+use crypto::x509::X509Certificate;
 use firmware_uefi::platform::nvram::EFI_TIME;
 use firmware_uefi::service::nvram::spec_services::ParsedAuthVar;
 use firmware_uefi::service::nvram::spec_services::auth_var_crypto;
 use guid::Guid;
-use openssl::asn1::Asn1Time;
-use openssl::hash::MessageDigest;
-use openssl::pkcs7::Pkcs7;
-use openssl::pkcs7::Pkcs7Flags;
-use openssl::pkey::PKey;
-use openssl::pkey::PKeyRef;
-use openssl::pkey::Private;
-use openssl::rsa::Rsa;
-use openssl::stack::Stack;
-use openssl::x509::X509;
-use openssl::x509::X509Builder;
-use openssl::x509::X509NameBuilder;
-use openssl::x509::X509Ref;
 use std::borrow::Cow;
 use ucs2::Ucs2LeVec;
 use uefi_nvram_specvars::signature_list::SignatureData;
@@ -85,8 +76,8 @@ fn do_fuzz(input: FuzzInput) {
         }
         FuzzInput::MatchingPkcs7AndSignatureLists { var, input } => {
             let pkey = test_pkey();
-            let signcert = test_x509(pkey.as_ref());
-            let pkcs7 = test_pkcs7_data_inner(&signcert, &pkey, &input);
+            let signcert = test_x509(&pkey);
+            let pkcs7 = Pkcs7SignedData::sign(&signcert, &pkey, &input).unwrap();
             let signature_lists = test_signature_list_from_x509(&signcert);
             (var, signature_lists, pkcs7.to_der().unwrap())
         }
@@ -178,7 +169,7 @@ fn test_valid_signature_lists() -> Vec<u8> {
     buf
 }
 
-fn test_signature_list_from_x509(signcert: &X509Ref) -> Vec<u8> {
+fn test_signature_list_from_x509(signcert: &X509Certificate) -> Vec<u8> {
     let list = SignatureList::X509(SignatureData::new_x509(
         OWNER_1,
         Cow::Owned(signcert.to_der().unwrap()),
@@ -188,52 +179,31 @@ fn test_signature_list_from_x509(signcert: &X509Ref) -> Vec<u8> {
     buf
 }
 
-fn test_pkey() -> PKey<Private> {
-    let rsa = Rsa::generate(1024).unwrap();
-    PKey::from_rsa(rsa).unwrap()
+fn test_pkey() -> RsaKeyPair {
+    RsaKeyPair::generate(1024).unwrap()
 }
 
-fn test_x509(pkey: &PKeyRef<Private>) -> X509 {
-    // Build the X.509 name
-    let mut name_builder = X509NameBuilder::new().unwrap();
-    name_builder.append_entry_by_text("C", "US").unwrap();
-    name_builder
-        .append_entry_by_text("ST", "Washington")
-        .unwrap();
-    name_builder.append_entry_by_text("L", "Redmond").unwrap();
-    name_builder
-        .append_entry_by_text("O", "Example Organization")
-        .unwrap();
-    name_builder
-        .append_entry_by_text("CN", "example.com")
-        .unwrap();
-    let name = name_builder.build();
-
-    // Build the X.509 certificate
+fn test_x509(pkey: &RsaKeyPair) -> X509Certificate {
     let mut builder = X509Builder::new().unwrap();
-    builder.set_subject_name(&name).unwrap();
-    builder.set_issuer_name(&name).unwrap();
-    builder.set_pubkey(pkey).unwrap();
     builder
-        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .set_subject_and_issuer_name(
+            "US",
+            "Washington",
+            "Redmond",
+            "Example Organization",
+            "example.com",
+        )
         .unwrap();
-    builder
-        .set_not_after(&Asn1Time::days_from_now(365).unwrap())
-        .unwrap();
-    builder.sign(pkey, MessageDigest::sha256()).unwrap();
-    builder.build()
+    builder.set_pubkey_from_rsa_key_pair(pkey).unwrap();
+    builder.set_validity_days(365).unwrap();
+    builder.sign_and_build(pkey).unwrap()
 }
 
 fn test_pkcs7_data(input: &[u8]) -> Vec<u8> {
     let pkey = test_pkey();
-    let signcert = test_x509(pkey.as_ref());
-    test_pkcs7_data_inner(&signcert, &pkey, input)
+    let signcert = test_x509(&pkey);
+    Pkcs7SignedData::sign(&signcert, &pkey, input)
+        .unwrap()
         .to_der()
         .unwrap()
-}
-
-fn test_pkcs7_data_inner(signcert: &X509Ref, pkey: &PKeyRef<Private>, input: &[u8]) -> Pkcs7 {
-    let certs = Stack::new().unwrap();
-    let flags = Pkcs7Flags::empty();
-    Pkcs7::sign(signcert, pkey, &certs, input, flags).unwrap()
 }

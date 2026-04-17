@@ -1,0 +1,29 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "vfio_assigned_device"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+chipset_device.workspace = true
+inspect.workspace = true
+pci_core.workspace = true
+pci_resources.workspace = true
+vfio_assigned_device_resources.workspace = true
+virt.workspace = true
+vm_resource.workspace = true
+vmcore.workspace = true
+
+anyhow.workspace = true
+async-trait.workspace = true
+tracelimit.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vfio_sys.workspace = true
+vfio-bindings.workspace = true
+
+[lints]
+workspace = true

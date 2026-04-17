@@ -10,6 +10,7 @@ mod package_info;
 mod repr_packed;
 mod trailing_newline;
 mod unsafe_code_comment;
+mod unused_deps;
 mod workspaced;
 
 use crate::fs_helpers::git_diffed;
@@ -24,7 +25,6 @@ use toml_edit::DocumentMut;
 
 /// Context passed to each lint, containing configuration options.
 pub struct LintCtx {
-    #[expect(dead_code)] // Will be used in the near future
     /// When true we are linting a subset of repo files, so some lints may want
     /// to skip checks that require whole-repo analysis.
     only_diffed: bool,
@@ -281,6 +281,7 @@ fn lint_workspace(
         Box::new(repr_packed::ReprPacked::new(&lint_ctx)),
         Box::new(trailing_newline::TrailingNewline::new(&lint_ctx)),
         Box::new(unsafe_code_comment::UnsafeCodeComment::new(&lint_ctx)),
+        Box::new(unused_deps::UnusedDeps::new(&lint_ctx)),
         Box::new(workspaced::WorkspacedManifest::new(&lint_ctx)),
     ];
 

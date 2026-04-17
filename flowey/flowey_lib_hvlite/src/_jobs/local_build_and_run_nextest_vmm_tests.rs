@@ -9,11 +9,11 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::build_tpm_guest_tests::TpmGuestTestsOutput;
+use crate::common::CommonArch;
+use crate::common::CommonPlatform;
+use crate::common::CommonProfile;
+use crate::common::CommonTriple;
 use crate::install_vmm_tests_deps::VmmTestsDepSelections;
-use crate::run_cargo_build::common::CommonArch;
-use crate::run_cargo_build::common::CommonPlatform;
-use crate::run_cargo_build::common::CommonProfile;
-use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
 use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
@@ -725,6 +725,7 @@ impl SimpleFlowNode for Node {
             get_env: v,
             release_igvm_files,
             use_relative_paths: build_only,
+            disable_remote_artifacts: false,
         });
 
         let mut side_effects = Vec::new();
@@ -768,11 +769,11 @@ impl SimpleFlowNode for Node {
             move |rt| {
                 let dep_install_cmds = rt.read(dep_install_cmds);
 
-                for cmd in &dep_install_cmds {
-                    log::info!("{cmd}");
-                }
-
                 if !dep_install_cmds.is_empty() {
+                    log::info!("Dependency install commands (written to install_deps.ps1):");
+                    for cmd in &dep_install_cmds {
+                        log::info!("  {cmd}");
+                    }
                     let script_contents = dep_install_cmds.join("\n");
                     fs_err::write(test_content_dir.join("install_deps.ps1"), script_contents)?;
                 }

@@ -91,6 +91,7 @@ use openvmm_defs::config::Vtl2Config;
 use openvmm_defs::rpc::VmRpc;
 use openvmm_defs::worker::VM_WORKER;
 use openvmm_defs::worker::VmWorkerParameters;
+use openvmm_helpers::disk::OpenDiskOptions;
 use openvmm_helpers::disk::create_disk_type;
 use openvmm_helpers::disk::open_disk_type;
 use pal_async::DefaultDriver;
@@ -768,6 +769,22 @@ async fn vm_config_from_command_line(
 
     let pcie_switches = build_switch_list(&opt.pcie_switch);
 
+    #[cfg(target_os = "linux")]
+    let vfio_pcie_devices: Vec<PcieDeviceConfig> = opt
+        .vfio
+        .iter()
+        .map(|cli_cfg| {
+            use vm_resource::IntoResource;
+            PcieDeviceConfig {
+                port_name: cli_cfg.port_name.clone(),
+                resource: vfio_assigned_device_resources::VfioDeviceHandle {
+                    pci_id: cli_cfg.pci_id.clone(),
+                }
+                .into_resource(),
+            }
+        })
+        .collect();
+
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt
         .device
@@ -854,6 +871,8 @@ async fn vm_config_from_command_line(
     let VmChipsetResult {
         chipset,
         mut chipset_devices,
+        pci_chipset_devices,
+        capabilities,
     } = chipset
         .build()
         .context("failed to build chipset configuration")?;
@@ -1465,25 +1484,35 @@ async fn vm_config_from_command_line(
 
         use crate::cli_args::VhostUserDeviceTypeCli;
         let resource: Resource<VirtioDeviceHandle> = match vhost_cli.device_type {
-            VhostUserDeviceTypeCli::Fs { ref tag } => {
-                virtio_resources::vhost_user::VhostUserFsHandle {
-                    socket: stream.into(),
-                    tag: tag.clone(),
-                }
-                .into_resource()
-            }
-            VhostUserDeviceTypeCli::Blk => virtio_resources::vhost_user::VhostUserDeviceHandle {
+            VhostUserDeviceTypeCli::Fs {
+                ref tag,
+                num_queues,
+                queue_size,
+            } => virtio_resources::vhost_user::VhostUserFsHandle {
                 socket: stream.into(),
-                device_id: virtio::spec::VirtioDeviceType::BLK.0,
+                tag: tag.clone(),
+                num_queues,
+                queue_size,
             }
             .into_resource(),
-            VhostUserDeviceTypeCli::Other { device_id } => {
-                virtio_resources::vhost_user::VhostUserDeviceHandle {
-                    socket: stream.into(),
-                    device_id,
-                }
-                .into_resource()
+            VhostUserDeviceTypeCli::Blk {
+                num_queues,
+                queue_size,
+            } => virtio_resources::vhost_user::VhostUserBlkHandle {
+                socket: stream.into(),
+                num_queues,
+                queue_size,
             }
+            .into_resource(),
+            VhostUserDeviceTypeCli::Other {
+                device_id,
+                ref queue_sizes,
+            } => virtio_resources::vhost_user::VhostUserGenericHandle {
+                socket: stream.into(),
+                device_id,
+                queue_sizes: queue_sizes.clone(),
+            }
+            .into_resource(),
         };
         if let Some(pcie_port) = &vhost_cli.pcie_port {
             pcie_devices.push(PcieDeviceConfig {
@@ -1515,6 +1544,13 @@ async fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         pcie_root_complexes,
+        #[cfg(target_os = "linux")]
+        pcie_devices: {
+            let mut devs = pcie_devices;
+            devs.extend(vfio_pcie_devices);
+            devs
+        },
+        #[cfg(not(target_os = "linux"))]
         pcie_devices,
         pcie_switches,
         vpci_devices,
@@ -1577,6 +1613,8 @@ async fn vm_config_from_command_line(
         }),
         vmbus_devices,
         chipset_devices,
+        pci_chipset_devices,
+        chipset_capabilities: capabilities,
         #[cfg(windows)]
         vpci_resources,
         vmgs,
@@ -1792,12 +1830,26 @@ fn disk_open_inner(
         DiskCliKind::File {
             path,
             create_with_len,
+            direct,
         } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
-            create_disk_type(path, *size)
-                .with_context(|| format!("failed to create {}", path.display()))?
+            create_disk_type(
+                path,
+                *size,
+                OpenDiskOptions {
+                    read_only: false,
+                    direct: *direct,
+                },
+            )
+            .with_context(|| format!("failed to create {}", path.display()))?
         } else {
-            open_disk_type(path, read_only)
-                .with_context(|| format!("failed to open {}", path.display()))?
+            open_disk_type(
+                path,
+                OpenDiskOptions {
+                    read_only,
+                    direct: *direct,
+                },
+            )
+            .with_context(|| format!("failed to open {}", path.display()))?
         })),
         DiskCliKind::Blob { kind, url } => {
             layers.push(disk(disk_backend_resources::BlobDiskHandle {
@@ -2035,10 +2087,7 @@ fn do_main(pidfile_path: &mut Option<PathBuf>) -> anyhow::Result<()> {
         });
     }
 
-    DefaultPool::run_with(async |driver| {
-        let mesh = VmmMesh::new(&driver, opt.single_process)?;
-        run_control(&driver, mesh, opt).await
-    })
+    DefaultPool::run_with(async |driver| run_control(&driver, opt).await)
 }
 
 fn new_hvsock_service_id(port: u32) -> Guid {
@@ -2050,8 +2099,24 @@ fn new_hvsock_service_id(port: u32) -> Guid {
     }
 }
 
-async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> anyhow::Result<()> {
-    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, &mesh, &opt).await?;
+async fn run_control(driver: &DefaultDriver, opt: Options) -> anyhow::Result<()> {
+    let mut mesh = Some(VmmMesh::new(&driver, opt.single_process)?);
+    let result = run_control_inner(driver, &mut mesh, opt).await;
+    // If setup failed before the mesh was handed to the controller, shut it
+    // down so the child host process exits cleanly without noisy logs.
+    if let Some(mesh) = mesh {
+        mesh.shutdown().await;
+    }
+    result
+}
+
+async fn run_control_inner(
+    driver: &DefaultDriver,
+    mesh_slot: &mut Option<VmmMesh>,
+    opt: Options,
+) -> anyhow::Result<()> {
+    let mesh = mesh_slot.as_ref().unwrap();
+    let (mut vm_config, mut resources) = vm_config_from_command_line(driver, mesh, &opt).await?;
 
     let mut vnc_worker = None;
     if opt.gfx || opt.vnc {
@@ -2186,7 +2251,7 @@ async fn run_control(driver: &DefaultDriver, mesh: VmmMesh, opt: Options) -> any
 
     // Build the VmController with exclusive resources.
     let controller = vm_controller::VmController {
-        mesh,
+        mesh: mesh_slot.take().unwrap(),
         vm_worker,
         vnc_worker,
         gdb_worker,

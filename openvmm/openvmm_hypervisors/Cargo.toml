@@ -21,6 +21,7 @@ virt_hvf = ["dep:virt_hvf"]
 
 [dependencies]
 anyhow.workspace = true
+fs-err.workspace = true
 hypervisor_resources.workspace = true
 openvmm_core.workspace = true
 vm_resource.workspace = true

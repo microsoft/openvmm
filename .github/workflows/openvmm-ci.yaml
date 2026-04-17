@@ -1007,7 +1007,7 @@ jobs:
     - name: unpack openvmm-deps archive
       run: flowey e 12 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
-    - name: extract X64 sysroot.tar.gz
+    - name: extract X86_64 sysroot.tar.gz
       run: flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       shell: bash
     - name: set '-Dwarnings' in .cargo/config.toml
@@ -4040,7 +4040,7 @@ jobs:
         flowey e 23 flowey_lib_hvlite::resolve_openhcl_kernel_package 0
         flowey e 23 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
       shell: bash
-    - name: extract X64 sysroot.tar.gz
+    - name: extract X86_64 sysroot.tar.gz
       run: |-
         flowey e 23 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
         flowey e 23 flowey_lib_hvlite::init_cross_build 3
@@ -6723,7 +6723,7 @@ jobs:
     - name: unpack openvmm-deps archive
       run: flowey e 9 flowey_lib_hvlite::resolve_openvmm_deps 0
       shell: bash
-    - name: extract X64 sysroot.tar.gz
+    - name: extract X86_64 sysroot.tar.gz
       run: |-
         flowey e 9 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
         flowey e 9 flowey_lib_hvlite::init_cross_build 4
