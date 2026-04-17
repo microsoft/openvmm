@@ -387,9 +387,9 @@ async fn no_numa_errors<T: PetriVmmBackend>(
 
 /// Boot OpenHCL with a multi-NUMA topology and force the private pool to be
 /// split across NUMA nodes via `OPENHCL_VTL2_GPA_POOL_NUMA=split`. Validates
-/// that multi-range pool allocation works end-to-end.
+/// that the pool was actually allocated on multiple NUMA nodes.
 #[vmm_test_with(noagent(openvmm_openhcl_uefi_x64(none)))]
-async fn numa_private_pool_spillover<T: PetriVmmBackend>(
+async fn numa_private_pool_split<T: PetriVmmBackend>(
     config: PetriVmBuilder<T>,
 ) -> Result<(), anyhow::Error> {
     // 2 NUMA nodes (vps_per_socket=2, 4 VPs → 2 sockets → 2 nodes).
@@ -406,11 +406,38 @@ async fn numa_private_pool_spillover<T: PetriVmmBackend>(
         .run_without_agent()
         .await?;
 
-    // Wait for VTL2 to be ready — if pool allocation panicked, boot fails.
     vm.wait_for_vtl2_ready().await?;
 
-    // Inspect the DMA manager's private pool to verify it was created.
-    vm.test_inspect_openhcl().await?;
+    // Inspect the private pool ranges to verify the pool was split across
+    // multiple NUMA nodes.
+    let pool_ranges = vm
+        .inspect_openhcl(
+            "vm/runtime_params/parsed_openhcl_boot/private_pool_ranges",
+            None,
+            None,
+        )
+        .await?;
+    let pool_ranges: serde_json::Value = serde_json::from_str(&format!("{}", pool_ranges.json()))?;
+    tracing::info!(pool_ranges = %pool_ranges, "private pool ranges");
+
+    let ranges = pool_ranges
+        .as_object()
+        .context("pool_ranges is not an object")?;
+    assert!(
+        !ranges.is_empty(),
+        "expected at least one private pool range"
+    );
+
+    // Collect unique vnodes across all pool ranges.
+    let vnodes: std::collections::BTreeSet<u64> = ranges
+        .values()
+        .map(|entry| entry["vnode"].as_u64().expect("vnode field"))
+        .collect();
+
+    assert!(
+        vnodes.len() >= 2,
+        "expected pool ranges on at least 2 NUMA nodes, but found vnodes: {vnodes:?}"
+    );
 
     Ok(())
 }
