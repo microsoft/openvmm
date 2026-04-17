@@ -19,7 +19,7 @@
 # [merge "flowey-theirs"]
 #     name = flowey-theirs merge driver
 #     driver = cp %B %A
-.github/workflows/flowey-* merge=flowey-theirs
+.github/workflows/openvmm-* merge=flowey-theirs
 ci-flowey/*.yaml merge=flowey-theirs
 
 # Mark flowey-generated pipelines as generated code
