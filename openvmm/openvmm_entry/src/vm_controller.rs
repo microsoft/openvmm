@@ -122,7 +122,7 @@ pub struct VmController {
 
 impl VmController {
     /// Run the controller, processing RPCs and worker events until the VM
-    /// stops or the REPL sends Quit.
+    /// stops or the caller (REPL or ttrpc server) sends Quit.
     pub async fn run(
         mut self,
         mut rpc_recv: mesh::Receiver<VmControllerRpc>,
@@ -138,12 +138,17 @@ impl VmController {
         }
 
         let mut quit = false;
+        let mut rpc_closed = false;
         loop {
             let event = {
                 let rpc = pin!(async {
-                    match rpc_recv.next().await {
-                        Some(msg) => Event::Rpc(msg),
-                        None => Event::RpcClosed,
+                    if rpc_closed {
+                        std::future::pending().await
+                    } else {
+                        match rpc_recv.next().await {
+                            Some(msg) => Event::Rpc(msg),
+                            None => Event::RpcClosed,
+                        }
                     }
                 });
                 let vm = (&mut self.vm_worker).map(Event::Worker);
@@ -164,10 +169,12 @@ impl VmController {
                     self.handle_rpc(rpc, &mut quit).await;
                 }
                 Event::RpcClosed => {
-                    // REPL disconnected. Stop the VM.
-                    tracing::info!("REPL disconnected, stopping VM");
+                    // Controller RPC channel closed (REPL/ttrpc disconnected).
+                    // Stop the VM.
+                    tracing::info!("controller RPC channel closed, stopping VM");
                     self.vm_worker.stop();
                     quit = true;
+                    rpc_closed = true;
                 }
                 Event::Worker(event) => match event {
                     WorkerEvent::Stopped => {

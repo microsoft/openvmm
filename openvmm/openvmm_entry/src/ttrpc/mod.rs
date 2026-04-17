@@ -135,6 +135,7 @@ impl Worker for TtrpcWorker {
                 vm_controller_events: None,
                 controller_task: None,
                 wait_vm_response: None,
+                halted: false,
                 rpc_tasks: Vec::new(),
                 transport: self.transport,
             };
@@ -324,6 +325,9 @@ struct VmService {
     vm_controller_events: Option<mesh::Receiver<VmControllerEvent>>,
     controller_task: Option<Task<()>>,
     wait_vm_response: Option<(mesh::CancelContext, mesh::OneshotSender<Result<(), Status>>)>,
+    /// Set when the guest has halted, so that a later `WaitVm` completes
+    /// immediately instead of blocking forever. Cleared on `CreateVm`.
+    halted: bool,
     rpc_tasks: Vec<Task<()>>,
     transport: ResolvedTransport,
 }
@@ -402,6 +406,10 @@ impl VmService {
                     vmservice::Vm::WaitVm((), response) => {
                         if self.wait_vm_response.is_some() {
                             response.send(Err(grpc_error(anyhow!("wait VM already in flight"))));
+                        } else if self.halted {
+                            // Guest already halted before WaitVm was called;
+                            // complete immediately.
+                            response.send(Ok(()));
                         } else {
                             self.wait_vm_response = Some((ctx.clone(), response));
                         }
@@ -489,6 +497,9 @@ impl VmService {
         if self.vm.is_some() {
             bail!("VM already created");
         }
+
+        // Reset halt state for the new VM.
+        self.halted = false;
 
         let load_mode = match req_config
             .boot_config
@@ -754,6 +765,7 @@ impl VmService {
         match event {
             VmControllerEvent::GuestHalt(reason) => {
                 tracing::info!(%reason, "guest halted (via controller)");
+                self.halted = true;
                 if let Some((_, response)) = self.wait_vm_response.take() {
                     response.send(Ok(()));
                 }
