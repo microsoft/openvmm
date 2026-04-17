@@ -563,6 +563,7 @@ pub mod thread {
                 // contention.
                 let driver = CURRENT_DRIVER.with(|cell| cell.borrow(|driver| driver.cloned()));
                 let driver = driver.as_ref().unwrap_or(&self.default);
+                // SAFETY: passthru from caller
                 unsafe {
                     driver
                         .io_uring_submitter()

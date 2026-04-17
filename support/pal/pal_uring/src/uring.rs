@@ -335,13 +335,10 @@ impl pal_async::io_uring::IoUringSubmit for IoInitiator {
         self.probe(opcode)
     }
 
-    unsafe fn submit(
-        &self,
-        sqe: squeue::Entry,
-    ) -> impl Future<Output = io::Result<i32>> + Send + '_ {
+    async unsafe fn submit(&self, sqe: squeue::Entry) -> io::Result<i32> {
         // SAFETY: the caller guarantees the SQE only references memory that is
         // valid for the lifetime of the returned future.
-        async move { unsafe { self.issue_io((), |_| sqe).await.0 } }
+        unsafe { self.issue_io((), |_| sqe).await.0 }
     }
 }
 
