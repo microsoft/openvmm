@@ -83,7 +83,7 @@ impl AccessVmState for &'_ MshvPartition {
             .inner
             .vmfd
             .get_partition_property(hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME)
-            .map_err(|e| Error::GetPartitionProperty(e.into()))?;
+            .map_err(Error::GetPartitionProperty)?;
         Ok(vm::ReferenceTime { value: ref_time })
     }
 
@@ -94,7 +94,7 @@ impl AccessVmState for &'_ MshvPartition {
                 hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME,
                 value.value,
             )
-            .map_err(|e| Error::SetPartitionProperty(e.into()))
+            .map_err(Error::SetPartitionProperty)
     }
 
     fn reference_tsc_page(&mut self) -> Result<vm::ReferenceTscPage, Self::Error> {
