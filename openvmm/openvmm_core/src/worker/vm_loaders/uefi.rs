@@ -195,24 +195,23 @@ pub fn load_uefi(
     }
 
     if !pcie_host_bridges.is_empty() {
-        let entries: Vec<u8> = pcie_host_bridges
+        let entries: Vec<config::PcieBarApertureEntry> = pcie_host_bridges
             .iter()
-            .flat_map(|b| {
-                config::PcieBarApertureEntry {
-                    segment: b.segment,
-                    start_bus: b.start_bus,
-                    end_bus: b.end_bus,
-                    uid: b.index,
-                    low_mmio_base: b.low_mmio.start(),
-                    low_mmio_length: b.low_mmio.len(),
-                    high_mmio_base: b.high_mmio.start(),
-                    high_mmio_length: b.high_mmio.len(),
-                }
-                .as_bytes()
-                .to_vec()
+            .map(|b| config::PcieBarApertureEntry {
+                segment: b.segment,
+                start_bus: b.start_bus,
+                end_bus: b.end_bus,
+                uid: b.index,
+                low_mmio_base: b.low_mmio.start(),
+                low_mmio_length: b.low_mmio.len(),
+                high_mmio_base: b.high_mmio.start(),
+                high_mmio_length: b.high_mmio.len(),
             })
             .collect();
-        cfg.add_raw(config::BlobStructureType::PcieBarApertures, &entries);
+        cfg.add_raw(
+            config::BlobStructureType::PcieBarApertures,
+            entries.as_bytes(),
+        );
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);

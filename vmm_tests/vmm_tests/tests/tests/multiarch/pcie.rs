@@ -461,7 +461,7 @@ async fn pcie_save_restore(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyho
     Ok(())
 }
 
-/// Boot a guest thru UEFI from an NVMe device on an emulated PCIe root port.
+/// Boot a guest through UEFI from an NVMe device on an emulated PCIe root port.
 /// Validates that UEFI's driver stack correctly enumerates and uses the NVMe
 /// device to load the guest OS.
 #[openvmm_test(
@@ -474,19 +474,8 @@ async fn pcie_nvme_boot(config: PetriVmBuilder<OpenVmmPetriBackend>) -> anyhow::
     let os_flavor = config.os_flavor();
     let (vm, agent) = config
         .with_boot_device_type(petri::BootDeviceType::PcieNvme)
-        .modify_backend(|b| {
-            b.with_pcie_root_topology(1, 1, 1).with_custom_config(|c| {
-                if let openvmm_defs::config::LoadMode::Uefi {
-                    ref mut default_boot_always_attempt,
-                    ref mut enable_vpci_boot,
-                    ..
-                } = c.load_mode
-                {
-                    *default_boot_always_attempt = true;
-                    *enable_vpci_boot = false;
-                }
-            })
-        })
+        .with_default_boot_always_attempt(true)
+        .modify_backend(|b| b.with_pcie_root_topology(1, 1, 1))
         .run()
         .await?;
 

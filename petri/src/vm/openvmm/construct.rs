@@ -11,6 +11,7 @@ use crate::Firmware;
 use crate::IsolationType;
 use crate::MemoryConfig;
 use crate::OpenHclConfig;
+use crate::PcieNvmeDrive;
 use crate::PetriLogSource;
 use crate::PetriVmConfig;
 use crate::PetriVmResources;
@@ -210,10 +211,18 @@ impl PetriVmConfigOpenVmm {
 
         let pcie_devices = pcie_nvme_drives
             .into_iter()
-            .filter_map(|(port_name, nsid, Drive { disk, .. })| {
-                let disk = disk?;
-                Some(petri_disk_to_openvmm(&disk).map(|disk| {
-                    PcieDeviceConfig {
+            .map(
+                |PcieNvmeDrive {
+                     port_name,
+                     nsid,
+                     drive: Drive { disk, .. },
+                 }| {
+                    let disk = disk.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "missing disk for PCIe NVMe drive on port '{port_name}' (nsid {nsid})"
+                        )
+                    })?;
+                    petri_disk_to_openvmm(&disk).map(|disk| PcieDeviceConfig {
                         port_name,
                         resource: NvmeControllerHandle {
                             subsystem_id: guid::guid!("a1b2c3d4-e5f6-7890-abcd-ef0123456789"),
@@ -227,9 +236,9 @@ impl PetriVmConfigOpenVmm {
                             requests: None,
                         }
                         .into_resource(),
-                    }
-                }))
-            })
+                    })
+                },
+            )
             .collect::<Result<Vec<_>, _>>()?;
 
         let (firmware_event_send, firmware_event_recv) = mesh::mpsc_channel();
