@@ -501,7 +501,7 @@ impl HclNetworkVFManagerWorker {
     ///
     /// This method intentionally clears `guest_state.offered_to_guest` before
     /// waiting on guest notifications so repeat removal requests are harmless.
-    /// 
+    ///
     /// On return, the worker will no longer treat the VF as offered, regardless
     /// of whether notification or revoke operations encountered errors.
     async fn try_notify_guest_and_revoke_vtl0_vf(&mut self, bus_control: &Vtl0Bus) {
@@ -1246,6 +1246,7 @@ impl HclNetworkVFManagerWorker {
                 )
                     .merge()
                     .next()
+                    .instrument(tracing::info_span!("awaiting command", vtl2_vfid))
                     .await
                     .unwrap()
             };
@@ -1262,10 +1263,15 @@ impl HclNetworkVFManagerWorker {
                         self.guest_state_notifications.push(send_update);
                         self.guest_state.clone()
                     })
+                    .instrument(tracing::info_span!(
+                        "add guest vf manager command,",
+                        vtl2_vfid
+                    ))
                     .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::PacketCapture(rpc)) => {
                     rpc.handle_failable(async |params| self.handle_packet_capture(params).await)
+                        .instrument(tracing::info_span!("packet capture command", vtl2_vfid))
                         .await
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::AddVtl0VF) => {
@@ -1274,22 +1280,28 @@ impl HclNetworkVFManagerWorker {
                     }
 
                     self.add_vtl0_vf()
-                        .instrument(tracing::info_span!("add vtl0 vf"))
+                        .instrument(tracing::info_span!("add vtl0 vf", vtl2_vfid))
                         .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::RemoveVtl0VF) => {
                     if self.is_shutdown_active {
                         continue;
                     }
-                    self.remove_vtl0_vf().await;
+
+                    let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+                    self.remove_vtl0_vf()
+                        .instrument(tracing::info_span!("remove vtl0 vf", vtl2_vfid, vtl0_vfid))
+                        .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::UpdateVtl0VF(rpc)) => {
                     if self.is_shutdown_active {
                         rpc.complete(());
                         continue;
                     }
+
+                    let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
                     self.update_vtl0_vf(rpc, &vtl2_device_state)
-                        .instrument(tracing::info_span!("update vtl0 vf"))
+                        .instrument(tracing::info_span!("update vtl0 vf", vtl2_vfid, vtl0_vfid))
                         .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::HideVtl0VF(rpc)) => {
@@ -1297,13 +1309,18 @@ impl HclNetworkVFManagerWorker {
                         rpc.complete(());
                         continue;
                     }
+
+                    let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
                     self.hide_vtl0_vf(rpc, &vtl2_device_state)
-                        .instrument(tracing::info_span!("hide vtl0 vf"))
+                        .instrument(tracing::info_span!("hide vtl0 vf", vtl2_vfid, vtl0_vfid))
                         .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
                     self.save_state(rpc)
-                        .instrument(tracing::info_span!("handling save state before exiting"))
+                        .instrument(tracing::info_span!(
+                            "handling save state before exiting",
+                            vtl2_vfid
+                        ))
                         .await;
                     // Exit worker thread.
                     return;
@@ -1311,21 +1328,31 @@ impl HclNetworkVFManagerWorker {
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownBegin(
                     remove_vtl0_vf,
                 )) => {
-                    tracing::info!(vtl2_vfid, remove_vtl0_vf, "starting VTL2 device shutdown");
+                    let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+                    tracing::info!(
+                        vtl2_vfid,
+                        vtl0_vfid,
+                        remove_vtl0_vf,
+                        "starting VTL2 device shutdown"
+                    );
                     if remove_vtl0_vf {
                         self.remove_vtl0_vf()
-                            .instrument(tracing::info_span!("remove vtl0 vf for shutdown"))
+                            .instrument(tracing::info_span!(
+                                "remove vtl0 vf for shutdown",
+                                vtl2_vfid,
+                                vtl0_vfid
+                            ))
                             .await;
                     }
                     self.is_shutdown_active = true;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownComplete(rpc)) => {
-                    tracing::info!(vtl2_vfid, "shutting down VTL2 device");
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
                     rpc.handle(async |keep_vf_alive| {
                         self.shutdown_vtl2_device(keep_vf_alive).await;
                     })
+                    .instrument(tracing::info_span!("shutting down VTL2 device", vtl2_vfid))
                     .await;
                     // Exit worker thread.
                     return;
