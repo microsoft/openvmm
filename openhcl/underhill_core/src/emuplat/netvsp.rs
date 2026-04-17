@@ -570,13 +570,13 @@ impl HclNetworkVFManagerWorker {
             }
         }
         if let Err(err) = {
-            let vpci_bus_control = if let Vtl0Bus::Present(bus_control) = &bus_control {
-                bus_control
+            let vpci_bus_control = if let Vtl0Bus::Present(current_bus) = bus_control {
+                current_bus
             } else {
-                let Vtl0Bus::Present(bus_control) = &self.vtl0_bus_control else {
+                let Vtl0Bus::Present(current_bus) = &self.vtl0_bus_control else {
                     unreachable!();
                 };
-                bus_control
+                current_bus
             };
 
             self.revoke_vtl0_vf(vpci_bus_control).await
@@ -702,7 +702,7 @@ impl HclNetworkVFManagerWorker {
                 vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control),
                 vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control),
                 hide_vtl0,
-                "VTL0 VF device is hidden"
+                "setting VTL0 VF hidden state"
             );
             *self.save_state.hidden_vtl0.lock() = Some(hide_vtl0);
             if hide_vtl0 {
@@ -1266,7 +1266,7 @@ impl HclNetworkVFManagerWorker {
                         self.guest_state.clone()
                     })
                     .instrument(tracing::info_span!(
-                        "add guest vf manager command,",
+                        "add guest vf manager command",
                         vtl2_vfid
                     ))
                     .await;
