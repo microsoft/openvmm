@@ -1395,14 +1395,11 @@ impl HclNetworkVFManagerWorker {
                         continue;
                     }
 
-                    match self
+                    vf_reconfig_backoff = self
                         .reconfigure_vf_restart(&mut vtl2_device_state, backoff)
                         .instrument(tracing::info_span!("VF reconfiguration restart", vtl2_vfid))
                         .await
-                    {
-                        Ok(backoff) => vf_reconfig_backoff = backoff,
-                        Err(_) => continue,
-                    }
+                        .unwrap_or(None);
                 }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
