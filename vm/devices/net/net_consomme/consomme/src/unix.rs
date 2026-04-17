@@ -14,9 +14,6 @@
 // sendmsg_x (private Apple API) with a manually built msghdr_x array.
 #![expect(unsafe_code)]
 
-#[cfg(target_os = "linux")]
-use std::mem::size_of;
-
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
