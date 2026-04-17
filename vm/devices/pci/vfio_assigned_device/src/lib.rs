@@ -36,6 +36,7 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
+use vmcore::vm_task::VmTaskDriverSource;
 
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
@@ -159,14 +160,20 @@ impl VfioAssignedPciDevice {
     /// Reads BAR flags from config space and derives BAR masks from the VFIO
     /// region sizes (avoiding the write-all-ones probe cycle). Discovers MSI-X
     /// capability if present and creates a software emulator for it.
-    pub fn new(
+    pub async fn new(
         binding: manager::VfioDeviceBinding,
-        vfio_device: vfio_sys::Device,
         pci_id: String,
-        register_mmio: &mut dyn chipset_device::mmio::RegisterMmioIntercept,
+        driver_source: &VmTaskDriverSource,
+        register_mmio: &mut (dyn chipset_device::mmio::RegisterMmioIntercept + Send),
         msi_target: &MsiTarget,
         irqfd: Arc<dyn IrqFd>,
     ) -> anyhow::Result<Self> {
+        let vfio_device = binding
+            .group()
+            .open_device(&pci_id, &driver_source.simple())
+            .await
+            .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
+
         let config_info = vfio_device
             .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
             .context("failed to get VFIO config region info")?;

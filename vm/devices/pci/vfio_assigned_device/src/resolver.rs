@@ -70,25 +70,19 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             .await
             .context("VFIO container manager failed")?;
 
-        let driver = input.driver_source.simple();
-        let device: vfio_sys::Device = binding
-            .group()
-            .open_device(&pci_id, &driver)
-            .await
-            .with_context(|| format!("failed to open VFIO device {pci_id}"))?;
-
         let irqfd = input
             .irqfd
             .context("partition does not support irqfd (required for VFIO)")?;
 
         let device = VfioAssignedPciDevice::new(
             binding,
-            device,
             pci_id,
+            input.driver_source,
             input.register_mmio,
             input.msi_target,
             irqfd,
-        )?;
+        )
+        .await?;
 
         Ok(device.into())
     }
