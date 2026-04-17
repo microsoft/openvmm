@@ -197,23 +197,22 @@ impl VfioAssignedPciDevice {
         let mut bar_masks = [0u32; 6];
         let mut bar_flags = [0u32; 6];
 
-        for (i, flags) in bar_flags.iter_mut().enumerate() {
-            let bar = read_config_u32(
+        let mut bars = [0u32; 6];
+        for (i, bar) in bars.iter_mut().enumerate() {
+            *bar = read_config_u32(
                 device_file,
                 config_offset,
                 config_size,
                 HeaderType00::BAR0.0 + (i as u16) * 4,
             )?;
-            // Ignore the current BAR values--we don't care what the device
-            // thinks the BARs are.
-            *flags = bar & 0xf;
         }
 
         let mut bar_regions = [None; 6];
         let mut bar_mmio_controls = [(); 6].map(|_| None);
         for info in config.bar_info {
             let i = usize::from(info.index);
-            let flags = bar_flags[i];
+            let flags = bars[i] & 0xf;
+            bar_flags[i] = flags;
             let encoded = cfg_space::BarEncodingBits::from(flags);
             if encoded.use_pio() {
                 anyhow::bail!("PIO BARs are not supported");
@@ -257,7 +256,7 @@ impl VfioAssignedPciDevice {
             config_offset,
             config_size,
             bar_masks,
-            bars: bar_flags,
+            bars: bar_flags, // Ignore the current BAR values--we don't care what the device thinks the BARs are.
             bar_flags,
             mmio_enabled: false,
             active_bars: BarMappings::default(),
