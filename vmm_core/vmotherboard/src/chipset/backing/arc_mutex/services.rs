@@ -281,6 +281,9 @@ mod device_range {
 
                 fn map(&mut self, addr: $addr) {
                     tracing::trace!(region_name = ?self.region_name, ?addr, len = ?self.len, "map");
+                    if self.len == 0 {
+                        return;
+                    }
                     self.unmap();
                     match self.ranges.register(
                         addr,

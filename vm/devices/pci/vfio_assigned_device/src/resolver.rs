@@ -116,11 +116,12 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             .context("failed to get VFIO config region info")?;
 
         // Query VFIO region info for each BAR (indices 0-5).
-        let mut bar_info: [Option<VfioBarInfo>; 6] = [None; 6];
+        let mut bar_info = Vec::new();
         for i in 0u32..6 {
             if let Ok(info) = device.region_info(i) {
                 if info.size > 0 {
-                    bar_info[i as usize] = Some(VfioBarInfo {
+                    bar_info.push(VfioBarInfo {
+                        index: i as u8,
                         vfio_offset: info.offset,
                         size: info.size,
                     });
@@ -132,28 +133,20 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             .irqfd
             .context("partition does not support irqfd (required for VFIO)")?;
 
-        // Register MMIO regions for each BAR with the chipset.
-        let bar_mmio_controls: Vec<_> = bar_info
-            .iter()
-            .enumerate()
-            .map(|(i, info)| {
-                let size = info.map_or(0, |bi| bi.size);
-                input.register_mmio.new_io_region(&format!("bar{i}"), size)
-            })
-            .collect();
-
-        let device = VfioAssignedPciDevice::new(VfioAssignedPciDeviceConfig {
-            pci_id: pci_id.clone(),
-            vfio_device: device,
-            config_offset: config_info.offset,
-            config_size: config_info.size,
-            msi_target: input.msi_target.clone(),
-            bar_info,
+        let device = VfioAssignedPciDevice::new(
+            VfioAssignedPciDeviceConfig {
+                pci_id: pci_id.clone(),
+                vfio_device: device,
+                config_offset: config_info.offset,
+                config_size: config_info.size,
+                bar_info,
+                vfio_container: container,
+                vfio_group: group,
+            },
+            input.register_mmio,
+            input.msi_target,
             irqfd,
-            bar_mmio_controls,
-            vfio_container: container,
-            vfio_group: group,
-        })?;
+        )?;
 
         Ok(device.into())
     }
