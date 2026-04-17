@@ -51,6 +51,16 @@ pub enum Error {
     #[cfg(feature = "dev_snp_ohcl_tio_support")]
     #[error("TIO_GUEST_REQUEST ioctl failed")]
     TioGuestRequestIoctl(#[source] nix::Error),
+    #[cfg(feature = "dev_snp_ohcl_tio_support")]
+    #[error(
+        "TIO_GUEST_REQUEST reported an ASP/VMM error: msg_type={msg_type} exitinfo1={{fw_error={fw_error:#x}, vmm_error={vmm_error:#x}}} exitinfo2={exitinfo2:#x}"
+    )]
+    TioGuestRequestFirmware {
+        msg_type: u64,
+        fw_error: u32,
+        vmm_error: u32,
+        exitinfo2: u64,
+    },
     #[error("Invalid TIO request parameters")]
     InvalidTioRequestParameters(String),
 }
@@ -113,7 +123,7 @@ pub enum TioGuestMessageId {
 
 /// VMM error code.
 #[repr(C)]
-#[derive(FromZeros, Immutable, KnownLayout)]
+#[derive(Copy, Clone, Debug, FromZeros, Immutable, KnownLayout)]
 struct VmmErrorCode {
     /// Firmware error
     fw_error: u32,
@@ -331,6 +341,33 @@ impl SevGuestDevice {
         unsafe {
             tio_guest_request(self.file.as_raw_fd(), &mut snp_guest_request)
                 .map_err(Error::TioGuestRequestIoctl)?;
+        }
+
+        // The Linux sev-guest driver's TIO_GUEST_REQUEST ioctl returns 0 from
+        // the syscall even when the ASP/VMM rejected the request — the actual
+        // firmware/VMM status is communicated out-of-band via the exitinfo1
+        // and exitinfo2 fields on the in/out struct. When the driver detects
+        // such a failure it also logs a message like
+        //     "sev-guest: Detected error from ASP request. rc: N, exitinfo2: ..."
+        // and disables VMPCK0 to prevent IV reuse. We must surface that as an
+        // error here rather than returning the zero-initialized response body
+        // as if the request had succeeded.
+        let exitinfo1 = snp_guest_request.exitinfo1;
+        let exitinfo2 = snp_guest_request.exitinfo2;
+        if exitinfo1.fw_error != 0 || exitinfo1.vmm_error != 0 || exitinfo2 != 0 {
+            tracing::error!(
+                msg_type,
+                fw_error = exitinfo1.fw_error,
+                vmm_error = exitinfo1.vmm_error,
+                exitinfo2 = format_args!("{:#x}", exitinfo2),
+                "tio_guest_request: ASP/VMM reported an error; ioctl returned 0 but the request was not performed"
+            );
+            return Err(Error::TioGuestRequestFirmware {
+                msg_type,
+                fw_error: exitinfo1.fw_error,
+                vmm_error: exitinfo1.vmm_error,
+                exitinfo2,
+            });
         }
 
         tracing::info!(?resp, "tio_guest_request completed successfully");
