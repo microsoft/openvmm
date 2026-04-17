@@ -28,6 +28,8 @@
 
 #![warn(missing_docs)]
 
+pub mod resolver;
+
 use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device::io::IoError;
@@ -365,11 +367,8 @@ pub struct EnableAcpiMode {
     pub default_pio_dynamic: u16,
 }
 
-/// Interface to enable/disable hypervisor PM timer assist.
-pub trait PmTimerAssist: Send + Sync {
-    /// Sets the port of the PM timer assist.
-    fn set(&self, port: Option<u16>);
-}
+// Re-export the PmTimerAssist trait from chipset_resources.
+pub use chipset_resources::pm::PmTimerAssist;
 
 /// A power management + ACPI device.
 ///

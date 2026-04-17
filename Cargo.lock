@@ -8303,6 +8303,7 @@ dependencies = [
  "chipset_device_worker",
  "chipset_device_worker_defs",
  "chipset_legacy",
+ "chipset_resources",
  "closeable_mutex",
  "crypto",
  "cvm_tracing",

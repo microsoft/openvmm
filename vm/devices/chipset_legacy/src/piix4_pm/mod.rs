@@ -3,6 +3,8 @@
 
 //! PIIX4 - Power Management
 
+pub mod resolver;
+
 use chipset::pm::PmTimerAssist;
 use chipset::pm::PowerAction;
 use chipset::pm::PowerActionFn;
