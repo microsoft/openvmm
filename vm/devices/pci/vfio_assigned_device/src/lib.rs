@@ -192,14 +192,14 @@ impl VfioAssignedPciDevice {
 
         let mut bar_regions = [None; 6];
         let mut bar_mmio_controls = [(); 6].map(|_| None);
-        let mut i = 0;
-        while i < 6 {
+        let mut processed = 0;
+        while processed < 6 {
+            let i = processed;
+            processed += 1;
             let Ok(info) = vfio_device.region_info(i as u32) else {
-                i += 1;
                 continue;
             };
             if info.size == 0 {
-                i += 1;
                 continue;
             }
 
@@ -225,6 +225,7 @@ impl VfioAssignedPciDevice {
             bar_masks[i] = (mask64 as u32) | flags;
             if is_64bit {
                 bar_masks[i + 1] = (mask64 >> 32) as u32;
+                processed += 1;
             }
 
             bar_regions[i] = Some(VfioBarInfo {

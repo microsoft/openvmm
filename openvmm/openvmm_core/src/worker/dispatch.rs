@@ -665,7 +665,7 @@ struct LoadedVmInner {
 
     /// VFIO container manager inspect handle (Linux only).
     #[cfg(target_os = "linux")]
-    vfio_inspect: Option<vfio_assigned_device::resolver::VfioInspectHandle>,
+    vfio_inspect: Option<vfio_assigned_device::manager::VfioManagerClient>,
 
     // relay halt messages, intercepting reset if configured.
     halt_recv: mesh::Receiver<HaltReason>,
