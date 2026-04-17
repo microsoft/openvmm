@@ -12,6 +12,7 @@ use crate::chipset::backing::arc_mutex::device::AddDeviceError;
 use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
 use chipset_device::interrupt::LineInterruptTarget;
+use chipset_device_resources::BSP_LINT_LINE_SET;
 use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
@@ -223,12 +224,10 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
             deps_hyperv_ide,
-            deps_hyperv_power_management,
             deps_hyperv_vga,
             deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
-            deps_piix4_power_management,
             deps_underhill_vga_proxy,
             deps_winbond_super_io_and_floppy_stub,
             deps_winbond_super_io_and_floppy_full,
@@ -510,6 +509,28 @@ impl<'a> BaseChipsetBuilder<'a> {
                     }
                     pm
                 })?;
+        }
+
+        if let Some(options::dev::HyperVGuestWatchdogDeps {
+            watchdog_platform,
+            port_base: pio_wdat_port,
+        }) = deps_hyperv_guest_watchdog
+        {
+            builder
+                .arc_mutex_device("guest-watchdog")
+                .add_async(async |services| {
+                    let vmtime = services.register_vmtime();
+                    let mut register_pio = services.register_pio();
+                    guest_watchdog::GuestWatchdogServices::new(
+                        vmtime.access("guest-watchdog-time"),
+                        watchdog_platform,
+                        &mut register_pio,
+                        pio_wdat_port,
+                        foundation.is_restoring,
+                    )
+                    .await
+                })
+                .await?;
         }
 
         if let Some(options::dev::HyperVFirmwareUefi {
@@ -1085,14 +1106,12 @@ pub mod options {
             hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
             hyperv_ide:                  dev::HyperVIdeDeps,
-            hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
             i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
 
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
-            piix4_power_management:      dev::Piix4PowerManagementDeps,
 
             underhill_vga_proxy:         dev::UnderhillVgaProxyDeps,
 
@@ -1153,26 +1172,8 @@ pub mod options {
             pub secondary_channel_drives: [Option<ide::DriveMedia>; 2],
         }
 
-        /// PIIX4 power management device (fixed pci address: 0:7.3)
-        pub struct Piix4PowerManagementDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
-
         /// Generic dual 8237A ISA DMA controllers
         pub struct GenericIsaDmaDeps;
-
-        /// Hyper-V specific ACPI-compatible power management device
-        pub struct HyperVPowerManagementDeps {
-            /// IRQ line triggered on ACPI power event
-            pub acpi_irq: u32,
-            /// Base port io address of the device's register region
-            pub pio_base: u16,
-            /// Interface to enable/disable PM timer assist
-            pub pm_timer_assist: Option<Box<dyn pm::PmTimerAssist>>,
-        }
 
         /// AMD Platform Security Processor (PSP)
         pub struct GenericPspDeps;
