@@ -2403,7 +2403,7 @@ async fn new_underhill_vm(
                 pcie_host_bridges: &vec![],
                 arch: vmm_core::acpi_builder::AcpiArchConfig::X86 {
                     with_ioapic: true, // openhcl always runs with ioapic
-                    with_pic: true,    // pcat always runs with pic and pit
+                    with_pic: capabilities.with_pic,
                     with_pit: capabilities.with_pit,
                     with_psp: dps.general.psp_enabled,
                     pm_base: PM_BASE,
@@ -2774,12 +2774,6 @@ async fn new_underhill_vm(
         None
     };
 
-    #[cfg(guest_arch = "x86_64")]
-    let deps_generic_pic = chipset.with_generic_pic.then_some(dev::GenericPicDeps {});
-
-    #[cfg(not(guest_arch = "x86_64"))]
-    let deps_generic_pic = None;
-
     let deps_generic_isa_dma = chipset
         .with_generic_isa_dma
         .then_some(dev::GenericIsaDmaDeps);
@@ -2980,7 +2974,6 @@ async fn new_underhill_vm(
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
-        deps_generic_pic,
         deps_hyperv_firmware_pcat,
         deps_hyperv_framebuffer: None,
         deps_hyperv_ide,

@@ -21,6 +21,7 @@ use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::i8042::I8042DeviceHandle;
+use chipset_resources::pic::PicDeviceHandle;
 use chipset_resources::piix4_uhci::PIIX4_PCI_USB_UHCI_STUB_BDF;
 use chipset_resources::piix4_uhci::Piix4PciUsbUhciStubDeviceHandle;
 use chipset_resources::pit::PitDeviceHandle;
@@ -256,7 +257,6 @@ impl VmManifestBuilder {
                     with_generic_isa_dma: true,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
-                    with_generic_pic: true,
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_firmware_uefi: false,
@@ -275,7 +275,7 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_full: !self.stub_floppy,
                 };
                 result.capabilities.with_ioapic = true;
-                result.capabilities.with_pic = true;
+                result.attach_pic();
                 result.attach_pit();
                 result.attach_missing_arch_ports(self.arch, false);
                 if let Some(recv) = self.battery_status_recv {
@@ -290,7 +290,6 @@ impl VmManifestBuilder {
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
-                    with_generic_pic: is_x86,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: false,
@@ -309,9 +308,9 @@ impl VmManifestBuilder {
                     with_winbond_super_io_and_floppy_full: false,
                 };
                 result.capabilities.with_ioapic = is_x86;
-                result.capabilities.with_pic = is_x86;
                 result.capabilities.with_psp = self.psp;
                 if is_x86 {
+                    result.attach_pic();
                     result.attach_pit();
                 }
                 result
@@ -334,7 +333,6 @@ impl VmManifestBuilder {
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
                     with_generic_pci_bus: false,
-                    with_generic_pic: false,
                     with_generic_psp: self.psp,
                     with_hyperv_firmware_pcat: false,
                     with_hyperv_firmware_uefi: matches!(self.ty, BaseChipsetType::HypervGen2Uefi),
@@ -396,6 +394,15 @@ impl VmChipsetResult {
             }
             .into_resource(),
         });
+        self
+    }
+
+    fn attach_pic(&mut self) -> &mut Self {
+        self.chipset_devices.push(ChipsetDeviceHandle {
+            name: PicDeviceHandle::ID.to_owned(),
+            resource: PicDeviceHandle.into_resource(),
+        });
+        self.capabilities.with_pic = true;
         self
     }
 
