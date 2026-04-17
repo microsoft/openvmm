@@ -70,8 +70,6 @@ vm_resource::register_static_resolvers! {
     nvme::resolver::NvmeControllerResolver,
     nvme_test::resolver::NvmeFaultControllerResolver,
     virtio::resolver::VirtioPciResolver,
-    #[cfg(target_os = "linux")]
-    vfio_assigned_device::resolver::VfioDeviceResolver,
 
     // SCSI
     scsidisk::resolver::SimpleScsiResolver,

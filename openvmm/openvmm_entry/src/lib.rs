@@ -775,15 +775,32 @@ async fn vm_config_from_command_line(
         .iter()
         .map(|cli_cfg| {
             use vm_resource::IntoResource;
-            PcieDeviceConfig {
+
+            let sysfs_path = Path::new("/sys/bus/pci/devices").join(&cli_cfg.pci_id);
+            let iommu_group_link = std::fs::read_link(sysfs_path.join("iommu_group"))
+                .with_context(|| format!("failed to read IOMMU group for {}", cli_cfg.pci_id))?;
+            let group_id: u64 = iommu_group_link
+                .file_name()
+                .and_then(|s| s.to_str())
+                .context("invalid iommu_group symlink")?
+                .parse()
+                .context("failed to parse IOMMU group ID")?;
+            let group = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/dev/vfio/{group_id}"))
+                .with_context(|| format!("failed to open /dev/vfio/{group_id}"))?;
+
+            Ok(PcieDeviceConfig {
                 port_name: cli_cfg.port_name.clone(),
                 resource: vfio_assigned_device_resources::VfioDeviceHandle {
                     pci_id: cli_cfg.pci_id.clone(),
+                    group,
                 }
                 .into_resource(),
-            }
+            })
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     #[cfg(windows)]
     let vpci_resources: Vec<_> = opt

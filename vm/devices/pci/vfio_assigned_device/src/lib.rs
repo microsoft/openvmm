@@ -12,6 +12,7 @@
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
+pub mod manager;
 pub mod resolver;
 
 use anyhow::Context as _;
@@ -38,9 +39,7 @@ use vmcore::save_restore::SavedStateNotSupported;
 
 /// VFIO BAR region information (offset and size within the device fd).
 #[derive(Debug, Clone, Copy, Inspect)]
-pub struct VfioBarInfo {
-    /// BAR index (0-5).
-    pub index: u8,
+struct VfioBarInfo {
     /// Offset within the VFIO device fd where this BAR region starts.
     #[inspect(hex)]
     pub vfio_offset: u64,
@@ -93,7 +92,7 @@ struct MsixEmulationState {
 /// intercepted and handled by a software emulator; all other BAR MMIO is
 /// proxied to the physical device via pread/pwrite on the VFIO device fd.
 #[derive(InspectMut)]
-pub struct VfioAssignedPciDevice {
+pub(crate) struct VfioAssignedPciDevice {
     /// The PCI address string (e.g., "0000:01:00.0") for diagnostics.
     #[inspect(display)]
     pci_id: String,
@@ -149,33 +148,9 @@ pub struct VfioAssignedPciDevice {
     /// flags at init).
     supports_reset: bool,
 
-    /// VFIO container and group handles. These must be kept alive for the
-    /// lifetime of the device — dropping them would close the VFIO fds and
-    /// tear down IOMMU mappings. Declared after `vfio_device` so they are
-    /// dropped after the device fd.
-    #[inspect(skip)]
-    _vfio_container: vfio_sys::Container,
-    #[inspect(skip)]
-    _vfio_group: vfio_sys::Group,
-}
-
-/// Parameters for creating a [`VfioAssignedPciDevice`].
-pub struct VfioAssignedPciDeviceConfig {
-    /// PCI BDF string (e.g., "0000:01:00.0").
-    pub pci_id: String,
-    /// The opened VFIO device (from `vfio_sys::Group::open_device`).
-    pub vfio_device: vfio_sys::Device,
-    /// Config region info from `vfio_sys::Device::region_info(CONFIG_REGION_INDEX)`.
-    pub config_offset: u64,
-    /// Config region size.
-    pub config_size: u64,
-    /// VFIO region info per BAR. `None` if the BAR region does not exist or
-    /// has zero size.
-    pub bar_info: Vec<VfioBarInfo>,
-    /// VFIO container handle (must outlive the device).
-    pub vfio_container: vfio_sys::Container,
-    /// VFIO group handle (must outlive the device).
-    pub vfio_group: vfio_sys::Group,
+    /// VFIO container/group binding. Keeps the container and group fds alive
+    /// and notifies the container manager on drop.
+    binding: manager::VfioDeviceBinding,
 }
 
 impl VfioAssignedPciDevice {
@@ -185,15 +160,19 @@ impl VfioAssignedPciDevice {
     /// region sizes (avoiding the write-all-ones probe cycle). Discovers MSI-X
     /// capability if present and creates a software emulator for it.
     pub fn new(
-        config: VfioAssignedPciDeviceConfig,
+        binding: manager::VfioDeviceBinding,
+        vfio_device: vfio_sys::Device,
+        pci_id: String,
         register_mmio: &mut dyn chipset_device::mmio::RegisterMmioIntercept,
         msi_target: &MsiTarget,
         irqfd: Arc<dyn IrqFd>,
     ) -> anyhow::Result<Self> {
-        let vfio_device = config.vfio_device;
-        let config_offset = config.config_offset;
-        let config_size = config.config_size;
-        let device_file = vfio_device.as_ref();
+        let config_info = vfio_device
+            .region_info(vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX)
+            .context("failed to get VFIO config region info")?;
+
+        let config_offset = config_info.offset;
+        let config_size = config_info.size;
 
         // Read BAR values and derive masks from VFIO region sizes.
         // This avoids the standard write-all-ones probe cycle — VFIO already
@@ -204,7 +183,7 @@ impl VfioAssignedPciDevice {
         let mut bars = [0u32; 6];
         for (i, bar) in bars.iter_mut().enumerate() {
             *bar = read_config_u32(
-                device_file,
+                vfio_device.as_ref(),
                 config_offset,
                 config_size,
                 HeaderType00::BAR0.0 + (i as u16) * 4,
@@ -213,8 +192,17 @@ impl VfioAssignedPciDevice {
 
         let mut bar_regions = [None; 6];
         let mut bar_mmio_controls = [(); 6].map(|_| None);
-        for info in config.bar_info {
-            let i = usize::from(info.index);
+        let mut i = 0;
+        while i < 6 {
+            let Ok(info) = vfio_device.region_info(i as u32) else {
+                i += 1;
+                continue;
+            };
+            if info.size == 0 {
+                i += 1;
+                continue;
+            }
+
             let flags = bars[i] & 0xf;
             bar_flags[i] = flags;
             let encoded = cfg_space::BarEncodingBits::from(flags);
@@ -239,12 +227,16 @@ impl VfioAssignedPciDevice {
                 bar_masks[i + 1] = (mask64 >> 32) as u32;
             }
 
-            bar_regions[i] = Some(info);
+            bar_regions[i] = Some(VfioBarInfo {
+                vfio_offset: info.offset,
+                size: info.size,
+            });
+
             bar_mmio_controls[i] = Some(register_mmio.new_io_region(&format!("bar{i}"), info.size));
         }
 
         // Discover MSI-X capability from physical device config space.
-        let msix = discover_msix(device_file, config_offset, config_size, msi_target);
+        let msix = discover_msix(vfio_device.as_ref(), config_offset, config_size, msi_target);
 
         // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
         // the ioctl on every VM reset for devices that don't support it.
@@ -254,7 +246,7 @@ impl VfioAssignedPciDevice {
             .unwrap_or(false);
 
         tracing::info!(
-            pci_id = config.pci_id.as_str(),
+            pci_id = pci_id.as_str(),
             ?bar_masks,
             has_msix = msix.is_some(),
             supports_reset,
@@ -262,7 +254,7 @@ impl VfioAssignedPciDevice {
         );
 
         Ok(Self {
-            pci_id: config.pci_id,
+            pci_id,
             vfio_device,
             irqfd,
             config_offset,
@@ -276,8 +268,7 @@ impl VfioAssignedPciDevice {
             bar_regions,
             msix,
             supports_reset,
-            _vfio_container: config.vfio_container,
-            _vfio_group: config.vfio_group,
+            binding,
         })
     }
 

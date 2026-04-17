@@ -209,6 +209,11 @@ pub struct Group {
 }
 
 impl Group {
+    /// Construct a `Group` from a pre-opened VFIO group file descriptor.
+    pub fn from_file(file: File) -> Self {
+        Self { file }
+    }
+
     pub fn open(group: u64) -> anyhow::Result<Self> {
         Self::open_path(format!("/dev/vfio/{group}").as_ref())
     }
@@ -277,6 +282,23 @@ impl Group {
                 .context("failed to set container")?;
         }
         Ok(())
+    }
+
+    /// Try to attach this group to the given container.
+    ///
+    /// Returns `Ok(true)` if the group was successfully attached, `Ok(false)`
+    /// if the kernel rejected the pairing (EINVAL — the IOMMU domains are
+    /// incompatible), or `Err` on unexpected failures.
+    pub fn try_set_container(&self, container: &Container) -> anyhow::Result<bool> {
+        // SAFETY: The file descriptors are valid.
+        let result = unsafe {
+            ioctl::vfio_group_set_container(self.file.as_raw_fd(), &container.file.as_raw_fd())
+        };
+        match result {
+            Ok(_) => Ok(true),
+            Err(nix::errno::Errno::EINVAL) => Ok(false),
+            Err(e) => Err(e).context("failed to set container"),
+        }
     }
 
     pub fn status(&self) -> anyhow::Result<GroupStatus> {

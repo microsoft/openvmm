@@ -112,7 +112,6 @@ serial_pl011.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 net_tap = { workspace = true, optional = true }
-vfio_assigned_device.workspace = true
 vhost_user_frontend.workspace = true
 disk_blockdevice.workspace = true
 
