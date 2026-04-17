@@ -758,6 +758,33 @@ impl HclNetworkVFManagerWorker {
         .unwrap_or_else(|cr| Err(anyhow!("vtl0 revoke timed out: {cr}")))
     }
 
+    /// Revokes the VTL0 VF from the guest.
+    ///
+    /// The guest-facing offer bit is cleared before the revoke RPC is issued so
+    /// duplicate removals become no-ops. On return,
+    /// `guest_state.offered_to_guest` is always false even if the RPC fails or
+    /// times out.
+    async fn remove_vtl0_vf(&mut self) {
+        let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+        let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
+        if self.guest_state.is_offered_to_guest().await {
+            *self.guest_state.offered_to_guest.lock().await = false;
+            if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
+                match self.revoke_vtl0_vf(vtl0_bus_control).await {
+                    Ok(_) => (),
+                    Err(err) => {
+                        tracing::error!(
+                            vtl2_vfid,
+                            vtl0_vfid,
+                            err = err.as_ref() as &dyn std::error::Error,
+                            "Failed to remove VTL0 VF"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Updates which VTL0 VF, if any, is associated with this worker.
     ///
     /// When `vtl2_device_state` is `Present`, the guest-visible VF id and
@@ -809,33 +836,6 @@ impl HclNetworkVFManagerWorker {
             }
         })
         .await
-    }
-
-    /// Revokes the VTL0 VF from the guest.
-    ///
-    /// The guest-facing offer bit is cleared before the revoke RPC is issued so
-    /// duplicate removals become no-ops. On return,
-    /// `guest_state.offered_to_guest` is always false even if the RPC fails or
-    /// times out.
-    async fn remove_vtl0_vf(&mut self) {
-        let vtl0_vfid = vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-        let vtl2_vfid = vtl2_vfid_from_bus_control(&self.vtl2_bus_control);
-        if self.guest_state.is_offered_to_guest().await {
-            *self.guest_state.offered_to_guest.lock().await = false;
-            if let Vtl0Bus::Present(vtl0_bus_control) = &self.vtl0_bus_control {
-                match self.revoke_vtl0_vf(vtl0_bus_control).await {
-                    Ok(_) => (),
-                    Err(err) => {
-                        tracing::error!(
-                            vtl2_vfid,
-                            vtl0_vfid,
-                            err = err.as_ref() as &dyn std::error::Error,
-                            "Failed to remove VTL0 VF"
-                        );
-                    }
-                }
-            }
-        }
     }
 
     async fn disconnect_all_endpoints(&mut self) {
