@@ -230,7 +230,7 @@ pub struct PetriVmConfig {
     pub pcie_nvme_drives: Vec<PcieNvmeDrive>,
 }
 
-/// A PCIe NVMe drive config VM.
+/// PCIe NVMe drive configuration.
 #[derive(Debug)]
 pub struct PcieNvmeDrive {
     /// PCIe root port name (e.g. "s0rc0rp0").
