@@ -201,6 +201,7 @@ impl TestNicEndpoint {
             tcp: true,
             udp: true,
             tso: true,
+            uso: false,
         };
         let multiqueue_support = MultiQueueSupport {
             max_queues: u16::MAX,

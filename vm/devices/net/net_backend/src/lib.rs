@@ -165,6 +165,8 @@ pub struct TxOffloadSupport {
     pub udp: bool,
     /// TCP segmentation offload.
     pub tso: bool,
+    /// UDP segmentation offload (USO).
+    pub uso: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -410,9 +412,10 @@ pub struct TxMetadata {
     /// The length of the TCP header. Only guaranteed to be set if various
     /// offload flags are set.
     pub l4_len: u8,
-    /// The maximum TCP segment size, used for segmentation. Only guaranteed to
-    /// be set if [`TxFlags::offload_tcp_segmentation`] is set.
-    pub max_tcp_segment_size: u16,
+    /// The maximum segment size, used for segmentation offload (TSO or USO).
+    /// Only guaranteed to be set if [`TxFlags::offload_tcp_segmentation`] or
+    /// [`TxFlags::offload_udp_segmentation`] is set.
+    pub max_segment_size: u16,
 }
 
 /// Flags affecting transmit behavior.
@@ -440,7 +443,10 @@ pub struct TxFlags {
     pub is_ipv4: bool,
     /// If true, the packet is IPv6. Mutually exclusive with `is_ipv4`.
     pub is_ipv6: bool,
-    #[bits(2)]
+    /// Offload UDP segmentation (USO), allowing UDP packets larger than the
+    /// MTU. `l2_len`, `l3_len`, and `max_segment_size` must be set.
+    pub offload_udp_segmentation: bool,
+    #[bits(1)]
     _reserved: u8,
 }
 
@@ -454,7 +460,7 @@ impl Default for TxMetadata {
             l2_len: 0,
             l3_len: 0,
             l4_len: 0,
-            max_tcp_segment_size: 0,
+            max_segment_size: 0,
         }
     }
 }
