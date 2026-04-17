@@ -184,7 +184,7 @@ where
         use crate::io_uring::IoUringSubmit as _;
 
         self.io_uring_submitter()
-            .map_or(false, |submitter| submitter.probe(opcode))
+            .is_some_and(|submitter| submitter.probe(opcode))
     }
 
     unsafe fn io_uring_submit(
