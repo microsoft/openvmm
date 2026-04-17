@@ -338,6 +338,10 @@ pub struct MemoryConfig {
     pub mmio_gaps: Vec<MemoryRange>,
     pub pci_ecam_gaps: Vec<MemoryRange>,
     pub pci_mmio_gaps: Vec<MemoryRange>,
+    /// Per-NUMA-node memory sizes. When set, RAM is distributed across
+    /// vNUMA nodes according to these sizes instead of assigning all
+    /// RAM to node 0. The sum must equal `mem_size`.
+    pub numa_mem_sizes: Option<Vec<u64>>,
 }
 
 #[derive(Debug, MeshPayload, Default)]

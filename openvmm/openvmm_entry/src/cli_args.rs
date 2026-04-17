@@ -48,9 +48,20 @@ pub struct Options {
         long,
         value_name = "SIZE",
         default_value = "1GB",
-        value_parser = parse_memory
+        value_parser = parse_memory,
+        conflicts_with = "numa_memory"
     )]
     pub memory: u64,
+
+    /// per-NUMA-node guest RAM sizes (comma-separated, e.g. "2G,2G").
+    /// Distributes memory across vNUMA nodes for ACPI SRAT / FDT reporting.
+    /// Mutually exclusive with --memory.
+    ///
+    /// TODO: This is informational topology only — backing pages are not pinned
+    /// to host NUMA nodes. This should change once we implement real numa
+    /// support.
+    #[clap(long, value_name = "SIZES", value_parser = parse_numa_memory, conflicts_with = "memory")]
+    pub numa_memory: Option<Vec<u64>>,
 
     /// use shared memory segment
     #[clap(short = 'M', long)]
@@ -973,6 +984,10 @@ fn parse_memory(s: &str) -> anyhow::Result<u64> {
         }()
         .with_context(|| format!("invalid memory size '{0}'", s))
     }
+}
+
+fn parse_numa_memory(s: &str) -> anyhow::Result<Vec<u64>> {
+    s.split(',').map(|part| parse_memory(part.trim())).collect()
 }
 
 /// Parse a number from a string that could be prefixed with 0x to indicate hex.
