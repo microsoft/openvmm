@@ -123,16 +123,10 @@ impl VfioDevice {
         tracing::info!(pci_id, keepalive, "device arrived");
         vfio_sys::print_relevant_params();
 
-        let container = vfio_sys::Container::new()?;
-        let group_id = vfio_sys::Group::find_group_for_device(&path)?;
-        let group = vfio_sys::Group::open_noiommu(group_id)?;
-        group.set_container(&container)?;
-        if !group.status()?.viable() {
-            anyhow::bail!("group is not viable");
-        }
+        let (container, group) = vfio_sys::setup_vfio_container_group(&path, IommuType::NoIommu)
+            .with_context(|| format!("failed VFIO setup for {pci_id}"))?;
 
         let driver = driver_source.simple();
-        container.set_iommu(IommuType::NoIommu)?;
         if keepalive {
             // Prevent physical hardware interaction when restoring.
             group.set_keep_alive(pci_id, &driver).await?;
