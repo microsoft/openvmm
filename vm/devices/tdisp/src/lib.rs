@@ -105,6 +105,62 @@ pub trait TdispHostDeviceTarget: Send + Sync {
     ) -> anyhow::Result<GuestToHostResponse>;
 }
 
+/// Isolation classification for a single VPCI resource (a BAR or DMA).
+///
+/// This mirrors the `VPCI_RESOURCE_ISOLATION` values used on the wire by
+/// `VpciMsgQueryIsolatedResources`, but is defined here so that
+/// `chipset_device` and `tdisp` can expose an isolation-reporter trait
+/// without taking a dependency on `vpci_protocol`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TdispResourceIsolation {
+    /// Host-visible, bounce-buffered.
+    Shared,
+    /// Host-inaccessible after TDI validation; backed by guest-private memory.
+    Private,
+}
+
+/// Classification of a device's BAR and DMA isolation for the VPCI
+/// `QueryIsolatedResources` message, reported by the guest-facing VPCI
+/// server.
+#[derive(Debug, Clone, Copy)]
+pub enum TdispIsolationReport {
+    /// The chipset device wraps a non-TDISP device. The paravisor should
+    /// answer the guest query with all `Shared` + `SUCCESS`, matching the
+    /// host VSP's behavior for non-confidential VMs.
+    NotTdispCapable,
+    /// The TDI is not in the Run state, or is in Run but no resource has
+    /// been unblocked yet. The paravisor should answer with an error
+    /// status; the guest may retry later.
+    NotReady,
+    /// The TDI is in Run and resources have been unblocked. The inner
+    /// arrays give the six per-BAR classifications and the DMA
+    /// classification. Guaranteed to contain only `Shared` / `Private`.
+    Ready {
+        /// Per-BAR isolation. Index `i` corresponds to BAR `i`.
+        bars: [TdispResourceIsolation; 6],
+        /// DMA path isolation.
+        dma: TdispResourceIsolation,
+    },
+    /// An internal paravisor error prevented reading the isolation state
+    /// (e.g. a non-blocking try-lock on the TDISP mutex failed, which
+    /// should be unreachable from any guest-driven sequence). The
+    /// paravisor should answer with an error status and log the event.
+    Error,
+}
+
+/// Trait added to chipset devices that want to report their VPCI
+/// resource-isolation state on behalf of the guest-facing VPCI server.
+///
+/// Implemented **only** by the OpenHCL VPCI relay's `RelayedVpciDevice`.
+/// Emulated devices and the host-facing `VpciClient` do not see this
+/// trait; the query is synthesized locally by the paravisor and never
+/// forwarded upstream.
+pub trait TdispIsolationReporter: Send + Sync {
+    /// Return a snapshot of the current isolation state, suitable for
+    /// populating a `VpciIsolatedResourcesReply`.
+    fn tdisp_isolation_report(&mut self) -> TdispIsolationReport;
+}
+
 /// An emulator which runs the TDISP state machine for a synthetic device.
 pub struct TdispHostDeviceTargetEmulator {
     machine: TdispHostStateMachine,
