@@ -197,10 +197,7 @@ open_enum! {
     pub enum Status: u32 {
         /// Operation completed successfully
         SUCCESS = 0,
-        /// Generic failure. Used to signal that an otherwise-valid request
-        /// could not be serviced because of transient or internal state
-        /// (e.g. `VPCI_QUERY_ISOLATED_RESOURCES` against a TDISP device that
-        /// has not yet reached the Run state and had resources unblocked).
+        /// Generic failure.
         UNSUCCESSFUL = 0xC0000001,
         /// Protocol revision mismatch
         REVISION_MISMATCH = 0xC0000059,
@@ -208,6 +205,10 @@ open_enum! {
         BAD_DATA = 0xC000090B,
         /// Operation not supported
         NOT_SUPPORTED = 0xC00000BB,
+        /// The device is not in a valid state to service the request.
+        /// Used for `VPCI_QUERY_ISOLATED_RESOURCES` when the TDI has not
+        /// reached Run, so the paravisor cannot yet classify resources.
+        INVALID_DEVICE_STATE = 0xC0000184,
     }
 }
 

@@ -528,23 +528,61 @@ impl VpciClientTdispState {
         self.mutable_state.intercepted_bars.contains(&bar_id)
     }
 
+    /// Classify a single BAR's isolation, based solely on the cached TDI
+    /// interface report and `intercepted_bars`.
+    ///
+    /// This is the single source of truth used by both
+    /// [`Self::isolation_snapshot`] and [`Self::tdisp_on_mmio_reconfigured`]:
+    /// a BAR whose classification here is `PRIVATE` is exactly one that
+    /// `tdisp_on_mmio_reconfigured` will call `tdisp_unblock_mmio` for;
+    /// `SHARED` is skipped. `INVALID` means the BAR has no entry in the
+    /// cached report (or there is no cached report yet).
+    fn classify_bar(&self, bar_id: u16) -> ResourceIsolation {
+        // Host-intercepted BARs (MSI-X table / PBA) have no host-RAM
+        // backing and can never be flipped private — always SHARED,
+        // independent of what the report says.
+        if self.mutable_state.intercepted_bars.contains(&bar_id) {
+            return ResourceIsolation::SHARED;
+        }
+
+        // No cached report yet (attestation hasn't run) → we don't know
+        // if this BAR is claimed at all, so INVALID rather than SHARED.
+        let Some(report) = self.mutable_state.tdi_report.as_ref() else {
+            return ResourceIsolation::INVALID;
+        };
+
+        // `range_id` == PCI BAR index for the guest protocols we
+        // support. A missing entry is an unused slot or the upper half
+        // of a 64-bit BAR (not reported independently).
+        let Some(range) = report
+            .mmio_interface_info
+            .iter()
+            .find(|r| r.range_id == bar_id)
+        else {
+            return ResourceIsolation::INVALID;
+        };
+
+        // `is_non_tee_mem` ranges have no protected backing and must
+        // never be passed to `tdisp_unblock_mmio` — report SHARED and
+        // skip. Everything else is TEE memory the TDI owns → PRIVATE.
+        if range.flags.is_non_tee_mem() {
+            ResourceIsolation::SHARED
+        } else {
+            ResourceIsolation::PRIVATE
+        }
+    }
+
     /// Classify BAR and DMA isolation for this device at this instant,
     /// suitable for populating a `VpciIsolatedResourcesReply` on the
     /// guest-facing side.
     ///
-    /// Returns [`IsolationSnapshot::NotReady`] if the TDI has not reached
-    /// `Run`, or if it has but no resource has been unblocked yet — the
-    /// paravisor cannot honestly report isolation until at least one
-    /// BAR or DMA has been bound into private memory.
-    ///
-    /// Per-BAR classification (for the 6-entry array):
-    /// - `PRIVATE` iff the BAR ID is in `validated_mmio_bars` **and not**
-    ///   in `intercepted_bars`.
-    /// - `SHARED` iff the BAR ID is in `intercepted_bars` (paravisor-
-    ///   virtualized MSI-X table/PBA — known-shared because it is never
-    ///   flipped private).
-    /// - `INVALID` otherwise, meaning the BAR is not part of the known
-    ///   set of tracked BAR IDs.
+    /// Returns [`IsolationSnapshot::NotReady`] iff the TDI has not reached
+    /// `Run`. Once `Run`, always returns `Ready` — classification mirrors
+    /// the logic that [`Self::tdisp_on_mmio_reconfigured`] applies when
+    /// the guest enables MMIO: a BAR is `PRIVATE` exactly when
+    /// `tdisp_unblock_mmio` would be called for it, `SHARED` when it
+    /// would be skipped, and `INVALID` when the cached TDI report has
+    /// no entry for it.
     ///
     /// DMA classification rules:
     /// - `PRIVATE` iff `dma_unblocked` is true.
@@ -554,22 +592,9 @@ impl VpciClientTdispState {
             return IsolationSnapshot::NotReady;
         }
 
-        let any_bar_unblocked = !self.mutable_state.validated_mmio_bars.is_empty();
-        if !any_bar_unblocked && !self.mutable_state.dma_unblocked {
-            return IsolationSnapshot::NotReady;
-        }
-
         let mut bars = [ResourceIsolation::INVALID; 6];
         for bar_id in 0..6u16 {
-            let is_intercepted = self.mutable_state.intercepted_bars.contains(&bar_id);
-            let is_validated = self.mutable_state.validated_mmio_bars.contains(&bar_id);
-            bars[bar_id as usize] = if is_intercepted {
-                ResourceIsolation::SHARED
-            } else if is_validated {
-                ResourceIsolation::PRIVATE
-            } else {
-                ResourceIsolation::INVALID
-            };
+            bars[bar_id as usize] = self.classify_bar(bar_id);
         }
 
         let dma = if self.mutable_state.dma_unblocked {
@@ -619,21 +644,6 @@ impl VpciClientTdispState {
                 return Ok(());
             }
 
-            // This BAR is marked as intercepted by an emulator. There is no
-            // convertible guest-RAM page backing this GPA on the host, so
-            // calling tdisp_unblock_mmio cannot mark anything as private. Skip
-            // entirely.
-            if self.mutable_state.intercepted_bars.contains(&bar_id) {
-                tracing::info!(
-                    bar_id,
-                    base_address,
-                    length,
-                    "skipping MMIO unblock for BAR because it is an intercepted region"
-                );
-                self.mutable_state.validated_mmio_bars.insert(bar_id);
-                return Ok(());
-            }
-
             if self.mutable_state.validated_mmio_bars.contains(&bar_id) {
                 tracing::debug!(
                     bar_id,
@@ -642,38 +652,33 @@ impl VpciClientTdispState {
                 return Ok(());
             }
 
-            // Look up the MMIO range in the TDI interface report by range_id
-            // (which matches the BAR index for the guest protocols we
-            // currently support). Only TEE memory (is_non_tee_mem == false)
-            // should be passed to tdisp_unblock_mmio; non-TEE ranges are
-            // unprotected and must not be validated.
-            let report = self.mutable_state.tdi_report.as_ref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "tdisp_on_mmio_reconfigured: TDI interface report not available; device has not been attested"
-                )
-            })?;
-
-            let mmio_range = report
-                .mmio_interface_info
-                .iter()
-                .find(|r| r.range_id == bar_id)
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "tdisp_on_mmio_reconfigured: BAR {bar_id} not present in TDI interface report"
-                    )
-                })?;
-
-            if mmio_range.flags.is_non_tee_mem() {
-                tracing::info!(
-                    bar_id,
-                    base_address,
-                    length,
-                    "skipping MMIO unblock for BAR because the TDI report marks it as non-TEE memory"
-                );
-                // Record the BAR as handled so we don't repeatedly re-check
-                // the report on subsequent reconfiguration callbacks.
-                self.mutable_state.validated_mmio_bars.insert(bar_id);
-                return Ok(());
+            match self.classify_bar(bar_id) {
+                ResourceIsolation::SHARED => {
+                    tracing::info!(
+                        bar_id,
+                        base_address,
+                        length,
+                        "skipping MMIO unblock for BAR classified SHARED \
+                         (intercepted or non-TEE memory)"
+                    );
+                    self.mutable_state.validated_mmio_bars.insert(bar_id);
+                    return Ok(());
+                }
+                ResourceIsolation::INVALID => {
+                    anyhow::bail!(
+                        "tdisp_on_mmio_reconfigured: BAR {bar_id} has no entry in \
+                         the TDI interface report (or report not available); \
+                         device has not been attested"
+                    );
+                }
+                ResourceIsolation::PRIVATE => {}
+                other => {
+                    anyhow::bail!(
+                        "tdisp_on_mmio_reconfigured: unexpected BAR {bar_id} \
+                         classification {:?}",
+                        other
+                    );
+                }
             }
 
             let device_id = self.mutable_state.guest_device_id;
@@ -870,13 +875,20 @@ impl VpciDevice {
     /// guest-driven queries — contention indicates an internal bug and
     /// callers should treat it as an error.
     pub fn tdisp_try_isolation_snapshot(&self) -> Option<IsolationSnapshot> {
-        self.tdisp.0.try_lock().map(|guard| guard.isolation_snapshot())
+        self.tdisp
+            .0
+            .try_lock()
+            .map(|guard| guard.isolation_snapshot())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use tdisp::devicereport::TdispTdiReportInterfaceInfo;
+    use tdisp::devicereport::TdispTdiReportMmioFlags;
+    use tdisp::devicereport::TdispTdiReportMmioInterfaceInfo;
 
     /// Build a `VpciClientTdispState` with default fields and a dangling
     /// worker sender. `send_tdisp_command` must not be called on the
@@ -894,6 +906,36 @@ mod tests {
         )
     }
 
+    /// Build a minimal `TdiReportStruct` containing only the given
+    /// `mmio_interface_info` ranges — enough for `isolation_snapshot`.
+    fn make_report(ranges: Vec<TdispTdiReportMmioInterfaceInfo>) -> TdiReportStruct {
+        TdiReportStruct {
+            interface_info: TdispTdiReportInterfaceInfo::new(),
+            msi_x_message_control: 0,
+            lnr_control: 0,
+            tph_control: 0,
+            mmio_interface_info: ranges,
+        }
+    }
+
+    fn tee_range(range_id: u16) -> TdispTdiReportMmioInterfaceInfo {
+        TdispTdiReportMmioInterfaceInfo {
+            first_4k_page_offset: 0,
+            num_4k_pages: 1,
+            flags: TdispTdiReportMmioFlags::new().with_is_non_tee_mem(false),
+            range_id,
+        }
+    }
+
+    fn non_tee_range(range_id: u16) -> TdispTdiReportMmioInterfaceInfo {
+        TdispTdiReportMmioInterfaceInfo {
+            first_4k_page_offset: 0,
+            num_4k_pages: 1,
+            flags: TdispTdiReportMmioFlags::new().with_is_non_tee_mem(true),
+            range_id,
+        }
+    }
+
     #[test]
     fn isolation_snapshot_not_ready_when_not_run() {
         let state = new_state();
@@ -904,55 +946,46 @@ mod tests {
     }
 
     #[test]
-    fn isolation_snapshot_not_ready_in_run_with_nothing_unblocked() {
+    fn isolation_snapshot_ready_in_run_with_empty_report() {
+        // In Run with no cached report: every BAR is INVALID; DMA SHARED.
         let mut state = new_state();
         state.mutable_state.tdi_state = TdispTdiState::Run;
-        assert!(matches!(
-            state.isolation_snapshot(),
-            IsolationSnapshot::NotReady
-        ));
-    }
-
-    #[test]
-    fn isolation_snapshot_ready_marks_unblocked_bar_private() {
-        let mut state = new_state();
-        state.mutable_state.tdi_state = TdispTdiState::Run;
-        state.mutable_state.validated_mmio_bars.insert(1);
         let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
             panic!("expected Ready");
         };
-        // Only BAR 1 is known/validated; all other slots are unknown and
-        // must surface as `INVALID`.
-        assert_eq!(
-            bars,
-            [
-                ResourceIsolation::INVALID,
-                ResourceIsolation::PRIVATE,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
-                ResourceIsolation::INVALID,
-            ]
-        );
+        assert_eq!(bars, [ResourceIsolation::INVALID; 6]);
         assert_eq!(dma, ResourceIsolation::SHARED);
     }
 
     #[test]
-    fn isolation_snapshot_intercepted_bar_is_shared() {
+    fn isolation_snapshot_classifies_report_ranges() {
+        // BAR 0: TEE memory → PRIVATE.
+        // BAR 2: non-TEE memory → SHARED.
+        // BAR 4: TEE memory but intercepted → SHARED.
+        // BARs 1, 3, 5: no entry → INVALID.
         let mut state = new_state();
         state.mutable_state.tdi_state = TdispTdiState::Run;
-        // BAR 0 unblocked (private). BAR 4 is a paravisor-intercepted
-        // MSI-X BAR — regardless of whether it also ends up in the
-        // validated set, it must report SHARED.
-        state.mutable_state.validated_mmio_bars.insert(0);
-        state.mutable_state.validated_mmio_bars.insert(4);
         state.mutable_state.intercepted_bars.insert(4);
-        let IsolationSnapshot::Ready { bars, .. } = state.isolation_snapshot() else {
+        state.mutable_state.tdi_report = Some(make_report(vec![
+            tee_range(0),
+            non_tee_range(2),
+            tee_range(4),
+        ]));
+        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
             panic!("expected Ready");
         };
-        assert_eq!(bars[0], ResourceIsolation::PRIVATE);
-        assert_eq!(bars[1], ResourceIsolation::INVALID);
-        assert_eq!(bars[4], ResourceIsolation::SHARED);
+        assert_eq!(
+            bars,
+            [
+                ResourceIsolation::PRIVATE,
+                ResourceIsolation::INVALID,
+                ResourceIsolation::SHARED,
+                ResourceIsolation::INVALID,
+                ResourceIsolation::SHARED,
+                ResourceIsolation::INVALID,
+            ]
+        );
+        assert_eq!(dma, ResourceIsolation::SHARED);
     }
 
     #[test]
@@ -963,7 +996,6 @@ mod tests {
         let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
             panic!("expected Ready");
         };
-        // No BARs validated or intercepted — every slot is unknown.
         assert_eq!(bars, [ResourceIsolation::INVALID; 6]);
         assert_eq!(dma, ResourceIsolation::PRIVATE);
     }

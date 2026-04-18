@@ -58,6 +58,9 @@ use vpci_client::tdisp::TdispVpciAttestationInterface;
 /// TODO TDISP: Required for the tdisp crate to be built in the meantime.
 #[expect(unused_imports)]
 use tdisp::TdispHostDeviceInterface;
+use tdisp::TdispIsolationReport;
+use tdisp::TdispIsolationReporter;
+use tdisp::TdispResourceIsolation;
 use tdisp::TdispTdiState;
 use tdisp::test_helpers::TDISP_MOCK_DEVICE_ID;
 use tdisp::test_helpers::TDISP_MOCK_GUEST_PROTOCOL;
@@ -527,6 +530,56 @@ struct RelayedVpciDevice(Arc<VpciDevice>);
 impl ChipsetDevice for RelayedVpciDevice {
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         Some(self)
+    }
+
+    fn supports_tdisp_isolation(&mut self) -> Option<&mut dyn TdispIsolationReporter> {
+        Some(self)
+    }
+}
+
+impl TdispIsolationReporter for RelayedVpciDevice {
+    fn tdisp_isolation_report(&mut self) -> TdispIsolationReport {
+        use vpci_client::tdisp::IsolationSnapshot;
+        use vpci_protocol::ResourceIsolation;
+
+        // Non-blocking read. All vpci packets for this device are serialized
+        // through the same VMBus channel worker, so the per-device TDISP
+        // mutex must not be contended when the guest issues
+        // `VPCI_QUERY_ISOLATED_RESOURCES`. If we do fail to acquire the
+        // lock, it indicates a paravisor-internal bug — surface it as
+        // `Error` so the caller can log and reply with a non-success
+        // NTSTATUS.
+        let Some(snapshot) = self.0.tdisp_try_isolation_snapshot() else {
+            tracing::error!(
+                "tdisp_isolation_report: failed to acquire TDISP lock; this \
+                 indicates a paravisor-internal bug as packets for a device \
+                 should be serialized"
+            );
+            return TdispIsolationReport::Error;
+        };
+
+        fn to_tdisp(r: ResourceIsolation) -> TdispResourceIsolation {
+            match r {
+                ResourceIsolation::PRIVATE => TdispResourceIsolation::Private,
+                ResourceIsolation::SHARED => TdispResourceIsolation::Shared,
+                _ => TdispResourceIsolation::Invalid,
+            }
+        }
+
+        match snapshot {
+            IsolationSnapshot::NotReady => TdispIsolationReport::NotReady,
+            IsolationSnapshot::Ready { bars, dma } => TdispIsolationReport::Ready {
+                bars: [
+                    to_tdisp(bars[0]),
+                    to_tdisp(bars[1]),
+                    to_tdisp(bars[2]),
+                    to_tdisp(bars[3]),
+                    to_tdisp(bars[4]),
+                    to_tdisp(bars[5]),
+                ],
+                dma: to_tdisp(dma),
+            },
+        }
     }
 }
 

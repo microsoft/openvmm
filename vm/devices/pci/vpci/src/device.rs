@@ -1020,6 +1020,11 @@ impl ReadyState {
                     DeviceRequest::QueryIsolatedResources => {
                         let all_invalid = [protocol::ResourceIsolation::INVALID; 6];
                         let reply = if self.vpci_version < protocol::ProtocolVersion::GE_TDISP {
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                negotiated_version = ?self.vpci_version,
+                                "VPCI_QUERY_ISOLATED_RESOURCES on downlevel protocol; replying NOT_SUPPORTED"
+                            );
                             protocol::VpciIsolatedResourcesReply {
                                 status: protocol::Status::NOT_SUPPORTED,
                                 bar_isolation: all_invalid,
@@ -1030,7 +1035,20 @@ impl ReadyState {
                             let report = locked_dev
                                 .supports_tdisp_isolation()
                                 .map(|r| r.tdisp_isolation_report());
-                            build_isolation_reply(report)
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                ?report,
+                                "VPCI_QUERY_ISOLATED_RESOURCES isolation report"
+                            );
+                            let reply = build_isolation_reply(report);
+                            tracelimit::info_ratelimited!(
+                                instance_id = %dev.instance_id,
+                                status = ?reply.status,
+                                bar_isolation = ?reply.bar_isolation,
+                                dma_isolation = ?reply.dma_isolation,
+                                "VPCI_QUERY_ISOLATED_RESOURCES reply"
+                            );
+                            reply
                         };
                         conn.send_completion(transaction_id, &reply, &[])?;
                     }
@@ -1121,8 +1139,7 @@ enum InvalidBars {
 
 /// Convert a `TdispIsolationReport` (or `None`, when the chipset device
 /// does not support the isolation reporter) into the wire reply for
-/// `VPCI_QUERY_ISOLATED_RESOURCES`. See the plan in
-/// `OPENHCL-TDISP-QUERYISOLATEDRESOURCES` for the mapping.
+/// `VPCI_QUERY_ISOLATED_RESOURCES`.
 fn build_isolation_reply(
     report: Option<tdisp::TdispIsolationReport>,
 ) -> protocol::VpciIsolatedResourcesReply {
@@ -1134,6 +1151,7 @@ fn build_isolation_reply(
         match r {
             TdispResourceIsolation::Shared => ResourceIsolation::SHARED,
             TdispResourceIsolation::Private => ResourceIsolation::PRIVATE,
+            TdispResourceIsolation::Invalid => ResourceIsolation::INVALID,
         }
     }
 
@@ -1149,13 +1167,16 @@ fn build_isolation_reply(
             bar_isolation: [ResourceIsolation::SHARED; 6],
             dma_isolation: ResourceIsolation::SHARED,
         },
-        Some(TdispIsolationReport::NotReady) | Some(TdispIsolationReport::Error) => {
-            protocol::VpciIsolatedResourcesReply {
-                status: protocol::Status::UNSUCCESSFUL,
-                bar_isolation: all_invalid,
-                dma_isolation: ResourceIsolation::INVALID,
-            }
-        }
+        Some(TdispIsolationReport::NotReady) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::INVALID_DEVICE_STATE,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
+        Some(TdispIsolationReport::Error) => protocol::VpciIsolatedResourcesReply {
+            status: protocol::Status::UNSUCCESSFUL,
+            bar_isolation: all_invalid,
+            dma_isolation: ResourceIsolation::INVALID,
+        },
         Some(TdispIsolationReport::Ready { bars, dma }) => protocol::VpciIsolatedResourcesReply {
             status: protocol::Status::SUCCESS,
             bar_isolation: [
@@ -2783,7 +2804,7 @@ mod tests {
     ///
     /// Exercises every branch of `build_isolation_reply`:
     /// - `Ready` → `SUCCESS` with the per-BAR/DMA classifications echoed.
-    /// - `NotReady` → `UNSUCCESSFUL` with all entries `INVALID`.
+    /// - `NotReady` → `INVALID_DEVICE_STATE` with all entries `INVALID`.
     /// - `NotTdispCapable` → `SUCCESS` with all entries `SHARED`.
     /// - `Error` → `UNSUCCESSFUL`.
     /// - Downlevel negotiation (no `GE_TDISP`) → `NOT_SUPPORTED`.
@@ -2792,15 +2813,15 @@ mod tests {
         use tdisp::TdispIsolationReport;
         use tdisp::TdispResourceIsolation;
 
-        // Ready: BAR 1 private, BAR 4 shared (intercepted), rest invalid;
-        // DMA private.
+        // Ready: BAR 0 PRIVATE (TEE), BAR 2 SHARED (non-TEE), BAR 4
+        // SHARED (intercepted), others INVALID. DMA PRIVATE.
         let ready_bars = [
-            TdispResourceIsolation::Shared,
             TdispResourceIsolation::Private,
+            TdispResourceIsolation::Invalid,
             TdispResourceIsolation::Shared,
+            TdispResourceIsolation::Invalid,
             TdispResourceIsolation::Shared,
-            TdispResourceIsolation::Shared,
-            TdispResourceIsolation::Shared,
+            TdispResourceIsolation::Invalid,
         ];
         let cases: &[(TdispIsolationReport, _, _)] = &[
             (
@@ -2810,12 +2831,12 @@ mod tests {
                 },
                 protocol::Status::SUCCESS,
                 [
-                    protocol::ResourceIsolation::SHARED,
                     protocol::ResourceIsolation::PRIVATE,
+                    protocol::ResourceIsolation::INVALID,
                     protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
                     protocol::ResourceIsolation::SHARED,
-                    protocol::ResourceIsolation::SHARED,
-                    protocol::ResourceIsolation::SHARED,
+                    protocol::ResourceIsolation::INVALID,
                 ],
             ),
             (
@@ -2825,7 +2846,7 @@ mod tests {
             ),
             (
                 TdispIsolationReport::NotReady,
-                protocol::Status::UNSUCCESSFUL,
+                protocol::Status::INVALID_DEVICE_STATE,
                 [protocol::ResourceIsolation::INVALID; 6],
             ),
             (
@@ -2856,6 +2877,7 @@ mod tests {
                 (TdispIsolationReport::Ready { dma, .. }, _) => match dma {
                     TdispResourceIsolation::Private => protocol::ResourceIsolation::PRIVATE,
                     TdispResourceIsolation::Shared => protocol::ResourceIsolation::SHARED,
+                    TdispResourceIsolation::Invalid => protocol::ResourceIsolation::INVALID,
                 },
                 (TdispIsolationReport::NotTdispCapable, _) => protocol::ResourceIsolation::SHARED,
                 _ => protocol::ResourceIsolation::INVALID,

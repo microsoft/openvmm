@@ -117,6 +117,11 @@ pub enum TdispResourceIsolation {
     Shared,
     /// Host-inaccessible after TDI validation; backed by guest-private memory.
     Private,
+    /// Paravisor has no classification for this slot (e.g. the cached
+    /// TDI interface report has no entry for this BAR index, including
+    /// the upper half of a 64-bit BAR which is not reported
+    /// independently).
+    Invalid,
 }
 
 /// Classification of a device's BAR and DMA isolation for the VPCI
