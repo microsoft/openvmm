@@ -43,7 +43,10 @@ impl ResourceId<HypervisorKind> for KvmHandle {
 
 /// Handle for the MSHV hypervisor backend.
 #[derive(MeshPayload)]
-pub struct MshvHandle;
+pub struct MshvHandle {
+    /// An open `/dev/mshv` file descriptor.
+    pub mshv: std::fs::File,
+}
 
 impl ResourceId<HypervisorKind> for MshvHandle {
     const ID: &'static str = "mshv";

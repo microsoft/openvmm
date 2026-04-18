@@ -13,6 +13,7 @@
 use hypervisor_resources::HypervisorKind;
 use hypervisor_resources::MshvHandle;
 use openvmm_core::hypervisor_backend::ResolvedHypervisorBackend;
+use vm_resource::IntoResource;
 use vm_resource::Resource;
 
 /// MSHV probe for auto-detection.
@@ -24,7 +25,12 @@ impl hypervisor_resources::HypervisorProbe for MshvProbe {
     }
 
     fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>> {
-        Ok(virt_mshv::is_available()?.then(|| Resource::new(MshvHandle)))
+        let mshv = match fs_err::File::open("/dev/mshv") {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        Ok(Some(MshvHandle { mshv: mshv.into() }.into_resource()))
     }
 }
 
@@ -35,8 +41,10 @@ impl vm_resource::ResolveResource<HypervisorKind, MshvHandle> for MshvResolver {
     type Output = ResolvedHypervisorBackend;
     type Error = std::convert::Infallible;
 
-    fn resolve(&self, _resource: MshvHandle, _input: ()) -> Result<Self::Output, Self::Error> {
-        Ok(ResolvedHypervisorBackend::new(virt_mshv::LinuxMshv))
+    fn resolve(&self, resource: MshvHandle, _input: ()) -> Result<Self::Output, Self::Error> {
+        Ok(ResolvedHypervisorBackend::new(virt_mshv::LinuxMshv::from(
+            resource.mshv,
+        )))
     }
 }
 

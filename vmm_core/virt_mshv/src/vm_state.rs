@@ -10,6 +10,7 @@
 
 use super::Error;
 use super::VcpuFdExt;
+use crate::ErrorInner;
 use crate::MshvPartition;
 use hvdef::HvX64RegisterName;
 use hvdef::hypercall::HvRegisterAssoc;
@@ -34,7 +35,7 @@ impl MshvPartition {
         self.inner
             .bsp_vcpufd
             .get_hvdef_regs(&mut assoc[..])
-            .map_err(Error::Register)?;
+            .map_err(ErrorInner::Register)?;
 
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)
@@ -55,7 +56,8 @@ impl MshvPartition {
         self.inner
             .bsp_vcpufd
             .set_hvdef_regs(&assoc[..])
-            .map_err(Error::Register)
+            .map_err(ErrorInner::Register)?;
+        Ok(())
     }
 }
 
@@ -83,7 +85,7 @@ impl AccessVmState for &'_ MshvPartition {
             .inner
             .vmfd
             .get_partition_property(hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME)
-            .map_err(Error::GetPartitionProperty)?;
+            .map_err(|e| ErrorInner::GetPartitionProperty(e.into()))?;
         Ok(vm::ReferenceTime { value: ref_time })
     }
 
@@ -94,7 +96,8 @@ impl AccessVmState for &'_ MshvPartition {
                 hv_partition_property_code_HV_PARTITION_PROPERTY_REFERENCE_TIME,
                 value.value,
             )
-            .map_err(Error::SetPartitionProperty)
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
+        Ok(())
     }
 
     fn reference_tsc_page(&mut self) -> Result<vm::ReferenceTscPage, Self::Error> {

@@ -26,6 +26,7 @@ inspect.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
+fs-err.workspace = true
 mshv-bindings = { workspace = true, features = ["with-serde", "fam-wrappers"] }
 mshv-ioctls.workspace = true
 libc.workspace = true

@@ -4,7 +4,6 @@
 //! Linux /dev/mshv implementation of the virt::generic interfaces.
 
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
-#![expect(missing_docs)]
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 
@@ -47,6 +46,7 @@ use std::convert::Infallible;
 use std::io;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
+use std::os::fd::IntoRawFd as _;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::Weak;
@@ -85,12 +85,12 @@ use zerocopy::IntoBytes;
 
 /// Extension trait for [`VcpuFd`] to accept hvdef register types directly.
 trait VcpuFdExt {
-    fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), MshvError>;
-    fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), MshvError>;
+    fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), KernelError>;
+    fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), KernelError>;
 }
 
 impl VcpuFdExt for VcpuFd {
-    fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), MshvError> {
+    fn get_hvdef_regs(&self, regs: &mut [HvRegisterAssoc]) -> Result<(), KernelError> {
         use mshv_bindings::hv_register_assoc;
         const {
             assert!(size_of::<HvRegisterAssoc>() == size_of::<hv_register_assoc>());
@@ -99,10 +99,11 @@ impl VcpuFdExt for VcpuFd {
         // SAFETY: HvRegisterAssoc and hv_register_assoc have the same layout.
         self.get_reg(unsafe {
             std::mem::transmute::<&mut [HvRegisterAssoc], &mut [hv_register_assoc]>(regs)
-        })
+        })?;
+        Ok(())
     }
 
-    fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), MshvError> {
+    fn set_hvdef_regs(&self, regs: &[HvRegisterAssoc]) -> Result<(), KernelError> {
         use mshv_bindings::hv_register_assoc;
         const {
             assert!(size_of::<HvRegisterAssoc>() == size_of::<hv_register_assoc>());
@@ -111,12 +112,34 @@ impl VcpuFdExt for VcpuFd {
         // SAFETY: HvRegisterAssoc and hv_register_assoc have the same layout.
         self.set_reg(unsafe {
             std::mem::transmute::<&[HvRegisterAssoc], &[hv_register_assoc]>(regs)
-        })
+        })?;
+        Ok(())
     }
 }
 
+/// Hypervisor backend for Linux /dev/mshv.
 #[derive(Debug)]
-pub struct LinuxMshv;
+pub struct LinuxMshv {
+    mshv: Mshv,
+}
+
+impl LinuxMshv {
+    /// Creates a new instance of the LinuxMshv hypervisor backend.
+    pub fn new() -> io::Result<Self> {
+        let file = fs_err::File::open("/dev/mshv")?;
+        Ok(Self::from(std::fs::File::from(file)))
+    }
+}
+
+impl From<std::fs::File> for LinuxMshv {
+    fn from(file: std::fs::File) -> Self {
+        LinuxMshv {
+            // SAFETY: We take ownership of the file descriptor and pass it to Mshv.
+            // TODO: fix mshv_bindings to not need this unsafe code.
+            mshv: unsafe { Mshv::new_with_fd_number(file.into_raw_fd()) },
+        }
+    }
+}
 
 impl virt::Hypervisor for LinuxMshv {
     type ProtoPartition<'a> = MshvProtoPartition<'a>;
@@ -132,11 +155,8 @@ impl virt::Hypervisor for LinuxMshv {
         config: ProtoPartitionConfig<'a>,
     ) -> Result<MshvProtoPartition<'a>, Self::Error> {
         if config.isolation.is_isolated() {
-            return Err(Error::IsolationNotSupported);
+            return Err(ErrorInner::IsolationNotSupported.into());
         }
-
-        // Open /dev/mshv.
-        let mshv = Mshv::new().map_err(Error::OpenMshv)?;
 
         // Build partition creation flags based on the requested
         // configuration. LAPIC is always enabled (the hypervisor emulates
@@ -177,13 +197,13 @@ impl virt::Hypervisor for LinuxMshv {
         // Create the VM with our explicit partition configuration.
         let vmfd: VmFd;
         loop {
-            match mshv.create_vm_with_args(&create_args) {
+            match self.mshv.create_vm_with_args(&create_args) {
                 Ok(fd) => vmfd = fd,
                 Err(e) => {
                     if e.errno() == libc::EINTR {
                         continue;
                     } else {
-                        return Err(Error::CreateVMFailed);
+                        return Err(ErrorInner::CreateVMFailed.into());
                     }
                 }
             }
@@ -222,11 +242,11 @@ impl virt::Hypervisor for LinuxMshv {
                 mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_SYNTHETIC_PROC_FEATURES,
                 u64::from(synthetic_features),
             )
-            .map_err(Error::SetPartitionProperty)?;
+            .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
         }
 
         vmfd.initialize()
-            .map_err(|e| Error::CreateVMInitFailed(e.into()))?;
+            .map_err(|e| ErrorInner::CreateVMInitFailed(e.into()))?;
 
         // Tell the hypervisor how many VPs are in each socket so it can
         // generate the correct topology CPUID leaves (01h, 04h, 0Bh, 1Fh,
@@ -235,19 +255,21 @@ impl virt::Hypervisor for LinuxMshv {
             mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_PROCESSORS_PER_SOCKET,
             config.processor_topology.reserved_vps_per_socket() as u64,
         )
-        .map_err(Error::SetPartitionProperty)?;
+        .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
 
         // Create virtual CPUs.
         let mut vps: Vec<MshvVpInner> = Vec::new();
 
         // /dev/mshv only supports 256 VPs right now for some reason.
         if config.processor_topology.vp_count() > u8::MAX as u32 {
-            return Err(Error::TooManyVps(config.processor_topology.vp_count()));
+            return Err(ErrorInner::TooManyVps(config.processor_topology.vp_count()).into());
         }
 
         // We have to create the BSP now to get access to some partition state.
         // Everything else is created later.
-        let bsp = vmfd.create_vcpu(0).map_err(Error::CreateVcpu)?;
+        let bsp = vmfd
+            .create_vcpu(0)
+            .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
 
         for vp in config.processor_topology.vps_arch() {
             vps.push(MshvVpInner {
@@ -268,7 +290,7 @@ impl virt::Hypervisor for LinuxMshv {
             intercept_parameter: Default::default(),
         };
         vmfd.install_intercept(intercept_args)
-            .map_err(Error::InstallIntercept)?;
+            .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
 
         // Intercept unknown SynIC connections so the VMM can handle
         // HvPostMessage / HvSignalEvent for guest-initiated connections
@@ -279,7 +301,7 @@ impl virt::Hypervisor for LinuxMshv {
                 hvdef::hypercall::HvInterceptType::HvInterceptTypeUnknownSynicConnection.0,
             intercept_parameter: Default::default(),
         })
-        .map_err(Error::InstallIntercept)?;
+        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
 
         // Intercept HvRetargetDeviceInterrupt for device IDs the
         // hypervisor doesn't know about (i.e. all software VPCI devices)
@@ -290,7 +312,7 @@ impl virt::Hypervisor for LinuxMshv {
                 hvdef::hypercall::HvInterceptType::HvInterceptTypeRetargetInterruptWithUnknownDeviceId.0,
             intercept_parameter: Default::default(),
         })
-        .map_err(Error::InstallIntercept)?;
+        .map_err(|e| ErrorInner::InstallIntercept(e.into()))?;
 
         // Set up a signal for forcing vcpufd.run() ioctl to exit.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
@@ -306,7 +328,7 @@ impl virt::Hypervisor for LinuxMshv {
 
         if let Some(hv_config) = &config.hv_config {
             if hv_config.vtl2.is_some() {
-                return Err(Error::Vtl2NotSupported);
+                return Err(ErrorInner::Vtl2NotSupported.into());
             }
         }
 
@@ -324,7 +346,7 @@ pub fn is_available() -> Result<bool, Error> {
     match std::fs::metadata("/dev/mshv") {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(Error::AvailableCheck(err)),
+        Err(err) => Err(ErrorInner::AvailableCheck(err).into()),
     }
 }
 
@@ -394,7 +416,9 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                 in_ptr: std::ptr::addr_of!(input) as u64,
                 ..Default::default()
             };
-            self.vmfd.hvcall(&mut args).map_err(Error::RegisterCpuid)?;
+            self.vmfd
+                .hvcall(&mut args)
+                .map_err(|e| ErrorInner::RegisterCpuid(e.into()))?;
         }
 
         // Get caps via cpuid
@@ -407,7 +431,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
                         .expect("cpuid should not fail")
                 },
             )
-            .map_err(Error::Capabilities)?;
+            .map_err(ErrorInner::Capabilities)?;
             caps.xsaves_state_bv_broken = true;
             caps.can_freeze_time = true;
             caps
@@ -456,6 +480,7 @@ impl ProtoPartition for MshvProtoPartition<'_> {
     }
 }
 
+/// A partition running on the /dev/mshv hypervisor.
 #[derive(Inspect)]
 pub struct MshvPartition {
     #[inspect(flatten)]
@@ -583,7 +608,7 @@ impl virt::ResetPartition for MshvPartition {
         let bsp_vp_info = &self.inner.vps[0].vp_info;
         self.access_state(Vtl::Vtl0)
             .reset_all(bsp_vp_info)
-            .map_err(|e| Error::ResetState(Box::new(e)))?;
+            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
 
         Ok(())
     }
@@ -620,10 +645,11 @@ impl Hv1 for MshvPartition {
 
 impl virt::DeviceBuilder for MshvPartition {
     fn build(&self, _vtl: Vtl, device_id: u64) -> Result<Self::Device, Self::Error> {
-        self.inner
+        Ok(self
+            .inner
             .software_devices
             .new_device(self.inner.clone(), device_id)
-            .map_err(Error::NewDevice)
+            .map_err(ErrorInner::NewDevice)?)
     }
 }
 
@@ -659,7 +685,7 @@ impl MshvPartitionInner {
                     mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_TIME_FREEZE,
                     1,
                 )
-                .map_err(Error::SetPartitionProperty)?;
+                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             *frozen = true;
         }
         Ok(())
@@ -675,7 +701,7 @@ impl MshvPartitionInner {
                     mshv_bindings::hv_partition_property_code_HV_PARTITION_PROPERTY_TIME_FREEZE,
                     0,
                 )
-                .map_err(Error::SetPartitionProperty)?;
+                .map_err(|e| ErrorInner::SetPartitionProperty(e.into()))?;
             *frozen = false;
         }
         Ok(())
@@ -703,6 +729,7 @@ impl MshvPartitionInner {
     }
 }
 
+/// Binds a virtual processor to the current thread.
 pub struct MshvProcessorBinder {
     partition: Arc<MshvPartitionInner>,
     vcpufd: Option<VcpuFd>,
@@ -752,7 +779,7 @@ impl virt::BindProcessor for MshvProcessorBinder {
                     .partition
                     .vmfd
                     .create_vcpu(u8::try_from(self.vpindex.index()).expect("validated above"))
-                    .map_err(Error::CreateVcpu)?;
+                    .map_err(|e| ErrorInner::CreateVcpu(e.into()))?;
                 self.vcpufd = Some(vcpufd);
             }
             self.vcpufd.as_ref().unwrap()
@@ -798,12 +825,13 @@ impl virt::BindProcessor for MshvProcessorBinder {
 
         vcpufd
             .set_hvdef_regs(&regs[..reg_count])
-            .map_err(Error::Register)?;
+            .map_err(ErrorInner::Register)?;
 
         Ok(this)
     }
 }
 
+/// A bound virtual processor for the /dev/mshv hypervisor.
 pub struct MshvProcessor<'a> {
     partition: &'a MshvPartitionInner,
     inner: &'a MshvVpInner,
@@ -1177,9 +1205,20 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
     }
 }
 
+/// Error type for /dev/mshv operations.
+#[derive(Error, Debug)]
+#[error(transparent)]
+pub struct Error(ErrorInner);
+
+impl<T: Into<ErrorInner>> From<T> for Error {
+    fn from(err: T) -> Self {
+        Error(err.into())
+    }
+}
+
 // TODO: Chunk this up into smaller types.
 #[derive(Error, Debug)]
-pub enum Error {
+enum ErrorInner {
     #[error("operation not supported")]
     NotSupported,
     #[error("create_vm failed")]
@@ -1187,45 +1226,75 @@ pub enum Error {
     #[error("failed to initialize VM")]
     CreateVMInitFailed(#[source] anyhow::Error),
     #[error("failed to create VCPU")]
-    CreateVcpu(#[source] MshvError),
+    CreateVcpu(#[source] KernelError),
     #[error("vtl2 not supported")]
     Vtl2NotSupported,
     #[error("isolation not supported")]
     IsolationNotSupported,
     #[error("failed to stat /dev/mshv")]
     AvailableCheck(#[source] io::Error),
-    #[error("failed to open /dev/mshv")]
-    OpenMshv(#[source] MshvError),
     #[error("failed to get partition property")]
-    GetPartitionProperty(#[source] MshvError),
+    GetPartitionProperty(#[source] KernelError),
     #[error("failed to set partition property")]
-    SetPartitionProperty(#[source] MshvError),
+    SetPartitionProperty(#[source] KernelError),
     #[error("register access error")]
-    Register(#[source] MshvError),
+    Register(#[source] KernelError),
     #[error("failed to get VP state {ty}")]
     GetVpState {
         #[source]
-        error: MshvError,
+        error: KernelError,
         ty: u8,
     },
     #[error("failed to set VP state {ty}")]
     SetVpState {
         #[source]
-        error: MshvError,
+        error: KernelError,
         ty: u8,
     },
     #[error("failed to reset state")]
-    ResetState(#[source] Box<virt::state::StateError<Self>>),
+    ResetState(#[source] Box<virt::state::StateError<Error>>),
     #[error("install intercept failed")]
-    InstallIntercept(#[source] MshvError),
+    InstallIntercept(#[source] KernelError),
     #[error("failed to register cpuid override")]
-    RegisterCpuid(#[source] MshvError),
+    RegisterCpuid(#[source] KernelError),
     #[error("host does not support required cpu capabilities")]
     Capabilities(#[source] virt::PartitionCapabilitiesError),
     #[error("too many virtual processors: {0}")]
     TooManyVps(u32),
     #[error("failed to create virtual device")]
     NewDevice(#[source] virt::x86::apic_software_device::DeviceIdInUse),
+}
+
+/// Equivalent to [`MshvError`] but has a much better error message.
+#[derive(Error, Debug)]
+enum KernelError {
+    #[error("kernel error")]
+    Kernel(#[source] io::Error),
+    #[error("hypercall {code:#x?} error")]
+    Hypercall {
+        code: hvdef::HypercallCode,
+        #[source]
+        error: HvError,
+    },
+}
+
+impl From<MshvError> for KernelError {
+    fn from(err: MshvError) -> Self {
+        match err {
+            MshvError::Errno(e) => KernelError::Kernel(e.into()),
+            MshvError::Hypercall {
+                code,
+                status_raw,
+                status: _,
+            } => KernelError::Hypercall {
+                code: hvdef::HypercallCode(code),
+                error: HvError::from(
+                    std::num::NonZeroU16::new(status_raw)
+                        .expect("not an error, hypercall returned success"),
+                ),
+            },
+        }
+    }
 }
 
 impl MshvPartitionInner {
@@ -1569,7 +1638,7 @@ impl virt::Processor for MshvProcessor<'_> {
         _vtl: Vtl,
         _state: Option<&virt::x86::DebugState>,
     ) -> Result<(), <&mut Self as virt::vp::AccessVpState>::Error> {
-        Err(Error::NotSupported)
+        Err(ErrorInner::NotSupported.into())
     }
 
     async fn run_vp(
@@ -1648,7 +1717,7 @@ impl virt::Processor for MshvProcessor<'_> {
         let vp_info = self.inner.vp_info;
         self.access_state(Vtl::Vtl0)
             .reset_all(&vp_info)
-            .map_err(|e| Error::ResetState(Box::new(e)))?;
+            .map_err(|e| ErrorInner::ResetState(Box::new(e)))?;
 
         // Clear VMM-side message queues.
         self.inner.message_queues.clear();
