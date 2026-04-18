@@ -17,9 +17,8 @@ use vm_resource::kind::PciDeviceHandleKind;
 
 /// Resource resolver for [`VfioDeviceHandle`].
 ///
-/// Spawns a [`VfioContainerManager`](crate::manager::VfioContainerManager)
-/// task internally and communicates with it via RPC to share VFIO containers
-/// across assigned devices.
+/// Spawns a `VfioContainerManager` task internally and communicates with it
+/// via RPC to share VFIO containers across assigned devices.
 pub struct VfioDeviceResolver {
     client: VfioManagerClient,
     _task: pal_async::task::Task<()>,
