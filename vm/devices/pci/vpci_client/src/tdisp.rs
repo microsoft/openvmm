@@ -42,10 +42,18 @@ struct VpciClientTdispMutableState {
     /// Cleared on unbind so that ranges are re-validated after re-attestation.
     #[inspect(iter_by_index)]
     validated_mmio_bars: HashSet<u16>,
+    /// Whether DMA has been unblocked via `tdisp_unblock_dma`. Cleared on
+    /// unbind so that DMA is re-unblocked after re-attestation.
+    dma_unblocked: bool,
     /// The most recently obtained TDI interface report, populated during attestation.
     /// Cleared on unbind so that it is re-fetched after re-attestation.
     #[inspect(debug)]
     tdi_report: Option<TdiReportStruct>,
+    /// Set of BAR IDs whose MMIO pages are intercepted (e.g. a BAR that hosts
+    /// the MSI-X table / PBA emulated by the host). These pages are not backed
+    /// by convertible guest RAM on the host.
+    #[inspect(iter_by_index)]
+    intercepted_bars: HashSet<u16>,
 }
 
 impl VpciClientTdispMutableState {
@@ -101,7 +109,9 @@ impl VpciClientTdispState {
                 tdi_state: TdispTdiState::Uninitialized,
                 guest_device_id: 0,
                 validated_mmio_bars: HashSet::new(),
+                dma_unblocked: false,
                 tdi_report: None,
+                intercepted_bars: HashSet::new(),
             },
             isolation_type,
             vtom,
@@ -320,6 +330,7 @@ impl VpciClientTdispState {
         match res.response::<TdispCommandResponseUnbind>() {
             Ok(_) => {
                 self.mutable_state.validated_mmio_bars.clear();
+                self.mutable_state.dma_unblocked = false;
                 self.mutable_state.tdi_report = None;
                 Ok(())
             }
@@ -435,16 +446,62 @@ impl VpciClientTdispState {
 
         self.mutable_state
             .update_guest_device_id(guest_device_id_u16);
+
+        // Auto-mark any MMIO range that the device reports as mapping the MSI-X
+        // table or PBA as intercepted. Intercepted BARs are not backed by RAM
+        // on the host and therefore cannot be made private.
+        for range in &tdi_report.mmio_interface_info {
+            if range.flags.range_maps_msix_table() || range.flags.range_maps_msix_pba() {
+                tracing::info!(
+                    bar_id = range.range_id,
+                    maps_msix_table = range.flags.range_maps_msix_table(),
+                    maps_msix_pba = range.flags.range_maps_msix_pba(),
+                    "auto-marking MSI-X table/PBA BAR as intercepted based on TDI report"
+                );
+                self.mutable_state.intercepted_bars.insert(range.range_id);
+            }
+        }
+
         self.mutable_state.tdi_report = Some(tdi_report);
 
-        // Device is now in the Run state without resource validation being performed.
-        // Platform specific validation methods should be called to unblock resources.
+        // Device is now in the Run state without resource validation being
+        // performed. Platform specific validation methods will be called on
+        // command register write to unblock resources.
         Ok(())
     }
 
     /// Get the TDI state of the device. This is used for testing and validation purposes, and is not part of the standard TDISP flow.
     pub fn tdisp_get_tdi_state(&self) -> TdispTdiState {
         self.tdi_state()
+    }
+
+    /// Mark a BAR as being intercepted and virtualized by the paravisor
+    /// (e.g. a BAR whose memory is registered as [`BarMemoryKind::Intercept`]
+    /// — the classic case being the MSI-X table / PBA BAR, which is handled
+    /// entirely inside the paravisor's VPCI layer and has no host-side
+    /// backing page).
+    ///
+    /// `tdisp_on_mmio_reconfigured` must NOT call `tdisp_unblock_mmio` on
+    /// such a BAR: the underlying `HvCallModifySparseGpaPageHostVisibility`
+    /// hypercall on a non-convertible GPA terminates the partition. This
+    /// provides the paravisor a way to tell TDISP "I handle this BAR, leave
+    /// it alone" before any guest configuration occurs.
+    ///
+    /// Intentionally intercept-vs-not is a static property of the device's
+    /// emulator, so this state is *not* cleared on unbind.
+    pub fn mark_bar_intercepted(&mut self, bar_id: u16) {
+        if self.mutable_state.intercepted_bars.insert(bar_id) {
+            tracing::info!(
+                bar_id,
+                "marking BAR as intercepted; TDISP MMIO unblock will be skipped for this BAR"
+            );
+        }
+    }
+
+    /// Returns true if the given BAR has been marked intercepted
+    /// via [`Self::mark_bar_intercepted`].
+    pub fn is_bar_intercepted(&self, bar_id: u16) -> bool {
+        self.mutable_state.intercepted_bars.contains(&bar_id)
     }
 
     /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
@@ -455,6 +512,11 @@ impl VpciClientTdispState {
     /// `is_non_tee_mem` flag is set are not protected memory and must NOT be
     /// passed to `tdisp_unblock_mmio`; only ranges with `is_non_tee_mem` clear
     /// are validated.
+    ///
+    /// BARs that the paravisor has marked as intercepted (see
+    /// [`Self::mark_bar_intercepted`]) are skipped unconditionally — these
+    /// pages have no host-side RAM backing and must never be flipped to
+    /// private.
     ///
     /// # Arguments
     ///
@@ -477,6 +539,21 @@ impl VpciClientTdispState {
                     length,
                     "ignoring MMIO reconfiguration callback because device is not in Run state"
                 );
+                return Ok(());
+            }
+
+            // This BAR is marked as intercepted by an emulator. There is no
+            // convertible guest-RAM page backing this GPA on the host, so
+            // calling tdisp_unblock_mmio cannot mark anything as private. Skip
+            // entirely.
+            if self.mutable_state.intercepted_bars.contains(&bar_id) {
+                tracing::info!(
+                    bar_id,
+                    base_address,
+                    length,
+                    "skipping MMIO unblock for BAR because it is an intercepted region"
+                );
+                self.mutable_state.validated_mmio_bars.insert(bar_id);
                 return Ok(());
             }
 
@@ -524,11 +601,29 @@ impl VpciClientTdispState {
 
             let device_id = self.mutable_state.guest_device_id;
 
-            validator
-                .tdisp_unblock_mmio(self.target_vtl, device_id, base_address, 0, length, bar_id)
-                .inspect(|_| {
-                    self.mutable_state.validated_mmio_bars.insert(bar_id);
-                })
+            validator.tdisp_unblock_mmio(
+                self.target_vtl,
+                device_id,
+                base_address,
+                0,
+                length,
+                bar_id,
+            )?;
+            self.mutable_state.validated_mmio_bars.insert(bar_id);
+
+            // After the first successful MMIO unblock following attestation,
+            // unblock DMA as well so the device can issue DMA traffic to the
+            // guest. Guard with `dma_unblocked` so it only fires once per
+            // bind/attest cycle (cleared on unbind).
+            if !self.mutable_state.dma_unblocked {
+                validator
+                    .tdisp_unblock_dma(self.target_vtl, device_id)
+                    .context("tdisp_on_mmio_reconfigured: failed to unblock DMA")?;
+                self.mutable_state.dma_unblocked = true;
+                tracing::info!(device_id, "tdisp_on_mmio_reconfigured: DMA unblocked");
+            }
+
+            Ok(())
         } else {
             Ok(())
         }
@@ -632,6 +727,13 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
         base_address: u64,
         length: u32,
     ) -> anyhow::Result<()>;
+
+    /// Mark a BAR as paravisor-intercepted so that TDISP will skip calling
+    /// `tdisp_unblock_mmio` on it during MMIO reconfiguration. Use this for
+    /// BARs whose memory is registered as a paravisor MMIO intercept region
+    /// (e.g. the MSI-X table / PBA BAR) and therefore has no host-side RAM
+    /// backing that could be flipped to private.
+    async fn tdisp_mark_bar_intercepted(&self, bar_id: u16);
 }
 
 impl TdispVpciAttestationInterface for VpciDevice {
@@ -661,5 +763,10 @@ impl TdispVpciAttestationInterface for VpciDevice {
     ) -> anyhow::Result<()> {
         let mut guard = self.tdisp.0.lock().await;
         guard.tdisp_on_mmio_reconfigured(bar_id, base_address, length)
+    }
+
+    async fn tdisp_mark_bar_intercepted(&self, bar_id: u16) {
+        let mut guard = self.tdisp.0.lock().await;
+        guard.mark_bar_intercepted(bar_id);
     }
 }

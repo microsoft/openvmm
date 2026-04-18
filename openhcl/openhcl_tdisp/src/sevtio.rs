@@ -78,7 +78,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         length_in_bytes: u32,
         range_id: u16,
     ) -> anyhow::Result<()> {
-        let pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
+        let base_pfn = base_gpa >> hvdef::HV_PAGE_SHIFT;
 
         // Ensure length_in_bytes is page aligned
         if !length_in_bytes.is_multiple_of(hvdef::HV_PAGE_SIZE as u32) {
@@ -89,12 +89,27 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             anyhow::bail!("length_in_bytes must be greater than 0");
         }
 
+        let length_in_pages = length_in_bytes / (hvdef::HV_PAGE_SIZE as u32);
+
+        // Build the full list of PFNs covered by the MMIO range.
+        let pfns: Vec<u64> = (0..length_in_pages as u64).map(|i| base_pfn + i).collect();
+
+        tracing::info!(
+            base_gpa = format_args!("{:#x}", base_gpa),
+            length_in_bytes,
+            page_count = pfns.len(),
+            first_pfn = format_args!("{:#x}", base_pfn),
+            last_pfn = format_args!("{:#x}", base_pfn + length_in_pages as u64 - 1),
+            "about to call modify_gpa_visibility(PRIVATE)"
+        );
+
         // Modify the pages to private before validation
         match self
             .mshv
-            .modify_gpa_visibility(HostVisibilityType::PRIVATE, &[pfn])
+            .modify_gpa_visibility(HostVisibilityType::PRIVATE, &pfns)
         {
             Ok(_) => tracing::info!(
+                page_count = pfns.len(),
                 "successfully modified GPA page visibility to private for MMIO unblock"
             ),
             Err(e) => {
@@ -103,7 +118,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             }
         }
 
-        let length_in_pages = length_in_bytes / (hvdef::HV_PAGE_SIZE as u32);
         let guest_device_id = device_id;
         let subrange_base = base_gpa;
         let subrange_page_count = length_in_pages;
@@ -153,7 +167,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         // Finally, rmpadjust the pages to be read/write to VTL0 so the guest can access them.
         match self.mshv_vtl.rmpadjust_pages(
-            MemoryRange::from_4k_gpn_range(pfn..(pfn + (length_in_pages as u64))),
+            MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
             SevRmpAdjust::new()
                 .with_enable_read(true)
                 .with_enable_write(true)
@@ -179,11 +193,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
 
         // Subtract 1 to create the mask for the non-VTOM bit parts of the address
         let vtom = vtom_high - 1;
-
-        // TDISP TODO: Validate that this calculation above is correct
-        if vtom != 0x7fffffff {
-            anyhow::bail!("unexpected VTOM value: {vtom:#x}, expected 0x7fffffff");
-        }
 
         let accept_dma = self
             .sev_guest
