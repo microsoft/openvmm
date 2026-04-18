@@ -31,7 +31,7 @@ pub async fn build_vpci_device(
     vmbus: &VmbusServerControl,
     instance_id: Guid,
     resource: Resource<PciDeviceHandleKind>,
-    chipset_builder: &mut ChipsetBuilder<'_>,
+    chipset_builder: &ChipsetBuilder<'_>,
     doorbell_registration: Option<Arc<dyn DoorbellRegistration>>,
     mapper: Option<&dyn guestmem::MemoryMapper>,
     new_virtual_device: impl FnOnce(u64) -> anyhow::Result<(Arc<dyn SignalMsi>, VpciInterruptMapper)>,
@@ -92,7 +92,7 @@ pub async fn build_vpci_device(
 /// Resolves a PCI device resource, builds the corresponding device, and attaches
 /// the device at the specified PCIe port.
 pub async fn build_pcie_device(
-    chipset_builder: &mut ChipsetBuilder<'_>,
+    chipset_builder: &ChipsetBuilder<'_>,
     port_name: Arc<str>,
     driver_source: &VmTaskDriverSource,
     resolver: &ResourceResolver,

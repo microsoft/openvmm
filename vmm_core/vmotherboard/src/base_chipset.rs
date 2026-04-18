@@ -202,7 +202,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             framebuffer_local_control: None,
         };
 
-        let mut builder = ChipsetBuilder::new(
+        let builder = ChipsetBuilder::new(
             driver_source,
             units,
             foundation.debug_event_handler.clone(),

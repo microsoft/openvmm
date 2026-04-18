@@ -1624,7 +1624,7 @@ impl InitializedVm {
         };
 
         let BaseChipsetBuilderOutput {
-            mut chipset_builder,
+            chipset_builder,
             device_interfaces: base_chipset_device_interfaces,
         } = BaseChipsetBuilder::new(
             BaseChipsetFoundation {
@@ -1798,21 +1798,31 @@ impl InitializedVm {
             chipset_builder.register_weak_mutex_pcie_enumerator(bus_id, Box::new(switch_device));
         }
 
-        for dev_cfg in cfg.pcie_devices {
-            vmm_core::device_builder::build_pcie_device(
-                &mut chipset_builder,
-                dev_cfg.port_name.into(),
-                &driver_source,
-                &resolver,
-                &gm,
-                dev_cfg.resource,
-                partition.clone().into_doorbell_registration(Vtl::Vtl0),
-                Some(&mapper),
-                partition.as_signal_msi(Vtl::Vtl0),
-                partition.irqfd(),
-            )
-            .await?;
-        }
+        // Resolve PCIe devices concurrently.
+        try_join_all(cfg.pcie_devices.into_iter().map(|dev_cfg| {
+            let chipset_builder = &chipset_builder;
+            let driver_source = &driver_source;
+            let resolver = &resolver;
+            let gm = &gm;
+            let partition = &partition;
+            let mapper = &mapper;
+            async move {
+                vmm_core::device_builder::build_pcie_device(
+                    chipset_builder,
+                    dev_cfg.port_name.into(),
+                    driver_source,
+                    resolver,
+                    gm,
+                    dev_cfg.resource,
+                    partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                    Some(mapper),
+                    partition.as_signal_msi(Vtl::Vtl0),
+                    partition.irqfd(),
+                )
+                .await
+            }
+        }))
+        .await?;
 
         if let Some(vmbus_cfg) = cfg.vmbus {
             if !cfg.hypervisor.with_hv {
@@ -2003,7 +2013,7 @@ impl InitializedVm {
                         vmbus.control(),
                         dev_cfg.instance_id,
                         dev_cfg.resource,
-                        &mut chipset_builder,
+                        &chipset_builder,
                         partition.clone().into_doorbell_registration(vtl),
                         Some(&mapper),
                         |device_id| {

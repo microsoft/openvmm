@@ -3029,7 +3029,7 @@ async fn new_underhill_vm(
     };
 
     let BaseChipsetBuilderOutput {
-        mut chipset_builder,
+        chipset_builder,
         device_interfaces: _,
     } = BaseChipsetBuilder::new(
         BaseChipsetFoundation {
@@ -3366,7 +3366,7 @@ async fn new_underhill_vm(
                 vmbus.control(),
                 instance_id,
                 resource,
-                &mut chipset_builder,
+                &chipset_builder,
                 None,
                 None,
                 |device_id| {
