@@ -1588,8 +1588,6 @@ async fn vm_config_from_command_line(
                 },
             }),
             with_isolation,
-            user_mode_hv_enlightenments: opt.no_enlightenments,
-            user_mode_apic: opt.user_mode_apic,
         },
         #[cfg(windows)]
         kernel_vmnics,

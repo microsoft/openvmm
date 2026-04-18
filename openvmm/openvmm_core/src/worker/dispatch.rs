@@ -802,7 +802,6 @@ impl InitializedVm {
             }
 
             Some(virt::HvConfig {
-                offload_enlightenments: !cfg.hypervisor.user_mode_hv_enlightenments,
                 allow_device_assignment,
                 vtl2: convert_vtl2_config(
                     cfg.hypervisor.with_vtl2.as_ref(),
@@ -821,7 +820,6 @@ impl InitializedVm {
                 processor_topology: &processor_topology,
                 hv_config,
                 vmtime: &vmtime_source,
-                user_mode_apic: cfg.hypervisor.user_mode_apic,
                 isolation: cfg
                     .hypervisor
                     .with_isolation

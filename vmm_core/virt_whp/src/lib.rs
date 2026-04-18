@@ -78,7 +78,12 @@ use x86defs::cpuid::Vendor;
 pub use aarch64::WHP_PMU_GSIV;
 
 #[derive(Debug)]
-pub struct Whp;
+pub struct Whp {
+    /// Use the user-mode APIC emulator instead of the in-hypervisor one.
+    pub user_mode_apic: bool,
+    /// Use the hypervisor's in-built enlightenment support if available.
+    pub offload_enlightenments: bool,
+}
 
 #[derive(Inspect)]
 #[inspect(transparent)]
@@ -775,18 +780,31 @@ impl virt::Hypervisor for Whp {
         &mut self,
         config: ProtoPartitionConfig<'a>,
     ) -> Result<WhpProtoPartition<'a>, Error> {
-        let vtl0 = VtlPartition::new(&config, Vtl::Vtl0)?;
+        let user_mode_apic = self.user_mode_apic;
+        let offload_enlightenments = self.offload_enlightenments;
+        let vtl0 = VtlPartition::new(&config, Vtl::Vtl0, user_mode_apic, offload_enlightenments)?;
         let vtl2 = if config
             .hv_config
             .as_ref()
             .is_some_and(|cfg| cfg.vtl2.is_some())
         {
-            Some(VtlPartition::new(&config, Vtl::Vtl2)?)
+            Some(VtlPartition::new(
+                &config,
+                Vtl::Vtl2,
+                user_mode_apic,
+                offload_enlightenments,
+            )?)
         } else {
             None
         };
 
-        Ok(WhpProtoPartition { vtl0, vtl2, config })
+        Ok(WhpProtoPartition {
+            vtl0,
+            vtl2,
+            config,
+            user_mode_apic,
+            offload_enlightenments,
+        })
     }
 }
 
@@ -800,6 +818,8 @@ pub struct WhpProtoPartition<'a> {
     vtl0: VtlPartition,
     vtl2: Option<VtlPartition>,
     config: ProtoPartitionConfig<'a>,
+    user_mode_apic: bool,
+    offload_enlightenments: bool,
 }
 
 impl ProtoPartition for WhpProtoPartition<'_> {
@@ -842,6 +862,8 @@ impl ProtoPartition for WhpProtoPartition<'_> {
             &self.config,
             self.vtl0,
             self.vtl2,
+            self.user_mode_apic,
+            self.offload_enlightenments,
         )?);
 
         let with_vtl0 = Arc::new(WhpPartitionAndVtl {
@@ -929,6 +951,8 @@ impl WhpPartitionInner {
         proto_config: &ProtoPartitionConfig<'_>,
         vtl0: VtlPartition,
         vtl2: Option<VtlPartition>,
+        user_mode_apic: bool,
+        offload_enlightenments: bool,
     ) -> Result<Self, Error> {
         // FUTURE: register cpuid results with the hypervisor, and register
         // appropriate per-VP results where necessary (or tell the hypervisor
@@ -953,8 +977,8 @@ impl WhpPartitionInner {
             );
 
             // Add in the synthetic hv leaves if necessary.
-            if let Some(hv_config) = &proto_config.hv_config {
-                if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
+            if proto_config.hv_config.is_some() {
+                if !offload_enlightenments || user_mode_apic {
                     let enlightenments = hvdef::HvEnlightenmentInformation::new()
                         .with_deprecate_auto_eoi(true)
                         .with_use_relaxed_timing(true)
@@ -1209,16 +1233,21 @@ impl VmTimeReferenceTimeSource {
 }
 
 impl VtlPartition {
-    fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
+    fn new(
+        config: &ProtoPartitionConfig<'_>,
+        vtl: Vtl,
+        user_mode_apic: bool,
+        offload_enlightenments: bool,
+    ) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
 
         let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
 
-        let user_mode_apic = config.user_mode_apic
+        let user_mode_apic = user_mode_apic
             || config
                 .hv_config
                 .as_ref()
-                .is_some_and(|cfg| !cfg.offload_enlightenments);
+                .is_some_and(|_| !offload_enlightenments);
 
         #[cfg(guest_arch = "x86_64")]
         let lapic = if user_mode_apic {
@@ -1334,7 +1363,7 @@ impl VtlPartition {
 
             let supported_synth_features = whp::capabilities::synthetic_processor_features()
                 .for_op("get synth processor features")?;
-            if hv_config.offload_enlightenments
+            if offload_enlightenments
                 && !user_mode_apic
                 && supported_synth_features
                     .bank0

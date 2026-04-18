@@ -32,6 +32,14 @@ impl hypervisor_resources::HypervisorProbe for MshvProbe {
         };
         Ok(Some(MshvHandle { mshv: mshv.into() }.into_resource()))
     }
+
+    fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
+        if let Some(&(key, _)) = params.first() {
+            anyhow::bail!("unknown mshv parameter: {key}");
+        }
+        anyhow::ensure!(virt_mshv::is_available()?, "MSHV is not available");
+        Ok(Resource::new(MshvHandle))
+    }
 }
 
 /// MSHV resource resolver.

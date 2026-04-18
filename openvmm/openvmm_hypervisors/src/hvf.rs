@@ -26,6 +26,13 @@ impl hypervisor_resources::HypervisorProbe for HvfProbe {
     fn try_new_resource(&self) -> anyhow::Result<Option<Resource<HypervisorKind>>> {
         Ok(Some(Resource::new(HvfHandle)))
     }
+
+    fn new_resource(&self, params: &[(&str, &str)]) -> anyhow::Result<Resource<HypervisorKind>> {
+        if let Some(&(key, _)) = params.first() {
+            anyhow::bail!("unknown hvf parameter: {key}");
+        }
+        Ok(Resource::new(HvfHandle))
+    }
 }
 
 /// HVF resource resolver.

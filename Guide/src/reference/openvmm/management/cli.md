@@ -10,6 +10,23 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--processors <COUNT>`: The number of processors. Defaults to 1.
 * `--memory <SIZE>`: The VM's memory size. Defaults to 1GB.
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
+* `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
+  backend-specific parameters. The format is `name` or `name:key=val,key,...`.
+  Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux), `hvf`
+  (macOS). When omitted, OpenVMM auto-detects the best available backend.
+
+  WHP accepts the following parameters:
+  * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
+    in-hypervisor APIC
+  * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
+
+  Examples:
+  ```sh
+  --hypervisor whp
+  --hypervisor whp:user_mode_apic
+  --hypervisor whp:user_mode_apic,no_enlightenments
+  --hypervisor kvm
+  ```
 * `--uefi`: Boot using `mu_msvm` UEFI
 * `--uefi-firmware <FILE>`: Path to the UEFI firmware file (`MSVM.fd`). When `--uefi` is specified, this option is required only if you do not set the environment variable `OPENVMM_UEFI_FIRMWARE` (or the architecture-specific variants `X86_64_OPENVMM_UEFI_FIRMWARE`, or `AARCH64_OPENVMM_UEFI_FIRMWARE`). If omitted, the default is read from `OPENVMM_UEFI_FIRMWARE` first, then falls back to the architecture-specific variables.
 * `--pcat`: Boot using the Microsoft Hyper-V PCAT BIOS

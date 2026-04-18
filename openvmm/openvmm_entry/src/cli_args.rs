@@ -141,14 +141,6 @@ pub struct Options {
     #[clap(long, requires("vtl2"), default_value = "halt")]
     pub late_map_vtl0_policy: Vtl0LateMapPolicyCli,
 
-    /// disable in-hypervisor enlightenment implementation (where possible)
-    #[clap(long)]
-    pub no_enlightenments: bool,
-
-    /// disable the in-hypervisor APIC and use the user-mode one (where possible)
-    #[clap(long)]
-    pub user_mode_apic: bool,
-
     /// attach a disk (can be passed multiple times)
     #[clap(long_help = r#"
 e.g: --disk memdiff:file:/path/to/disk.vhd
@@ -596,7 +588,19 @@ flags:
     #[clap(long)]
     pub mana: Vec<NicConfigCli>,
 
-    /// use a specific hypervisor interface
+    /// use a specific hypervisor interface, with optional backend-specific
+    /// parameters.
+    ///
+    /// Format: `name` or `name:key=val,key,...`
+    ///
+    /// WHP parameters:
+    ///   user_mode_apic       - use user-mode APIC emulator
+    ///   no_enlightenments    - disable in-hypervisor enlightenments
+    ///
+    /// Examples:
+    ///   --hypervisor whp
+    ///   --hypervisor whp:user_mode_apic
+    ///   --hypervisor whp:user_mode_apic,no_enlightenments
     #[clap(long)]
     pub hypervisor: Option<String>,
 
