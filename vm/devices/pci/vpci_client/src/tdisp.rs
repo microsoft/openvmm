@@ -26,6 +26,7 @@ use tdisp::TdispTdiState;
 use tdisp::devicereport::TdiReportStruct;
 use virt::IsolationType;
 use vpci_protocol::MAX_VPCI_TDISP_COMMAND_SIZE;
+use vpci_protocol::ResourceIsolation;
 use vpci_protocol::SlotNumber;
 
 use super::VpciDevice;
@@ -33,6 +34,29 @@ use super::WorkerRequest;
 use openhcl_tdisp::TdispResourceValidationInterface;
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// Point-in-time classification of a device's BAR and DMA isolation.
+///
+/// Returned by [`VpciClientTdispState::isolation_snapshot`] and used to
+/// populate `VpciIsolatedResourcesReply` on the paravisor's guest-facing
+/// VPCI channel.
+#[derive(Debug, Clone, Copy)]
+pub enum IsolationSnapshot {
+    /// The TDI is not in the `Run` state, or is in `Run` but no resource
+    /// has been unblocked yet. The paravisor cannot answer the isolation
+    /// query in this state — callers should map this to an error reply.
+    NotReady,
+    /// The TDI is in `Run` and at least one BAR or DMA has been unblocked.
+    /// BAR entries may be `SHARED`, `PRIVATE`, or `INVALID` (for BAR IDs
+    /// outside the device's known range, e.g. upper halves of 64-bit
+    /// BARs). `dma` is always `SHARED` or `PRIVATE`.
+    Ready {
+        /// Classification for each of the device's six BARs.
+        bars: [ResourceIsolation; 6],
+        /// Classification for the device's DMA path.
+        dma: ResourceIsolation,
+    },
+}
 
 #[derive(Inspect)]
 struct VpciClientTdispMutableState {
@@ -504,6 +528,59 @@ impl VpciClientTdispState {
         self.mutable_state.intercepted_bars.contains(&bar_id)
     }
 
+    /// Classify BAR and DMA isolation for this device at this instant,
+    /// suitable for populating a `VpciIsolatedResourcesReply` on the
+    /// guest-facing side.
+    ///
+    /// Returns [`IsolationSnapshot::NotReady`] if the TDI has not reached
+    /// `Run`, or if it has but no resource has been unblocked yet — the
+    /// paravisor cannot honestly report isolation until at least one
+    /// BAR or DMA has been bound into private memory.
+    ///
+    /// Per-BAR classification (for the 6-entry array):
+    /// - `PRIVATE` iff the BAR ID is in `validated_mmio_bars` **and not**
+    ///   in `intercepted_bars`.
+    /// - `SHARED` iff the BAR ID is in `intercepted_bars` (paravisor-
+    ///   virtualized MSI-X table/PBA — known-shared because it is never
+    ///   flipped private).
+    /// - `INVALID` otherwise, meaning the BAR is not part of the known
+    ///   set of tracked BAR IDs.
+    ///
+    /// DMA classification rules:
+    /// - `PRIVATE` iff `dma_unblocked` is true.
+    /// - `SHARED` otherwise.
+    pub fn isolation_snapshot(&self) -> IsolationSnapshot {
+        if self.tdi_state() != TdispTdiState::Run {
+            return IsolationSnapshot::NotReady;
+        }
+
+        let any_bar_unblocked = !self.mutable_state.validated_mmio_bars.is_empty();
+        if !any_bar_unblocked && !self.mutable_state.dma_unblocked {
+            return IsolationSnapshot::NotReady;
+        }
+
+        let mut bars = [ResourceIsolation::INVALID; 6];
+        for bar_id in 0..6u16 {
+            let is_intercepted = self.mutable_state.intercepted_bars.contains(&bar_id);
+            let is_validated = self.mutable_state.validated_mmio_bars.contains(&bar_id);
+            bars[bar_id as usize] = if is_intercepted {
+                ResourceIsolation::SHARED
+            } else if is_validated {
+                ResourceIsolation::PRIVATE
+            } else {
+                ResourceIsolation::INVALID
+            };
+        }
+
+        let dma = if self.mutable_state.dma_unblocked {
+            ResourceIsolation::PRIVATE
+        } else {
+            ResourceIsolation::SHARED
+        };
+
+        IsolationSnapshot::Ready { bars, dma }
+    }
+
     /// Called when a BAR MMIO range is reconfigured by the guest. If a resource
     /// validator is present, unblocks the MMIO range for the device.
     ///
@@ -734,6 +811,11 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// (e.g. the MSI-X table / PBA BAR) and therefore has no host-side RAM
     /// backing that could be flipped to private.
     async fn tdisp_mark_bar_intercepted(&self, bar_id: u16);
+
+    /// Return a classification of BAR and DMA isolation for this device.
+    /// Callers on the guest-facing VPCI channel use this to synthesize the
+    /// `VpciIsolatedResourcesReply` for `VPCI_QUERY_ISOLATED_RESOURCES`.
+    async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot;
 }
 
 impl TdispVpciAttestationInterface for VpciDevice {
@@ -768,5 +850,121 @@ impl TdispVpciAttestationInterface for VpciDevice {
     async fn tdisp_mark_bar_intercepted(&self, bar_id: u16) {
         let mut guard = self.tdisp.0.lock().await;
         guard.mark_bar_intercepted(bar_id);
+    }
+
+    async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot {
+        let guard = self.tdisp.0.lock().await;
+        guard.isolation_snapshot()
+    }
+}
+
+impl VpciDevice {
+    /// Non-blocking variant of
+    /// [`TdispVpciAttestationInterface::tdisp_isolation_snapshot`] for
+    /// synchronous callers (e.g. the guest-facing VPCI channel dispatch
+    /// thread, which cannot await).
+    ///
+    /// Returns `None` if the TDISP mutex is contended. All vpci packets
+    /// for a given device are serialized through the same VMBus channel
+    /// worker, so this lock should not be contended during normal
+    /// guest-driven queries — contention indicates an internal bug and
+    /// callers should treat it as an error.
+    pub fn tdisp_try_isolation_snapshot(&self) -> Option<IsolationSnapshot> {
+        self.tdisp.0.try_lock().map(|guard| guard.isolation_snapshot())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `VpciClientTdispState` with default fields and a dangling
+    /// worker sender. `send_tdisp_command` must not be called on the
+    /// returned value, but `isolation_snapshot` and the mutable-state
+    /// fields it inspects are safe to poke directly.
+    fn new_state() -> VpciClientTdispState {
+        let (worker_req, _worker_recv) = mesh::channel::<WorkerRequest>();
+        VpciClientTdispState::new(
+            worker_req,
+            /* device_id = */ 0,
+            /* resource_validator = */ None,
+            IsolationType::None,
+            /* vtom = */ 0,
+            Vtl::Vtl0,
+        )
+    }
+
+    #[test]
+    fn isolation_snapshot_not_ready_when_not_run() {
+        let state = new_state();
+        assert!(matches!(
+            state.isolation_snapshot(),
+            IsolationSnapshot::NotReady
+        ));
+    }
+
+    #[test]
+    fn isolation_snapshot_not_ready_in_run_with_nothing_unblocked() {
+        let mut state = new_state();
+        state.mutable_state.tdi_state = TdispTdiState::Run;
+        assert!(matches!(
+            state.isolation_snapshot(),
+            IsolationSnapshot::NotReady
+        ));
+    }
+
+    #[test]
+    fn isolation_snapshot_ready_marks_unblocked_bar_private() {
+        let mut state = new_state();
+        state.mutable_state.tdi_state = TdispTdiState::Run;
+        state.mutable_state.validated_mmio_bars.insert(1);
+        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
+            panic!("expected Ready");
+        };
+        // Only BAR 1 is known/validated; all other slots are unknown and
+        // must surface as `INVALID`.
+        assert_eq!(
+            bars,
+            [
+                ResourceIsolation::INVALID,
+                ResourceIsolation::PRIVATE,
+                ResourceIsolation::INVALID,
+                ResourceIsolation::INVALID,
+                ResourceIsolation::INVALID,
+                ResourceIsolation::INVALID,
+            ]
+        );
+        assert_eq!(dma, ResourceIsolation::SHARED);
+    }
+
+    #[test]
+    fn isolation_snapshot_intercepted_bar_is_shared() {
+        let mut state = new_state();
+        state.mutable_state.tdi_state = TdispTdiState::Run;
+        // BAR 0 unblocked (private). BAR 4 is a paravisor-intercepted
+        // MSI-X BAR — regardless of whether it also ends up in the
+        // validated set, it must report SHARED.
+        state.mutable_state.validated_mmio_bars.insert(0);
+        state.mutable_state.validated_mmio_bars.insert(4);
+        state.mutable_state.intercepted_bars.insert(4);
+        let IsolationSnapshot::Ready { bars, .. } = state.isolation_snapshot() else {
+            panic!("expected Ready");
+        };
+        assert_eq!(bars[0], ResourceIsolation::PRIVATE);
+        assert_eq!(bars[1], ResourceIsolation::INVALID);
+        assert_eq!(bars[4], ResourceIsolation::SHARED);
+    }
+
+    #[test]
+    fn isolation_snapshot_dma_private_after_unblock() {
+        let mut state = new_state();
+        state.mutable_state.tdi_state = TdispTdiState::Run;
+        state.mutable_state.dma_unblocked = true;
+        let IsolationSnapshot::Ready { bars, dma } = state.isolation_snapshot() else {
+            panic!("expected Ready");
+        };
+        // No BARs validated or intercepted — every slot is unknown.
+        assert_eq!(bars, [ResourceIsolation::INVALID; 6]);
+        assert_eq!(dma, ResourceIsolation::PRIVATE);
     }
 }

@@ -126,8 +126,13 @@ impl<M: RingMem> VpciConnection<M> {
     }
 
     async fn negotiate(&mut self) -> anyhow::Result<protocol::ProtocolVersion> {
-        // Try to negotiate versions in order from newest to oldest
-        let versions = &[protocol::ProtocolVersion::VB];
+        // Try to negotiate versions in order from newest to oldest. Hosts
+        // that predate `GE_TDISP` reply with `REVISION_MISMATCH`, so the
+        // loop falls through to `VB`.
+        let versions = &[
+            protocol::ProtocolVersion::GE_TDISP,
+            protocol::ProtocolVersion::VB,
+        ];
 
         for &version in versions {
             tracing::debug!(?version, "trying protocol version");
