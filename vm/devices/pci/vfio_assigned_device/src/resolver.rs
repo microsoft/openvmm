@@ -73,6 +73,10 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             .irqfd
             .context("partition does not support irqfd (required for VFIO)")?;
 
+        let memory_mapper = input
+            .shared_mem_mapper
+            .context("memory mapper is required for VFIO device assignment")?;
+
         let device = VfioAssignedPciDevice::new(
             binding,
             pci_id,
@@ -80,6 +84,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, VfioDeviceHandle> for VfioDeviceR
             input.register_mmio,
             input.msi_target,
             irqfd,
+            memory_mapper,
         )
         .await?;
 

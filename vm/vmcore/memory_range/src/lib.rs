@@ -109,10 +109,20 @@ impl MemoryRange {
     /// Panics if the start is after the end or if the end address is in the
     /// last page of the 64-bit space.
     pub fn bounding(range: Range<u64>) -> Self {
+        Self::bounding_aligned(range, PAGE_SIZE)
+    }
+
+    /// Returns the smallest range with the specified alignemnt that contains
+    /// the given address range.
+    ///
+    /// Panics if the start is after the end or if the end address is in the
+    /// last page of the 64-bit space.
+    pub fn bounding_aligned(range: Range<u64>, alignment: u64) -> Self {
         assert!(range.start <= range.end);
         assert!(range.end < u64::MAX - PAGE_SIZE);
-        let start = range.start & !(PAGE_SIZE - 1);
-        let end = (range.end + (PAGE_SIZE - 1)) & !(PAGE_SIZE - 1);
+        assert!(alignment.is_power_of_two());
+        let start = range.start & !(alignment - 1);
+        let end = (range.end + (alignment - 1)) & !(alignment - 1);
         Self::new(start..end)
     }
 

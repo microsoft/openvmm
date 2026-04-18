@@ -8,7 +8,9 @@
 
 use anyhow::Context;
 use bitfield_struct::bitfield;
+use headervec::HeaderVec;
 use libc::c_void;
+use memory_range::MemoryRange;
 use pal_async::driver::Driver;
 use pal_async::timer::PolledTimer;
 use std::ffi::CString;
@@ -22,11 +24,15 @@ use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_ACTION_TRIGGER;
 use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_EVENTFD;
 use vfio_bindings::bindings::vfio::VFIO_IRQ_SET_DATA_NONE;
 use vfio_bindings::bindings::vfio::VFIO_PCI_MSIX_IRQ_INDEX;
+use vfio_bindings::bindings::vfio::VFIO_REGION_INFO_CAP_SPARSE_MMAP;
 use vfio_bindings::bindings::vfio::vfio_device_info;
 use vfio_bindings::bindings::vfio::vfio_group_status;
+use vfio_bindings::bindings::vfio::vfio_info_cap_header;
 use vfio_bindings::bindings::vfio::vfio_irq_info;
 use vfio_bindings::bindings::vfio::vfio_irq_set;
 use vfio_bindings::bindings::vfio::vfio_region_info;
+use vfio_bindings::bindings::vfio::vfio_region_info_cap_sparse_mmap;
+use vfio_bindings::bindings::vfio::vfio_region_sparse_mmap_area;
 
 mod ioctl {
     use nix::request_code_none;
@@ -463,6 +469,71 @@ impl Device {
         })
     }
 
+    /// Query the mmappable sub-regions for a VFIO region.
+    ///
+    /// If the region has a `VFIO_REGION_INFO_CAP_SPARSE_MMAP` capability,
+    /// returns the list of mmappable areas from it. If the region supports
+    /// mmap but has no sparse capability, returns a single area covering
+    /// the entire region. Returns an empty list if the region does not
+    /// support mmap.
+    pub fn region_mmap_areas(&self, index: u32) -> anyhow::Result<Vec<MemoryRange>> {
+        let mut info = vfio_region_info {
+            argsz: size_of::<vfio_region_info>() as u32,
+            index,
+            flags: 0,
+            cap_offset: 0,
+            size: 0,
+            offset: 0,
+        };
+        // SAFETY: The file descriptor is valid and a correctly constructed struct is being passed.
+        unsafe {
+            ioctl::vfio_device_get_region_info(self.file.as_raw_fd(), &mut info)
+                .context("failed to get region info")?;
+        };
+
+        let flags = RegionFlags::from(info.flags);
+
+        // If the kernel indicates capabilities are present and returned a
+        // larger argsz, re-query with a sufficiently large buffer to
+        // retrieve the capability chain.
+        if flags.caps() && info.argsz > size_of::<vfio_region_info>() as u32 {
+            let buf_size = info.argsz as usize;
+            let tail_len = buf_size - size_of::<vfio_region_info>();
+            let mut buf = HeaderVec::<vfio_region_info, u8, 0>::with_capacity(
+                vfio_region_info {
+                    argsz: buf_size as u32,
+                    index,
+                    flags: 0,
+                    cap_offset: 0,
+                    size: 0,
+                    offset: 0,
+                },
+                tail_len,
+            );
+            // SAFETY: The buffer is properly aligned and large enough per the
+            // kernel's argsz, and the fd is valid.
+            unsafe {
+                ioctl::vfio_device_get_region_info(self.file.as_raw_fd(), buf.as_mut_ptr())
+                    .context("failed to get region info with capabilities")?;
+            }
+            // Use the kernel's returned argsz rather than our pre-computed
+            // value, in case it differs.
+            let actual_tail = buf.head.argsz as usize - size_of::<vfio_region_info>();
+            // SAFETY: The kernel initialized the tail bytes via the ioctl.
+            unsafe { buf.set_tail_len(actual_tail.min(tail_len)) };
+            let areas = parse_sparse_mmap_caps(&buf);
+            if !areas.is_empty() {
+                return Ok(areas);
+            }
+        }
+
+        if flags.mmap() {
+            Ok(vec![MemoryRange::new(0..info.size)])
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     pub fn irq_info(&self, index: u32) -> anyhow::Result<IrqInfo> {
         let mut info = vfio_irq_info {
             argsz: size_of::<vfio_irq_info>() as u32,
@@ -595,6 +666,62 @@ impl Device {
         }
         Ok(())
     }
+}
+
+/// Walk the VFIO capability chain in a region info buffer and extract sparse
+/// mmap areas from any `VFIO_REGION_INFO_CAP_SPARSE_MMAP` capability.
+fn parse_sparse_mmap_caps(buf: &HeaderVec<vfio_region_info, u8, 0>) -> Vec<MemoryRange> {
+    let mut offset = buf.head.cap_offset as usize;
+
+    // SAFETY: HeaderVec guarantees head + tail are contiguous.
+    let bytes =
+        unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), buf.total_byte_len()) };
+
+    while offset != 0 {
+        if offset + size_of::<vfio_info_cap_header>() > bytes.len() {
+            tracing::warn!(offset, "VFIO cap header extends beyond buffer");
+            break;
+        }
+
+        // SAFETY: Bounds checked above. The kernel places capabilities at
+        // aligned offsets within the buffer.
+        let header = unsafe { &*bytes.as_ptr().add(offset).cast::<vfio_info_cap_header>() };
+
+        if header.id as u32 == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
+            if offset + size_of::<vfio_region_info_cap_sparse_mmap>() > bytes.len() {
+                tracing::warn!("VFIO sparse mmap cap truncated");
+                break;
+            }
+            // SAFETY: Bounds checked above; repr(C) struct at kernel-aligned offset.
+            let cap = unsafe {
+                &*bytes
+                    .as_ptr()
+                    .add(offset)
+                    .cast::<vfio_region_info_cap_sparse_mmap>()
+            };
+            let n = cap.nr_areas as usize;
+            let areas_end = offset
+                + size_of::<vfio_region_info_cap_sparse_mmap>()
+                + n * size_of::<vfio_region_sparse_mmap_area>();
+            if areas_end > bytes.len() {
+                tracing::warn!(n, "VFIO sparse mmap areas extend beyond buffer");
+                break;
+            }
+            // SAFETY: Bounds checked; flexible array immediately follows the fixed fields.
+            let areas = unsafe { cap.areas.as_slice(n) };
+            return areas
+                .iter()
+                .filter(|a| a.size > 0)
+                .map(|a| MemoryRange::new(a.offset..a.offset + a.size))
+                .collect();
+        }
+
+        offset = header.next as usize;
+    }
+
+    // No sparse mmap cap found — return empty (caller should check mmap flag
+    // separately if needed).
+    Vec::new()
 }
 
 impl AsRef<File> for Device {
