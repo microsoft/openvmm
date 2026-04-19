@@ -125,6 +125,25 @@ pub trait TdispResourceValidationInterface: Send + Sync {
     ///
     /// * `device_id` - Identifies the TDI device (not a VPCI ID).
     fn tdisp_unblock_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+
+    /// Re-block a previously-unblocked MMIO range. This is the inverse
+    /// of [`Self::tdisp_unblock_mmio`] and is called during unbind so
+    /// the guest-private pages are flipped back to shared (host-visible)
+    /// before the device channel is torn down.
+    ///
+    /// Arguments mirror [`Self::tdisp_unblock_mmio`].
+    fn tdisp_block_mmio(
+        &self,
+        target_vtl: Vtl,
+        device_id: u16,
+        base_gpa: u64,
+        base_offset: u32,
+        length_in_bytes: u32,
+        range_id: u16,
+    ) -> anyhow::Result<()>;
+
+    /// Re-block DMA access. Inverse of [`Self::tdisp_unblock_dma`].
+    fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.

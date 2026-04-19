@@ -16,7 +16,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use hvdef::Vtl;
 use openhcl_tdisp::TdispVirtualDeviceInterface;
-use openhcl_tdisp::mocks::TdispMockResourceValidator;
+use openhcl_tdisp::mocks::TdispNoopResourceValidator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::task::Spawn;
@@ -129,7 +129,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .next()
         .unwrap()
         .init(
-            Some(Arc::new(TdispMockResourceValidator::new())),
+            Some(Arc::new(TdispNoopResourceValidator::new())),
             IsolationType::None,
             0,
             Vtl::Vtl0,
@@ -201,7 +201,7 @@ async fn test_tdisp_interface_get_device_interface_info(driver: DefaultDriver) {
         .next()
         .unwrap()
         .init(
-            Some(Arc::new(TdispMockResourceValidator::new())),
+            Some(Arc::new(TdispNoopResourceValidator::new())),
             IsolationType::None,
             0,
             Vtl::Vtl0,
