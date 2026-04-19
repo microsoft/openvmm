@@ -12,8 +12,9 @@ as well as the generated CLI help (via `cargo run -- --help`).
 * `--hv`: Exposes Hyper-V enlightenments and VMBus support.
 * `--hypervisor <SPEC>`: Select a specific hypervisor backend, optionally with
   backend-specific parameters. The format is `name` or `name:key=val,key,...`.
-  Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux), `hvf`
-  (macOS). When omitted, OpenVMM auto-detects the best available backend.
+  Available backends: `whp` (Windows), `kvm` (Linux), `mshv` (Linux,
+  `x86_64` guests only), `hvf` (macOS). When omitted, OpenVMM
+  auto-detects the best available backend.
 
   WHP accepts the following parameters:
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
@@ -21,7 +22,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support
 
   Examples:
-  ```sh
+  ```bash
   --hypervisor whp
   --hypervisor whp:user_mode_apic
   --hypervisor whp:user_mode_apic,no_enlightenments

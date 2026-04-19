@@ -56,8 +56,14 @@ impl ResourceId<HypervisorKind> for MshvHandle {
 #[derive(MeshPayload)]
 pub struct WhpHandle {
     /// Use the user-mode APIC emulator instead of the in-hypervisor one.
+    ///
+    /// Only supported on x86_64. Setting this on aarch64 will cause partition
+    /// creation to fail.
     pub user_mode_apic: bool,
     /// Use the hypervisor's in-built enlightenment support if available.
+    ///
+    /// Only supported on x86_64. Setting this to `false` on aarch64 will cause
+    /// partition creation to fail.
     pub offload_enlightenments: bool,
 }
 

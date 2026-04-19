@@ -24,16 +24,22 @@ pub fn choose_hypervisor() -> anyhow::Result<Resource<HypervisorKind>> {
 ///
 /// Returns `(name, params)` where `params` is a list of `(key, value)` pairs.
 /// A bare key (no `=`) is treated as a boolean flag with value `"true"`.
-fn parse_hypervisor_spec(spec: &str) -> (&str, Vec<(&str, &str)>) {
+fn parse_hypervisor_spec(spec: &str) -> anyhow::Result<(&str, Vec<(&str, &str)>)> {
     let (name, rest) = spec.split_once(':').unwrap_or((spec, ""));
+    anyhow::ensure!(!name.is_empty(), "empty hypervisor name in spec: {spec}");
     let params = if rest.is_empty() {
         Vec::new()
     } else {
         rest.split(',')
-            .map(|item| item.split_once('=').unwrap_or((item, "true")))
-            .collect()
+            .filter(|item| !item.is_empty())
+            .map(|item| {
+                let (key, val) = item.split_once('=').unwrap_or((item, "true"));
+                anyhow::ensure!(!key.is_empty(), "empty parameter key in spec: {spec}");
+                Ok((key, val))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?
     };
-    (name, params)
+    Ok((name, params))
 }
 
 /// Returns a [`Resource<HypervisorKind>`] for the named backend, with
@@ -43,7 +49,7 @@ fn parse_hypervisor_spec(spec: &str) -> (&str, Vec<(&str, &str)>) {
 /// Each backend validates its own parameters — see the probe
 /// implementations for supported keys.
 pub fn hypervisor_resource(spec: &str) -> anyhow::Result<Resource<HypervisorKind>> {
-    let (name, params) = parse_hypervisor_spec(spec);
+    let (name, params) = parse_hypervisor_spec(spec)?;
     let probe = hypervisor_resources::probe_by_name(name)
         .ok_or_else(|| anyhow::anyhow!("unknown hypervisor: {name}"))?;
     probe.new_resource(&params)

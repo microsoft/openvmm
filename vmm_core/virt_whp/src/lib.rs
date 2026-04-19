@@ -742,6 +742,8 @@ pub enum Error {
     GicV2NotSupported,
     #[error("failed to compute topology cpuid")]
     TopologyCpuid(#[source] virt::x86::topology::UnknownVendor),
+    #[error("{0} is not supported on this architecture")]
+    UnsupportedParameter(&'static str),
 }
 
 trait WhpResultExt<T> {
@@ -954,6 +956,9 @@ impl WhpPartitionInner {
         user_mode_apic: bool,
         offload_enlightenments: bool,
     ) -> Result<Self, Error> {
+        // These are validated by VtlPartition::new and only consumed on x86_64.
+        let _ = (user_mode_apic, offload_enlightenments);
+
         // FUTURE: register cpuid results with the hypervisor, and register
         // appropriate per-VP results where necessary (or tell the hypervisor
         // the AMD topology information so that it can provide per-VP results
@@ -1239,6 +1244,16 @@ impl VtlPartition {
         user_mode_apic: bool,
         offload_enlightenments: bool,
     ) -> Result<Self, Error> {
+        #[cfg(guest_arch = "aarch64")]
+        {
+            if user_mode_apic {
+                return Err(Error::UnsupportedParameter("user_mode_apic"));
+            }
+            if !offload_enlightenments {
+                return Err(Error::UnsupportedParameter("no_enlightenments"));
+            }
+        }
+
         let mut hypervisor_enlightened = false;
 
         let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);

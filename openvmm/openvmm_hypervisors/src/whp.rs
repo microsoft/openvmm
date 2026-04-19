@@ -26,9 +26,11 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         let mut handle = WhpHandle::default();
         for &(key, val) in params {
             match key {
+                #[cfg(guest_arch = "x86_64")]
                 "user_mode_apic" => {
                     handle.user_mode_apic = parse_bool_param(key, val)?;
                 }
+                #[cfg(guest_arch = "x86_64")]
                 "no_enlightenments" => {
                     handle.offload_enlightenments = !parse_bool_param(key, val)?;
                 }
