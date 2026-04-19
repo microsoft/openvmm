@@ -115,6 +115,8 @@ struct RelayedDevice {
     bus_instance_id: Guid,
     bus_client: VpciClient,
     #[inspect(skip)]
+    vpci_device: Arc<VpciDevice>,
+    #[inspect(skip)]
     removed: VpciDeviceEject,
     #[inspect(skip)]
     bus_unit: DynamicDeviceUnit,
@@ -125,8 +127,30 @@ struct RelayedDevice {
 
 impl RelayedDevice {
     async fn remove(self) {
+        // Tear down the guest-facing surface first so the guest can no
+        // longer issue packets against the channel while we unbind the
+        // TDI on the host side.
         self.bus_unit.remove().await;
         self.device_unit.remove().await;
+
+        // Only devices that actually completed at least a Bind have a
+        // TDI on the host side to unbind. Non-TDISP devices stay in
+        // `Uninitialized` and must be left alone — `tdisp_unbind` on
+        // them would return a host error.
+        if self.vpci_device.tdisp_tdi_state().await != TdispTdiState::Uninitialized {
+            if let Err(err) = self
+                .vpci_device
+                .tdisp_unbind(tdisp::TdispGuestUnbindReason::DeviceTeardown)
+                .await
+            {
+                tracing::warn!(
+                    bus_instance_id = %self.bus_instance_id,
+                    error = &*err as &dyn std::error::Error,
+                    "tdisp_unbind during relay teardown failed"
+                );
+            }
+        }
+
         self.bus_client.shutdown().await;
     }
 }
@@ -399,7 +423,7 @@ impl VpciRelay {
             })
             .await?;
 
-        let interrupt_mapper = VpciInterruptMapper::new(vpci_device);
+        let interrupt_mapper = VpciInterruptMapper::new(vpci_device.clone());
 
         let (bus_unit, _) = {
             let vpci_bus_name = format!("vpci:{instance_id}");
@@ -432,6 +456,7 @@ impl VpciRelay {
         entry.insert(RelayedDevice {
             bus_instance_id: instance_id,
             bus_client: vpci_client,
+            vpci_device: vpci_device.clone(),
             removed,
             bus_unit,
             device_unit,
