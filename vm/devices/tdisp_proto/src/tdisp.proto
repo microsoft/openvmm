@@ -77,6 +77,12 @@ enum TdispGuestUnbindReason {
   // The guest requested to unbind the device because the device is being
   // detached.
   TDISP_GUEST_UNBIND_REASON_GRACEFUL = 1;
+
+  // The paravisor is tearing down the VPCI channel for this device (e.g.
+  // guest eject, host-initiated eject, or relay shutdown). Sent
+  // automatically from `RelayedDevice::remove` so the host returns the
+  // TDI to Unlocked.
+  TDISP_GUEST_UNBIND_REASON_DEVICE_TEARDOWN = 2;
 }
 
 // Represents a type of report that can be requested from the TDI (VF).
