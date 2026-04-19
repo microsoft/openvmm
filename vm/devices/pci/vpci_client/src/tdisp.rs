@@ -62,10 +62,12 @@ pub enum IsolationSnapshot {
 struct VpciClientTdispMutableState {
     tdi_state: TdispTdiState,
     guest_device_id: u16,
-    /// Set of BAR IDs that have been successfully validated via `tdisp_unblock_mmio`.
-    /// Cleared on unbind so that ranges are re-validated after re-attestation.
-    #[inspect(iter_by_index)]
-    validated_mmio_bars: HashSet<u16>,
+    /// Map of BAR ID to the `(base_gpa, length_in_bytes)` that was passed
+    /// to `tdisp_unblock_mmio`. Populated on unblock and used during
+    /// unbind to call `tdisp_block_mmio` with the same parameters so
+    /// private pages can be flipped back to shared. Cleared on unbind.
+    #[inspect(iter_by_key)]
+    validated_mmio_bars: std::collections::HashMap<u16, ValidatedMmio>,
     /// Whether DMA has been unblocked via `tdisp_unblock_dma`. Cleared on
     /// unbind so that DMA is re-unblocked after re-attestation.
     dma_unblocked: bool,
@@ -78,6 +80,16 @@ struct VpciClientTdispMutableState {
     /// by convertible guest RAM on the host.
     #[inspect(iter_by_index)]
     intercepted_bars: HashSet<u16>,
+}
+
+/// Tracks the parameters used to unblock a BAR's MMIO pages, so the same
+/// range can be re-blocked on unbind.
+#[derive(Inspect, Clone, Copy, Debug)]
+struct ValidatedMmio {
+    #[inspect(hex)]
+    base_gpa: u64,
+    #[inspect(hex)]
+    length_in_bytes: u32,
 }
 
 impl VpciClientTdispMutableState {
@@ -132,7 +144,7 @@ impl VpciClientTdispState {
             mutable_state: VpciClientTdispMutableState {
                 tdi_state: TdispTdiState::Uninitialized,
                 guest_device_id: 0,
-                validated_mmio_bars: HashSet::new(),
+                validated_mmio_bars: std::collections::HashMap::new(),
                 dma_unblocked: false,
                 tdi_report: None,
                 intercepted_bars: HashSet::new(),
@@ -344,6 +356,48 @@ impl VpciClientTdispState {
 
     /// See: [`TdispVirtualDeviceInterface::tdisp_unbind`]
     pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
+        // Flip all unblocked MMIO ranges and DMA back to shared before
+        // we tell the host to unbind the TDI. This is best-effort: a
+        // failure here is logged but doesn't abort the unbind, because
+        // the channel is already being torn down and the host-side TDI
+        // state is our only source of truth for what remains bound.
+        if let Some(validator) = self.resource_validator.clone() {
+            let device_id = self.mutable_state.guest_device_id;
+            for (bar_id, mmio) in &self.mutable_state.validated_mmio_bars {
+                // length == 0 is the "classified SHARED, never unblocked"
+                // sentinel — nothing to block.
+                if mmio.length_in_bytes == 0 {
+                    continue;
+                }
+                if let Err(e) = validator.tdisp_block_mmio(
+                    self.target_vtl,
+                    device_id,
+                    mmio.base_gpa,
+                    0,
+                    mmio.length_in_bytes,
+                    *bar_id,
+                ) {
+                    tracing::error!(
+                        bar_id,
+                        base_gpa = format_args!("{:#x}", mmio.base_gpa),
+                        length_in_bytes = mmio.length_in_bytes,
+                        error = &*e as &dyn std::error::Error,
+                        "tdisp_unbind: failed to re-block MMIO range"
+                    );
+                }
+            }
+
+            if self.mutable_state.dma_unblocked {
+                if let Err(e) = validator.tdisp_block_dma(self.target_vtl, device_id) {
+                    tracing::error!(
+                        device_id,
+                        error = &*e as &dyn std::error::Error,
+                        "tdisp_unbind: failed to re-block DMA"
+                    );
+                }
+            }
+        }
+
         let res = self
             .send_tdisp_command(openhcl_tdisp::new_unbind_command(
                 self.vpci_device_id,
@@ -644,7 +698,7 @@ impl VpciClientTdispState {
                 return Ok(());
             }
 
-            if self.mutable_state.validated_mmio_bars.contains(&bar_id) {
+            if self.mutable_state.validated_mmio_bars.contains_key(&bar_id) {
                 tracing::debug!(
                     bar_id,
                     "skipping MMIO unblock for BAR that has already been validated"
@@ -661,7 +715,17 @@ impl VpciClientTdispState {
                         "skipping MMIO unblock for BAR classified SHARED \
                          (intercepted or non-TEE memory)"
                     );
-                    self.mutable_state.validated_mmio_bars.insert(bar_id);
+                    // Record with a zero-length entry so we don't repeatedly
+                    // fall through here on subsequent reconfigurations. The
+                    // unbind path uses length == 0 as a sentinel for "no
+                    // block call needed."
+                    self.mutable_state.validated_mmio_bars.insert(
+                        bar_id,
+                        ValidatedMmio {
+                            base_gpa: base_address,
+                            length_in_bytes: 0,
+                        },
+                    );
                     return Ok(());
                 }
                 ResourceIsolation::INVALID => {
@@ -691,7 +755,13 @@ impl VpciClientTdispState {
                 length,
                 bar_id,
             )?;
-            self.mutable_state.validated_mmio_bars.insert(bar_id);
+            self.mutable_state.validated_mmio_bars.insert(
+                bar_id,
+                ValidatedMmio {
+                    base_gpa: base_address,
+                    length_in_bytes: length,
+                },
+            );
 
             // After the first successful MMIO unblock following attestation,
             // unblock DMA as well so the device can issue DMA traffic to the
