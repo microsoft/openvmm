@@ -594,8 +594,7 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
             bar_regions: _, // immutable device geometry
             msix,
             supports_reset,
-            _vfio_container: _, // lifetime handle — no reset needed
-            _vfio_group: _,     // lifetime handle — no reset needed
+            binding: _, // lifetime handle — no reset needed
         } = self;
 
         // Reset emulated MSI-X table and capability to power-on defaults
