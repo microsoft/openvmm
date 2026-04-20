@@ -779,7 +779,9 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         // if the guest says it is unbinding due to a host-related error), the reason is discarded and InvalidGuestUnbindReason
         // is recorded in the unbind history.
         let reason = match reason {
-            TdispGuestUnbindReason::Graceful | TdispGuestUnbindReason::DeviceTeardown => {
+            TdispGuestUnbindReason::Graceful
+            | TdispGuestUnbindReason::DeviceTeardown
+            | TdispGuestUnbindReason::AttestationFailure => {
                 TdispUnbindReason::GuestInitiated(reason)
             }
             _ => {

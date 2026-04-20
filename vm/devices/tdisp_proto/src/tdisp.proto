@@ -83,6 +83,10 @@ enum TdispGuestUnbindReason {
   // automatically from `RelayedDevice::remove` so the host returns the
   // TDI to Unlocked.
   TDISP_GUEST_UNBIND_REASON_DEVICE_TEARDOWN = 2;
+
+  // The paravisor is unbinding the TDI because attestation failed during
+  // activation.
+  TDISP_GUEST_UNBIND_REASON_ATTESTATION_FAILURE = 3;
 }
 
 // Represents a type of report that can be requested from the TDI (VF).

@@ -360,7 +360,7 @@ fn test_rebind_after_full_lifecycle() {
         unbind_cmd(DEVICE_ID, TdispGuestUnbindReason::Graceful),
     );
 
-    // Second cycle — device must behave identically
+    // Second cycle: device must behave identically
     let resp = dispatch_roundtrip(&mut mock.emulator, bind_cmd(DEVICE_ID));
     assert_eq!(resp.result, TdispGuestOperationErrorCode::Success as i32);
     assert_eq!(resp.tdi_state_before, TdispTdiState::Unlocked as i32);
