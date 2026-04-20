@@ -593,7 +593,7 @@ flags:
     ///
     /// Format: `name` or `name:key=val,key,...`
     ///
-    /// WHP parameters:
+    /// WHP parameters (x86_64 guests only):
     ///   user_mode_apic       - use user-mode APIC emulator
     ///   no_enlightenments    - disable in-hypervisor enlightenments
     ///

@@ -16,7 +16,7 @@ as well as the generated CLI help (via `cargo run -- --help`).
   `x86_64` guests only), `hvf` (macOS). When omitted, OpenVMM
   auto-detects the best available backend.
 
-  WHP accepts the following parameters:
+  WHP accepts the following parameters (x86_64 guests only):
   * `user_mode_apic` — use the user-mode APIC emulator instead of WHP's
     in-hypervisor APIC
   * `no_enlightenments` — disable in-hypervisor Hyper-V enlightenment support

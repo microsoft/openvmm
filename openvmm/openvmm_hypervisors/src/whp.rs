@@ -26,11 +26,19 @@ impl hypervisor_resources::HypervisorProbe for WhpProbe {
         let mut handle = WhpHandle::default();
         for &(key, val) in params {
             match key {
-                "user_mode_apic" if cfg!(guest_arch = "x86_64") => {
-                    handle.user_mode_apic = parse_bool_param(key, val)?;
+                "user_mode_apic" => {
+                    if cfg!(guest_arch = "x86_64") {
+                        handle.user_mode_apic = parse_bool_param(key, val)?;
+                    } else {
+                        anyhow::bail!("whp parameter {key} is only supported for x86_64 guests");
+                    }
                 }
-                "no_enlightenments" if cfg!(guest_arch = "x86_64") => {
-                    handle.offload_enlightenments = !parse_bool_param(key, val)?;
+                "no_enlightenments" => {
+                    if cfg!(guest_arch = "x86_64") {
+                        handle.offload_enlightenments = !parse_bool_param(key, val)?;
+                    } else {
+                        anyhow::bail!("whp parameter {key} is only supported for x86_64 guests");
+                    }
                 }
                 _ => anyhow::bail!("unknown whp parameter: {key}"),
             }
