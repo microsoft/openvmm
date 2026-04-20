@@ -560,20 +560,95 @@ impl VpciDevice {
         accessor.write(self.dev.id, offset, value);
     }
 
-    /// Notifies TDISP about each currently active MMIO BAR, calling
-    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`] for each.
+    /// Clear the MMIO-enable and bus-master bits in both the shadowed
+    /// command register and on the host-side device, as if the guest
+    /// had written a STATUS_COMMAND value with MMIO and bus-master
+    /// disabled. Used to roll the command register back to the
+    /// deactivated state when attestation fails during
+    /// [`Self::tdisp_on_device_activate`].
     ///
-    /// Call this when STATUS_COMMAND transitions MMIO from disabled to
-    /// enabled; the caller is responsible for detecting the edge. BARs that
-    /// have already been validated are skipped via deduplication in the
-    /// TDISP state.
+    /// Reads back the current value on entry so other command bits
+    /// (e.g. interrupt disable) that the guest just set are preserved
+    /// across the rollback.
+    fn clear_command_register(&self) {
+        let mut shadows = self.shadows.lock();
+        let mut cleared = shadows.command;
+        cleared.set_mmio_enabled(false);
+        cleared.set_bus_master(false);
+        shadows.command = cleared;
+        drop(shadows);
+
+        // Push the update through so the host observes MMIO and
+        // bus-master as disabled. Use the same accessor path that
+        // `write_cfg` uses for STATUS_COMMAND so we don't re-enter the
+        // BAR-flush logic that runs only on the disabled→enabled edge.
+        let mut accessor = self.config_space.lock();
+        accessor.write(
+            self.dev.id,
+            HeaderType00::STATUS_COMMAND.0,
+            u32::from(u16::from(cleared)),
+        );
+    }
+
+    /// Called on the STATUS_COMMAND MMIO disabled→enabled edge.
     ///
-    /// Awaits each `tdisp_on_mmio_reconfigured` call through the trait
-    /// interface, which serializes with other TDISP operations
-    /// (attest/bind/unbind) on the same device. Callers must drive this to
-    /// completion — typically via a deferred chipset write.
-    pub async fn notify_tdisp_of_mmio_bars(&self) {
+    /// If the TDI is not already in `Run`, drives a bind/attest cycle first. On
+    /// attestation failure, the command register is rolled back to the
+    /// deactivated state via [`Self::clear_command_register`]. There is an
+    /// unavoidable race where BARs briefly appear mapped to the guest while
+    /// attestation is in flight; this is safe because until resource validation
+    /// has run, the resources cannot be used for private operations.
+    ///
+    /// Then notifies TDISP about each currently active MMIO BAR via
+    /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`];
+    /// already-validated BARs are deduped in the TDISP state.
+    ///
+    /// Callers must drive this future to completion (typically via a deferred
+    /// chipset write).
+    pub async fn tdisp_on_device_activate(&self) {
+        use openhcl_tdisp::TdispGuestUnbindReason;
+        use openhcl_tdisp::TdispTdiState;
         use tdisp::TdispVpciAttestationInterface;
+
+        // If the TDI is not in Run, attest first; on failure roll the
+        // command register back so the guest sees the device as
+        // deactivated. See the function docs for the race discussion.
+        let state = self.tdisp_tdi_state().await;
+        if state != TdispTdiState::Run {
+            tracing::info!(
+                ?state,
+                "tdisp_on_device_activate: TDI not in Run, performing attestation"
+            );
+            let attest_result = match self.tdisp_query_capabilities().await {
+                Ok(interface_info) => self
+                    .tdisp_attest_device(interface_info)
+                    .await
+                    .context("tdisp_attest_device failed"),
+                Err(err) => Err(err.context("tdisp_query_capabilities failed")),
+            };
+
+            if let Err(err) = attest_result {
+                tracing::error!(
+                    error = &*err as &dyn std::error::Error,
+                    "tdisp_on_device_activate: attestation failed, rolling command register back to deactivated state"
+                );
+                // Tear down any partial host-side bind using the
+                // preserve-report unbind so the cached attestation report
+                // (if any) is retained for a future retry, matching the
+                // behavior of the MMIO-disable path.
+                if let Err(unbind_err) = self
+                    .tdisp_unbind_preserve_report(TdispGuestUnbindReason::AttestationFailure)
+                    .await
+                {
+                    tracing::warn!(
+                        error = &*unbind_err as &dyn std::error::Error,
+                        "tdisp_on_device_activate: preserve-report unbind after attestation failure failed"
+                    );
+                }
+                self.clear_command_register();
+                return;
+            }
+        }
 
         let bars = self.shadows.lock().bars;
 
@@ -612,7 +687,7 @@ impl VpciDevice {
                 bar_id,
                 base_address,
                 length_bytes,
-                "notify_tdisp_of_mmio_bars"
+                "tdisp_on_device_activate"
             );
 
             if base_address != 0 && length_bytes != 0 {
@@ -640,49 +715,47 @@ impl VpciDevice {
         }
     }
 
-    /// Notifies TDISP that the guest has disabled MMIO on this device, and
-    /// unbinds the TDI if it is currently bound. Mirrors
-    /// [`Self::notify_tdisp_of_mmio_bars`] for the disable edge.
+    /// Notifies TDISP that the guest has disabled MMIO on this device.
+    /// If the TDI is in `Run`, issues a `tdisp_unbind_preserve_report`
+    /// so that the cached TDI interface report survives for subsequent
+    /// `QueryIsolatedResources` calls while the device sits in
+    /// `Unlocked` awaiting re-activation. Mirrors
+    /// [`Self::tdisp_on_device_activate`] for the disable edge.
     ///
     /// Call this when STATUS_COMMAND transitions MMIO from enabled to
-    /// disabled; the caller is responsible for detecting the edge. If the
-    /// TDI is in `Uninitialized`/`Unlocked` (no host-side Bind to tear
-    /// down), this is a no-op; otherwise it issues the same unbind flow
-    /// used during relay teardown, with
-    /// [`TdispGuestUnbindReason::DeviceTeardown`].
+    /// disabled; the caller is responsible for detecting the edge. If
+    /// the TDI is not in `Run` (e.g. `Uninitialized`, `Unlocked`, or
+    /// `Locked`), this is a no-op; there is no active host-side
+    /// bind/attest pair to tear down here.
     ///
     /// Awaits each operation through the trait interface so that locking is
     /// fully owned by the TDISP interface. Callers must drive this to
-    /// completion — typically via a deferred chipset write.
-    pub async fn notify_tdisp_of_mmio_disabled(&self) {
+    /// completion, typically via a deferred chipset write.
+    pub async fn tdisp_on_device_deactivate(&self) {
         use openhcl_tdisp::TdispGuestUnbindReason;
         use openhcl_tdisp::TdispTdiState;
-        use openhcl_tdisp::TdispVirtualDeviceInterface;
         use tdisp::TdispVpciAttestationInterface;
 
         let state = self.tdisp_tdi_state().await;
-        if matches!(
-            state,
-            TdispTdiState::Uninitialized | TdispTdiState::Unlocked
-        ) {
+        if state != TdispTdiState::Run {
             tracing::debug!(
                 ?state,
-                "mmio disabled: TDI not bound, skipping unbind"
+                "tdisp_on_device_deactivate: TDI not in Run, skipping preserve-report unbind"
             );
             return;
         }
 
         tracing::info!(
             ?state,
-            "mmio disabled by guest, unbinding TDI"
+            "tdisp_on_device_deactivate: guest disabled MMIO, preserve-report unbinding TDI"
         );
         if let Err(err) = self
-            .tdisp_unbind(TdispGuestUnbindReason::DeviceTeardown)
+            .tdisp_unbind_preserve_report(TdispGuestUnbindReason::Graceful)
             .await
         {
             tracing::warn!(
                 error = &*err as &dyn std::error::Error,
-                "tdisp_unbind on mmio disable failed"
+                "tdisp_on_device_deactivate: preserve-report unbind failed"
             );
         }
     }
