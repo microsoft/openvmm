@@ -2735,10 +2735,10 @@ async fn new_underhill_vm(
                             ScsiControllerDisk::new(scsi_disk),
                         ));
 
-                        // When storvsc usermode provides a separate bounce-buffer
-                        // disk for IDE direct path (port I/O), use it. The IDE
-                        // CommandBuffer has fake GPNs that would corrupt guest
-                        // memory if passed via GPA-direct to the host.
+                        // storvsc usermode backs both the IDE accelerator (VMBus SCSI,
+                        // GPA-direct) and port I/O paths. The port I/O path needs a
+                        // separate bounce-buffer disk because IDE CommandBuffer uses
+                        // synthetic GPNs that cannot be sent to the host via GPA-direct.
                         let ide_disk = if let Some(bounce_type) = ide_direct_disk_type {
                             disk_from_disk_type(*bounce_type, read_only, &resolver, &driver_source)
                                 .await?

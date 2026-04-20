@@ -32,6 +32,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
+use std::sync::Weak;
 use storvsc_driver::StorvscDriver;
 use thiserror::Error;
 use tracing::Instrument;
@@ -61,6 +62,8 @@ enum InnerError {
     DriverInitFailed(#[source] storvsc_driver::StorvscError),
     #[error("failed to create dma client for device")]
     DmaClient(#[source] anyhow::Error),
+    #[error("failed to claim VMBus device for UIO")]
+    ClaimFailed(#[source] anyhow::Error),
 }
 
 #[derive(Debug)]
@@ -267,7 +270,9 @@ impl StorvscManagerWorker {
                 // Claim this SCSI controller for UIO from hv_storvsc.
                 // hv_storvsc binds all SCSI channels at boot. We need to
                 // steal specific relay controllers for usermode operation.
-                claim_vmbus_device_for_uio(&instance_guid).await;
+                claim_vmbus_device_for_uio(&instance_guid)
+                    .await
+                    .map_err(InnerError::ClaimFailed)?;
 
                 let file = vmbus_user_channel::open_uio_device(&instance_guid)
                     .map_err(InnerError::Vmbus)?;
@@ -341,7 +346,12 @@ impl StorvscManagerWorker {
         self.drivers = HashMap::new();
         for driver_state in &saved_state.storvsc_drivers {
             // Claim this SCSI controller for UIO (restore path).
-            claim_vmbus_device_for_uio(&driver_state.instance_guid).await;
+            claim_vmbus_device_for_uio(&driver_state.instance_guid)
+                .await
+                .context(format!(
+                    "failed to claim UIO for {}",
+                    driver_state.instance_guid
+                ))?;
 
             let file = vmbus_user_channel::open_uio_device(&driver_state.instance_guid)
                 .map_err(InnerError::Vmbus)?;
@@ -388,11 +398,14 @@ impl StorvscManagerWorker {
 pub struct StorvscDiskResolver {
     manager: StorvscManagerClient,
     is_isolated: bool,
-    /// Cache of StorvscDisk instances keyed by (controller_guid, lun).
+    /// Weak-ref cache of StorvscDisk instances keyed by (backing_channel_guid, lun).
+    /// Uses Weak so disks are automatically invalidated when storvsp drops them
+    /// (e.g., on hot-remove). On re-add, Weak::upgrade() fails and a fresh
+    /// StorvscDisk is created with up-to-date metadata.
     /// Shared between StorvscDiskConfig and StorvscDiskBounceConfig resolvers
-    /// so both IDE-direct (bounce) and IDE-accel (GPA-direct) paths share
-    /// the same underlying disk (same metadata, resize listeners, etc.).
-    disk_cache: Arc<Mutex<HashMap<(guid::Guid, u8), Arc<disk_storvsc::StorvscDisk>>>>,
+    /// so both IDE port I/O (bounce) and IDE accelerator (GPA-direct) paths
+    /// share the same underlying disk instance.
+    disk_cache: Arc<Mutex<HashMap<(guid::Guid, u8), Weak<disk_storvsc::StorvscDisk>>>>,
 }
 
 impl Clone for StorvscDiskResolver {
@@ -428,15 +441,15 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskConfig> for StorvscDiskReso
     ) -> Result<Self::Output, Self::Error> {
         let key = (rsrc.instance_guid, rsrc.lun);
 
-        // Check cache first (bounce resolver may have already created it).
+        // Check cache -- Weak ref auto-invalidates when storvsp drops the disk.
         {
             let cache = self.disk_cache.lock();
-            if let Some(disk) = cache.get(&key) {
-                return ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(
-                    disk.clone(),
-                    false,
-                ))
-                .context("invalid disk");
+            if let Some(weak) = cache.get(&key) {
+                if let Some(disk) = weak.upgrade() {
+                    return ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(disk, false))
+                        .context("invalid disk");
+                }
+                // Weak expired -- disk was removed, will create fresh below.
             }
         }
 
@@ -452,7 +465,7 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskConfig> for StorvscDiskReso
                 .context("failed to create StorvscDisk")?,
         );
 
-        self.disk_cache.lock().insert(key, disk.clone());
+        self.disk_cache.lock().insert(key, Arc::downgrade(&disk));
 
         ResolvedDisk::new(disk_storvsc::StorvscDiskBounce::new(disk, false)).context("invalid disk")
     }
@@ -494,10 +507,10 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskBounceConfig> for StorvscDi
     ) -> Result<Self::Output, Self::Error> {
         let key = (rsrc.instance_guid, rsrc.lun);
 
-        // Check cache first (GPA-direct resolver may have already created the disk).
+        // Check cache -- Weak ref auto-invalidates when storvsp drops the disk.
         let inner = {
             let cache = self.disk_cache.lock();
-            cache.get(&key).cloned()
+            cache.get(&key).and_then(|w| w.upgrade())
         };
 
         let inner = match inner {
@@ -516,7 +529,7 @@ impl AsyncResolveResource<DiskHandleKind, StorvscDiskBounceConfig> for StorvscDi
                         .context("failed to create StorvscDisk for bounce")?,
                 );
 
-                self.disk_cache.lock().insert(key, disk.clone());
+                self.disk_cache.lock().insert(key, Arc::downgrade(&disk));
                 disk
             }
         };
@@ -560,41 +573,36 @@ const SCSI_CLASS_GUID: &str = "ba6163d9-04a1-4d29-b605-72e2ffb1dc7f";
 ///
 /// VTL2-internal SCSI channels (cidata, diagnostics) stay on hv_storvsc.
 ///
-/// # Error Handling
+/// Expected "error" codes that are treated as success:
+/// - EEXIST on new_id: class already registered (idempotent, multi-controller)
+/// - ENODEV on unbind: device not on hv_storvsc (already on UIO or hot-added)
+/// - EBUSY on bind: device already bound to UIO (idempotent re-claim)
 ///
-/// Currently fire-and-forget: errors at each step are logged but do not
-/// prevent the caller from attempting `open_uio_device`, which will fail
-/// if the device was not successfully bound to UIO. This results in a
-/// hard failure for that SCSI controller.
-///
-/// TODO: Consider returning `Result` and falling back to kernel hv_storvsc
-/// when UIO claiming fails. This would allow the disk to remain accessible
-/// via the kernel driver path (slower but functional). The fallback would
-/// need to be wired into `StorvscDiskResolver::resolve()` to re-route the
-/// device through `get_vscsi_devname()` instead.
-async fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
+/// All other sysfs errors are propagated as failures.
+async fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) -> anyhow::Result<()> {
     let device_id = instance_guid.to_string();
     let guid_for_log = *instance_guid;
 
     // All sysfs writes are blocking I/O -- run them off the async executor.
     blocking::unblock(move || {
         // Step 1: Ensure UIO knows about SCSI class (idempotent).
-        // This is needed so uio_hv_generic will accept the bind.
+        // EEXIST is expected when multiple controllers register the same class.
         if let Err(e) = std::fs::write(
             "/sys/bus/vmbus/drivers/uio_hv_generic/new_id",
             SCSI_CLASS_GUID,
         ) {
-            // EEXIST is fine -- means it's already registered.
             if e.kind() != std::io::ErrorKind::AlreadyExists {
-                tracing::warn!(
-                    instance_guid = %guid_for_log,
-                    error = %e,
-                    "failed to register SCSI class for UIO (may already be registered)"
+                anyhow::bail!(
+                    "failed to register SCSI class GUID for UIO on {}: {}",
+                    guid_for_log,
+                    e
                 );
             }
         }
 
-        // Step 2: Unbind from hv_storvsc (if currently bound there).
+        // Step 2: Unbind from hv_storvsc.
+        // ENODEV is expected when the device is already on UIO (e.g., hot-add
+        // of a disk on a channel we already claimed).
         match std::fs::write("/sys/bus/vmbus/drivers/hv_storvsc/unbind", &device_id) {
             Ok(()) => {
                 tracing::info!(
@@ -602,26 +610,19 @@ async fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
                     "unbound SCSI channel from hv_storvsc for usermode relay"
                 );
             }
+            Err(e) if e.raw_os_error() == Some(libc::ENODEV) => {
+                tracing::debug!(
+                    instance_guid = %guid_for_log,
+                    "hv_storvsc unbind skipped (device not bound there)"
+                );
+            }
             Err(e) => {
-                if e.raw_os_error() == Some(libc::ENODEV) {
-                    // ENODEV: device not bound to hv_storvsc -- expected
-                    // when already on UIO or unbound.
-                    tracing::debug!(
-                        instance_guid = %guid_for_log,
-                        "hv_storvsc unbind skipped (device not bound there)"
-                    );
-                } else {
-                    // Unexpected error (EPERM, EACCES, etc.)
-                    tracing::warn!(
-                        instance_guid = %guid_for_log,
-                        error = %e,
-                        "hv_storvsc unbind failed unexpectedly"
-                    );
-                }
+                anyhow::bail!("failed to unbind {} from hv_storvsc: {}", guid_for_log, e);
             }
         }
 
         // Step 3: Bind to uio_hv_generic.
+        // EBUSY is expected when the device is already bound to UIO.
         match std::fs::write("/sys/bus/vmbus/drivers/uio_hv_generic/bind", &device_id) {
             Ok(()) => {
                 tracing::info!(
@@ -629,23 +630,18 @@ async fn claim_vmbus_device_for_uio(instance_guid: &guid::Guid) {
                     "bound SCSI channel to UIO for usermode relay"
                 );
             }
+            Err(e) if e.raw_os_error() == Some(libc::EBUSY) => {
+                tracing::debug!(
+                    instance_guid = %guid_for_log,
+                    "UIO bind skipped (device already bound)"
+                );
+            }
             Err(e) => {
-                if e.raw_os_error() == Some(libc::EBUSY) {
-                    // EBUSY: already bound to UIO -- expected.
-                    tracing::debug!(
-                        instance_guid = %guid_for_log,
-                        "UIO bind skipped (device already bound)"
-                    );
-                } else {
-                    // Unexpected error -- may cause open_uio_device to fail.
-                    tracing::warn!(
-                        instance_guid = %guid_for_log,
-                        error = %e,
-                        "UIO bind failed unexpectedly"
-                    );
-                }
+                anyhow::bail!("failed to bind {} to uio_hv_generic: {}", guid_for_log, e);
             }
         }
+
+        Ok(())
     })
-    .await;
+    .await
 }
