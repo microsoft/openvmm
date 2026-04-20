@@ -24,6 +24,7 @@ use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::ResolveResource;
 use vm_resource::ResourceId;
@@ -715,7 +716,7 @@ impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver 
 #[derive(Inspect)]
 pub struct VhdmpDisk {
     #[inspect(skip)]
-    file: OverlappedFile,
+    file: Arc<OverlappedFile>,
     sector_count: u64,
     sector_size: u32,
     #[inspect(skip)]
@@ -770,7 +771,8 @@ impl VhdmpDisk {
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
         let physical_sector_size = vhd.get_physical_sector_size().map_err(Error::Query)?;
         // SAFETY: VHDMP handles are opened with FILE_FLAG_OVERLAPPED.
-        let file = unsafe { OverlappedFile::new(driver, vhd.0) }.map_err(Error::Overlapped)?;
+        let file =
+            Arc::new(unsafe { OverlappedFile::new(driver, vhd.0) }.map_err(Error::Overlapped)?);
 
         let sector_shift = size.SectorSize.trailing_zeros();
         Ok(Self {
@@ -919,9 +921,9 @@ impl DiskIo for VhdmpDisk {
     async fn sync_cache(&self) -> Result<(), DiskError> {
         // NtFlushBuffersFileEx always waits synchronously even on async file
         // handles, so dispatch to the system thread pool.
-        let flush_file = self.file.get().try_clone().map_err(DiskError::Io)?;
+        let file = self.file.clone();
         pal_async::windows::TpPool::system()
-            .spawn("vhdmp_flush", async move { flush_file.sync_all() })
+            .spawn("vhdmp_flush", async move { file.get().sync_all() })
             .await
             .map_err(DiskError::Io)
     }
