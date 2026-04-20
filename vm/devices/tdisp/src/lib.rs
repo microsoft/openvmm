@@ -45,6 +45,8 @@ pub mod test_helpers;
 
 use anyhow::Context;
 use parking_lot::Mutex;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 pub use tdisp_proto::GuestToHostCommand;
 pub use tdisp_proto::GuestToHostCommandExt;
@@ -155,15 +157,17 @@ pub enum TdispIsolationReport {
 
 /// Trait added to chipset devices that want to report their VPCI
 /// resource-isolation state on behalf of the guest-facing VPCI server.
-///
-/// Implemented **only** by the OpenHCL VPCI relay's `RelayedVpciDevice`.
-/// Emulated devices and the host-facing `VpciClient` do not see this
-/// trait; the query is synthesized locally by the paravisor and never
-/// forwarded upstream.
 pub trait TdispIsolationReporter: Send + Sync {
     /// Return a snapshot of the current isolation state, suitable for
     /// populating a `VpciIsolatedResourcesReply`.
-    fn tdisp_isolation_report(&mut self) -> TdispIsolationReport;
+    ///
+    /// To retrieve the report, this may need to drive a fresh attestation cycle
+    /// (Unlocked -> Locked -> Run -> cached report -> Unlocked) before
+    /// answering. To avoid forcing callers to hold a sync device guard across
+    /// the await, this returns a `'static` boxed future.
+    fn tdisp_isolation_report(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = TdispIsolationReport> + Send + 'static>>;
 }
 
 /// An emulator which runs the TDISP state machine for a synthetic device.
@@ -781,7 +785,7 @@ impl TdispGuestRequestInterface for TdispHostStateMachine {
         let reason = match reason {
             TdispGuestUnbindReason::Graceful
             | TdispGuestUnbindReason::DeviceTeardown
-            | TdispGuestUnbindReason::AttestationFailure => {
+            | TdispGuestUnbindReason::ResourceSetupFailure => {
                 TdispUnbindReason::GuestInitiated(reason)
             }
             _ => {

@@ -1031,10 +1031,20 @@ impl ReadyState {
                                 dma_isolation: protocol::ResourceIsolation::INVALID,
                             }
                         } else {
-                            let mut locked_dev = dev.device.lock();
-                            let report = locked_dev
-                                .supports_tdisp_isolation()
-                                .map(|r| r.tdisp_isolation_report());
+                            // The reporter returns a `'static` boxed future,
+                            // so we can drop the sync device guard before
+                            // awaiting it. This avoids holding the chipset
+                            // device lock across attestation work.
+                            let fut = {
+                                let mut locked_dev = dev.device.lock();
+                                locked_dev
+                                    .supports_tdisp_isolation()
+                                    .map(|r| r.tdisp_isolation_report())
+                            };
+                            let report = match fut {
+                                Some(f) => Some(f.await),
+                                None => None,
+                            };
                             tracelimit::info_ratelimited!(
                                 instance_id = %dev.instance_id,
                                 ?report,
@@ -2630,9 +2640,15 @@ mod tests {
     }
 
     impl tdisp::TdispIsolationReporter for TestDevice {
-        fn tdisp_isolation_report(&mut self) -> tdisp::TdispIsolationReport {
-            self.isolation_report
-                .expect("isolation_report must be set when supports_tdisp_isolation returns Some")
+        fn tdisp_isolation_report(
+            &mut self,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = tdisp::TdispIsolationReport> + Send + 'static>,
+        > {
+            let report = self
+                .isolation_report
+                .expect("isolation_report must be set when supports_tdisp_isolation returns Some");
+            Box::pin(async move { report })
         }
     }
 

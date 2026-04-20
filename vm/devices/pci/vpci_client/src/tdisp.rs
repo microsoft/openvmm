@@ -726,10 +726,6 @@ impl VpciClientTdispState {
     /// `tdisp_unblock_mmio` would be called for it, `SHARED` when it
     /// would be skipped, and `INVALID` when the cached TDI report has
     /// no entry for it.
-    ///
-    /// DMA classification rules:
-    /// - `PRIVATE` iff `dma_unblocked` is true.
-    /// - `SHARED` otherwise.
     pub fn isolation_snapshot(&self) -> IsolationSnapshot {
         if self.mutable_state.tdi_report.is_none() {
             return IsolationSnapshot::NotReady;
@@ -740,11 +736,9 @@ impl VpciClientTdispState {
             bars[bar_id as usize] = self.classify_bar(bar_id);
         }
 
-        let dma = if self.mutable_state.dma_unblocked {
-            ResourceIsolation::PRIVATE
-        } else {
-            ResourceIsolation::SHARED
-        };
+        // TDISP devices always private DMA, even if at this moment the device's
+        // DMA isn't unblocked.
+        let dma = ResourceIsolation::PRIVATE;
 
         IsolationSnapshot::Ready { bars, dma }
     }
@@ -1066,6 +1060,15 @@ impl VpciDevice {
             .0
             .try_lock()
             .map(|guard| guard.isolation_snapshot())
+    }
+
+    /// Async equivalent of [`Self::tdisp_try_isolation_snapshot`]: awaits
+    /// the per-device TDISP mutex and returns the current isolation
+    /// snapshot. Use from async contexts where blocking on the mutex is
+    /// acceptable (e.g. the guest-facing VPCI dispatch on its async path).
+    pub async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot {
+        let guard = self.tdisp.0.lock().await;
+        guard.isolation_snapshot()
     }
 }
 
