@@ -55,12 +55,18 @@ pub mod publish {
                     let openvmm_openhcl = rt.read(openvmm_openhcl);
                     fs_err::copy(openvmm_openhcl.bin, artifact_dir.join("openhcl"))?;
 
+                    let mut seen_labels = std::collections::HashSet::new();
                     for (label, kernel_var) in kernel_baselines {
-                        assert!(
-                            !label.contains('/')
+                        anyhow::ensure!(
+                            !label.is_empty()
+                                && !label.contains('/')
                                 && !label.contains('\\')
                                 && !label.starts_with('.'),
-                            "kernel baseline label must be a simple filename: {label}"
+                            "kernel baseline label must be a non-empty simple filename: {label}"
+                        );
+                        anyhow::ensure!(
+                            seen_labels.insert(label.clone()),
+                            "duplicate kernel baseline label: {label}"
                         );
                         let kernel_path = rt.read(kernel_var);
                         fs_err::copy(kernel_path, artifact_dir.join(&label))?;

@@ -12,7 +12,6 @@ use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
-use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
 use flowey_lib_common::gh_workflow_id;
@@ -83,10 +82,7 @@ impl SimpleFlowNode for Node {
             openvmm_hcl_output: v,
         });
 
-        let kernel_arch = match arch {
-            CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
-            CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
-        };
+        let kernel_arch = arch;
 
         let current_kernels: Vec<_> = kernel_checks
             .iter()
@@ -215,6 +211,13 @@ impl SimpleFlowNode for Node {
 
                 // Compare kernel binaries
                 for (label, kernel_var) in current_kernels {
+                    anyhow::ensure!(
+                        !label.is_empty()
+                            && !label.contains('/')
+                            && !label.contains('\\')
+                            && !label.starts_with('.'),
+                        "invalid kernel label: {label}"
+                    );
                     let new_kernel = rt.read(kernel_var);
                     let old_kernel = old_openhcl.join(file_name).join(&label);
                     println!("== kernel: {label} ==");

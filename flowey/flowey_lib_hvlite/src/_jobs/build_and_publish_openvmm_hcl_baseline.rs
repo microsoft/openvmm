@@ -11,7 +11,6 @@ use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::common::CommonArch;
 use crate::common::CommonTriple;
-use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageArch;
 use crate::resolve_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey::node::prelude::*;
 
@@ -69,10 +68,7 @@ impl SimpleFlowNode for Node {
             openvmm_hcl_output: v,
         });
 
-        let kernel_arch = match arch {
-            CommonArch::X86_64 => OpenhclKernelPackageArch::X86_64,
-            CommonArch::Aarch64 => OpenhclKernelPackageArch::Aarch64,
-        };
+        let kernel_arch = arch;
 
         let kernel_baselines: Vec<_> = kernel_checks
             .into_iter()
