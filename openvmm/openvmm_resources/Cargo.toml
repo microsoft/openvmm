@@ -50,6 +50,7 @@ chipset.workspace = true
 chipset_legacy.workspace = true
 chipset_resources.workspace = true
 firmware_uefi.workspace = true
+ide.workspace = true
 missing_dev.workspace = true
 guest_watchdog.workspace = true
 tpm_device = { workspace = true, optional = true, features = ["tpm"] }

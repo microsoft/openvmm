@@ -703,6 +703,7 @@ name = "chipset_resources"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "ide_resources",
  "inspect",
  "local_clock",
  "memory_range",
@@ -3650,8 +3651,11 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 name = "ide"
 version = "0.0.0"
 dependencies = [
+ "async-trait",
  "bitfield-struct 0.11.0",
  "chipset_device",
+ "chipset_device_resources",
+ "chipset_resources",
  "disk_backend",
  "disk_file",
  "guestmem",
@@ -3673,6 +3677,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "tracing_helpers",
+ "vm_resource",
  "vmcore",
  "zerocopy",
 ]
@@ -5569,6 +5574,7 @@ dependencies = [
  "getrandom 0.4.2",
  "guestmem",
  "guid",
+ "hcl_compat_uefi_nvram_storage",
  "hvdef",
  "hyperv_dump",
  "hypervisor_resources",
@@ -5782,6 +5788,7 @@ dependencies = [
  "firmware_uefi",
  "guest_watchdog",
  "hyperv_ic",
+ "ide",
  "mesh_worker",
  "missing_dev",
  "nvme",
@@ -5873,6 +5880,7 @@ dependencies = [
  "guest_watchdog",
  "hyperv_ic",
  "hypervisor_resources",
+ "ide",
  "mesh_worker",
  "missing_dev",
  "net_backend",

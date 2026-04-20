@@ -82,6 +82,7 @@ pub struct VmManifestBuilder {
     uefi: Option<UefiManifest>,
     debugcon: Option<(Resource<SerialBackendHandle>, u16)>,
     vmbus: bool,
+    ide_as_chipset_resource: bool,
 }
 
 /// Configuration for the Hyper-V UEFI helper device.
@@ -290,6 +291,7 @@ impl VmManifestBuilder {
             uefi: None,
             debugcon: None,
             vmbus,
+            ide_as_chipset_resource: false,
         }
     }
 
@@ -389,6 +391,14 @@ impl VmManifestBuilder {
         self
     }
 
+    /// The Hyper-V IDE controller is provided externally as a chipset resource
+    /// (`pci_chipset_devices`) rather than built inline by the base chipset;
+    /// the base chipset manifest therefore must not list it.
+    pub fn with_ide_as_chipset_resource(mut self) -> Self {
+        self.ide_as_chipset_resource = true;
+        self
+    }
+
     /// Use the platform-provided PM timer assist implementation for power
     /// management devices.
     ///
@@ -433,6 +443,7 @@ impl VmManifestBuilder {
             chipset: BaseChipsetManifest::empty(),
             isa_dma_controller: None,
             capabilities: VmChipsetCapabilities {
+                with_ide: false,
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
@@ -474,7 +485,7 @@ impl VmManifestBuilder {
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_framebuffer: !self.proxy_vga,
-                    with_hyperv_ide: true,
+                    with_hyperv_ide: !self.ide_as_chipset_resource,
                     with_hyperv_vga: !self.proxy_vga,
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
@@ -484,6 +495,7 @@ impl VmManifestBuilder {
                 };
                 result.attach_generic_ioapic();
                 result.attach_pic();
+                result.capabilities.with_ide = true;
                 result.attach_pit();
                 result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);

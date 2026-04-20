@@ -587,6 +587,7 @@ impl VmService {
             vm_manifest_builder::BaseChipsetType::HyperVGen2LinuxDirect,
             vm_manifest_builder::MachineArch::X86_64,
         )
+        .with_ide_as_chipset_resource()
         .with_serial(ports);
         let layout_config = chipset_builder.layout_config();
         let chipset = chipset_builder

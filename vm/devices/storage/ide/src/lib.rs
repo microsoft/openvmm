@@ -30,6 +30,8 @@
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod resolver;
+
 mod drive;
 mod protocol;
 

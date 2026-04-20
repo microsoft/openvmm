@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 chipset_device.workspace = true
+chipset_device_resources.workspace = true
+chipset_resources.workspace = true
 disk_backend.workspace = true
 ide_resources.workspace = true
 inspect.workspace = true
@@ -18,10 +20,13 @@ safeatomic.workspace = true
 scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
+scsidisk.workspace = true
 tracing_helpers.workspace = true
 guestmem.workspace = true
+vm_resource.workspace = true
 vmcore.workspace = true
 
+async-trait.workspace = true
 bitfield-struct.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
@@ -31,7 +36,6 @@ zerocopy.workspace = true
 [dev-dependencies]
 disk_file.workspace = true
 pal_async.workspace = true
-scsidisk.workspace = true
 test_with_tracing.workspace = true
 
 tempfile.workspace = true

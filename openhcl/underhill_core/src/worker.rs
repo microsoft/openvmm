@@ -100,6 +100,8 @@ use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::rpc::RpcSend;
+use scsi_core::ResolveScsiDeviceHandleParams;
+use scsidisk::atapi_scsi::AtapiScsiDisk;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
@@ -116,8 +118,6 @@ use pal_async::DefaultPool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
-use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use socket2::Socket;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
@@ -2926,18 +2926,22 @@ async fn new_underhill_vm(
         enlightened_interrupts: true, // As advertised by the PCAT BIOS.
     });
 
+    let [primary_channel_drives, secondary_channel_drives] = ide_drives;
     let deps_hyperv_ide = if chipset.with_hyperv_ide {
-        let [primary_channel_drives, secondary_channel_drives] = ide_drives;
         Some(dev::HyperVIdeDeps {
             attached_to: pci_bus_id_piix4.clone(),
             primary_channel_drives,
             secondary_channel_drives,
         })
     } else {
-        // Ensured above.
-        assert!(ide_drives.iter().flatten().all(|d| d.is_none()));
+        assert!(
+            primary_channel_drives.iter().all(|d| d.is_none())
+                && secondary_channel_drives.iter().all(|d| d.is_none())
+        );
         None
     };
+
+    let pci_chipset_devices = pci_chipset_devices;
 
     let deps_underhill_vga_proxy =
         chipset

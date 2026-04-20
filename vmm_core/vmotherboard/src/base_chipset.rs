@@ -1053,6 +1053,8 @@ pub mod options {
         pub with_guest_watchdog: bool,
         /// Whether the VM exposes an i440BX Host-PCI Bridge (Gen1 legacy PCI bus).
         pub with_i440bx_host_pci_bridge: bool,
+        /// Whether the VM exposes a Hyper-V IDE controller.
+        pub with_ide: bool,
     }
 
     /// Device specific dependencies
@@ -1076,6 +1078,12 @@ pub mod options {
                 $(#[$m])*
                 pub struct $root_deps $($rest)*
             };
+        }
+
+        /// PIIX4 PCI-ISA bridge (fixed pci address: 0:7.0)
+        pub struct Piix4PciIsaBridgeDeps {
+            /// `vmotherboard` bus identifier
+            pub attached_to: BusIdPci,
         }
 
         /// Hyper-V IDE controller (fixed pci address: 0:7.1)
