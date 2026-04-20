@@ -566,8 +566,8 @@ impl TestIgvmAgent {
 
         // Convert the JWK RSA key to a usable RSA public key
         let rsa_public_key = RsaPublicKey::new(
-            rsa::BoxedUint::from_be_slice(&transfer_key.n, 1024).unwrap(),
-            rsa::BoxedUint::from_be_slice(&transfer_key.e, 1024).unwrap(),
+            rsa::BoxedUint::from_be_slice(&transfer_key.n, 4096 * 8).unwrap(),
+            rsa::BoxedUint::from_be_slice(&transfer_key.e, 4096 * 8).unwrap(),
         )
         .map_err(KeyReleaseError::ConvertJwkRsaFailed)?;
 
