@@ -38,7 +38,9 @@ impl hypervisor_resources::HypervisorProbe for MshvProbe {
             anyhow::bail!("unknown mshv parameter: {key}");
         }
         anyhow::ensure!(virt_mshv::is_available()?, "MSHV is not available");
-        Ok(Resource::new(MshvHandle))
+        Ok(Resource::new(MshvHandle{
+            mshv: fs_err::File::open("/dev/mshv")?.into(),
+        }))
     }
 }
 
