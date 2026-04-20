@@ -84,9 +84,9 @@ enum TdispGuestUnbindReason {
   // TDI to Unlocked.
   TDISP_GUEST_UNBIND_REASON_DEVICE_TEARDOWN = 2;
 
-  // The paravisor is unbinding the TDI because attestation failed during
-  // activation.
-  TDISP_GUEST_UNBIND_REASON_ATTESTATION_FAILURE = 3;
+  // The paravisor is unbinding the TDI because post-attestation resource
+  // setup failed during activation (for example, unblocking MMIO or DMA).
+  TDISP_GUEST_UNBIND_REASON_RESOURCE_SETUP_FAILURE = 3;
 }
 
 // Represents a type of report that can be requested from the TDI (VF).

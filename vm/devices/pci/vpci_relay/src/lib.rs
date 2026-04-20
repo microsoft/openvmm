@@ -389,59 +389,21 @@ impl VpciRelay {
                 .await
                 .expect("failed to exercise TDISP flow test");
         } else {
-            // Otherwise, try to perform real TDISP attestation before the device appears to VTL0
-            let tdisp_capabilities = vpci_device.tdisp_query_capabilities().await;
-            match tdisp_capabilities {
-                Ok(interface_info) => {
+            // Probe TDISP capability without attesting.
+            match vpci_device.tdisp_query_capabilities().await {
+                Ok(_) => {
                     tdisp_capable = true;
-                    // Take device through attestation flow before relaying it to the guest. This is prior to any resource validation, so the
-                    // device resources will still not be functional until resource assignment takes place in the guest.
-                    let attestation_result = vpci_device
-                        .tdisp_attest_device(interface_info)
-                        .await
-                        .context("TDISP attestation failed");
-
-                    match attestation_result {
-                        Ok(()) => {
-                            tracing::info!(%instance_id, "TDISP attestation succeeded for device");
-
-                            // If attestation succeeds, we will relay the device as normal. When calls are made to assign resources,
-                            // we will call to the platform to validate the resources for private access knowing that attestation succeeded.
-                            // The device is now in the Run state.
-                            //
-                            // Now unbind the device so the guest can drive its own bind/attest cycle
-                            // when it assigns resources. Preserve the cached TDI interface report so
-                            // that VPCI_QUERY_ISOLATED_RESOURCES can still answer with real MMIO/DMA
-                            // isolation classification while the TDI sits in `Unlocked`.
-                            match vpci_device
-                                .tdisp_unbind_preserve_report(
-                                    tdisp::TdispGuestUnbindReason::Graceful,
-                                )
-                                .await
-                            {
-                                Ok(()) => tracing::info!(
-                                    %instance_id,
-                                    "TDISP post-attestation unbind succeeded; device is Unlocked with cached report"
-                                ),
-                                Err(e) => tracing::error!(
-                                    %instance_id,
-                                    error = &*e as &dyn std::error::Error,
-                                    "TDISP post-attestation unbind failed; continuing to relay device"
-                                ),
-                            }
-                        }
-                        Err(e) => {
-                            tracing::info!(%instance_id, failure_reason = ?e, "TDISP attestation failed for device");
-
-                            // TDISP TODO: Implement policy decisisons about how TDISP devices will choose to appear or not
-                            // depending on attestation results. For now, we'll still allow the device to be relayed but
-                            // without any locked resources.
-                            // The device is still in the Unlocked state.
-                        }
-                    }
+                    tracing::info!(
+                        %instance_id,
+                        "TDISP capable device; deferring attestation until first guest interaction"
+                    );
                 }
                 Err(e) => {
-                    tracing::info!(%instance_id, failure_reason = ?e, "TDISP not supported or failed to query capabilities");
+                    tracing::info!(
+                        %instance_id,
+                        failure_reason = ?e,
+                        "TDISP not supported or failed to query capabilities"
+                    );
                 }
             }
         }
@@ -645,44 +607,6 @@ impl TdispIsolationReporter for RelayedVpciDevice {
                 return TdispIsolationReport::NotTdispCapable;
             }
 
-            // If the TDI is parked in `Unlocked`, drive a full attest cycle so a
-            // fresh interface report is cached before we answer. After
-            // attestation, unbind back to `Unlocked` (preserving the cached
-            // report) so the guest can drive its own bind/attest when it
-            // assigns resources, mirroring the post-init flow in
-            // `relay_vpci_bus`.
-            if device.tdisp_tdi_state().await == TdispTdiState::Unlocked {
-                match device.tdisp_query_capabilities().await {
-                    Ok(info) => {
-                        if let Err(err) = device.tdisp_attest_device(info).await {
-                            tracing::error!(
-                                error = &*err as &dyn std::error::Error,
-                                "tdisp_isolation_report: attest from Unlocked failed",
-                            );
-                            return TdispIsolationReport::Error;
-                        }
-                        if let Err(err) = device
-                            .tdisp_unbind_preserve_report(
-                                tdisp::TdispGuestUnbindReason::Graceful,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = &*err as &dyn std::error::Error,
-                                "tdisp_isolation_report: post-attest unbind failed",
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            error = &*err as &dyn std::error::Error,
-                            "tdisp_isolation_report: query_capabilities failed",
-                        );
-                        return TdispIsolationReport::Error;
-                    }
-                }
-            }
-
             fn to_tdisp(r: ResourceIsolation) -> TdispResourceIsolation {
                 match r {
                     ResourceIsolation::PRIVATE => TdispResourceIsolation::Private,
@@ -691,24 +615,65 @@ impl TdispIsolationReporter for RelayedVpciDevice {
                 }
             }
 
-            // We are on an async task and the per-device TDISP mutex is not
-            // held by anyone above us in this stack, so an awaited acquire is
-            // safe and equivalent in steady state to the previous
-            // try-lock-or-error path.
-            match device.tdisp_isolation_snapshot().await {
-                IsolationSnapshot::NotReady => TdispIsolationReport::NotReady,
-                IsolationSnapshot::Ready { bars, dma } => TdispIsolationReport::Ready {
-                    bars: [
-                        to_tdisp(bars[0]),
-                        to_tdisp(bars[1]),
-                        to_tdisp(bars[2]),
-                        to_tdisp(bars[3]),
-                        to_tdisp(bars[4]),
-                        to_tdisp(bars[5]),
-                    ],
-                    dma: to_tdisp(dma),
-                },
+            fn build(snapshot: IsolationSnapshot) -> TdispIsolationReport {
+                match snapshot {
+                    IsolationSnapshot::NotReady => TdispIsolationReport::NotReady,
+                    IsolationSnapshot::Ready { bars, dma } => TdispIsolationReport::Ready {
+                        bars: [
+                            to_tdisp(bars[0]),
+                            to_tdisp(bars[1]),
+                            to_tdisp(bars[2]),
+                            to_tdisp(bars[3]),
+                            to_tdisp(bars[4]),
+                            to_tdisp(bars[5]),
+                        ],
+                        dma: to_tdisp(dma),
+                    },
+                }
             }
+
+            // If TDI is in `Unlocked` state, we need to drive a full attest cycle
+            // to generate a fresh interface report for this query.
+            if device.tdisp_tdi_state().await == TdispTdiState::Unlocked {
+                let info = match device.tdisp_query_capabilities().await {
+                    Ok(info) => info,
+                    Err(err) => {
+                        tracing::error!(
+                            error = &*err as &dyn std::error::Error,
+                            "tdisp_isolation_report: query_capabilities failed",
+                        );
+                        return TdispIsolationReport::Error;
+                    }
+                };
+                if let Err(err) = device.tdisp_attest_device(info).await {
+                    tracing::error!(
+                        error = &*err as &dyn std::error::Error,
+                        "tdisp_isolation_report: attest from Unlocked failed",
+                    );
+                    return TdispIsolationReport::Error;
+                }
+
+                // Snapshot must be captured before the trailing unbind,
+                // which now wipes `tdi_report`.
+                let snapshot = device.tdisp_isolation_snapshot().await;
+
+                if let Err(err) = device
+                    .tdisp_unbind(tdisp::TdispGuestUnbindReason::Graceful)
+                    .await
+                {
+                    tracing::warn!(
+                        error = &*err as &dyn std::error::Error,
+                        "tdisp_isolation_report: post-attest unbind failed",
+                    );
+                }
+
+                return build(snapshot);
+            }
+
+            // Fallthrough: TDI is in Locked / Run / Uninitialized. The
+            // cached snapshot reflects the current bind, so we can return
+            // it directly without driving the state machine.
+            build(device.tdisp_isolation_snapshot().await)
         })
     }
 }
@@ -754,11 +719,7 @@ impl PciConfigSpace for RelayedVpciDevice {
             None
         };
 
-        // If the command register write crossed an MMIO-enable edge, drive
-        // the appropriate TDISP notification via a deferred chipset write.
-        // The helper functions may await on the per-device TDISP mutex and on
-        // host-side TDISP commands; `PollDevice::poll_device` drives the
-        // future to completion.
+        // Determine if we are going from mmio off -> on or on -> off and bind/unbind appropriately.
         match mmio_edge {
             Some(true) => {
                 // MMIO-enable edge: issue the cfg write first, then notify
@@ -767,8 +728,7 @@ impl PciConfigSpace for RelayedVpciDevice {
 
                 let (write, token) = chipset_device::io::deferred::defer_write();
                 let device = self.device.clone();
-                let fut: Pin<Box<dyn Future<Output = ()> + Send + Sync>> =
-                    Box::pin(async move { device.tdisp_on_device_activate().await });
+                let fut = Box::pin(async move { device.tdisp_on_device_activate().await });
 
                 tracing::info!(
                     offset,
@@ -782,16 +742,10 @@ impl PciConfigSpace for RelayedVpciDevice {
                 IoResult::Defer(token)
             }
             Some(false) => {
-                // MMIO-disable edge: writing to the command register while
-                // the device is in the Run state will cause the device to
-                // error out. If the TDI is not in Uninitialized or Unlocked,
-                // defer the cfg write until after the TDISP unbind. The
-                // cfg write then happens regardless of whether the unbind
-                // succeeds or fails. For Uninitialized/Unlocked we can write
-                // immediately since no active bind is in place.
+                // MMIO-disable edge: defer the cfg write until after the TDISP unbind.
                 let (write, token) = chipset_device::io::deferred::defer_write();
                 let device = self.device.clone();
-                let fut: Pin<Box<dyn Future<Output = ()> + Send + Sync>> = Box::pin(async move {
+                let fut = Box::pin(async move {
                     let state = device.tdisp_tdi_state().await;
                     if state == TdispTdiState::Uninitialized || state == TdispTdiState::Unlocked {
                         device.write_cfg(offset, value);
@@ -799,6 +753,7 @@ impl PciConfigSpace for RelayedVpciDevice {
                         // Unbind first; the cfg write must not happen
                         // while the device is still bound/running.
                         device.tdisp_on_device_deactivate().await;
+
                         // Write to the command register after the
                         // unbind regardless of its outcome.
                         device.write_cfg(offset, value);

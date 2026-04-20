@@ -606,7 +606,6 @@ impl VpciDevice {
     /// Callers must drive this future to completion (typically via a deferred
     /// chipset write).
     pub async fn tdisp_on_device_activate(&self) {
-        use openhcl_tdisp::TdispGuestUnbindReason;
         use openhcl_tdisp::TdispTdiState;
         use tdisp::TdispVpciAttestationInterface;
 
@@ -632,20 +631,7 @@ impl VpciDevice {
                     error = &*err as &dyn std::error::Error,
                     "tdisp_on_device_activate: attestation failed, rolling command register back to deactivated state"
                 );
-                // Tear down any partial host-side bind using the
-                // preserve-report unbind so the cached attestation report
-                // (if any) is retained for a future retry, matching the
-                // behavior of the MMIO-disable path.
-                if let Err(unbind_err) = self
-                    .tdisp_unbind_preserve_report(TdispGuestUnbindReason::AttestationFailure)
-                    .await
-                {
-                    tracing::warn!(
-                        error = &*unbind_err as &dyn std::error::Error,
-                        "tdisp_on_device_activate: preserve-report unbind after attestation failure failed"
-                    );
-                }
-                self.clear_command_register();
+                self.tdisp_fail_attestation().await;
                 return;
             }
         }
@@ -706,8 +692,10 @@ impl VpciDevice {
                         base_address,
                         length_bytes,
                         error = %e,
-                        "failed to notify TDISP of active MMIO BAR"
+                        "failed to notify TDISP of active MMIO BAR; failing activation"
                     );
+                    self.tdisp_fail_attestation().await;
+                    return;
                 }
             }
 
@@ -715,12 +703,36 @@ impl VpciDevice {
         }
     }
 
+    /// Common teardown for any failure during the MMIO-enable activation
+    /// path: post-Bind attestation failure, per-BAR unblock failure, or
+    /// similar. Issues a preserve-report unbind so the cached attestation
+    /// report (if any) is retained for a future retry, and rolls the
+    /// command register back so the guest sees the device as deactivated.
+    /// Mirrors the MMIO-disable path.
+    async fn tdisp_fail_attestation(&self) {
+        use openhcl_tdisp::TdispGuestUnbindReason;
+        use openhcl_tdisp::TdispVirtualDeviceInterface;
+
+        if let Err(unbind_err) = self
+            .tdisp_unbind(TdispGuestUnbindReason::ResourceSetupFailure)
+            .await
+        {
+            tracing::warn!(
+                error = &*unbind_err as &dyn std::error::Error,
+                "tdisp_fail_attestation: unbind failed"
+            );
+        }
+        self.clear_command_register();
+    }
+
     /// Notifies TDISP that the guest has disabled MMIO on this device.
-    /// If the TDI is in `Run`, issues a `tdisp_unbind_preserve_report`
-    /// so that the cached TDI interface report survives for subsequent
-    /// `QueryIsolatedResources` calls while the device sits in
-    /// `Unlocked` awaiting re-activation. Mirrors
-    /// [`Self::tdisp_on_device_activate`] for the disable edge.
+    /// If the TDI is in `Run`, issues a full `tdisp_unbind` so the TDI
+    /// returns to `Unlocked` and *all* per-attest state (cached interface
+    /// report, device id, intercepted BARs, validated MMIO bars, DMA
+    /// flag) is cleared. Subsequent `QueryIsolatedResources` calls will
+    /// either return `NotReady` or trigger a fresh attest (via
+    /// `tdisp_isolation_report`'s auto-attest path) before answering.
+    /// Mirrors [`Self::tdisp_on_device_activate`] for the disable edge.
     ///
     /// Call this when STATUS_COMMAND transitions MMIO from enabled to
     /// disabled; the caller is responsible for detecting the edge. If
@@ -733,29 +745,20 @@ impl VpciDevice {
     /// completion, typically via a deferred chipset write.
     pub async fn tdisp_on_device_deactivate(&self) {
         use openhcl_tdisp::TdispGuestUnbindReason;
-        use openhcl_tdisp::TdispTdiState;
+        use openhcl_tdisp::TdispVirtualDeviceInterface;
         use tdisp::TdispVpciAttestationInterface;
 
         let state = self.tdisp_tdi_state().await;
-        if state != TdispTdiState::Run {
-            tracing::debug!(
-                ?state,
-                "tdisp_on_device_deactivate: TDI not in Run, skipping preserve-report unbind"
-            );
-            return;
-        }
 
         tracing::info!(
             ?state,
-            "tdisp_on_device_deactivate: guest disabled MMIO, preserve-report unbinding TDI"
+            "tdisp_on_device_deactivate: guest disabled MMIO, unbinding TDI back to Unlocked"
         );
-        if let Err(err) = self
-            .tdisp_unbind_preserve_report(TdispGuestUnbindReason::Graceful)
-            .await
-        {
+
+        if let Err(err) = self.tdisp_unbind(TdispGuestUnbindReason::Graceful).await {
             tracing::warn!(
                 error = &*err as &dyn std::error::Error,
-                "tdisp_on_device_deactivate: preserve-report unbind failed"
+                "tdisp_on_device_deactivate: unbind failed"
             );
         }
     }

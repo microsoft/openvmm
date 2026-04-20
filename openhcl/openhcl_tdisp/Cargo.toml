@@ -7,7 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [features]
-dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio"]
+dev_snp_ohcl_tio_support = ["dep:sev_guest_device_tio", "hcl/dev_snp_ohcl_tio_support", "hvdef/dev_snp_ohcl_tio_support"]
 
 [dependencies]
 hcl.workspace = true

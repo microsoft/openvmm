@@ -109,7 +109,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             page_count = pfns.len(),
             first_pfn = format_args!("{:#x}", base_pfn),
             last_pfn = format_args!("{:#x}", base_pfn + length_in_pages as u64 - 1),
-            "about to call modify_gpa_visibility(PRIVATE)"
+            "about to call modify_gpa_visibility(PRIVATE + IMMUTABLE)"
         );
 
         // Open fresh mshv/mshv_vtl handles on the current VP; these cannot be
@@ -117,20 +117,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         // it.
         let mshv = Self::open_mshv_hvcall()?;
         let mshv_vtl = Self::open_mshv_vtl()?;
-
-        // Modify the pages to private before validation
-        match mshv
-            .modify_gpa_visibility(HostVisibilityType::PRIVATE, &pfns)
-        {
-            Ok(_) => tracing::info!(
-                page_count = pfns.len(),
-                "successfully modified GPA page visibility to private for MMIO unblock"
-            ),
-            Err(e) => {
-                tracing::error!(?e, "failed to modify GPA page visibility for MMIO unblock");
-                anyhow::bail!("failed to modify GPA page visibility for MMIO unblock: {e:?}");
-            }
-        }
 
         let guest_device_id = device_id;
         let subrange_base = base_gpa;
@@ -149,6 +135,20 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             %force_validate,
             "sending SEV-TIO MMIO validate request"
         );
+
+        // Modify the pages to private before validation
+        // New SEV-TIO requirement: pages must be marked immutable in addition to private
+        match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, true, &pfns)
+        {
+            Ok(_) => tracing::info!(
+                page_count = pfns.len(),
+                "successfully modified GPA page visibility to private + immutable for MMIO unblock"
+            ),
+            Err(e) => {
+                tracing::error!(?e, "failed to modify GPA page visibility for MMIO unblock");
+                anyhow::bail!("failed to modify GPA page visibility for MMIO unblock: {e:?}");
+            }
+        }
 
         // Initiate the guest request to mark the MMIO range as validated. The firmware will verify all paging assignments from
         // the host to ensure the range is properly backed by expected guest pages before marking it as validated.
@@ -179,7 +179,28 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             }
         }
 
-        // Finally, rmpadjust the pages to be read/write to VTL0 so the guest can access them.
+        // Turn off immutability now that the firmware has validated the pages
+        match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, false, &pfns)
+        {
+            Ok(_) => tracing::info!(
+                page_count = pfns.len(),
+                "successfully modified GPA page immutable=false after PSP call for MMIO unblock"
+            ),
+            Err(e) => {
+                tracing::error!(
+                    ?e,
+                    "failed to modify GPA page immutability=false for MMIO unblock"
+                );
+                anyhow::bail!(
+                    "failed to modify GPA page immutability=false for MMIO unblock: {e:?}"
+                );
+            }
+        }
+
+        // Page is now in the validated=true and immutable=false state in the RMP. We are free to RMPADJUST
+        // now.
+
+        // RMPADJUST the page to be read/write to VTL0 so the guest can access them.
         match mshv_vtl.rmpadjust_pages(
             MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
             SevRmpAdjust::new()
@@ -261,8 +282,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         let mshv = Self::open_mshv_hvcall()?;
         let mshv_vtl = Self::open_mshv_vtl()?;
 
-        // Revoke VTL0 access first so the guest cannot touch these pages
-        // while we flip them back to shared.
+        // Revoke VTL0 access so the guest cannot touch these pages anymore.
         match mshv_vtl.rmpadjust_pages(
             MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
             SevRmpAdjust::new()
@@ -276,6 +296,20 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             Err(e) => {
                 tracing::error!(?e, "failed to rmpadjust pages for MMIO block");
                 anyhow::bail!("failed to rmpadjust pages for MMIO block: {e:?}");
+            }
+        }
+
+        // Modify the pages to private and immutable before un-validation
+        // New SEV-TIO requirement: pages must be marked immutable in addition to private
+        match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, true, &pfns)
+        {
+            Ok(_) => tracing::info!(
+                page_count = pfns.len(),
+                "successfully modified GPA page visibility to private + immutable for MMIO unblock"
+            ),
+            Err(e) => {
+                tracing::error!(?e, "failed to modify GPA page visibility for MMIO unblock");
+                anyhow::bail!("failed to modify GPA page visibility for MMIO unblock: {e:?}");
             }
         }
 
@@ -314,11 +348,31 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             base_gpa = format_args!("{:#x}", base_gpa),
             length_in_bytes,
             page_count = pfns.len(),
+            "about to call modify_gpa_visibility(PRIVATE + IMMUTABLE=false)"
+        );
+
+        // Remove immutability from the pages before flipping them back to shared
+        match mshv.modify_gpa_visibility_and_immutability(HostVisibilityType::PRIVATE, false, &pfns)
+        {
+            Ok(_) => tracing::info!(
+                page_count = pfns.len(),
+                "successfully flipped GPA pages back to shared for MMIO block"
+            ),
+            Err(e) => {
+                tracing::error!(?e, "failed to modify GPA page visibility for MMIO block");
+                anyhow::bail!("failed to modify GPA page visibility for MMIO block: {e:?}");
+            }
+        }
+
+        // Flip the pages back to shared / host-visible.
+        tracing::info!(
+            base_gpa = format_args!("{:#x}", base_gpa),
+            length_in_bytes,
+            page_count = pfns.len(),
             "about to call modify_gpa_visibility(SHARED)"
         );
-        match mshv
-            .modify_gpa_visibility(HostVisibilityType::SHARED, &pfns)
-        {
+
+        match mshv.modify_gpa_visibility(HostVisibilityType::SHARED, &pfns) {
             Ok(_) => tracing::info!(
                 page_count = pfns.len(),
                 "successfully flipped GPA pages back to shared for MMIO block"
@@ -364,6 +418,19 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         &self,
         device_id: u16,
     ) -> anyhow::Result<Option<TdispTdiState>> {
+        // Intentionally NOT issuing `tio_msg_tdi_info_req` right now. On
+        // current SEV-TIO firmware the TDI_INFO request can only be
+        // serviced while the TDI is in the Run state, which makes it
+        // useless as a pre-Bind sanity check (which is when we actually
+        // want to cross-reference the firmware's view of the TDI state).
+        // Until the firmware is fixed to answer in other states, treat
+        // this as "not supported" so callers fall through to their cached
+        // paravisor state. The full implementation is preserved below so
+        // it can be re-enabled once the firmware side is working.
+        let _ = device_id;
+        Ok(None)
+
+        /*
         use sev_guest_device_tio::TioMsgTdiStatus;
 
         let resp = self
@@ -405,5 +472,6 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         };
 
         Ok(Some(mapped))
+        */
     }
 }

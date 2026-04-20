@@ -149,7 +149,7 @@ impl VpciClientTdispState {
             worker_req,
             vpci_device_id: device_id,
             mutable_state: VpciClientTdispMutableState {
-                tdi_state: TdispTdiState::Uninitialized,
+                tdi_state: TdispTdiState::Unlocked,
                 guest_device_id: 0,
                 validated_mmio_bars: std::collections::HashMap::new(),
                 dma_unblocked: false,
@@ -368,38 +368,18 @@ impl VpciClientTdispState {
 
     /// See: [`TdispVirtualDeviceInterface::tdisp_unbind`]
     pub async fn tdisp_unbind(&mut self, reason: TdispGuestUnbindReason) -> anyhow::Result<()> {
-        self.tdisp_unbind_inner(reason, /* clear_cached_report = */ true)
-            .await
-    }
-
-    /// Same as [`Self::tdisp_unbind`], but preserves the cached
-    /// `tdi_report` and `intercepted_bars` so that
-    /// [`Self::isolation_snapshot`] can continue to classify BAR/DMA
-    /// isolation while the TDI sits in the `Unlocked` state awaiting a
-    /// guest-initiated re-attestation.
-    ///
-    /// Host-side per-bind state (`validated_mmio_bars`, `dma_unblocked`)
-    /// is still cleared, since that bookkeeping is specific to a single
-    /// bind/attest cycle and will be rebuilt when the guest drives
-    /// attestation again.
-    pub async fn tdisp_unbind_preserve_report(
-        &mut self,
-        reason: TdispGuestUnbindReason,
-    ) -> anyhow::Result<()> {
-        self.tdisp_unbind_inner(reason, /* clear_cached_report = */ false)
-            .await
-    }
-
-    async fn tdisp_unbind_inner(
-        &mut self,
-        reason: TdispGuestUnbindReason,
-        clear_cached_report: bool,
-    ) -> anyhow::Result<()> {
         // Flip all unblocked MMIO ranges and DMA back to shared before
         // we tell the host to unbind the TDI. This is best-effort: a
         // failure here is logged but doesn't abort the unbind, because
         // the channel is already being torn down and the host-side TDI
         // state is our only source of truth for what remains bound.
+        //
+        // Invariant: every "what is currently unblocked" field on
+        // `mutable_state` must be read here to issue the corresponding
+        // re-block *before* the unbind command goes out and the cache
+        // gets cleared. If a future field gets added that represents
+        // an unblocked resource, it must participate in this same
+        // read-then-block-then-clear flow.
         if let Some(validator) = self.resource_validator.clone() {
             let device_id = self.mutable_state.guest_device_id;
             for (bar_id, mmio) in &self.mutable_state.validated_mmio_bars {
@@ -446,11 +426,13 @@ impl VpciClientTdispState {
 
         match res.response::<TdispCommandResponseUnbind>() {
             Ok(_) => {
+                // Clear every per-attest field. Capabilities are static
+                // device properties and stay cached.
                 self.mutable_state.validated_mmio_bars.clear();
                 self.mutable_state.dma_unblocked = false;
-                if clear_cached_report {
-                    self.mutable_state.tdi_report = None;
-                }
+                self.mutable_state.tdi_report = None;
+                self.mutable_state.guest_device_id = 0;
+                self.mutable_state.intercepted_bars.clear();
                 Ok(())
             }
             Err(err) => Err(anyhow::anyhow!("error response in tdisp_unbind: {err}")),
@@ -547,10 +529,10 @@ impl VpciClientTdispState {
 
         // The host-side state machine only accepts Bind from Unlocked. If
         // the TDI is in any other state (e.g. Locked from a partial prior
-        // attempt, or Run from a previous attest cycle), issue a full
-        // tdisp_unbind first to reset the host state. Use `tdisp_unbind`
-        // (not `tdisp_unbind_preserve_report`) so all per-bind bookkeeping
-        // is cleared before the new attestation rebuilds it.
+        // attempt, or Run from a previous attest cycle), issue a
+        // tdisp_unbind first to reset the host state. The unbind clears
+        // all per-attest bookkeeping so the new attestation rebuilds it
+        // from a clean slate.
         if self.tdi_state() != TdispTdiState::Unlocked {
             tracing::info!(
                 current_state = %self.tdi_state(),
@@ -979,16 +961,6 @@ pub trait TdispVpciAttestationInterface: Sync + Send {
     /// Callers on the guest-facing VPCI channel use this to synthesize the
     /// `VpciIsolatedResourcesReply` for `VPCI_QUERY_ISOLATED_RESOURCES`.
     async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot;
-
-    /// Unbind the TDI on the host side while preserving the cached TDI
-    /// interface report. After this call, [`Self::tdisp_isolation_snapshot`]
-    /// can still return a classified snapshot even though the TDI has been
-    /// returned to `Unlocked`. Used by the relay to re-arm the device for
-    /// guest-driven attestation after pre-warming the report at init.
-    async fn tdisp_unbind_preserve_report(
-        &self,
-        reason: TdispGuestUnbindReason,
-    ) -> anyhow::Result<()>;
 }
 
 impl TdispVpciAttestationInterface for VpciDevice {
@@ -1033,14 +1005,6 @@ impl TdispVpciAttestationInterface for VpciDevice {
     async fn tdisp_isolation_snapshot(&self) -> IsolationSnapshot {
         let guard = self.tdisp.0.lock().await;
         guard.isolation_snapshot()
-    }
-
-    async fn tdisp_unbind_preserve_report(
-        &self,
-        reason: TdispGuestUnbindReason,
-    ) -> anyhow::Result<()> {
-        let mut guard = self.tdisp.0.lock().await;
-        guard.tdisp_unbind_preserve_report(reason).await
     }
 }
 
