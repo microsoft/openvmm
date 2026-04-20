@@ -19,7 +19,9 @@ pci_bus.workspace = true
 pci_core.workspace = true
 memory_range.workspace = true
 vmcore.workspace = true
+power_resources.workspace = true
 
+async-trait.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 open_enum.workspace = true
