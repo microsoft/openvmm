@@ -3834,12 +3834,9 @@ jobs:
         flowey e 22 flowey_lib_common::git_checkout 3
         flowey e 22 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
-    - name: add default cargo home to path
-      run: flowey e 22 flowey_lib_common::install_rust 0
-      shell: bash
-    - name: install Rust
+    - name: detect active toolchain
       run: |-
-        flowey e 22 flowey_lib_common::install_rust 1
+        flowey e 22 flowey_lib_common::install_rust 0
         flowey v 22 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.token <<EOF
         ${{ github.token }}
         EOF
