@@ -22,6 +22,8 @@ use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use chipset_resources::hyperv_guest_watchdog::DEFAULT_WDAT_PORT_BASE;
 use chipset_resources::hyperv_guest_watchdog::HyperVGuestWatchdogDeviceHandle;
+use chipset_resources::i440bx_host_pci_bridge::I440BX_HOST_PCI_BRIDGE_BDF;
+use chipset_resources::i440bx_host_pci_bridge::I440BxHostPciBridgeDeviceHandle;
 use chipset_resources::i8042::I8042DeviceHandle;
 use chipset_resources::ioapic::GenericIoApicDeviceHandle;
 use chipset_resources::isa_dma::GenericIsaDmaDeviceHandle;
@@ -345,6 +347,7 @@ impl VmManifestBuilder {
                 with_generic_isa_dma: false,
                 with_psp: false,
                 with_guest_watchdog: false,
+                with_i440bx_host_pci_bridge: false,
             },
         };
 
@@ -365,6 +368,7 @@ impl VmManifestBuilder {
                 result.attach_generic_isa_dma();
                 result.attach_piix4_pci_usb_uhci_stub();
                 result.attach_piix4_pci_isa_bridge();
+                result.attach_i440bx_host_pci_bridge();
                 // This chipset always has a serial port even if not requested.
                 result.attach_serial_16550(
                     self.serial_wait_for_rts,
@@ -379,7 +383,6 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: !self.proxy_vga,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
-                    with_i440bx_host_pci_bridge: true,
                     with_piix4_cmos_rtc: true,
                     with_piix4_pci_bus: true,
                     with_underhill_vga_proxy: self.proxy_vga,
@@ -388,6 +391,7 @@ impl VmManifestBuilder {
                 };
                 result.attach_generic_ioapic();
                 result.attach_pic();
+                result.capabilities.with_i440bx_host_pci_bridge = true;
                 result.attach_pit();
                 result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);
@@ -406,7 +410,6 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
-                    with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
                     with_underhill_vga_proxy: false,
@@ -448,7 +451,6 @@ impl VmManifestBuilder {
                     with_hyperv_framebuffer: self.framebuffer,
                     with_hyperv_ide: false,
                     with_hyperv_vga: false,
-                    with_i440bx_host_pci_bridge: false,
                     with_piix4_cmos_rtc: false,
                     with_piix4_pci_bus: false,
 
@@ -686,6 +688,19 @@ impl VmChipsetResult {
                 time_source,
             }
             .into_resource(),
+        });
+        self
+    }
+
+    fn attach_i440bx_host_pci_bridge(&mut self) -> &mut Self {
+        self.pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+            name: "440bx-host-pci-bridge".to_string(),
+            resource: I440BxHostPciBridgeDeviceHandle {
+                adjust_gpa_range: PlatformResource.into_resource(),
+            }
+            .into_resource(),
+            pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+            bdf: I440BX_HOST_PCI_BRIDGE_BDF,
         });
         self
     }

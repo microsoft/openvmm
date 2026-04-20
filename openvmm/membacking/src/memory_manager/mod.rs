@@ -750,6 +750,7 @@ impl GuestMemoryManager {
 
 /// A client to the [`GuestMemoryManager`] used to control the visibility of
 /// RAM regions.
+#[derive(Clone)]
 pub struct RamVisibilityControl {
     regions: Arc<Vec<RamRegion>>,
 }

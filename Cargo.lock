@@ -707,6 +707,7 @@ dependencies = [
  "arbitrary",
  "inspect",
  "local_clock",
+ "memory_range",
  "mesh",
  "vm_resource",
 ]

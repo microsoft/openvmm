@@ -3,10 +3,15 @@
 
 use chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange;
 use chipset_legacy::i440bx_host_pci_bridge::GpaState;
+use chipset_resources::i440bx_host_pci_bridge::AdjustGpaRangeHandleKind;
+use chipset_resources::i440bx_host_pci_bridge::ResolvedAdjustGpaRange;
 use futures::executor::block_on;
 use membacking::RamVisibility;
 use membacking::RamVisibilityControl;
 use memory_range::MemoryRange;
+use std::convert::Infallible;
+use vm_resource::PlatformResource;
+use vm_resource::ResolveResource;
 
 /// Implementation of [`AdjustGpaRange`] used by the legacy PCI bus for OpenVMM
 /// and the legacy PCAT and SVGA BIOSes.
@@ -45,5 +50,23 @@ impl AdjustGpaRange for ManageRamGpaRange {
             }
         };
         block_on(self.memory.set_ram_visibility(range, state)).unwrap();
+    }
+}
+
+/// Platform resolver for [`AdjustGpaRangeHandleKind`] in OpenVMM.
+pub struct AdjustGpaRangeResolver(pub RamVisibilityControl);
+
+impl ResolveResource<AdjustGpaRangeHandleKind, PlatformResource> for AdjustGpaRangeResolver {
+    type Output = ResolvedAdjustGpaRange;
+    type Error = Infallible;
+
+    fn resolve(
+        &self,
+        _resource: PlatformResource,
+        _input: (),
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(ResolvedAdjustGpaRange(Box::new(ManageRamGpaRange::new(
+            self.0.clone(),
+        ))))
     }
 }
