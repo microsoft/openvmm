@@ -13,7 +13,6 @@
 //! fatal.
 
 #![cfg(target_os = "linux")]
-#![forbid(unsafe_code)]
 
 pub mod manager;
 pub mod resolver;

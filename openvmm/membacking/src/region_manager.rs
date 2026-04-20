@@ -4,9 +4,13 @@
 //! Implements the region manager, which tracks regions and their mappings, as
 //! well as partitions to map the regions into.
 
+// UNSAFETY: Calling unsafe DmaTarget::map_dma with validated VA pointers.
+#![expect(unsafe_code)]
+
 use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingManagerClient;
 use crate::mapping_manager::MappingParams;
+use crate::mapping_manager::VaMapper;
 use crate::partition_mapper::PartitionMapper;
 use futures::StreamExt;
 use inspect::Inspect;
@@ -17,8 +21,122 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use std::cmp::Ordering;
+use std::sync::Arc;
 use thiserror::Error;
 use vmcore::local_only::LocalOnly;
+
+/// A consumer of IOMMU-granularity DMA mapping events.
+///
+/// Unlike [`PartitionMemoryMap`](virt::PartitionMemoryMap), which maps entire
+/// regions by VA pointer for lazy SLAT resolution, this trait receives
+/// individual sub-mapping events with the backing fd + offset, suitable for
+/// explicit IOMMU programming (VFIO type1, iommufd, etc.).
+///
+/// DMA targets receive notifications for **all** active sub-mappings,
+/// including device BAR memory (regions with `dma_target: false`). The
+/// `dma_target` flag controls only whether a region is exposed via
+/// `GuestMemorySharing` (for vhost-user); IOMMU consumers need the full
+/// GPA→backing map to program identity mappings for all guest-visible memory.
+///
+/// Implementations must be `Send + Sync` because they are stored behind `Arc`
+/// in the region manager task.
+pub trait DmaTarget: Send + Sync {
+    /// Program an IOMMU mapping from `iova` to the backing described by
+    /// `mappable` at `file_offset` for `size` bytes.
+    ///
+    /// `host_va` is the host virtual address of the mapping, provided when
+    /// the target was registered with `needs_va = true`. When `None`, the
+    /// implementation should use `mappable` and `file_offset` directly
+    /// (e.g., iommufd).
+    ///
+    /// # Safety
+    /// When `host_va` is `Some`, the pointed-to memory must be backed and
+    /// must not be unmapped for the duration of the resulting IOMMU mapping.
+    /// The caller (the crate-internal `DmaMapper`) guarantees this by holding an
+    /// [`Arc<VaMapper>`] and calling `ensure_mapped` before each invocation.
+    unsafe fn map_dma(
+        &self,
+        iova: u64,
+        host_va: Option<*const u8>,
+        mappable: &Mappable,
+        file_offset: u64,
+        size: u64,
+    ) -> anyhow::Result<()>;
+
+    /// Remove an IOMMU mapping at `iova` for `size` bytes.
+    ///
+    /// The region manager may call this with a range that is larger than any
+    /// single `map_dma` call (e.g., unmapping an entire region at once even
+    /// though individual sub-mappings were mapped separately). Implementations
+    /// must handle this gracefully — for example, by unmapping whatever
+    /// sub-ranges are currently mapped within the requested range and ignoring
+    /// any gaps.
+    fn unmap_dma(&self, iova: u64, size: u64) -> anyhow::Result<()>;
+}
+
+/// Wraps a [`DmaTarget`] for use by the region manager.
+///
+/// Holds an optional [`VaMapper`] to ensure pages are faulted in before
+/// `map_dma` (needed for VFIO type1's `pin_user_pages`).
+struct DmaMapper {
+    id: DmaMapperId,
+    target: Arc<dyn DmaTarget>,
+    va_mapper: Option<Arc<VaMapper>>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct DmaMapperId(u64);
+
+impl DmaMapper {
+    /// Map a sub-mapping into the IOMMU.
+    async fn map_dma(
+        &self,
+        iova: u64,
+        mappable: &Mappable,
+        file_offset: u64,
+        size: u64,
+    ) -> anyhow::Result<()> {
+        // Ensure the VaMapper has the backing pages faulted in and compute
+        // the host VA for type1 backends.
+        let host_va = if let Some(va_mapper) = &self.va_mapper {
+            va_mapper
+                .ensure_mapped(MemoryRange::new(iova..iova + size))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "VA range {:#x}..{:#x} has no backing mapping",
+                        iova,
+                        iova + size
+                    )
+                })?;
+            Some(va_mapper.as_ptr().wrapping_add(iova as usize).cast_const())
+        } else {
+            None
+        };
+        // SAFETY: When host_va is Some, the VaMapper has been ensure_mapped
+        // for this range. The VaMapper is held alive by this DmaMapper (via
+        // Arc), so the VA reservation persists. The pages are backed because
+        // ensure_mapped succeeded. The IOMMU mapping will be torn down
+        // (via unmap_dma in disable_region or remove_dma_mapper) before the
+        // VaMapper releases the VA range.
+        unsafe {
+            self.target
+                .map_dma(iova, host_va, mappable, file_offset, size)
+        }
+    }
+
+    /// Unmap a range from the IOMMU.
+    fn unmap_dma(&self, iova: u64, size: u64) {
+        if let Err(e) = self.target.unmap_dma(iova, size) {
+            tracing::warn!(
+                error = &*e as &dyn std::error::Error,
+                iova,
+                size,
+                "DMA unmap failed"
+            );
+        }
+    }
+}
 
 /// The region manager.
 #[derive(Debug, Inspect)]
@@ -130,6 +248,8 @@ fn inspect_mappings(req: inspect::Request<'_>, region_start: u64, mappings: &[Re
 
 struct RegionManagerTaskInner {
     partitions: Vec<PartitionMapper>,
+    dma_mappers: Vec<DmaMapper>,
+    next_dma_mapper_id: u64,
     mapping_manager: MappingManagerClient,
 }
 
@@ -144,6 +264,8 @@ enum RegionRequest {
     AddPartition(
         LocalOnly<Rpc<PartitionMapper, Result<(), crate::partition_mapper::PartitionMapperError>>>,
     ),
+    AddDmaMapper(LocalOnly<Rpc<(Arc<dyn DmaTarget>, bool), anyhow::Result<DmaMapperId>>>),
+    RemoveDmaMapper(LocalOnly<DmaMapperId>),
     Inspect(inspect::Deferred),
 }
 
@@ -178,6 +300,8 @@ impl RegionManagerTask {
             inner: RegionManagerTaskInner {
                 mapping_manager,
                 partitions: Vec::new(),
+                dma_mappers: Vec::new(),
+                next_dma_mapper_id: 0,
             },
         }
     }
@@ -196,6 +320,14 @@ impl RegionManagerTask {
                 RegionRequest::AddPartition(LocalOnly(rpc)) => {
                     rpc.handle(async |partition| self.add_partition(partition).await)
                         .await
+                }
+                RegionRequest::AddDmaMapper(LocalOnly(rpc)) => {
+                    let ((target, needs_va), rpc) = rpc.split();
+                    let result = self.add_dma_mapper(target, needs_va).await;
+                    rpc.complete(result);
+                }
+                RegionRequest::RemoveDmaMapper(LocalOnly(id)) => {
+                    self.remove_dma_mapper(id);
                 }
                 RegionRequest::AddRegion(rpc) => rpc.handle_sync(|params| self.add_region(params)),
                 RegionRequest::RemoveRegion(rpc) => {
@@ -232,6 +364,73 @@ impl RegionManagerTask {
         }
         self.inner.partitions.push(partition);
         Ok(())
+    }
+
+    async fn add_dma_mapper(
+        &mut self,
+        target: Arc<dyn DmaTarget>,
+        needs_va: bool,
+    ) -> anyhow::Result<DmaMapperId> {
+        // Create a VaMapper if the target needs host VAs for IOMMU programming.
+        let va_mapper = if needs_va {
+            Some(
+                self.inner
+                    .mapping_manager
+                    .new_mapper()
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?,
+            )
+        } else {
+            None
+        };
+
+        let id = DmaMapperId(self.inner.next_dma_mapper_id);
+        self.inner.next_dma_mapper_id += 1;
+
+        let mapper = DmaMapper {
+            id,
+            target,
+            va_mapper,
+        };
+
+        // Replay existing active sub-mappings so the new IOMMU consumer
+        // gets the current state.
+        for region in &self.regions {
+            if region.is_active {
+                for mapping in &region.mappings {
+                    let iova = region.params.range.start() + mapping.params.range_in_region.start();
+                    let size = mapping.params.range_in_region.len();
+                    mapper
+                        .map_dma(
+                            iova,
+                            &mapping.params.mappable,
+                            mapping.params.file_offset,
+                            size,
+                        )
+                        .await?;
+                }
+            }
+        }
+        self.inner.dma_mappers.push(mapper);
+        Ok(id)
+    }
+
+    fn remove_dma_mapper(&mut self, id: DmaMapperId) {
+        if let Some(pos) = self.inner.dma_mappers.iter().position(|m| m.id == id) {
+            let mapper = &self.inner.dma_mappers[pos];
+            // Unmap all active sub-mappings from this mapper before removing it.
+            for region in &self.regions {
+                if region.is_active {
+                    for mapping in &region.mappings {
+                        let iova =
+                            region.params.range.start() + mapping.params.range_in_region.start();
+                        let size = mapping.params.range_in_region.len();
+                        mapper.unmap_dma(iova, size);
+                    }
+                }
+            }
+            self.inner.dma_mappers.swap_remove(pos);
+        }
     }
 
     fn region_index(&self, id: RegionId) -> usize {
@@ -410,6 +609,25 @@ impl RegionManagerTask {
             for partition in &mut self.inner.partitions {
                 partition.notify_new_mapping(range).await;
             }
+
+            for dma_mapper in &self.inner.dma_mappers {
+                if let Err(e) = dma_mapper
+                    .map_dma(
+                        range.start(),
+                        &params.mappable,
+                        params.file_offset,
+                        range.len(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = &*e as &dyn std::error::Error,
+                        iova = range.start(),
+                        size = range.len(),
+                        "DMA mapper failed to map new sub-mapping"
+                    );
+                }
+            }
         }
 
         region.mappings.push(RegionMapping { params });
@@ -418,6 +636,22 @@ impl RegionManagerTask {
     async fn remove_mappings(&mut self, id: RegionId, range_in_region: MemoryRange) {
         let index = self.region_index(id);
         let region = &mut self.regions[index];
+        let active_range = region.active_range();
+
+        // Collect absolute GPA ranges of mappings being removed (before
+        // mutating the vec) so we can notify DMA mappers.
+        let removed_ranges: Vec<MemoryRange> = if active_range.is_some() {
+            let region_range = region.params.range;
+            region
+                .mappings
+                .iter()
+                .filter(|m| range_in_region.contains(&m.params.range_in_region))
+                .map(|m| range_within(region_range, m.params.range_in_region))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         region.mappings.retain_mut(|mapping| {
             if !range_in_region.contains(&mapping.params.range_in_region) {
                 assert!(
@@ -428,12 +662,18 @@ impl RegionManagerTask {
             }
             false
         });
-        if let Some(region_range) = region.active_range() {
+        if let Some(region_range) = active_range {
             self.inner
                 .mapping_manager
                 .remove_mappings(range_within(region_range, range_in_region))
                 .await;
 
+            // Unmap removed sub-mappings from DMA mappers.
+            for removed in &removed_ranges {
+                for dma_mapper in &self.inner.dma_mappers {
+                    dma_mapper.unmap_dma(removed.start(), removed.len());
+                }
+            }
             // Currently there is no need to tell the partitions about the
             // removed mappings; they will find out when the underlying VA is
             // invalidated by the kernel.
@@ -466,6 +706,30 @@ impl RegionManagerTaskInner {
                 .await;
         }
 
+        // Map sub-mappings into DMA mappers (per-sub-mapping granularity).
+        for mapping in &region.mappings {
+            let iova = region.params.range.start() + mapping.params.range_in_region.start();
+            let size = mapping.params.range_in_region.len();
+            for dma_mapper in &self.dma_mappers {
+                if let Err(e) = dma_mapper
+                    .map_dma(
+                        iova,
+                        &mapping.params.mappable,
+                        mapping.params.file_offset,
+                        size,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = &*e as &dyn std::error::Error,
+                        iova,
+                        size,
+                        "DMA mapper failed to map sub-mapping during region enable"
+                    );
+                }
+            }
+        }
+
         // Map the region into the partitions.
         for partition in &mut self.partitions {
             partition
@@ -486,7 +750,15 @@ impl RegionManagerTaskInner {
             "disabling region"
         );
 
+        // Unmap DMA mappers first — IOMMU entries must be removed before
+        // the VA mappings are torn down (type1's pin_user_pages pins are
+        // released by unmap_dma, and the underlying pages must still be
+        // valid at that point).
         let region_range = region.params.range;
+        for dma_mapper in &mut self.dma_mappers {
+            dma_mapper.unmap_dma(region_range.start(), region_range.len());
+        }
+
         for partition in &mut self.partitions {
             partition.unmap_region(region_range);
         }
@@ -559,6 +831,76 @@ impl RegionManagerClient {
             id: Some(id),
             req_send: self.req_send.clone(),
         })
+    }
+}
+
+/// Client for registering DMA mappers with the region manager.
+///
+/// This is the public-facing handle for IOMMU consumers (VFIO, iommufd)
+/// to register themselves. It exposes only `add_dma_mapper`, hiding the
+/// rest of the region manager API.
+#[derive(Clone)]
+pub struct DmaMapperClient {
+    req_send: mesh::Sender<RegionRequest>,
+}
+
+impl DmaMapperClient {
+    pub(crate) fn new(region_manager: &RegionManagerClient) -> Self {
+        Self {
+            req_send: region_manager.req_send.clone(),
+        }
+    }
+
+    /// Register a DMA target to receive sub-mapping events.
+    ///
+    /// This may only be called in the same process as the region manager.
+    ///
+    /// If `needs_va` is `true`, the region manager will maintain a `VaMapper`
+    /// and pass a host VA to [`DmaTarget::map_dma`] for each sub-mapping.
+    /// Use this for backends that program the IOMMU via host VAs (VFIO type1).
+    ///
+    /// If `needs_va` is `false`, no `VaMapper` is created and `host_va` will
+    /// be `None`. Use this for backends that map from the fd directly (iommufd).
+    ///
+    /// The replay loop maps all existing active sub-mappings into the new
+    /// consumer.
+    ///
+    /// Returns a [`DmaMapperHandle`] that removes the mapper when dropped.
+    pub async fn add_dma_mapper(
+        &self,
+        target: Arc<dyn DmaTarget>,
+        needs_va: bool,
+    ) -> anyhow::Result<DmaMapperHandle> {
+        let id = self
+            .req_send
+            .call(
+                |x| RegionRequest::AddDmaMapper(LocalOnly(x)),
+                (target, needs_va),
+            )
+            .await
+            .unwrap()?;
+        Ok(DmaMapperHandle {
+            id: Some(id),
+            req_send: self.req_send.clone(),
+        })
+    }
+}
+
+/// Handle to a registered DMA mapper.
+///
+/// Removes the mapper from the region manager on drop, unmapping all
+/// active IOMMU entries.
+pub struct DmaMapperHandle {
+    id: Option<DmaMapperId>,
+    req_send: mesh::Sender<RegionRequest>,
+}
+
+impl Drop for DmaMapperHandle {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            self.req_send
+                .send(RegionRequest::RemoveDmaMapper(LocalOnly(id)));
+        }
     }
 }
 
