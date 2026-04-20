@@ -8,3 +8,22 @@ target = "x86_64-unknown-none"
 
 [env]
 MINIMAL_RT_BUILD = "1"
+
+# By default the sha2 crate uses CPU feature detection which on x86_64 uses the
+# cpuid instruction. Executing cpuid in an SNP CVM would require implementing an
+# exception handler, so force sha2's software backend instead. These cfgs are
+# read by the sha2 crate itself, so they must be set via rustflags (which apply
+# to all crates in the build, including dependencies) rather than via a
+# downstream build.rs (whose `cargo:rustc-cfg` only affects that one crate).
+# The `sha2_backend_soft = "compact"` cfg additionally disables loop unrolling
+# in the soft backend, trading performance for a smaller code size.
+[target.x86_64-unknown-none]
+rustflags = [
+  "--cfg", 'sha2_backend="soft"',
+  "--cfg", 'sha2_backend_soft="compact"',
+  "--check-cfg", 'cfg(sha2_backend, values("soft", "riscv-zknh"))',
+  "--check-cfg", 'cfg(sha2_256_backend, values("soft", "riscv-zknh", "x86-sha", "aarch64-sha2"))',
+  "--check-cfg", 'cfg(sha2_512_backend, values("soft", "riscv-zknh", "aarch64-sha2"))',
+  "--check-cfg", 'cfg(sha2_backend_soft, values("compact"))',
+  "--check-cfg", 'cfg(sha2_backend_riscv_zknh, values("compact"))',
+]
