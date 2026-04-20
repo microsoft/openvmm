@@ -145,6 +145,27 @@ pub trait TdispResourceValidationInterface: Send + Sync {
 
     /// Re-block DMA access. Inverse of [`Self::tdisp_unblock_dma`].
     fn tdisp_block_dma(&self, target_vtl: Vtl, device_id: u16) -> anyhow::Result<()>;
+
+    /// Query the platform firmware for the current TDI state of the device.
+    ///
+    /// Returns `Ok(None)` on platforms that do not support querying firmware
+    /// TDI state directly. On platforms that do (e.g. SEV-TIO), returns
+    /// `Ok(Some(state))` with the firmware's state mapped to
+    /// [`TdispTdiState`], or `Err` if the firmware reports an error state
+    /// or the request itself fails.
+    ///
+    /// Callers can use this to validate that the paravisor's cached TDI
+    /// state matches what the firmware actually has before sending
+    /// state-sensitive commands to the host.
+    ///
+    /// * `device_id` - Identifies the TDI device (not a VPCI ID).
+    fn tdisp_query_firmware_tdi_state(
+        &self,
+        device_id: u16,
+    ) -> anyhow::Result<Option<TdispTdiState>> {
+        let _ = device_id;
+        Ok(None)
+    }
 }
 
 /// Creates a [`GuestToHostCommand`] for the `GetDeviceInterfaceInfo` command.

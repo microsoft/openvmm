@@ -5595,6 +5595,7 @@ dependencies = [
  "memory_range",
  "parking_lot",
  "sev_guest_device",
+ "sev_guest_device_tio",
  "tdisp",
  "tdisp_proto",
  "tracing",
