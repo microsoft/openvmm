@@ -10,6 +10,7 @@ rust-version.workspace = true
 vm_resource.workspace = true
 
 inspect.workspace = true
+memory_range.workspace = true
 mesh.workspace = true
 
 arbitrary = { workspace = true, optional = true, features = ["derive"] }

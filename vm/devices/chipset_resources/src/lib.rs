@@ -165,3 +165,66 @@ pub mod piix4_uhci {
         const ID: &'static str = "piix4PciUsbUhciStub";
     }
 }
+
+pub mod i440bx_host_pci_bridge {
+    //! Resource definitions for the i440BX Host-PCI Bridge.
+
+    use memory_range::MemoryRange;
+    use mesh::MeshPayload;
+    use vm_resource::CanResolveTo;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
+    use vm_resource::ResourceKind;
+    use vm_resource::kind::ChipsetDeviceHandleKind;
+
+    /// Memory mapping state for a GPA range managed by the i440BX PAM registers.
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum GpaState {
+        /// Reads and writes go to RAM.
+        #[default]
+        Writable,
+        /// Reads go to RAM, writes go to MMIO.
+        WriteProtected,
+        /// Reads go to ROM, writes go to RAM.
+        WriteOnly,
+        /// Reads and writes go to MMIO.
+        Mmio,
+    }
+
+    /// A trait to adjust GPA memory range mappings.
+    ///
+    /// This is called when the i440BX PAM (Physical Address Management) PCI
+    /// configuration registers are modified, or for VGA memory.
+    pub trait AdjustGpaRange: Send {
+        /// Adjusts a memory range's mapping state.
+        fn adjust_gpa_range(&mut self, range: MemoryRange, state: GpaState);
+    }
+
+    /// Resolved platform-specific [`AdjustGpaRange`] implementation.
+    pub struct ResolvedAdjustGpaRange(pub Box<dyn AdjustGpaRange>);
+
+    /// Resource kind for platform-specific [`AdjustGpaRange`] implementations.
+    pub enum AdjustGpaRangeHandleKind {}
+
+    impl ResourceKind for AdjustGpaRangeHandleKind {
+        const NAME: &'static str = "i440bx_adjust_gpa_range";
+    }
+
+    impl CanResolveTo<ResolvedAdjustGpaRange> for AdjustGpaRangeHandleKind {
+        type Input<'a> = ();
+    }
+
+    /// A handle to an i440BX Host-PCI Bridge device.
+    #[derive(MeshPayload)]
+    pub struct I440BxHostPciBridgeDeviceHandle {
+        /// Platform-specific implementation of GPA range adjustment.
+        pub adjust_gpa_range: Resource<AdjustGpaRangeHandleKind>,
+    }
+
+    /// The fixed BDF used by the i440BX Host-PCI Bridge in the Gen1 chipset.
+    pub const I440BX_HOST_PCI_BRIDGE_BDF: (u8, u8, u8) = (0, 0, 0);
+
+    impl ResourceId<ChipsetDeviceHandleKind> for I440BxHostPciBridgeDeviceHandle {
+        const ID: &'static str = "i440bx-host-pci-bridge";
+    }
+}

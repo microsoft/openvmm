@@ -1096,6 +1096,9 @@ impl InitializedVm {
         let halt_vps = Arc::new(halt_vps);
 
         resolver.add_resolver(vmm_core::platform_resolvers::HaltResolver(halt_vps.clone()));
+        resolver.add_resolver(emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(
+            memory_manager.ram_visibility_control(),
+        ));
 
         let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
 
@@ -1552,16 +1555,6 @@ impl InitializedVm {
             None
         };
 
-        let deps_i440bx_host_pci_bridge =
-            (cfg.chipset.with_i440bx_host_pci_bridge).then(|| dev::I440BxHostPciBridgeDeps {
-                attached_to: pci_bus_id_piix4.clone(),
-                adjust_gpa_range: Box::new(
-                    emuplat::i440bx_host_pci_bridge::ManageRamGpaRange::new(
-                        memory_manager.ram_visibility_control(),
-                    ),
-                ),
-            });
-
         let deps_piix4_pci_bus = (cfg.chipset.with_piix4_pci_bus).then(|| dev::Piix4PciBusDeps {
             bus_id: pci_bus_id_piix4.clone(),
         });
@@ -1607,7 +1600,6 @@ impl InitializedVm {
                 deps_hyperv_ide,
                 deps_hyperv_power_management,
                 deps_hyperv_vga,
-                deps_i440bx_host_pci_bridge,
                 deps_piix4_cmos_rtc,
                 deps_piix4_pci_bus,
                 deps_piix4_power_management,
@@ -1691,7 +1683,7 @@ impl InitializedVm {
         let pci_inta_line = {
             const PCI_LEGACY_INTA_IRQ: u32 = 11;
             const PCI_INTA_IRQ: u32 = 16;
-            if cfg.chipset.with_i440bx_host_pci_bridge {
+            if cfg.chipset_capabilities.with_i440bx_host_pci_bridge {
                 // Hyper-V hard-wires this to 11.
                 Some(PCI_LEGACY_INTA_IRQ)
             } else if cfg.chipset.with_generic_pci_bus {
@@ -2415,6 +2407,7 @@ impl LoadedVmInner {
                                     mem_layout,
                                     dsdt,
                                     &self.chipset_cfg,
+                                    &self.chipset_capabilities,
                                     enable_serial,
                                     self.virtio_mmio_count,
                                     self.virtio_mmio_irq,
@@ -3140,6 +3133,7 @@ fn add_devices_to_dsdt_x64(
     mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,
     cfg: &BaseChipsetManifest,
+    capabilities: &VmChipsetCapabilities,
     serial_uarts: bool,
     virtio_mmio_count: usize,
     virtio_mmio_irq: u32,
@@ -3196,7 +3190,7 @@ fn add_devices_to_dsdt_x64(
 
     let high_mmio_gap = MemoryRange::new(high_mmio_space);
 
-    if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
+    if cfg.with_generic_pci_bus || capabilities.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
         dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
     } else {
@@ -3204,7 +3198,7 @@ fn add_devices_to_dsdt_x64(
     }
 
     dsdt.add_vmbus(
-        cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge,
+        cfg.with_generic_pci_bus || capabilities.with_i440bx_host_pci_bridge,
         None,
     );
     dsdt.add_rtc();

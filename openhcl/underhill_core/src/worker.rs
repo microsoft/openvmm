@@ -25,7 +25,6 @@ use crate::emuplat::EmuplatServicing;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
-use crate::emuplat::i440bx_host_pci_bridge::ArcMutexGetBackedAdjustGpaRange;
 use crate::emuplat::i440bx_host_pci_bridge::GetBackedAdjustGpaRange;
 use crate::emuplat::local_clock::ArcMutexUnderhillLocalClock;
 use crate::emuplat::local_clock::UnderhillLocalClock;
@@ -2732,46 +2731,42 @@ async fn new_underhill_vm(
         bus_id: pci_bus_id_piix4.clone(),
     });
 
-    let deps_i440bx_host_pci_bridge = if chipset.with_i440bx_host_pci_bridge {
-        Some(dev::I440BxHostPciBridgeDeps {
-            attached_to: pci_bus_id_piix4.clone(),
-            adjust_gpa_range: {
-                // TODO: improve slot range allocation, when there are more API consumers
-                let base_slot = 0;
-                // The host will only consider the first available RAM block when
-                // creating PCAT mappings, so we need to do the same. This only
-                // works because everybody keeps things sorted.
-                const SIZE_1_MB: u64 = 1024 * 1024;
-                const SIZE_4_GB: u64 = 4 * 1024 * SIZE_1_MB;
-                let first_mem_block = &mem_layout.ram()[0];
-                anyhow::ensure!(
-                    first_mem_block.range.end() < SIZE_4_GB,
-                    "first memory block must be below 4GB for adjust_gpa_range"
-                );
-                // Reserve 1MB off the top.
-                let rom_bios_offset = first_mem_block.range.end() - SIZE_1_MB;
+    if capabilities.with_i440bx_host_pci_bridge {
+        // TODO: improve slot range allocation, when there are more API consumers
+        let base_slot = 0;
+        // The host will only consider the first available RAM block when
+        // creating PCAT mappings, so we need to do the same. This only
+        // works because everybody keeps things sorted.
+        const SIZE_1_MB: u64 = 1024 * 1024;
+        const SIZE_4_GB: u64 = 4 * 1024 * SIZE_1_MB;
+        let first_mem_block = &mem_layout.ram()[0];
+        anyhow::ensure!(
+            first_mem_block.range.end() < SIZE_4_GB,
+            "first memory block must be below 4GB for adjust_gpa_range"
+        );
+        // Reserve 1MB off the top.
+        let rom_bios_offset = first_mem_block.range.end() - SIZE_1_MB;
 
-                let adjust_gpa_range = GetBackedAdjustGpaRange::new(
-                    get_client.clone(),
-                    base_slot,
-                    rom_bios_offset,
-                    servicing_state
-                        .emuplat
-                        .get_backed_adjust_gpa_range
-                        .flatten(),
-                )
-                .context("failed to initialize GetBackedAdjustGpaRange emuplat")?;
+        let adjust_gpa_range = GetBackedAdjustGpaRange::new(
+            get_client.clone(),
+            base_slot,
+            rom_bios_offset,
+            servicing_state
+                .emuplat
+                .get_backed_adjust_gpa_range
+                .flatten(),
+        )
+        .context("failed to initialize GetBackedAdjustGpaRange emuplat")?;
 
-                let adjust_gpa_range = Arc::new(Mutex::new(adjust_gpa_range));
+        let adjust_gpa_range = Arc::new(Mutex::new(adjust_gpa_range));
 
-                emuplat_adjust_gpa_range = Some(adjust_gpa_range.clone());
+        emuplat_adjust_gpa_range = Some(adjust_gpa_range.clone());
 
-                Box::new(ArcMutexGetBackedAdjustGpaRange(adjust_gpa_range))
-            },
-        })
+        resolver.add_resolver(
+            crate::emuplat::i440bx_host_pci_bridge::AdjustGpaRangeResolver(adjust_gpa_range),
+        );
     } else {
         emuplat_adjust_gpa_range = None;
-        None
     };
 
     let deps_generic_isa_dma = chipset
@@ -2972,7 +2967,6 @@ async fn new_underhill_vm(
         deps_hyperv_framebuffer: None,
         deps_hyperv_ide,
         deps_hyperv_vga: None,
-        deps_i440bx_host_pci_bridge,
         deps_piix4_cmos_rtc,
         deps_piix4_pci_bus,
         deps_piix4_power_management,

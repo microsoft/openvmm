@@ -227,7 +227,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_ide,
             deps_hyperv_power_management,
             deps_hyperv_vga,
-            deps_i440bx_host_pci_bridge,
             deps_piix4_cmos_rtc,
             deps_piix4_pci_bus,
             deps_piix4_power_management,
@@ -274,22 +273,6 @@ impl<'a> BaseChipsetBuilder<'a> {
                 )
             })?;
             builder.register_weak_mutex_pci_bus(bus_id, Box::new(pci));
-        }
-
-        if let Some(options::dev::I440BxHostPciBridgeDeps {
-            attached_to,
-            adjust_gpa_range,
-        }) = deps_i440bx_host_pci_bridge
-        {
-            builder
-                .arc_mutex_device("440bx-host-pci-bridge")
-                .on_pci_bus(attached_to)
-                .add(|_| {
-                    chipset_legacy::i440bx_host_pci_bridge::HostPciBridge::new(
-                        adjust_gpa_range,
-                        foundation.is_restoring,
-                    )
-                })?;
         }
 
         let dma = {
@@ -1125,8 +1108,6 @@ pub mod options {
             hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
-            i440bx_host_pci_bridge:      dev::I440BxHostPciBridgeDeps,
-
             piix4_cmos_rtc:              dev::Piix4CmosRtcDeps,
             piix4_pci_bus:               dev::Piix4PciBusDeps,
             piix4_power_management:      dev::Piix4PowerManagementDeps,
@@ -1149,6 +1130,8 @@ pub mod options {
         pub with_pit: bool,
         /// Whether the VM exposes a PSP.
         pub with_psp: bool,
+        /// Whether the VM exposes an i440BX Host-PCI Bridge (Gen1 legacy PCI bus).
+        pub with_i440bx_host_pci_bridge: bool,
     }
 
     /// Device specific dependencies
@@ -1274,14 +1257,6 @@ pub mod options {
         pub struct Piix4PciBusDeps {
             /// `vmotherboard` bus identifier
             pub bus_id: BusIdPci,
-        }
-
-        /// i440BX Host-PCI bridge (fixed pci address: 0:0.0)
-        pub struct I440BxHostPciBridgeDeps {
-            /// `vmotherboard` bus identifier
-            pub attached_to: BusIdPci,
-            /// Interface to create GPA alias ranges.
-            pub adjust_gpa_range: Box<dyn chipset_legacy::i440bx_host_pci_bridge::AdjustGpaRange>,
         }
 
         feature_gated! {
