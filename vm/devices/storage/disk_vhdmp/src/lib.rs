@@ -11,10 +11,15 @@ use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
-use disk_file::FileDisk;
+use guestmem::MemoryRead;
+use guestmem::MemoryWrite;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
+use pal_async::driver::Driver;
+use pal_async::task::Spawn;
+use pal_async::windows::overlapped::FILE_SEGMENT_ELEMENT;
+use pal_async::windows::overlapped::OverlappedFile;
 use scsi_buffers::RequestBuffers;
 use std::fs;
 use std::os::windows::prelude::*;
@@ -24,6 +29,8 @@ use vm_resource::ResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskHandleKind;
+
+const PAGE_SIZE: usize = 4096;
 
 mod virtdisk {
     #![expect(non_snake_case, dead_code, clippy::upper_case_acronyms)]
@@ -690,8 +697,10 @@ impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver 
         rsrc: OpenVhdmpDiskConfig,
         input: ResolveDiskParameters<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        let driver = input.driver_source.simple();
         ResolvedDisk::new(
-            VhdmpDisk::new(rsrc.0, input.read_only).map_err(ResolveVhdmpDiskError::Vhdmp)?,
+            VhdmpDisk::new(rsrc.0, input.read_only, &driver)
+                .map_err(ResolveVhdmpDiskError::Vhdmp)?,
         )
         .map_err(ResolveVhdmpDiskError::InvalidDisk)
     }
@@ -699,15 +708,20 @@ impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver 
 
 /// Implementation of [`DiskIo`] for VHD and VHDX files, using the VHDMP driver
 /// as the parser.
-#[derive(Debug, Inspect)]
+///
+/// Uses Windows overlapped IO for true async reads and writes. Requires a
+/// [`Driver`] that supports overlapped IO (e.g., from
+/// `VmTaskDriverSource::simple()`).
+#[derive(Inspect)]
 pub struct VhdmpDisk {
-    #[inspect(flatten)]
-    vhd: FileDisk,
-    /// Lock uses to serialize IOs, since FileDisk currently cannot handle
-    /// multiple concurrent IOs on files opened with FILE_FLAG_OVERLAPPED on
-    /// Windows (and the VHDMP handle is opened with FILE_FLAG_OVERLAPPED).
     #[inspect(skip)]
-    io_lock: futures::lock::Mutex<()>,
+    file: OverlappedFile,
+    disk_size: u64,
+    sector_size: u32,
+    #[inspect(skip)]
+    sector_shift: u32,
+    physical_sector_size: u32,
+    read_only: bool,
     disk_id: Guid,
 }
 
@@ -726,6 +740,9 @@ pub enum Error {
     #[error("failed to query VHD metadata")]
     /// Error querying disk metadata
     Query(#[source] std::io::Error),
+    #[error("failed to create overlapped file")]
+    /// Error creating the overlapped file for async IO
+    Overlapped(#[source] std::io::Error),
 }
 
 impl VhdmpDisk {
@@ -739,24 +756,55 @@ impl VhdmpDisk {
         }
     }
 
-    /// Creates a disk from an open VHD handle. `vhd` should have been opened via [`OpenOptions::open()`].
-    pub fn new(vhd: Vhd, read_only: bool) -> Result<Self, Error> {
+    /// Creates a disk from an open VHD handle.
+    ///
+    /// Uses Windows overlapped IO for true async read/write, allowing
+    /// concurrent IOs without serialization. Requires a `Driver` that
+    /// supports overlapped IO (e.g., from `VmTaskDriverSource::simple()`).
+    ///
+    /// Flush operations are dispatched to a blocking thread pool because
+    /// `NtFlushBuffersFileEx` always waits synchronously, even on async
+    /// file handles.
+    pub fn new(vhd: Vhd, read_only: bool, driver: &(impl ?Sized + Driver)) -> Result<Self, Error> {
         let size = vhd.get_size().map_err(Error::Query)?;
         let disk_id = vhd.get_disk_id().map_err(Error::Query)?;
-        let metadata = disk_file::Metadata {
-            disk_size: size.VirtualSize,
-            sector_size: size.SectorSize,
-            physical_sector_size: vhd.get_physical_sector_size().map_err(Error::Query)?,
-            read_only,
-        };
-        let vhd = FileDisk::with_metadata(vhd.0, metadata);
+        let physical_sector_size = vhd.get_physical_sector_size().map_err(Error::Query)?;
+        // SAFETY: VHDMP handles are opened with FILE_FLAG_OVERLAPPED.
+        let file = unsafe { OverlappedFile::new(driver, vhd.0) }.map_err(Error::Overlapped)?;
 
         Ok(Self {
-            vhd,
-            io_lock: Default::default(),
+            file,
+            disk_size: size.VirtualSize,
+            sector_size: size.SectorSize,
+            sector_shift: size.SectorSize.trailing_zeros(),
+            physical_sector_size,
+            read_only,
             disk_id,
         })
     }
+}
+
+/// Builds a null-terminated [`FILE_SEGMENT_ELEMENT`] array from locked IO
+/// buffers. Each element points to one system page (4096 bytes).
+fn build_segment_list(io_vecs: &[scsi_buffers::IoBuffer<'_>]) -> Vec<FILE_SEGMENT_ELEMENT> {
+    let total_pages: usize = io_vecs.iter().map(|v| v.len() / PAGE_SIZE).sum();
+    // +1 for the null terminator.
+    let mut segments = Vec::with_capacity(total_pages + 1);
+    for io_vec in io_vecs {
+        let mut ptr = io_vec.as_ptr() as *mut u8;
+        let mut remaining = io_vec.len();
+        while remaining > 0 {
+            segments.push(FILE_SEGMENT_ELEMENT { Buffer: ptr.cast() });
+            // SAFETY: advancing by PAGE_SIZE within the locked buffer.
+            ptr = unsafe { ptr.add(PAGE_SIZE) };
+            remaining -= PAGE_SIZE;
+        }
+    }
+    // Null terminator.
+    segments.push(FILE_SEGMENT_ELEMENT {
+        Buffer: std::ptr::null_mut(),
+    });
+    segments
 }
 
 impl DiskIo for VhdmpDisk {
@@ -765,15 +813,15 @@ impl DiskIo for VhdmpDisk {
     }
 
     fn sector_count(&self) -> u64 {
-        self.vhd.sector_count()
+        self.disk_size >> self.sector_shift
     }
 
     fn sector_size(&self) -> u32 {
-        self.vhd.sector_size()
+        self.sector_size
     }
 
     fn is_read_only(&self) -> bool {
-        self.vhd.is_read_only()
+        self.read_only
     }
 
     fn disk_id(&self) -> Option<[u8; 16]> {
@@ -781,11 +829,11 @@ impl DiskIo for VhdmpDisk {
     }
 
     fn physical_sector_size(&self) -> u32 {
-        self.vhd.physical_sector_size()
+        self.physical_sector_size
     }
 
     fn is_fua_respected(&self) -> bool {
-        self.vhd.is_fua_respected()
+        false
     }
 
     async fn read_vectored(
@@ -793,23 +841,72 @@ impl DiskIo for VhdmpDisk {
         buffers: &RequestBuffers<'_>,
         sector: u64,
     ) -> Result<(), DiskError> {
-        let _locked = self.io_lock.lock().await;
-        self.vhd.read(buffers, sector).await
+        let len = buffers.len();
+        let offset = sector << self.sector_shift;
+        if offset + len as u64 > self.disk_size {
+            return Err(DiskError::IllegalBlock);
+        }
+        if buffers.is_aligned(PAGE_SIZE) {
+            let locked = buffers.lock(true)?;
+            let io = {
+                let segments = build_segment_list(locked.io_vecs());
+                // SAFETY: segments point to locked guest pages that will not
+                // be referenced via Rust references until the IO completes;
+                // file is opened with FILE_NO_INTERMEDIATE_BUFFERING.
+                unsafe { self.file.read_scatter_at(offset, &segments, len as u32) }
+            };
+            let (result, _) = io.await;
+            drop(locked);
+            result.map_err(DiskError::Io)?;
+        } else {
+            let buf = vec![0u8; len];
+            let (result, buf) = self.file.read_at(offset, buf).await;
+            result.map_err(DiskError::Io)?;
+            buffers.writer().write(&buf)?;
+        }
+        Ok(())
     }
 
     async fn write_vectored(
         &self,
         buffers: &RequestBuffers<'_>,
         sector: u64,
-        fua: bool,
+        _fua: bool,
     ) -> Result<(), DiskError> {
-        let _locked = self.io_lock.lock().await;
-        self.vhd.write(buffers, sector, fua).await
+        let len = buffers.len();
+        let offset = sector << self.sector_shift;
+        if offset + len as u64 > self.disk_size {
+            return Err(DiskError::IllegalBlock);
+        }
+        if buffers.is_aligned(PAGE_SIZE) {
+            let locked = buffers.lock(false)?;
+            let io = {
+                let segments = build_segment_list(locked.io_vecs());
+                // SAFETY: segments point to locked guest pages that will not
+                // be referenced via Rust references until the IO completes;
+                // file is opened with FILE_NO_INTERMEDIATE_BUFFERING.
+                unsafe { self.file.write_gather_at(offset, &segments, len as u32) }
+            };
+            let (result, _) = io.await;
+            drop(locked);
+            result.map_err(DiskError::Io)?;
+        } else {
+            let mut buf = vec![0u8; len];
+            buffers.reader().read(&mut buf)?;
+            let (result, _) = self.file.write_at(offset, buf).await;
+            result.map_err(DiskError::Io)?;
+        }
+        Ok(())
     }
 
     async fn sync_cache(&self) -> Result<(), DiskError> {
-        let _locked = self.io_lock.lock().await;
-        self.vhd.flush().await
+        // NtFlushBuffersFileEx always waits synchronously even on async file
+        // handles, so dispatch to the system thread pool.
+        let flush_file = self.file.get().try_clone().map_err(DiskError::Io)?;
+        pal_async::windows::TpPool::system()
+            .spawn("vhdmp_flush", async move { flush_file.sync_all() })
+            .await
+            .map_err(DiskError::Io)
     }
 
     async fn unmap(
@@ -833,6 +930,7 @@ mod tests {
     use disk_backend::DiskIo;
     use disk_vhd1::Vhd1Disk;
     use guestmem::GuestMemory;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use scsi_buffers::OwnedRequestBuffers;
     use std::io::Write;
@@ -844,6 +942,14 @@ mod tests {
         f.write_all(&vec![0u8; size]).unwrap();
         Vhd1Disk::make_fixed(f.as_file()).unwrap();
         f.into_temp_path()
+    }
+
+    fn open_disk(path: &std::path::Path, read_only: bool, driver: &DefaultDriver) -> VhdmpDisk {
+        let vhd = VhdmpDisk::options()
+            .read_only(read_only)
+            .open(path)
+            .unwrap();
+        VhdmpDisk::new(vhd, read_only, driver).unwrap()
     }
 
     #[test]
@@ -864,13 +970,9 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_invalid_lba() {
+    async fn test_invalid_lba(driver: DefaultDriver) {
         let path = make_test_vhd();
-        let vhd = VhdmpDisk::options()
-            .read_only(true)
-            .open(path.as_ref())
-            .unwrap();
-        let disk = VhdmpDisk::new(vhd, true).unwrap();
+        let disk = open_disk(path.as_ref(), true, &driver);
         let gm = GuestMemory::allocate(512);
         match disk
             .read_vectored(
@@ -882,5 +984,117 @@ mod tests {
             Err(DiskError::IllegalBlock) => {}
             r => panic!("unexpected result: {:?}", r),
         }
+    }
+
+    /// Tests the page-aligned read/write path (scatter/gather).
+    #[async_test]
+    async fn test_read_write_aligned(driver: DefaultDriver) {
+        let path = make_test_vhd();
+        let disk = open_disk(path.as_ref(), false, &driver);
+
+        let page_count = 4;
+        let len = page_count * 4096;
+        // Use separate GPN ranges for write and read so they don't overlap.
+        let gm = GuestMemory::allocate(len * 2);
+
+        // Fill the write region with a deterministic pattern.
+        let pattern: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        gm.write_at(0, &pattern).unwrap();
+
+        // Write from GPNs [0..4).
+        let write_bufs = OwnedRequestBuffers::linear(0, len, true);
+        disk.write_vectored(&write_bufs.buffer(&gm), 0, false)
+            .await
+            .unwrap();
+
+        // Read into GPNs [4..8).
+        let read_bufs = OwnedRequestBuffers::linear(len as u64, len, true);
+        disk.read_vectored(&read_bufs.buffer(&gm), 0).await.unwrap();
+
+        // Verify read-back matches the pattern.
+        let mut readback = vec![0u8; len];
+        gm.read_at(len as u64, &mut readback).unwrap();
+        assert_eq!(pattern, readback);
+    }
+
+    /// Tests the unaligned read/write path (bounce buffer fallback).
+    #[async_test]
+    async fn test_read_write_unaligned(driver: DefaultDriver) {
+        let path = make_test_vhd();
+        let disk = open_disk(path.as_ref(), false, &driver);
+
+        // Use a sub-page-aligned buffer: 512 bytes at a non-zero page offset.
+        let gm = GuestMemory::allocate(4096 * 4);
+        let pattern: Vec<u8> = (0..512).map(|i| (i % 197) as u8).collect();
+
+        // Write 512 bytes from offset 256 within guest memory (unaligned).
+        gm.write_at(256, &pattern).unwrap();
+        let write_bufs = OwnedRequestBuffers::new_unaligned(&[0], 256, 512);
+        disk.write_vectored(&write_bufs.buffer(&gm), 0, false)
+            .await
+            .unwrap();
+
+        // Read into a different offset.
+        let read_bufs = OwnedRequestBuffers::new_unaligned(&[1], 256, 512);
+        disk.read_vectored(&read_bufs.buffer(&gm), 0).await.unwrap();
+
+        let mut readback = vec![0u8; 512];
+        gm.read_at(4096 + 256, &mut readback).unwrap();
+        assert_eq!(pattern, readback);
+    }
+
+    /// Tests writing to one sector and reading from another (verifies no
+    /// cross-contamination).
+    #[async_test]
+    async fn test_read_write_different_sectors(driver: DefaultDriver) {
+        let path = make_test_vhd();
+        let disk = open_disk(path.as_ref(), false, &driver);
+
+        let sector_size = disk.sector_size() as usize;
+        let gm = GuestMemory::allocate(4096 * 4);
+
+        // Write a known pattern to sector 10.
+        let pattern_a: Vec<u8> = (0..sector_size).map(|i| 0xAA ^ (i as u8)).collect();
+        gm.write_at(0, &pattern_a).unwrap();
+        let bufs = OwnedRequestBuffers::linear(0, sector_size, true);
+        disk.write_vectored(&bufs.buffer(&gm), 10, false)
+            .await
+            .unwrap();
+
+        // Write a different pattern to sector 20.
+        let pattern_b: Vec<u8> = (0..sector_size).map(|i| 0x55 ^ (i as u8)).collect();
+        gm.write_at(0, &pattern_b).unwrap();
+        disk.write_vectored(&bufs.buffer(&gm), 20, false)
+            .await
+            .unwrap();
+
+        // Read sector 10 and verify.
+        gm.write_at(0, &vec![0u8; sector_size]).unwrap();
+        disk.read_vectored(&bufs.buffer(&gm), 10).await.unwrap();
+        let mut readback = vec![0u8; sector_size];
+        gm.read_at(0, &mut readback).unwrap();
+        assert_eq!(pattern_a, readback);
+
+        // Read sector 20 and verify.
+        gm.write_at(0, &vec![0u8; sector_size]).unwrap();
+        disk.read_vectored(&bufs.buffer(&gm), 20).await.unwrap();
+        gm.read_at(0, &mut readback).unwrap();
+        assert_eq!(pattern_b, readback);
+    }
+
+    /// Tests that sync_cache completes without error.
+    #[async_test]
+    async fn test_sync_cache(driver: DefaultDriver) {
+        let path = make_test_vhd();
+        let disk = open_disk(path.as_ref(), false, &driver);
+
+        let gm = GuestMemory::allocate(4096);
+        gm.write_at(0, &[0xCCu8; 4096]).unwrap();
+        let bufs = OwnedRequestBuffers::linear(0, 4096, true);
+        disk.write_vectored(&bufs.buffer(&gm), 0, false)
+            .await
+            .unwrap();
+
+        disk.sync_cache().await.unwrap();
     }
 }
