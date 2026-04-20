@@ -33,8 +33,7 @@ use rsa::Oaep;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
 use rsa::pkcs8::EncodePrivateKey;
-use rsa::rand_core::OsRng;
-use rsa::rand_core::RngCore;
+use rsa::rand_core::Rng;
 use rsa::rand_core::SeedableRng;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -469,7 +468,7 @@ impl TestIgvmAgent {
 
         self.secret_key = Some(private_key);
 
-        RngCore::fill_bytes(&mut rng, &mut des_key);
+        Rng::fill_bytes(&mut rng, &mut des_key);
         self.des_key = Some(des_key);
 
         Ok(())
@@ -491,8 +490,8 @@ impl TestIgvmAgent {
             .ok_or(WrappedKeyError::SecretKeyNotInitialized)?;
 
         // Encrypt the DES key using RSA-OAEP
-        let mut rng = OsRng;
-        let padding = Oaep::new::<Sha256>();
+        let mut rng = DummyRng::from_seed(0xabcdu64.to_le_bytes());
+        let padding = Oaep::<Sha256>::new();
         let rsa_public = RsaPublicKey::from(secret_key);
         let encrypted_des = rsa_public
             .encrypt(&mut rng, padding, &des_key)
@@ -567,8 +566,8 @@ impl TestIgvmAgent {
 
         // Convert the JWK RSA key to a usable RSA public key
         let rsa_public_key = RsaPublicKey::new(
-            rsa::BigUint::from_bytes_be(&transfer_key.n),
-            rsa::BigUint::from_bytes_be(&transfer_key.e),
+            rsa::BoxedUint::from_be_slice(&transfer_key.n, 64).unwrap(),
+            rsa::BoxedUint::from_be_slice(&transfer_key.e, 64).unwrap(),
         )
         .map_err(KeyReleaseError::ConvertJwkRsaFailed)?;
 
@@ -587,18 +586,18 @@ impl TestIgvmAgent {
             .secret_key
             .as_ref()
             .ok_or(KeyReleaseError::SecretKeyNotInitialized)?;
-        let mut rng = OsRng;
+        let mut rng = DummyRng::from_seed(0xabcdu64.to_le_bytes());
 
         // Generate the KEK (32 bytes) and wrap the private key using internal wrapper
         let mut kek_bytes = [0u8; 32];
-        RngCore::fill_bytes(&mut rng, &mut kek_bytes);
+        Rng::fill_bytes(&mut rng, &mut kek_bytes);
         let priv_key_der = secret_key
             .to_pkcs8_der()
             .map_err(KeyReleaseError::RsaToPkcs8Error)?;
         let wrapped_key = aes_key_wrap_with_padding(&kek_bytes, priv_key_der.as_bytes());
 
         // Encrypt the KEK using RSA-OAEP
-        let padding = Oaep::new::<TestSha1>();
+        let padding = Oaep::<TestSha1>::new();
         let encrypted_kek = public_key
             .encrypt(&mut rng, padding, &kek_bytes)
             .map_err(KeyReleaseError::RsaEncryptionError)?;
