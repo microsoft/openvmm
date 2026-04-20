@@ -898,6 +898,7 @@ pub(crate) async fn run_repl(
                                     direct: false,
                                 },
                             )
+                            .await
                             .with_context(|| format!("failed to open {}", path.display()))?
                         }
                         Some(size) => {
@@ -1092,6 +1093,7 @@ pub(crate) async fn run_repl(
                                 direct: false,
                             },
                         )
+                        .await
                         .with_context(|| format!("failed to open {}", path.display()))?,
                         (Some(size), None) => {
                             Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(

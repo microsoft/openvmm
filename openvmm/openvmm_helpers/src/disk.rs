@@ -36,7 +36,7 @@ pub struct OpenDiskOptions {
 /// If the file ends with .vhd and is a fixed VHD1, it will be opened using
 /// the user-mode VHD parser. Otherwise, if the file ends with .vhd or
 /// .vhdx, the file will be opened using the kernel-mode VHD parser.
-pub fn open_disk_type(
+pub async fn open_disk_type(
     path: &Path,
     options: OpenDiskOptions,
 ) -> anyhow::Result<Resource<DiskHandleKind>> {

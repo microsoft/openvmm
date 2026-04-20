@@ -442,14 +442,16 @@ async fn vm_config_from_command_line(
             anyhow::bail!("`--disk` is incompatible with PCIe");
         }
 
-        storage.add(
-            vtl,
-            underhill,
-            storage_builder::DiskLocation::Scsi(None),
-            kind,
-            is_dvd,
-            read_only,
-        )?;
+        storage
+            .add(
+                vtl,
+                underhill,
+                storage_builder::DiskLocation::Scsi(None),
+                kind,
+                is_dvd,
+                read_only,
+            )
+            .await?;
     }
 
     for &cli_args::IdeDiskCli {
@@ -460,14 +462,16 @@ async fn vm_config_from_command_line(
         is_dvd,
     } in &opt.ide
     {
-        storage.add(
-            DeviceVtl::Vtl0,
-            None,
-            storage_builder::DiskLocation::Ide(channel, device),
-            kind,
-            is_dvd,
-            read_only,
-        )?;
+        storage
+            .add(
+                DeviceVtl::Vtl0,
+                None,
+                storage_builder::DiskLocation::Ide(channel, device),
+                kind,
+                is_dvd,
+                read_only,
+            )
+            .await?;
     }
 
     for &cli_args::DiskCli {
@@ -479,14 +483,16 @@ async fn vm_config_from_command_line(
         ref pcie_port,
     } in &opt.nvme
     {
-        storage.add(
-            vtl,
-            underhill,
-            storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
-            kind,
-            is_dvd,
-            read_only,
-        )?;
+        storage
+            .add(
+                vtl,
+                underhill,
+                storage_builder::DiskLocation::Nvme(None, pcie_port.clone()),
+                kind,
+                is_dvd,
+                read_only,
+            )
+            .await?;
     }
 
     for &cli_args::DiskCli {
@@ -508,23 +514,21 @@ async fn vm_config_from_command_line(
             kind,
             is_dvd,
             read_only,
-        )?;
+        )
+        .await?;
     }
 
-    let floppy_disks: Vec<_> = opt
-        .floppy
-        .iter()
-        .map(|disk| -> anyhow::Result<_> {
-            let &cli_args::FloppyDiskCli {
-                ref kind,
-                read_only,
-            } = disk;
-            Ok(FloppyDiskConfig {
-                disk_type: disk_open(kind, read_only)?,
-                read_only,
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut floppy_disks = Vec::new();
+    for disk in &opt.floppy {
+        let &cli_args::FloppyDiskCli {
+            ref kind,
+            read_only,
+        } = disk;
+        floppy_disks.push(FloppyDiskConfig {
+            disk_type: disk_open(kind, read_only).await?,
+            read_only,
+        });
+    }
 
     let mut vpci_mana_nics = [(); 3].map(|()| None);
     let mut pcie_mana_nics = BTreeMap::<String, GdmaDeviceHandle>::new();
@@ -1005,7 +1009,9 @@ async fn vm_config_from_command_line(
 
     let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
         let disk = VmgsDisk {
-            disk: disk_open(kind, false).context("failed to open vmgs disk")?,
+            disk: disk_open(kind, false)
+                .await
+                .context("failed to open vmgs disk")?,
             encryption_policy: if opt.test_gsp_by_id {
                 GuestStateEncryptionPolicy::GspById(true)
             } else {
@@ -1784,9 +1790,12 @@ enum LayerOrDisk {
     Disk(Resource<DiskHandleKind>),
 }
 
-fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
+async fn disk_open(
+    disk_cli: &DiskCliKind,
+    read_only: bool,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
     let mut layers = Vec::new();
-    disk_open_inner(disk_cli, read_only, &mut layers)?;
+    disk_open_inner(disk_cli, read_only, &mut layers).await?;
     if layers.len() == 1 && matches!(layers[0], LayerOrDisk::Disk(_)) {
         let LayerOrDisk::Disk(disk) = layers.pop().unwrap() else {
             unreachable!()
@@ -1809,161 +1818,168 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
     }
 }
 
-fn disk_open_inner(
-    disk_cli: &DiskCliKind,
+fn disk_open_inner<'a>(
+    disk_cli: &'a DiskCliKind,
     read_only: bool,
-    layers: &mut Vec<LayerOrDisk>,
-) -> anyhow::Result<()> {
-    fn layer<T: IntoResource<DiskLayerHandleKind>>(layer: T) -> LayerOrDisk {
-        LayerOrDisk::Layer(layer.into_resource().into())
-    }
-    fn disk<T: IntoResource<DiskHandleKind>>(disk: T) -> LayerOrDisk {
-        LayerOrDisk::Disk(disk.into_resource())
-    }
-    match disk_cli {
-        &DiskCliKind::Memory(len) => {
-            layers.push(layer(RamDiskLayerHandle {
-                len: Some(len),
-                sector_size: None,
-            }));
+    layers: &'a mut Vec<LayerOrDisk>,
+) -> futures::future::BoxFuture<'a, anyhow::Result<()>> {
+    Box::pin(async move {
+        fn layer<T: IntoResource<DiskLayerHandleKind>>(layer: T) -> LayerOrDisk {
+            LayerOrDisk::Layer(layer.into_resource().into())
         }
-        DiskCliKind::File {
-            path,
-            create_with_len,
-            direct,
-        } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
-            create_disk_type(
-                path,
-                *size,
-                OpenDiskOptions {
-                    read_only: false,
-                    direct: *direct,
-                },
-            )
-            .with_context(|| format!("failed to create {}", path.display()))?
-        } else {
-            open_disk_type(
-                path,
-                OpenDiskOptions {
-                    read_only,
-                    direct: *direct,
-                },
-            )
-            .with_context(|| format!("failed to open {}", path.display()))?
-        })),
-        DiskCliKind::Blob { kind, url } => {
-            layers.push(disk(disk_backend_resources::BlobDiskHandle {
-                url: url.to_owned(),
-                format: match kind {
-                    cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
-                    cli_args::BlobKind::Vhd1 => disk_backend_resources::BlobDiskFormat::FixedVhd1,
-                },
-            }))
+        fn disk<T: IntoResource<DiskHandleKind>>(disk: T) -> LayerOrDisk {
+            LayerOrDisk::Disk(disk.into_resource())
         }
-        DiskCliKind::MemoryDiff(inner) => {
-            layers.push(layer(RamDiskLayerHandle {
-                len: None,
-                sector_size: None,
-            }));
-            disk_open_inner(inner, true, layers)?;
-        }
-        DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
-            disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
-        )),
-        DiskCliKind::DelayDiskWrapper {
-            delay_ms,
-            disk: inner,
-        } => layers.push(disk(DelayDiskHandle {
-            delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
-            disk: disk_open(inner, read_only)?,
-        })),
-        DiskCliKind::Crypt {
-            disk: inner,
-            cipher,
-            key_file,
-        } => layers.push(disk(disk_crypt_resources::DiskCryptHandle {
-            disk: disk_open(inner, read_only)?,
-            cipher: match cipher {
-                cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
-            },
-            key: fs_err::read(key_file).context("failed to read key file")?,
-        })),
-        DiskCliKind::Sqlite {
-            path,
-            create_with_len,
-        } => {
-            // FUTURE: this code should be responsible for opening
-            // file-handle(s) itself, and passing them into sqlite via a custom
-            // vfs. For now though - simply check if the file exists or not, and
-            // perform early validation of filesystem-level create options.
-            match (create_with_len.is_some(), path.exists()) {
-                (true, true) => anyhow::bail!(
-                    "cannot create new sqlite disk at {} - file already exists",
-                    path.display()
-                ),
-                (false, false) => anyhow::bail!(
-                    "cannot open sqlite disk at {} - file not found",
-                    path.display()
-                ),
-                _ => {}
+        match disk_cli {
+            &DiskCliKind::Memory(len) => {
+                layers.push(layer(RamDiskLayerHandle {
+                    len: Some(len),
+                    sector_size: None,
+                }));
             }
-
-            layers.push(layer(SqliteDiskLayerHandle {
-                dbhd_path: path.display().to_string(),
-                format_dbhd: create_with_len.map(|len| {
-                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                        logically_read_only: false,
-                        len: Some(len),
-                    }
-                }),
-            }));
-        }
-        DiskCliKind::SqliteDiff { path, create, disk } => {
-            // FUTURE: this code should be responsible for opening
-            // file-handle(s) itself, and passing them into sqlite via a custom
-            // vfs. For now though - simply check if the file exists or not, and
-            // perform early validation of filesystem-level create options.
-            match (create, path.exists()) {
-                (true, true) => anyhow::bail!(
-                    "cannot create new sqlite disk at {} - file already exists",
-                    path.display()
-                ),
-                (false, false) => anyhow::bail!(
-                    "cannot open sqlite disk at {} - file not found",
-                    path.display()
-                ),
-                _ => {}
-            }
-
-            layers.push(layer(SqliteDiskLayerHandle {
-                dbhd_path: path.display().to_string(),
-                format_dbhd: create.then_some(
-                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                        logically_read_only: false,
-                        len: None,
+            DiskCliKind::File {
+                path,
+                create_with_len,
+                direct,
+            } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
+                create_disk_type(
+                    path,
+                    *size,
+                    OpenDiskOptions {
+                        read_only: false,
+                        direct: *direct,
                     },
-                ),
-            }));
-            disk_open_inner(disk, true, layers)?;
-        }
-        DiskCliKind::AutoCacheSqlite {
-            cache_path,
-            key,
-            disk,
-        } => {
-            layers.push(LayerOrDisk::Layer(DiskLayerDescription {
-                read_cache: true,
-                write_through: false,
-                layer: SqliteAutoCacheDiskLayerHandle {
-                    cache_path: cache_path.clone(),
-                    cache_key: key.clone(),
+                )
+                .with_context(|| format!("failed to create {}", path.display()))?
+            } else {
+                open_disk_type(
+                    path,
+                    OpenDiskOptions {
+                        read_only,
+                        direct: *direct,
+                    },
+                )
+                .await
+                .with_context(|| format!("failed to open {}", path.display()))?
+            })),
+            DiskCliKind::Blob { kind, url } => {
+                layers.push(disk(disk_backend_resources::BlobDiskHandle {
+                    url: url.to_owned(),
+                    format: match kind {
+                        cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
+                        cli_args::BlobKind::Vhd1 => {
+                            disk_backend_resources::BlobDiskFormat::FixedVhd1
+                        }
+                    },
+                }))
+            }
+            DiskCliKind::MemoryDiff(inner) => {
+                layers.push(layer(RamDiskLayerHandle {
+                    len: None,
+                    sector_size: None,
+                }));
+                disk_open_inner(inner, true, layers).await?;
+            }
+            DiskCliKind::PersistentReservationsWrapper(inner) => {
+                layers.push(disk(disk_backend_resources::DiskWithReservationsHandle(
+                    disk_open(inner, read_only).await?,
+                )))
+            }
+            DiskCliKind::DelayDiskWrapper {
+                delay_ms,
+                disk: inner,
+            } => layers.push(disk(DelayDiskHandle {
+                delay: CellUpdater::new(Duration::from_millis(*delay_ms)).cell(),
+                disk: disk_open(inner, read_only).await?,
+            })),
+            DiskCliKind::Crypt {
+                disk: inner,
+                cipher,
+                key_file,
+            } => layers.push(disk(disk_crypt_resources::DiskCryptHandle {
+                disk: disk_open(inner, read_only).await?,
+                cipher: match cipher {
+                    cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
+                },
+                key: fs_err::read(key_file).context("failed to read key file")?,
+            })),
+            DiskCliKind::Sqlite {
+                path,
+                create_with_len,
+            } => {
+                // FUTURE: this code should be responsible for opening
+                // file-handle(s) itself, and passing them into sqlite via a custom
+                // vfs. For now though - simply check if the file exists or not, and
+                // perform early validation of filesystem-level create options.
+                match (create_with_len.is_some(), path.exists()) {
+                    (true, true) => anyhow::bail!(
+                        "cannot create new sqlite disk at {} - file already exists",
+                        path.display()
+                    ),
+                    (false, false) => anyhow::bail!(
+                        "cannot open sqlite disk at {} - file not found",
+                        path.display()
+                    ),
+                    _ => {}
                 }
-                .into_resource(),
-            }));
-            disk_open_inner(disk, read_only, layers)?;
+
+                layers.push(layer(SqliteDiskLayerHandle {
+                    dbhd_path: path.display().to_string(),
+                    format_dbhd: create_with_len.map(|len| {
+                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                            logically_read_only: false,
+                            len: Some(len),
+                        }
+                    }),
+                }));
+            }
+            DiskCliKind::SqliteDiff { path, create, disk } => {
+                // FUTURE: this code should be responsible for opening
+                // file-handle(s) itself, and passing them into sqlite via a custom
+                // vfs. For now though - simply check if the file exists or not, and
+                // perform early validation of filesystem-level create options.
+                match (create, path.exists()) {
+                    (true, true) => anyhow::bail!(
+                        "cannot create new sqlite disk at {} - file already exists",
+                        path.display()
+                    ),
+                    (false, false) => anyhow::bail!(
+                        "cannot open sqlite disk at {} - file not found",
+                        path.display()
+                    ),
+                    _ => {}
+                }
+
+                layers.push(layer(SqliteDiskLayerHandle {
+                    dbhd_path: path.display().to_string(),
+                    format_dbhd: create.then_some(
+                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                            logically_read_only: false,
+                            len: None,
+                        },
+                    ),
+                }));
+                disk_open_inner(disk, true, layers).await?;
+            }
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key,
+                disk,
+            } => {
+                layers.push(LayerOrDisk::Layer(DiskLayerDescription {
+                    read_cache: true,
+                    write_through: false,
+                    layer: SqliteAutoCacheDiskLayerHandle {
+                        cache_path: cache_path.clone(),
+                        cache_key: key.clone(),
+                    }
+                    .into_resource(),
+                }));
+                disk_open_inner(disk, read_only, layers).await?;
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Get the system page size.
