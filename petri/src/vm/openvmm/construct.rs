@@ -518,7 +518,7 @@ impl PetriVmConfigOpenVmm {
         let VmChipsetResult {
             chipset,
             mut chipset_devices,
-            pci_chipset_devices,
+            mut pci_chipset_devices,
             isa_dma_controller,
             capabilities,
         } = chipset;
@@ -541,6 +541,21 @@ impl PetriVmConfigOpenVmm {
                     .into_resource(),
                 )
                 .into_resource(),
+            });
+        }
+
+        // Add the IDE device handle if there are any IDE disks.
+        if !ide_disks.is_empty() {
+            use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+            use chipset_resources::ide::HYPERV_IDE_BDF;
+            use chipset_resources::ide::HyperVIdeDeviceHandle;
+            use vmotherboard::LegacyPciChipsetDeviceHandle;
+
+            pci_chipset_devices.push(LegacyPciChipsetDeviceHandle {
+                name: "hyperv-ide".to_string(),
+                resource: HyperVIdeDeviceHandle { disks: ide_disks }.into_resource(),
+                pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+                bdf: HYPERV_IDE_BDF,
             });
         }
 
@@ -585,7 +600,7 @@ impl PetriVmConfigOpenVmm {
 
             // Devices
             floppy_disks: vec![],
-            ide_disks,
+            ide_disks: vec![],
             pcie_root_complexes: vec![],
             pcie_devices,
             pcie_switches: vec![],
@@ -1217,11 +1232,11 @@ fn spawn_dump_handler(driver: &DefaultDriver, logger: &PetriLogSource) -> GuestC
     handle
 }
 
-/// Convert the generic IDE configuration to OpenVMM IDE disks and storvsp
-/// IDE accelerator handles.
+/// Convert the generic IDE configuration to OpenVMM IDE device disks and
+/// storvsp IDE accelerator handles.
 ///
-/// Returns the IDE emulator disk configs and storvsp IDE accelerator
-/// VMBus device handles (for hard disks only).
+/// Returns the IDE device disk configs (for HyperVIdeDeviceHandle) and
+/// storvsp IDE accelerator VMBus device handles (hard disks only).
 async fn ide_controllers_to_openvmm(
     ide_controllers: Option<&[[Option<Drive>; 2]; 2]>,
 ) -> anyhow::Result<(
@@ -1236,9 +1251,13 @@ async fn ide_controllers_to_openvmm(
             for (controller_location, drive) in controller.iter().enumerate() {
                 if let Some(drive) = drive {
                     if let Some(disk) = &drive.disk {
-                        // Create storvsp accelerator resource before consuming
-                        // the disk reference, since petri_disk_to_openvmm
-                        // shadows the binding.
+                        let path = ide_resources::IdePath {
+                            channel: controller_number as u8,
+                            drive: controller_location as u8,
+                        };
+
+                        // Create storvsp resource before shadowing the disk
+                        // binding with the resolved resource below.
                         let storvsp_disk = if !drive.is_dvd {
                             Some(petri_disk_to_openvmm(disk).await?)
                         } else {
@@ -1262,24 +1281,15 @@ async fn ide_controllers_to_openvmm(
                             }
                         };
 
-                        let channel = controller_number as u8;
-                        let device = controller_location as u8;
-
-                        ide_disks.push(IdeDeviceConfig {
-                            path: ide_resources::IdePath {
-                                channel,
-                                drive: device,
-                            },
-                            guest_media,
-                        });
+                        ide_disks.push(IdeDeviceConfig { path, guest_media });
 
                         // Hard disks also get a storvsp IDE accelerator channel.
                         if let Some(storvsp_disk) = storvsp_disk {
                             storvsp_ide_handles.push((
                                 DeviceVtl::Vtl0,
                                 storvsp_resources::StorvspIdeDeviceHandle {
-                                    channel_id: channel,
-                                    device_id: device,
+                                    channel_id: path.channel,
+                                    device_id: path.drive,
                                     disk: SimpleScsiDiskHandle {
                                         disk: storvsp_disk,
                                         read_only: false,

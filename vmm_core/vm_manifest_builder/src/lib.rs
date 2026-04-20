@@ -341,6 +341,7 @@ impl VmManifestBuilder {
             chipset: BaseChipsetManifest::empty(),
             isa_dma_controller: None,
             capabilities: VmChipsetCapabilities {
+                with_ide: false,
                 with_ioapic: false,
                 with_pic: false,
                 with_pit: false,
@@ -381,6 +382,7 @@ impl VmManifestBuilder {
                     with_generic_psp: false,
                     with_hyperv_firmware_pcat: true,
                     with_hyperv_framebuffer: !self.proxy_vga,
+                    with_hyperv_guest_watchdog: false,
                     with_hyperv_ide: true,
                     with_hyperv_vga: !self.proxy_vga,
                     with_piix4_cmos_rtc: true,
@@ -391,6 +393,7 @@ impl VmManifestBuilder {
                 };
                 result.attach_generic_ioapic();
                 result.attach_pic();
+                result.capabilities.with_ide = true;
                 result.attach_pit();
                 result.attach_piix4_power_management(self.platform_pm_timer_assist);
                 result.attach_missing_arch_ports(self.arch, false);
