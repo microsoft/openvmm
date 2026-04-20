@@ -145,6 +145,10 @@ pub struct VfioAssignedPciDevice {
     /// MSI-X emulation state (None if device has no MSI-X capability).
     msix: Option<MsixEmulationState>,
 
+    /// Whether the device supports VFIO_DEVICE_RESET (cached from device info
+    /// flags at init).
+    supports_reset: bool,
+
     /// VFIO container and group handles. These must be kept alive for the
     /// lifetime of the device — dropping them would close the VFIO fds and
     /// tear down IOMMU mappings. Declared after `vfio_device` so they are
@@ -242,10 +246,18 @@ impl VfioAssignedPciDevice {
         // Discover MSI-X capability from physical device config space.
         let msix = discover_msix(device_file, config_offset, config_size, msi_target);
 
+        // Cache whether the device supports VFIO_DEVICE_RESET so we can skip
+        // the ioctl on every VM reset for devices that don't support it.
+        let supports_reset = vfio_device
+            .info()
+            .map(|info| info.flags.reset())
+            .unwrap_or(false);
+
         tracing::info!(
             pci_id = config.pci_id.as_str(),
             ?bar_masks,
             has_msix = msix.is_some(),
+            supports_reset,
             "VFIO assigned PCI device initialized"
         );
 
@@ -263,6 +275,7 @@ impl VfioAssignedPciDevice {
             bar_mmio_controls,
             bar_regions,
             msix,
+            supports_reset,
             _vfio_container: config.vfio_container,
             _vfio_group: config.vfio_group,
         })
@@ -564,22 +577,56 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         // Tear down MSI-X irqfd routes before resetting state.
         if self.msix.as_ref().is_some_and(|m| m.enabled) {
             self.msix_disable();
-            self.msix.as_mut().expect("msix must be present").enabled = false;
         }
+
+        // Destructure to ensure every field is explicitly considered for reset.
+        let Self {
+            pci_id,
+            vfio_device,
+            irqfd: _,         // handle — no reset needed
+            config_offset: _, // immutable device geometry
+            config_size: _,   // immutable device geometry
+            bar_masks: _,     // immutable device geometry
+            bars,
+            bar_flags,
+            mmio_enabled,
+            active_bars,
+            bar_mmio_controls,
+            bar_regions: _, // immutable device geometry
+            msix,
+            supports_reset,
+            _vfio_container: _, // lifetime handle — no reset needed
+            _vfio_group: _,     // lifetime handle — no reset needed
+        } = self;
+
+        // Reset emulated MSI-X table and capability to power-on defaults
+        // (all vectors masked, address/data zeroed). The capability and
+        // emulator share state via Arc<Mutex>.
+        if let Some(msix) = msix {
+            msix.enabled = false;
+            msix.capability.reset();
+        }
+
         // Unmap BAR MMIO regions.
-        for control in self.bar_mmio_controls.iter_mut().flatten() {
+        for control in bar_mmio_controls.iter_mut().flatten() {
             control.unmap();
         }
-        self.mmio_enabled = false;
-        self.active_bars = BarMappings::default();
+        *mmio_enabled = false;
+        *active_bars = BarMappings::default();
+
+        // Reset cached BAR addresses to power-on defaults (flags only, no
+        // address bits). The guest will re-probe and re-program BARs.
+        *bars = *bar_flags;
 
         // Reset the physical device via VFIO so it starts in a clean state.
-        if let Err(err) = self.vfio_device.reset() {
-            tracelimit::warn_ratelimited!(
-                pci_id = self.pci_id.as_str(),
-                error = err.as_ref() as &dyn std::error::Error,
-                "failed to reset VFIO device"
-            );
+        if *supports_reset {
+            if let Err(err) = vfio_device.reset() {
+                tracing::warn!(
+                    pci_id = pci_id.as_str(),
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to reset VFIO device"
+                );
+            }
         }
     }
 }

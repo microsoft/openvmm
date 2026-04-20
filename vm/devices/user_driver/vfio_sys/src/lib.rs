@@ -354,12 +354,12 @@ pub struct DeviceInfo {
 
 #[bitfield(u32)]
 pub struct DeviceFlags {
-    reset: bool,
-    pci: bool,
-    platform: bool,
-    amba: bool,
-    ccw: bool,
-    ap: bool,
+    pub reset: bool,
+    pub pci: bool,
+    pub platform: bool,
+    pub amba: bool,
+    pub ccw: bool,
+    pub ap: bool,
 
     #[bits(26)]
     _reserved: u32,
