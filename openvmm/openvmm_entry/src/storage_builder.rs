@@ -31,14 +31,13 @@ use virtio_resources::blk::VirtioBlkHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::VmbusDeviceHandleKind;
+use vm_resource::kind::ScsiDeviceHandleKind;
 use vtl2_settings_proto::Lun;
 use vtl2_settings_proto::StorageController;
 use vtl2_settings_proto::storage_controller;
 
 pub(super) struct StorageBuilder {
-    vtl0_ide_disks: Vec<IdeDeviceConfig>,
-    storvsp_ide_handles: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
+    vtl0_ide_entries: Vec<IdeEntry>,
     vtl0_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
@@ -54,6 +53,13 @@ pub(super) struct StorageBuilder {
 struct VirtioBlkDisk {
     disk: Resource<DiskHandleKind>,
     read_only: bool,
+}
+
+struct IdeEntry {
+    config: IdeDeviceConfig,
+    /// For hard disks, the SCSI device resource for the storvsp IDE
+    /// accelerator channel. `None` for DVDs.
+    storvsp_scsi_disk: Option<Resource<ScsiDeviceHandleKind>>,
 }
 
 #[derive(Clone)]
@@ -116,8 +122,7 @@ const VIRTIO_BLK_INSTANCE_ID_TEMPLATE: Guid = guid::guid!("00000000-a4e7-4b53-b7
 impl StorageBuilder {
     pub fn new(openhcl_vtl: Option<DeviceVtl>) -> Self {
         Self {
-            vtl0_ide_disks: Vec::new(),
-            storvsp_ide_handles: Vec::new(),
+            vtl0_ide_entries: Vec::new(),
             vtl0_scsi_devices: Vec::new(),
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
@@ -189,9 +194,9 @@ impl StorageBuilder {
                     channel.unwrap_or(c) == c
                         && device.unwrap_or(d) == d
                         && !self
-                            .vtl0_ide_disks
+                            .vtl0_ide_entries
                             .iter()
-                            .any(|cfg| cfg.path.channel == c && cfg.path.drive == d)
+                            .any(|e| e.config.path.channel == c && e.config.path.drive == d)
                 };
 
                 let (channel, device) = (0..=1)
@@ -202,33 +207,31 @@ impl StorageBuilder {
                 if vtl != DeviceVtl::Vtl0 {
                     anyhow::bail!("ide only supported for VTL0");
                 }
-                self.vtl0_ide_disks.push(IdeDeviceConfig {
-                    path: IdePath {
-                        channel,
-                        drive: device,
-                    },
-                    guest_media,
-                });
 
-                // Hard disks also get a storvsp IDE accelerator channel.
-                if !is_dvd {
+                let storvsp_scsi_disk = if !is_dvd {
                     let storvsp_disk = disk_open(kind, read_only).await?;
-                    self.storvsp_ide_handles.push((
-                        DeviceVtl::Vtl0,
-                        StorvspIdeDeviceHandle {
-                            channel_id: channel,
-                            device_id: device,
-                            disk: SimpleScsiDiskHandle {
-                                disk: storvsp_disk,
-                                read_only,
-                                parameters: Default::default(),
-                            }
-                            .into_resource(),
-                            io_queue_depth: None,
+                    Some(
+                        SimpleScsiDiskHandle {
+                            disk: storvsp_disk,
+                            read_only,
+                            parameters: Default::default(),
                         }
                         .into_resource(),
-                    ));
-                }
+                    )
+                } else {
+                    None
+                };
+
+                self.vtl0_ide_entries.push(IdeEntry {
+                    config: IdeDeviceConfig {
+                        path: IdePath {
+                            channel,
+                            drive: device,
+                        },
+                        guest_media,
+                    },
+                    storvsp_scsi_disk,
+                });
                 None
             }
             DiskLocation::Scsi(lun) => {
@@ -396,8 +399,39 @@ impl StorageBuilder {
         resources: &mut VmResources,
         scsi_sub_channels: u16,
     ) -> anyhow::Result<()> {
-        config.ide_disks.append(&mut self.vtl0_ide_disks);
-        config.vmbus_devices.append(&mut self.storvsp_ide_handles);
+        let ide_entries = std::mem::take(&mut self.vtl0_ide_entries);
+        let mut ide_disks = Vec::new();
+        for entry in ide_entries {
+            if let Some(storvsp_scsi_disk) = entry.storvsp_scsi_disk {
+                config.vmbus_devices.push((
+                    DeviceVtl::Vtl0,
+                    StorvspIdeDeviceHandle {
+                        channel_id: entry.config.path.channel,
+                        device_id: entry.config.path.drive,
+                        disk: storvsp_scsi_disk,
+                        io_queue_depth: None,
+                    }
+                    .into_resource(),
+                ));
+            }
+            ide_disks.push(entry.config);
+        }
+
+        if !ide_disks.is_empty() {
+            use chipset_resources::LEGACY_CHIPSET_PCI_BUS_NAME;
+            use chipset_resources::ide::HYPERV_IDE_BDF;
+            use chipset_resources::ide::HyperVIdeDeviceHandle;
+            use vmotherboard::LegacyPciChipsetDeviceHandle;
+
+            config
+                .pci_chipset_devices
+                .push(LegacyPciChipsetDeviceHandle {
+                    name: "hyperv-ide".to_string(),
+                    resource: HyperVIdeDeviceHandle { disks: ide_disks }.into_resource(),
+                    pci_bus_name: LEGACY_CHIPSET_PCI_BUS_NAME.to_string(),
+                    bdf: HYPERV_IDE_BDF,
+                });
+        }
 
         // Add an empty VTL0 SCSI controller even if there are no configured disks.
         if !self.vtl0_scsi_devices.is_empty() || config.vmbus.is_some() {

@@ -26,6 +26,7 @@ vmotherboard = { workspace = true, features = [
     "dev_underhill_vga_proxy",
     "dev_winbond_super_io_and_floppy_stub",
 ] }
+chipset_resources.workspace = true
 build_info.workspace = true
 cvm_tracing.workspace = true
 mem_profile_tracing = { workspace = true, optional = true }
@@ -63,7 +64,6 @@ hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect", "save
 get_helpers.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
-ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
@@ -78,8 +78,6 @@ netvsp.workspace = true
 nvme_driver.workspace = true
 nvme_resources.workspace = true
 openhcl_dma_manager.workspace = true
-scsi_core.workspace = true
-scsidisk.workspace = true
 scsidisk_resources.workspace = true
 serial_16550_resources.workspace = true
 storage_string.workspace = true

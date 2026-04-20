@@ -224,7 +224,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_hyperv_firmware_uefi,
             deps_hyperv_framebuffer,
             deps_hyperv_guest_watchdog,
-            deps_hyperv_ide,
             deps_hyperv_power_management,
             deps_hyperv_vga,
             deps_i440bx_host_pci_bridge,
@@ -389,32 +388,6 @@ impl<'a> BaseChipsetBuilder<'a> {
             } else {
                 return Err(BaseChipsetBuilderError::NoDmaForFloppy);
             }
-        }
-
-        if let Some(options::dev::HyperVIdeDeps {
-            attached_to,
-            primary_channel_drives,
-            secondary_channel_drives,
-        }) = deps_hyperv_ide
-        {
-            builder
-                .arc_mutex_device("ide")
-                .on_pci_bus(attached_to)
-                .try_add(|services| {
-                    // hard-coded to iRQ lines 14 and 15, as per PIIX4 spec
-                    let primary_channel_line_interrupt =
-                        services.new_line(IRQ_LINE_SET, "ide1", 14);
-                    let secondary_channel_line_interrupt =
-                        services.new_line(IRQ_LINE_SET, "ide2", 15);
-                    ide::IdeDevice::new(
-                        foundation.untrusted_dma_memory.clone(),
-                        &mut services.register_pio(),
-                        primary_channel_drives,
-                        secondary_channel_drives,
-                        primary_channel_line_interrupt,
-                        secondary_channel_line_interrupt,
-                    )
-                })?;
         }
 
         if let Some(options::dev::GenericCmosRtcDeps {
@@ -1121,7 +1094,6 @@ pub mod options {
             hyperv_firmware_uefi:        dev::HyperVFirmwareUefi,
             hyperv_framebuffer:          dev::HyperVFramebufferDeps,
             hyperv_guest_watchdog:       dev::HyperVGuestWatchdogDeps,
-            hyperv_ide:                  dev::HyperVIdeDeps,
             hyperv_power_management:     dev::HyperVPowerManagementDeps,
             hyperv_vga:                  dev::HyperVVgaDeps,
 
@@ -1149,6 +1121,8 @@ pub mod options {
         pub with_pit: bool,
         /// Whether the VM exposes a PSP.
         pub with_psp: bool,
+        /// Whether the VM exposes a Hyper-V IDE controller.
+        pub with_ide: bool,
     }
 
     /// Device specific dependencies
@@ -1173,6 +1147,12 @@ pub mod options {
                 $(#[$m])*
                 pub struct $root_deps $($rest)*
             };
+        }
+
+        /// PIIX4 PCI-ISA bridge (fixed pci address: 0:7.0)
+        pub struct Piix4PciIsaBridgeDeps {
+            /// `vmotherboard` bus identifier
+            pub attached_to: BusIdPci,
         }
 
         /// Hyper-V IDE controller (fixed pci address: 0:7.1)

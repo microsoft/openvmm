@@ -16,6 +16,8 @@ vm_resource::register_static_resolvers! {
     #[cfg(guest_arch = "x86_64")]
     chipset_legacy::piix4_pci_isa_bridge::resolver::Piix4PciIsaBridgeResolver,
     #[cfg(guest_arch = "x86_64")]
+    ide::resolver::HyperVIdeResolver,
+    #[cfg(guest_arch = "x86_64")]
     chipset::pit::resolver::PitResolver,
     #[cfg(guest_arch = "x86_64")]
     chipset::pic::resolver::PicResolver,

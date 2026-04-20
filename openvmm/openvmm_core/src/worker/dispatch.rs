@@ -26,8 +26,6 @@ use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use hypervisor_resources::HypervisorKind;
-use ide_resources::GuestMedia;
-use ide_resources::IdeDeviceConfig;
 use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
@@ -80,8 +78,6 @@ use pci_core::PciInterruptPin;
 use pcie::root::GenericPcieRootComplex;
 use pcie::root::GenericPcieRootPortDefinition;
 use pcie::switch::GenericPcieSwitch;
-use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
@@ -164,7 +160,6 @@ impl Manifest {
         Self {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
-            ide_disks: config.ide_disks,
             pcie_root_complexes: config.pcie_root_complexes,
             pcie_devices: config.pcie_devices,
             pcie_switches: config.pcie_switches,
@@ -213,7 +208,6 @@ impl Manifest {
 pub struct Manifest {
     load_mode: LoadMode,
     floppy_disks: Vec<FloppyDiskConfig>,
-    ide_disks: Vec<IdeDeviceConfig>,
     pcie_root_complexes: Vec<PcieRootComplexConfig>,
     pcie_devices: Vec<PcieDeviceConfig>,
     pcie_switches: Vec<PcieSwitchConfig>,
@@ -1314,57 +1308,9 @@ impl InitializedVm {
 
         let mut pci_legacy_interrupts = Vec::new();
 
-        let mut ide_drives = [[None, None], [None, None]];
-        if cfg.chipset.with_hyperv_ide {
+        if cfg.chipset_capabilities.with_ide {
             pci_legacy_interrupts.push(((7, None), 14));
             pci_legacy_interrupts.push(((7, None), 15));
-
-            for disk_cfg in cfg.ide_disks {
-                let path = disk_cfg.path;
-                let media = match disk_cfg.guest_media {
-                    GuestMedia::Dvd(disk_type) => {
-                        let dvd = resolver
-                            .resolve(
-                                disk_type,
-                                ResolveScsiDeviceHandleParams {
-                                    driver_source: &driver_source,
-                                },
-                            )
-                            .await
-                            .context("failed to open IDE DVD")?;
-
-                        let scsi_disk = Arc::new(AtapiScsiDisk::new(dvd.0));
-                        ide::DriveMedia::optical_disk(scsi_disk.clone())
-                    }
-                    GuestMedia::Disk {
-                        disk_type,
-                        read_only,
-                        disk_parameters: _,
-                    } => {
-                        let disk =
-                            open_simple_disk(&resolver, disk_type, read_only, &driver_source)
-                                .await
-                                .context("failed to open IDE disk")?;
-
-                        ide::DriveMedia::hard_disk(disk)
-                    }
-                };
-
-                let old_media = ide_drives
-                    .get_mut(path.channel as usize)
-                    .context("invalid ide channel")?
-                    .get_mut(path.drive as usize)
-                    .context("invalid ide device")?
-                    .replace(media);
-
-                if old_media.is_some() {
-                    anyhow::bail!(
-                        "ide drive {}:{} is already in use",
-                        path.channel,
-                        path.drive
-                    );
-                }
-            }
         }
 
         let deps_hyperv_guest_watchdog = if cfg.chipset.with_hyperv_guest_watchdog {
@@ -1569,6 +1515,11 @@ impl InitializedVm {
             }
         });
 
+        let deps_piix4_pci_isa_bridge =
+            (cfg.chipset.with_piix4_pci_isa_bridge).then_some(dev::Piix4PciIsaBridgeDeps {
+                attached_to: pci_bus_id_piix4.clone(),
+            });
+
         let [primary_channel_drives, secondary_channel_drives] = ide_drives;
         let deps_hyperv_ide = (cfg.chipset.with_hyperv_ide).then_some(dev::HyperVIdeDeps {
             attached_to: pci_bus_id_piix4.clone(),
@@ -1594,7 +1545,6 @@ impl InitializedVm {
                 deps_hyperv_firmware_uefi,
                 deps_hyperv_framebuffer,
                 deps_hyperv_guest_watchdog,
-                deps_hyperv_ide,
                 deps_hyperv_power_management,
                 deps_hyperv_vga,
                 deps_i440bx_host_pci_bridge,
@@ -3038,7 +2988,6 @@ impl LoadedVm {
         let manifest = Manifest {
             load_mode: self.inner.load_mode,
             floppy_disks: vec![],        // TODO
-            ide_disks: vec![],           // TODO
             pcie_root_complexes: vec![], // TODO
             pcie_devices: vec![],        // TODO
             pcie_switches: vec![],       // TODO
