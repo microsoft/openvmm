@@ -563,28 +563,19 @@ impl VpciDevice {
     /// Notifies TDISP about each currently active MMIO BAR, calling
     /// [`tdisp::VpciClientTdispState::tdisp_on_mmio_reconfigured`] for each.
     ///
-    /// Call this after a write to the STATUS_COMMAND config register. If MMIO
-    /// is not currently enabled or no resource validator is configured, this is
-    /// a no-op. BARs that have already been validated are skipped via
-    /// deduplication in the TDISP state.
+    /// Call this when STATUS_COMMAND transitions MMIO from disabled to
+    /// enabled; the caller is responsible for detecting the edge. BARs that
+    /// have already been validated are skipped via deduplication in the
+    /// TDISP state.
     ///
-    /// Uses a non-blocking try-lock on the TDISP mutex. This succeeds in
-    /// practice because TDISP operations complete before the guest is able to
-    /// enable MMIO.
-    pub fn notify_tdisp_of_mmio_bars(&self) {
-        // Check if MMIO is enabled in command register
-        let bars = {
-            let shadows = self.shadows.lock();
-            if !shadows.command.mmio_enabled() {
-                return;
-            }
-            shadows.bars
-        };
+    /// Awaits each `tdisp_on_mmio_reconfigured` call through the trait
+    /// interface, which serializes with other TDISP operations
+    /// (attest/bind/unbind) on the same device. Callers must drive this to
+    /// completion — typically via a deferred chipset write.
+    pub async fn notify_tdisp_of_mmio_bars(&self) {
+        use tdisp::TdispVpciAttestationInterface;
 
-        let Some(mut tdisp) = self.tdisp.0.try_lock() else {
-            tracing::warn!("TDISP mutex held when notifying of MMIO bars; skipping BAR validation");
-            return;
-        };
+        let bars = self.shadows.lock().bars;
 
         tracing::debug!(?bars, ?self.bar_masks, "command register write enabled mmio, notifying TDISP of MMIO bars");
 
@@ -631,7 +622,9 @@ impl VpciDevice {
                     length_bytes,
                     "notifying TDISP state of active MMIO BAR"
                 );
-                if let Err(e) = tdisp.tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
+                if let Err(e) = self
+                    .tdisp_on_mmio_reconfigured(bar_id, base_address, length_bytes)
+                    .await
                 {
                     tracing::error!(
                         bar_id,
@@ -644,6 +637,53 @@ impl VpciDevice {
             }
 
             i = next_i;
+        }
+    }
+
+    /// Notifies TDISP that the guest has disabled MMIO on this device, and
+    /// unbinds the TDI if it is currently bound. Mirrors
+    /// [`Self::notify_tdisp_of_mmio_bars`] for the disable edge.
+    ///
+    /// Call this when STATUS_COMMAND transitions MMIO from enabled to
+    /// disabled; the caller is responsible for detecting the edge. If the
+    /// TDI is in `Uninitialized`/`Unlocked` (no host-side Bind to tear
+    /// down), this is a no-op; otherwise it issues the same unbind flow
+    /// used during relay teardown, with
+    /// [`TdispGuestUnbindReason::DeviceTeardown`].
+    ///
+    /// Awaits each operation through the trait interface so that locking is
+    /// fully owned by the TDISP interface. Callers must drive this to
+    /// completion — typically via a deferred chipset write.
+    pub async fn notify_tdisp_of_mmio_disabled(&self) {
+        use openhcl_tdisp::TdispGuestUnbindReason;
+        use openhcl_tdisp::TdispTdiState;
+        use openhcl_tdisp::TdispVirtualDeviceInterface;
+        use tdisp::TdispVpciAttestationInterface;
+
+        let state = self.tdisp_tdi_state().await;
+        if matches!(
+            state,
+            TdispTdiState::Uninitialized | TdispTdiState::Unlocked
+        ) {
+            tracing::debug!(
+                ?state,
+                "mmio disabled: TDI not bound, skipping unbind"
+            );
+            return;
+        }
+
+        tracing::info!(
+            ?state,
+            "mmio disabled by guest, unbinding TDI"
+        );
+        if let Err(err) = self
+            .tdisp_unbind(TdispGuestUnbindReason::DeviceTeardown)
+            .await
+        {
+            tracing::warn!(
+                error = &*err as &dyn std::error::Error,
+                "tdisp_unbind on mmio disable failed"
+            );
         }
     }
 }

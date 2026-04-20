@@ -36,6 +36,7 @@ pub use tdisp_proto::TdispGuestOperationErrorCode;
 pub use tdisp_proto::TdispGuestProtocolType;
 pub use tdisp_proto::TdispGuestUnbindReason;
 pub use tdisp_proto::TdispReportType;
+pub use tdisp_proto::TdispTdiState;
 
 #[cfg(feature = "dev_snp_ohcl_tio_support")]
 pub use sevtio::TdispSevTioResourceValidator;
