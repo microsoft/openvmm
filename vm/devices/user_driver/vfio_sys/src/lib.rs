@@ -80,6 +80,10 @@ mod ioctl {
         request_code_none!(VFIO_TYPE, VFIO_BASE + 10),
         vfio_irq_set
     );
+    nix::ioctl_none_bad!(
+        vfio_device_reset,
+        request_code_none!(VFIO_TYPE, VFIO_BASE + 11)
+    );
     nix::ioctl_write_ptr_bad!(
         vfio_group_set_keep_alive,
         request_code_none!(VFIO_TYPE, VFIO_PRIVATE_BASE),
@@ -554,6 +558,18 @@ impl Device {
         unsafe {
             ioctl::vfio_device_set_irqs(self.file.as_raw_fd(), &header)
                 .context("failed to unmap msix vectors")?;
+        }
+        Ok(())
+    }
+
+    /// Reset the device via VFIO_DEVICE_RESET.
+    ///
+    /// Not all devices support reset — check `DeviceInfo::flags.reset()`
+    /// first. Returns an error if the ioctl fails.
+    pub fn reset(&self) -> anyhow::Result<()> {
+        // SAFETY: The file descriptor is valid.
+        unsafe {
+            ioctl::vfio_device_reset(self.file.as_raw_fd()).context("VFIO_DEVICE_RESET failed")?;
         }
         Ok(())
     }

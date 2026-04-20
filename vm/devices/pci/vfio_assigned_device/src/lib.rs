@@ -572,6 +572,15 @@ impl ChangeDeviceState for VfioAssignedPciDevice {
         }
         self.mmio_enabled = false;
         self.active_bars = BarMappings::default();
+
+        // Reset the physical device via VFIO so it starts in a clean state.
+        if let Err(err) = self.vfio_device.reset() {
+            tracelimit::warn_ratelimited!(
+                pci_id = self.pci_id.as_str(),
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to reset VFIO device"
+            );
+        }
     }
 }
 
