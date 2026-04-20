@@ -3,6 +3,8 @@
 
 use super::*;
 use std::ptr;
+use windows::Win32::Foundation::CRYPT_E_NOT_FOUND;
+use windows::Win32::Foundation::NTE_BAD_SIGNATURE;
 use windows::Win32::Security::Cryptography::*;
 
 fn err(e: windows_result::Error, op: &'static str) -> Pkcs7Error {
@@ -247,7 +249,13 @@ impl Pkcs7SignedDataInner {
         let signer_cert =
             unsafe { CertGetSubjectCertificateFromStore(msg_store.0, ENCODING, cert_info) };
         if signer_cert.is_null() {
-            return Ok(false);
+            let e = windows_result::Error::from_thread();
+            // The signer's certificate not being present in the message is a
+            // signature verification failure, not an internal error.
+            if e.code() == CRYPT_E_NOT_FOUND {
+                return Ok(false);
+            }
+            return Err(err(e, "find signer certificate"));
         }
         let signer_cert = CertContextHandle(signer_cert);
 
@@ -262,8 +270,13 @@ impl Pkcs7SignedDataInner {
             )
         };
 
-        if verify_result.is_err() {
-            return Ok(false);
+        if let Err(e) = verify_result {
+            // A bad signature is a verification failure; anything else is an
+            // internal error that should be propagated.
+            if e.code() == NTE_BAD_SIGNATURE {
+                return Ok(false);
+            }
+            return Err(err(e, "verify message signature"));
         }
 
         // Step 7: Build a certificate chain from the signer cert to our trusted store.
@@ -293,7 +306,12 @@ impl Pkcs7SignedDataInner {
 
         let mut chain_context: *mut CERT_CHAIN_CONTEXT = ptr::null_mut();
         // SAFETY: engine, signer_cert, and msg_store handles are valid.
-        let chain_result = unsafe {
+        //
+        // `CertGetCertificateChain` only fails for internal errors such as
+        // invalid parameters or out-of-memory; trust problems with the chain
+        // are reported via the `TrustStatus` field of the returned context and
+        // are surfaced later by `CertVerifyCertificateChainPolicy`.
+        unsafe {
             CertGetCertificateChain(
                 Some(engine.0),
                 signer_cert.0,
@@ -304,11 +322,8 @@ impl Pkcs7SignedDataInner {
                 None,
                 &mut chain_context,
             )
-        };
-
-        if chain_result.is_err() {
-            return Ok(false);
         }
+        .map_err(|e| err(e, "build certificate chain"))?;
 
         let chain_context = ChainContextHandle(chain_context);
 
