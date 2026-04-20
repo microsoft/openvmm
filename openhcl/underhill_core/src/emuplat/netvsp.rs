@@ -1402,7 +1402,10 @@ impl HclNetworkVFManagerWorker {
                         .unwrap_or(None);
                 }
                 NextWorkItem::ManaDeviceArrived => {
-                    assert!(!self.is_shutdown_active);
+                    if self.is_shutdown_active {
+                        tracing::error!(vtl2_vfid, "MANA device arrival during shutdown");
+                        continue;
+                    }
                     assert!(
                         vf_reconfig_backoff.is_none(),
                         "device arrival should only occur after device removal and not vf reconfiguration"
@@ -1412,7 +1415,10 @@ impl HclNetworkVFManagerWorker {
                         .await;
                 }
                 NextWorkItem::ManaDeviceRemoved => {
-                    assert!(!self.is_shutdown_active);
+                    if self.is_shutdown_active {
+                        tracing::info!(vtl2_vfid, "MANA device removal during shutdown");
+                        continue
+                    }
                     self.mana_device_removed(&mut vtl2_device_state, &mut vf_reconfig_backoff)
                         .instrument(tracing::info_span!("VTL2 VF removal", vtl2_vfid))
                         .await;
