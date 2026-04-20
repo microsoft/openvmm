@@ -716,7 +716,7 @@ impl ResolveResource<DiskHandleKind, OpenVhdmpDiskConfig> for VhdmpDiskResolver 
 pub struct VhdmpDisk {
     #[inspect(skip)]
     file: OverlappedFile,
-    disk_size: u64,
+    sector_count: u64,
     sector_size: u32,
     #[inspect(skip)]
     sector_shift: u32,
@@ -772,11 +772,12 @@ impl VhdmpDisk {
         // SAFETY: VHDMP handles are opened with FILE_FLAG_OVERLAPPED.
         let file = unsafe { OverlappedFile::new(driver, vhd.0) }.map_err(Error::Overlapped)?;
 
+        let sector_shift = size.SectorSize.trailing_zeros();
         Ok(Self {
             file,
-            disk_size: size.VirtualSize,
+            sector_count: size.VirtualSize >> sector_shift,
             sector_size: size.SectorSize,
-            sector_shift: size.SectorSize.trailing_zeros(),
+            sector_shift,
             physical_sector_size,
             read_only,
             disk_id,
@@ -813,7 +814,7 @@ impl DiskIo for VhdmpDisk {
     }
 
     fn sector_count(&self) -> u64 {
-        self.disk_size >> self.sector_shift
+        self.sector_count
     }
 
     fn sector_size(&self) -> u32 {
@@ -842,10 +843,11 @@ impl DiskIo for VhdmpDisk {
         sector: u64,
     ) -> Result<(), DiskError> {
         let len = buffers.len();
-        let offset = sector << self.sector_shift;
-        if offset + len as u64 > self.disk_size {
+        let sector_count = (len >> self.sector_shift) as u64;
+        if sector > self.sector_count || sector_count > self.sector_count - sector {
             return Err(DiskError::IllegalBlock);
         }
+        let offset = sector << self.sector_shift;
         if buffers.is_aligned(PAGE_SIZE) {
             let locked = buffers.lock(true)?;
             let io = {
@@ -853,7 +855,14 @@ impl DiskIo for VhdmpDisk {
                 // SAFETY: segments point to locked guest pages that will not
                 // be referenced via Rust references until the IO completes;
                 // file is opened with FILE_NO_INTERMEDIATE_BUFFERING.
-                unsafe { self.file.read_scatter_at(offset, &segments, len as u32) }
+                unsafe {
+                    self.file.read_scatter_at(
+                        offset,
+                        &segments,
+                        len.try_into()
+                            .map_err(|_| DiskError::Io(std::io::ErrorKind::Unsupported.into()))?,
+                    )
+                }
             };
             let (result, _) = io.await;
             drop(locked);
@@ -874,10 +883,11 @@ impl DiskIo for VhdmpDisk {
         _fua: bool,
     ) -> Result<(), DiskError> {
         let len = buffers.len();
-        let offset = sector << self.sector_shift;
-        if offset + len as u64 > self.disk_size {
+        let sector_count = (len >> self.sector_shift) as u64;
+        if sector > self.sector_count || sector_count > self.sector_count - sector {
             return Err(DiskError::IllegalBlock);
         }
+        let offset = sector << self.sector_shift;
         if buffers.is_aligned(PAGE_SIZE) {
             let locked = buffers.lock(false)?;
             let io = {
@@ -885,7 +895,14 @@ impl DiskIo for VhdmpDisk {
                 // SAFETY: segments point to locked guest pages that will not
                 // be referenced via Rust references until the IO completes;
                 // file is opened with FILE_NO_INTERMEDIATE_BUFFERING.
-                unsafe { self.file.write_gather_at(offset, &segments, len as u32) }
+                unsafe {
+                    self.file.write_gather_at(
+                        offset,
+                        &segments,
+                        len.try_into()
+                            .map_err(|_| DiskError::Io(std::io::ErrorKind::Unsupported.into()))?,
+                    )
+                }
             };
             let (result, _) = io.await;
             drop(locked);
