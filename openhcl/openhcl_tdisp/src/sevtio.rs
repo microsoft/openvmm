@@ -23,14 +23,16 @@ use x86defs::snp::SevRmpAdjust;
 /// hypercalls to make device resources (MMIO, DMA) accessible to the guest.
 pub struct TdispSevTioResourceValidator {
     sev_guest: SevGuestDevice,
-    mshv: MshvHvcall,
-    mshv_vtl: MshvVtl,
     vtom: u64,
 }
 
 impl TdispSevTioResourceValidator {
-    /// Open handles to the `/dev/sev-guest` device and the hypervisor call
-    /// interface required for SEV-TIO operations.
+    /// Open a handle to the `/dev/sev-guest` device required for SEV-TIO
+    /// operations.
+    ///
+    /// Note: the `mshv` and `mshv_vtl` handles are intentionally not cached
+    /// here; they are (re)created on each request so that the VP servicing
+    /// the request is the same VP that created the handle.
     ///
     /// * `vtom` - The address mask with the VTOM bit set to signify where VTOM
     ///   addresses start in the CVM.
@@ -39,23 +41,29 @@ impl TdispSevTioResourceValidator {
             .context("failed to open /dev/sev-guest")
             .unwrap();
 
+        Ok(Self { sev_guest, vtom })
+    }
+
+    /// Open a fresh `MshvHvcall` handle for a single request. The handle must
+    /// be created on the VP that will use it, so we do not cache it on the
+    /// validator.
+    fn open_mshv_hvcall() -> anyhow::Result<MshvHvcall> {
         let mshv = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
         mshv.set_allowed_hypercalls(&[
             hvdef::HypercallCode::HvCallModifySparseGpaPageHostVisibility,
         ]);
+        Ok(mshv)
+    }
 
-        let mshv_vtl_changer = Mshv::new().context("failed to create mshv").unwrap();
+    /// Open a fresh `MshvVtl` handle for a single request. The handle must be
+    /// created on the VP that will use it, so we do not cache it on the
+    /// validator.
+    fn open_mshv_vtl() -> anyhow::Result<MshvVtl> {
+        let mshv_vtl_changer = Mshv::new().context("failed to create mshv")?;
         let mshv_vtl = mshv_vtl_changer
             .create_vtl()
-            .context("failed to create mshv vtl")
-            .unwrap();
-
-        Ok(Self {
-            sev_guest,
-            mshv,
-            mshv_vtl,
-            vtom,
-        })
+            .context("failed to create mshv vtl")?;
+        Ok(mshv_vtl)
     }
 
     fn vtl_to_vmpl(vtl: Vtl) -> u8 {
@@ -103,9 +111,14 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             "about to call modify_gpa_visibility(PRIVATE)"
         );
 
+        // Open fresh mshv/mshv_vtl handles on the current VP; these cannot be
+        // cached because the VP that created the handle must be the one using
+        // it.
+        let mshv = Self::open_mshv_hvcall()?;
+        let mshv_vtl = Self::open_mshv_vtl()?;
+
         // Modify the pages to private before validation
-        match self
-            .mshv
+        match mshv
             .modify_gpa_visibility(HostVisibilityType::PRIVATE, &pfns)
         {
             Ok(_) => tracing::info!(
@@ -166,7 +179,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         }
 
         // Finally, rmpadjust the pages to be read/write to VTL0 so the guest can access them.
-        match self.mshv_vtl.rmpadjust_pages(
+        match mshv_vtl.rmpadjust_pages(
             MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
             SevRmpAdjust::new()
                 .with_enable_read(true)
@@ -241,9 +254,15 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
         let length_in_pages = length_in_bytes / (hvdef::HV_PAGE_SIZE as u32);
         let pfns: Vec<u64> = (0..length_in_pages as u64).map(|i| base_pfn + i).collect();
 
+        // Open fresh mshv/mshv_vtl handles on the current VP; these cannot be
+        // cached because the VP that created the handle must be the one using
+        // it.
+        let mshv = Self::open_mshv_hvcall()?;
+        let mshv_vtl = Self::open_mshv_vtl()?;
+
         // Revoke VTL0 access first so the guest cannot touch these pages
         // while we flip them back to shared.
-        match self.mshv_vtl.rmpadjust_pages(
+        match mshv_vtl.rmpadjust_pages(
             MemoryRange::from_4k_gpn_range(base_pfn..(base_pfn + (length_in_pages as u64))),
             SevRmpAdjust::new()
                 .with_enable_read(false)
@@ -296,8 +315,7 @@ impl TdispResourceValidationInterface for TdispSevTioResourceValidator {
             page_count = pfns.len(),
             "about to call modify_gpa_visibility(SHARED)"
         );
-        match self
-            .mshv
+        match mshv
             .modify_gpa_visibility(HostVisibilityType::SHARED, &pfns)
         {
             Ok(_) => tracing::info!(
