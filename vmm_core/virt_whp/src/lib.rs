@@ -1244,7 +1244,7 @@ impl VtlPartition {
         user_mode_apic: bool,
         offload_enlightenments: bool,
     ) -> Result<Self, Error> {
-        #[cfg(guest_arch = "aarch64")]
+        #[cfg(not(guest_arch = "x86_64"))]
         {
             if user_mode_apic {
                 return Err(Error::UnsupportedParameter("user_mode_apic"));
