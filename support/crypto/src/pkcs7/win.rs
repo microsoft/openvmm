@@ -121,16 +121,8 @@ impl Pkcs7SignedDataInner {
         // Step 1: Decode the PKCS7 message with CMSG_DETACHED_FLAG
         // since content is provided separately.
         // SAFETY: standard CryptMsg decode sequence.
-        let msg = unsafe {
-            CryptMsgOpenToDecode(
-                ENCODING_RAW,
-                CMSG_DETACHED_FLAG,
-                CMSG_SIGNED.0,
-                None,
-                None,
-                None,
-            )
-        };
+        let msg =
+            unsafe { CryptMsgOpenToDecode(ENCODING_RAW, CMSG_DETACHED_FLAG, 0, None, None, None) };
         if msg.is_null() {
             return Err(err(
                 windows_result::Error::from_thread(),
@@ -140,7 +132,7 @@ impl Pkcs7SignedDataInner {
         let msg = MsgHandle(msg);
 
         // SAFETY: msg handle is valid, data is a valid slice.
-        unsafe { CryptMsgUpdate(msg.0, Some(data), false) }
+        unsafe { CryptMsgUpdate(msg.0, Some(data), true) }
             .map_err(|e| err(e, "decode pkcs7 message"))?;
 
         Ok(Self { msg })
@@ -290,8 +282,12 @@ impl Pkcs7SignedDataInner {
 
         if let Err(e) = verify_result {
             // A bad signature is a verification failure; anything else is an
-            // internal error that should be propagated.
-            if e.code() == NTE_BAD_SIGNATURE {
+            // internal error that should be propagated. Newer Windows builds
+            // surface the NTSTATUS form instead of the `NTE_*` HRESULT, so
+            // accept both.
+            if e.code() == NTE_BAD_SIGNATURE
+                || e.code().0 == windows::Win32::Foundation::STATUS_INVALID_SIGNATURE.0
+            {
                 return Ok(false);
             }
             return Err(err(e, "verify message signature"));
@@ -337,14 +333,22 @@ impl Pkcs7SignedDataInner {
         policy_para.cbSize = size_of::<CERT_CHAIN_POLICY_PARA>() as u32;
 
         if uefi_mode {
-            // UEFI mode flags:
+            // UEFI mode flags, chosen to match the OpenSSL backend's
+            // `NO_CHECK_TIME | PARTIAL_CHAIN` + `X509Purpose::ANY` + no
+            // revocation behavior:
+            //
             // - Ignore time validity (certs may be expired)
-            // - Allow unknown CA (partial chain terminating at a cert in the
-            //   exclusive root store, matching OpenSSL's PARTIAL_CHAIN)
             // - Ignore wrong usage (any purpose)
             // - Ignore all revocation unknowns
+            //
+            // `PARTIAL_CHAIN` is already provided by `hExclusiveRoot` on the
+            // chain engine: any cert in the caller's trust store is treated as
+            // a trust anchor, including intermediates. Do NOT also set
+            // `CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG` here, because that
+            // would mask the legitimate "no matching trust anchor" error when
+            // the trust store lacks an appropriate cert, causing untrusted
+            // signatures to be accepted.
             policy_para.dwFlags = CERT_CHAIN_POLICY_IGNORE_ALL_NOT_TIME_VALID_FLAGS
-                | CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG
                 | CERT_CHAIN_POLICY_IGNORE_WRONG_USAGE_FLAG
                 | CERT_CHAIN_POLICY_IGNORE_ALL_REV_UNKNOWN_FLAGS;
         }
