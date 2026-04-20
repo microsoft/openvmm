@@ -61,7 +61,7 @@ impl Pkcs7SignedDataInner {
     }
 
     pub fn verify(
-        &self,
+        self,
         mut store: Pkcs7CertStoreInner,
         signed_content: &[u8],
         uefi_mode: bool,

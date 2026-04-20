@@ -48,5 +48,5 @@ pub struct BackendError(#[source] openssl::error::ErrorStack, &'static str);
 /// operation being performed when the error occurred.
 #[cfg(windows)]
 #[derive(Clone, Debug, thiserror::Error)]
-#[error("bcrypt error during {1}")]
+#[error("windows crypto error during {1}")]
 pub struct BackendError(#[source] windows_result::Error, &'static str);

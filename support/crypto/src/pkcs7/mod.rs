@@ -70,7 +70,7 @@ impl Pkcs7SignedData {
     /// Returns `Ok(true)` when verification succeeds and `Ok(false)` when the
     /// signature check fails.
     pub fn verify(
-        &self,
+        self,
         store: Pkcs7CertStore,
         signed_content: &[u8],
         uefi_mode: bool,

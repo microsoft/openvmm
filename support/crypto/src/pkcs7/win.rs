@@ -147,7 +147,7 @@ impl Pkcs7SignedDataInner {
     }
 
     pub fn verify(
-        &self,
+        self,
         store: Pkcs7CertStoreInner,
         signed_content: &[u8],
         uefi_mode: bool,
@@ -190,9 +190,27 @@ impl Pkcs7SignedDataInner {
             return Ok(false);
         }
 
+        // Create a custom chain engine with `hExclusiveRoot` set to the
+        // caller's trust store so that only the caller-provided certificates
+        // are treated as trust anchors (not the Windows system root store).
+        //
+        // The engine depends only on the trust store, so create it once here
+        // and share it across all signers.
+        let engine_config = CERT_CHAIN_ENGINE_CONFIG {
+            cbSize: size_of::<CERT_CHAIN_ENGINE_CONFIG>() as u32,
+            hExclusiveRoot: store.store.0,
+            ..Default::default()
+        };
+
+        let mut engine = HCERTCHAINENGINE::default();
+        // SAFETY: engine_config is valid with a valid hExclusiveRoot store handle.
+        unsafe { CertCreateCertificateChainEngine(&engine_config, &mut engine) }
+            .map_err(|e| err(e, "create chain engine"))?;
+        let engine = ChainEngineHandle(engine);
+
         // Verify each signer in the message.
         for signer_index in 0..signer_count {
-            if !self.verify_signer(&msg_store, &store, signer_index, uefi_mode)? {
+            if !self.verify_signer(&msg_store, &engine, signer_index, uefi_mode)? {
                 return Ok(false);
             }
         }
@@ -204,7 +222,7 @@ impl Pkcs7SignedDataInner {
     fn verify_signer(
         &self,
         msg_store: &CertStoreHandle,
-        trust_store: &Pkcs7CertStoreInner,
+        engine: &ChainEngineHandle,
         signer_index: u32,
         uefi_mode: bool,
     ) -> Result<bool, Pkcs7Error> {
@@ -279,23 +297,9 @@ impl Pkcs7SignedDataInner {
             return Err(err(e, "verify message signature"));
         }
 
-        // Step 7: Build a certificate chain from the signer cert to our trusted store.
+        // Step 7: Build a certificate chain from the signer cert to our
+        // trusted store using the shared chain engine.
         //
-        // Create a custom chain engine with hExclusiveRoot set to the caller's
-        // trust store so that only the caller-provided certificates are treated
-        // as trust anchors (not the Windows system root store).
-        let engine_config = CERT_CHAIN_ENGINE_CONFIG {
-            cbSize: size_of::<CERT_CHAIN_ENGINE_CONFIG>() as u32,
-            hExclusiveRoot: trust_store.store.0,
-            ..Default::default()
-        };
-
-        let mut engine = HCERTCHAINENGINE::default();
-        // SAFETY: engine_config is valid with a valid hExclusiveRoot store handle.
-        unsafe { CertCreateCertificateChainEngine(&engine_config, &mut engine) }
-            .map_err(|e| err(e, "create chain engine"))?;
-        let engine = ChainEngineHandle(engine);
-
         // SAFETY: CERT_CHAIN_PARA is a plain data struct that is valid when zeroed.
         let mut chain_para: CERT_CHAIN_PARA = unsafe { std::mem::zeroed() };
         chain_para.cbSize = size_of::<CERT_CHAIN_PARA>() as u32;
